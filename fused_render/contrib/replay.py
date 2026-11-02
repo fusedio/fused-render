@@ -21,16 +21,18 @@ the branch with `git reset --keep`: it refuses (rather than clobbers) when an
 uncommitted edit overlaps what the move would change, and a refusal is
 "defer, try next time" (§0.2), never an error.
 
-NOTHING OF BOB'S IS LOST SILENTLY (§0.2). Before `land` moves a branch off a
-tip the new one does not contain — or over a local file the new tip adds —
-the old tip is pinned at `refs/fused/backup/<unix_ms>-<why>` (and the
-uncommitted edits, untracked files included, at `…-wip` —
-`wip_commit_locked`). A fast-forward or a merge commit whose first parent is
-HEAD drops nothing, but an automatic one still pins the old tip
-(`undoable=True`) so its Activity line can offer Undo. `land` answers
-the ref it wrote so the engine can name it on the Activity line that offers
-Undo. The refs are NEVER deleted while an activity line references them;
-`prune_backups_locked` drops only unreferenced ones older than 30 days.
+NOTHING OF BOB'S IS LOST SILENTLY (§0.2, §16.16). Activity is read-only, so
+fused keeps no backup of what a move drops on purpose — the edits Discard
+throws away, the commits Use the version on GitHub replaces. Three guards
+remain, for what a move would otherwise destroy without anyone choosing it:
+a local file git does not track that the new version adds at the same path
+(`clobber_paths`, ignored files included — a `.env`, a token) is saved
+first at `refs/fused/backup/<unix_ms>-<why>-wip` (`wip_commit_locked`,
+under its tip `…-<why>`); a commit that lands while fused moves the branch
+is pinned and put back (`undo_race_locked`); and the v3 migration pins
+commits found nowhere else (classify). The refs are NEVER deleted while an
+activity line references them; `prune_backups_locked` drops only
+unreferenced ones older than 30 days, and never a race pin.
 
 COMMITTED `.fused/` (§4). A repo that tracks its own `.fused/` would show
 fused's writes there (the install stamp, `meta.json`) as edits, so tracked
@@ -640,6 +642,18 @@ def backup_locked(root, tip, *, why="update", also=()) -> list[str]:
     return refs
 
 
+def clobber_backup_locked(root, tip, clobber, *, why="update") -> list[str]:
+    """The one backup a move still makes (§16.16): the local files at
+    `clobber` (`clobber_paths`) that the move would overwrite, saved in a
+    `-wip` commit under a pin of `tip`. `[]` — and the caller must not move
+    — when they could not be saved."""
+    refs = backup_locked(root, tip, why=why, also=clobber)
+    if not any(r.endswith("-wip") for r in refs):
+        unbackup_locked(root, refs)
+        return []
+    return refs
+
+
 def unbackup_locked(root, refs) -> None:
     """Take back the refs of a move that did not happen."""
     for r in refs:
@@ -889,8 +903,8 @@ def sweep(ttl_s: float = 48 * 3600) -> int:
 
 def land(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str | None]:
     """Move `branch` (checked out in `root`) from `old_tip` to `new_tip`:
-    backup when the move can drop something, then `git reset --keep` under
-    the slot. `(None, backup_ref|None)` when it moved; else `(why, None)`
+    a local file in the way saved first (`clobber_paths`), then `git reset
+    --keep` under the slot. `(None, backup_ref|None)` when it moved; else `(why, None)`
     and nothing moved — `slot-busy` or `land_locked`'s reasons."""
     with slot() as held:
         if not held:
@@ -898,13 +912,10 @@ def land(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str | None
         return land_locked(root, branch=branch, old_tip=old_tip, new_tip=new_tip, why=why)
 
 
-def land_locked(root, *, branch, old_tip, new_tip, why,
-                undoable=False) -> tuple[str | None, str | None]:
+def land_locked(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str | None]:
     """`land`'s body; the caller holds the slot. `(None, backup)` when the
-    branch moved to `new_tip` (`backup` None for a move that keeps the old
-    tip in history and overwrites no local file — unless `undoable`: an
-    automatic move whose Activity line offers Undo pins the old tip even
-    then), else `(reason, None)`:
+    branch moved to `new_tip` (`backup` only when a local file the move
+    overwrites was saved), else `(reason, None)`:
     `moved` (the branch is not at `old_tip`, or a commit raced in),
     `in-progress` (an operation in flight) or `reset-refused` (the backup or
     `reset --keep` failed — an uncommitted edit overlapping the move).
@@ -926,10 +937,9 @@ def land_locked(root, *, branch, old_tip, new_tip, why,
     refs = []
     if new_tip != old_tip:
         clobber = clobber_paths(root, old_tip, new_tip)
-        if clobber or undoable or not is_ancestor(root, old_tip, new_tip):
-            refs = backup_locked(root, old_tip, why=why, also=clobber)
-            if not refs or (clobber and not any(r.endswith("-wip") for r in refs)):
-                unbackup_locked(root, refs)
+        if clobber:
+            refs = clobber_backup_locked(root, old_tip, clobber, why=why)
+            if not refs:
                 return "reset-refused", None
         # The S bit is what makes a set-aside `.fused/` file invisible to
         # `reset --keep`; without it the file reads as a local deletion and
@@ -970,7 +980,7 @@ def undo_race_locked(root, old_tip, refs, *, hard=False) -> bool:
 
                 store.add_activity(root, "race", "A change saved while fused was updating "
                                                  "this app couldn't be put back in place. "
-                                                 "It is kept: Restore brings it back.",
+                                                 "It is kept in a backup on this Mac.",
                                    backup=pin)
             except Exception:  # noqa: BLE001 — the pin itself already keeps the change
                 logger.exception("contrib: race activity line failed for %s", root)
@@ -981,13 +991,13 @@ def undo_race_locked(root, old_tip, refs, *, hard=False) -> bool:
 
 
 def reset_hard_locked(root, *, branch, target, why) -> tuple[bool, str | None]:
-    """Use-theirs / Discard / Restore's move: back up HEAD and every
-    uncommitted edit (untracked files included), then `reset --hard target`
-    and remove the untracked files the backup holds — "your edits" are
-    exactly what `edits()` names, so nothing of Bob's is left behind and
-    nothing unsaved. Ignored files (`.venv`, caches) and `.fused/` are never
-    touched. Refuses — nothing moved — when there are edits the backup
-    failed to capture. `(ok, backup_ref)`; the caller holds the slot."""
+    """Use-theirs / Discard's move — the person confirmed losing their
+    edits, so none is backed up (§16.16): `reset --hard target`, then the
+    untracked files `edits()` named are removed. A local file the target
+    adds at the same path is saved first (`clobber_backup_locked`; refused,
+    nothing moved, when it can't be). Other ignored files (`.venv`, caches)
+    and `.fused/` are never touched. `(ok, backup_ref|None)`; the caller
+    holds the slot."""
     head = rev(root, "HEAD")
     if gu._current_branch(root) != branch or not head:
         return False, None
@@ -995,24 +1005,24 @@ def reset_hard_locked(root, *, branch, target, why) -> tuple[bool, str | None]:
         return False, None
     untracked = {p for code, p in edits(root) if code == "??"}
     clobber = clobber_paths(root, head, target)
-    refs = backup_locked(root, head, why=why, also=clobber)
-    if not refs or ((dirty(root) or clobber) and not any(r.endswith("-wip") for r in refs)):
-        unbackup_locked(root, refs)
+    refs = clobber_backup_locked(root, head, clobber, why=why) if clobber else []
+    if clobber and not refs:
         return False, None
+    saved = refs[0] if refs else None
     protect_after_move(root)
     with fused_aside(root, target):
         moved = git(root, "reset", "--hard", target, timeout=REPLAY_TIMEOUT_S)
     if not ok(moved):
         logger.warning("contrib: reset --hard failed in %s: %s", root, gu._text(moved))
-        return False, refs[0]  # a failed hard reset may be partial: the backup stays
+        return False, saved  # a failed hard reset may be partial: a saved file stays
     if not undo_race_locked(root, head, refs, hard=True):
-        return False, refs[0]
+        return False, saved
     # Only paths STILL untracked: one the target now tracks is the author's.
     still = {p for code, p in edits(root) if code == "??"}
     for rel in sorted(untracked & still):
         _remove_untracked(root, rel)
     protect_after_move(root)
-    return True, refs[0]
+    return True, saved
 
 
 def _remove_untracked(root, rel) -> None:
@@ -1117,8 +1127,7 @@ def settle_locked(root, *, why="settle", main=None, merged=None,
                   head=None) -> tuple[bool, str | None]:
     """Settle (§17.3): `fused/mine` holds the author's version (same tree as
     `main`) by other commits — Bob's own, a bring-in merge, a squash on
-    GitHub — so `fused/mine` becomes `main`. HEAD is pinned first
-    (`backup_locked`: its tip, and any uncommitted edits at `-wip`; Undo).
+    GitHub — so `fused/mine` becomes `main`.
 
     Same tree: a compare-and-set `update-ref fused/mine <main> <HEAD>`, then
     `reset --keep main`. No file differs between the two commits, so every
@@ -1129,8 +1138,8 @@ def settle_locked(root, *, why="settle", main=None, merged=None,
     tree(main) while tree(HEAD) is not: Bob's change is already in `main`,
     the author edited it since. Then the move changes files: `reset --keep
     main` (git refuses rather than drop an unsaved edit on a file the move
-    changes; an ignored local file it would overwrite rides in the backup or
-    it does not move), and a commit that raced in is put back
+    changes; a local file it would overwrite is saved first or it does not
+    move), and a commit that raced in is put back
     (`undo_race_locked`).
 
     `head`: the HEAD the caller computed `merged` for — refused when HEAD
@@ -1138,7 +1147,8 @@ def settle_locked(root, *, why="settle", main=None, merged=None,
     `merged`.
 
     Requires HEAD on `fused/mine`. `main` defaults to `mirror_ref`. `(True,
-    backup)` when it settled; `(False, None)` and nothing moved otherwise.
+    backup|None)` when it settled (`backup` only for a saved local file);
+    `(False, None)` and nothing moved otherwise.
     The caller holds the slot."""
     main = main or mirror_ref(root)
     if gu._current_branch(root) != HOME_BRANCH or gu._operation_in_flight(root) is not None:
@@ -1150,11 +1160,7 @@ def settle_locked(root, *, why="settle", main=None, merged=None,
         return False, None
     want = tree_of(root, main)
     if tree_of(root, head) == want:
-        refs = backup_locked(root, head, why=why)
-        if not refs:
-            return False, None
         if not ok(git(root, "update-ref", "-m", "fused: settle", HOME_REF, main, head)):
-            unbackup_locked(root, refs)
             return False, None
         protect_after_move(root)
         with fused_aside(root, main):
@@ -1165,13 +1171,12 @@ def settle_locked(root, *, why="settle", main=None, merged=None,
             logger.info("contrib settle: reset after the ref move failed in %s: %s", root,
                         gu._text(r))
         protect_after_move(root)
-        return True, refs[0]
+        return True, None
     if not merged or merged != want or not expected or head != expected:
         return False, None
     clobber = clobber_paths(root, head, main)
-    refs = backup_locked(root, head, why=why, also=clobber)
-    if not refs or (clobber and not any(r.endswith("-wip") for r in refs)):
-        unbackup_locked(root, refs)
+    refs = clobber_backup_locked(root, head, clobber, why=why) if clobber else []
+    if clobber and not refs:
         return False, None
     protect_after_move(root)
     with fused_aside(root, main):
@@ -1183,4 +1188,4 @@ def settle_locked(root, *, why="settle", main=None, merged=None,
     if not undo_race_locked(root, head, refs, hard=True):
         return False, None
     protect_after_move(root)
-    return True, refs[0]
+    return True, (refs[0] if refs else None)

@@ -25,9 +25,9 @@ import {
 import {
   CanvasesControl,
   CanvasesEmbedProxyControl,
+  CanvasRailPeekControl,
   GitSyncControl,
   LivePreviewsControl,
-  MarketplaceControl,
   MonitorControl,
   NotifyTerminalControl,
   ProjectQueueControl,
@@ -36,7 +36,6 @@ import {
   TaskRecapsControl,
   TaskSummaryTitlesControl,
   ClaudeStrictMcpControl,
-  ContribControl,
   ContribRemixControl,
   ClaudeDefaultPermissionControl,
 } from "./toggles";
@@ -58,6 +57,7 @@ import {
   DiagnosticsControl,
   IndexQueryControl,
 } from "./advanced";
+import { CanvasScreenshotsControl, CanvasScreenshotsFallbackControl } from "./screenshots";
 
 export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   appearance: AppearanceControl,
@@ -79,12 +79,13 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
   "claude-default-permission": ClaudeDefaultPermissionControl,
+  "canvas-screenshots": CanvasScreenshotsControl,
+  "canvas-screenshots-fallback": CanvasScreenshotsFallbackControl,
   "claude-max-sessions": ClaudeMaxSessionsControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
   "share-sheet": ShareSheetControl,
   "live-previews": LivePreviewsControl,
-  contrib: ContribControl,
   "contrib-remix": ContribRemixControl,
   indexing: IndexingControl,
   "ranked-search": RankedSearchControl,
@@ -93,7 +94,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "rebuild-index": RebuildIndexControl,
   canvases: CanvasesControl,
   "canvases-embed-proxy": CanvasesEmbedProxyControl,
-  marketplace: MarketplaceControl,
+  "canvases-rail-peek": CanvasRailPeekControl,
   monitor: MonitorControl,
   reader: ReaderControl,
   "chromium-windows": ChromiumWindowsControl,

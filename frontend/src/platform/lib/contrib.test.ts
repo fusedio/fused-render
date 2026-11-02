@@ -54,17 +54,16 @@ test("a review-needed refusal comes back as an ordinary answer with the server's
 
 const OFF = { sources: false, changes: false, inbox: false, loop: false, remix: false };
 
-test("the copy-status read runs for a known Marketplace copy with every switch off", () => {
-  expect(contribReadEnabled("/w/app", OFF, false, false)).toBe(false);
-  expect(contribReadEnabled("/w/app", OFF, false, true)).toBe(true);
-  // …still unread switches too: the block does not wait on the prefs read.
-  expect(contribReadEnabled("/w/app", null, null, true)).toBe(true);
-  expect(contribReadEnabled(null, OFF, false, true)).toBe(false);
+test("the copy-status read runs for a known Marketplace copy before the flags land", () => {
+  expect(contribReadEnabled("/w/app", null, false)).toBe(false);
+  expect(contribReadEnabled("/w/app", null, true)).toBe(true);
+  expect(contribReadEnabled(null, null, true)).toBe(false);
+  // No phase on (not a state the always-on loop produces, but the rule holds).
+  expect(contribReadEnabled("/w/app", OFF, false)).toBe(false);
 });
 
-test("the switches still turn the read on by themselves", () => {
-  expect(contribReadEnabled("/w/app", { ...OFF, sources: true }, false, false)).toBe(true);
-  expect(contribReadEnabled("/w/app", OFF, true, false)).toBe(true);
+test("the phases turn the read on by themselves", () => {
+  expect(contribReadEnabled("/w/app", { ...OFF, sources: true }, false)).toBe(true);
 });
 
 test("a publish refused for Doctor's checks or a missing app id offers App Doctor; nothing else does", () => {

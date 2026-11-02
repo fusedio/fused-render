@@ -19,8 +19,6 @@ import { getAppsPage, getBackgroundAppsRunning } from "@platform/lib/api";
 import type { AppInfo, AppsPage, Config } from "@platform/lib/api";
 import { useCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { appCardMenu } from "@platform/lib/appCardMenu";
-import { runCommunity } from "@platform/lib/community";
-import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
@@ -58,7 +56,7 @@ let lastChips: { tags: string[]; categories: string[] } = { tags: [], categories
 
 // Which facet the chips filter by. "category" reads each app's authored
 // metadata.json category; "repo" is the top-level workspace folder (tag):
-// all / examples / local / showcase in a stock workspace.
+// all / examples / app in a stock workspace.
 type FilterMode = "category" | "repo";
 
 // The `key`s are internal (mode is local state derived from which URL param is
@@ -73,59 +71,9 @@ const MODES: { key: FilterMode; label: string }[] = [
 const modeLabel = (m: FilterMode): string =>
   MODES.find((x) => x.key === m)?.label ?? m;
 
-type ShowcaseCatalog = { status?: string };
-
-// Read the showcase catalog once per mount, purely to force the clone when
-// it's missing.
-//
-// `catalog` first — a cheap local read (a folder scan), no lock, no network.
-// Only when it reports no-cache (the clone is missing or the startup clone
-// is still running) does this escalate to `refresh`: that call parks on the
-// cache lock behind an in-flight startup clone (or performs the clone itself
-// after a failed start), and its completion is the signal that
-// <workspace>/showcase just landed — `onSynced` then refetches the grid so
-// the first visit doesn't keep a stale listing until reload. An
-// already-cloned catalog never touches the network here (it's cloned once,
-// then left alone), so this never blocks on git after the first visit.
-//
-// Returns the clone's failure message when it refused (no usable git on the
-// machine, no network, a foreign folder already at <workspace>/showcase).
-// This used to be swallowed, which left the hub silently short of every
-// showcase app with nothing on screen to say why; the local grid still loads
-// either way, so it renders as a muted line rather than the page's error
-// banner. The backend composes the whole user-facing sentence.
-//
-// RETIRED with the reviewed Marketplace (CONTRIB_LOOP.md §18.5, stage B):
-// while `marketplace_enabled` is on, nothing here asks for the clone (the
-// server answers `{status: "retired"}` then anyway) and the "showcase"
-// folder chip is not offered; a clone already on disk is left alone.
-function useShowcaseSync(onSynced: () => void, retired: boolean | null): string | null {
-  const [syncError, setSyncError] = useState<string | null>(null);
-  useEffect(() => {
-    // Not until the flag is known, and never while it is on.
-    if (retired !== false) return;
-    let alive = true;
-    (async () => {
-      const local = await runCommunity<ShowcaseCatalog>({ action: "catalog" });
-      if (!alive) return;
-      if (local.status !== "no-cache") return;
-      await runCommunity<ShowcaseCatalog>({ action: "refresh" });
-      if (!alive) return;
-      onSynced();
-    })().catch((e: Error) => {
-      if (alive) setSyncError(e.message);
-    });
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount (per flag answer)
-  }, [retired]);
-  return retired === false ? syncError : null;
-}
-
 // Folder paths (keys of GET /api/apps/background/running) whose background
 // daemon is currently live — feeds the "running" badge on background-app
-// cards. Same decoration-only posture as useShowcaseSync above: one fetch per
+// cards. Decoration only: one fetch per
 // mount, no polling (a stale badge just means "reload to see it flip"), and a
 // failure yields an empty set rather than a card-breaking error — failures
 // just mean no badges.
@@ -386,14 +334,7 @@ export default function Apps({ config }: { config: Config }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMore guards itself through moreCtl
   }, [hasMore, shownCount, moreFailed, filterKey]);
 
-  const marketplaceOn = useMarketplaceFeature();
-  const showcaseError = useShowcaseSync(() => setNonce((n) => n + 1), marketplaceOn);
   const runningPaths = useRunningBackgroundApps();
-  // Showcase apps are ordinary workspace apps now: the server clones the
-  // community repo into <workspace>/showcase in the background on startup,
-  // and the workspace scan picks it up like any other tag dir. No synthetic
-  // chip, no separate catalog surface.
-  //
   // Chips speak for the WHOLE catalog, which is why the server sends them
   // with every page rather than the client deriving them from the cards it
   // holds. Folders: the server's sorted tag list (minus exported `.fused`
@@ -402,9 +343,10 @@ export default function Apps({ config }: { config: Config }) {
   // geospatial) first, then locale-alphabetical for anything else a workspace
   // turns up. Card order in the grid is unaffected.
   const tags = page?.tags ?? lastChips.tags;
-  // The retired Showcase's folder chip goes while the Marketplace is on —
-  // unless it is the filter in force, so the reader can still clear it.
-  const folderChips = tags.filter((t) => marketplaceOn !== true || t !== "showcase" || tag === t);
+  // The retired Showcase's folder chip (a clone from before the Community
+  // replaced it, 2026-10-29, left on disk) is not offered — unless it is the
+  // filter in force, so the reader can still clear it.
+  const folderChips = tags.filter((t) => t !== "showcase" || tag === t);
   const categories = orderCategories(page?.categories ?? lastChips.categories);
   const chips = mode === "repo" ? folderChips : categories;
   const active = mode === "repo" ? tag : category;
@@ -477,9 +419,6 @@ export default function Apps({ config }: { config: Config }) {
         </div>
 
         {error && <ErrorBanner>{error}</ErrorBanner>}
-        {/* Above the grid, not inside its empty state: the local apps below
-            are fine, it is only the showcase half that is missing. */}
-        {showcaseError && <div className="apps-showcase-note">{showcaseError}</div>}
         {/* Skeleton only while there is nothing drawable at all: once a page
             has landed the cards themselves are the loading indicator. */}
         {page === null && !error && <SkeletonLines rows={4} label="Loading apps" />}

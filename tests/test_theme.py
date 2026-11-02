@@ -536,3 +536,55 @@ def test_bootstrap_preset_ids_match_theme_ts_in_index_and_lan():
         for pid in expected:
             assert f'html[data-theme-name="{pid}"]' in head, (path, pid)
             assert f'html[data-theme-name="{pid}"][data-theme="light"]' in head, (path, pid)
+
+
+# --- Default view scrollbars (runtime.js) -----------------------------------
+
+
+@pytest.fixture(scope="module")
+def scrollbar_probe():
+    import json
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to execute runtime.js's scrollbar block")
+    here = os.path.dirname(os.path.abspath(__file__))
+    runtime = os.path.join(REPO_ROOT, "fused_render", "static", "runtime.js")
+    out = subprocess.run(
+        ["node", os.path.join(here, "_scrollbar_probe.mjs"), runtime],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_view_scrollbar_sheet_lands_ahead_of_the_views_own_css(scrollbar_probe):
+    r = scrollbar_probe["bodyCanvas"]
+    assert r["first"], "the sheet must precede every author stylesheet so theirs wins by order"
+    assert "::-webkit-scrollbar-thumb" in r["css"]
+
+
+def test_view_scrollbar_rules_never_outrank_author_rules(scrollbar_probe):
+    import re
+
+    css = scrollbar_probe["bodyCanvas"]["css"]
+    for selector in re.findall(r"([^{}]+)\{", css):
+        for part in selector.split(","):
+            bare = re.sub(r":where\([^)]*\)", "", part.strip())
+            assert re.fullmatch(r"(::-webkit-scrollbar(-[a-z]+)?)?", bare), (
+                f"{part!r} carries specificity beyond `*`-level; an author's "
+                "`::-webkit-scrollbar*` rule would no longer win by order"
+            )
+
+
+def test_viewport_track_takes_the_canvas_colour(scrollbar_probe):
+    assert scrollbar_probe["bodyCanvas"]["canvas"] == "rgb(13, 17, 23)"
+    assert scrollbar_probe["rootCanvas"]["canvas"] == "rgb(255, 255, 255)", "<html>'s bg wins over <body>'s"
+    assert scrollbar_probe["cleared"]["canvas"] == "", "no canvas means a transparent track"
+
+
+def test_view_can_keep_native_scrollbars(scrollbar_probe):
+    assert scrollbar_probe["native"]["sheet"] is False

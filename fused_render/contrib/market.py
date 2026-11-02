@@ -30,8 +30,8 @@ nothing — `actions.facts`, which runs on a page GET and must never wait on
 the network).
 
 SWITCHING (D13) is always the user's explicit act, both ways, each one
-Activity line (kind `switch`) whose Undo is the opposite switch
-(`engine.restore`): `switch_to_link` (marketplace → github: the mirror moves
+Activity line (kind `switch`); switching back is the opposite switch:
+`switch_to_link` (marketplace → github: the mirror moves
 to the author's tip, then one fast-forward when nothing of Bob's is in the
 way) and `switch_to_reviewed` (github → marketplace: refused while Bob has
 changes of his own; the mirror and HEAD go to the approved commit, pinned).
@@ -47,7 +47,7 @@ import time
 from dataclasses import dataclass, field
 
 from fused_render import git_upstream as gu
-from fused_render.contrib import classify, follow, replay, store
+from fused_render.contrib import classify, follow, replay, store, timeline
 
 logger = logging.getLogger(__name__)
 
@@ -284,9 +284,7 @@ PREV_KEEP = 10
 
 def refresh_approved(root, *, fresh=False, mode=None) -> Approved | None:
     """Bring `record.approved` / `record.listing` up to date with the
-    catalog (`approved_for`), before the engine's fetch. A new approved
-    commit ends an undo hold (`skip_tip`): "a new author tip clears it by
-    itself" (§17.2) reads "a new release clears it" here. `delisted` keeps
+    catalog (`approved_for`), before the engine's fetch. `delisted` keeps
     `approved` (the copy keeps working on its last reviewed version);
     `unknown` writes nothing. Writes only when something changed. No git,
     no slot; the catalog read may build it (`ttl` by default — off the
@@ -311,6 +309,8 @@ def refresh_approved(root, *, fresh=False, mode=None) -> Approved | None:
 
         def live(r):
             old = r.get("approved") if isinstance(r.get("approved"), dict) else {}
+            if (r.get("listing") or {}).get("status") == "delisted":
+                store.append_activity(r, timeline.relisted_line(r))
             new = dict(entry)
             if old.get("commit") and old.get("commit") != new["commit"]:
                 # The releases this copy ran before, newest first: where a
@@ -324,8 +324,6 @@ def refresh_approved(root, *, fresh=False, mode=None) -> Approved | None:
             if ap.slug:
                 r["slug"] = ap.slug
             r["listing"] = {"status": "live", "checked_at": now, "delisted_at": None}
-            if old.get("commit") != new["commit"]:
-                r["skip_tip"] = None
         store.update(root, live)
     elif ap.status == "delisted":
         listing = rec.get("listing") if isinstance(rec.get("listing"), dict) else {}
@@ -334,6 +332,7 @@ def refresh_approved(root, *, fresh=False, mode=None) -> Approved | None:
 
         def gone(r):
             r["listing"] = {"status": "delisted", "checked_at": now, "delisted_at": now}
+            store.append_activity(r, timeline.delisted_line(r))
         store.update(root, gone)
     return ap
 
@@ -398,10 +397,10 @@ def _home_ready(engine, root):
 
 
 def _hard_reset_locked(root, target, why) -> tuple[bool, str | None]:
-    """HEAD (fused/mine) → `target` with `reset --hard`, HEAD and any edit
-    it would overwrite pinned first (`backup_locked`, Undo). Untracked
-    files are never removed (a switch keeps the user's data). `(ok,
-    backup)`; the slot is held."""
+    """HEAD (fused/mine) → `target` with `reset --hard`; a local file the
+    move would overwrite is saved first (`replay.clobber_backup_locked`, the
+    one backup §16.16 keeps). Untracked files are never removed (a switch
+    keeps the user's data). `(ok, backup|None)`; the slot is held."""
     head = replay.rev(root, "HEAD")
     target = replay.rev(root, target)
     if not head or not target:
@@ -409,25 +408,25 @@ def _hard_reset_locked(root, target, why) -> tuple[bool, str | None]:
     if head == target:
         return True, None
     clobber = replay.clobber_paths(root, head, target)
-    refs = replay.backup_locked(root, head, why=why, also=clobber)
-    if not refs or (clobber and not any(r.endswith("-wip") for r in refs)):
-        replay.unbackup_locked(root, refs)
+    refs = replay.clobber_backup_locked(root, head, clobber, why=why) if clobber else []
+    if clobber and not refs:
         return False, None
+    saved = refs[0] if refs else None
     replay.protect_after_move(root)
     with replay.fused_aside(root, target):
         r = replay.git(root, "reset", "-q", "--hard", target, timeout=replay.REPLAY_TIMEOUT_S)
     if not replay.ok(r):
         logger.warning("contrib market: reset to %s failed in %s: %s", target, root, gu._text(r))
-        return False, refs[0]
+        return False, saved
     if not replay.undo_race_locked(root, head, refs, hard=True):
-        return False, refs[0]
+        return False, saved
     replay.protect_after_move(root)
-    return True, refs[0]
+    return True, saved
 
 
-def _switched(r, frm, backup) -> None:
+def _switched(r, frm) -> None:
     lst = r.get("switched") if isinstance(r.get("switched"), list) else []
-    lst.append({"from": frm, "at": time.time(), "backup": backup})
+    lst.append({"from": frm, "at": time.time()})
     r["switched"] = lst[-20:]
 
 
@@ -436,15 +435,13 @@ REVIEWED_TEXT = "Switched to reviewed releases."
 CHANGES_FIRST = "Propose or discard your changes first."
 
 
-def switch_to_link(root, *, backup=None) -> dict:
+def switch_to_link(root) -> dict:
     """Marketplace → github (§18.4 D13), the user's explicit choice: the
     author's branch is fetched, the mirror moves from the approved commit
     to the author's tip (a pinned non-fast-forward when the approved commit
     is not in it), the record and the marker become `github` (the push
     guard stays), and — when nothing of Bob's is in the way (clean, not
-    ahead) — one fast-forward brings the tip in, pinned for Undo. `backup`
-    (Undo of a `switch_to_reviewed` line): HEAD goes back to exactly that
-    commit instead. Activity kind `switch`, Undo = the opposite switch."""
+    ahead) — one fast-forward brings the tip in. Activity kind `switch`."""
     engine = _engine()
     rec = store.get(root)
     if not isinstance(rec, dict) or rec.get("kind") != "marketplace":
@@ -470,7 +467,7 @@ def switch_to_link(root, *, backup=None) -> dict:
             tip, reason = follow.fetch(root, fol)
             if not tip:
                 return _fetch_failed(engine, reason, who)
-            m = follow.update_mirror(root, link, why="switch")
+            follow.update_mirror(root, link, why="switch")
             main = replay.rev(root, engine._mirror(link))
             if main != follow.tip(root, link):
                 return engine._refuse("failed", f"Couldn't switch to following {who} directly; "
@@ -479,46 +476,32 @@ def switch_to_link(root, *, backup=None) -> dict:
             def flip(r):
                 r["kind"] = "github"
                 r["block"] = None
-                r["skip_tip"] = None
-                _switched(r, "marketplace", m.get("backup"))
+                _switched(r, "marketplace")
             store.update(root, flip)
             classify._forget_kind(root)
             classify.ensure_push_guard(root, "github")
             classify._set_upstream(root, branch, "github")
             head = replay.rev(root, "HEAD")
-            land = None
-            target = replay.rev(root, backup) if backup else None
-            if target:
-                ok, land = _hard_reset_locked(root, target, "switch")
-                if not ok:
-                    land = None
-            elif (head and main and head != main and not replay.tracked_edits(root)
-                  and replay.is_ancestor(root, head, main)):
-                refs = replay.backup_locked(root, head, why="switch")
-                if refs:
-                    why, _ = replay.land_ff_locked(root, main)
-                    if why:
-                        replay.unbackup_locked(root, refs)
-                    else:
-                        land = refs[0]
+            if (head and main and head != main and not replay.tracked_edits(root)
+                    and replay.is_ancestor(root, head, main)):
+                replay.land_ff_locked(root, main)  # refused = stays put, said by the panel
         engine._status_cache.pop(root, None)
         engine._note_head(root)
         text = LINK_TEXT.format(who=who)
-        engine._activity(root, store.SWITCH_KIND, text, backup=land)
+        engine._activity(root, store.SWITCH_KIND, text)
         return {"ok": True, "message": text}
 
     return engine._user_run(root, go)
 
 
-def switch_to_reviewed(root, row, *, backup=None) -> dict:
+def switch_to_reviewed(root, row) -> dict:
     """Github → marketplace (§18.4 D13), the user's explicit choice:
     refused with "Propose or discard your changes first." while the copy has
     commits of Bob's the author lacks or unsaved edits; else the approved
     commit of `row` is fetched (pinned), the mirror moves to it (pinned when
-    that is backwards), HEAD goes to it (`reset --hard`, HEAD pinned for
-    Undo — `backup`, Undo of a `switch_to_link` line, lands on exactly that
-    commit instead, unless it is blocked), and the record and the marker
-    become `marketplace`, upstream the mirror. Activity kind `switch`."""
+    that is backwards), HEAD goes to it (`reset --hard`), and the record and
+    the marker become `marketplace`, upstream the mirror. Activity kind
+    `switch`."""
     engine = _engine()
     rec = store.get(root)
     if not isinstance(rec, dict) or rec.get("kind") != "github":
@@ -561,15 +544,10 @@ def switch_to_reviewed(root, row, *, backup=None) -> dict:
                                                      "won't switch to it. Nothing was changed.")
                 return engine._refuse("failed", "Couldn't switch to the reviewed version; "
                                                 "nothing was changed.")
-            target = ap.commit
-            if backup and replay.rev(root, backup):
-                want = replay.rev(root, backup)
-                if not _backup_blocked(root, slug, want, ap.commit):
-                    target = want
-            ok, land = _hard_reset_locked(root, target, "switch")
+            ok, land = _hard_reset_locked(root, ap.commit, "switch")
             if not ok:
-                return engine._refuse("failed", "Couldn't switch to the reviewed version; your "
-                                                "copy is saved in Activity.")
+                return engine._refuse("failed", "Couldn't switch to the reviewed version. "
+                                                "Try again.")
 
             def flip(r):
                 r["kind"] = "marketplace"
@@ -580,8 +558,7 @@ def switch_to_reviewed(root, row, *, backup=None) -> dict:
                                 "delisted_at": None}
                 r["block"] = None
                 r["block_warn"] = None
-                r["skip_tip"] = None
-                _switched(r, "github", land)
+                _switched(r, "github")
             store.update(root, flip)
             classify._forget_kind(root)
             classify.ensure_push_guard(root, "marketplace")
@@ -597,42 +574,6 @@ def switch_to_reviewed(root, row, *, backup=None) -> dict:
 
 def not_on_branch_words(who) -> str:
     return f"The reviewed version isn't in {who}'s app any more. Nothing was changed."
-
-
-def _backup_blocked(root, slug, sha, mirror) -> bool:
-    try:
-        from fused_render.contrib import blocks
-
-        return bool(blocks.contains_blocked(root, slug, sha, mirror))
-    except Exception:  # noqa: BLE001 — unknown reads as blocked (M1)
-        logger.exception("contrib market: block check failed for %s", root)
-        return True
-
-
-def undo_switch(root, entry) -> dict:
-    """Undo of a `switch` Activity line (`engine.restore`): the opposite
-    switch, landing on the line's backup when it has one."""
-    engine = _engine()
-    rec = store.get(root) or {}
-    backup = (entry or {}).get("backup")
-    if isinstance(backup, list):
-        backup = next((b for b in backup if isinstance(b, str) and not b.endswith("-wip")), None)
-    if rec.get("kind") == "marketplace":
-        out = switch_to_link(root, backup=backup)
-    elif rec.get("kind") == "github":
-        # The catalog FILE (an Undo runs on the request thread: no build),
-        # else the row this copy last ran.
-        row = row_for_repo(rec.get("repo"), mode="local") or (
-            {**_unknown(rec).__dict__, "repo": rec.get("repo"), "branch": rec.get("branch"),
-             "slug": rec.get("slug")} if (rec.get("approved") or {}).get("commit") else None)
-        if row is None:
-            return engine._refuse("not-listed", "This app isn't in the Community any more.")
-        out = switch_to_reviewed(root, row, backup=backup)
-    else:
-        return engine._refuse("nothing", "There's nothing to bring back for that.")
-    if out.get("ok") and entry and entry.get("id"):
-        store.mark_restored(root, entry["id"])
-    return out
 
 
 # ------------------------------------------------------------------- legacy

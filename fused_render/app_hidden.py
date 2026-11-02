@@ -1,8 +1,10 @@
-"""Apps the user uninstalled that cannot be deleted: a subfolder of the
-showcase clone (deleting it dirties the repo and the next sync restores it).
-``~/.fused-render/hidden_apps.json`` holds their paths; every hub listing
-drops them (routers/apps.py). Nothing un-hides one yet — the showcase
-checkout is the owner's to tidy."""
+"""Apps the user uninstalled that cannot be deleted: a subfolder of a
+showcase clone left from before the Community replaced it (2026-10-29;
+deleting it dirties that repo), or any workspace copy a Community install
+replaced on the user's say-so (`marketplace.ReplaceNeeded`: its data moved
+into the new copy, its files stay). ``~/.fused-render/hidden_apps.json`` holds
+their paths; every hub listing drops them (routers/apps.py). Nothing
+un-hides one yet — the showcase checkout is the owner's to tidy."""
 from __future__ import annotations
 
 import os

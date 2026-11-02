@@ -10,6 +10,15 @@ Python `main()` function and sync its state to the URL.
 Runs entirely on `127.0.0.1`. No accounts, no cloud, no sandboxing — your own
 machine, your own trusted code.
 
+## Install with uv
+
+```
+uv tool install --force --python 3.12 "fused-render[cli]"
+uv tool update-shell
+```
+
+Then run `fused-render` to start the server.
+
 ## Download
 
 Download from **[render.fused.io](https://render.fused.io)**:

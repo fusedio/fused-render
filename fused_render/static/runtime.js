@@ -788,6 +788,106 @@
 
   startTheme();
 
+  // --- Scrollbars -----------------------------------------------------------
+  //
+  // Every view gets the shell's quiet scrollbar (frontend/src/styles/
+  // scrollbars.css): a 10px classic bar, transparent track, and a thumb that
+  // shows only while the pointer is over the element that scrolls. Without
+  // this a view's bars are whatever the engine draws by default, and some
+  // engines draw a light track in a dark frame however `color-scheme` is set,
+  // which is why apps kept pasting their own `::-webkit-scrollbar` block.
+  //
+  // The thumb's ink is `currentColor`, so it reads against whatever the view
+  // paints, opted into theming or not, with no palette here.
+  //
+  // The sheet goes in now, while this parser-blocking script is the only thing
+  // in <head>, so it lands ahead of every stylesheet the view has. Each rule is
+  // `*`-level specificity, so the view's own rules at the same specificity win
+  // by order, and anything more specific wins outright. An element with a
+  // non-`auto` `scrollbar-width`/`scrollbar-color` makes Chromium ignore the
+  // pseudo rules, so standard scrollbar CSS still wins too. A view that wants
+  // the engine's native bars puts `data-fused-scrollbars="native"` on <html>.
+  //
+  // The custom property is set on EVERY element (as in scrollbars.css): it
+  // inherits, and every ancestor of the pointer is `:hover`, so without a value
+  // of its own each scroller under the pointer would light up together.
+  //
+  // The VIEWPORT scrollbar's track is the exception to "transparent": that bar
+  // sits outside the canvas, so a transparent track shows the parent document
+  // through the frame (a dark stripe down a white page). It is painted with
+  // the document's own canvas colour, which syncScrollbarCanvas keeps in
+  // `--fused-sb-canvas` on <html>. WebKit matches the viewport bar only with
+  // an unqualified `::-webkit-scrollbar-*` selector (`html::…` and `:root::…`
+  // never apply), but it does inherit <html>'s custom properties, so every
+  // track reads the variable and everything inside <body> resets it.
+  var SCROLLBAR_CSS =
+    ":where(*){--fused-sb-thumb:transparent}" +
+    ":where(*:hover){--fused-sb-thumb:color-mix(in srgb,currentColor 25%,transparent)}" +
+    ":where(body *){--fused-sb-canvas:transparent}" +
+    "::-webkit-scrollbar{width:10px;height:10px}" +
+    "::-webkit-scrollbar-track,::-webkit-scrollbar-corner" +
+    "{background:var(--fused-sb-canvas,transparent)}" +
+    "::-webkit-scrollbar-thumb{background:var(--fused-sb-thumb);" +
+    "background-clip:padding-box;border:3px solid transparent;border-radius:999px}";
+
+  function isTransparent(color) {
+    return !color || color === "transparent" || /^rgba\(.*,\s*0\)$/.test(color);
+  }
+
+  // The canvas colour, by the CSS background propagation rule: <html>'s
+  // background if it has one, else <body>'s. Neither means the document paints
+  // no canvas, and the track stays transparent like the rest of it.
+  function syncScrollbarCanvas() {
+    var root = document.documentElement;
+    var color = getComputedStyle(root).backgroundColor;
+    if (isTransparent(color) && document.body) color = getComputedStyle(document.body).backgroundColor;
+    var next = isTransparent(color) ? "" : color;
+    // Only on a change: the root observer below watches `style`, and an
+    // unconditional write would wake it again every frame.
+    if (root.style.getPropertyValue("--fused-sb-canvas") === next) return;
+    if (next) root.style.setProperty("--fused-sb-canvas", next);
+    else root.style.removeProperty("--fused-sb-canvas");
+  }
+
+  function startScrollbars() {
+    var root = document.documentElement;
+    var head = document.head;
+    if (!root || !head) return;
+    if (root.getAttribute("data-fused-scrollbars") === "native") return;
+    var style = document.createElement("style");
+    style.setAttribute("data-fused-scrollbars", "");
+    style.textContent = SCROLLBAR_CSS;
+    head.insertBefore(style, head.firstChild);
+    // The canvas colour is only known once the view's stylesheets and <body>
+    // exist, and it moves when the view re-themes: a class or attribute flip
+    // on <html>/<body>, a preset's tokens landing in <html>'s style, or a
+    // `prefers-color-scheme` block.
+    var sync = function () {
+      requestAnimationFrame(syncScrollbarCanvas);
+    };
+    var observeBody = function () {
+      if (document.body) {
+        new MutationObserver(sync).observe(document.body, { attributes: true });
+      }
+    };
+    document.addEventListener("DOMContentLoaded", function () {
+      observeBody();
+      sync();
+    });
+    window.addEventListener("load", sync);
+    new MutationObserver(sync).observe(root, {
+      attributes: true,
+      attributeFilter: ["class", "style", "data-theme", "data-fused-theme-name"],
+    });
+    try {
+      window.matchMedia(DARK_QUERY).addEventListener("change", sync);
+    } catch (e) {
+      /* no matchMedia — the observers above still follow a re-theme */
+    }
+  }
+
+  startScrollbars();
+
   // --- The pane focus contract (`_nofocus=1`) -------------------------------
   //
   // A page rendered in the explorer's PREVIEW PANE must not take the keyboard.

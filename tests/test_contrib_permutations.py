@@ -203,8 +203,9 @@ def _check_return(kind, tip, *, method):
         assert dirty_paths(W.bob.app) == [], dirty_paths(W.bob.app)
     # The proposal's content is in the author's latest, whatever the method.
     assert "return 3" in W.fake.read(REPO, "app.py")
-    assert any(x.get("undo") and "merged your change" in x.get("text", "")
+    assert any("merged your change" in x.get("text", "")
                for x in out["activity"]), out["activity"]
+    assert not any("undo" in x for x in out["activity"]), "Activity is read-only (§16.16)"
     return out
 
 
@@ -315,7 +316,13 @@ def test_withdraw_then_propose_again(world):
     assert "return 3" in W.fake.read(REPO, "app.py") and "gold" in W.fake.read(REPO, "index.html")
 
 
-def test_discard_with_withdraw_and_undo(world):
+def _backups(app):
+    """Every backup ref in the copy — none but §16.16's guards write one."""
+    from fused_render.contrib import replay
+    return git(app, "for-each-ref", "--format=%(refname)", replay.BACKUP_PREFIX).split()
+
+
+def test_discard_with_withdraw_drops_without_a_backup(world):
     setup_world()
     n1 = propose(W.bob, {"app.py": louder(3)}, "louder", title="Louder")
     write(W.bob.app, "index.html", PAGE.replace("blue", "teal"))  # unsaved too
@@ -332,14 +339,10 @@ def test_discard_with_withdraw_and_undo(world):
     assert read(W.bob.app, "app.py") == APP_PY and read(W.bob.app, "index.html") == PAGE
     out = page(W.bob)
     assert out["panel"]["state"] == "following", out["panel"]
-    line = next(x for x in out["activity"] if x.get("undo") and "iscard" in x["text"])
-    r = post(W.bob, "restore", id=line["id"])
-    assert r.get("ok"), r
-    assert head(W.bob.app) == bob_head
-    assert "return 3" in read(W.bob.app, "app.py")
-    assert "teal" in read(W.bob.app, "index.html"), "the unsaved edit was not brought back"
-    out = page(W.bob)
-    assert out["panel"]["state"] == "changes" and "propose" in ids(out), out["panel"]
+    # Activity is read-only (§16.16): the person confirmed losing it, so
+    # nothing of what was discarded is kept.
+    assert any("iscard" in x["text"] for x in out["activity"]), out["activity"]
+    assert not _backups(W.bob.app) and bob_head != head(W.bob.app)
 
 
 # == the author moves while a proposal is open =====================================
@@ -575,7 +578,7 @@ def test_two_senders_on_different_files(world):
 # == the author takes it back, rewinds, or a collaborator publishes ==================
 
 
-def test_merged_then_taken_back_then_undo_and_propose_again(world):
+def test_merged_then_taken_back(world):
     setup_world()
     n = propose(W.bob, {"app.py": louder(3)}, "louder", title="Louder")
     accept_on_github(n, method="merge")
@@ -586,17 +589,9 @@ def test_merged_then_taken_back_then_undo_and_propose_again(world):
     app_open(W.bob)
     out = page(W.bob)
     p = out["panel"]
-    # v3: no take-back detection; Alice's revert is just her latest, and the
-    # merged line's Undo brings Bob's version back.
+    # v3: no take-back detection; Alice's revert is just her latest.
     assert p["state"] == "merged" and "merged your change" in p["sentence"], p
     assert head(W.bob.app) == tip and read(W.bob.app, "app.py") == APP_PY
-    line = next(x for x in out["activity"] if x.get("undo") and "merged your change" in x["text"])
-    r = post(W.bob, "restore", id=line["id"])
-    assert r.get("ok"), r
-    assert "return 3" in read(W.bob.app, "app.py")
-    out = page(W.bob)
-    assert out["panel"]["state"] in ("changes", "merged"), out["panel"]
-    assert "propose" in ids(out) or "bring-in" in ids(out), ids(out)
     no_pushes(before, "the take-back")
 
 
@@ -685,7 +680,7 @@ def test_collaborator_publishes_directly(world):
 def test_flags_off_while_merged_then_on_returns(world):
     """The loop is switched off while a proposal is open and the author
     merges it meanwhile: the copy still gets her latest (clean, local,
-    undoable) and nothing is pushed; switching it back on returns the copy."""
+    backed up) and nothing is pushed; switching it back on returns the copy."""
     setup_world()
     n = propose(W.bob, {"app.py": louder(3)}, "louder", title="Louder")
     W.bob.flags = dict(ALL_OFF)
@@ -771,10 +766,10 @@ def test_delete_versus_change_is_a_choice(world):
     assert out["panel"]["state"] == "changes" and "propose" in ids(out), out["panel"]
 
 
-def test_overlap_then_match_then_undo(world):
+def test_overlap_then_match_drops_without_a_backup(world):
     """An overlap stands until Bob decides: nothing moves on its own; Use
-    alice's version (match) lands him on her tip with his version saved;
-    Undo brings his back."""
+    alice's version (match) lands him on her tip, his version not kept
+    (he confirmed it; Activity is read-only, §16.16)."""
     setup_world()
     turn_committed(W.bob, {"app.py": louder(3)}, "louder")
     alice_publish({"app.py": louder(5)}, "five")
@@ -793,36 +788,8 @@ def test_overlap_then_match_then_undo(world):
     r = act(W.bob, "match", confirm=True)
     assert r.get("ok"), r
     assert head(W.bob.app) == tip_of() and read(W.bob.app, "app.py") == louder(5)
-    out = page(W.bob)
-    line = next(x for x in out["activity"] if x.get("undo") and "alice" in x["text"])
-    r = post(W.bob, "restore", id=line["id"])
-    assert r.get("ok") and head(W.bob.app) == bob_head, r
-
-
-def test_undo_of_an_automatic_bring_in_holds_until_the_author_moves(world):
-    """§17.2: Undo of an automatic bring-in is an answer; the next open does
-    not redo it. Bring in (the button) does, and so does a newer tip."""
-    setup_world()
-    turn_committed(W.bob, {"app.py": louder(3)}, "louder")
-    bob_mine = head(W.bob.app)
-    alice_publish({"index.html": PAGE.replace("blue", "green")}, "green")
-    app_open(W.bob)
-    assert read(W.bob.app, "index.html") == PAGE.replace("blue", "green")
-    out = page(W.bob)
-    line = next(x for x in out["activity"] if x.get("undo") and "alice" in x["text"])
-    r = post(W.bob, "restore", id=line["id"])
-    assert r.get("ok"), r
-    assert head(W.bob.app) == bob_mine
-    app_open(W.bob)
-    assert head(W.bob.app) == bob_mine, "auto-sync re-merged right after Undo"
-    out = page(W.bob)
-    assert "bring-in" in ids(out) and "waiting" in out["panel"]["sentence"], out["panel"]
-    # A newer tip from Alice lifts the hold.
-    alice_publish({"README.md": "hi\n"}, "readme")
-    app_open(W.bob)
-    assert read(W.bob.app, "index.html") == PAGE.replace("blue", "green")
-    assert read(W.bob.app, "README.md") == "hi\n"
-    assert read(W.bob.app, "app.py") == louder(3)
+    assert any(x["text"] == "Switched to alice's version." for x in page(W.bob)["activity"])
+    assert not _backups(W.bob.app)
 
 
 # == merge commits on GitHub vs a copy whose history drifted ===========================

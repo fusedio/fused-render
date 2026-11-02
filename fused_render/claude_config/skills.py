@@ -44,11 +44,23 @@ main(action=...):
   search -> {ok, skills: [{id, source, skillId, name, installs, added}]}
             params: query  (skills.sh directory search, 30 hits; < 2 chars is an
             empty result with no request; network trouble is {ok: False, error})
-  remote_preview -> {ok, text, files}  params: source (GitHub owner/repo), skill_id
-            (the skill's SKILL.md and file list, located in the repo's tree)
-  remote_add -> {ok, slug, path}  params: source, skill_id  (downloads that skill
-            dir from GitHub and places it like add; the file paths come from the
-            repo's tree, never from the caller)
+  remote_preview -> {ok, text, readme, readmeIsSkill, fileCount, totalBytes}
+                    (or {ok: False, tooLarge: True, error} when the skill is over the limits)
+            params: source (GitHub owner/repo), skill_id  (text: the skill's SKILL.md;
+            readme: the repo's root README with relative links made absolute, or
+            the SKILL.md when there is none)
+            Only the skill's own folder is downloaded: the repo's file list comes
+            from GitHub's recursive tree API (path -> size), the skill is located
+            in it, its size is checked against the 25 MB / 500 file limit from the
+            listed sizes, and only then are its files fetched from
+            raw.githubusercontent.com. When the tree API cannot answer (truncated,
+            rate limited, offline) the repo tarball is streamed instead: the full
+            listing is kept but bytes only for SKILL.md, the root README and small
+            files, and any other file the skill needs is fetched raw.
+  remote_add -> {ok, slug, path}  params: source, skill_id  (fetches that skill
+            dir like remote_preview and places it like add; the file paths come
+            from GitHub's listing, never from the caller; over the limit is
+            {ok: False, tooLarge: True, error})
   draft_check -> {ok, root, name, files}  params: path  (a folder holding SKILL.md or
             the SKILL.md itself, `~` allowed; {ok: False, error} when it is neither)
   draft_start -> {ok, staging}  params: [path]  (a fresh dir under the state dir's
@@ -69,11 +81,13 @@ main(action=...):
   delete -> {ok, removed}  params: slug [, location]  (user skills only; removes
             every copy and link of it across the user dirs)
 """
+import concurrent.futures
 import json
 import os
 import re
 import secrets
 import shutil
+import tarfile
 import threading
 import time
 import urllib.parse
@@ -398,9 +412,15 @@ def _add(marketplace: str, plugin: str, slug: str) -> dict:
 _HTTP_TIMEOUT = 10
 _SEARCH_LIMIT = 30
 _TREE_TTL = 600
-_FRONTMATTER_PROBES = 40
+_ARCHIVE_STREAM_MAX_BYTES = 1024 * 1024 * 1024  # safety cap on the tarball fallback's download
+_ARCHIVE_KEEP_FILE_BYTES = 256 * 1024  # fallback: files up to this size are kept in memory
+_ARCHIVE_KEEP_BUDGET = 64 * 1024 * 1024  # fallback: total bytes kept in memory
+_TREE_API_MAX_BYTES = 64 * 1024 * 1024
+_LOCATE_NAME_READS = 50  # SKILL.md files the frontmatter-name fallback may read
+_FETCH_WORKERS = 8
+_ARCHIVE_CACHE_MAX = 8
 _SOURCE_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
-_trees: dict = {}  # source -> (fetched at, [(path, size)])
+_trees: dict = {}  # source -> (fetched at, _Repo)
 _trees_lock = threading.Lock()
 # A root-level skill is the repo itself: only these travel with its SKILL.md.
 _ROOT_SKILL_DIRS = ("references", "scripts", "assets", "templates")
@@ -446,95 +466,258 @@ def _search(query: str) -> dict:
     return {"ok": True, "skills": out}
 
 
-def _repo_tree(source: str) -> list:
-    """[(path, size)] of every blob in the repo's default branch. One request
-    per source per _TREE_TTL: the unauthenticated GitHub limit is 60/hour."""
+class _TooLarge(ValueError):
+    """The skill is over the copy limits, or the repo download hit the stream cap."""
+
+
+def _read_capped(url: str, cap: int, accept: str = "application/json, text/plain, */*") -> bytes:
+    """GET `url` in chunks, refusing a body over `cap` bytes."""
+    req = urllib.request.Request(url, headers={"User-Agent": "fused-render", "Accept": accept})
+    out = bytearray()
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as r:
+        while True:
+            chunk = r.read(1024 * 1024)
+            if not chunk:
+                break
+            out += chunk
+            if len(out) > cap:
+                raise _TooLarge(f"download is larger than {cap // (1024 * 1024)} MB")
+    return bytes(out)
+
+
+def _path_ok(path: str) -> bool:
+    parts = path.split("/")
+    return bool(parts) and not path.startswith("/") and not any(x in ("", ".", "..") for x in parts)
+
+
+class _Repo:
+    """A repo's default branch as the skill code sees it: `paths()` is every
+    regular file with its size, `read(path)` its bytes. Bytes the listing came
+    with (the tarball fallback) are served from memory; the rest are fetched
+    from raw.githubusercontent.com once and cached on the object, so a preview
+    warms the add."""
+
+    def __init__(self, source: str, sizes: dict, kept: dict = None):
+        self.slug = source
+        self._sizes = sizes
+        self._bytes = dict(kept or {})
+        self._lock = threading.Lock()
+
+    def paths(self) -> dict:
+        return self._sizes
+
+    def read(self, path: str) -> bytes:
+        with self._lock:
+            hit = self._bytes.get(path)
+        if hit is not None:
+            return hit
+        url = f"https://raw.githubusercontent.com/{self.slug}/HEAD/{urllib.parse.quote(path)}"
+        data = _read_capped(url, _COPY_MAX_BYTES)
+        with self._lock:
+            self._bytes[path] = data
+        return data
+
+
+def _tree_listing(source: str):
+    """_Repo from GitHub's recursive tree API, or None when it cannot answer
+    (truncated listing, rate limit, network, bad JSON): the caller falls back
+    to the tarball."""
+    try:
+        raw = _read_capped(f"https://api.github.com/repos/{source}/git/trees/HEAD?recursive=1",
+                           _TREE_API_MAX_BYTES, accept="application/vnd.github+json")
+        doc = json.loads(raw)
+        if not isinstance(doc, dict) or doc.get("truncated") or not isinstance(doc.get("tree"), list):
+            return None
+    except (OSError, ValueError):
+        return None
+    sizes = {}
+    for e in doc["tree"]:
+        if not isinstance(e, dict) or e.get("type") != "blob" or e.get("mode") == "120000":
+            continue
+        path, size = e.get("path"), e.get("size")
+        if isinstance(path, str) and isinstance(size, int) and _path_ok(path):
+            sizes[path] = size
+    return _Repo(source, sizes)
+
+
+class _CappedReader:
+    """File-like over a socket that refuses to hand out more than `cap` bytes."""
+
+    def __init__(self, raw, cap: int):
+        self._raw, self._cap, self._n = raw, cap, 0
+
+    def read(self, n: int = -1) -> bytes:
+        data = self._raw.read(n)
+        self._n += len(data)
+        if self._n > self._cap:
+            raise _TooLarge(f"download is larger than {self._cap // (1024 * 1024)} MB")
+        return data
+
+
+def _stream_archive(source: str) -> _Repo:
+    """Tarball fallback. The codeload tarball is streamed (never held whole):
+    the listing covers every regular file; bytes are kept only for SKILL.md,
+    the root README and files up to _ARCHIVE_KEEP_FILE_BYTES, within
+    _ARCHIVE_KEEP_BUDGET. Anything else a skill needs is fetched raw later."""
+    sizes, kept, budget = {}, {}, _ARCHIVE_KEEP_BUDGET
+    req = urllib.request.Request(f"https://codeload.github.com/{source}/tar.gz/HEAD", headers={
+        "User-Agent": "fused-render", "Accept": "application/json, text/plain, */*"})
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+        reader = _CappedReader(resp, _ARCHIVE_STREAM_MAX_BYTES)
+        with tarfile.open(fileobj=reader, mode="r|gz") as tf:
+            for m in tf:
+                if not m.isreg() or m.name.startswith("/"):
+                    continue
+                parts = m.name.split("/")[1:]
+                if not parts or any(x in ("", ".", "..") for x in parts):
+                    continue
+                path = "/".join(parts)
+                sizes[path] = m.size
+                name = parts[-1]
+                wanted = (name == "SKILL.md" or (len(parts) == 1 and name.lower() in _README_NAMES)
+                          or m.size <= _ARCHIVE_KEEP_FILE_BYTES)
+                if wanted and m.size <= budget:
+                    f = tf.extractfile(m)
+                    if f is not None:
+                        kept[path] = f.read()
+                        budget -= len(kept[path])
+    return _Repo(source, sizes, kept)
+
+
+def _repo_view(source: str) -> _Repo:
+    """The repo's default branch, one listing per source per _TREE_TTL."""
     with _trees_lock:
         hit = _trees.get(source)
     if hit and time.time() - hit[0] < _TREE_TTL:
         return hit[1]
-    try:
-        raw = _http_get(f"https://api.github.com/repos/{source}/git/trees/HEAD?recursive=1")
-    except OSError as e:
-        raise ValueError(f"could not read {source} on GitHub: {e}")
-    body = json.loads(raw)
-    if body.get("truncated"):
-        raise ValueError(f"{source} is too large to read on GitHub")
-    blobs = [(n["path"], n.get("size") or 0) for n in (body.get("tree") or [])
-             if isinstance(n, dict) and n.get("type") == "blob" and isinstance(n.get("path"), str)]
+    repo = _tree_listing(source)
+    if repo is None:
+        try:
+            repo = _stream_archive(source)
+        except _TooLarge:
+            raise
+        except (OSError, tarfile.TarError, EOFError) as e:
+            raise ValueError(f"could not read {source} on GitHub: {e}")
     now = time.time()
     with _trees_lock:
-        for k in [k for k, (at, _b) in _trees.items() if now - at >= _TREE_TTL]:
+        for k in [k for k, (at, _r) in _trees.items() if now - at >= _TREE_TTL]:
             del _trees[k]
-        _trees[source] = (now, blobs)
-    return blobs
-
-
-def _raw(source: str, path: str) -> bytes:
-    return _http_get(f"https://raw.githubusercontent.com/{source}/HEAD/{urllib.parse.quote(path)}")
+        _trees[source] = (now, repo)
+        while len(_trees) > _ARCHIVE_CACHE_MAX:
+            del _trees[min(_trees, key=lambda k: _trees[k][0])]
+    return repo
 
 
 def _locate(source: str, skill_id: str) -> tuple:
-    """(skill dir inside the repo, [(path, relpath, size)]) for the skill named
+    """(skill dir inside the repo, {relpath: bytes}) for the skill named
     `skill_id`: the SKILL.md whose dir is called that, else whose frontmatter
-    `name` is. The paths come from the repo's tree."""
+    `name` is. The size limits are checked against the listed sizes before
+    any file is downloaded."""
     if not _SOURCE_RE.match(source or "") or not _SLUG_RE.match(skill_id or ""):
         raise ValueError(f"invalid skill: {source!r} {skill_id!r}")
-    tree = _repo_tree(source)
-    cands = sorted((p for p, _n in tree if p == "SKILL.md" or p.endswith("/SKILL.md")),
-                   key=lambda p: (p.count("/"), p))
-    found = next((p for p in cands if p.rpartition("/")[0].rpartition("/")[2].lower() == skill_id), None)
-    cut_short = found is None and len(cands) > _FRONTMATTER_PROBES
-    if found is None:
-        for p in cands[:_FRONTMATTER_PROBES]:
-            try:
-                text = _raw(source, p).decode("utf-8", errors="replace")
-            except OSError:
+    repo = _repo_view(source)
+    tree = repo.paths()
+    try:
+        cands = sorted((p for p in tree if p == "SKILL.md" or p.endswith("/SKILL.md")),
+                       key=lambda p: (p.count("/"), p))
+        found = next((p for p in cands if p.rpartition("/")[0].rpartition("/")[2].lower() == skill_id), None)
+        if found is None:
+            head = cands[:_LOCATE_NAME_READS]
+            with concurrent.futures.ThreadPoolExecutor(_FETCH_WORKERS) as pool:
+                texts = list(pool.map(lambda p: repo.read(p)[:4096].decode("utf-8", errors="replace"), head))
+            for p, text in zip(head, texts):
+                if (lib.parse_frontmatter(text).get("name") or "").lower() == skill_id:
+                    found = p
+                    break
+        if found is None:
+            raise ValueError(f"no skill {skill_id} in {source}")
+        root = found.rpartition("/")[0]
+        prefix = root + "/" if root else ""
+        listed, size = [], 0
+        for p, n in tree.items():
+            if not p.startswith(prefix):
                 continue
-            if (lib.parse_frontmatter(text[:4096]).get("name") or "").lower() == skill_id:
-                found = p
-                break
-    if found is None:
-        if cut_short:
-            raise ValueError(
-                f"no skill {skill_id} found in {source}: the search stopped after "
-                f"{_FRONTMATTER_PROBES} of {len(cands)} SKILL.md files")
-        raise ValueError(f"no skill {skill_id} in {source}")
-    root = found.rpartition("/")[0]
-    prefix = root + "/" if root else ""
-    files, size = [], 0
-    for p, n in tree:
-        if not p.startswith(prefix):
-            continue
-        rel = p[len(prefix):]
-        parts = rel.split("/")
-        if any(x in ("", ".", "..") for x in parts) or any(x in _COPY_SKIP_DIRS for x in parts[:-1]):
-            continue
-        if not root and rel != "SKILL.md" and parts[0] not in _ROOT_SKILL_DIRS:
-            continue
-        files.append((p, rel, n))
-        size += n
-        if len(files) > _COPY_MAX_FILES or size > _COPY_MAX_BYTES:
-            raise ValueError("skill is too large to add")
-    files.sort(key=lambda f: f[1])
-    return root, files
+            rel = p[len(prefix):]
+            parts = rel.split("/")
+            if any(x in _COPY_SKIP_DIRS for x in parts[:-1]):
+                continue
+            if not root and rel != "SKILL.md" and parts[0] not in _ROOT_SKILL_DIRS:
+                continue
+            listed.append((rel, p))
+            size += n
+            if len(listed) > _COPY_MAX_FILES or size > _COPY_MAX_BYTES:
+                raise _TooLarge("This skill is too large to add (over 25 MB or 500 files).")
+        with concurrent.futures.ThreadPoolExecutor(_FETCH_WORKERS) as pool:
+            datas = list(pool.map(lambda rp: repo.read(rp[1]), listed))
+    except OSError as e:
+        raise ValueError(f"could not read {source} on GitHub: {e}")
+    return root, dict(sorted((rel, d) for (rel, _p), d in zip(listed, datas)))
+
+
+_README_NAMES = ("readme.md", "readme.markdown", "readme")
+_MD_TARGET_RE = re.compile(r"(!?)\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)((?:\s+\"[^\"]*\")?)\s*\)")
+_IMG_SRC_RE = re.compile(r"(<img\b[^>]*?\bsrc\s*=\s*)([\"'])([^\"']*)\2", re.I)
+
+
+def _absolute_target(target: str, source: str, image: bool) -> str:
+    t = target.strip()
+    if (not t or t.startswith("#") or t.startswith("//")
+            or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", t)):
+        return target
+    t = t.lstrip("/") if t.startswith("/") else t
+    if t.startswith("./"):
+        t = t[2:]
+    base = (f"https://raw.githubusercontent.com/{source}/HEAD/" if image
+            else f"https://github.com/{source}/blob/HEAD/")
+    return base + t
+
+
+def _absolutize_readme(text: str, source: str) -> str:
+    def md(m):
+        t = m.group(3)
+        inner = t[1:-1] if t.startswith("<") and t.endswith(">") else t
+        return f"{m.group(1)}[{m.group(2)}]({_absolute_target(inner, source, bool(m.group(1)))}{m.group(4)})"
+
+    def img(m):
+        return f"{m.group(1)}{m.group(2)}{_absolute_target(m.group(3), source, True)}{m.group(2)}"
+    return _IMG_SRC_RE.sub(img, _MD_TARGET_RE.sub(md, text))
+
+
+def _root_readme(tree: dict) -> str:
+    cands = [p for p in tree if "/" not in p and p.lower() in _README_NAMES]
+    cands.sort(key=lambda p: (not p.lower().endswith(".md"), _README_NAMES.index(p.lower()), p))
+    return cands[0] if cands else ""
 
 
 def _remote_preview(source: str, skill_id: str) -> dict:
-    root, files = _locate(source, skill_id)
-    skill_md = next(p for p, rel, _n in files if rel == "SKILL.md")
-    text = _raw(source, skill_md).decode("utf-8", errors="replace")
-    return {"ok": True, "text": text, "files": [rel for _p, rel, _n in files]}
+    try:
+        _root, files = _locate(source, skill_id)
+    except _TooLarge as e:
+        return {"ok": False, "tooLarge": True, "error": str(e)}
+    skill_text = files["SKILL.md"].decode("utf-8", errors="replace")
+    repo = _repo_view(source)
+    readme = _root_readme(repo.paths())
+    if readme:
+        try:
+            text = _absolutize_readme(repo.read(readme).decode("utf-8", errors="replace"), source)
+        except (OSError, ValueError):
+            readme, text = "", skill_text
+    else:
+        text = skill_text
+    return {"ok": True, "text": skill_text, "readme": text, "readmeIsSkill": not readme,
+            "fileCount": len(files), "totalBytes": sum(len(d) for d in files.values())}
 
 
 def _remote_add(source: str, skill_id: str) -> dict:
-    """Everything is fetched before the config lock is taken: only placing
-    the downloaded files holds it."""
-    _root, files = _locate(source, skill_id)
-    blobs = [(rel, _raw(source, p)) for p, rel, _n in files]
+    """The skill's files are fetched before the config lock is taken: only placing
+    the files holds it. No network happens after `_locate`."""
+    try:
+        _root, files = _locate(source, skill_id)
+    except _TooLarge as e:
+        return {"ok": False, "tooLarge": True, "error": str(e)}
 
     def fill(dst: str) -> None:
-        for rel, data in blobs:
+        for rel, data in files.items():
             target = os.path.normpath(os.path.join(dst, rel))
             if not target.startswith(dst + os.sep):
                 raise ValueError(f"invalid path: {rel!r}")

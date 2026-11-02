@@ -71,8 +71,8 @@ NOT_MAIN = "Switch this app back to its main version first."
 UNREADABLE = "Couldn't read this app's history. Try again."
 PUBLISH_OVER_CONFIRM = ("Replace the version on GitHub with this copy? Anything removed "
                         "from GitHub since this copy last saved there comes back, and "
-                        "changes made on GitHub since then are replaced. What's on GitHub "
-                        "now is kept on this Mac for 30 days.")
+                        "changes made on GitHub since then are replaced. This can't be "
+                        "undone.")
 #: GitHub tips fused saw, kept on the record (`seen_tips`, newest last).
 SEEN_KEEP = 20
 
@@ -95,8 +95,6 @@ MESSAGES = {
     "merging": "Claude is combining your edits with the version on GitHub.",
     "no-github": "This app isn't connected to GitHub.",
     "held": "This is your app. {edits} ready to publish.",
-    "kept": ("You undid bringing in GitHub's version. New edits wait here until you "
-             "bring it in again."),
     "unknown": ("fused can't tell whether the version on GitHub was rolled back, so "
                      "your edits are waiting here. Publish them, or switch to the version "
                      "on GitHub."),
@@ -119,7 +117,6 @@ FIXES = {
     "publish-hook": ["publish-now"],
     "held": ["publish-now"],
     "unknown": ["publish-now", "use-github"],
-    "kept": ["bring-in"],
 }
 
 
@@ -532,7 +529,12 @@ def _push_failure(root, result) -> str:
     return why
 
 
-def _after_push(root, f: _Facts, *, pulled, pushed, why) -> dict:
+def _after_push(root, f: _Facts, *, pulled, pushed, why, sent=None) -> dict:
+    """`sent`: the commit the push published (GitHub had `f.tip` before) —
+    named in one Activity line (§16.16; one `git log`, only on a push)."""
+    if pushed and sent:
+        from fused_render.contrib import timeline
+        timeline.published(root, f.tip, sent)
     if pushed or why is None:
         _set_state(root, None)
         return _result(root, f.branch, "synced", pulled=pulled, pushed=pushed)
@@ -573,15 +575,15 @@ def _combine(root, f: _Facts, *, allow_merge: bool, identity=None) -> dict:
 
 
 def _land(root, f: _Facts, new, *, why) -> tuple[str | None, list]:
-    """Move the branch HEAD → `new` (backup + `reset --keep`). `(refusal,
-    backup refs)`; refusal None = moved."""
+    """Move the branch HEAD → `new` (`reset --keep`; a local file in the
+    way saved first). `(refusal, backup refs)`; refusal None = moved."""
     refused, backup = replay.land_locked(root, branch=f.branch, old_tip=f.head,
                                          new_tip=new, why=why)
     return refused, _with_wip(root, backup)
 
 
 def _with_wip(root, backup) -> list[str]:
-    """A backup ref and its `-wip` (the uncommitted edits), when written."""
+    """A backup ref and its `-wip` (what was saved), when written."""
     if not backup:
         return []
     return [backup] + ([f"{backup}-wip"] if replay.rev(root, f"{backup}-wip") else [])
@@ -678,16 +680,9 @@ def _resolve_locked(root, branch, *, push) -> dict:
             _settle(root)
             return _result(root, branch, "skipped", "held")
         pushed, why = _push(root, branch)
-        return _after_push(root, f, pulled=0, pushed=pushed, why=why)
+        return _after_push(root, f, pulled=0, pushed=pushed, why=why, sent=f.head)
     if _job_open(root):
         return _result(root, branch, "skipped", "merge-job")
-    rec = store.get(root) or {}
-    if rec.get("skip_tip"):
-        if rec["skip_tip"] == f.tip:
-            # The person undid the last automatic combine: it stays undone
-            # until GitHub's version moves again (or they press Check now).
-            return _result(root, branch, "skipped", "kept")
-        store.update(root, lambda r: r.__setitem__("skip_tip", None))
     if _claude_busy(root):
         return _result(root, branch, "skipped", "claude")
     if held:
@@ -703,6 +698,8 @@ def _resolve_locked(root, branch, *, push) -> dict:
     if refused is not None:
         return refused
     gu._record_pull(root, behind)
+    from fused_render.contrib import timeline
+    timeline.pulled(root, f.head, f.tip)
     if f.u:
         text = (f"Brought in the newer version from GitHub and kept your "
                 f"{_edits_word(len(f.u))}.")
@@ -713,7 +710,7 @@ def _resolve_locked(root, branch, *, push) -> dict:
         _settle(root)
         return _result(root, branch, "synced", pulled=behind)
     pushed, why = _push(root, branch)
-    return _after_push(root, f, pulled=behind, pushed=pushed, why=why)
+    return _after_push(root, f, pulled=behind, pushed=pushed, why=why, sent=new)
 
 
 # ------------------------------------------------------------ manual buttons
@@ -754,20 +751,8 @@ def publish_now(root) -> dict:
 
 
 def check_now(root) -> dict:
-    """Check now: fetch and bring in what GitHub has, without publishing —
-    including a version an Undo had set aside (`skip_tip`)."""
-    if (store.get(root) or {}).get("skip_tip"):
-        store.update(root, lambda r: r.__setitem__("skip_tip", None))
+    """Check now: fetch and bring in what GitHub has, without publishing."""
     return _sync_answer(root, gu.sync_repo(root, action="Check now", push=False))
-
-
-def bring_in(root) -> dict:
-    """Bring in and publish (the `kept` state's button): drop what an Undo
-    set aside (`skip_tip`), bring GitHub's version in and publish — the
-    hold, if any, still decides the publishing."""
-    if (store.get(root) or {}).get("skip_tip"):
-        store.update(root, lambda r: r.__setitem__("skip_tip", None))
-    return _sync_answer(root, gu.sync_repo(root, action="Bring in and publish", push=True))
 
 
 def _fetched_facts(root):
@@ -790,9 +775,8 @@ def _fetched_facts(root):
 
 
 def use_github(root) -> dict:
-    """Use the version on GitHub: this copy becomes GitHub's version. Its
-    edits — saved and not — are kept in a backup the Activity line can
-    restore."""
+    """Use the version on GitHub: this copy becomes GitHub's version. The
+    person confirmed losing its edits, saved and not (no backup, §16.16)."""
     if _claude_busy(root):
         return _answer(root, False, CLAUDE_BUSY)
     with replay.slot() as held:
@@ -812,31 +796,28 @@ def use_github(root) -> dict:
                            else "Couldn't switch to the version on GitHub. Try again.")
         _set_state(root, None)
         release_hold(root)  # the held edits are not this copy's version any more
-        _activity(root, "use-github", "Switched to the version on GitHub. Your edits "
-                  "are saved in case you want them back.", backup=refs)
+        _activity(root, "use-github", "Switched to the version on GitHub.", backup=refs)
     return _answer(root, True, "This app now matches the version on GitHub.")
 
 
 def _hard_move(root, f: _Facts) -> tuple[str | None, list]:
-    """`use_github` when an uncommitted edit overlaps: back up HEAD and
-    every edit (untracked files too), then a hard move. Untracked files the
-    author made stay where they are (only the ones GitHub's version adds
-    are overwritten — and they are in the backup)."""
+    """`use_github` when an uncommitted edit overlaps: a hard move. Untracked
+    files the author made stay where they are; one GitHub's version adds at
+    the same path is saved first (§16.16's one backup)."""
     clobber = replay.clobber_paths(root, f.head, f.tip)
-    refs = replay.backup_locked(root, f.head, why="use-github", also=clobber)
-    if not refs or not any(r.endswith("-wip") for r in refs):
-        replay.unbackup_locked(root, refs)
+    refs = (replay.clobber_backup_locked(root, f.head, clobber, why="use-github")
+            if clobber else [])
+    if clobber and not refs:
         return "reset-refused", []
     replay.protect_after_move(root)  # see land_locked: the S bit lets .fused/ through
     with replay.fused_aside(root, f.tip):
         moved = replay.git(root, "reset", "--hard", f.tip, timeout=replay.REPLAY_TIMEOUT_S)
     if not gu._ok(moved) or not replay.undo_race_locked(root, f.head, refs, hard=True):
-        # A failed hard reset may be partial, and a raced one dropped the
-        # edits: either way the backup is their only copy — named.
         logger.warning("ownsync: hard move did not happen in %s: %s", root,
                        gu._text(moved) if moved else "no git")
-        _activity(root, "backup", "Saved a copy of your work before changing it.",
-                  backup=refs)
+        if refs:  # the saved files' only copy: named, so never pruned
+            _activity(root, "backup", "Saved a file that was in the way before changing "
+                      "this app.", backup=refs)
         return "moved", []
     replay.protect_after_move(root)
     return None, refs
@@ -891,7 +872,7 @@ def put_on_top(root) -> dict:
             return _answer(root, True, "Your edits are on top of the version on GitHub.")
         release_hold(root)  # the button publishes, on the person's say-so
         pushed, why = _push(root, f.branch)
-        _after_push(root, f, pulled=0, pushed=pushed, why=why)
+        _after_push(root, f, pulled=0, pushed=pushed, why=why, sent=new)
         note_seen(root, replay.rev(root, _tracking(f.branch)) or "")
     if not pushed:
         return _answer(root, False, OFFLINE if why == "offline"
@@ -905,8 +886,8 @@ def put_on_top(root) -> dict:
 def publish_over(root) -> dict:
     """Publish mine over it: GitHub's version becomes this copy's, but only
     if it is still the version the person looked at (a lease on the tip
-    the stuck state recorded). GitHub's old version is kept in a backup.
-    The person has confirmed already (`PUBLISH_OVER_CONFIRM`, asked by the
+    the stuck state recorded); GitHub's old version is not backed up
+    (§16.16). The person has confirmed already (`PUBLISH_OVER_CONFIRM`, asked by the
     action route before it calls this)."""
     with replay.slot() as held:
         if not held:
@@ -918,12 +899,9 @@ def publish_over(root) -> dict:
         seen = st.get("tip") or replay.rev(root, _tracking(branch))
         if not seen or not replay.rev(root, "HEAD"):
             return _answer(root, False, UNREADABLE)
-        pin = _pin(root, seen, "publish-over")
         r = _publish_git(root, "push", f"--force-with-lease={branch}:{seen}", "--",
                          "origin", f"HEAD:refs/heads/{branch}")
         if not gu._ok(r):
-            if pin:
-                replay.git(root, "update-ref", "-d", pin)
             why = _push_failure(root, r)
             logger.info("ownsync: publish over refused in %s (%s): %s", root, why, gu._text(r))
             if why == "offline":
@@ -935,17 +913,8 @@ def publish_over(root) -> dict:
                                                  else "publish-failed"])
         _set_state(root, None)
         release_hold(root)  # published, on the person's say-so
-        # Not undoable here: putting this copy back on GitHub's old version
-        # would not un-publish anything. The pin ages out like any backup.
-        _activity(root, "publish-over", "Replaced the version on GitHub with this copy. "
-                  "GitHub's previous version is kept on this Mac for 30 days.")
+        _activity(root, "publish-over", "Replaced the version on GitHub with this copy.")
     return _answer(root, True, "The version on GitHub is now this copy.")
-
-
-def _pin(root, sha, why) -> str | None:
-    """A backup ref at `sha` (GitHub's version, about to be replaced)."""
-    name = f"{replay.BACKUP_PREFIX}{int(time.time() * 1000)}-{why}"
-    return name if gu._ok(replay.git(root, "update-ref", name, sha)) else None
 
 
 def save_edits(root) -> dict:
@@ -987,83 +956,6 @@ def start_merge(root) -> dict:
     return {"ok": True, "job": job}
 
 
-def restore(root, activity_id) -> dict:
-    """Undo one Activity line that names a backup: this copy goes back to
-    the version the backup holds (and its unsaved edits, when the line
-    saved some). What is here now is backed up first and named by a new
-    line, so a restore can itself be undone."""
-    entry = store.activity_entry(root, activity_id) or {}
-    refs = entry.get("backup")
-    refs = [r for r in (refs if isinstance(refs, list) else [refs]) if isinstance(r, str) and r]
-    tip_ref = next((r for r in refs if not r.endswith("-wip")), None)
-    if not tip_ref or entry.get("restored_at"):
-        return _answer(root, False, "There's nothing to undo here.")
-    if _claude_busy(root):
-        return _answer(root, False, CLAUDE_BUSY)
-    with replay.slot() as held:
-        if not held:
-            return _answer(root, False, BUSY)
-        branch = gu._default_branch(root)
-        if not branch or gu._current_branch(root) != branch:
-            return _answer(root, False, NOT_MAIN)
-        target, head = replay.rev(root, tip_ref), replay.rev(root, "HEAD")
-        if not target or not head:
-            return _answer(root, False, "That earlier version is no longer available.")
-        wip = replay.rev(root, f"{tip_ref}-wip") if f"{tip_ref}-wip" in refs else None
-        saved = []
-        if target != head:
-            refused, backup = replay.land_locked(root, branch=branch, old_tip=head,
-                                                 new_tip=target, why="restore")
-            if refused == "reset-refused":
-                return _answer(root, False, "You have unsaved edits to files the earlier "
-                               "version changes. Save or undo them first.")
-            if refused is not None:
-                return _answer(root, False, BUSY)
-            saved = _with_wip(root, backup)
-        if wip and not _put_back_edits(root, target, wip, saved):
-            return _answer(root, False, "Couldn't put back your unsaved edits. Try again.")
-        store.mark_restored(root, activity_id)
-        _settle(root)  # a hold on publishing outlives the move
-        if entry.get("kind") == "own-sync":
-            # Undoing an automatic combine sticks until GitHub's version
-            # moves (or Check now): the next sync must not redo it (§16.12).
-            tip = replay.rev(root, _tracking(branch))
-            store.update(root, lambda r: r.__setitem__("skip_tip", tip))
-        _activity(root, "restore", "Put back an earlier version of this app. What was here "
-                  "is saved too.", backup=saved or None)
-    return _answer(root, True, "This app is back to the earlier version.")
-
-
-def _put_back_edits(root, target, wip, saved: list) -> bool:
-    """Write the unsaved edits a backup's `-wip` holds (relative to
-    `target`) back into the folder, unstaged. Edits made here since are
-    backed up first when the move itself saved nothing (`saved`)."""
-    r = replay.git(root, "diff", "--name-status", "--no-renames", "-z", target, wip)
-    if not gu._ok(r):
-        return False
-    fields = [p for p in r[1].decode("utf-8", "replace").split("\0") if p]
-    pairs = list(zip(fields[0::2], fields[1::2]))
-    if not pairs:
-        return True
-    if not saved and replay.dirty(root):
-        refs = replay.backup_locked(root, target, why="restore")
-        if not any(x.endswith("-wip") for x in refs):
-            replay.unbackup_locked(root, refs)
-            return False
-        saved.extend(refs)
-    keep = [p for code, p in pairs if code != "D"]
-    if keep and not gu._ok(replay.git(root, "--literal-pathspecs", "restore", f"--source={wip}",
-                                   "--worktree", "--", *keep)):
-        return False
-    for code, p in pairs:
-        if code == "D":
-            try:
-                os.remove(os.path.join(root, p))
-            except OSError:
-                pass
-    return True
-
-
 def merge_plan(root) -> dict | None:
     """`{purpose, ours, theirs, files}` for the recorded `needs-merge` state
     while it still applies (HEAD and GitHub's tip unchanged), else None."""
@@ -1101,7 +993,6 @@ def status(root) -> dict:
         return {"state": "no-github", "unpublished": 0, "github_new": 0, "files": [],
                 "message": MESSAGES["no-github"], "fixes": []}
     ahead, behind = _ahead_behind(root, branch)
-    rec = store.get(root) or {}
     st = _own_state(root) or {}
     held = hold_of(root)
     variant = None
@@ -1119,8 +1010,6 @@ def status(root) -> dict:
     elif held and ahead:
         # The hold stands until Publish now, whatever HEAD does meanwhile.
         state, files = ("unknown" if held["why"] == "unknown" else "held"), []
-    elif rec.get("skip_tip") == tip and behind:
-        state, files = "kept", []
     else:
         files = []
         state = ("published" if not ahead and not behind else

@@ -82,7 +82,7 @@ def _rollback_lines(m):
     return [x for x in store.activity(m.app) if x["kind"] == "rollback"]
 
 
-def test_hard_block_on_a_clean_copy_rolls_back_without_undo(m):
+def test_hard_block_on_a_clean_copy_rolls_back(m):
     c2 = _release(m, {"index.html": RED}, "Red")
     _block(m, c2)
     assert blocks.gate(m.app) is not None             # before enforcement caught up
@@ -92,7 +92,9 @@ def test_hard_block_on_a_clean_copy_rolls_back_without_undo(m):
     inv(m)
     assert m.stopped == [m.app]
     line = _rollback_lines(m)[0]
-    assert not line["undo"]
+    assert "undo" not in line                          # read-only (§16.16)
+    raw = next(e for e in store.get(m.app)["activity"] if e["id"] == line["id"])
+    assert not raw["backup"] and "ref" not in raw     # nothing pinned: no guard applied
     assert line["text"].startswith("Fused blocked the version you were running: "
                                    "It read saved passwords. Rolled back to the release of Oct 1.")
     assert line["text"].endswith("Change your passwords.")
@@ -246,19 +248,6 @@ def test_update_mirror_refuses_a_pinned_target_that_contains_a_blocked_commit(m)
     res = follow.update_mirror(m.app, fol)
     assert res["moved"] is False and res["reason"] == follow.BLOCKED
     assert m.g("rev-parse", "refs/heads/main") == m.c1
-
-
-def test_undo_never_lands_on_a_blocked_commit(m):
-    c2 = _release(m, {"index.html": RED}, "Red", at="2026-10-10T10:00:00Z")
-    c3 = _release(m, {"NOTES.md": "n\n"}, "Notes", at="2026-10-12T10:00:00Z")
-    line = store.activity(m.app)[0]                  # c3's release: backup = c2
-    assert line["undo"]
-    _block(m, c2)
-    assert actions.activity(m.app)[0]["undo"] is False or not [
-        x for x in actions.activity(m.app) if x["id"] == line["id"] and x["undo"]]
-    refused = engine.restore(m.app, line["id"])
-    assert not refused["ok"] and refused["reason"] == "blocked"
-    assert m.head() == c3
 
 
 def test_soft_block_pauses_updates_and_asks_before_opening(m):
@@ -416,9 +405,9 @@ def test_a_shrunk_list_never_lifts_a_block_whose_code_still_runs(m, how):
 
 
 def test_the_backend_is_asked_only_when_the_list_can_act(m, monkeypatch):
-    """Upgrade risk: with the Community off and no copy the list can act on,
-    neither startup nor the sweep calls the backend (on main, fused never
-    did with the store off)."""
+    """The Community is always on (2026-10-29), so the list is always worth
+    asking for: startup and the sweep call the backend with or without a
+    copy the list can act on."""
     from fused_render import marketplace
 
     asked = []
@@ -430,11 +419,8 @@ def test_the_backend_is_asked_only_when_the_list_can_act(m, monkeypatch):
     assert blocks.sweep_tick(now=10_000.0) and asked == [True]
     for k in list((store.all() or {})):
         store.drop(k)
-    assert store.all() == {} and not blocks.needed()
-    assert blocks.sweep_tick(now=20_000.0) is False and asked == [True]
-    from _contrib_gh_world import write_prefs
-    write_prefs(marketplace_enabled=True)   # switching the Community on is enough
-    assert blocks.needed()
+    assert store.all() == {} and blocks.needed()
+    assert blocks.sweep_tick(now=20_000.0) and asked == [True, True]
 
 
 def test_a_hard_block_never_moves_a_folder_whose_config_runs_commands(m):

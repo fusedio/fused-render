@@ -2032,6 +2032,27 @@ def test_force_refuses_a_task_with_nothing_waiting(
     assert calls == []
 
 
+def test_force_on_a_task_that_is_already_running_says_so(
+        client, projects_dir, folders, flag, manager, dispatched, chat_run):
+    """SINA'S RECORDING (2026-10-31): a task whose card had been answered was
+    running again, the row still offered Force start, and the press printed
+    "nothing waiting to start" under it. `positions` no longer lists such a
+    task, but a row can be a lap behind — and a task that owns its folder has
+    nothing waiting either. The sentence names the thing that is true."""
+    flag()
+    calls, _answer = dispatched
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "mine")
+    chat_run("run-1", alpha, pid=os.getpid(), session_id="sess-a")
+    manager.started(alpha, "sess-a", run_id="run-1", session_id="sess-a")
+    assert manager.holds_live("sess-a") is True
+
+    r = _post(client, "/api/tasks/queue/force", {"key": "sess-a"})
+    assert r.status_code == 409
+    assert r.json()["error"] == "This task is live — nothing is waiting to start"
+    assert calls == []
+
+
 def test_force_refuses_a_disabled_queue_and_a_name_that_is_nothing(
         client, folders, flag, dispatched):
     """The flag is the feature's one promise: with it off this verb does not

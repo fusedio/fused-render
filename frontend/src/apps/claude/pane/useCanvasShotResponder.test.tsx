@@ -104,18 +104,20 @@ test("an answer that did not land is retried from the picture already taken", as
 });
 
 test("a canvas page answers at once, and a refused capture is the answer's error", async () => {
-  const asked: Array<[string, string | undefined]> = [];
+  const asked: Array<[string, string | undefined, string | undefined]> = [];
   const shot: CanvasShot = {
     targets: ["canvas", "udf"],
-    capture: async (what, udf) => {
-      asked.push([what, udf]);
+    capture: async (what, udf, by) => {
+      asked.push([what, udf, by]);
       return { ok: false, error: "the workbench is not loaded yet" };
     },
   };
   const answers: Array<[string, Answer]> = [];
   mount({ rows: [row("r1", 1, "udf", "fine_udf")], shot }, answers);
   await settle();
-  expect(asked).toEqual([["udf", "fine_udf"]]);
+  // AS THE AGENT: the host's scrim over the workbench names who is looking,
+  // because no gesture of the user's is behind this capture.
+  expect(asked).toEqual([["udf", "fine_udf", "agent"]]);
   expect(answers).toEqual([["r1", { error: "the workbench is not loaded yet" }]]);
 });
 

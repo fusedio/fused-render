@@ -855,7 +855,7 @@ export default function AppPage({
                   {/* Where this copy came from (shell/contrib/SourceLine.tsx):
                       "GitHub link · follows alice/x", "Your app", "Remix of
                       alice/x". Nothing while the contrib flags are off. */}
-                  <SourceLine contrib={contrib.data} />
+                  <SourceLine contrib={contrib.data} ladder={ladder.data} />
                 </div>
               </div>
             </div>

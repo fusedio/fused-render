@@ -32,6 +32,16 @@
 // Pause freezes what is DRAWN, never the poll, so un-pausing is instant and
 // the 3 s "still running?" check after a kill keeps seeing live data.
 //
+// CLAUDE TASKS, ABOVE THE TABLE (Akshil 2026-10-29: "I want to kill processes
+// but I have zero context over what to kill — which task is each linked to").
+// One row per live Claude tree — a run's session host, CLI, MCP servers and
+// Bash-tool shells — named by its task, with its status, background jobs and
+// the whole tree's memory and CPU (`claude.tasks`, sysmon/labels.claude_tasks).
+// "Done – still alive" is amber: the task finished, its tree did not. "Open
+// task" goes where a Tasks row goes (`taskHref`); "Stop" ends the whole tree
+// through the run's own cancel (`POST /stop` on its top process), behind the
+// same inline confirm the toolbar uses.
+//
 // ENDING A PROCESS: fused-render's own rows with an owner (Claude, engines,
 // models, terminals) go through the owner-aware `POST /stop` and read "Stop";
 // every other row is signalled through `POST /kill` (SIGTERM; "Force kill" is
@@ -41,15 +51,18 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { isMac } from "@platform/lib/platform";
 import { notify } from "@platform/lib/notifications";
+import { navigateUrl } from "@platform/lib/router";
 import {
   formatBytes,
   formatCpu,
   getMachineSnapshot,
   getProcHistory,
+  type ClaudeTaskTree,
   type MachineSnapshot,
   type MachineProc,
   type ProcHistoryPoint,
 } from "@platform/lib/sysmon";
+import { taskHref } from "../tasks-lib";
 import { useTween } from "./useTween";
 import { getProcessDetail, type ProcessDetail } from "./monitor-api";
 import { claudeLine } from "./monitor-net-lib";
@@ -66,6 +79,13 @@ import {
   ROW_CAP,
   STILL_ALIVE_MS,
   bulkVerb,
+  claudeTreeCost,
+  claudeTreeJobs,
+  claudeTreeName,
+  claudeTreeState,
+  claudeTreeWhere,
+  claudeTrees,
+  claudeTreesHeading,
   clickSelect,
   confirmQuestion,
   cpuTone,
@@ -350,6 +370,154 @@ const ProcRow = memo(function ProcRow({
   );
 });
 
+// ---- Claude tasks ---------------------------------------------------------------------
+
+/** Where "Open task" goes: the task's own door, as a Tasks row's. Null when
+ *  no task matched the tree (and for the app's helper). */
+function treeHref(t: ClaudeTaskTree): string | null {
+  if (t.helper || !t.task_id) return null;
+  return taskHref({
+    key: t.key,
+    session_id: t.session_id,
+    target: t.target,
+    project: t.project,
+    entry: t.entry,
+    entry_origin: t.entry_origin,
+    canvas: t.canvas,
+    status: t.status,
+  });
+}
+
+function ClaudeTreeRow({
+  t,
+  proc,
+  state,
+  asking,
+  onAsk,
+  onCancel,
+  onStop,
+  onOpen,
+}: {
+  t: ClaudeTaskTree;
+  /** The tree's top process as the table has it: what Stop names. */
+  proc: MachineProc | undefined;
+  state: RowState | undefined;
+  asking: boolean;
+  onAsk: (pid: number) => void;
+  onCancel: () => void;
+  onStop: (t: ClaudeTaskTree) => void;
+  onOpen: (href: string) => void;
+}) {
+  const name = claudeTreeName(t);
+  const st = claudeTreeState(t);
+  const href = treeHref(t);
+  const sub = [claudeTreeWhere(t), claudeTreeJobs(t)].filter(Boolean).join(" · ");
+  const busy = state?.phase === "busy";
+  const tag = busy
+    ? "Stopping…"
+    : state?.phase === "still"
+      ? "Still running"
+      : state?.phase === "error"
+        ? state.message
+        : null;
+  return (
+    <li className={`monitor-claude-row is-${st.tone}`} data-pid={t.root_pid}>
+      <span className="monitor-claude-dot" aria-hidden="true" />
+      <div className="monitor-claude-main">
+        <div className="monitor-claude-name" title={name}>
+          {name}
+        </div>
+        {sub && (
+          <div className="monitor-claude-sub" title={sub}>
+            {sub}
+          </div>
+        )}
+      </div>
+      <span className="monitor-claude-state">{tag ?? st.text}</span>
+      <span className="monitor-claude-cost">{claudeTreeCost(t)}</span>
+      <div className="monitor-claude-actions">
+        {asking ? (
+          <>
+            <span className="monitor-selq" title={t.helper ? `Stop ${name}? Ends this one CLI process.` : `Stop ${name} and everything it runs?`}>
+              {t.helper ? "Stop the helper CLI?" : `Stop ${t.task_id || "this task"}?`}
+            </span>
+            <button type="button" className="btn btn-danger monitor-btn" onClick={() => onStop(t)}>
+              Stop
+            </button>
+            <button type="button" className="btn btn-secondary monitor-btn" onClick={onCancel}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            {href && (
+              <button type="button" className="btn btn-secondary monitor-btn" onClick={() => onOpen(href)}>
+                Open task
+              </button>
+            )}
+            <button
+              type="button"
+              className={`btn btn-secondary monitor-btn monitor-btn-danger${st.tone === "stale" ? " is-suggested" : ""}`}
+              disabled={!proc || busy}
+              title={
+                !proc
+                  ? "Not in the latest reading"
+                  : t.helper
+                    ? `Stop ${name} (this one CLI process)`
+                    : `Stop ${name} and everything it runs`
+              }
+              onClick={() => onAsk(t.root_pid)}
+            >
+              Stop
+            </button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function ClaudeTrees({
+  trees,
+  byPid,
+  rows,
+  asking,
+  onAsk,
+  onCancel,
+  onStop,
+  onOpen,
+}: {
+  trees: ClaudeTaskTree[];
+  byPid: Map<number, MachineProc>;
+  rows: Record<number, RowState>;
+  asking: number | null;
+  onAsk: (pid: number) => void;
+  onCancel: () => void;
+  onStop: (t: ClaudeTaskTree) => void;
+  onOpen: (href: string) => void;
+}) {
+  return (
+    <section className="monitor-claude" aria-label="Claude tasks">
+      <header className="monitor-claude-head">{claudeTreesHeading(trees)}</header>
+      <ul className="monitor-claude-list">
+        {trees.map((t) => (
+          <ClaudeTreeRow
+            key={t.root_pid}
+            t={t}
+            proc={byPid.get(t.root_pid)}
+            state={rows[t.root_pid]}
+            asking={asking === t.root_pid}
+            onAsk={onAsk}
+            onCancel={onCancel}
+            onStop={onStop}
+            onOpen={onOpen}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 // ---- per-process graph ------------------------------------------------------------------
 
 function memTicks(maxBytes: number): { max: number; ticks: Tick[] } {
@@ -438,6 +606,7 @@ export default function ProcessesTab({
   confirmMs = CONFIRM_MS,
   initialPid = null,
   loadDetail = getProcessDetail,
+  openUrl = navigateUrl,
 }: {
   load?: () => Promise<MachineSnapshot>;
   loadHistory?: (pids: number[]) => Promise<Record<string, ProcHistoryPoint[]>>;
@@ -446,6 +615,8 @@ export default function ProcessesTab({
   /** `?pid=`: open the detail drawer on this process at mount. */
   initialPid?: number | null;
   loadDetail?: (pid: number) => Promise<ProcessDetail>;
+  /** Where "Open task" goes (test seam; the shell's own navigation). */
+  openUrl?: (url: string) => void;
 } = {}) {
   // The detail drawer's pid. Opened by clicking a row's name (not a row
   // select), or from `?pid=`; the URL is read once, never written here.
@@ -470,6 +641,10 @@ export default function ProcessesTab({
     verb: "Kill" | "Stop";
     targets: MachineProc[];
   } | null>(null);
+  // The Claude tasks strip's armed Stop: one tree at a time.
+  // `startedAt` is the top process as the confirm saw it: Stop names that
+  // process, not whatever holds the pid by the time it is pressed.
+  const [treeAsk, setTreeAsk] = useState<{ pid: number; startedAt: number | null; token: number } | null>(null);
   const tokens = useRef(0);
   const confirmMsRef = useRef(confirmMs);
   confirmMsRef.current = confirmMs;
@@ -687,6 +862,7 @@ export default function ProcessesTab({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       setBulk(null);
+      setTreeAsk(null);
       setSel(EMPTY_SELECTION);
     };
     window.addEventListener("keydown", onKey);
@@ -724,6 +900,35 @@ export default function ProcessesTab({
       tone: results.some((r) => r.outcome === "refused") ? "error" : "info",
     });
     results.forEach((r, i) => settle(targets[i], r, force));
+  };
+
+  // The strip's inline confirm auto-cancels like the toolbar's; its Stop
+  // takes the same owner-aware path as a row's.
+  const trees = useMemo(() => claudeTrees(data?.claude), [data]);
+  const askTree = (pid: number) => {
+    const token = ++tokens.current;
+    setTreeAsk({ pid, startedAt: byPid.get(pid)?.startedAt ?? null, token });
+    later(confirmMs, () => setTreeAsk((cur) => (cur?.token === token ? null : cur)));
+  };
+  const stopTree = async (t: ClaudeTaskTree) => {
+    const asked = treeAsk;
+    setTreeAsk(null);
+    // Already being ended (the toolbar's Stop on the same process): that
+    // request reports its own result; a second would only contradict it.
+    if (rows[t.root_pid]?.phase === "busy") return;
+    const p = byPid.get(t.root_pid);
+    if (!p || !asked || asked.pid !== t.root_pid || p.startedAt !== asked.startedAt) {
+      notify({ title: `Not stopped: ${claudeTreeName(t)} has already ended`, tone: "info" });
+      return;
+    }
+    setRow(p.pid, { phase: "busy" });
+    const r = await endProcess(p);
+    notify({
+      title: summarizeResults([r], false, "Stop"),
+      detail: `${t.pids.length} process${t.pids.length === 1 ? "" : "es"}`,
+      tone: r.outcome === "refused" ? "error" : "info",
+    });
+    settle(p, r, false);
   };
 
   const machine = isMac ? "this Mac" : "this computer";
@@ -839,8 +1044,20 @@ export default function ProcessesTab({
         )}
       </div>
 
-      {data?.claude && data.claude.total > 0 && (
-        <p className="monitor-claudeline">{claudeLine(data.claude)}</p>
+      {trees.length > 0 ? (
+        <ClaudeTrees
+          trees={trees}
+          byPid={byPid}
+          rows={rows}
+          asking={treeAsk?.pid ?? null}
+          onAsk={askTree}
+          onCancel={() => setTreeAsk(null)}
+          onStop={(t) => void stopTree(t)}
+          onOpen={openUrl}
+        />
+      ) : (
+        data?.claude &&
+        data.claude.total > 0 && <p className="monitor-claudeline">{claudeLine(data.claude)}</p>
       )}
 
       <div className="monitor-split">

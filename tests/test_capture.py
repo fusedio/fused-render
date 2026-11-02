@@ -1752,3 +1752,46 @@ def test_a_stop_error_keeps_the_backends_warning(backend, client, home):
     assert done["warning"] == backend.warn
     assert done["error"].startswith(backend.warn)
     assert "captured no audio" in done["error"]
+
+
+def test_the_screen_recording_settings_door_opens_the_backends_pane(backend, client, monkeypatch):
+    """`POST /api/capture/settings` — the canvas page's "Open System Settings"
+    after a slow screenshot. The backend names the pane (`settings_url`); the
+    route runs `open` on it and answers ok. Guarded like every mutating route."""
+    opened = []
+
+    def run(argv, **kw):
+        opened.append(argv)
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", run)
+    backend.settings_url = lambda: "x-apple.systempreferences:test?Privacy_ScreenCapture"
+    assert client.post("/api/capture/settings").status_code == 403
+    r = client.post("/api/capture/settings", headers={"X-Fused": "1"})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert opened == [["open", "x-apple.systempreferences:test?Privacy_ScreenCapture"]]
+
+
+def test_a_platform_with_no_settings_pane_answers_409(backend, client):
+    assert not hasattr(backend, "settings_url")
+    r = client.post("/api/capture/settings", headers={"X-Fused": "1"})
+    assert r.status_code == 409
+    assert "Screen Recording" in r.json()["error"]
+
+def test_a_linux_region_shot_is_a_409_not_a_crop_of_another_window(
+        monkeypatch, client):
+    """Wayland gives a browser no screen origin, so cropping the portal's
+    whole-desktop still at `screenX/Y` photographs whatever app sits there.
+    The route says 409 so the page falls back to its own DOM capture."""
+    from fused_render.capture import _linux
+
+    monkeypatch.setattr(capture.sys, "platform", "linux")
+    monkeypatch.setattr(capture, "_backend", lambda: _linux)
+    called = []
+    monkeypatch.setattr(_linux, "screenshot",
+                        lambda out, spec: called.append(spec))
+    res = client.post("/api/capture/shot-region",
+                      json={"rect": [0, 0, 400, 300], "dpr": 1}, headers=H)
+    assert res.status_code == 409
+    assert "Linux" in res.json()["error"]
+    assert called == []

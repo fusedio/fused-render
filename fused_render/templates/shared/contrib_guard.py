@@ -133,18 +133,12 @@ def match_label(who):
 
 
 def app_page_on(home_dir=None):
-    """Whether the app page has the panel a sentence can point at — the
-    contribution loop's switch (`contrib_enabled` in the app's prefs.json,
-    §16.12). `home_dir` defaults to appenv's (PY-15: env vars only);
-    unreadable reads as off."""
-    try:
-        if home_dir is None:
-            home_dir = _load_sibling_appenv().home_dir()
-        with open(os.path.join(home_dir, "prefs.json"), encoding="utf-8") as f:
-            prefs = json.load(f)
-        return isinstance(prefs, dict) and prefs.get("contrib_enabled") is True
-    except Exception:  # noqa: BLE001 — the plain sentence is always true
-        return False
+    """Whether the app page has the panel a sentence can point at (§16.12).
+    Always, since 2026-10-29: the contribution loop is no longer a switch
+    (`contrib_enabled` in prefs.json was it). `home_dir` is accepted and
+    ignored so callers keep their signature."""
+    del home_dir
+    return True
 
 
 def current_branch(root, run):
@@ -215,8 +209,7 @@ def reset_blocked(root, run, home_dir=None):
         return None
     who = guarded[0]
     button = f"“{match_label(who)}”"
-    where = (f"use {button} on its app page" if app_page_on(home_dir)
-             else f"turn on Community apps in Settings, then use {button} on its app page")
+    where = f"use {button} on its app page"
     # No branch name (§0.1): the Git panel's other guard sentences avoid
     # them too.
     return (f"This app follows {who}. Only your own version can be reset here: go back "

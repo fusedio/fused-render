@@ -1179,6 +1179,13 @@ def _blocked_note(backend: str = "") -> str:
     tell a closing question from a closing answer, so the rule lives where the
     choice is made: the model must park on a card when it is blocked.
 
+    The card is also the model's only way to talk while blocked, so a user
+    who types a QUESTION into its "Other" box (which the CLI reports as a
+    full answer, D407) used to get another card back with the reply buried in
+    its wording. The Claude text therefore says to answer in plain text first,
+    in the same turn (text before a card does not end the turn), then put
+    only the choice that is still open back on a card.
+
     Appended to EVERY target's prompt, like `_origin_note`: this is a fact
     about how the app reads the run, not about the target. A non-Claude
     `backend` drops the tool name — no non-Claude agent has
@@ -1210,7 +1217,13 @@ def _blocked_note(backend: str = "") -> str:
         "them. If the thing you need is approval for an action, call the "
         "tool that takes the action and let the permission prompt stop the "
         f"turn. Use `{ANSWERABLE_TOOL}` only when you truly cannot proceed "
-        "without the answer."
+        "without the answer. If the user replies to a card with a question or "
+        "a request for information instead of a choice, answer it in plain "
+        "text first, in the same turn, then call "
+        f"`{ANSWERABLE_TOOL}` again with the choice that is still open: text "
+        "before a card does not end the turn. Do not end that plain-text "
+        "answer with a question, and do not repeat a choice they have "
+        "already made."
     )
 
 
@@ -5492,6 +5505,68 @@ def _turn_state(run_dir: str) -> tuple:
     A caller that still wants the raw process check has `_alive`.
     """
     return _turn_state_fold(run_dir, {}, partial=True)
+
+
+# How long a Stop marker vouches for a dead run past the log's last write —
+# `_cancel` writes `cancelled`, then interrupts; the kill that follows lands
+# within this. The same slack tasks.py's `_stopped` uses for the Tasks row.
+_STOP_MARKER_SLACK_SEC = 5.0
+
+
+def _died_mid_turn(run_dir: str) -> str:
+    """The sentence to show when this run's process is GONE with its turn
+    still open — "" when it is alive, finished, stopped, or cannot be told.
+
+    The host killed with the app, a `kill -9`, an OOM: the CLI never writes
+    the `result` row that closes a turn, the host never posts `exited`, and
+    the transcript ends on a tool call with no result. Rendered from the
+    transcript alone that is a chip spinning for ever under a Done ring
+    (Sina, 2026-10-31). The run dir is where the end of a turn is written by
+    the process that ended it, so it is the one place that can say the turn
+    did NOT end: a `pid` file naming a dead process (no file is a run still
+    spawning, and a probe that cannot answer says alive — see `_alive`), no
+    Stop marker newer than the log (`_cancel` leaves one; a stopped turn is
+    the reader's doing, not a crash), and `_turn_state` reading the log as
+    open. The Tasks row reads the same three facts for its Blocked verdict
+    (tasks.py `_dead_turns`), so the row and the chat tell one story."""
+    if not os.path.isfile(os.path.join(run_dir, "pid")) or _alive(run_dir):
+        return ""
+    marker = os.path.join(run_dir, "cancelled")
+    if os.path.exists(marker):
+        try:
+            marked_at = os.path.getmtime(marker)
+            written_at = os.path.getmtime(os.path.join(run_dir, "out.jsonl"))
+        except OSError:
+            return ""
+        if marked_at + _STOP_MARKER_SLACK_SEC >= written_at:
+            return ""
+    try:
+        turn_open, _pending = _turn_state(run_dir)
+    except Exception:  # noqa: BLE001 — an unreadable log is "cannot tell"
+        return ""
+    if not turn_open:
+        return ""
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    cli_name = _meta_backend(meta if isinstance(meta, dict) else {})
+    # The CLI's own last words when it left any (`_poll` reads the same two
+    # files for its abnormal-exit error); a kill leaves none, hence the
+    # plain sentence with the one thing the reader can do.
+    tail = ""
+    for name in ("err.log", "host.err.log"):
+        try:
+            with open(os.path.join(run_dir, name), encoding="utf-8",
+                      errors="replace") as fh:
+                tail = fh.read().strip()[-2000:]
+        except OSError:
+            tail = ""
+        if tail:
+            break
+    return tail or (f"{cli_name} stopped unexpectedly before finishing this "
+                    "reply. Send your message again to continue.")
 
 
 def _turn_state_row(row: dict, state: dict) -> None:
@@ -11581,6 +11656,31 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         window = _run_context_window(last_run)
         if window:
             context = {**context, "window": window}
+    # A TURN ITS PROCESS NEVER FINISHED reads as a failure, not as a reply
+    # still being written: the pending tool chips of the last reply settle as
+    # errors and a red line says what happened and what to do
+    # (`_died_mid_turn`). Only off the session's newest run dir, only while the
+    # transcript's last word is that unfinished turn (a user prompt nothing
+    # answered, or a reply whose tools never returned), and never over a
+    # failure already on file (an API error row is its own `error` turn).
+    # A STOPPED TURN IS NOT A DEAD ONE: `_stopped_last` is the authoritative
+    # read of the Stop marker (poll-cursor staleness and all), and a reply it
+    # has just stamped `stopped` keeps its ⏹ note alone — a Stop whose CLI
+    # wrote past `_died_mid_turn`'s own five-second slack must not wear the
+    # note AND a red crash line (Bugbot, PR #2063).
+    if last_run and turns and not transcript and \
+            turns[-1].get("role") in ("assistant", "user") and \
+            not turns[-1].get("stopped") and \
+            not _stopped_last(file, session_id):
+        death = _died_mid_turn(last_run)
+        if death:
+            if turns[-1].get("role") == "assistant":
+                for seg in turns[-1].get("segments") or []:
+                    if (isinstance(seg, dict) and seg.get("kind") == "tool"
+                            and seg.get("status") == "running"):
+                        seg["status"] = "error"
+                        seg["output"] = death
+            turns.append({"role": "error", "text": death})
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.

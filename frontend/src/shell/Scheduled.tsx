@@ -77,10 +77,7 @@ import { draftChatUrl } from "@apps/claude";
 import {
   chatKeySession,
   fetchDrafts,
-  NEW_CHAT_PREFIX,
-  newChatFile,
 } from "@platform/lib/drafts";
-import type { ChatDraft } from "@platform/lib/drafts";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
@@ -92,7 +89,11 @@ import ScheduleCalendar, {
   ICON_VIEW_CARDS,
   ICON_VIEW_LIST,
 } from "./ScheduleCalendar";
-import NewJobModal, { seededDraftForm, splitDraft } from "./NewJobModal";
+import NewJobModal, { chatHopSeed, reopenTime, seededDraftForm } from "./NewJobModal";
+// Moved beside the card so the canvas rail can open a draft on it the same
+// way (apps may import NewJobModal, never this page); re-exported for readers
+// who learnt them here.
+export { chatHopSeed, reopenTime } from "./NewJobModal";
 import type { DraftSeed } from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -294,6 +295,12 @@ const ICON_VIEW_WORKSPACE = svg(
   <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M8 14h8" /><path d="M8 17.5h5" /></>,
 );
 const ICON_X = svg(<><path d="M18 6 6 18" /><path d="m6 6 12 12" /></>);
+// lucide `arrow-up-down`: the tab editor's Sort menu (Akshil, 2026-11-02).
+const ICON_SORT = svg(
+  <><path d="m21 16-4 4-4-4" /><path d="M17 20V4" /><path d="m3 8 4-4 4 4" /><path d="M7 4v16" /></>,
+);
+const ICON_CHECK = svg(<path d="M20 6 9 17l-5-5" />);
+const SORT_OPTIONS: ReadonlyArray<readonly [TaskSortBy, string]> = [["changed", "Last change"], ["created", "Created"]];
 const VIEW_ICONS: Record<TaskView, React.ReactNode> = {
   list: ICON_VIEW_LIST,
   board: ICON_VIEW_BOARD,
@@ -393,6 +400,20 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
   const [adding, setAdding] = useState(false);
   const available = TASK_VIEWS.filter((v) => !tabs.includes(v));
   const addRef = useRef<HTMLDivElement>(null);
+  // SORT AS A MENU (Akshil, 2026-11-02): an icon button beside the + with the
+  // two orders in a dropdown, not a labelled segmented control — the label and
+  // second pill row read as a stray form field in a strip of chips.
+  const [sorting, setSorting] = useState(false);
+  const sortRef = useRef<HTMLDivElement>(null);
+  const sortBtnRef = useRef<HTMLButtonElement>(null);
+  // Closing from inside the menu (a pick, or Escape on an item) unmounts the
+  // focused item; focus goes back to the button, not the body, so Tab carries
+  // on from the strip (CodeRabbit, #2055).
+  const closeSort = () => {
+    setSorting(false);
+    sortBtnRef.current?.focus();
+  };
+  const sortLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "";
   const stripRef = useRef<HTMLDivElement>(null);
   // DRAG TO REORDER (Akshil, 2026-10-16): native HTML5 drag on the chips. The
   // chip being carried and the one under the pointer; the drop splices the
@@ -436,13 +457,14 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
   // WebKit does not focus a button on click, so a blur-based close fired on the
   // mousedown and unmounted the item before its click could land.
   useEffect(() => {
-    if (!adding) return;
+    if (!adding && !sorting) return;
     const onDown = (e: PointerEvent) => {
       if (!addRef.current?.contains(e.target as Node)) setAdding(false);
+      if (!sortRef.current?.contains(e.target as Node)) setSorting(false);
     };
     document.addEventListener("pointerdown", onDown, true);
     return () => document.removeEventListener("pointerdown", onDown, true);
-  }, [adding]);
+  }, [adding, sorting]);
   // Escape = Cancel (or close the + menu first), wherever focus is: a removed
   // chip takes the focus with it, so a listener on the strip alone missed the
   // key right after the most natural edit.
@@ -451,11 +473,12 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
       if (e.key !== "Escape") return;
       e.stopPropagation();
       if (adding) setAdding(false);
+      else if (sorting) closeSort();
       else onCancel();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [adding, onCancel]);
+  }, [adding, sorting, onCancel]);
   return (
     <div className="schedule-view-editor" role="group" aria-label="Edit views" ref={stripRef}>
       <div className="schedule-view-editor-tabs">
@@ -540,7 +563,10 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
             aria-expanded={adding}
             disabled={!available.length}
             title={available.length ? "Add view" : "Every view is on the row"}
-            onClick={() => setAdding((a) => !a)}
+            onClick={() => {
+              setSorting(false);
+              setAdding((a) => !a);
+            }}
           >
             {ICON_PLUS}
           </button>
@@ -568,23 +594,46 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
             </div>
           )}
         </div>
-        <div className="schedule-view-sort">
-          <span className="schedule-view-sort-lbl" id="schedule-sort-lbl">Sort by</span>
-          <div className="schedule-form-seg" role="radiogroup" aria-labelledby="schedule-sort-lbl">
-            {([["changed", "Last change"], ["created", "Created"]] as const).map(([v, label]) => (
-              <button
-                key={v}
-                type="button"
-                role="radio"
-                aria-checked={sortBy === v}
-                data-sort={v}
-                className={"btn btn-secondary schedule-view-btn" + (sortBy === v ? " is-active" : "")}
-                onClick={() => onSortBy(v)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+        <div className="schedule-view-add schedule-view-sort" ref={sortRef}>
+          <button
+            type="button"
+            className="btn btn-secondary schedule-view-add-btn"
+            aria-label={`Sort by: ${sortLabel}`}
+            aria-haspopup="menu"
+            aria-expanded={sorting}
+            title={`Sort by: ${sortLabel}`}
+            ref={sortBtnRef}
+            // One menu open at a time: a keyboard press never reaches the
+            // pointerdown close, so opening one shuts the other here.
+            onClick={() => {
+              setAdding(false);
+              setSorting((o) => !o);
+            }}
+          >
+            {ICON_SORT}
+          </button>
+          {sorting && (
+            <div className="schedule-view-add-menu schedule-view-sort-menu" role="menu" aria-label="Sort by" data-hint-stop>
+              <div className="schedule-view-menu-head" aria-hidden="true">Sort by</div>
+              {SORT_OPTIONS.map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={sortBy === v}
+                  className="schedule-view-add-item"
+                  data-sort={v}
+                  onClick={() => {
+                    onSortBy(v);
+                    closeSort();
+                  }}
+                >
+                  <span className="schedule-view-add-name">{label}</span>
+                  {sortBy === v && <span className="schedule-view-sort-check">{ICON_CHECK}</span>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {/* Right after the +, not at the far end (Akshil, 2026-10-19): the
             three controls that finish the edit sit together. */}
@@ -629,91 +678,6 @@ interface ChatHop {
 /** The opening that came from nowhere: every way into the form but the hop.
  *  A module constant so `openForm`'s default argument is one stable value. */
 const NO_HOP: ChatHop = { key: "", from: "" };
-
-/**
- * ONE CHAT RECORD, AS THE NEW TASK CARD OPENS ON IT (design "one record", §1).
- *
- * The hop no longer carries a sentence, a tray or a session in its URL — it
- * carries the KEY, and this turns what is stored under that key into the seed
- * the card already knows how to mount on (`DraftSeed`, the shape a reopened
- * task draft uses). One seeding rule for both kinds of draft, which is what
- * makes "the modal opens on the record" a true sentence rather than two
- * near-identical paths.
- *
- * THE WORDS COME OUT OF `text`, SPLIT, and they go back into `text`, JOINED
- * (contract §1: the words live in `text`, never in `form.description`; the
- * modal splits and joins with `splitDraft`/`joinDraft`). So the composer's box
- * and the card's two prose fields are two views of one string, and a hop out
- * followed by Back to chat is lossless. Nothing here reads `form.title` — the
- * title IS the first line, which is also what the listing row prints.
- *
- * `session_id` is the KEY when the key is a session: a hop out of a chat that
- * has already run is a message into that thread, and that is what the Schedule
- * payload's `sessionId` is built from. `new:<file>` has no thread to continue,
- * and its `<file>` is the folder the card falls back to when the record names
- * no target of its own.
- *
- * `at` IS WHAT A SESSION KEY CANNOT SAY (Akshil, 2026-09-16). A `new:<file>` key
- * spells its folder; a session id spells only the thread, so this used to fall
- * through to `""` and the card opened on the reader's HOME — and its first
- * autosave then wrote that home path onto the conversation's own record as the
- * target. Every door that knows the folder now states it: the hop's `?target=`
- * (the composer's own `file`), or a draft row's `project`. The stored form still
- * outranks it, because a form that names a target is a choice somebody made.
- */
-export function chatHopSeed(
-  key: string,
-  record: ChatDraft | null,
-  at = "",
-): DraftSeed | null {
-  if (!record) return null;
-  const split = splitDraft(record.text);
-  const form = (record.form ?? {}) as Record<string, unknown>;
-  const newChat = key.startsWith(NEW_CHAT_PREFIX);
-  return {
-    id: "",
-    form: {
-      ...form,
-      title: split.title,
-      description: split.description,
-      attachments: record.attachments ?? [],
-      target: (typeof form.target === "string" && form.target)
-        || (newChat ? newChatFile(key) : "") || at || "",
-      session_id: newChat ? "" : key,
-    },
-  };
-}
-
-/**
- * WHAT TIME A FORM THAT ALREADY EXISTS OPENS ON — its own, or none (Bugbot, PR
- * #1126, 2026-09-12).
- *
- * `NEW_LINK_LEAD_MS` is an answer to a question a FRESH link asks: a card that
- * has never been saved opens on now+2m because a deep link means "set this up",
- * and a near-now time is the one to adjust from. A form that has been saved
- * already answered that question, and the answer is in it — `when`, which the
- * store keeps as null until somebody actually opens the when-row and picks one
- * (NewJobModal `draftBody`). Null there means IMMEDIATE: a task to run, not a
- * task to plan.
- *
- * Handing the lead date to such a form overwrote that. `creating` being a Date
- * is what makes the card `planning`, `planning` is what makes `timePicked` open
- * true, and `timePicked` is what puts `when` in the next autosave — so merely
- * reopening an immediate draft rewrote it as one scheduled for two minutes'
- * time, and Schedule sent it that way. So: the stored time when there is one,
- * and nothing at all when there is not. Only the opening with no stored form
- * behind it keeps the lead (see both call sites).
- *
- * An unreadable `when` reads as none here. The card seeds its own field from
- * the string verbatim (`seededDraftForm`), so nothing is lost by this one
- * declining to guess a Date out of it.
- */
-export function reopenTime(seed: DraftSeed | null): Date | null {
-  const when = (seed?.form as { when?: unknown } | null | undefined)?.when;
-  if (typeof when !== "string" || !when) return null;
-  const at = new Date(when);
-  return Number.isNaN(at.getTime()) ? null : at;
-}
 
 export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the

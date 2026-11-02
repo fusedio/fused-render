@@ -36,12 +36,10 @@ untracked or ignored local file at a path `main` adds is `blocked` (Move my
 file aside). Bob's commits keep their ids forever; nothing is rebased.
 
 AUTOMATIC IS FINE; MAGIC IS NOT (P6). Every automatic move writes one
-Activity line — with Undo (a backup of the old HEAD) — and is also a
-button. Undo of an automatic move HOLDS: `restore` sets the record's
-`skip_tip` to the author's tip it undid, and no automatic move runs while
-the mirror is still there (`kept-mine`); a button clears the hold, and a
-newer tip from the author ends it by itself. The `merged` once-stamp: `proposal.landed_at` is set ONCE, in the
-same store update as the line "<who> merged your change…".
+Activity line (read-only, §16.16 — a backup of the old HEAD is still made
+and kept while a line names it) and is also a button. The `merged` once-stamp:
+`proposal.landed_at` is set ONCE, in the same store update as the line
+"<who> merged your change…".
 
 THE ENGINE NEVER PUSHES (P2) except `push_to_main` (a collaborator's
 explicit act, by URL). Tree moves wait while a Claude turn is open in the
@@ -192,10 +190,10 @@ def claude_busy(root) -> bool:
     return _claude_busy(root)
 
 
-def _activity(root, kind, text, *, backup=None, aside=None):
+def _activity(root, kind, text, *, backup=None):
     """One Activity line (§16.9); never raises."""
     try:
-        return store.add_activity(root, kind, text, backup=backup, aside=aside)
+        return store.add_activity(root, kind, text, backup=backup)
     except Exception:  # noqa: BLE001
         logger.exception("contrib: activity line failed for %s", root)
         return None
@@ -652,14 +650,6 @@ def _run_inner(root, *, user, action) -> dict:
     if not user and not gu.auto_sync_enabled():
         # Fetched for the page's "updates waiting"; the move is the user's.
         return _out("skipped", "auto-sync-off", **done)
-    hold = (store.get(root) or {}).get("skip_tip")
-    if hold:
-        main = _main(root, fol)
-        if user or hold != main:
-            _clear_hold(root)  # a button, or the author published again
-        elif not replay.is_ancestor(root, main, replay.rev(root, "HEAD")):
-            # Something to bring in, and Bob undid exactly that: wait.
-            return _out("skipped", "kept-mine", **done)
     if old_main != tip:
         _refresh_proposal(root)
     for _round in range(3):  # another round only after committing "Your edits"
@@ -667,17 +657,6 @@ def _run_inner(root, *, user, action) -> dict:
         if not again:
             return res
     return _out("deferred", "edits", **done)
-
-
-def _clear_hold(root) -> None:
-    """End an undo hold (`skip_tip`)."""
-    if (store.get(root) or {}).get("skip_tip"):
-        store.update(root, lambda r: r.__setitem__("skip_tip", None))
-
-
-#: Activity kinds of AUTOMATIC moves (ff / bring-in, settle): Undo of one
-#: holds the author's tip it undid (`skip_tip`).
-_HOLD_KINDS = frozenset({"update", "merged"})
 
 
 def _refresh_proposal(root) -> None:
@@ -742,7 +721,7 @@ def _step(root, fol, tip, *, user, done) -> tuple[dict, bool]:
             # merge-commit accept whose merge is a sibling of his own
             # bring-in): settle straight onto it rather than record one more
             # bookkeeping merge first — files move only where the author
-            # edited since, and Undo pins Bob's own tip.
+            # edited since, and the backup pins Bob's own tip.
             with replay.slot() as held:
                 if not held:
                     return _out("deferred", "slot-busy", **done), False
@@ -763,11 +742,11 @@ def _step(root, fol, tip, *, user, done) -> tuple[dict, bool]:
         move = "merge"
         text = (f"Brought in {who}'s {subjects}, your changes kept." if subjects
                 else f"Brought in {who}'s latest, your changes kept.")
-    why, backup = _land(root, head, new)
+    why = _land(root, head, new)
     if why:
         return _out("deferred", why, **done), False
     gu._record_pull(root, pulled)
-    return _after_in(root, fol, done, move=move, backup=backup, pulled=pulled, text=text), False
+    return _after_in(root, fol, done, move=move, backup=None, pulled=pulled, text=text), False
 
 
 def _merged_base(root, rec, head, main) -> str | None:
@@ -788,27 +767,19 @@ def _merged_base(root, rec, head, main) -> str | None:
     return pr_head
 
 
-def _land(root, head, new) -> tuple:
+def _land(root, head, new) -> str | None:
     """A bring-in's only write: under the slot, a Claude turn re-checked,
-    the old HEAD pinned (every automatic move has Undo), then
-    `replay.land_ff_locked` — git's own `merge --ff-only`, which refuses
-    when a commit raced in. `(None, backup)` when it landed, else `(why,
-    None)` and the pin is taken back."""
+    then `replay.land_ff_locked` — git's own `merge --ff-only`, which
+    refuses when a commit raced in or a local file is in the way, and drops
+    nothing. None when it landed, else why not."""
     with replay.slot() as held:
         if not held:
-            return "slot-busy", None
+            return "slot-busy"
         if _claude_busy(root):
-            return "claude", None
+            return "claude"
         if replay.rev(root, "HEAD") != head or not _on_home(root):
-            return "moved", None
-        refs = replay.backup_locked(root, head, why="update")
-        if not refs:
-            return "reset-refused", None
-        why, _ = replay.land_ff_locked(root, new)
-        if why:
-            replay.unbackup_locked(root, refs)
-            return why, None
-    return None, refs[0]
+            return "moved"
+        return replay.land_ff_locked(root, new)[0]
 
 
 def _commit_edits(root, head, paths, who) -> bool:
@@ -836,8 +807,7 @@ def _after_in(root, fol, done, *, move, backup, pulled, text) -> dict:
     already). With Bob's proposal merged and not landed yet (§17.2 `merged`
     row): settle when `fused/mine` holds exactly the author's tree by other
     commits, then the once-stamp — `landed_at` and the line "<who> merged
-    your change…" in ONE store update, Undo = the settle's backup (else the
-    bring-in's). A settle that cannot run now (Claude
+    your change…" in ONE store update. A settle that cannot run now (Claude
     working) leaves both for the next sync. Otherwise the move's own line."""
     _note_head(root)
     rec = store.get(root) or {}
@@ -859,20 +829,19 @@ def _after_in(root, fol, done, *, move, backup, pulled, text) -> dict:
                          backup=backup, pulled=pulled, text=text)
     if p and not p.get("landed_at") and _landed_in(root, p, main):
         settled = False
-        undo = backup
         same = head != main and replay.tree_of(root, head) == replay.tree_of(root, main)
         if same:
             with replay.slot() as held:
-                ok, sb = (replay.settle_locked(root, why="settle", main=_mirror(fol))
-                          if held and not _claude_busy(root) else (False, None))
+                ok = held and not _claude_busy(root) and replay.settle_locked(
+                    root, why="settle", main=_mirror(fol))[0]
             if not ok:
                 if move:
                     _activity(root, "update", text, backup=backup)
                     return _out("synced", move=move, pulled=pulled, **done)
                 return _out("noop", **done)
-            settled, undo = True, sb
+            settled = True
         line = store.new_activity("merged", _merged_text(who, kept=not same and head != main),
-                                  backup=undo)
+                                  backup=backup)
         number = p.get("number")
 
         def stamp(r):
@@ -896,24 +865,23 @@ RELEASED_TEXT = "{who} released your change. You're on the reviewed version."
 def _released(root, fol, done, rec, p, *, head, main, move, backup, pulled, text) -> dict:
     """`_after_in`'s `merged` row for a marketplace copy (§18.4 B5): the
     release containing Bob's merged change arrived — the same settle as a
-    GitHub-link copy's, its line "<who> released your change…" (Undo = the
-    settle's backup, else the move's), and `proposal.live` set in the same
+    GitHub-link copy's, its line "<who> released your change…", and `proposal.live` set in the same
     store update as `landed_at` (the page: "Your change is live for
     everyone.", crediting Bob when the review credits his login)."""
     who = _who(rec)
-    settled, undo = False, backup
+    settled = False
     same = head != main and replay.tree_of(root, head) == replay.tree_of(root, main)
     if same:
         with replay.slot() as held:
-            ok, sb = (replay.settle_locked(root, why="settle", main=_mirror(fol))
-                      if held and not _claude_busy(root) else (False, None))
+            ok = held and not _claude_busy(root) and replay.settle_locked(
+                root, why="settle", main=_mirror(fol))[0]
         if not ok:
             if move:
                 _activity(root, "update", text, backup=backup)
                 return _out("synced", move=move, pulled=pulled, **done)
             return _out("noop", **done)
-        settled, undo = True, sb
-    line = store.new_activity("merged", RELEASED_TEXT.format(who=who), backup=undo)
+        settled = True
+    line = store.new_activity("merged", RELEASED_TEXT.format(who=who), backup=backup)
     number = p.get("number")
 
     def stamp(r):
@@ -1025,8 +993,8 @@ def _bring_in_answer(res, who) -> dict:
 
 
 def _hard_to_main(root, *, why, kind, text, message) -> dict:
-    """Discard / Match: backup (incl. every uncommitted edit), then `reset
-    --hard` the author's latest on fused/mine. Refused while a Claude turn
+    """Discard / Match: `reset --hard` the author's latest on fused/mine —
+    the person confirmed losing their changes (no backup, §16.16). Refused while a Claude turn
     is open, or while a Send / Update proposal job runs. A marketplace
     copy's target is the approved commit VETTED against the block list
     (`_vetted`), never one that contains a hard-blocked commit (M1)."""
@@ -1054,7 +1022,6 @@ def _hard_to_main(root, *, why, kind, text, message) -> dict:
             # Only now, with the move sure to be attempted: a ready Merge
             # with Claude result is not thrown away by a refused click.
             _discard_job(root)
-            _clear_hold(root)
             tip, _reason = follow.fetch(root, fol)
             rec, fol, safe = _vetted(root, rec, fol)
             if not safe:
@@ -1084,12 +1051,12 @@ def _hard_to_main(root, *, why, kind, text, message) -> dict:
 
 
 def match(root) -> dict:
-    """Match <who>: the author's latest exactly, mine saved (Undo) — the
-    `needs-merge` state's other way out (§17.3; replaces v2's Use theirs)."""
+    """Match <who>: the author's latest exactly — the `needs-merge` state's
+    other way out (§17.3; replaces v2's Use theirs)."""
     return _hard_to_main(
         root, why="match", kind="match",
-        text="Switched to {who}'s version. Your version is saved.",
-        message="You're on {who}'s version. Your version is saved in Activity.")
+        text="Switched to {who}'s version.",
+        message="You're on {who}'s version.")
 
 
 def discard(root, *, withdraw: bool = False) -> dict:
@@ -1098,9 +1065,8 @@ def discard(root, *, withdraw: bool = False) -> dict:
     rec = store.get(root) or {}
     out = _hard_to_main(
         root, why="discard", kind="discard",
-        text="Discarded your changes. You're on {who}'s version; a copy is saved.",
-        message="Your changes were discarded. fused kept a copy on this computer, just "
-                "in case.")
+        text="Discarded your changes. You're on {who}'s version.",
+        message="Your changes were discarded.")
     if out.get("ok") and withdraw and isinstance(rec.get("proposal"), dict):
         try:
             from fused_render.contrib import proposals
@@ -1123,10 +1089,7 @@ def keep_working(root) -> dict:
     if p and _pr_state(p) == "open":
         return _refuse("open", "Your proposal is still open. Withdraw it first.")
 
-    def fn(r):
-        r["proposal"] = None
-        r["skip_tip"] = None  # a button ends an undo hold (§17.2)
-    store.update(root, fn)
+    store.update(root, lambda r: r.__setitem__("proposal", None))
     return {"ok": True, "message": "Your changes are still here. Propose them again any time."}
 
 
@@ -1139,8 +1102,8 @@ def _aside_root(root) -> str:
 
 def move_aside(root) -> dict:
     """The `blocked` fix: move the local files the author's latest adds out
-    of the folder (to `<home>/contrib/aside/<key>/<ms>/…`, Restore puts
-    them back), then Bring in."""
+    of the folder (to `<home>/contrib/aside/<key>/<ms>/…`, which its Activity
+    line names), then Bring in."""
     rec, fol = _record(root)
     if rec is None or fol is None:
         return _refuse("not-a-copy", "There is nothing to update here.")
@@ -1158,7 +1121,6 @@ def move_aside(root) -> dict:
                 return _refuse("off-default", OTHER_VERSION_MESSAGE), None
             if _claude_busy(root):
                 return _refuse("claude", CLAUDE_BUSY_MESSAGE), None
-            _clear_hold(root)
             main, head = _main(root, fol), replay.rev(root, "HEAD")
             tracked = set(replay.tracked_edits(root))
             files = [p for p in replay.clobber_paths(root, head, main) if p not in tracked]
@@ -1179,9 +1141,9 @@ def move_aside(root) -> dict:
                 except OSError:
                     logger.warning("contrib: could not move %s aside", rel, exc_info=True)
             if moved:
+                # Activity is read-only (§16.16): the line says where they are.
                 _activity(root, "aside", f"Moved your {_files_words(moved)} aside so {who}'s "
-                                         "update could come in.",
-                          aside={"dir": dest, "files": moved})
+                                         f"update could come in. They're in {dest}.")
             if len(moved) != len(files):
                 return _refuse("failed", "Couldn't move your file out of the way; nothing "
                                          "else was changed."), None
@@ -1195,9 +1157,8 @@ def move_aside(root) -> dict:
         return refusal
     out = bring_in(root)
     if moved and out.get("ok"):
-        out["message"] = (f"Moved your {_files_words(moved)} aside — you can put "
-                          f"{'it' if len(moved) == 1 else 'them'} back from Activity. "
-                          + out["message"])
+        out["message"] = (f"Moved your {_files_words(moved)} aside — Activity says "
+                          "where. " + out["message"])
     return out
 
 
@@ -1208,7 +1169,7 @@ def go_back_main(root) -> dict:
     `fused/mine`: when what is checked out CONTAINS `fused/mine` (or there
     is none yet), `fused/mine` moves there — nothing left behind, commits
     made on the other version carried; else `fused/mine` is checked out and
-    the other version is saved (Undo). The author's branch then becomes the
+    the other version is left behind. The author's branch then becomes the
     mirror again (I3). Uncommitted tracked edits → a plain sentence,
     nothing moved."""
     rec, fol = _record(root)
@@ -1233,26 +1194,26 @@ def go_back_main(root) -> dict:
             if replay.tracked_edits(root):
                 return _refuse("dirty", "You have unsaved edits in this version. Save or undo "
                                         "them, then try again.")
-            _clear_hold(root)
             head = replay.rev(root, "HEAD")
             home = replay.rev(root, classify.HOME_REF)
-            backup = None
+            backup = left = None
             if home is None or replay.is_ancestor(root, home, head):
                 r = replay.git(root, "switch", "-q", "-C", HOME_BRANCH)
                 text = "Went back to your usual version of this app, with your edits."
             else:
-                # `switch` overwrites an ignored local file fused/mine tracks
-                # without asking: it goes into the backup too.
+                # `switch` overwrites a local file fused/mine tracks without
+                # asking: it is saved first (§16.16's one backup).
                 clobber = replay.clobber_paths(root, head, home)
-                refs = replay.backup_locked(root, head, why="go-back", also=clobber)
-                if not refs or (clobber and not any(x.endswith("-wip") for x in refs)):
-                    replay.unbackup_locked(root, refs)
-                    return _refuse("failed", "Couldn't save this version first; nothing was "
-                                             "changed.")
-                backup = refs[0]
+                if clobber:
+                    refs = replay.clobber_backup_locked(root, head, clobber, why="go-back")
+                    if not refs:
+                        return _refuse("failed", "Couldn't save a file in the way first; "
+                                                 "nothing was changed.")
+                    backup = refs[0]
+                left = head
                 with replay.fused_aside(root, home):
                     r = replay.git(root, "switch", "-q", HOME_BRANCH)
-                text = "Went back to your usual version of this app. The other version is saved."
+                text = "Went back to your usual version of this app."
             if not gu._ok(r) or not _on_home(root):
                 logger.warning("contrib: go back failed in %s: %s", root, gu._text(r))
                 if backup:
@@ -1262,9 +1223,9 @@ def go_back_main(root) -> dict:
             classify.ensure_home_locked(root, fol.branch)
             replay.protect_after_move(root)
             # The author's branch is not checked out any more: the mirror
-            # again. Commits made on it are on fused/mine now (or in the
-            # saved version): reset it straight to the author's tip — that is
-            # not the author rewinding (no line, no pin).
+            # again. Commits made on it are on fused/mine now (or were in
+            # the version left behind): reset it straight to the author's
+            # tip — that is not the author rewinding (no line).
             old, tip = replay.rev(root, _mirror(fol)), follow.tip(root, fol)
             if fol.pinned:
                 # §18.4: a marketplace copy's mirror goes back to the
@@ -1276,7 +1237,7 @@ def go_back_main(root) -> dict:
                     tip = None
             if old and tip and old != tip and not replay.is_ancestor(root, old, tip) and (
                     replay.is_ancestor(root, old, replay.rev(root, "HEAD"))
-                    or (backup and replay.is_ancestor(root, old, backup))):
+                    or (left and replay.is_ancestor(root, old, left))):
                 replay.git(root, "update-ref", _mirror(fol), tip, old)
             if tip or not fol.pinned:
                 follow.update_mirror(root, fol)
@@ -1285,157 +1246,6 @@ def go_back_main(root) -> dict:
         return {"ok": True, "message": text}
 
     return _user_run(root, go)
-
-
-def _apply_wip_locked(root, base, wip) -> None:
-    """Put a backup's uncommitted edits back as uncommitted edits: every
-    path `base..wip` changes gets wip's content in the working tree (index
-    left at HEAD); a path wip deleted is removed."""
-    r = replay.git(root, "diff", "--name-status", "--no-renames", "-z", base, wip)
-    items = replay.names(r)
-    for status, rel in zip(items[0::2], items[1::2]):
-        path = os.path.join(root, rel)
-        if status.startswith("D"):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            continue
-        if gu._ok(replay.git(root, "checkout", wip, "--", rel)):
-            replay.git(root, "reset", "-q", "--", rel)
-
-
-def restore(root, activity_id) -> dict:
-    """Undo / Restore an Activity line: back up what is here now (so this,
-    too, can be undone), then move fused/mine to the line's backup (`reset
-    --keep`, else `--hard` — everything current is in the new backup) with
-    its uncommitted edits put back, and/or put its set-aside files back.
-    Undo of an automatic move (`_HOLD_KINDS`) sets the undo hold
-    (`skip_tip` = the author's tip now)."""
-    rec, fol = _record(root)
-    entry = store.activity_entry(root, activity_id) if rec is not None else None
-    if entry and entry.get("kind") == store.SWITCH_KIND and not entry.get("restored_at"):
-        # §18.4 D13: Undo of a switch is the opposite switch (landing on the
-        # line's backup when it has one) — market's, which takes the locks.
-        return _market().undo_switch(root, entry)
-    if rec is None or fol is None:
-        return _refuse("not-a-copy", "There is nothing to bring back here.")
-    backup = (entry or {}).get("backup")
-    if isinstance(backup, list):  # a tip and its -wip: the tip names both
-        backup = next((b for b in backup if isinstance(b, str)
-                       and not b.endswith("-wip")), None)
-    aside = (entry or {}).get("aside") if isinstance((entry or {}).get("aside"), dict) else None
-    if not entry or not (backup or aside) or entry.get("restored_at"):
-        return _refuse("nothing", "There's nothing to bring back for that.")
-    if _is_market(rec) and backup and _blocks().backup_blocked(root, rec, backup):
-        # M1: Undo never lands a marketplace copy on a blocked commit.
-        return _refuse("blocked", "That version was blocked by Fused, so it can't come back.")
-    if _claude_busy(root):
-        return _refuse("claude", CLAUDE_BUSY_MESSAGE)
-
-    def go():
-        with replay.slot() as held:
-            if not held:
-                return _refuse("busy", BUSY_MESSAGE)
-            if _unsafe_config(root):
-                return _refuse(UNSAFE_CONFIG, replay.UNSAFE_CONFIG_MESSAGE)
-            if _claude_busy(root):
-                return _refuse("claude", CLAUDE_BUSY_MESSAGE)
-            new_backup = None
-            if backup:
-                target = replay.rev(root, backup)
-                if not target:
-                    return _refuse("gone", "That saved version is no longer on this computer.")
-                if not _on_home(root):
-                    return _refuse("off-default", OTHER_VERSION_MESSAGE)
-                if gu._operation_in_flight(root):
-                    return _refuse("in-progress", ELSEWHERE_MESSAGE)
-                head = replay.rev(root, "HEAD")
-                # As a land: an ignored local file the restored version
-                # tracks is overwritten by the move, so it rides in the backup.
-                clobber = replay.clobber_paths(root, head, target)
-                refs = replay.backup_locked(root, head, why="restore", also=clobber)
-                if not refs or (clobber and not any(x.endswith("-wip") for x in refs)):
-                    replay.unbackup_locked(root, refs)
-                    return _refuse("failed", "Couldn't save what's here first; nothing was "
-                                             "changed.")
-                new_backup = refs[0]
-                held_wip = any(x.endswith("-wip") for x in refs)
-                with replay.fused_aside(root, target):
-                    r = replay.git(root, "reset", "-q", "--keep", target)
-                    # `--hard` only when everything it drops is in the backup
-                    # (`reset_hard_locked`'s guard, review P2 #18).
-                    if not gu._ok(r) and (held_wip or not (replay.dirty(root) or clobber)):
-                        r = replay.git(root, "reset", "-q", "--hard", target)
-                if not gu._ok(r):
-                    if not held_wip:
-                        replay.unbackup_locked(root, refs)
-                        return _refuse("failed", "Couldn't bring that version back; unsaved "
-                                                 "edits are in the way. Nothing was changed.")
-                    return _refuse("failed", "Couldn't bring that version back; what you had is "
-                                             "saved in Activity.")
-                if not replay.undo_race_locked(root, head, refs, hard=True):
-                    return _refuse("moved", "Something changed in this app meanwhile; what you "
-                                            "had is saved in Activity. Try again.")
-                wip = replay.rev(root, backup + "-wip")
-                if wip:
-                    _apply_wip_locked(root, target, wip)
-                replay.protect_after_move(root)
-            back = _unaside(root, aside) if aside else []
-        # Still in the aside folder = not back yet (an earlier Restore may
-        # have brought the others).
-        box = (aside or {}).get("dir") or ""
-        left = [p for p in (aside or {}).get("files") or []
-                if os.path.lexists(os.path.join(box, p))]
-        if not left:
-            # A line whose files did not all come back keeps its Restore.
-            store.mark_restored(root, activity_id)
-        if backup and entry.get("kind") in _HOLD_KINDS:
-            # Undo of an automatic move holds: the next automatic sync must
-            # not bring the same tip straight back; Bring in still does.
-            main = _main(root, fol)
-            if main:
-                store.update(root, lambda r: r.__setitem__("skip_tip", main))
-        _note_head(root)
-        t = time.localtime(entry.get("at") or time.time())
-        when = f"{time.strftime('%b', t)} {t.tm_mday}, {time.strftime('%H:%M', t)}"
-        if backup:
-            text = f"Brought back your version from {when}."
-        elif not back:
-            return _refuse("in-the-way", f"Couldn't put your {_files_words(left)} back: a file "
-                                         "with that name is already here. Rename it, then try "
-                                         "again.")
-        else:
-            text = f"Put your {_files_words(back)} back."
-            if left:
-                text += (f" {_files_words(left)} is still set aside: a file with that name is "
-                         "already here.")
-        _activity(root, "restore", text, backup=new_backup)
-        return {"ok": True, "message": text}
-
-    return _user_run(root, go)
-
-
-def _unaside(root, aside) -> list:
-    """Move set-aside files back. A path the folder now TRACKS takes Bob's
-    file as an uncommitted edit (the author's version is in history); an
-    untracked file already there is never overwritten."""
-    base = aside.get("dir") or ""
-    back = []
-    for rel in aside.get("files") or []:
-        src, dest = os.path.join(base, rel), os.path.join(root, rel)
-        if not os.path.lexists(src):
-            continue
-        tracked = gu._ok(replay.git(root, "ls-files", "--error-unmatch", "--", rel))
-        if os.path.lexists(dest) and not tracked:
-            continue
-        try:
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            os.replace(src, dest)
-            back.append(rel)
-        except OSError:
-            logger.warning("contrib: could not put %s back", rel, exc_info=True)
-    return back
 
 
 def push_to_main(root) -> dict:
@@ -1468,7 +1278,6 @@ def push_to_main(root) -> dict:
             return _refuse("needs-merge", f"{who} changed the same parts you did. Combine them "
                                           "first.")
         return res
-    _clear_hold(root)
     # The bring-in may have vetted the approved commit (a marketplace copy):
     # read the record again, never the follow from before it.
     rec, fol = _record(root)
@@ -1672,16 +1481,14 @@ def status(root) -> dict:
     part cached on `(HEAD, main, pr)`. A folder with no record yet is
     classified in the background and answers `pending: True`. Keeps every
     v2 key: `merged_in_tip` (= pr merged), `taken_back` (always False),
-    `needs_merge*` (from the overlap) — for one release. `kept_mine`: an
-    Undo hold stands on the author's latest (`skip_tip` == main) and it is
-    not in the copy (Bring in still offered)."""
+    `needs_merge*` (from the overlap) — for one release."""
     rec = store.get(root)
     view = {
         "kind": "own", "state": "own", "repo": None, "who": None, "author": None,
         "remix_of": None, "changes_files": [], "changes": 0, "dirty": False,
         "unproposed": 0, "behind": 0, "ahead": 0, "needs_merge": False,
         "needs_merge_purpose": None, "needs_merge_files": [], "merge_job": None,
-        "blocked_files": [], "kept_mine": False, "off_default": False, "claude_busy": False,
+        "blocked_files": [], "off_default": False, "claude_busy": False,
         "merged_in_tip": False, "taken_back": False,
         "last_checked": None, "auto_sync": gu.auto_sync_enabled(),
         "original_update": False, "can_push": None, "owner_checked": True,
@@ -1747,8 +1554,6 @@ def status(root) -> dict:
         ahead=facts["ahead"], needs_merge=bool(conflict),
         needs_merge_purpose="update" if conflict else None, needs_merge_files=conflict,
         blocked_files=blocked, off_default=not on_home, claude_busy=_claude_busy(root),
-        kept_mine=bool(rec.get("skip_tip")) and rec.get("skip_tip") == main
-        and facts["behind"] > 0,
         merged_in_tip=pstate == "merged")
     job_open = bool(job) and job.get("status") in ("running", "ready", "landing", "choice")
     if not on_home:

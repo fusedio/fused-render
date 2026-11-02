@@ -24,7 +24,10 @@ REQUEST_TIMEOUT = (5.0, 60.0)
 def raise_request_timeout() -> None:
     import fused
 
-    options = fused.options
-    if "request_timeout" in options.model_fields_set:
+    # A fused without `options` (older SDKs, the test fakes) has no timeout to raise.
+    options = getattr(fused, "options", None)
+    if options is None or not hasattr(options, "request_timeout"):
+        return
+    if "request_timeout" in getattr(options, "model_fields_set", ()):
         return
     options.request_timeout = REQUEST_TIMEOUT

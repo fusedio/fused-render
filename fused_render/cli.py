@@ -239,15 +239,10 @@ def _run_serve(args: argparse.Namespace) -> None:
     from fused_render import apps_root_migration
 
     apps_root_migration.run_once(fused_ws)
-    # Showcase apps: clone/sync the community repo into <workspace>/showcase in
-    # the background — the apps grid lists it as an ordinary tag dir once done.
-    from fused_render import community
-
-    community.ensure_showcase_in_background()
     # Probe Claude Code (found / version / signed-in) off the request path, so
     # the first-run strip's GET is a disk read rather than a login-shell spawn.
-    # Same placement rule as the showcase refresh above: an entry point, never
-    # create_app, so importing the server in a test probes nothing.
+    # Placed at an entry point, never create_app, so importing the server in
+    # a test probes nothing.
     # Each agent's probe follows its Preferences switch (D17): a disabled
     # agent is never probed, so a machine with no Copilot never spawns one.
     from fused_render import claude_health, codex_health, copilot_health, gemini_health
@@ -421,7 +416,7 @@ def _run_open(args: argparse.Namespace) -> None:
     """`fused-render open <path>`: a lean server for one app, opened straight
     to its embed URL. `path` is resolved by `_open_target` — an app folder or
     a file in one, a `.fused` file, or a GitHub URL/deep link (cloned or
-    pulled first). No onboarding/migrations, no showcase clone, no Claude
+    pulled first). No onboarding/migrations, no Claude
     health probe (all `serve`-only, above) — those are about the workspace as
     a whole, and this command scopes to one app. No server.json either
     (`create_app`'s `lean=True` already skips every background subsystem;

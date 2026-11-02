@@ -22,7 +22,6 @@ import { getJson, postJson } from "@platform/lib/api";
 import type { SetupRecord } from "@platform/lib/github-setup";
 import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import { useContribFlags, type ContribFlags } from "@platform/lib/contrib-flags";
-import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 
 export type { ContribFlags };
 
@@ -308,16 +307,19 @@ export interface ContribAction {
   dialog?: string | null;
 }
 
+/** One Activity line — read-only (§16.16): nothing on it is a button. */
 export interface ActivityLine {
   id: string;
   /** Epoch seconds. */
   at: number;
-  /** "update", "switch" (a trust-level switch, Undo = the opposite
-   *  switch), "rollback" (a block rolled the copy back; never Undo), … */
+  /** "update", "switch" (a trust-level switch), "rollback" (a block rolled
+   *  the copy back), "proposal-accepted", … */
   kind: "update" | "switch" | "rollback" | (string & {});
   text: string;
-  /** Something moved away and can come back: offers Undo. */
-  undo: boolean;
+  /** §16.16: who took the step, when it was someone else. */
+  actor?: string;
+  /** §16.16: the github.com page it happened on (a pull request, the repo). */
+  link?: string;
 }
 
 export interface AppContrib {
@@ -489,8 +491,6 @@ export const runAction = (
     ...(opts.confirm ? { confirm: true } : {}),
     ...(opts.args ? { args: opts.args } : {}),
   });
-/** Undo / Restore one activity line (§16.9). */
-export const restoreActivity = (path: string, id: string) => post<ContribAnswer>("restore", { path, id });
 
 // ---- stage B: the author's Marketplace listing (§18.6) -----------------------
 
@@ -535,6 +535,10 @@ export interface Listing {
   doctor_clear: boolean;
   /** The app has edits not on GitHub yet — publishing needs them pushed. */
   unpushed: boolean;
+  /** A standing word under the sentence after a publish that went through
+   *  on a fallback (the fork of the index could not be synced: gh's token
+   *  has no `workflow` scope). Not an error. */
+  notice?: string | null;
 }
 
 /** GET /api/contrib/listing. `sentence` is the server's status line
@@ -771,18 +775,13 @@ function anyFlag(f: ContribFlags): boolean {
   return f.sources || f.changes || f.inbox || f.loop || f.remix;
 }
 
-/** Whether `useAppContrib` reads at all: any contrib switch, the Marketplace
- *  switch, or `force` — a folder the caller already knows is a Marketplace
- *  copy. Such a copy's block is enforced whatever the switches say (§18.4),
- *  so the page must learn whether opening it asks first even with every
- *  switch off. */
-export function contribReadEnabled(
-  dir: string | null,
-  flags: ContribFlags | null,
-  market: boolean | null,
-  force: boolean,
-): boolean {
-  return !!dir && ((flags !== null && anyFlag(flags)) || market === true || force);
+/** Whether `useAppContrib` reads at all: any contrib phase (the loop is
+ *  always on, so once the flags have landed), or `force` — a folder the
+ *  caller already knows is a Marketplace copy. Such a copy's block is
+ *  enforced whatever the flags say (§18.4), so the page must learn whether
+ *  opening it asks first even before they land. */
+export function contribReadEnabled(dir: string | null, flags: ContribFlags | null, force: boolean): boolean {
+  return !!dir && ((flags !== null && anyFlag(flags)) || force);
 }
 
 export interface AppContribState {
@@ -807,15 +806,11 @@ export interface AppContribState {
  *  so the page with the feature off makes exactly the requests it always did. */
 export function useAppContrib(dir: string | null, opts: { marketplace?: boolean } = {}): AppContribState {
   const flags = useContribFlags();
-  // Stage B (§18.8): a Marketplace copy's panel, buttons and block strips
-  // answer with the Marketplace switch on too, Community flags or not; the
-  // server answers `{ok:false}` for any other copy then, and nothing shows.
   // `marketplace`: the caller knows this folder is a Marketplace copy (the
-  // ladder's `kind`, or the open gate's 423) — read whatever the switches
-  // say, since its block asks before it opens whatever they say.
-  const market = useMarketplaceFeature();
+  // ladder's `kind`, or the open gate's 423) — read before the flags land,
+  // since its block asks before it opens whatever they say.
   const force = !!opts.marketplace;
-  const enabled = contribReadEnabled(dir, flags, market, force);
+  const enabled = contribReadEnabled(dir, flags, force);
   const [data, setData] = useState<AppContrib | null>(null);
   const [settled, setSettled] = useState(false);
   const [pending, setPending] = useState(false);
@@ -905,10 +900,17 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
     };
   }, [enabled, read]);
 
+  // The folder's rung moved from outside this page (the Share sheet put it
+  // on GitHub): the record was rebound on the server, so read it again.
+  useEffect(() => {
+    if (!enabled || !dir) return;
+    return onLadderChanged(dir, () => void read());
+  }, [enabled, dir, read]);
+
   const refresh = useCallback(() => (enabled ? read() : Promise.resolve()), [enabled, read]);
   // Not settled while the flags themselves are still being read: a
   // `?_tab=proposals` link must keep its tab through that window too.
-  const known = flags !== null || market === true || force;
+  const known = flags !== null || force;
   return {
     data: enabled ? data : null,
     settled: known && settled,
@@ -916,6 +918,49 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
     answered: known && (!enabled || answered),
     refresh,
   };
+}
+
+// ---- "this folder's rung moved" ------------------------------------------------
+
+/** Listeners keyed by folder (trailing slashes dropped). */
+const ladderListeners = new Map<string, Set<() => void>>();
+
+const ladderKey = (dir: string) => dir.replace(/\/+$/, "");
+
+/** Subscribe to `notifyLadderChanged(dir)`; returns the unsubscribe. */
+export function onLadderChanged(dir: string, cb: () => void): () => void {
+  const key = ladderKey(dir);
+  let set = ladderListeners.get(key);
+  if (!set) {
+    set = new Set();
+    ladderListeners.set(key, set);
+  }
+  set.add(cb);
+  return () => {
+    const cur = ladderListeners.get(key);
+    if (!cur) return;
+    cur.delete(cb);
+    if (cur.size === 0) ladderListeners.delete(key);
+  };
+}
+
+/** Tell every `useLadder` / `useAppContrib` on `dir` to re-read now. Called
+ *  by whoever just MOVED the folder's rung from outside the page — the
+ *  Share sheet after "Put it on GitHub" settles, a listing publish, a
+ *  remove. Each hook holds its own state (§19.1: read live, never cached
+ *  across folders), so without this the sheet saw rung 2 while the app page
+ *  behind it stayed on rung 1 — no Community tab, no "Add to the
+ *  Community" — until a reload or an alt-tab (`focus`), because an
+ *  in-window modal closing fires no focus event. */
+export function notifyLadderChanged(dir: string): void {
+  const set = ladderListeners.get(ladderKey(dir));
+  if (!set) return;
+  for (const cb of Array.from(set)) cb();
+}
+
+/** How many listeners `dir` has right now (tests). */
+export function ladderListenerCount(dir: string): number {
+  return ladderListeners.get(ladderKey(dir))?.size ?? 0;
 }
 
 // ---- the ladder (§19.1/§19.2) -------------------------------------------------
@@ -1006,6 +1051,12 @@ export function useLadder(dir: string | null): LadderState {
     const onFocus = () => void read();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
+  }, [dir, read]);
+
+  // Something else moved this folder's rung (the Share sheet): re-read.
+  useEffect(() => {
+    if (!dir) return;
+    return onLadderChanged(dir, () => void read());
   }, [dir, read]);
 
   // Ownership still being asked (`pending`): read again shortly, a bounded

@@ -333,6 +333,26 @@ const ENTRIES = [
     keywords: "mcp memory connectors strict lean",
   },
   {
+    id: "canvas-screenshots",
+    group: "tasks",
+    section: "Canvas screenshots",
+    label: "Screen permission",
+    description: "Canvas screenshots — yours and your agent's — are taken natively, in under a second. On macOS that needs screen permission. The app photographs only its own workbench frame, only when a screenshot is asked for; the picture is saved to the app's screenshots folder and attached to that chat, nowhere else.",
+    keywords: "screenshot screen recording permission canvas capture native fast claude",
+    renderOnly: true,
+    macOnly: true,
+  },
+  {
+    id: "canvas-screenshots-fallback",
+    group: "tasks",
+    section: "Canvas screenshots",
+    label: "Fall back to in-canvas capture",
+    description: "When the native screenshot cannot be taken, let the workbench draw the canvas itself instead of failing. Slow: 5–30 s with the canvas locked meanwhile. Off by default on macOS, where allowing screen permission is the fix.",
+    keywords: "screenshot fallback slow canvas capture html-to-image",
+    renderOnly: true,
+    macOnly: true,
+  },
+  {
     id: "claude-default-permission",
     group: "tasks",
     section: "Running",
@@ -368,10 +388,10 @@ const ENTRIES = [
     keywords: "git push pull commit fast-forward sync github remote auto",
     renderOnly: true,
   },
-  // Owner 2026-10-27: three switches decide what Share offers — Public link
-  // (this row), Contributing (the GitHub card + install link) and Remix.
-  // The Share button itself is there when any of them is on
-  // (share-app-flag.ts `useAppShareOffered`); .fused file export always.
+  // Owner 2026-10-27: what Share offers — Public link (this row), the
+  // GitHub card + install link (always, since 2026-10-29) and Remix. The
+  // Share button is always there (share-app-flag.ts `useAppShareOffered`);
+  // .fused file export always.
   {
     id: "share-sheet",
     needs: "fused",
@@ -391,32 +411,9 @@ const ENTRIES = [
     keywords: "thumbnail preview iframe cards live hover image",
     renderOnly: true,
   },
-  // Community: the store of reviewed, open-source apps (one switch), the
-  // GitHub contribution loop (one switch), and Remix on its own
-  // (docs/CONTRIB_LOOP.md §1). Off by default.
-  {
-    id: "marketplace",
-    group: "apps",
-    section: "Community",
-    label: "Community",
-    description:
-      "The community store of reviewed, open-source apps: a Community row in the sidebar and its pages. Every release is reviewed by Fused before it reaches you, and you can list your own apps there.",
-    keywords: "marketplace store community apps gallery install reviewed releases publish open source",
-    renderOnly: true,
-    badge: "Beta",
-  },
-  {
-    id: "contrib",
-    group: "apps",
-    section: "Community",
-    label: "Contributing",
-    description:
-      "Cards say whether an app is yours or follows someone else's, and Share offers its GitHub install link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited.",
-    keywords:
-      "community apps contribute follow author source origin propose proposals proposal edits pull request inbox review accept decline merged accepted credit contributors github install link",
-    renderOnly: true,
-    badge: "Beta",
-  },
+  // Community: Remix on its own switch (docs/CONTRIB_LOOP.md §1), off by
+  // default. The Community store and the contribution loop stopped being
+  // switches on 2026-10-29 — always on, no row.
   {
     id: "contrib-remix",
     group: "apps",
@@ -502,6 +499,18 @@ const ENTRIES = [
     renderOnly: true,
     child: true,
     // Only means something while Canvases is offered at all.
+    available: ({ prefs }) => prefs.canvases?.enabled === true,
+  },
+  {
+    id: "canvases-rail-peek",
+    needs: "fused",
+    group: "features",
+    section: "Sidebar",
+    label: "Preview chats from the collapsed Claude rail",
+    description: "On a canvas with the Claude panel hidden, hovering a chat on the rail previews it as a floating card beside it; clicking keeps the card open, ready to type, and lets you resize it from its left corners. Click elsewhere, press Escape, or use its × or Open to close it.",
+    keywords: "canvas rail hover click preview peek card chat collapsed claude panel popover",
+    renderOnly: true,
+    child: true,
     available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
   {

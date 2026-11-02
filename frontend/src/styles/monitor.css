@@ -941,6 +941,121 @@ th[aria-sort="descending"] .monitor-sort {
   color: var(--fg-muted);
 }
 
+/* ---- Claude tasks strip (ProcessesTab): one row per live Claude tree ---- */
+.monitor-claude {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--monitor-hairline, var(--border));
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.monitor-claude-head {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  border-bottom: 1px solid var(--monitor-rule, var(--border));
+}
+
+/* A handful of trees is the common case; past that the strip scrolls rather
+   than pushing the table off the page. */
+.monitor-claude-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 188px;
+  overflow: auto;
+}
+
+.monitor-claude-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.monitor-claude-row + .monitor-claude-row {
+  border-top: 1px solid var(--monitor-rule, var(--border));
+}
+
+.monitor-claude-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.monitor-claude-row.is-running .monitor-claude-dot {
+  background: var(--success);
+}
+
+.monitor-claude-row.is-waiting .monitor-claude-dot {
+  background: var(--accent);
+}
+
+/* Done – still alive: the task finished, its tree did not. The kill candidate. */
+.monitor-claude-row.is-stale {
+  background: color-mix(in srgb, var(--warning) 7%, transparent);
+}
+
+.monitor-claude-row.is-stale .monitor-claude-dot {
+  background: var(--warning);
+}
+
+.monitor-claude-row.is-stale .monitor-claude-state {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.monitor-claude-main {
+  min-width: 0;
+}
+
+.monitor-claude-name,
+.monitor-claude-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-claude-name {
+  font-weight: 600;
+}
+
+.monitor-claude-sub {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* Capped and wrapping: a long "<Status> – still alive" or a stop error must
+   not widen its track and push Stop / Cancel past the strip's edge. */
+.monitor-claude-state {
+  max-width: 28ch;
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
+}
+
+.monitor-claude-cost {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.monitor-claude-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 132px;
+}
+
 .monitor-split {
   flex: 1 1 auto;
   min-height: 0;
