@@ -46,6 +46,10 @@ export function useRailGit(path: string | null): RailGit {
   // answer always lands.
   const seq = useRef(0);
   const checkingRef = useRef(false);
+  // Which check is the live one: a path switch mid-check abandons it (the
+  // effect below), and its late answer must then neither land nor clear the
+  // flag a newer check holds (Bugbot on #2069).
+  const checkToken = useRef(0);
   const pathRef = useRef(path);
   pathRef.current = path;
   const reload = useCallback(() => {
@@ -61,6 +65,11 @@ export function useRailGit(path: string | null): RailGit {
     );
   }, [path]);
   useEffect(() => {
+    // A check still out is the OLD path's: let it go, so the new path's
+    // read is not held back by it.
+    checkToken.current += 1;
+    checkingRef.current = false;
+    setChecking(false);
     setRepo(undefined);
     setChecked(null);
     reload();
@@ -105,21 +114,22 @@ export function useRailGit(path: string | null): RailGit {
     setChecking(true);
     ++seq.current;
     const asked = path;
+    const token = ++checkToken.current;
+    const mine = () => alive.current && token === checkToken.current && pathRef.current === asked;
     postRailGitCheck(path).then(
       (r) => {
+        // Abandoned (the page moved on): not ours to show, nor to end.
+        if (!mine()) return;
         checkingRef.current = false;
-        if (!alive.current) return;
         setChecking(false);
-        // The page moved on to another path meanwhile: not ours to show.
-        if (pathRef.current !== asked) return;
         setRepo(r.repo);
         setChecked(r.checked);
       },
       () => {
+        if (!mine()) return;
         checkingRef.current = false;
-        if (!alive.current) return;
         setChecking(false);
-        if (pathRef.current === asked) setChecked(false);
+        setChecked(false);
       },
     );
   }, [path]);

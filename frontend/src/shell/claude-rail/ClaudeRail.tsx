@@ -488,6 +488,18 @@ export function ClaudeRail({
   // archiving lets go first (RailPeek `onFiled`).
   // …AND A HELD CHAT CLIPPED OUT of the list (above) draws in the foot the
   // same way: still anchored, still seen.
+  //
+  // BUT NEVER ACROSS PLACES: the explorer keeps this rail mounted from one
+  // folder or file to the next, and a card pinned on the last place is not
+  // this place's to hold — by key alone it would ride into the foot here
+  // (Bugbot on #2069). A place change lets the card go.
+  const placeRef = useRef(place);
+  useEffect(() => {
+    if (placeRef.current === place) return;
+    placeRef.current = place;
+    setHeld(false);
+    intent.dismiss();
+  }, [place, intent]);
   const heldKey = held ? peekKey : null;
   const heldExtra = useMemo((): RailRow | null => {
     if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return null;
