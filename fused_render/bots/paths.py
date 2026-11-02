@@ -577,10 +577,13 @@ def is_bot_workdir(cwd: str | None) -> bool:
     * legacy home side: `bots/cache/bots/<id>` off the BASE home, optionally
       behind `branches/<ref>/` — the projects dir holds transcripts from every
       branch install and from before v3, which must stay hidden.
-    * legacy Inbox: a direct child of `<workspace>/bots/` that holds NO
-      bot.json — pre-v3 Super Bot ran in its Inbox folder `~/Fused/bots/<slug>`;
-      one that v3 adopted as a public folder now has a bot.json, and a human
-      who opens Claude Code there is doing a task, not running the bot."""
+    * legacy Inbox: any direct child of `<workspace>/bots/` — pre-v3 Super Bot
+      ran in its Inbox folder `~/Fused/bots/<slug>`, and migrate_v3 ADOPTS that
+      folder as the bot's v3 folder (bot.json and all), so a "no bot.json" test
+      would bring every pre-migration Super Bot turn back as a task row. The
+      cost, accepted as before v3: a human who opens Claude Code in a bot's
+      folder root is hidden too. `skills/` and other public subfolders stay
+      tasks: no bot run works there."""
     if not cwd:
         return False
     path = os.path.normcase(os.path.normpath(cwd))
@@ -600,7 +603,7 @@ def is_bot_workdir(cwd: str | None) -> bool:
         parts = p[len(r) + 1:].split(os.sep)
         if len(parts) >= 2 and parts[0] and parts[1] == os.path.normcase(_PRIVATE):
             return True
-        if len(parts) == 1 and parts[0] and not os.path.exists(os.path.join(r, parts[0], _META)):
+        if len(parts) == 1 and parts[0]:
             return True
     return False
 

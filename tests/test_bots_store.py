@@ -779,3 +779,56 @@ def test_migrate_v3_reserved_names_in_an_inbox_are_kept_as_leftovers(app_home, w
         assert f.read() == "written by a task"
     assert not os.path.exists(os.path.join(folder, "README.md"))
     assert os.path.isfile(os.path.join(folder, ".fused", "inbox", "t1", "out.txt"))
+
+
+# ------------------------------------------------------- is_bot_workdir ---
+# The Tasks page drops a transcript whose cwd is a bot's own run folder (routers/tasks `_bot_session`): a bot's
+# conversation is a CLI session on disk, not a task. v3 moved those folders under <ws>/bots/<folder>/.fused/.
+def test_is_bot_workdir_hides_v3_runs_and_legacy_cwds_but_not_user_folders(app_home, ws, tmp_path):
+    folder = os.path.join(ws, "bots", "super-bot")
+    _touch(os.path.join(folder, "bot.json"), json.dumps({"id": "abcd1234", "name": "Super Bot"}))
+    os.makedirs(os.path.join(folder, ".fused", "inbox", "20260101-0900-x"))
+    os.makedirs(os.path.join(folder, "skills"))
+    base = _storage.base_home_dir()
+    hidden = [
+        os.path.join(folder, ".fused", "cache"),                       # an ordinary bot's run
+        os.path.join(folder, ".fused", "inbox"),                       # Super Bot's run
+        os.path.join(folder, ".fused", "inbox", "20260101-0900-x"),    # nested under the Inbox
+        os.path.join(base, "bots", "cache", "bots", "abcd1234"),       # legacy cache dir (pre-v3 transcripts)
+        os.path.join(base, "branches", "dev", "bots", "cache", "bots", "abcd1234"),
+        os.path.join(ws, "bots", "old-inbox"),                         # legacy Inbox, folder since moved away
+        # legacy Super Bot Inbox that migrate_v3 adopted as this bot's folder (it has a bot.json now): its
+        # pre-migration transcripts still name it as their cwd and must stay hidden.
+        folder,
+    ]
+    shown = [
+        os.path.join(ws, "canvas", "x"),
+        os.path.join(ws, "app", "x"),
+        os.path.join(ws, "bots"),
+        os.path.join(folder, "skills"),                                # no bot run works in the public half
+        os.path.join(ws, "projects", "bots", "cache", "bots", "x"),    # a substring is never enough
+        "",
+        None,
+    ]
+    assert [p for p in hidden if not bpaths.is_bot_workdir(p)] == []
+    assert [p for p in shown if bpaths.is_bot_workdir(p)] == []
+    # The CLI may record the resolved path: a symlinked workspace still hides the run.
+    link = str(tmp_path / "ws-link")
+    os.symlink(ws, link)
+    assert bpaths.is_bot_workdir(os.path.join(link, "bots", "super-bot", ".fused", "inbox", "20260101-0900-x"))
+    assert not bpaths.is_bot_workdir(os.path.join(link, "canvas", "x"))
+
+
+def test_is_bot_workdir_after_migrate_v3_hides_the_adopted_inbox(app_home, ws):
+    # The end-to-end shape of the regression: a pre-v3 Super Bot ran in ~/Fused/bots/<slug>; migrate_v3 adopts
+    # that folder and writes bot.json into it. Old transcripts naming the old Inbox (and the old cache) stay hidden.
+    bid = "a1b2c3d4"
+    inbox = os.path.join(ws, "bots", "daily-digest")
+    _legacy(app_home, bid, "Daily Digest", inbox=inbox)
+    legacy_cache = os.path.join(str(app_home), "bots", "cache", "bots", bid)
+    assert migrate_v3.migrate_once()["moved"] == 1
+    assert os.path.isfile(os.path.join(inbox, "bot.json")) and not os.path.exists(legacy_cache)
+    assert bpaths.is_bot_workdir(inbox)
+    assert bpaths.is_bot_workdir(legacy_cache)
+    assert bpaths.is_bot_workdir(bpaths.bot_cache_dir(bid)) and bpaths.bot_cache_dir(bid).startswith(inbox + os.sep)
+    assert bpaths.is_bot_workdir(bpaths.bot_inbox(bid))
