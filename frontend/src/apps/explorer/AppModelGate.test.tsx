@@ -51,7 +51,10 @@ beforeEach(() => {
     return ok({});
   }) as typeof fetch;
 });
+const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
+  // Unmount every renderer: a mounted Modal leaks its esc-stack token process-wide.
+  for (const r of mounted.splice(0)) act(() => { r.unmount(); });
   globalThis.fetch = realFetch;
   removePortalContainer();
 });
@@ -67,6 +70,7 @@ async function mount(onDecline = () => {}, pollMs = 20): Promise<ReactTestRender
       </AppModelGate>,
     );
   });
+  mounted.push(r);
   await flush();
   return r;
 }
@@ -90,6 +94,7 @@ describe("gate states", () => {
     globalThis.fetch = (() => new Promise((res) => { release = () => res(new Response(JSON.stringify({ declares: false }))); })) as any;
     let r!: ReactTestRenderer;
     await act(async () => { r = create(<AppModelGate path="/a/index.html" onDecline={() => {}}><i id="app" /></AppModelGate>); });
+    mounted.push(r);
     expect(hasApp(r)).toBe(false);
     await act(async () => { release(); });
     await flush();
@@ -111,6 +116,7 @@ describe("gate states", () => {
   test("non-html paths never fetch", async () => {
     let r!: ReactTestRenderer;
     await act(async () => { r = create(<AppModelGate path="/a/data.csv" onDecline={() => {}}><i id="app" /></AppModelGate>); });
+    mounted.push(r);
     expect(hasApp(r)).toBe(true);
     expect(calls.length).toBe(0);
   });
