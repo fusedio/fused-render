@@ -219,6 +219,12 @@ export interface InstallJob {
   message: string;
   path?: string;
   error?: string;
+  /** `replace`: the install refused because another copy of this app,
+   *  installed another way, holds its place at `replace_path`; posting the
+   *  install again with `replace: <that path>` installs over it (its data
+   *  moves along, the old folder is hidden). */
+  code?: "replace";
+  replace_path?: string;
 }
 
 // -- Fetchers ----------------------------------------------------------------
@@ -263,6 +269,8 @@ export type InstallAnswer =
 export interface InstallOpts {
   switch?: boolean;
   overwrite?: boolean;
+  /** The failed job's `replace_path`: install over that copy. */
+  replace?: string;
 }
 
 export function postInstall(slug: string, opts: InstallOpts = {}): Promise<InstallAnswer> {
@@ -270,6 +278,7 @@ export function postInstall(slug: string, opts: InstallOpts = {}): Promise<Insta
     slug,
     ...(opts.switch ? { switch: true } : {}),
     ...(opts.overwrite ? { overwrite: true } : {}),
+    ...(opts.replace ? { replace: opts.replace } : {}),
   });
 }
 
