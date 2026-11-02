@@ -2023,3 +2023,36 @@
 .cc-showmore:hover {
   color: var(--accent);
 }
+
+/* Memory project path-search combobox */
+.cc-pathsearch .cc-pathlist {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 224px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--popover, var(--background));
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.14);
+}
+.cc-pathopt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cc-pathopt[data-active] { background: var(--accent); }
+.cc-pathopt-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-pathopt-tag { font-size: 11px; color: var(--muted-foreground); white-space: nowrap; }
+.cc-pathopt-count { min-width: 1.5em; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.cc-pathmark { background: color-mix(in srgb, var(--primary, currentColor) 22%, transparent); color: inherit; border-radius: 2px; }

@@ -22,7 +22,6 @@
 // an option.
 import { useCallback, useState } from "react";
 import { Button } from "@platform/shadcn/ui/button";
-import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import {
@@ -44,6 +43,7 @@ import {
 } from "../bits";
 import type { HeadedSectionProps } from "../bits";
 import { FileEditor } from "../FileEditor";
+import { ProjectPathSearch } from "../ProjectPathSearch";
 
 function MemoryFileEditor({ project, file, onDelete }: { project: string; file: string; onDelete: () => void }) {
   const load = useCallback(async () => {
@@ -148,19 +148,16 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
         blurb={`${plural(fileCount, "file")} across ${plural(data.projects.length, "project")}`}
         aside={
           <div className="flex items-center gap-2">
-            <NativeSelect
-              size="sm"
-              aria-label="Filter by project"
+            <ProjectPathSearch
+              options={sorted.map((p) => ({
+                id: p.project,
+                title: titleOf(p),
+                count: p.files.length,
+                confirmed: !!p.pathConfirmed,
+              }))}
               value={active}
-              onChange={(e) => setPicked(e.target.value)}
-            >
-              <NativeSelectOption value="">All projects ({fileCount} files)</NativeSelectOption>
-              {sorted.map((p) => (
-                <NativeSelectOption key={p.project} value={p.project}>
-                  {titleOf(p)} ({p.files.length})
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              onChange={setPicked}
+            />
             <RefreshButton onClick={reload} />
           </div>
         }
