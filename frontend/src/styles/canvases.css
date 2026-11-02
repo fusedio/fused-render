@@ -662,9 +662,11 @@
 /* THE GRIPS (RailPeek, owner 2026-11-02): the pinned card's two LEFT
    corners — the right edge stands against the rail — as 12px hit areas
    (8px of them over the card's rounded corner, clear of the pin seat), with
-   the corner's resize cursor. Quiet
-   until hovered: a short L of the border tone traces the corner, the
-   accent while the drag is on. Children of the fixed box, not of the card
+   the corner's resize cursor. Quiet until the pointer rests on the corner
+   (owner, 2026-11-02: "show it when we hover over the corner … when we drag
+   the corner it changes color to accent"): a short L in the ink's tone
+   traces the corner under the pointer, and turns to the accent while the
+   drag is on. Children of the fixed box, not of the card
    (the card clips its overflow), above the head and the chat. */
 .canvas-rail-peek-grip {
   position: absolute;
@@ -688,18 +690,21 @@
   left: 4px;
   width: 7px;
   height: 7px;
-  border-left: 2px solid color-mix(in srgb, var(--fg) 45%, var(--bg));
+  border-left: 2px solid currentColor;
+  color: var(--fg);
   opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease-out);
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 .canvas-rail-peek-grip.is-tl::after {
   top: 4px;
-  border-top: 2px solid color-mix(in srgb, var(--fg) 45%, var(--bg));
+  border-top: 2px solid currentColor;
   border-top-left-radius: 4px;
 }
 .canvas-rail-peek-grip.is-bl::after {
   bottom: 4px;
-  border-bottom: 2px solid color-mix(in srgb, var(--fg) 45%, var(--bg));
+  border-bottom: 2px solid currentColor;
   border-bottom-left-radius: 4px;
 }
 .canvas-rail-peek-grip:hover::after,
@@ -707,7 +712,7 @@
   opacity: 1;
 }
 .canvas-rail-peek-grip.is-active::after {
-  border-color: var(--accent);
+  color: var(--accent);
 }
 .canvas-rail-peek-card {
   flex: 1 1 auto;

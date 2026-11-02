@@ -83,11 +83,6 @@ describe("peekPlacement with a wish (a pinned card's remembered size)", () => {
     expect(box.height).toBe(500 - 2 * PEEK_INSET);
     expect(box.top).toBe(PEEK_INSET);
   });
-  it("honours an asked top (where a top-left drag left it), clamped to the row", () => {
-    expect(peekPlacement(ring(300), RAIL, ROW, { top: 120 })!.top).toBe(120);
-    expect(peekPlacement(ring(300), RAIL, ROW, { top: -500 })!.top).toBe(ROW.top + PEEK_INSET);
-    expect(peekPlacement(ring(300), RAIL, ROW, { top: 5000 })!.top).toBe(ROW.top + ROW.height - PEEK_INSET - PEEK_MAX_HEIGHT);
-  });
 });
 
 describe("dragResize", () => {

@@ -172,5 +172,12 @@ def put_ui_layout(layout=Body(default=None), x_fused: str | None = Header(defaul
         clean = _clean(layout)
     except _Invalid:
         return JSONResponse({"error": "invalid layout"}, status_code=400)
+    # A document from an OLDER bundle (another window, the desktop app before
+    # its relaunch) says nothing of `canvasRailPeek`; the whole-document PUT
+    # must not drop the size a newer one saved (CodeRabbit on #2062).
+    if "canvasRailPeek" not in clean:
+        stored = read_layout()
+        if stored and "canvasRailPeek" in stored:
+            clean["canvasRailPeek"] = stored["canvasRailPeek"]
     storage.write_json(_path(), clean)
     return {"ok": True}

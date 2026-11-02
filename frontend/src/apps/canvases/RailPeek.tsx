@@ -56,9 +56,11 @@
 // document (`canvasRailPeek`, D1386: it must survive a relaunch on another
 // port) and is the size of every pinned card from then on; a hover card is
 // always the default 420×640, so a hover keeps reading as a glance and a
-// click as the thing the reader shaped. While pinned, a top-left drag's top
-// is kept (`dragTop`) through re-placements on the same chat; a swap to
-// another ring aligns to that ring again. A press INSIDE a hover card pins
+// click as the thing the reader shaped. The drag moves the box literally
+// (a top-left drag lifts the top edge); when it ENDS the card is placed
+// again at its new size — top level with the ring, as always (owner,
+// 2026-11-02: "when resize ends, we should match top to top again"). A
+// press INSIDE a hover card pins
 // it too — but the remembered size waits for that press to END (`grown`):
 // a card that grew under a pressed pin would move the pin out from under
 // the pointer before the click landed.
@@ -94,7 +96,7 @@ import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
-import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
+import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import {
   cardTitleLine,
   isDraftTask,
@@ -424,13 +426,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     } else if (pressingInside.current) growAfterPress.current = true;
     else setGrown(true);
   }, [pinned]);
-  const dragTop = useRef<{ key: string; top: number } | null>(null);
   const wishFor = (key: string): PeekWish => {
     if (!kept.find((s) => s.pulse.key === key)?.pulse.session_id) return { maxHeight: PEEK_PLAIN_HEIGHT };
     const size = grownRef.current ? storedPeekSize() : null;
     if (!size) return { maxHeight: PEEK_MAX_HEIGHT };
-    const top = dragTop.current?.key === key ? dragTop.current.top : undefined;
-    return { width: size.width, maxHeight: size.height, top };
+    return { width: size.width, maxHeight: size.height };
   };
   // The rail's left edge as of the last placement: where the bridge below
   // ends. A ref, not state — `place` runs before every `setBox`, so the
@@ -450,7 +450,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const [resizing, setResizing] = useState<Corner | null>(null);
   const resizingRef = useRef<Corner | null>(null);
   resizingRef.current = resizing;
-  const dragStart = useRef<{ x: number; y: number; box: Box; pointerId: number; corner: Corner } | null>(null);
+  const dragStart = useRef<{ x: number; y: number; box: Box; pointerId: number; corner: Corner; el: HTMLElement } | null>(null);
   // The box the last move asked for — what the release saves. A ref, not
   // `box`: the move's state write may not have committed when the pointer
   // comes up (reviewer).
@@ -459,7 +459,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (e.button !== 0 || !box) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner };
+    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget };
     dragLast.current = null;
     setResizing(corner);
   };
@@ -475,23 +475,32 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         : next,
     );
   };
-  const endDrag = () => {
+  // The drag ends: `save` on the grip's own release; not when the card swapped
+  // chat, unpinned or hid under the pointer (the effect below) — that drag
+  // was about a card that is gone (CodeRabbit on #2062). Either way the
+  // placement effects take over again and set the card level with its ring
+  // at the size it now has (header).
+  const endDrag = (save: boolean) => {
     const start = dragStart.current;
     dragStart.current = null;
     setResizing(null);
     const last = dragLast.current;
     dragLast.current = null;
+    if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
     // A press that never moved saves nothing — not the default size, not a
-    // size the row clamped (reviewer) — and leaves the card on its ring.
-    if (!start || !last || !shownKey || (last.width === start.box.width && last.height === start.box.height)) return;
-    // Only the top-left grip moves the top: that top is kept. A bottom-left
-    // drag's card still follows its ring.
-    if (start.corner === "tl") dragTop.current = { key: shownKey, top: last.top };
-    // Only the dimension the drag changed is remembered: a height-only drag
-    // in a narrow window must not persist the width the row clamped it to.
+    // size the row clamped (reviewer).
+    if (!save || !start || !last || !shownKey || (last.width === start.box.width && last.height === start.box.height)) return;
+    // WHAT IS REMEMBERED (Bugbot and CodeRabbit on #2062): only a dimension
+    // the drag changed, and only when the row let it reach the minimum — a
+    // height-only drag in a narrow window must not persist the width the row
+    // clamped the card to, and a drag in a row shorter than PEEK_MIN_HEIGHT
+    // must not replace a remembered height with the row's. The other
+    // dimension keeps what was remembered, else the pinned card's default.
     const prev = storedPeekSize();
-    const width = last.width !== start.box.width ? last.width : (prev?.width ?? last.width);
-    const height = last.height !== start.box.height ? last.height : (prev?.height ?? last.height);
+    const pick = (changed: boolean, got: number, min: number, kept: number | undefined, fallback: number) =>
+      changed && got >= min ? got : (kept ?? fallback);
+    const width = pick(last.width !== start.box.width, last.width, PEEK_MIN_WIDTH, prev?.width, PEEK_WIDTH);
+    const height = pick(last.height !== start.box.height, last.height, PEEK_MIN_HEIGHT, prev?.height, PEEK_MAX_HEIGHT);
     // SET, never toggle (ui-layout header): the same answer on any base.
     patchUiLayout((d) =>
       d.canvasRailPeek?.width === width && d.canvasRailPeek?.height === height ? d : { ...d, canvasRailPeek: { width, height } },
@@ -500,25 +509,27 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     if (!start || start.pointerId !== e.pointerId) return;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-    endDrag();
+    endDrag(true);
   };
   // The grip can leave mid-drag (Escape, the chat pruned, the card unpinned
-  // or hidden): the drag ends there, or `.is-resizing` would stick and the
-  // follow-the-ring paths would stand back for good (reviewer).
+  // or hidden), or the card can SWAP chat under it (another ring's press):
+  // the drag is cancelled there, unsaved — or `.is-resizing` would stick,
+  // the follow-the-ring paths would stand back for good (reviewer), and a
+  // release would save a size that was about the old chat (CodeRabbit).
   const visible = on && box !== null && shownKey !== null;
   const gripsOn = pinned && visible && !!view?.pulse.session_id;
+  const dragKey = useRef<string | null>(null);
   useEffect(() => {
-    if (!gripsOn && dragStart.current) endDrag();
-    // `endDrag` reads refs; the flag is what decides.
+    if (dragStart.current && (!gripsOn || dragKey.current !== shownKey)) endDrag(false);
+    dragKey.current = shownKey;
+    // `endDrag` reads refs; the flag and the key are what decide.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gripsOn, shownKey]);
-  // A swap to another chat, or the card closing or unpinning, forgets the
-  // dragged top: the next placement aligns to its ring again.
-  useEffect(() => {
-    if (!shownKey || !pinned) dragTop.current = null;
-    else if (dragTop.current && dragTop.current.key !== shownKey) dragTop.current = null;
-  }, [shownKey, pinned]);
+  // A ui-layout hydrate that lands after the first render replaces the
+  // cache without a render of ours: re-render, so a pinned card up at that
+  // moment is re-placed at the saved size (CodeRabbit on #2062).
+  const [, setLayoutTick] = useState(0);
+  useEffect(() => subscribeUiLayout(() => setLayoutTick((n) => n + 1)), []);
 
   // PLACED, THEN SHOWN (header). Hidden → shown sets the box on this frame and
   // the class on the next; shown → shown (a swap) moves the box under the
@@ -949,7 +960,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             onPointerMove={onGripMove}
             onPointerUp={onGripUp}
             onPointerCancel={onGripUp}
-            onLostPointerCapture={() => dragStart.current && endDrag()}
+            onLostPointerCapture={() => dragStart.current && endDrag(true)}
           />
         ))}
       <div className="canvas-rail-peek-card">

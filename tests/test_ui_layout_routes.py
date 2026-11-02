@@ -45,9 +45,28 @@ def test_put_roundtrips_and_drops_unknown_keys(tmp_path, monkeypatch):
     stored = json.loads(open(os.path.join(storage.home_dir(), "ui_layout.json")).read())
     assert stored == doc
     assert client.get("/api/ui-layout").json() == {"exists": True, "layout": doc}
-    # Every sub-object is optional; the doc is replaced whole.
+    # Every sub-object is optional; the doc is replaced whole — except the
+    # pinned rail card's size, which an older bundle's document never names
+    # and so is carried forward (test below).
     assert client.put("/api/ui-layout", json={"v": 1}, headers=FUSED).status_code == 200
-    assert client.get("/api/ui-layout").json()["layout"] == {"v": 1}
+    assert client.get("/api/ui-layout").json()["layout"] == {"v": 1, "canvasRailPeek": doc["canvasRailPeek"]}
+
+
+def test_put_without_canvas_rail_peek_keeps_the_stored_size(tmp_path, monkeypatch):
+    """An older bundle's whole-document PUT omits `canvasRailPeek`: the size a
+    newer one saved is carried forward; a PUT that names it still replaces it."""
+    client = _client(tmp_path, monkeypatch)
+    doc = _doc()
+    assert client.put("/api/ui-layout", json=doc, headers=FUSED).status_code == 200
+    older = {k: v for k, v in doc.items() if k != "canvasRailPeek"}
+    older["sidebar"] = {"width": 300, "collapsed": True}
+    assert client.put("/api/ui-layout", json=older, headers=FUSED).status_code == 200
+    got = client.get("/api/ui-layout").json()["layout"]
+    assert got["sidebar"] == {"width": 300, "collapsed": True}
+    assert got["canvasRailPeek"] == {"width": 520, "height": 720}
+    newer = {**older, "canvasRailPeek": {"width": 600, "height": 500}}
+    assert client.put("/api/ui-layout", json=newer, headers=FUSED).status_code == 200
+    assert client.get("/api/ui-layout").json()["layout"]["canvasRailPeek"] == {"width": 600, "height": 500}
 
 
 def test_put_requires_fused_header(tmp_path, monkeypatch):

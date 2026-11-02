@@ -27,11 +27,12 @@
 //     trigger of 2026-10-31 is gone). The pointer and the keyboard focus
 //     are tracked apart: a ring that loses focus while the pointer still
 //     rests on it is still hovered.
-//   - HOW BIG IT IS (`peekPlacement`, `PEEK_MIN_WIDTH`/`PEEK_MIN_HEIGHT`):
-//     420×640 for a hover; a PINNED card takes the size the reader last
-//     dragged it to from its left corners (RailPeek, ui-layout
-//     `canvasRailPeek`), both clamped to the row, the width also to the
-//     chat's reading column (`PEEK_MAX_WIDTH`).
+//   - HOW BIG IT IS (`peekPlacement`, `dragResize`): 420×640 for a hover; a
+//     PINNED card takes the size the reader last dragged it to from its left
+//     corners (RailPeek, ui-layout `canvasRailPeek`), both clamped to the
+//     row, the width also to the chat's reading column (`PEEK_MAX_WIDTH`).
+//     The drag itself moves the box as the pointer does; when it ends the
+//     card is placed again — top level with the ring — at its new size.
 //   - WHAT STAYS WARM (`keepAlive`): the chats the reader has previewed stay
 //     mounted (hidden) after the card closes, newest first, up to PEEK_KEEP,
 //     so coming back to one is instant — the "load fast" half of the ask.
@@ -97,9 +98,6 @@ export interface PeekWish {
   maxHeight?: number;
   /** The width to aim for (the reader's dragged width for a pinned card). */
   width?: number;
-  /** Where the top should be instead of level with the ring: where a drag
-   *  from the top-left corner left it. Still clamped to the row. */
-  top?: number;
 }
 
 /** Where the card stands for a ring at `anchor`, beside a rail at `rail`,
@@ -115,7 +113,7 @@ export function peekPlacement(anchor: Box, rail: Box, bounds: Box, wish: number 
   const left = rail.left - PEEK_GAP - width;
   const minTop = bounds.top + PEEK_INSET;
   const maxTop = bounds.top + bounds.height - PEEK_INSET - height;
-  const top = Math.max(minTop, Math.min(maxTop, w.top ?? anchor.top));
+  const top = Math.max(minTop, Math.min(maxTop, anchor.top));
   return { left: Math.round(left), top: Math.round(top), width: Math.round(width), height: Math.round(height) };
 }
 
