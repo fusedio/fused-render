@@ -101,6 +101,8 @@ def load_manifest(folder: str) -> Manifest | None:
     # — both names expose TOMLDecodeError, so aliasing keeps the except below
     # unchanged). A missing parser is not a user-actionable error (every
     # install of fused-render has one), so it's a warning, not a raise.
+    # `app.models` is a sibling table owned by app_models.py; it never makes
+    # an app a background app and is not read here.
     try:
         import tomllib
     except ImportError:
