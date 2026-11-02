@@ -14,7 +14,7 @@
 // composer is pinned to the bottom of a pane) and the dismissal contract
 // (outside press, Escape). Its trigger is an inert overlay on the pill's own
 // box rather than the select, so nothing intercepts the select's keys.
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   Popover,
   PopoverContent,
@@ -168,24 +168,27 @@ export function PillSelect({
         >
           <div className="c-selpop-head">{group}</div>
           {options.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={`c-selpop-opt${option.value === value ? " is-on" : ""}`}
-              data-hint={option.hint}
-              aria-describedby={option.hint ? `${hintBase}-${option.value}` : undefined}
-              onClick={() => {
-                setOpen(false);
-                // Fired even when the value is unchanged: picking the value
-                // detection guessed is how the user PINS it (T:12540).
-                onChange(option.value);
-              }}
-            >
-              <span>{option.label}</span>
+            <Fragment key={option.value}>
+              <button
+                type="button"
+                className={`c-selpop-opt${option.value === value ? " is-on" : ""}`}
+                data-hint={option.hint}
+                aria-describedby={option.hint ? `${hintBase}-${option.value}` : undefined}
+                onClick={() => {
+                  setOpen(false);
+                  // Fired even when the value is unchanged: picking the value
+                  // detection guessed is how the user PINS it (T:12540).
+                  onChange(option.value);
+                }}
+              >
+                <span>{option.label}</span>
+              </button>
+              {/* A SIBLING, not a child: inside the button it would join the
+                  row's accessible name. */}
               {option.hint && (
                 <span id={`${hintBase}-${option.value}`} className="sr-only">{option.hint}</span>
               )}
-            </button>
+            </Fragment>
           ))}
         </PopoverContent>
       </Popover>

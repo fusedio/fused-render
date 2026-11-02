@@ -63,7 +63,11 @@ function fixedBox(el: HTMLElement | null): { x: number; y: number; w: number; h:
       return { x: r.left, y: r.top, w: r.width, h: r.height };
     }
   }
-  return { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
+  // `clientWidth`, not `innerWidth`: a classic (non-overlay) scrollbar is
+  // inside innerWidth but outside the box `right` resolves against. (A test
+  // DOM has no documentElement; innerWidth stands in there.)
+  const w = document.documentElement?.clientWidth || window.innerWidth;
+  return { x: 0, y: 0, w, h: window.innerHeight };
 }
 
 export function popStyle(

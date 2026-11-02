@@ -12,7 +12,7 @@
 // its own — only "Custom (cron)…" reveals one extra input.
 import { canonFsPath } from "@platform/lib/path-url";
 import {
-  useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
+  Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject,
 } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
@@ -4402,6 +4402,9 @@ export default function NewJobModal({
   const [accessOpen, setAccessOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [effortOpen, setEffortOpen] = useState(false);
+  // The Thinking pill is not drawn for a model that takes no levels; an open
+  // flag left behind would reopen the popover the moment the pill came back.
+  useEffect(() => { if (!runEfforts.length) setEffortOpen(false); }, [runEfforts.length]);
   const [agentOpen, setAgentOpen] = useState(false);
   const wherePillRef = useRef<HTMLButtonElement>(null);
   const whenPillRef = useRef<HTMLButtonElement>(null);
@@ -5526,42 +5529,50 @@ export default function NewJobModal({
             onDismiss={() => dismissPill("access")}
             pillRef={accessPillRef}
             popWidth={220}
-            popHeight={permissionOptions.length * 28 + 20}
+            popHeight={permissionOptions.length * 28 + 40}
           >
-            {/* The KEY is what gets submitted; the label is only how the mode is
-                said. The raw keys ("acceptEdits") were the server's vocabulary
-                printed at the user (audit 2026-08-16), and an unknown key still
-                shows itself rather than being hidden.
+            {/* "Mode" — the composer's word for the same list (Akshil,
+                2026-11-02) and the heading the Model and Thinking menus have.
+                The KEY is what gets submitted; the label is only how the mode
+                is said. The raw keys ("acceptEdits") were the server's
+                vocabulary printed at the user (audit 2026-08-16), and an unknown
+                key still shows itself rather than being hidden.
 
                 What a mode MEANS is on the row's hover (`data-hint`, the app's
                 instant tooltip), one line per mode, not printed under the menu:
                 the note that used to sit there described Auto alone, for every
-                pick (Akshil, 2026-11-02). */}
+                pick. A screen reader gets the same sentence from a clipped span
+                the row points at — a SIBLING of the button, not a child, so the
+                row's accessible name stays the mode's word alone. */}
+            <div className="nt-pop-h">Mode</div>
             <div className="nt-menu" role="menu" aria-label="Permissions">
               {permissionOptions.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={permission === m}
-                  data-hint={PERMISSION_HINTS[m]}
-                  aria-describedby={PERMISSION_HINTS[m] ? `${permHintBase}-${m}` : undefined}
-                  onClick={() => { setPermission(m); setAccessOpen(false); }}
-                >
-                  {permissionLabel(m)}
-                  {permission === m && ICON_CHECK}
+                <Fragment key={m}>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={permission === m}
+                    data-hint={PERMISSION_HINTS[m]}
+                    aria-describedby={PERMISSION_HINTS[m] ? `${permHintBase}-${m}` : undefined}
+                    onClick={() => { setPermission(m); setAccessOpen(false); }}
+                  >
+                    {permissionLabel(m)}
+                    {permission === m && ICON_CHECK}
+                  </button>
                   {PERMISSION_HINTS[m] && (
                     <span id={`${permHintBase}-${m}`} className="sr-only">{PERMISSION_HINTS[m]}</span>
                   )}
-                </button>
+                </Fragment>
               ))}
             </div>
           </PropPill>
-          {/* The gap that puts where and when on the right edge. A flex item,
-              not `margin-left: auto` on the next pill: the pills are in
-              `display: contents` wrappers, and the where pill is one of two
+          {/* WHERE and WHEN, on the right edge as a group of their own: the
+              group takes the row's slack (`margin-left: auto`) and, on a row
+              too narrow for all five, drops to a second line still flush
+              right. A wrapper rather than a gap item, because the pills sit in
+              `display: contents` wrappers and the where pill is one of two
               elements (`WherePill` on a locked card). */}
-          <span className="nt-pills-gap" aria-hidden="true" />
+          <div className="nt-pills-right">
           {/* NOT THERE AT ALL inside an app's Tasks tab (Akshil, 2026-09-19: "in
               dedicated tasks when we open the new task modal, hide the path
               field"): a control whose one answer is already known is a control
@@ -6110,6 +6121,7 @@ export default function NewJobModal({
               </>
             )}
           </PropPill>
+          </div>
         </div>
         {/* EVERY LINE THE ROWS USED TO PRINT UNDER THEMSELVES, in one place: the
             path's refusal, who runs the task, what leaving the session costs,

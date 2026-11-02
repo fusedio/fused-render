@@ -36,9 +36,9 @@ test("the lists and labels are the CLI's vocabulary, verbatim (T:11823-11876)", 
     "Auto",
   ]);
   expect(PERMISSION_MODES.map((m) => PERMISSION_SHORT[m])).toEqual([
-    "plan",
-    "ask",
-    "edits",
+    "Plan",
+    "Ask",
+    "Edits",
     "Auto",
   ]);
   expect([DEFAULT_MODEL, DEFAULT_EFFORT, DEFAULT_PERMISSION]).toEqual([

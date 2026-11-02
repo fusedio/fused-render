@@ -2080,7 +2080,8 @@ input.schedule-when-field {
 .schedule-recur {
   position: fixed;
   top: 10vh;
-  left: calc(50% + 65px);
+  /* 10px right of the card wherever the card ended up (see the shift above). */
+  left: max(calc(50% + 65px), 602px);
   width: min(380px, 38vw);
   z-index: 50;
   display: flex;
@@ -2260,7 +2261,10 @@ input.schedule-when-field {
 .modal-dialog:has(.schedule-explorer:not(.is-closing)),
 .modal-dialog:has(.schedule-recur:not(.is-closing)) {
   position: relative;
-  left: -235px;
+  /* …but never past the window's left edge: the card is the thing being
+     edited, so on a narrow window it keeps 12px of margin and the panel is
+     the one that runs off the right. (`302px` = half the card + the margin.) */
+  left: max(-235px, calc(302px - 50vw));
 }
 
 /* `top` and `height` are set INLINE by NewJobModal, measured off the dialog's
@@ -2271,7 +2275,7 @@ input.schedule-when-field {
 .schedule-explorer {
   position: fixed;
   top: 10vh;
-  left: calc(50% + 65px);
+  left: max(calc(50% + 65px), 602px);
   width: min(460px, 44vw);
   height: min(600px, 82vh);
   z-index: 50;

@@ -110,9 +110,9 @@ export function permissionLabelsFor(_agent: string): Record<PermissionMode, stri
  *  only, and only when the row has run out of width (T:11858-11870). The menu
  *  always spells the sentences out. */
 export const PERMISSION_SHORT: Record<PermissionMode, string> = {
-  plan: "plan",
-  prompt: "ask",
-  acceptEdits: "edits",
+  plan: "Plan",
+  prompt: "Ask",
+  acceptEdits: "Edits",
   auto: "Auto",
 };
 
@@ -129,7 +129,7 @@ export const DEFAULT_PERMISSION: PermissionMode = "prompt";
 export const GROUP_LABELS = {
   model: "Model",
   effort: "Effort",
-  permission: "Approvals",
+  permission: "Mode",
 } as const;
 /** Pill accessible names (03 §F). */
 export const PILL_ARIA = {

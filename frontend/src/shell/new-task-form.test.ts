@@ -2925,14 +2925,14 @@ describe("property pills", () => {
     // whole pill is behind the guard, not just its rows.
     const think = s.indexOf('ariaLabel="Thinking"');
     expect(s.lastIndexOf("{runEfforts.length ? (", think)).toBeGreaterThan(s.indexOf('ariaLabel="Model"'));
-    const gap = s.indexOf('<span className="nt-pills-gap" aria-hidden="true" />');
-    expect(gap).toBeGreaterThan(s.indexOf('ariaLabel="Permissions"'));
-    expect(gap).toBeLessThan(s.indexOf('ariaLabel="Folder"'));
+    const group = s.indexOf('<div className="nt-pills-right">');
+    expect(group).toBeGreaterThan(s.indexOf('ariaLabel="Permissions"'));
+    expect(group).toBeLessThan(s.indexOf('ariaLabel="Folder"'));
   });
 
   test("the ACCESS menu says what a mode means on the row's hover, not under the menu", () => {
     const s = src();
-    const menu = s.slice(s.indexOf('aria-label="Permissions"'), s.indexOf('<span className="nt-pills-gap"'));
+    const menu = s.slice(s.indexOf('aria-label="Permissions"'), s.indexOf('<div className="nt-pills-right">'));
     expect(menu).toContain("data-hint={PERMISSION_HINTS[m]}");
     expect(menu).not.toContain("nt-menu-note");
     expect(s).toContain('import { PERMISSION_HINTS, permissionLabel } from "@platform/lib/permission-modes";');

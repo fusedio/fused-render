@@ -1017,13 +1017,14 @@ button.new-task-source:focus-visible {
   opacity: 0.7;
 }
 
-/* The gap between the three words and the two chips: where and when sit on
-   the RIGHT edge of the row. A flex item rather than a margin because every
-   pill is inside a `display: contents` wrapper. On a row too narrow for all
-   five the gap collapses to nothing and the chips wrap under. */
-.nt-pills-gap {
-  flex: 1 1 0;
-  min-width: 0;
+/* WHERE and WHEN as one right-hand group: takes the row's slack, and on a row
+   too narrow for all five pills drops to its own line, still flush right. */
+.nt-pills-right {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-left: auto;
 }
 
 /* THE READ-ONLY WHERE PILL (NewJobModal `WherePill`): a canvas's locked target,
