@@ -131,6 +131,20 @@ describe("visibility", () => {
     expect(ids(true, { bot: true })).not.toContain("canvases-embed-proxy");
   });
 
+  test("the rail preview's trigger picker appears only while the preview itself is on", () => {
+    const ids = (canvases: boolean, peek: boolean | undefined) =>
+      visibleSettings(
+        ctx({}, {
+          canvases: { enabled: canvases },
+          ...(peek === undefined ? {} : { canvas_rail_peek: { enabled: peek } }),
+        } as Partial<Prefs>),
+      ).map((s) => s.id);
+    expect(ids(true, true)).toContain("canvases-rail-peek-trigger");
+    expect(ids(true, false)).not.toContain("canvases-rail-peek-trigger");
+    expect(ids(true, undefined)).not.toContain("canvases-rail-peek-trigger");
+    expect(ids(false, true)).not.toContain("canvases-rail-peek-trigger");
+  });
+
   test("the default-agent picker appears only with two or more agents on", () => {
     expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("agent-default");
     const agents = (claude: boolean, copilot: boolean, codex: boolean, gemini = false) =>

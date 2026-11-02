@@ -29,7 +29,7 @@
 // the listed rows rather than above them — a chat that just finished takes
 // its place under the running ones, not the rail's head.
 import type { Task, TaskPulseTask } from "@platform/lib/api";
-import { sortForList, taskColumn } from "@shell/tasks-lib";
+import { isDraftTask, sortForList, taskColumn } from "@shell/tasks-lib";
 import type { WorkbenchEnv } from "./api";
 
 /** One rail seat: the pulse row (live status) and, once the listing holds it,
@@ -47,20 +47,66 @@ export interface RailPlace {
   name: string;
   dir: string | null;
   file?: string | null;
+  /** Admit rows with no session yet (drafts, scheduled tasks). The canvas
+   *  rail always does (owner, 2026-10-30); the option exists so the two
+   *  rulings stay provable apart. */
+  sessionless?: boolean;
 }
 
-/** Is this pulse row one of the rail's: a chat (it has a session) on THIS
- *  canvas — on the selected node, when one is — and not archived. */
+/** Is this row one of the rail's: a row on THIS canvas — on the selected
+ *  node, when one is — and not archived. A row with no session yet (a draft,
+ *  a scheduled task) is on the rail too (owner, 2026-10-30: "the draft is
+ *  ordered, but drafts are not shown"): the List shows them for the canvas,
+ *  and the rail is the List's order in rings. Drafts reach `railRows` from
+ *  the LISTING, not the pulse (`/api/tasks/pulse` leaves `kind: "draft"`
+ *  rows out; the listing feed a mounted chat holds carries them). */
 export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
-  if (!t.session_id) return false;
+  if (!t.session_id && !place.sessionless) return false;
   if (taskColumn(t) === "archived") return false;
   const named = !!t.canvas && t.canvas.env === place.env && t.canvas.name === place.name;
   if (!named && !(place.dir !== null && t.project === place.dir)) return false;
   if (!place.file) return true;
   // A row the server stamped names its node; one that predates `task.canvas`
-  // is matched by its target, the node's file under the clone.
-  if (named) return t.canvas!.file === place.file;
-  return place.dir !== null && t.target === `${place.dir.replace(/\/+$/, "")}/${place.file}`;
+  // is matched by its target, the node's file under the clone. BY NAME, not
+  // by file: the page's selected file is guessed from the workbench's echo,
+  // which names the node only (a widget's `.json` may be an `.html` on disk),
+  // and a node's name is unique on its canvas.
+  const want = nodeName(place.file);
+  if (named) return !!t.canvas!.file && nodeName(t.canvas!.file) === want;
+  if (place.dir === null) return false;
+  const base = place.dir.replace(/\/+$/, "") + "/";
+  const rest = (t.target || "").startsWith(base) ? t.target!.slice(base.length) : "";
+  return !!rest && !rest.includes("/") && nodeName(rest) === want;
+}
+
+/** A node file's name as the workbench names the node: the file's stem
+ *  (`hex.py` → `hex`, `widget_5.json` → `widget_5`). */
+export function nodeName(file: string): string {
+  const dot = file.lastIndexOf(".");
+  return dot > 0 ? file.slice(0, dot) : file;
+}
+
+/** WHERE A ROW LIVES on the canvas: the canvas as a whole, or one node
+ *  (RailPeek's head says which — owner, 2026-10-30: "I don't know if that
+ *  chat is associated with a node or not"). A row the server stamped names
+ *  its node file; one that predates `task.canvas` is read off its target
+ *  under the clone. The node's name is the file's stem, as the workbench
+ *  names it (CanvasWorkspace `nodeHopFromUrl`). */
+export function railScope(
+  t: Pick<TaskPulseTask, "canvas" | "target" | "project">,
+  dir: string | null,
+): { kind: "canvas" } | { kind: "node"; name: string; file: string } {
+  let file = t.canvas?.file || "";
+  if (!file && dir) {
+    const base = dir.replace(/\/+$/, "") + "/";
+    const target = t.target || "";
+    if (target.startsWith(base)) {
+      const rest = target.slice(base.length);
+      if (rest && !rest.includes("/")) file = rest;
+    }
+  }
+  if (!file) return { kind: "canvas" };
+  return { kind: "node", name: nodeName(file), file };
 }
 
 /**
@@ -75,7 +121,13 @@ export function railRows(
   place: RailPlace,
   now: number = Date.now(),
 ): RailRow[] {
-  const mine = rows.filter((t) => onRail(t, place));
+  const pulseKeys = new Set(rows.map((t) => t.key));
+  // Drafts the pulse does not carry (header): the listing's own draft rows
+  // on this canvas stand in as their own pulse row — a `Task` is a superset.
+  const drafts: TaskPulseTask[] = place.sessionless
+    ? [...listing.values()].filter((r) => !pulseKeys.has(r.key) && isDraftTask(r) && onRail(r, place))
+    : [];
+  const mine = [...rows.filter((t) => onRail(t, place)), ...drafts];
   const byKey = new Map(mine.map((t) => [t.key, t]));
   const held = new Map<string, Task>();
   const ranked: Task[] = mine.map((t) => {
@@ -98,4 +150,57 @@ export function railRows(
       return pulse ? { pulse, row: held.get(row.key) ?? null } : null;
     })
     .filter((r): r is RailRow => r !== null);
+}
+
+// A PRESS ON A RING CLEARS ITS DOT (owner, 2026-11-01: "on click it should
+// be unread, the dot should go away"). The write is the List's own
+// whole-task read (api.markWholeTaskRead); the pulse reports the new count
+// on its next poll, ~600ms later, and the dot must not stand for those
+// 600ms. So the rail holds a MARK per pressed ring — what the row reported
+// at the press — and draws the ring hollow while the row still says exactly
+// that. The moment the row says anything else, the mark is spent:
+//   - unread 0: the server confirmed the read — the mark is not needed;
+//   - a new `happened_at` or another count: something landed after the
+//     press, and that IS news — the dot comes back on the server's word,
+//     never hidden by a stale mark.
+// A refused write drops the mark (ClaudeRail), the List's rollback.
+
+/** What a pressed ring's row reported at the press. */
+export interface ReadMark {
+  unread: number;
+  happened: number;
+}
+
+/** The mark a press on this row leaves, or null when it has nothing to
+ *  clear (a second press on a hollow ring posts nothing). */
+export function readMark(t: Pick<TaskPulseTask, "unread" | "happened_at">): ReadMark | null {
+  return t.unread > 0 ? { unread: t.unread, happened: t.happened_at ?? 0 } : null;
+}
+
+/** Is the dot held off by this mark: the row still reports exactly what the
+ *  press cleared. */
+export function dotCleared(
+  mark: ReadMark | undefined,
+  t: Pick<TaskPulseTask, "unread" | "happened_at">,
+): boolean {
+  return !!mark && t.unread === mark.unread && (t.happened_at ?? 0) === mark.happened;
+}
+
+/** The marks still worth holding after the rows moved: a mark whose row is
+ *  gone, or no longer reports what the press cleared (header), is spent.
+ *  Returns the same map when nothing is spent, so a state set is a no-op. */
+export function keepMarks(
+  marks: ReadonlyMap<string, ReadMark>,
+  rows: readonly Pick<TaskPulseTask, "key" | "unread" | "happened_at">[],
+): ReadonlyMap<string, ReadMark> {
+  if (marks.size === 0) return marks;
+  const byKey = new Map(rows.map((t) => [t.key, t]));
+  let out: Map<string, ReadMark> | null = null;
+  for (const [key, mark] of marks) {
+    const t = byKey.get(key);
+    if (t && dotCleared(mark, t)) continue;
+    if (!out) out = new Map(marks);
+    out.delete(key);
+  }
+  return out ?? marks;
 }

@@ -193,7 +193,8 @@ and `py` calls skip the approval card for this bot whatever the write heuristic,
 the app's SKILL.md or the bot's own `risky: true` say (owner, 2026-10-22: one
 list, ticked = without asking, nothing else); browser actions, texts and builds
 are not apps. It is the ONE app-level permission: a build this bot finishes
-ticks its app (`bot.py`, where `builds[].done_at` is set), and "Always approve"
+ticks its app (`bot.py`, where `builds[].done_at` is set; a hand-off build ticks
+it for the asking Super Bot too, `_trust_for_asker`), and "Always approve"
 on a `tool` / `py` card ticks the app (the rule kind `trusted`, key = the
 folder; `tools.forever_rule` no longer makes per-tool rules, and old `tool` /
 `py` rows plus finished builds migrate into ticks once per bot on load,
@@ -2100,6 +2101,15 @@ to rebuild.
 Chips: `marketplace_search` → "N apps found"; `marketplace_install` → the
 first sentence ("Installed Name v1.2 at …"). Both are `_NO_THUMB` in the
 steps engine (the browser did not move).
+
+Tests: `tests/test_marketplace.py` (`test_bot_marketplace_tools_search_card_and_install`:
+roster, the search lines, the card's label and risk sentence, no forever rule,
+a real clone at the approved commit that APPS then lists, the INSTALLED flag
+and the second-install refusal, over the FakeUdf + FakeGitHub world) and the
+engine tests (`test_marketplace_install_asks_even_under_never_ask` in
+`test_bots_agent_engine.py` and `test_bots_steps_engine.py`: the card under
+"Never ask", nothing run before the yes, one card per slug; the agent one also
+covers the denial).
 
 ## 16. Bot terminals — `terminal_run` / `terminal_read` / `terminal_interrupt` (`tools.TERMINAL_TOOLS`, 2026-10-20)
 

@@ -156,7 +156,10 @@
 //     canvas pane (keyboard follows the hover: Space-pan, Delete, Cmd+Z),
 //     unless the user is typing somewhere — a wandering mouse must not pull
 //     keystrokes out of the chat onto canvas hotkeys. The chat never takes
-//     focus on hover: a text surface is clicked into.
+//     focus on hover: a text surface is clicked into. Nor while the Claude
+//     rail's pinned card is up (ClaudeRail `onCardPinned`): a press into the
+//     frame is what closes that card, and the page can only hear it as the
+//     frame TAKING the focus — so a hover must not hand it over first.
 //
 // The node pane's chat (owner, 2026-10-19: "when I switch from one node to
 // another, each time I get the new claude session screen"). Selecting a node
@@ -1383,6 +1386,24 @@ export default function CanvasWorkspace({
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
+  // The rail card's node chip (RailPeek), or the rail's own last seat asking
+  // for NO node (ClaudeRail, `null`): pressed before the frame is ready (no
+  // window or origin yet), the ask is kept and replayed — in place of the
+  // page's own node — when the frame comes up (auth-ready, hydration),
+  // rather than dropped (CodeRabbit on #2044). Boxed, so a kept deselect
+  // (`{ udfName: null }`) reads apart from nothing kept (`null`). Kept
+  // through the frame's BOOT too (auth-ready seen, hello not yet): a frame
+  // that has not hydrated takes no selection, and the hello replay would
+  // otherwise put the page's own node back — undoing the deselect.
+  const pendingSelectRef = useRef<{ udfName: string | null } | null>(null);
+  const selectFromRail = useCallback(
+    (udfName: string | null) => {
+      const up = !!frameRef.current?.contentWindow && !!baseOriginRef.current && frameUpRef.current;
+      pendingSelectRef.current = up ? null : { udfName };
+      sendSelect(udfName);
+    },
+    [sendSelect],
+  );
 
   // Whether the right pane is up (see the header): an older workbench's
   // expand chip acts on this pane, so it needs the state to show itself.
@@ -1468,8 +1489,10 @@ export default function CanvasWorkspace({
   // Pointer enters the canvas pane: give the frame focus, unless the user is
   // mid-drag from elsewhere or typing (header). `preventScroll`: a focus
   // must never shift the page.
+  const railCardPinnedRef = useRef(false);
   const focusCanvasOnEnter = useCallback((e: React.MouseEvent) => {
     if (e.buttons !== 0) return;
+    if (railCardPinnedRef.current) return;
     if (activeElementIsEditable(document)) return;
     frameRef.current?.focus({ preventScroll: true });
   }, []);
@@ -1884,6 +1907,9 @@ export default function CanvasWorkspace({
         }
         canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
         navHopRef.current = true;
+        // The URL outranks a rail ask kept for the frame's boot: the hello
+        // replay reads the page's node, which this sets (CodeRabbit on #2049).
+        pendingSelectRef.current = null;
         sendSelect(null);
         setNode(null);
         return;
@@ -1899,6 +1925,7 @@ export default function CanvasWorkspace({
       // carries on the URL: the pane boots off the seeded map either way,
       // but the address should still restore the task's session on reload.
       navHopRef.current = true;
+      pendingSelectRef.current = null; // as above: the URL's node wins
       sendSelect(next.udfName);
       setNodeBootSeq((n) => n + 1);
       setNode(next);
@@ -1936,7 +1963,8 @@ export default function CanvasWorkspace({
           // A fresh document: down until its next hello (the selection gate
           // below), whether or not the src changed.
           frameUpRef.current = false;
-          sendSelect(nodeRef.current?.udfName ?? null);
+          const kept = pendingSelectRef.current;
+          sendSelect(kept ? kept.udfName : nodeRef.current?.udfName ?? null);
         }
       }
       if (type === "fused-embed-snapshot") {
@@ -2064,8 +2092,11 @@ export default function CanvasWorkspace({
         // Once more now that the canvas is there to select in: an older
         // workbench picks its first UDF on hydration, and this puts it back
         // on the page's own node (or none). A current one already settled on
-        // the replay it was holding, and a repeat is a no-op there.
-        sendSelect(nodeRef.current?.udfName ?? null);
+        // the replay it was holding, and a repeat is a no-op there. A chip
+        // press that came before the frame (`selectFromRail`) is spent here.
+        const kept = pendingSelectRef.current;
+        pendingSelectRef.current = null;
+        sendSelect(kept ? kept.udfName : nodeRef.current?.udfName ?? null);
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;
@@ -3057,8 +3088,14 @@ export default function CanvasWorkspace({
                 : new URLSearchParams(window.location.search).get("session_id")
             }
             onOpenChat={(href) => navigateUrl(href)}
+            // The card's node chip: the workbench selects the node (zooms to
+            // it, shows its code); its selection echo sets `node` here.
+            onSelectNode={selectFromRail}
             onOpen={openFromRail}
             onPullStart={onRailPull}
+            onCardPinned={(on) => {
+              railCardPinnedRef.current = on;
+            }}
           />
         )}
       </div>

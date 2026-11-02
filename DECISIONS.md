@@ -7726,3 +7726,11 @@ Cursor Bugbot found that the IMAGE_GENERATION workload's fixed `guidance: 4.0` m
 #1994 made every child script call `raise_request_timeout()` at import, which did `fused.options` unguarded. The test fakes of `fused` (and older SDKs) have no `options`, so the share shim, canvas push children and their tests died with `AttributeError`; every test-python lane and fused-engine went red on main.
 - `raise_request_timeout` now returns early when `fused` has no `options`, or `options` has no `request_timeout`. No other #1994 site touches `fused.options` directly (all call this function).
 - `_fused_cli.py` imports and calls it inside a try/except, so an unimportable `fused_render` still falls through to the real CLI (the shim's own promise).
+
+## D1453: skills.sh installs come from one GitHub tarball per source, and the preview shows the repo README (2026-11-02, skills-tarball-install)
+
+- `_remote_add` used to fetch every file of a skill from raw.githubusercontent.com one by one (stageshow: 358 sequential requests), and `_locate` used the 60/hour unauthenticated tree API plus up to 40 frontmatter probes. Both are replaced by `_repo_archive(source)`: one GET of `codeload.github.com/{source}/tar.gz/HEAD` (measured 1.07 MB, 0.49 s for benjitaylor/skills), parsed in memory into `{relpath: bytes}` (regular files only; symlinks, hardlinks, devices, absolute and `.`/`..` paths skipped; never `extractall`), capped at 50 MiB, cached 600 s per source, at most 8 sources.
+- Preview and Add share that cache, so a preview warms the add and the pair costs one request. With everything local, `_FRONTMATTER_PROBES` and its "stopped after N" error are gone.
+- `remote_preview` returns the repo's root README (relative image/link targets made absolute) instead of the SKILL.md plus file list, falling back to the SKILL.md (`readmeIsSkill`), with `fileCount`/`totalBytes`. A README says what the repo is for; a SKILL.md alone rarely does.
+- The Skills page now shows and sorts by skills.sh install counts and folds rows sharing a `skillId` under the most-installed one. This reverses the old header comment in `Skills.tsx` ("nothing on this page shows or ranks by installs"): search rows carry no description, so install count is the only signal separating the real repo from 1-install forks.
+- `.cc-aside-files` CSS stays: NewSkill's preview still uses it.

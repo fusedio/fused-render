@@ -260,7 +260,8 @@ def process_executable(pid: int) -> str | None:
 
     try:
         out = subprocess.run(["/bin/ps", "-o", "comm=", "-p", str(pid)],
-                             capture_output=True, text=True, timeout=5, close_fds=False)
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=5, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return None
     line = out.stdout.strip()
@@ -294,7 +295,8 @@ def process_argv(pid: int) -> list[str] | None:
     else:
         cmd = ["/bin/ps", "-o", "args=", "-p", str(pid)]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10, close_fds=False)
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=10, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return None
     return out.stdout.split() or None

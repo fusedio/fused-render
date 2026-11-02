@@ -1,5 +1,6 @@
-// The right-hand preview of a skills.sh skill: its SKILL.md (frontmatter
-// stripped, it is metadata), its files, who would read it once added, and the
+// The right-hand preview of a skills.sh skill: the repo's README (or the
+// SKILL.md when it has none; frontmatter stripped, it is metadata), a file
+// count and size line, who would read it once added, and the
 // buttons to add it or open its repo.
 import { useEffect, useState } from "react";
 import { Button } from "@platform/shadcn/ui/button";
@@ -9,7 +10,14 @@ import * as cc from "@apps/claude_config/api";
 import { CLI_LABEL } from "@apps/claude_config/readers";
 import { stripFrontmatter } from "@apps/claude_config/skill-detail";
 
-type Loaded = { text: string; files: string[] } | { error: string } | null;
+/** "2.1 MB", "340 B". */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+type Loaded = { readme: string; readmeIsSkill: boolean; fileCount: number; totalBytes: number } | { error: string } | null;
 
 export function RemotePreview({
   skill,
@@ -31,7 +39,7 @@ export function RemotePreview({
     let alive = true;
     setLoaded(null);
     cc.skills.remotePreview(skill.source, skill.skillId).then(
-      (r) => alive && setLoaded(r.ok ? { text: r.text, files: r.files } : { error: r.error || "Could not read the skill" }),
+      (r) => alive && setLoaded(r.ok ? { readme: r.readme, readmeIsSkill: r.readmeIsSkill, fileCount: r.fileCount, totalBytes: r.totalBytes } : { error: r.error || "Could not read the skill" }),
       (e) => alive && setLoaded({ error: (e as Error).message }),
     );
     return () => {
@@ -60,6 +68,11 @@ export function RemotePreview({
           View on GitHub ↗
         </a>
       </div>
+      {loaded && "readme" in loaded && (
+        <p className="cc-aside-label m-0" data-testid="remote-preview-meta">
+          {loaded.fileCount === 1 ? "1 file" : `${loaded.fileCount} files`} · {formatBytes(loaded.totalBytes)}
+        </p>
+      )}
       {readers.length > 0 && (
         <div className="cc-aside-readers">
           <span className="cc-aside-label">Read by</span>
@@ -70,21 +83,14 @@ export function RemotePreview({
           ))}
         </div>
       )}
-      {loaded === null && <p className="cc-skill-empty">Loading SKILL.md…</p>}
+      {loaded === null && <p className="cc-skill-empty">Loading…</p>}
       {loaded && "error" in loaded && <ErrorBanner>{loaded.error}</ErrorBanner>}
-      {loaded && "text" in loaded && (
+      {loaded && "readme" in loaded && (
         <>
+          <p className="cc-aside-label m-0">{loaded.readmeIsSkill ? "SKILL.md" : `README · ${skill.source}`}</p>
           <div className="cc-skill-card cc-aside-body">
-            <MarkdownView text={stripFrontmatter(loaded.text)} enhance={false} />
+            <MarkdownView text={stripFrontmatter(loaded.readme)} enhance={false} />
           </div>
-          <p className="cc-aside-label m-0">{loaded.files.length === 1 ? "1 file" : `${loaded.files.length} files`}</p>
-          <ul className="cc-aside-files m-0">
-            {loaded.files.map((f) => (
-              <li key={f} className="cc-mono">
-                {f}
-              </li>
-            ))}
-          </ul>
         </>
       )}
     </aside>

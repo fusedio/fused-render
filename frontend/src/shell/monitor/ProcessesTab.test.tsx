@@ -68,6 +68,11 @@ afterEach(() => {
   act(() => renderer?.unmount());
   renderer = null;
   globalThis.fetch = realFetch;
+  // Kill/Stop/Force kill each `notify()` their outcome into the shared
+  // notification store — module state that outlives this file in bun's one
+  // test process. A popup left here was rendered by the next suite that
+  // mounted `NotificationHost` (`NotificationHost.test.tsx`), whose count of
+  // `leaving` cards then included ours (red CI, 2026-10-30 → 11-01).
   _resetNotificationsForTest();
 });
 

@@ -11380,7 +11380,13 @@ platforms, one API, no field naming which one served you.
 - **CP-9** Packaging: `NSMicrophoneUsageDescription` in the bundle plist (an app
   that touches the mic without it is killed, not prompted) and
   `com.apple.security.device.audio-input` in the hardened-runtime entitlements
-  (without it the mic is refused whatever TCC says). Screen recording needs
+  (without it the mic is refused whatever TCC says). The camera is the same
+  pair — `NSCameraUsageDescription` plus `com.apple.security.device.camera` —
+  because a page's `getUserMedia({video})` in one of OUR windows — WKWebView or
+  Chromium (D1408) — is captured under this app's hardened runtime (tccd judges
+  the responsible app even when a helper opens the device); only the shell in
+  the user's own browser needed nothing from us. Without it tccd refuses with no
+  prompt and the page gets a track that never carries a frame. Screen recording needs
   neither — only the System Settings grant, which macOS 15+ re-confirms after
   ~30 idle days. Linux needs no packaging step at all: the still is
   ordinary D-Bus, and the recording permission is the browser's to ask for.

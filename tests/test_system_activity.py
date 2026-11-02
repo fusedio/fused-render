@@ -441,10 +441,15 @@ def test_a_first_all_poll_does_not_start_a_second_loop(monkeypatch, registries):
     import time as _time
 
     backend = FakeBackend()
+    # Only loops THIS sampler starts: a neighbouring test's sampler (same
+    # pytest process) can still be idling out its own `sysmon-sampler`
+    # thread when this one counts, which read as "2 loops" on CI once.
+    before = set(threading.enumerate())
     s = sysmon_sampler.Sampler(backend, root_pid=ROOT, roots=lambda: {},
                                interval=0.05, idle_after=0.2)
     loops = lambda: [t for t in threading.enumerate()
-                     if t.name == "sysmon-sampler" and t.is_alive()]
+                     if t.name == "sysmon-sampler" and t.is_alive()
+                     and t not in before]
     s.poll()
     s.poll("all")
     s.poll("all")

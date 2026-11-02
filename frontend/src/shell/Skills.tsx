@@ -1,8 +1,8 @@
 // Skills page — `/skills`. One search box over the skills on this machine and
 // skills.sh; `New skill` opens the Draft with Claude flow (`?new=1`); `?skill=`
 // opens one skill's page. Marketplace plugins are NOT searched here, they live
-// under Claude Code → Plugins. Nothing on this page shows or ranks by how many
-// people installed a skill.
+// under Claude Code → Plugins. skills.sh rows are ordered by installs, and the
+// sources of one skill id are folded under the most-installed one.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Search, Sparkles, X } from "lucide-react";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
@@ -18,6 +18,8 @@ import { NewSkill } from "./skills/NewSkill";
 import { RemotePreview } from "./skills/RemotePreview";
 import {
   REMOTE_MIN,
+  formatInstalls,
+  groupRemote,
   matchSkills,
   readParams,
   skillKey,
@@ -43,6 +45,7 @@ export default function Skills() {
   const [remote, setRemote] = useState<Remote>({ state: "idle" });
   const [attempt, setAttempt] = useState(0);
   const [picked, setPicked] = useState<cc.RemoteSkill | null>(null);
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set());
   const [adding, setAdding] = useState<string | null>(null);
   const [added, setAdded] = useState<ReadonlySet<string>>(new Set());
   const searchRef = useRef<HTMLDivElement>(null);
@@ -204,6 +207,38 @@ export default function Skills() {
     matched.length === 0 &&
     (q.length < REMOTE_MIN || (remoteSettled && (remote.state === "error" || (remote.state === "ok" && remoteRows.length === 0))));
   const isAdded = (r: cc.RemoteSkill) => r.added || added.has(r.id);
+  const remoteRow = (r: cc.RemoteSkill, others: number) => (
+    <div key={r.id} className={"cc-srow" + (picked?.id === r.id ? " is-active" : "")}>
+      <button type="button" className="cc-srow-pick" onClick={() => setPicked(r)}>
+        <span className="cc-srow-name">{r.name}</span>
+        <span className="cc-srow-desc">{r.source}</span>
+        {r.installs > 0 && <span className="cc-lrow-meta">{formatInstalls(r.installs)}</span>}
+      </button>
+      {others > 0 && (
+        <button
+          type="button"
+          className="cc-link cc-srow-more"
+          aria-expanded={openGroups.has(r.skillId)}
+          onClick={() =>
+            setOpenGroups((g) => {
+              const next = new Set(g);
+              if (!next.delete(r.skillId)) next.add(r.skillId);
+              return next;
+            })
+          }
+        >
+          {openGroups.has(r.skillId) ? "hide other sources" : `+${others} other ${others === 1 ? "source" : "sources"}`}
+        </button>
+      )}
+      {isAdded(r) ? (
+        <span className="cc-lrow-meta">Added</span>
+      ) : (
+        <button type="button" className="cc-btn-sm" disabled={adding === r.id} onClick={() => void addRemote(r)}>
+          {adding === r.id ? "Adding…" : "Add"}
+        </button>
+      )}
+    </div>
+  );
 
   const list = (
     <>
@@ -265,23 +300,11 @@ export default function Skills() {
           )}
           {remoteRows.length > 0 && (
             <div className="settings-card">
-              {remoteRows.map((r) => (
-                <div key={r.id} className={"cc-srow" + (picked?.id === r.id ? " is-active" : "")}>
-                  <button type="button" className="cc-srow-pick" onClick={() => setPicked(r)}>
-                    <span className="cc-srow-name">{r.name}</span>
-                    <span className="cc-srow-desc">{r.source}</span>
-                  </button>
-                  {isAdded(r) ? (
-                    <span className="cc-lrow-meta">Added</span>
-                  ) : (
-                    <button
-                      type="button"
-                      className="cc-btn-sm"
-                      disabled={adding === r.id}
-                      onClick={() => void addRemote(r)}
-                    >
-                      {adding === r.id ? "Adding…" : "Add"}
-                    </button>
+              {groupRemote(remoteRows).map(({ top, rest }) => (
+                <div key={top.id}>
+                  {remoteRow(top, rest.length)}
+                  {rest.length > 0 && openGroups.has(top.skillId) && (
+                    <div className="cc-srow-others">{rest.map((r) => remoteRow(r, 0))}</div>
                   )}
                 </div>
               ))}

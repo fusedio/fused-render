@@ -101,6 +101,16 @@ def _wait_for(predicate, timeout=10.0, interval=0.05):
     return predicate()
 
 
+def _host_alive(agent, run_dir):
+    """What `_send`'s own guard reads: a parsable host.json whose pid lives."""
+    try:
+        with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(host, dict) and agent._pid_alive(str(host.get("pid") or ""))
+
+
 def _start(agent, monkeypatch, stub_cli, target, message="m1", read_dirs=None,
            **extra_env):
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", stub_cli)
@@ -251,7 +261,9 @@ def test_a_send_that_asks_for_a_respawn_records_nothing_yet(
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", stub_cli)
     res = agent._start(target, "first", "", "haiku", "low", has_pane=False)
     run_dir = os.path.join(agent.RUNS, res["run_id"])
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    # `_send` wants a LIVE host — host.json parsed and its pid alive — not
+    # merely the file: a half-written one answered "no live session" once.
+    assert _wait_for(lambda: _host_alive(agent, run_dir))
 
     assert agent._send(res["run_id"], "second", "", "haiku", "max") \
         == {"respawn": True}
