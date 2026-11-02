@@ -174,9 +174,10 @@ xmllint --noout "$BUILD_DIR/distribution.xml"
 # ---------------------------------------------------------------------------
 # --nopayload: nothing is laid down by Installer itself, so its bundle
 # "relocation" (which can put a payload app anywhere an older copy lives)
-# has nothing to act on; the postinstall decides the path. The receipt
-# (`pkgutil --pkgs | grep installer`) records that the installer ran, not
-# any files — the app is removed by dragging it to the Trash, as with the DMG.
+# has nothing to act on; the postinstall decides the path. Installer writes
+# no receipt for a payload-free component (`pkgutil --pkgs` never lists it),
+# so there is nothing to forget: the app is removed by dragging it to the
+# Trash, as with the DMG.
 echo "==> pkgbuild (component, no payload)"
 pkgbuild --nopayload \
   --scripts "$BUILD_DIR/scripts" \
