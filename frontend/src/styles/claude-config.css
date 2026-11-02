@@ -1485,6 +1485,15 @@
   border-bottom: none;
 }
 
+.cc-srow-others {
+  padding-left: 18px;
+}
+
+.cc-srow-more {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
 .cc-srow-name {
   flex: 0 1 auto;
   max-width: 40%;

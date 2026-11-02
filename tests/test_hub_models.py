@@ -2235,7 +2235,11 @@ def test_a_malformed_id_is_refused_before_the_hub_is_asked(client, monkeypatch, 
     monkeypatch.setattr(httpx, "get", fake)
     reply = _size(client, {"id": bad})
     assert reply.status_code == 400 and reply.json()["error"]
-    assert not fake.calls, "a malformed id still cost an outbound request"
+    # `httpx.get` is patched process-wide, so a background refresh elsewhere
+    # in the server (the Community blocklist fetch landed here once on CI)
+    # shows up in `calls` too — only a call to the HUB is this test's.
+    hub_calls = [c for c in fake.calls if "/api/models" in c[0]]
+    assert not hub_calls, "a malformed id still cost an outbound request"
 
 
 def test_an_unreachable_hub_is_a_sentence_not_a_500_for_sizes(client, monkeypatch):

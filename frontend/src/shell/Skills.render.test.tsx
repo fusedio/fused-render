@@ -48,7 +48,7 @@ function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
     if (action === "list" && listFails) return Promise.reject(new Error("offline"));
     if (action === "list") data = { skills: [MINE, OTHER, BUNDLED] };
     else if (action === "search") { searchQueries.push(String(body.query)); data = searchReply(); }
-    else if (action === "remote_preview") data = { ok: true, text: "---\nname: web-design-guidelines\n---\n\n## Rules\nBe tidy.\n", files: ["SKILL.md", "rules.md"] };
+    else if (action === "remote_preview") data = { ok: true, text: "x", readme: "---\nname: web-design-guidelines\n---\n\n## Rules\nBe tidy.\n", readmeIsSkill: false, fileCount: 2, totalBytes: 2200000 };
     else if (action === "remote_add") data = { ok: true, slug: "web-design-guidelines" };
   }
   const text = JSON.stringify(data);
@@ -144,7 +144,7 @@ describe("the Skills page", () => {
     expect(calls.filter((c) => c.action === "available")).toHaveLength(0);
   });
 
-  test("two letters search installed skills and skills.sh, debounced, with no counts", async () => {
+  test("two letters search installed skills and skills.sh, debounced, with compact install counts", async () => {
     const box = await mount();
     await type(box, "design");
     expect(searchQueries).toEqual(["design"]);
@@ -155,7 +155,7 @@ describe("the Skills page", () => {
     expect(text).toContain("Add from skills.sh");
     expect(text).toContain("web-design-guidelines");
     expect(text).toContain("vercel-labs/agent-skills");
-    expect(text).not.toContain("424");
+    expect(text).toContain("424.2k installs");
     expect(text.toLowerCase()).not.toContain("install count");
     expect(text.toLowerCase()).not.toContain("popular");
     expect(calls.filter((c) => c.action === "available")).toHaveLength(0);
@@ -209,7 +209,9 @@ describe("the Skills page", () => {
     const md = aside.findAll((n) => typeof n.props.text === "string")[0];
     expect(md.props.text).toContain("Be tidy.");
     expect(md.props.text).not.toContain("name: web-design-guidelines");
-    expect(text).toContain("rules.md");
+    expect(text).toContain("README · vercel-labs/agent-skills");
+    expect(text).toContain("2 files · 2.1 MB");
+    expect(text).not.toContain("rules.md");
     expect(text).toContain("View on GitHub");
     const gh = aside.findAllByType("a")[0];
     expect(gh.props.href).toBe("https://github.com/vercel-labs/agent-skills");
@@ -218,6 +220,29 @@ describe("the Skills page", () => {
     await tick();
     expect(calls.find((c) => c.action === "remote_add")?.body).toMatchObject({ source: "vercel-labs/agent-skills", skill_id: "web-design-guidelines" });
     expect(textOf(box.root.findByProps({ "data-testid": "remote-preview" }))).toContain("Added");
+  });
+
+  test("skills.sh rows are sorted by installs, same skill ids fold under the top one", async () => {
+    const row = (source: string, skillId: string, installs: number) => ({ id: `${source}/${skillId}`, source, skillId, name: skillId, installs, added: false });
+    searchReply = () => ({ ok: true, skills: [
+      row("fork/a", "stageshow", 1), row("x/y", "other", 12), row("benji/skills", "stageshow", 3854), row("fork/b", "stageshow", 1), row("z/w", "zero", 0),
+    ] });
+    const box = await mount();
+    await type(box, "stage");
+    const rows = () => box.root.findAll((n) => n.type === "div" && String(n.props.className ?? "").split(" ").includes("cc-srow"));
+    expect(rows().map((r) => textOf(r))).toEqual([
+      "stageshowbenji/skills3.9k installs+2 other sourcesAdd",
+      "otherx/y12 installsAdd",
+      "zeroz/wAdd",
+    ]);
+    await act(async () => { button(box, "+2 other sources").props.onClick(); });
+    expect(rows().map((r) => textOf(r))).toEqual([
+      "stageshowbenji/skills3.9k installs" + "hide other sourcesAdd",
+      "stageshowfork/a1 installAdd",
+      "stageshowfork/b1 installAdd",
+      "otherx/y12 installsAdd",
+      "zeroz/wAdd",
+    ]);
   });
 
   test("no match anywhere offers to write that skill", async () => {

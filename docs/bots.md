@@ -193,7 +193,8 @@ and `py` calls skip the approval card for this bot whatever the write heuristic,
 the app's SKILL.md or the bot's own `risky: true` say (owner, 2026-10-22: one
 list, ticked = without asking, nothing else); browser actions, texts and builds
 are not apps. It is the ONE app-level permission: a build this bot finishes
-ticks its app (`bot.py`, where `builds[].done_at` is set), and "Always approve"
+ticks its app (`bot.py`, where `builds[].done_at` is set; a hand-off build ticks
+it for the asking Super Bot too, `_trust_for_asker`), and "Always approve"
 on a `tool` / `py` card ticks the app (the rule kind `trusted`, key = the
 folder; `tools.forever_rule` no longer makes per-tool rules, and old `tool` /
 `py` rows plus finished builds migrate into ticks once per bot on load,

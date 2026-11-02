@@ -1877,7 +1877,12 @@ class FakeGitHub:
 def _iso_now() -> str:
     # Microseconds: two comments a test writes in the same second must still
     # order, and GitHub's own ISO strings compare correctly against these.
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{int(time.time() * 1e6) % 1000000:06d}Z"
+    # ONE clock read: seconds from one `time.time()` and microseconds from a
+    # second one could straddle a second boundary, dating an event a whole
+    # second early — a close then sorted BELOW the send that preceded it
+    # (test_contrib_timeline, red once on CI).
+    now = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + f".{int(now * 1e6) % 1000000:06d}Z"
 
 
 # ---------------------------------------------------------- smoke-test CLI
