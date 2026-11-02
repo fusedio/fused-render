@@ -29,6 +29,7 @@ from fused_render.ai import tasks as ai_tasks
 from fused_render.server import create_app
 from fused_render.ai import hub_cache as ai_models_mod
 from fused_render.server.routers import hub_models as hub
+from fused_render import marketplace as _marketplace
 
 
 def _search(client, body=None):
@@ -111,8 +112,16 @@ def client():
 
 
 def _reply(rows, status=200, body=None):
-    """A stand-in `httpx.get` returning one canned Hub answer."""
+    """A stand-in `httpx.get` returning one canned Hub answer.
+
+    `httpx.get` is patched process-wide, so the server's background Community
+    blocklist refresh lands here too (seen on CI as `calls[0]` being the
+    blocklist URL). It is not the Hub: answered 404 (read as "unavailable")
+    and kept out of `calls`, so `calls[i]` is always this test's i-th Hub
+    request."""
     def fake(url, **kwargs):
+        if str(url).startswith(_marketplace.api_base()):
+            return httpx.Response(404, request=httpx.Request("GET", url))
         fake.calls.append((url, kwargs))
         content = json.dumps(rows).encode() if body is None else body
         return httpx.Response(status, content=content,
