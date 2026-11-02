@@ -32,4 +32,4 @@ Two rules making second palette work:
 
 Never read app's own localStorage key — private, drifts. Options 2/3 give answer without it.
 
-Native controls/scrollbars across engines (`color-scheme` vs `appearance: none`) → `fused-render-cross-browser`. Rest of page authoring → `fused-render-authoring`.
+Rest of page authoring → `fused-render-authoring`.

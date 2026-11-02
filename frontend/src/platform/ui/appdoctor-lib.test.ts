@@ -65,9 +65,6 @@ const check = (
   detail: "",
   findings: [],
   task: null,
-  ondemand: false,
-  check_task: null,
-  verdict_task: null,
   ...extra,
 });
 
@@ -95,11 +92,11 @@ test("the strip's reading counts what wants an answer, and says so only when not
     check("a", "fail", { severity: "critical" }),
     check("b", "fail", { severity: "warning" }),
     check("c", "pass"),
-    check("d", "unrun"),
+    check("d", "skip"),
   ];
   expect(readinessCount(failing)).toBe("2 of 4");
   expect(readinessSentence(failing)).toBe(
-    "checks need attention before this app is worth sharing, and 1 waits for Check.",
+    "checks need attention before this app is worth sharing, and 1 could not be answered here.",
   );
   expect(failingCount(failing)).toBe(2);
 });
@@ -148,7 +145,7 @@ test("the tasks tab is the app page's own address, path-encoded", () => {
 });
 
 test("every state has a label, so no row renders a bare icon", () => {
-  expect(Object.keys(STATE_LABEL).sort()).toEqual(["fail", "pass", "skip", "unrun"]);
+  expect(Object.keys(STATE_LABEL).sort()).toEqual(["fail", "pass", "skip"]);
   expect(Object.values(STATE_LABEL).every((v) => v.length > 0)).toBe(true);
 });
 
@@ -169,18 +166,17 @@ test("rows group into their sections in server order, without sorting", () => {
 
 // -------------------------------------------------------------- attention order
 
-test("sortByAttention orders fail, unrun, skip, pass, and returns a NEW array", () => {
+test("sortByAttention orders fail, skip, pass, and returns a NEW array", () => {
   const checks = [
     check("a", "pass"),
     check("b", "skip"),
     check("c", "fail", { severity: "warning" }),
-    check("d", "unrun"),
   ];
   const sorted = sortByAttention(checks);
-  expect(sorted.map((c) => c.id)).toEqual(["c", "d", "b", "a"]);
+  expect(sorted.map((c) => c.id)).toEqual(["c", "b", "a"]);
   expect(sorted).not.toBe(checks);
   // The input is untouched.
-  expect(checks.map((c) => c.id)).toEqual(["a", "b", "c", "d"]);
+  expect(checks.map((c) => c.id)).toEqual(["a", "b", "c"]);
 });
 
 test("sortByAttention ranks a failing row's severity via effectiveSeverity, so a candidate's discount applies here too", () => {
@@ -236,9 +232,9 @@ test("severityDotLabel names info-only failures as suggestions, not warnings", (
   ).toBe("App Doctor: 1 warning");
 });
 
-test("sortByAttention puts a failing info row after warnings and before unrun rows", () => {
+test("sortByAttention puts a failing info row after warnings and before skipped rows", () => {
   const sorted = sortByAttention([
-    check("u", "unrun"),
+    check("u", "skip"),
     check("i", "fail", { severity: "info" }),
     check("w", "fail", { severity: "warning" }),
   ]).map((c) => c.id);
@@ -319,7 +315,6 @@ test("a failing candidate's DETAIL text reads as N to review, never as a settled
 test("every other row's detail text falls back to STATE_LABEL", () => {
   expect(rowStateDetailText(check("readme", "pass"))).toBe("Passed");
   expect(rowStateDetailText(check("readme", "skip"))).toBe("Not checked");
-  expect(rowStateDetailText(check("readme", "unrun"))).toBe("Not run yet");
 });
 
 // §16: the visible line no longer prints the bare "Failed" prefix — the left
@@ -346,11 +341,9 @@ test("a failing CANDIDATE row's visible text keeps the N to review count", () =>
   expect(rowVisibleDetailText(c)).toBe("2 to review — looks like an API key or token");
 });
 
-test("a skipped/unrun row's visible text is just the detail", () => {
-  for (const state of ["skip", "unrun"] as const) {
-    const c = check("readme", state, { detail: `${state} detail sentence` });
-    expect(rowVisibleDetailText(c)).toBe(c.detail);
-  }
+test("a skipped row's visible text is just the detail", () => {
+  const c = check("readme", "skip", { detail: "skip detail sentence" });
+  expect(rowVisibleDetailText(c)).toBe(c.detail);
 });
 
 test("a passing row draws no visible detail sentence, even when the check carries one", () => {

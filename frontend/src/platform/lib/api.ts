@@ -3254,10 +3254,8 @@ export function migrateApp(
 // ---- App Doctor (fused_render/app_doctor.py) --------------------------------
 //
 // The share-readiness checklist for one app folder: deterministic checks only —
-// a row is `pass`, `fail`, `skip` (the check could not run: no entry to read,
-// no git repo, an optional file that isn't there), or `unrun` (a check that
-// needs a Claude session to answer at all, not yet asked — no check emits this
-// today, see app_doctor.py's own note on `UNRUN`), never a judgment on its own.
+// a row is `pass`, `fail`, or `skip` (the check could not run: no entry to read,
+// no git repo, an optional file that isn't there), never a judgment on its own.
 // `kind` tells a "fact" row (the check IS the judgment — a file exists or does
 // not) from a "candidate" row (`secrets`, `device-paths`: a pattern match that
 // only LOCATES something to look at — see app_doctor.py's module docstring for
@@ -3266,7 +3264,7 @@ export function migrateApp(
 // fused-render-app-doctor skill against that one row (`runAppDoctorCheck`,
 // `runAppDoctorAll` below).
 
-export type AppCheckState = "pass" | "fail" | "skip" | "unrun";
+export type AppCheckState = "pass" | "fail" | "skip";
 export type AppCheckSection = "essentials" | "sharing";
 export type Severity = "critical" | "warning" | "info";
 export type AppCheckKind = "fact" | "candidate";
@@ -3276,12 +3274,8 @@ export interface AppCheckFinding {
   path: string;
   /** 0 for a finding about the folder rather than a line. */
   line: number;
-  /** Already masked server-side when it came off a secret — safe to render.
-   *  For a model-backed row (`cross-browser`) this is a plain-language
-   *  sentence saying what a visitor will see go wrong, not a source line. */
+  /** Already masked server-side when it came off a secret — safe to render. */
   excerpt: string;
-  /** Model-backed rows only: one plain sentence saying what to change. */
-  fix?: string;
 }
 
 export interface AppDoctorTask {
@@ -3304,23 +3298,6 @@ export interface AppCheck {
    *  row (or, for "Fix all", one covering every failing row at once, still
    *  attached the same way a stored prompt is: by which check id it names). */
   task: AppDoctorTask | null;
-  /** A row a person runs by pressing its own Check button (`runAppDoctorOnDemand`)
-   *  rather than one the doctor answers on every GET — today `cross-browser`,
-   *  a Sonnet read of the view files cached on their checksum
-   *  (fused_render/app_doctor_ai.py). `state: "unrun"` only ever appears on
-   *  one of these: never run, the app changed since, or a check task is on it. */
-  ondemand: boolean;
-  /** The on-demand row's own CHECK task (the Sonnet read, run as a task on the
-   *  app's entry page) while it is still live, or null. Kept apart from `task`
-   *  — a fix session — because the row draws one as "Checking…" and the other
-   *  as "Fix in progress". Read off the server's task store on every GET, so
-   *  a reload or a tab switch shows the same in-flight state. */
-  check_task: AppDoctorTask | null;
-  /** On a SETTLED on-demand row: the check task whose session wrote the cached
-   *  verdict, so the row can open that conversation (its plain per-finding
-   *  lines). `session_id` is the conversation the turn ran in — what `chatUrl`
-   *  opens; `target` its entry page. Null when the task is gone from the store. */
-  verdict_task: { id: string; session_id: string; target: string } | null;
   /** `git` row only: commits HEAD is behind/ahead of
    *  `origin/<default_branch>` (`git_upstream.check_repo`'s
    *  `HEAD...origin/<default_branch>` count), or `null` when the remote
@@ -3370,10 +3347,10 @@ export interface AppDoctorReport {
   severities: Severity[];
 }
 
-/** `fetch: false` is the POLL variant (the panel and the header dot re-asking
- *  every few seconds while a check task is live): the server skips the
- *  modal-open git force-fetch and answers the `git` row from its throttled
- *  cache, so polling never turns into a git fetch every four seconds. */
+/** `fetch: false` is the PASSIVE variant (the header dot): the server skips
+ *  the modal-open git force-fetch and answers the `git` row from its
+ *  throttled cache, so a dot decorating a page never forces a git fetch on
+ *  every app open. */
 export function getAppDoctor(
   path: string,
   opts: { fetch?: boolean } = {},
@@ -3386,39 +3363,6 @@ export function getAppDoctor(
 
 export interface AppDoctorFixResult extends NewAppResult {
   check: string;
-}
-
-export interface AppDoctorRunResult {
-  path: string;
-  entry_html: string;
-  /** The row as the next GET would draw it: `check_task` set while the new
-   *  task (or one already on it) is live, else the cached verdict. */
-  check: AppCheck;
-  /** The stored task entry when one was created this call, else null (the
-   *  cache already answered, or a task was already on it). */
-  task: NewAppResult["task"];
-  task_error: string | null;
-}
-
-/** RUN one on-demand row (`check.ondemand`): creates its CHECK task — a
- *  session on the app's entry page that reads the view files against the
- *  cross-browser skill and writes the verdict into the app's `.fused/cache/`
- *  — and returns at once with the row in its "checking" state. The verdict
- *  is cached on the app's content, so until the view files change the next
- *  GET draws it for free, and a press while a task is already on it is a
- *  no-op that returns that task. 409 while a fix task is live on the app;
- *  502 when the task could not be created. */
-export function runAppDoctorOnDemand(
-  path: string,
-  check: string,
-  /** Re-check: ask again although the cached verdict still matches the files. */
-  force = false,
-): Promise<AppDoctorRunResult> {
-  return postJson<AppDoctorRunResult>("/api/apps/doctor/run", {
-    path,
-    check,
-    force,
-  });
 }
 
 // Create the App Doctor FIX task for ONE row — its prompt invokes the

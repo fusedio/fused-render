@@ -15,7 +15,7 @@ Share-readiness pass over one app folder. `fused-render` ships as a packaged des
 
 **Not a code audit.** No opinion on logic bugs, cache eviction, date math, dedup, DOM injection, error handling, perf. Even when the request says "review for correctness": say this skill covers share-readiness, offer the audit as separate work.
 
-**Two kinds of row.** `fact` — a file read or git call settled it, nothing to judge. `candidate` — a regex over arbitrary text (or, for `cross-browser`, a model reading a rubric), so it locates a SHAPE, not a verdict; read the surrounding file before calling any hit real. The regex engine over 8 apps in a live workspace: all 40 candidate findings were false positives.
+**Two kinds of row.** `fact` — a file read or git call settled it, nothing to judge. `candidate` — a regex over arbitrary text, so it locates a SHAPE, not a verdict; read the surrounding file before calling any hit real. The regex engine over 8 apps in a live workspace: all 40 candidate findings were false positives.
 
 ## `secrets` — leaked credentials
 
@@ -89,22 +89,6 @@ Real: a hardcoded `/Users/alex/data.csv` (or `/home/…`, `/Volumes/…`) the ap
 
 **Fix.** A path relative to the app folder, or one the runtime hands the app at call time. Never another absolute path.
 
-## `cross-browser` — renders and works alike in Chrome, Firefox and Safari
-
-**candidate** — a Sonnet read of the app's `.html`/`.css`/`.js`/`.svg` files against `fused-render-cross-browser`'s own SKILL.md, run as an App Doctor **check task** (a session on the entry page, listed under the app's Tasks tab) only when someone pressed the row's Check button. The check task runs in **plan mode** (read-only, enforced by the CLI) and ends its reply with the verdict as a fenced JSON block; the server lifts that into `.fused/cache/app-doctor/cross-browser.verdict.json` beside its own run record keyed on a checksum of those files, so the findings you are handed describe the folder as it was when Check was last pressed (the panel refuses to open a fix session on a stale verdict, and a fix and a check never run at once on one app).
-
-If YOU are the check task (your prompt says "run check `cross-browser`"): read only the listed files and answer in the chat exactly as the prompt asks — plain lines, then one JSON block last. You cannot edit or commit, and must not try.
-
-Not a finding:
-
-- **Already guarded** — the flagged feature sits inside an `@supports (…) {}` block, or the `-webkit-` twin is on the very next line and the model missed it.
-- **Vendored third-party file** — a bundled library's minified CSS/JS. Not this app's authoring to fix; say so.
-- **Rubric drift** — the row cites a feature the current MDN compat table now marks Baseline widely available. The rubric is the skill's table; check that table before agreeing with the model, not the other way round.
-
-Real: a line the skill's trap table names, in a view this app ships, with no fallback.
-
-**Fix.** Invoke **`fused-render-cross-browser`** and apply its paste-in baseline and trap table to exactly the cited lines — prefix, `@supports` fallback, or the replacement the table names. Never restructure the view; never add a build step or autoprefixer (the authoring contract has none). Say in one line per finding what changed.
-
 ## `git` — repo in sync
 
 **fact** — one consolidated row covering three things (with auto-sync on and the repo on its default branch, unpushed commits and behind-origin pass — they sync automatically — and a standing auto-sync failure fails the row instead; uncommitted paths always fail): every change committed (`git status --porcelain`, scoped to the app folder), every commit pushed (`git rev-list --count @{upstream}..HEAD` — no network call, so as stale as the last fetch), and not behind origin (a real background `git fetch`, dispatched when App Doctor opens and read from cache here — never run inline, so it can be unresolved). The row's `detail` names whichever of the three apply; its findings mix uncommitted paths and unpushed commit subjects. Skip means no readable git repo, no git, no upstream configured, or the remote check hasn't resolved (offline, unreachable, or just not checked yet) — none of those are a defect in the app.
@@ -150,7 +134,6 @@ No row above judges whether a real `fused.*` call is correct. Read what the app 
 | `fused.daemon`, `[tool.fused-render.app]` (Python alive after the page closes) | `fused-render-background-apps` |
 | stale or missing `fused-api-version` | `fused-render-api-migration` |
 | an `icon.svg` / `icon.png` that exists and fails to parse | `fused-render-app-icon` |
-| a `cross-browser` finding, or a CSS/JS feature whose Safari/Firefox support is in doubt | `fused-render-cross-browser` |
 
 Each row comes from that skill's own `description:` line — re-check there rather than guessing from a name.
 
@@ -165,7 +148,7 @@ Asked to set up CI: write the files yourself, don't tell the user to copy them.
 
 That workflow is a floor, not a substitute for this review. It runs `app_check.py` (stdlib-only, nothing to install) per app folder and exits 1 only on a **fact** finding of severity **critical** or **warning**. It prints without failing: every **candidate** (all 40 in the measurement above were false positives, so one must never block a push) and a **suggested** fact — a missing README or `preview.png`, real but cosmetic. `suggested` exists only for this exit-code decision; the checklist's quiet tier is `info` (a failing info row never turns the app not-ok or the header dot yellow). Gating on `kind == "fact"` alone would fail a build over a thumbnail while a leaked-credential candidate exited 0.
 
-The floor is deliberately a subset — no `entry`/`api-version`/`git`/`generated`, which need the runtime's own knowledge or a live repo a fresh checkout may not have, and no `cross-browser`, which needs a model.
+The floor is deliberately a subset — no `entry`/`api-version`/`git`/`generated`, which need the runtime's own knowledge or a live repo a fresh checkout may not have.
 
 ## No panel
 
