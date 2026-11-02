@@ -96,7 +96,7 @@ def resolve_source(app_dir: str) -> dict:
 
 
 # -------------------------------------------------------------- reading the bot ---
-def _public(bid: str) -> tuple[str, bytes, dict]:
+def _public(bid: str) -> tuple[str, bytes, dict, dict]:
     """(bot.json path, the bytes that ship, parsed). The bytes are `store.public_json` of the PUBLIC half of the
     merged meta: byte-identical to the file on disk once the split is complete (write_meta writes exactly that
     text), and filtered down to PUBLIC_KEYS when it is not (a bot.json from before the split, or hand-edited with a
@@ -110,7 +110,7 @@ def _public(bid: str) -> tuple[str, bytes, dict]:
         raise ValueError(f"this bot's bot.json is not valid JSON: {e}")
     public, _private = store.split_meta(meta)
     public["id"] = bid
-    return path, store.public_json(public).encode("utf-8"), public
+    return path, store.public_json(public).encode("utf-8"), public, meta
 
 
 def _skill_files(bid: str, skipped: list | None = None) -> list[tuple[str, str]]:
@@ -281,10 +281,19 @@ def _app_row(folder: str, manifest_row: dict | None) -> dict:
     return out
 
 
-def _manifest(public: dict) -> dict[str, dict]:
-    """folder -> manifest row, in manifest order, dropping rows without a usable folder (a hand-edited bot.json)."""
+def _manifest(meta: dict) -> dict[str, dict]:
+    """folder -> row for every app the bot comes with: the `apps` manifest (what earlier exports chose) UNIONED
+    with what the bot uses NOW — the apps it may use without asking (`trusted_apps`, private) and the apps it built —
+    through migrate_v3.seed_apps, the same union that seeded the manifest. The manifest alone goes stale the moment
+    the user ticks an app in Settings → Permissions after the bot was made (owner, 2026-11-02: those must come up
+    selected). Rows without a usable folder (a hand-edited bot.json) are dropped."""
     out: dict[str, dict] = {}
-    rows = public.get("apps")
+    rows = list(meta.get("apps") or []) if isinstance(meta.get("apps"), list) else []
+    try:
+        from fused_render.bots.migrate_v3 import seed_apps
+        rows += seed_apps(meta)
+    except Exception:  # noqa: BLE001 - the manifest alone is still a plan
+        log.debug("bot %s: live apps union failed", meta.get("id"), exc_info=True)
     for r in rows if isinstance(rows, list) else []:
         if isinstance(r, dict) and isinstance(r.get("folder"), str) and r["folder"] not in out:
             try:
@@ -302,7 +311,7 @@ def plan(bid: str) -> dict:
     Read-only: nothing is exported or written here."""
     from fused_render.bots.bot import Bot, is_super
 
-    _path, _raw, public = _public(bid)
+    _path, _raw, public, meta = _public(bid)
     name = public.get("name") or bid
     hits: list = []
     _scan("instructions", public.get("instructions") or "", hits)
@@ -338,7 +347,7 @@ def plan(bid: str) -> dict:
         "skills_bytes": skills_bytes,
         "skills_skipped": skipped,
         "memory_bytes": memory_bytes,
-        "apps": [_app_row(f, row) for f, row in _manifest(public).items()],
+        "apps": [_app_row(f, row) for f, row in _manifest(meta).items()],
         "secrets": hits,
         # What the caution line covers; bundled app SOURCES are not scanned here (the app doctor is for that).
         "secrets_scope": ["instructions", "memory", "skills", "readme", "routines"],
@@ -366,7 +375,7 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
     from fused_render.bots.bot import is_super
     from fused_render.server.routers.appfile import _unique_export_path
 
-    _path, raw, public = _public(bid)
+    _path, raw, public, meta = _public(bid)
     if is_super(public):
         raise ValueError("Super Bot cannot be exported: it is this machine's own assistant")
     name = public.get("name") or bid
@@ -395,7 +404,7 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
     if text_bytes > TEXT_MAX_BYTES:
         raise ValueError(f"skills and memory are too large to export ({text_bytes} bytes > {TEXT_MAX_BYTES})")
 
-    manifest = _manifest(public)
+    manifest = _manifest(meta)
     rows: list[dict] = []
     bundled: list[str] = []
     added: list[dict] = []

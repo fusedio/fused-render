@@ -2261,7 +2261,10 @@ the error with Retry; it is never bundled as a fallback.
  secrets_scope: ["instructions", "memory", "skills", "readme", "routines"]}
 ```
 
-`apps` is the bot's `apps` manifest (§2), each row re-resolved and sized:
+`apps` is the bot's `apps` manifest (§2) unioned with what the bot uses now — its
+`trusted_apps` and the apps it built (`migrate_v3.seed_apps`, the union that
+seeded the manifest), so an app ticked under Permissions after the bot was made
+comes up selected — each row re-resolved and sized:
 starter / marketplace `bytes: 0`, bundled = the folder's exportable members
 (`appfile._iter_app_files`); `problem` when the folder is gone, is not a fused
 app, or is over the app-file caps; `mints_app_id` on a bundled row says the
