@@ -366,7 +366,7 @@ export const skills = {
     callModule<OkResult & { skills?: RemoteSkill[] }>("skills", { action: "search", query }),
   remotePreview: (source: string, skillId: string) =>
     callModule<
-      OkResult & { text: string; readme: string; readmeIsSkill: boolean; fileCount: number; totalBytes: number }
+      OkResult & { text: string; readme: string; readmeIsSkill: boolean; fileCount: number; totalBytes: number; tooLarge?: boolean }
     >("skills", {
       action: "remote_preview",
       source,

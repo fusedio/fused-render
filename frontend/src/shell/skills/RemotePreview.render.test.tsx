@@ -56,6 +56,18 @@ describe("RemotePreview", () => {
   });
 });
 
+describe("RemotePreview too large", () => {
+  test("a tooLarge reply shows a muted note, not the error banner", async () => {
+    reply = { ok: false, tooLarge: true, error: "download is larger than 50 MB" };
+    const box = await mount();
+    const text = textOf(box.root);
+    expect(text).toContain("This repo is too large to preview here. Open it on GitHub to read it.");
+    expect(text).not.toContain("download is larger than");
+    expect(text).toContain("View on GitHub");
+    expect(box.root.findAll((n) => n.props["data-testid"] === "remote-preview-toolarge")).not.toHaveLength(0);
+  });
+});
+
 describe("helpers", () => {
   test("formatBytes", () => {
     expect(formatBytes(0)).toBe("0 B");

@@ -199,6 +199,13 @@ def test_archive_over_the_byte_cap_is_refused(home, monkeypatch):
     assert "o/r" not in skills._trees
 
 
+def test_preview_of_an_oversized_repo_is_flagged_too_large(home, monkeypatch):
+    monkeypatch.setattr(skills, "_ARCHIVE_MAX_BYTES", 100)
+    _repo(monkeypatch, {"SKILL.md": "---\nname: foo\n---\n", "big.bin": bytes(range(256)) * 40})
+    res = skills.main(action="remote_preview", source="o/r", skill_id="foo")
+    assert res["ok"] is False and res["tooLarge"] is True and "larger than" in res["error"]
+
+
 def test_symlink_and_odd_members_are_skipped(home, monkeypatch):
     link = tarfile.TarInfo("repo-abc123/s/foo/link.md")
     link.type = tarfile.SYMTYPE

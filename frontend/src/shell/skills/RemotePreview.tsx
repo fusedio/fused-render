@@ -17,7 +17,7 @@ export function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-type Loaded = { readme: string; readmeIsSkill: boolean; fileCount: number; totalBytes: number } | { error: string } | null;
+type Loaded = { readme: string; readmeIsSkill: boolean; fileCount: number; totalBytes: number } | { error: string } | { tooLarge: true } | null;
 
 export function RemotePreview({
   skill,
@@ -39,7 +39,7 @@ export function RemotePreview({
     let alive = true;
     setLoaded(null);
     cc.skills.remotePreview(skill.source, skill.skillId).then(
-      (r) => alive && setLoaded(r.ok ? { readme: r.readme, readmeIsSkill: r.readmeIsSkill, fileCount: r.fileCount, totalBytes: r.totalBytes } : { error: r.error || "Could not read the skill" }),
+      (r) => alive && setLoaded(r.tooLarge ? { tooLarge: true } : r.ok ? { readme: r.readme, readmeIsSkill: r.readmeIsSkill, fileCount: r.fileCount, totalBytes: r.totalBytes } : { error: r.error || "Could not read the skill" }),
       (e) => alive && setLoaded({ error: (e as Error).message }),
     );
     return () => {
@@ -84,6 +84,11 @@ export function RemotePreview({
         </div>
       )}
       {loaded === null && <p className="cc-skill-empty">Loading…</p>}
+      {loaded && "tooLarge" in loaded && (
+        <p className="cc-aside-label m-0" data-testid="remote-preview-toolarge">
+          This repo is too large to preview here. Open it on GitHub to read it.
+        </p>
+      )}
       {loaded && "error" in loaded && <ErrorBanner>{loaded.error}</ErrorBanner>}
       {loaded && "readme" in loaded && (
         <>

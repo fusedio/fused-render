@@ -45,6 +45,7 @@ main(action=...):
             params: query  (skills.sh directory search, 30 hits; < 2 chars is an
             empty result with no request; network trouble is {ok: False, error})
   remote_preview -> {ok, text, readme, readmeIsSkill, fileCount, totalBytes}
+                    (or {ok: False, tooLarge: True, error} when the repo is over the cap)
             params: source (GitHub owner/repo), skill_id  (text: the skill's SKILL.md;
             readme: the repo's root README with relative links made absolute, or
             the SKILL.md when there is none; located in the repo's tarball)
@@ -451,6 +452,10 @@ def _search(query: str) -> dict:
     return {"ok": True, "skills": out}
 
 
+class _TooLarge(ValueError):
+    """The repo archive is over the download cap."""
+
+
 def _read_capped(url: str, cap: int) -> bytes:
     """GET `url` in chunks, refusing a body over `cap` bytes."""
     req = urllib.request.Request(url, headers={
@@ -463,7 +468,7 @@ def _read_capped(url: str, cap: int) -> bytes:
                 break
             out += chunk
             if len(out) > cap:
-                raise ValueError(f"download is larger than {cap // (1024 * 1024)} MB")
+                raise _TooLarge(f"download is larger than {cap // (1024 * 1024)} MB")
     return bytes(out)
 
 
@@ -580,7 +585,10 @@ def _root_readme(tree: dict) -> str:
 
 
 def _remote_preview(source: str, skill_id: str) -> dict:
-    _root, files = _locate(source, skill_id)
+    try:
+        _root, files = _locate(source, skill_id)
+    except _TooLarge as e:
+        return {"ok": False, "tooLarge": True, "error": str(e)}
     skill_text = files["SKILL.md"].decode("utf-8", errors="replace")
     readme = _root_readme(_repo_archive(source))
     if readme:
