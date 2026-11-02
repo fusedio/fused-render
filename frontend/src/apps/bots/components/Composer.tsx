@@ -363,7 +363,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   return (
     <div className="composer">
       <div className="ctl">
-        {stat ? <span className="stat" title={stat || b?.title || undefined}><span className={`dot ${b?.status}`} />{stat}</span> : null}
+        {stat ? <span className="stat" title={b?.title ? `${stat}\n${b.title}` : stat}><span className={`dot ${b?.status}`} />{stat}</span> : null}
         <button id="pause" disabled={!on || b?.status !== "running"} onClick={ctl(api.pause)}
           title="Hold the task before its next step. The browser and everything done so far stay; Resume carries on from here.">Pause</button>
         <button id="resume" disabled={!on || b?.status !== "paused"} onClick={ctl(api.resume)} title="Carry on from where it paused.">Resume</button>
