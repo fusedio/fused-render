@@ -463,7 +463,7 @@ def test_rate_limited_tree_falls_back_to_the_tarball(home, monkeypatch):
 
 
 def test_tarball_fallback_fetches_large_skill_files_raw(home, monkeypatch):
-    monkeypatch.setattr(skills, "_ARCHIVE_KEEP_FILE_BYTES", 4)
+    monkeypatch.setattr(skills, "_ARCHIVE_KEEP_FILE_BYTES", 0)
     calls = []
     _repo(monkeypatch, FILES, calls)
     repo = skills._repo_view("o/r")
