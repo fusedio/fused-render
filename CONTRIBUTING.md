@@ -56,6 +56,7 @@ Build the macOS app with:
 
 ```
 bash scripts/build_dmg.sh   # py2app → dist/FusedRender-<version>.dmg
+bash scripts/build_pkg.sh dist/FusedRender-<version>.dmg <its-cdn-url>   # → the .pkg network installer (docs/signing.md)
 ```
 
 Signing and notarization are credential-driven — see
