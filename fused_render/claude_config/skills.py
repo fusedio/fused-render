@@ -498,7 +498,7 @@ class _Repo:
     warms the add."""
 
     def __init__(self, source: str, sizes: dict, kept: dict = None):
-        self.source = source
+        self.slug = source
         self._sizes = sizes
         self._bytes = dict(kept or {})
         self._lock = threading.Lock()
@@ -511,7 +511,7 @@ class _Repo:
             hit = self._bytes.get(path)
         if hit is not None:
             return hit
-        url = f"https://raw.githubusercontent.com/{self.source}/HEAD/{urllib.parse.quote(path)}"
+        url = f"https://raw.githubusercontent.com/{self.slug}/HEAD/{urllib.parse.quote(path)}"
         data = _read_capped(url, _COPY_MAX_BYTES)
         with self._lock:
             self._bytes[path] = data

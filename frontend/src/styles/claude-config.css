@@ -2039,7 +2039,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--popover, var(--background));
-  box-shadow: 0 6px 20px rgb(0 0 0 / 0.14);
+  box-shadow: 0 6px 20px var(--scrim-lift);
 }
 .cc-pathopt {
   display: flex;
