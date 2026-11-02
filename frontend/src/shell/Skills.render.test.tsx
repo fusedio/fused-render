@@ -36,6 +36,7 @@ let calls: { action: string; body: Record<string, unknown> }[] = [];
 let searchReply: () => unknown = () => ({ ok: true, skills: [HIT] });
 let searchQueries: string[] = [];
 let listFails = false;
+let extraMine = 0;
 
 function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   let body: Record<string, unknown> = {};
@@ -46,7 +47,7 @@ function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   let data: unknown = {};
   if (u.endsWith("/claude-config/skills")) {
     if (action === "list" && listFails) return Promise.reject(new Error("offline"));
-    if (action === "list") data = { skills: [MINE, OTHER, BUNDLED] };
+    if (action === "list") data = { skills: [MINE, OTHER, ...Array.from({ length: extraMine }, (_, i) => ({ ...MINE, slug: `extra-${i}`, name: `extra-${i}`, path: `/h/.agents/skills/extra-${i}`, paths: [`/h/.agents/skills/extra-${i}`] })), BUNDLED] };
     else if (action === "search") { searchQueries.push(String(body.query)); data = searchReply(); }
     else if (action === "remote_preview") data = { ok: true, text: "x", readme: "---\nname: web-design-guidelines\n---\n\n## Rules\nBe tidy.\n", readmeIsSkill: false, fileCount: 2, totalBytes: 2200000 };
     else if (action === "remote_add") data = { ok: true, slug: "web-design-guidelines" };
@@ -72,6 +73,7 @@ beforeEach(() => {
   calls = [];
   searchQueries = [];
   listFails = false;
+  extraMine = 0;
   searchReply = () => ({ ok: true, skills: [HIT] });
   setLocation("");
   globalThis.fetch = fakeFetch as unknown as typeof fetch;
@@ -130,6 +132,20 @@ describe("model helpers", () => {
 });
 
 describe("the Skills page", () => {
+  test("your skills cap at 6 rows with Show N more; at 6 or fewer there is no button", async () => {
+    const box = await mount();
+    expect(box.root.findAllByProps({ className: "cc-showmore" })).toHaveLength(0);
+    box.unmount();
+    extraMine = 6; // 8 of your own
+    const big = await mount();
+    const rows = () => textOf(big.root).match(/ui-design-review|Cuts a release|extra-\d/g)!.length;
+    expect(rows()).toBe(6);
+    expect(button(big, "Show 2 more").props["aria-expanded"]).toBe(false);
+    await act(async () => { button(big, "Show 2 more").props.onClick(); });
+    expect(rows()).toBe(8);
+    expect(button(big, "Show less").props["aria-expanded"]).toBe(true);
+  });
+
   test("an empty query lists your skills, plugin skills and the skills.sh hint, and asks skills.sh nothing", async () => {
     const box = await mount();
     const text = textOf(box.root);

@@ -1911,3 +1911,20 @@
     flex-direction: column;
   }
 }
+
+/* A long list's quiet "Show N more" row, inside the card. */
+.cc-showmore {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  text-align: left;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.cc-showmore:hover {
+  color: var(--accent);
+}
