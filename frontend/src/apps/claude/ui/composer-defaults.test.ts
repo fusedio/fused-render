@@ -39,7 +39,7 @@ test("the lists and labels are the CLI's vocabulary, verbatim (T:11823-11876)", 
     "plan",
     "ask",
     "edits",
-    "auto",
+    "Auto",
   ]);
   expect([DEFAULT_MODEL, DEFAULT_EFFORT, DEFAULT_PERMISSION]).toEqual([
     "sonnet",

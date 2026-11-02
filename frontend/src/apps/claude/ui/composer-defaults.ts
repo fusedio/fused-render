@@ -113,7 +113,7 @@ export const PERMISSION_SHORT: Record<PermissionMode, string> = {
   plan: "plan",
   prompt: "ask",
   acceptEdits: "edits",
-  auto: "auto",
+  auto: "Auto",
 };
 
 export const DEFAULT_MODEL = "sonnet";
