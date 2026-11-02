@@ -26,6 +26,9 @@ export function lastChatId(t: { project?: string | null; task_id?: string | null
 
 const subs = new Set<() => void>();
 let mem: string | null = read();
+/** The last write was refused (private mode, quota): `mem` is the only copy,
+ *  and a re-read from storage would throw it away. */
+let unsaved = false;
 
 function read(): string | null {
   try {
@@ -50,27 +53,39 @@ export function setLastChat(id: string): void {
   mem = id;
   try {
     sessionStorage.setItem(KEY, id);
+    unsaved = false;
   } catch {
     // Storage refused (private mode, quota): this document still knows.
+    unsaved = true;
   }
   notify();
 }
 
+/** Another document of this window wrote the mark (the node chat's frame,
+ *  or the page around it): adopt it. The `storage` listener; exported so the
+ *  sync can be tested without a browser. */
+export function onLastChatStorage(e: Pick<StorageEvent, "key" | "storageArea">): void {
+  if (typeof sessionStorage === "undefined" || e.storageArea !== sessionStorage) return;
+  if (e.key !== KEY && e.key !== null) return;
+  const next = read();
+  unsaved = false;
+  if (next === mem) return;
+  mem = next;
+  notify();
+}
+
 let listening = false;
-function subscribe(fn: () => void): () => void {
+/** Follow the mark: `fn` runs on every change, this document's or another's.
+ *  Returns the unsubscribe. */
+export function subscribeLastChat(fn: () => void): () => void {
   subs.add(fn);
   // A second document (the node chat's frame) loaded its copy of this module
-  // before a press elsewhere: catch up before the first read.
-  mem = read();
+  // before a press elsewhere: catch up before the first read — unless this
+  // document holds a pick storage refused, which a re-read would drop.
+  if (!unsaved) mem = read();
   if (!listening && typeof window !== "undefined") {
     listening = true;
-    window.addEventListener("storage", (e) => {
-      if (e.storageArea !== sessionStorage || (e.key !== KEY && e.key !== null)) return;
-      const next = read();
-      if (next === mem) return;
-      mem = next;
-      notify();
-    });
+    window.addEventListener("storage", onLastChatStorage);
   }
   return () => {
     subs.delete(fn);
@@ -80,5 +95,5 @@ function subscribe(fn: () => void): () => void {
 /** The last chat picked, live: re-renders when any document of this window
  *  picks another. */
 export function useLastChat(): string | null {
-  return useSyncExternalStore(subscribe, lastChat, lastChat);
+  return useSyncExternalStore(subscribeLastChat, lastChat, lastChat);
 }

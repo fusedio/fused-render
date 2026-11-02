@@ -188,6 +188,14 @@ interface Card {
  *  hold the button disabled until the browser gave up on the request. */
 const SCHEDULE_WAIT_MS = 8000;
 
+/** A seat's door: a draft's New task card (`draftHref`, as the List's row
+ *  press), every other row's chat (`taskHref`, on the pulse's live status).
+ *  Null while a pulse-only draft waits for the listing to name it. */
+function seatHref({ pulse: t, row }: RailRow): string | null {
+  const merged = row ? { ...row, status: t.status } : t;
+  return (row && isDraftTask(row) ? draftHref(row) : null) ?? taskHref(merged);
+}
+
 /** The schedule's answer for the card, or empty if the read fails or outlasts
  *  `SCHEDULE_WAIT_MS` — either way the card opens (see `openNewTask`). */
 function cardSeed(): Promise<{ modes: string[]; recents: string[] }> {
@@ -720,13 +728,24 @@ export function ClaudeRail({
   };
   // A DRAFT'S DOOR, IN PLACE (header of `Card.draft`): the same New task card
   // the + opens, on the draft's own record — what the Tasks page's row press
-  // does (Scheduled `openDraft`), without leaving the canvas. A chat draft is
-  // read by its key and seeded the Tasks page's way (`chatHopSeed`); a task
-  // draft carries its form on the row. Nothing is minted either way, and the
-  // card's autosave goes on writing the same record.
-  const openDraftCard = (row: Task) => {
-    // No clone yet: no node to name and no target to lock (the +'s gate).
-    if (opening || card || dir === null) return;
+  // does (Scheduled `openDraft`), without leaving the canvas. Read FRESH, both
+  // kinds: the listing row's `form` can trail an edit made a moment ago, and a
+  // card seeded on it would autosave the older words back over the newer.
+  // Nothing is minted, and the card's autosave goes on writing the same
+  // record. Needs no clone: the row names its own target and node.
+  //
+  // THREE ANSWERS from the read (capped at SCHEDULE_WAIT_MS, the +'s cap, so
+  // a hung read never holds the rail's doors shut):
+  //   * the record — the card opens on it (a chat draft with no record yet
+  //     opens on its key, as the Tasks page's hop does);
+  //   * the record is GONE (a task draft deleted elsewhere, the row not yet
+  //     re-read) — no card, which would mint it again; the listing is re-read
+  //     so the ring goes;
+  //   * NO ANSWER (failed or timed out) — no card on a guess, which could
+  //     autosave a blank form over the stored one: the press takes the
+  //     Tasks page's door instead (`href`), which reads the record itself.
+  const openDraftCard = (row: Task, href: string) => {
+    if (opening || card) return;
     const chat = isChatDraftTask(row);
     if (!chat && !row.draft_id) return;
     setOpening(true);
@@ -736,58 +755,63 @@ export function ClaudeRail({
       node: where.kind === "node" ? where.name : null,
       canvas: name,
     };
-    // READ FRESH, both kinds: the listing row's `form` can trail an edit
-    // made a moment ago (a close-and-reopen), and a card seeded on it would
-    // autosave the older words back over the newer. The row's own form is
-    // the fallback when the read fails or outlasts SCHEDULE_WAIT_MS — the
-    // +'s cap, so a hung read never holds the rail's doors shut.
-    const fallback: DraftSeed | null = chat
-      ? null
-      : { id: row.draft_id!, form: row.form ? { ...row.form } : null };
-    const stored = new Promise<DraftSeed | null>((resolve) => {
-      const timer = window.setTimeout(() => resolve(fallback), SCHEDULE_WAIT_MS);
+    type Read = { kind: "seed"; seed: DraftSeed | null } | { kind: "gone" } | { kind: "unknown" };
+    const stored = new Promise<Read>((resolve) => {
+      const timer = window.setTimeout(() => resolve({ kind: "unknown" }), SCHEDULE_WAIT_MS);
       fetchDrafts().then(
         (all) => {
           window.clearTimeout(timer);
-          if (!all) return resolve(fallback);
-          if (chat) return resolve(chatHopSeed(row.key, all.chat[row.key] ?? null, row.project || row.file || ""));
+          if (!all) return resolve({ kind: "unknown" });
+          if (chat) {
+            const seed = chatHopSeed(row.key, all.chat[row.key] ?? null, row.project || row.file || "");
+            return resolve({ kind: "seed", seed });
+          }
           const form = all.task[row.draft_id!];
-          resolve(form ? { id: row.draft_id!, form: { ...form } } : fallback);
+          resolve(form ? { kind: "seed", seed: { id: row.draft_id!, form: { ...form } } } : { kind: "gone" });
         },
         () => {
           window.clearTimeout(timer);
-          resolve(fallback);
+          resolve({ kind: "unknown" });
         },
       );
     });
-    void Promise.all([cardSeed(), stored]).then(([got, seed]) => {
+    void Promise.all([cardSeed(), stored]).then(([got, read]) => {
       if (!alive.current) return;
       setOpening(false);
+      if (read.kind === "gone") {
+        refreshListing();
+        return;
+      }
+      if (read.kind === "unknown") {
+        onOpenChat(href);
+        return;
+      }
       setCard({
         seq: Date.now(),
         ...base,
         ...got,
-        draft: seed,
+        draft: read.seed,
         chatKey: chat ? row.key : "",
-        time: reopenTime(seed),
+        time: reopenTime(read.seed),
       });
     });
   };
   // THE RAIL'S ONE DOOR: a draft's href opens its card here; every other
   // href is the page's (`onOpenChat`). By href, because that is what the
-  // ring, the hover card's Open and the no-room press all hand over.
-  const draftByHref = useMemo(() => {
-    const map = new Map<string, Task>();
-    for (const { row } of seats) {
-      if (!row || !isDraftTask(row)) continue;
-      const href = draftHref(row);
-      if (href) map.set(href, row);
+  // ring, the hover card's Open and the no-room press all hand over — and
+  // every one of them moves the last-picked mark to that chat (header).
+  const seatByHref = useMemo(() => {
+    const map = new Map<string, RailRow>();
+    for (const seat of seats) {
+      const href = seatHref(seat);
+      if (href) map.set(href, seat);
     }
     return map;
   }, [seats]);
   const openChat = (href: string) => {
-    const row = draftByHref.get(href);
-    if (row) openDraftCard(row);
+    const seat = seatByHref.get(href);
+    if (seat) setLastChat(lastChatId(seat.pulse));
+    if (seat?.row && isDraftTask(seat.row)) openDraftCard(seat.row, href);
     else onOpenChat(href);
   };
   const openChatRef = useRef(openChat);
@@ -808,7 +832,7 @@ export function ClaudeRail({
               // moment: it still gets its ring, the press waits for the
               // listing.
               const draft = !!row && isDraftTask(row);
-              const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged);
+              const href = seatHref({ pulse: t, row });
               // No door, no ring (as before): a form-scheduled row with no
               // session, or a pulse-only draft the listing has not named yet.
               if (!href) return null;
