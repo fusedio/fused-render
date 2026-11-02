@@ -279,7 +279,7 @@ export function ClaudeRail({
   /** THE GIT SECTION (owner, 2026-11-02: "we need to show git as well when
    *  collapsed … like the collapsed left sidebar where we have sections"):
    *  under the chats, past a separator, the way the left rail splits
-   *  Projects / Canvases / Favourites — a Check-for-updates seat, the branch,
+   *  Projects / Canvases / Favourites — the branch, a Check-for-updates seat,
    *  and the last three commits that touched `path` (rail-git.ts). Drawn only
    *  where `path` sits in a repository; absent on a canvas (a clone is not
    *  one). `onOpenGit` is the branch's and the commits' door: the page's git
@@ -1118,6 +1118,22 @@ export function ClaudeRail({
                   <>
                     <button
                       type="button"
+                      className="sidebar-rail-btn claude-rail-item claude-rail-git-branch"
+                      aria-label={`On ${branch} · ${counts}${git.onOpenGit ? " — open the Git panel" : ""}`}
+                      disabled={!git.onOpenGit}
+                      data-hint={`On ${branch}`}
+                      data-hint-title={`On ${branch}`}
+                      data-hint-reply={counts}
+                      data-hint-side="left"
+                      onClick={() => {
+                        hideHint();
+                        git.onOpenGit?.();
+                      }}
+                    >
+                      <GitBranch size={16} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
                       className={"sidebar-rail-btn claude-rail-item claude-rail-git-check" + (railGit.checking ? " is-checking" : "")}
                       aria-label={`${checkWords} · ${counts}`}
                       aria-busy={railGit.checking || undefined}
@@ -1133,22 +1149,6 @@ export function ClaudeRail({
                     >
                       <RefreshCw size={16} aria-hidden="true" />
                       {behind > 0 && <span className="sidebar-rail-dot is-unread" aria-hidden="true" />}
-                    </button>
-                    <button
-                      type="button"
-                      className="sidebar-rail-btn claude-rail-item claude-rail-git-branch"
-                      aria-label={`On ${branch} · ${counts}${git.onOpenGit ? " — open the Git panel" : ""}`}
-                      disabled={!git.onOpenGit}
-                      data-hint={`On ${branch}`}
-                      data-hint-title={`On ${branch}`}
-                      data-hint-reply={counts}
-                      data-hint-side="left"
-                      onClick={() => {
-                        hideHint();
-                        git.onOpenGit?.();
-                      }}
-                    >
-                      <GitBranch size={16} aria-hidden="true" />
                     </button>
                     {r.commits.map((c) => {
                       const when = timeAgo(c.when) ?? "";
