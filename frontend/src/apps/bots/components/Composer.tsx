@@ -10,8 +10,8 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { api, rawFileUrl, request, type Bot } from "../lib/api";
 import { canClear, commandFor, matchCommands, slashQuery, type Command } from "../lib/commands";
 import { jobNote } from "../lib/dictation";
-import { statusLabel } from "../lib/derive";
-import { fmtAgo, fmtBytes, fmtSecs } from "../lib/format";
+import { runningStatusText } from "../lib/derive";
+import { fmtBytes, fmtSecs } from "../lib/format";
 import { act, errMsg, eventsOf, markSeen, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
 
 export interface ReplyTo { seq: number; text: string }
@@ -350,8 +350,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   const lastStepTs = useBotsSelector(() => { const evs = b ? eventsOf(b.id) : []; for (let i = evs.length - 1; i >= 0; i--) if (evs[i].role !== "user" && evs[i].role !== "delivery") return evs[i].ts; return 0; });
   const [, tick] = useState(0);
   useEffect(() => { if (!running) return; const t = window.setInterval(() => tick((n) => n + 1), 1000); return () => window.clearInterval(t); }, [running]);
-  const quiet = running && lastStepTs ? fmtAgo(lastStepTs) : "";
-  const stat = !b || !running ? "" : b.status === "waiting" ? "Waiting for you · answer, sign in or approve above" : statusLabel(b) + (quiet && quiet !== "now" ? ` · last step ${quiet}` : "");
+  const stat = !b || !running ? "" : runningStatusText(b, lastStepTs);
   // While you hold the browser the bot stays stopped: what you send is queued (server meta.held) and goes when you hand back.
   const placeholder = !b ? "Message…" : mic.busy ? mic.note || "Transcribing…"
     : b.control ? `Message ${b.name}… (sent when you hand back)`
@@ -364,7 +363,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   return (
     <div className="composer">
       <div className="ctl">
-        {stat ? <span className="stat" title={b?.title || undefined}><span className={`dot ${b?.status}`} />{stat}</span> : null}
+        {stat ? <span className="stat" title={b?.title ? `${stat}\n${b.title}` : stat}><span className={`dot ${b?.status}`} />{stat}</span> : null}
         <button id="pause" disabled={!on || b?.status !== "running"} onClick={ctl(api.pause)}
           title="Hold the task before its next step. The browser and everything done so far stay; Resume carries on from here.">Pause</button>
         <button id="resume" disabled={!on || b?.status !== "paused"} onClick={ctl(api.resume)} title="Carry on from where it paused.">Resume</button>

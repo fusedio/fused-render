@@ -16,7 +16,9 @@ import { useState } from "react";
 
 import {
   CLAUDE_INSTALL_COMMAND,
+  CLAUDE_INSTALL_COMMAND_WINDOWS,
   CODEX_INSTALL_COMMAND,
+  GEMINI_INSTALL_COMMAND,
   isClaudeTrouble,
   troubleHelpUrl,
   troubleInstructions,
@@ -25,6 +27,7 @@ import {
   troubleReport,
   type TroubleFacts,
 } from "@platform/lib/trouble";
+import { isWindows } from "@platform/lib/platform";
 import { CommandLine } from "./CommandLine";
 
 // Plain-language headings and explanations, following the download page's
@@ -62,6 +65,28 @@ const SAID: Record<string, { title: string; explain: string }> = {
 // beside "Install Codex" named the wrong agent in the one line the user reads
 // first (CodeRabbit on the Codex PR). `raw` is shared — it names nobody.
 const SAID_BY_AGENT: Record<string, Record<string, { title: string; explain: string }>> = {
+  gemini: {
+    notfound: {
+      title: "The app can't find Gemini CLI",
+      explain:
+        "Fused Render uses Google Gemini CLI on this computer for this task, " +
+        "and it could not find it. Either it was never installed, or it is " +
+        "somewhere the app cannot see.",
+    },
+    login: {
+      title: "Gemini isn't signed in",
+      explain:
+        "Gemini CLI is installed but not signed in to your Google account " +
+        "(or given an API key) yet, so nothing can run. Sign in from " +
+        "Preferences → Coding agents, or in a terminal, once.",
+    },
+    limit: {
+      title: "Your Gemini quota was reached",
+      explain:
+        "Nothing is broken — your Google account or API key has a set amount " +
+        "of Gemini use and it is spent for now. The message below says when it resets.",
+    },
+  },
   codex: {
     notfound: {
       title: "The app can't find Codex",
@@ -186,8 +211,8 @@ export function TroubleCard({
   kind?: TroubleKind;
   /** Which agent failed — "claude" when absent (docs/COPILOT_BACKEND.md D13).
    *  Picks the classifier's subject and the brief's steps, and the install
-   *  line: Claude's, Codex's own (docs/CODEX_BACKEND.md D10), none on a
-   *  Copilot card. */
+   *  line: Claude's, Codex's own (docs/CODEX_BACKEND.md D10), Gemini's own
+   *  (docs/GEMINI_BACKEND.md D10), none on a Copilot card. */
   backend?: string;
   /** Extra actions belonging to the calling surface (e.g. "Fix this"). */
   children?: React.ReactNode;
@@ -200,14 +225,18 @@ export function TroubleCard({
   const instructions = troubleInstructions(ctx);
   const install = backend === "codex"
     ? { name: "Codex", command: CODEX_INSTALL_COMMAND }
-    : backend === "copilot"
-      ? null
-      : { name: "Claude Code", command: CLAUDE_INSTALL_COMMAND };
+    : backend === "gemini"
+      ? { name: "Gemini CLI", command: GEMINI_INSTALL_COMMAND }
+      : backend === "copilot"
+        ? null
+        : { name: "Claude Code", command: isWindows ? CLAUDE_INSTALL_COMMAND_WINDOWS : CLAUDE_INSTALL_COMMAND };
   // The brief behind the second copy button is written for THIS agent
   // (`troubleInstructions`), so the button names that agent — a Codex card
   // labelling its brief "Claude Code instructions" hands the wrong agent's
   // name to whoever gets the paste.
-  const agentName = backend === "codex" ? "Codex" : backend === "copilot" ? "Copilot" : "Claude Code";
+  const agentName = backend === "codex" ? "Codex"
+    : backend === "gemini" ? "Gemini"
+      : backend === "copilot" ? "Copilot" : "Claude Code";
   const copyBriefLabel = `Copy ${agentName} instructions`;
 
   if (compact) {

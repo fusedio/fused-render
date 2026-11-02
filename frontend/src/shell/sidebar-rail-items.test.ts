@@ -41,14 +41,15 @@ const pin = (n: number): Bookmark => ({
 const range = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
 
 describe("railExtras", () => {
-  test("caps apps at 6, canvases at 4 and pins at 3, keeping the head of each list in order", () => {
-    const desk = [...range(9).map(app), ...range(6).map(canvas)];
+  test("caps apps at 5, canvases at 5 and pins at 3, keeping the head of each list in order", () => {
+    // An even split between apps and canvases (owner, 2026-10-23: 5-5, was 6-4).
+    const desk = [...range(9).map(app), ...range(7).map(canvas)];
     const out = railExtras({ desk, pins: range(5).map(pin), bot: false, canvases: true });
-    expect(RAIL_APPS_MAX).toBe(6);
-    expect(RAIL_CANVASES_MAX).toBe(4);
+    expect(RAIL_APPS_MAX).toBe(5);
+    expect(RAIL_CANVASES_MAX).toBe(5);
     expect(RAIL_PINS_MAX).toBe(3);
-    expect(out.apps.map((a) => a.name)).toEqual(range(6).map((i) => `app${i}`));
-    expect(out.canvases.map((a) => a.name)).toEqual(range(4).map((i) => `canvas${i}`));
+    expect(out.apps.map((a) => a.name)).toEqual(range(5).map((i) => `app${i}`));
+    expect(out.canvases.map((a) => a.name)).toEqual(range(5).map((i) => `canvas${i}`));
     expect(out.pins.map((b) => b.id)).toEqual(["b0", "b1", "b2"]);
   });
 

@@ -215,6 +215,12 @@ _VISION_LENGTHS = ("short", "normal", "long")
 _VISION_MAX_OBJECTS = 200
 
 
+def _hub_meta_cached(model_id):
+    """`hub_metadata.cached(model_id)`, starting the refreshers first."""
+    supervisor.start_hub_refreshers()
+    return hub_metadata.cached(model_id)
+
+
 def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
     """400 naming every key of `body` that is not in `allowed`, or None.
 
@@ -1250,6 +1256,8 @@ def _catalog_with_downloads() -> list[dict]:
             if traits:
                 entry.update(voiceMode=traits["mode"], voices=traits["voices"],
                              languages=traits["languages"])
+                if traits.get("instructable") is False:
+                    entry["instructable"] = False
     return rows
 
 
@@ -1310,7 +1318,7 @@ def _kv_geometry_kwargs(model_id: str, runner_code: str | None) -> dict:
     it with is inert (`fit._kv_cache_bytes` returns `0.0` before it ever
     reads the dtype).
     """
-    meta = hub_metadata.cached(model_id)
+    meta = _hub_meta_cached(model_id)
     kwargs = {
         snake: meta[camel]
         for camel, snake in _KV_GEOMETRY_FIELDS.items()
@@ -1353,7 +1361,7 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
       cached snapshot's own `config.json` with no model load involved — the
       MEASURED answer, when there is a snapshot to measure. Only when
       `hub_cache.has_cached_snapshot` says there is NOTHING on disk yet does
-      this fall back to `hub_metadata.cached(model_id)`'s `hasVisionTower` —
+      this fall back to `_hub_meta_cached(model_id)`'s `hasVisionTower` —
       the Hub's OWN `config.json`, harvested ahead of any download (AI-17)
       — so a search result still classifies before the user fetches a
       single byte. `cached()`, never `get()` (code review finding 1): this
@@ -1383,7 +1391,7 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
     if capability == registry.TEXT_GENERATION and runner_code == "mlx-text":
         if has_cached_snapshot(model_id):
             return has_vision_tower(model_id)
-        meta = hub_metadata.cached(model_id)
+        meta = _hub_meta_cached(model_id)
         return bool(meta and meta.get("hasVisionTower"))
     return False
 
@@ -1411,7 +1419,7 @@ def _capability_tags(capability: str, model_id: str) -> tuple[str, ...]:
     if has_cached_snapshot(model_id):
         vision = has_vision_tower(model_id)
     else:
-        meta = hub_metadata.cached(model_id)
+        meta = _hub_meta_cached(model_id)
         vision = bool(meta and meta.get("hasVisionTower"))
         if meta:
             model_type = meta.get("modelType")
@@ -1482,6 +1490,7 @@ def api_ai_catalog():
     Sync `def`: `cached_models()` walks the hub cache (memoised, see there), so it
     belongs in the threadpool rather than on the event loop.
     """
+    supervisor.start_hub_refreshers()
     return {"capabilities": _catalog_with_downloads(),
             # Everything else on this disk, with the reason it is not above.
             "unsupported": _unsupported_downloads(),
@@ -2578,8 +2587,14 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
         return _error(registry.unavailable_reason(registry.TEXT_TO_SPEECH)
                       or "no speech model is configured", status=409)
     curated = catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}
-    traits = speech_traits(model) or (
-        {"mode": curated["voiceMode"]} if curated.get("voiceMode") else None)
+    # Not downloaded yet: the curated row stands in for the snapshot. Kokoro's
+    # voice table is static, so its row gets the full traits (voices included)
+    # and a wrong voice is a 400 here, not a failure after the download.
+    curated_traits = (
+        formats.kokoro_traits() if "sherpa-tts" in catalog.runners_offering(model)
+        else {"mode": curated["voiceMode"], "instructable": curated.get("instructable", True)}
+        if curated.get("voiceMode") else None)
+    traits = speech_traits(model) or curated_traits
     if traits is not None:
         try:
             fields = formats.speech_options(model, traits, fields)

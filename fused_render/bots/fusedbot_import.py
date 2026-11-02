@@ -50,6 +50,7 @@ import os
 import shutil
 import time
 
+from fused_render import _platform
 from fused_render.bots import paths as _bpaths
 from fused_render.bots.store import write_json_atomic
 
@@ -106,7 +107,7 @@ def _hot_pid(bot_dir: str) -> int | None:
     try:
         target = os.readlink(os.path.join(bot_dir, "profile", "SingletonLock"))
         pid = int(target.rsplit("-", 1)[1])
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)  # never os.kill(pid, 0): CTRL_C_EVENT on Windows
         return pid
     except (OSError, ValueError, IndexError):
         return None

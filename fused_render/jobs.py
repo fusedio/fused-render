@@ -259,8 +259,9 @@ MODEL_MAX = TITLE_MAX
 _ORIGIN_BY_ROUTE: dict[str, str] = {
     "/ai-models/local": "Local models",
     "/ai-models/benchmark": "Benchmark",
-    "/claude-config": "Claude setup",
+    "/claude-config": "Claude Code",
     "/preferences": "Preferences",
+    "/skills": "Skills",
     "/preferences?tab=indexing": "Explorer",
     "/tasks": "Scheduler",
 }
@@ -436,7 +437,7 @@ class Job:
     # `matchesSource("", "")` reading false for exactly this reason.
     source: str = ""
     # A short, human-readable label naming WHAT RAISED this job — "Playground",
-    # "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
+    # "Local models", "Benchmark", "Explorer", "Claude Code", "GitHub",
     # "Scheduler", "App install", or a user app's own name. Not stored as a
     # function of `page` — `page` answers "where does clicking this row go",
     # `origin` answers "who asked for this", and the two move independently
@@ -673,7 +674,7 @@ def upsert(body: dict, *, page: str = "", source: str = "", origin: str | None =
 
     `origin=`, like `page=`, is threaded in as its own argument rather than
     trusted from the body — a page could otherwise attribute its own row to
-    "Claude setup" or "Scheduler" by typing one of those strings into its
+    "Claude Code" or "Scheduler" by typing one of those strings into its
     report, and the whole point of the field is that the caption can be
     trusted. The HTTP endpoint computes it server-side, from the report's own
     `X-Fused-Page` (`origin_for_page`), and passes the verdict in here; a
@@ -823,7 +824,7 @@ def upsert(body: dict, *, page: str = "", source: str = "", origin: str | None =
         if "origin" in body and server:
             # Same gate as `tier`/`waiting_for` above, and for the same
             # reason: attribution is exactly what a page could otherwise
-            # forge (`{"origin": "Claude setup"}` on a row it started
+            # forge (`{"origin": "Claude Code"}` on a row it started
             # itself), so a page's own `origin` in the body is silently
             # dropped, same treatment as the rest of this function's
             # server-only fields. A server-side producer's own report (a

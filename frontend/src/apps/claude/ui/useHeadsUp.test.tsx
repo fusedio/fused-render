@@ -13,18 +13,23 @@ const realFetch = globalThis.fetch;
 let polls: string[] = [];
 let posts: unknown[] = [];
 let answers: unknown[] = [];
+let lastAnswer: unknown = { state: "idle" };
 
 beforeEach(() => {
   polls = [];
   posts = [];
   answers = [];
+  lastAnswer = { state: "idle" };
   (globalThis as { fetch: unknown }).fetch = (url: string, init?: { method?: string; body?: string }) => {
     if (init?.method === "POST") {
       posts.push(JSON.parse(init.body ?? "{}"));
       return Promise.resolve(new Response("{}", { status: 200 }));
     }
     polls.push(String(url));
-    const next = answers.shift() ?? { state: "idle" };
+    // Like the real server, keep returning a note until a test says otherwise.
+    const sticky = (lastAnswer as { state?: string }).state === "note" ? lastAnswer : { state: "idle" };
+    const next = answers.shift() ?? sticky;
+    lastAnswer = next;
     return Promise.resolve(new Response(JSON.stringify(next), { status: 200 }));
   };
 });
@@ -161,6 +166,24 @@ test("the card clears itself after the user sends two more messages", async () =
   expect(api.note).not.toBeNull();
   act(() => r.update(<Probe runId="r1" running enabled userTurns={5} />));
   expect(api.note).toBeNull();
+});
+
+test("the card clears when the server withdraws the note; a failed poll keeps it", async () => {
+  answers = [{ state: "note", id: "n1", note: NOTE }];
+  const r = mount({ runId: "r1", running: true, enabled: true, userTurns: 0 });
+  await wait(25);
+  expect(api.note).not.toBeNull();
+  // A failed poll is "nothing new": the card stays.
+  const okFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = () => Promise.reject(new Error("offline"));
+  await wait(40);
+  expect(api.note).not.toBeNull();
+  (globalThis as { fetch: unknown }).fetch = okFetch;
+  answers = [{ state: "idle" }];
+  await wait(40);
+  expect(api.note).toBeNull();
+  act(() => r.unmount());
+  mounted.pop();
 });
 
 test("a disabled answer from the server stops polling that run", async () => {

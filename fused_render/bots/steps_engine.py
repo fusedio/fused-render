@@ -104,13 +104,16 @@ def system_prompt() -> str:
 # The Marketplace's two actions (docs §15), in the prompt only while the Marketplace is on (tools.marketplace_on):
 # the same pref that shows the shell its entry points.
 MARKETPLACE_ACTIONS = (
-    "- marketplace_search [query]: search the Marketplace, the catalog of community apps the user can install (`query` words "
+    "- marketplace_search [query]: search the Community, the catalog of apps people share that the user can install (`query` words "
     "against name, description, tags, category; omit it for the whole catalog). Each hit gives the app's slug, what it does and "
     "whether it is INSTALLED already (then it is in APPS: `show` it, do not install again). Read-only. Use it when the user asks "
     "for an app that is not in APPS, or when a community app would do the task better than browsing.\n"
-    "- marketplace_install slug [update]: install one Marketplace app (slug from marketplace_search) into the user's workspace. "
+    "- marketplace_install slug [update]: install one Community app (slug from marketplace_search) into the user's workspace: "
+    "a copy of its author's GitHub repo at the version Fused reviewed (Community apps are reviewed GitHub releases). "
     "ALWAYS raises an approval card first (say which app and why in `thought`); `update: true` only when the user asks to "
-    "update an installed one. The result names its folder, now in APPS: `show` it, `goto` its link, or call its tools.\n")
+    "update an installed one to the newest reviewed release. An app the user already follows by GitHub link is refused: "
+    "switching it is the user's choice in the app. The result names its folder, now in APPS: `show` it, `goto` its link, "
+    "or call its tools.\n")
 
 
 # The model's `ask` sometimes claims it has no browser actions (it saw the host's
@@ -143,6 +146,16 @@ def _one_liner(act, result, obs, label=""):
     first = lines[0] if lines else ""
     first = " ".join(first.split())
     return first if len(first) <= 160 else first[:159] + "…"
+
+
+def _doing(bot, text):
+    """Live activity for the status line (Bot.set_doing); a test's fake bot may lack it."""
+    fn = getattr(bot, "set_doing", None)
+    if fn:
+        try:
+            fn(text)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _wait_for_user(bot):
@@ -206,6 +219,7 @@ def run(bot, task, label=None):
                     visited[u] = {"title": obs.get("title") or "", "n": 1}
             prev_url = u
             prompt = _prompt(bot, task, history, obs, visited, past, result=current_result)
+            _doing(bot, "thinking")
             try:
                 raw = bot._ai_call(ai, prompt, model=bot.meta.get("model") or botmod.DEFAULT_MODEL,
                                    system_prompt=sys_prompt,
@@ -412,7 +426,9 @@ def run(bot, task, label=None):
                 if rule and any(channels.base.is_forever(a) for a in yes):
                     tools.add_allow_rule(bot, rule)
                 history.append(f"APPROVED by the user: {preview}")
+            _doing(bot, tools.describe(bot, act, decision, obs))
             lbl, result = tools.execute(bot, act, decision, obs)
+            _doing(bot, "thinking")
             # The thumb is "the page after this step": only browser actions change the page.
             browser_step = act not in _NO_THUMB
             # `result` is the user's one-liner; `detail` keeps the raw text where it adds something.

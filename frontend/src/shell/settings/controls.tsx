@@ -20,14 +20,14 @@ import {
   CopilotAgentControl,
   DefaultAgentControl,
   EnginesPointer,
+  GeminiAgentControl,
 } from "./ai";
 import {
   CanvasesControl,
   CanvasesEmbedProxyControl,
-  GithubLinkControl,
+  CanvasRailPeekControl,
   GitSyncControl,
   LivePreviewsControl,
-  MarketplaceControl,
   MonitorControl,
   NotifyTerminalControl,
   ProjectQueueControl,
@@ -36,6 +36,7 @@ import {
   TaskRecapsControl,
   TaskSummaryTitlesControl,
   ClaudeStrictMcpControl,
+  ContribRemixControl,
   ClaudeDefaultPermissionControl,
 } from "./toggles";
 import {
@@ -56,6 +57,7 @@ import {
   DiagnosticsControl,
   IndexQueryControl,
 } from "./advanced";
+import { CanvasScreenshotsControl, CanvasScreenshotsFallbackControl } from "./screenshots";
 
 export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   appearance: AppearanceControl,
@@ -67,6 +69,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "agent-claude": ClaudeAgentControl,
   "agent-copilot": CopilotAgentControl,
   "agent-codex": CodexAgentControl,
+  "agent-gemini": GeminiAgentControl,
   "agent-default": DefaultAgentControl,
   "claude-model": ClaudeModelPointer,
   "claude-cli-missing": ClaudeCliMissing,
@@ -76,12 +79,14 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
   "claude-default-permission": ClaudeDefaultPermissionControl,
+  "canvas-screenshots": CanvasScreenshotsControl,
+  "canvas-screenshots-fallback": CanvasScreenshotsFallbackControl,
   "claude-max-sessions": ClaudeMaxSessionsControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
   "share-sheet": ShareSheetControl,
-  "github-link": GithubLinkControl,
   "live-previews": LivePreviewsControl,
+  "contrib-remix": ContribRemixControl,
   indexing: IndexingControl,
   "ranked-search": RankedSearchControl,
   "low-impact": LowImpactControl,
@@ -89,7 +94,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "rebuild-index": RebuildIndexControl,
   canvases: CanvasesControl,
   "canvases-embed-proxy": CanvasesEmbedProxyControl,
-  marketplace: MarketplaceControl,
+  "canvases-rail-peek": CanvasRailPeekControl,
   monitor: MonitorControl,
   reader: ReaderControl,
   "chromium-windows": ChromiumWindowsControl,

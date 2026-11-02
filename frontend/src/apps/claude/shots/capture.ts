@@ -14,15 +14,18 @@
 // an object URL nobody holds a handle to any more.
 import { APP_STATE_UNREADABLE } from "../pane/paneUrl";
 import { captureDom, caveatsOf } from "./dom-capture";
-import { encode, encodeBadged } from "./encode";
+import { cropRect, encode, encodeBadged, fit } from "./encode";
 import { captureNative } from "./native-capture";
 import { captureXO } from "./xo-capture";
 import {
+  SHOT_CROP_MAX,
+  SHOT_CROP_WHOLE,
   SHOT_FLASH_MS,
   SHOT_TIMEOUT_MS,
   SHOT_VIEW_BYTES,
   SHOT_VIEW_EDGE,
   type CaptureResult,
+  type CropResult,
   type PaneBitmap,
   type ShotBadge,
 } from "./types";
@@ -176,6 +179,7 @@ async function paneShot(
       why: "it did not fit the " + SHOT_VIEW_BYTES + "-byte budget",
     };
   }
+  const crops = badges ? await cropsOf(pane, badges) : undefined;
   return {
     blob,
     width: pane.width,
@@ -187,7 +191,34 @@ async function paneShot(
     via,
     incomplete: pane.incomplete,
     thumb: URL.createObjectURL(blob),
+    ...(crops ? { crops } : {}),
   };
+}
+
+/** One picture per badge that carries a target, cut from the SAME bitmap the
+ *  overview was (a second capture would photograph a pane that has moved on),
+ *  with that note's own letter burned in. A crop that will not encode, or that
+ *  would cover most of the pane and so repeat the overview, is skipped; the rest
+ *  stand. */
+async function cropsOf(pane: PaneBitmap, badges: ShotBadge[]): Promise<CropResult[]> {
+  const out: CropResult[] = [];
+  for (const b of badges) {
+    if (out.length >= SHOT_CROP_MAX) break;
+    if (!b.target) continue;
+    const rect = cropRect(b.target, pane.width, pane.height);
+    if (!rect || rect.width * rect.height >= pane.width * pane.height * SHOT_CROP_WHOLE) continue;
+    const size = fit(rect.width, rect.height);
+    const blob = await encodeBadged(pane, [b], undefined, rect);
+    if (!blob) continue;
+    out.push({
+      label: b.label,
+      blob,
+      width: size.width,
+      height: size.height,
+      thumb: URL.createObjectURL(blob),
+    });
+  }
+  return out;
 }
 
 /** The budget, and the abandoned capture's own aftercare (T:10199, 11278).
@@ -221,9 +252,11 @@ function race(
   // thumbnail is a Blob pinned for the life of the page with no handle left.
   capture.then(
     (late) => {
-      if (abandoned && late && late.thumb) {
+      if (!abandoned || !late) return;
+      for (const url of [late.thumb, ...(late.crops ?? []).map((c) => c.thumb)]) {
+        if (!url) continue;
         try {
-          URL.revokeObjectURL(late.thumb);
+          URL.revokeObjectURL(url);
         } catch {
           /* already gone */
         }

@@ -29,6 +29,7 @@ afterAll(() => {
 });
 
 const {
+  attachCrops,
   attachFile,
   attachPaths,
   dragHasAttachment,
@@ -252,6 +253,16 @@ describe("toWire", () => {
     expect(wire.map((w) => w.kind)).toEqual(["overview", "image"]);
     expect(wire[0]).toEqual({ kind: "overview", view: "/shots/o-overview.webp", viewNote: "…" });
   });
+
+  test("a crop follows the overview, tagged to its note by name", () => {
+    const wire = toWire([
+      { id: "1", kind: "crop", view: "/shots/n-note-a.png", name: "crop around note A" },
+      { id: "2", kind: "image", view: "/shots/a.png", name: "a.png" },
+      { id: "3", kind: "overview", view: "/shots/o-overview.webp" },
+    ]);
+    expect(wire.map((w) => w.kind)).toEqual(["overview", "crop", "image"]);
+    expect(wire[1]).toEqual({ kind: "crop", view: "/shots/n-note-a.png", name: "crop around note A" });
+  });
 });
 
 // ── receipts ────────────────────────────────────────────────────────────────
@@ -262,6 +273,7 @@ describe("receiptFor / failLabel", () => {
       receiptFor({ id: "1", kind: "pane", view: "/shots/a", ...att } as Attachment).label;
     expect(r({})).toBe("screenshot attached");
     expect(r({ kind: "overview" })).toBe("annotated overview attached");
+    expect(r({ kind: "crop", name: "crop around note A" })).toBe("crop around note A");
     expect(r({ kind: "image", name: "a.png" })).toBe("image attached: a.png");
     expect(r({ kind: "image" })).toBe("image attached");
     expect(r({ kind: "file", name: "a.csv" })).toBe("file attached: a.csv");
@@ -429,6 +441,39 @@ describe("revoke", () => {
   });
 });
 
+describe("attachCrops", () => {
+  const png = () => new Blob([new Uint8Array(64)], { type: "image/png" });
+  const capture = (labels: string[]) => ({
+    blob: png(),
+    width: 800,
+    height: 600,
+    notes: [],
+    via: "dom" as const,
+    crops: labels.map((label) => ({
+      label,
+      blob: png(),
+      width: 200,
+      height: 120,
+      thumb: "blob:crop/" + label,
+    })),
+  });
+
+  test("one upload per crop, named for its note, tied to it on the wire", async () => {
+    const atts = await attachCrops(capture(["A", "B"]));
+    expect(atts.map((a) => a.kind)).toEqual(["crop", "crop"]);
+    expect(atts.map((a) => a.name)).toEqual(["crop around note A", "crop around note B"]);
+    expect(uploads.map((u) => u.path.replace(/^.*-(note-\w)\.png$/, "$1")).sort()).toEqual([
+      "note-a",
+      "note-b",
+    ]);
+    expect(toWire(atts).map((w) => w.name)).toEqual(["crop around note A", "crop around note B"]);
+  });
+
+  test("a capture with no crops attaches nothing", async () => {
+    expect(await attachCrops({ ...capture([]), crops: undefined })).toEqual([]);
+  });
+});
+
 // ── the one refusal, and NO CAP OF ANY KIND (P2-6) ─────────────────────────
 
 describe("attachFile", () => {
@@ -583,4 +628,63 @@ describe("attachFile", () => {
     expect(att.why).toBe("could not be saved");
     expect(att.viewNote).toBe("not attached: it could not be saved (readonly)");
   });
+});
+
+describe("filesFromPaste", () => {
+  test("falls back to clipboardData.items when files is empty", () => {
+    const f = new File(["x"], "shot.png", { type: "image/png" });
+    const clipboardData = {
+      files: [],
+      items: [{ kind: "file", getAsFile: () => f }],
+    } as unknown as DataTransfer;
+    expect(filesFromPaste({ clipboardData })).toEqual([f]);
+  });
+
+  test("a text-only paste returns []", () => {
+    const clipboardData = {
+      files: [],
+      items: [{ kind: "string", getAsFile: () => null }],
+    } as unknown as DataTransfer;
+    expect(filesFromPaste({ clipboardData })).toEqual([]);
+  });
+});
+
+
+test("a save that stalls is given up within the save budget, says so on the chip, and the next capture asks again", async () => {
+  // The picture is taken; the shots-dir lookup never answers (a transport
+  // that swallowed the request). Unbounded, the chip stayed "attaching…"
+  // for ever with the scrim long gone.
+  const { attachPaneFromBlob, setShotSaveTimeoutForTests } = await import("./attach");
+  const { forgetPendingShotsDir } = await import("./dir");
+  resetShotsDirForTests();
+  let asks = 0;
+  const realFetch = globalThis.fetch;
+  Object.assign(globalThis, {
+    fetch: (url: string | URL | Request) => {
+      if (String(url) === "/api/claude/agent") {
+        asks += 1;
+        return new Promise<Response>(() => {}); // never
+      }
+      return realFetch(url as string);
+    },
+  });
+  setShotSaveTimeoutForTests(40);
+  try {
+    const t0 = Date.now();
+    const att = await attachPaneFromBlob({ blob: new Blob([new Uint8Array(16)], { type: "image/webp" }) });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(att.view).toBeNull();
+    expect(att.why).toBe("could not be saved");
+    expect(att.viewNote).toContain("did not answer within");
+    expect(asks).toBe(1);
+    // The stalled lookup is forgotten: a second capture asks the server again
+    // instead of waiting on the same dead promise.
+    await attachPaneFromBlob({ blob: new Blob([new Uint8Array(16)], { type: "image/webp" }) });
+    expect(asks).toBe(2);
+    forgetPendingShotsDir();
+  } finally {
+    setShotSaveTimeoutForTests(20_000);
+    Object.assign(globalThis, { fetch: realFetch });
+    resetShotsDirForTests();
+  }
 });

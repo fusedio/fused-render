@@ -1,7 +1,6 @@
-// The global model / thinking store's ORDERING rules (Bugbot on #1281,
-// 2026-09-21): an answer from the server never lands on top of a pick made
-// after it departed, and a refused write is taken back — unless a newer pick
-// has already taken over.
+// The global model / thinking store: read-only (the Claude settings page is
+// the one editor of `~/.claude/settings.json`), and a settings-page save
+// reaches every open surface through `refreshClaudeDefaults`.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 
@@ -30,8 +29,6 @@ function stub() {
   return { pending, answer };
 }
 
-const tick = () => new Promise((r) => setTimeout(r, 0));
-
 let mod: typeof import("./claude-defaults");
 beforeEach(async () => {
   mod = await import("./claude-defaults");
@@ -41,86 +38,77 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-test("a read that departed before a pick does not snap the pick back", async () => {
+test("the store has no writer: only the settings page edits the global pair", () => {
+  // Akshil, 2026-10-28: a pick on the New app composer used to PUT here and
+  // move every later Claude run on the machine.
+  expect("setClaudeDefaults" in mod).toBe(false);
+});
+
+test("a refresh re-reads the file and tells every subscriber and tab", async () => {
   const s = stub();
+  const stored = new Map<string, string>();
+  const g = globalThis as { localStorage?: unknown };
+  const realStorage = g.localStorage;
+  g.localStorage = { setItem: (k: string, v: string) => stored.set(k, v) };
   const heard: Pair[] = [];
   mod.subscribeClaudeDefaults((d) => heard.push(d));
-  const read = mod.readClaudeDefaults();          // GET #0 in flight
-  void mod.setClaudeDefaults({ model: "opus" }); // pick while it is out: PUT #1
-  expect(mod.getClaudeDefaults()?.model).toBe("opus");
-  s.answer(0, { model: "fable", effort: "low" }); // the stale GET lands late
-  // The read's MODEL is stale (picked since); its EFFORT is not and is taken.
-  expect(await read).toEqual({ model: "opus", effort: "low" });
-  expect(mod.getClaudeDefaults()?.model).toBe("opus");
-  s.answer(1, { model: "opus", effort: "low" });
-  await tick();
-  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "low" });
-  expect(heard.some((d) => d.model === "fable")).toBe(false);
+  const done = mod.refreshClaudeDefaults();
+  expect(s.pending[0].method).toBe("GET");
+  s.answer(0, { model: "sonnet", effort: "high" });
+  expect(await done).toEqual({ model: "sonnet", effort: "high" });
+  expect(heard).toEqual([{ model: "sonnet", effort: "high" }]);
+  g.localStorage = realStorage;
+  const sent = JSON.parse(stored.get(mod.CLAUDE_DEFAULTS_BROADCAST_KEY) ?? "{}");
+  expect([sent.model, sent.effort]).toEqual(["sonnet", "high"]);
 });
 
-test("a refused write is taken back from the file", async () => {
+test("a refresh does not share a read that departed before the save", async () => {
   const s = stub();
-  const heard: Pair[] = [];
-  mod.subscribeClaudeDefaults((d) => heard.push(d));
-  const write = mod.setClaudeDefaults({ model: "gpt-42" }); // PUT #0
-  expect(mod.getClaudeDefaults()?.model).toBe("gpt-42");     // optimistic
-  s.answer(0, { model: "", effort: "" }, 400);
-  await tick();
-  expect(s.pending[1].method).toBe("GET");                    // the re-read
-  s.answer(1, { model: "fable", effort: "low" });
-  expect(await write).toEqual({ model: "fable", effort: "low" });
-  expect(heard[heard.length - 1]).toEqual({ model: "fable", effort: "low" });
+  const stale = mod.readClaudeDefaults();   // GET #0, the file before the save
+  const fresh = mod.refreshClaudeDefaults(); // GET #1, its own request
+  expect(s.pending.length).toBe(2);
+  s.answer(0, { model: "fable", effort: "low" });
+  await stale;
+  s.answer(1, { model: "opus", effort: "max" });
+  await fresh;
+  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "max" });
 });
 
-test("a refused write's re-read does not clobber a newer pick", async () => {
+test("an older refresh that completes last does not overwrite a newer one", async () => {
   const s = stub();
-  const first = mod.setClaudeDefaults({ model: "gpt-42" }); // PUT #0, will fail
-  void mod.setClaudeDefaults({ effort: "high" });            // PUT #1, newer
-  s.answer(0, { model: "", effort: "" }, 400);
-  await tick();
-  s.answer(2, { model: "fable", effort: "low" });            // GET #2: the file BEFORE #1 landed
-  await first;
-  // The stale re-read said nothing; the newer pick still speaks.
-  expect(mod.getClaudeDefaults()?.effort).toBe("high");
-  s.answer(1, { model: "fable", effort: "high" });
-  await tick();
-  expect(mod.getClaudeDefaults()).toEqual({ model: "fable", effort: "high" });
+  const stored = new Map<string, string>();
+  const g = globalThis as { localStorage?: unknown };
+  const realStorage = g.localStorage;
+  g.localStorage = { setItem: (k: string, v: string) => stored.set(k, v) };
+  const older = mod.refreshClaudeDefaults(); // GET #0, after the model save
+  const newer = mod.refreshClaudeDefaults(); // GET #1, after the effort save
+  s.answer(1, { model: "opus", effort: "max" });
+  await newer;
+  s.answer(0, { model: "opus", effort: "low" });
+  await older;
+  g.localStorage = realStorage;
+  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "max" });
+  const sent = JSON.parse(stored.get(mod.CLAUDE_DEFAULTS_BROADCAST_KEY) ?? "{}");
+  expect([sent.model, sent.effort]).toEqual(["opus", "max"]);
 });
 
-test("a write that finishes after a newer pick leaves the newer pick alone", async () => {
+test("a failed newer refresh does not discard an older refresh's answer", async () => {
   const s = stub();
-  void mod.setClaudeDefaults({ model: "opus" });  // PUT #0
-  void mod.setClaudeDefaults({ model: "haiku" }); // PUT #1
-  s.answer(0, { model: "opus", effort: "low" });  // #0 answers late
-  await tick();
-  expect(mod.getClaudeDefaults()?.model).toBe("haiku");
-  s.answer(1, { model: "haiku", effort: "low" });
-  await tick();
-  expect(mod.getClaudeDefaults()).toEqual({ model: "haiku", effort: "low" });
+  const older = mod.refreshClaudeDefaults(); // GET #0
+  const newer = mod.refreshClaudeDefaults(); // GET #1
+  s.answer(1, { model: "", effort: "" }, 500);
+  await newer;
+  s.answer(0, { model: "sonnet", effort: "high" });
+  expect(await older).toEqual({ model: "sonnet", effort: "high" });
 });
 
-test("two fields in flight: the later answer never carries the other field's old value", async () => {
-  // Bugbot on 1e4a44c: model and effort are separate PUTs. If the server
-  // processes the effort write first, its answer says the OLD model; that
-  // answer must not put the model pill back while the model write is out.
+test("a read that departed before a refresh does not overwrite it when it completes last", async () => {
   const s = stub();
-  void mod.setClaudeDefaults({ model: "opus" });  // PUT #0
-  void mod.setClaudeDefaults({ effort: "high" }); // PUT #1
-  s.answer(1, { model: "fable", effort: "high" }); // #1 lands first, model still old
-  await tick();
-  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "high" });
-  s.answer(0, { model: "opus", effort: "high" });
-  await tick();
-  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "high" });
-});
-
-test("a refused write is taken back even while the OTHER field is in flight", async () => {
-  const s = stub();
-  const bad = mod.setClaudeDefaults({ model: "gpt-42" }); // PUT #0
-  void mod.setClaudeDefaults({ effort: "high" });          // PUT #1
-  s.answer(0, { model: "", effort: "" }, 400);
-  await tick();
-  s.answer(2, { model: "fable", effort: "low" });          // re-read GET #2
-  await bad;
-  expect(mod.getClaudeDefaults()).toEqual({ model: "fable", effort: "high" });
+  const stale = mod.readClaudeDefaults();    // GET #0, the file before the save
+  const fresh = mod.refreshClaudeDefaults(); // GET #1, after the save
+  s.answer(1, { model: "opus", effort: "max" });
+  await fresh;
+  s.answer(0, { model: "fable", effort: "low" });
+  expect(await stale).toEqual({ model: "opus", effort: "max" });
+  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "max" });
 });

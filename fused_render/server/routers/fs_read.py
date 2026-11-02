@@ -659,7 +659,12 @@ def _make_thumb(src: str, dst: str, size: int) -> None:
                 raise ValueError(proc.stderr.decode("utf-8", "replace").strip()
                                  or f"sips exited with status {proc.returncode}")
         else:
-            from PIL import Image, ImageOps
+            try:
+                from PIL import Image, ImageOps
+            except ImportError:
+                raise LookupError(
+                    "thumbnails need Pillow (pip install 'fused-render[cli]')"
+                ) from None
 
             with Image.open(src) as image:
                 image = ImageOps.exif_transpose(image)

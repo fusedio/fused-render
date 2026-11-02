@@ -1321,10 +1321,17 @@ class _Controller:
             self.tls_error = "no free https port among " + ", ".join(map(str, TLS_PORT_CANDIDATES))
             self.tls_port = None
             return
+        # The context is built here, not by uvicorn from `ssl.SSLContext`, which
+        # `_system_trust` replaces with a client-side wrapper whose server
+        # handshake fails on macOS. uvicorn rejects a stdlib context from
+        # `ssl_context_factory` (its isinstance check sees the wrapper), so load
+        # the config without TLS and attach the context afterwards.
         config = uvicorn.Config(LanApp(self._inner), host="0.0.0.0", port=self.tls_port,
                                 log_level="warning", lifespan="on",
-                                log_config=uvicorn_log_config(),
-                                ssl_certfile=cert, ssl_keyfile=key)
+                                log_config=uvicorn_log_config())
+        config.load()
+        config.ssl = lan_tls.server_ssl_context(
+            cert, key, getattr(config.http_protocol_class, "alpn_protocols", None))
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]},
                                   daemon=True, name="fused-lan-tls")

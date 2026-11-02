@@ -13,18 +13,30 @@
 //   - the node pane's chat is an explorer embed FRAMED by the host
 //     (`_canvasshot=1`): `requestCanvasShotFromParent` below asks the parent
 //     window and waits for its answer, targets ["canvas", "udf"] —
-//       chat   → parent { type: "fused-canvas-shot", req, what }
+//       chat   → parent { type: "fused-canvas-shot", req, what, udf?, by? }
 //       parent → chat   { type: "fused-canvas-shot-done", req, ok, blob?, error? }
 //     same origin both ways, `req` keeping a late answer off a later click.
+//
+// `by` says WHO is asking — the user at the Screenshot seat, or the agent's
+// `canvas_screenshot` tool — so the host's scrim over the workbench can name
+// the asker ("Capturing canvas…" against "Claude is looking at the canvas…"),
+// and so the native still can trust a user's click as proof the window is in
+// front where `document.hasFocus()` would lie (canvas-shot-native.ts). It
+// never changes WHAT is captured.
 //
 // HOW THE BYTES COME BACK: `postMessage` structured-clones a Blob — the
 // receiving window gets its own copy of the bytes, origin notwithstanding —
 // so the frame's answer carries the picture itself, no data URL, no upload.
 
 export type CanvasShotWhat = "canvas" | "udf";
+/** Who asked: the reader at the seat, or the model's tool. */
+export type CanvasShotBy = "user" | "agent";
 export type CanvasShotAnswer = { ok: true; blob: Blob } | { ok: false; error: string };
 export interface CanvasShot {
-  capture(what: CanvasShotWhat): Promise<CanvasShotAnswer>;
+  /** `udf` names the node for `what: "udf"`; omitted, the host uses the node
+   *  this chat is on (the agent's `canvas_screenshot` tool may name any).
+   *  `by` defaults to "user". */
+  capture(what: CanvasShotWhat, udf?: string, by?: CanvasShotBy): Promise<CanvasShotAnswer>;
   /** What this chat may ask for; one entry means a plain seat, two a menu. */
   targets: readonly CanvasShotWhat[];
 }
@@ -34,12 +46,17 @@ export const CANVAS_SHOT_LABEL: Record<CanvasShotWhat, string> = {
   udf: "Capture this UDF's output",
 };
 
-/** Generous: the frame's capture is seconds on a big graph; the parent's own
- *  timer answers before this does, so this is only the belt to its braces. */
-const ANSWER_TIMEOUT_MS = 60_000;
+/** Above the parent's whole budget — up to 40 s waiting for the workbench
+ *  frame, then 45 s for the capture — so the parent's own sentence always
+ *  arrives first; this is only the belt to its braces. */
+const ANSWER_TIMEOUT_MS = 95_000;
 
 /** The framed chat's ask. */
-export function requestCanvasShotFromParent(what: CanvasShotWhat): Promise<CanvasShotAnswer> {
+export function requestCanvasShotFromParent(
+  what: CanvasShotWhat,
+  udf?: string,
+  by: CanvasShotBy = "user",
+): Promise<CanvasShotAnswer> {
   if (typeof window === "undefined" || window.parent === window) {
     return Promise.resolve({ ok: false, error: "this chat is not on a canvas page" });
   }
@@ -71,7 +88,10 @@ export function requestCanvasShotFromParent(what: CanvasShotWhat): Promise<Canva
       ANSWER_TIMEOUT_MS,
     );
     window.addEventListener("message", onMessage);
-    window.parent.postMessage({ type: "fused-canvas-shot", req, what }, window.location.origin);
+    window.parent.postMessage(
+      { type: "fused-canvas-shot", req, what, by, ...(udf ? { udf } : {}) },
+      window.location.origin,
+    );
   });
 }
 

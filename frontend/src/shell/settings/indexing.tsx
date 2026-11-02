@@ -1,7 +1,7 @@
 // File index: the file index's switches and its escape hatches.
 //
-// The index maintains itself (a scan on every startup, incremental after the
-// first), so the rows here are "is it on", "how does it rank", "what does it
+// Once on, the index maintains itself (a scan on every startup, incremental
+// after the first; on by default only in the desktop app), so the rows here are "is it on", "how does it rank", "what does it
 // skip" and "rebuild it now" — not a normal path anybody walks daily.
 //
 // The status poll and the skip-rules config are SHARED by the rows through

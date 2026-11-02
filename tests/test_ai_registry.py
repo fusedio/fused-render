@@ -401,3 +401,38 @@ def test_apple_silicon_still_resolves_vision_to_the_mps_row(monkeypatch):
     assert not _runner("vision-torch-cuda").available().ok
     resolved = registry.for_capability(registry.VISION)
     assert resolved is not None and resolved.code == "vision-torch"
+
+
+def test_text_to_speech_has_the_mlx_row_first_and_kokoro_last():
+    """Registry order is the opt-in mechanism: Apple Silicon keeps Qwen3-TTS
+    because `mlx-audio-tts` is registered above the cross-platform row."""
+    rows = [r for r in registry.all_runners() if r.capability == registry.TEXT_TO_SPEECH]
+    assert [r.code for r in rows] == ["mlx-audio-tts", "sherpa-tts"]
+    kokoro = _runner("sherpa-tts")
+    assert (kokoro.label, kokoro.short, kokoro.family) == (
+        "Kokoro (sherpa-onnx)", "Kokoro", "Kokoro")
+    # The one loadable repo (csukuangfj/kokoro-multi-lang-v1_1) carries only
+    # the tags ['onnx', 'region:us']; a "kokoro" tag filter would hide it.
+    assert kokoro.hub_filter_tags == ()
+    # ...but the catalog POOL must still page that tag (D1304), or Linux pages
+    # the whole text-to-speech pipeline and a Mac's pool drops Kokoro's repo.
+    assert kokoro.hub_pool_tags == ("onnx",)
+
+
+def test_kokoro_runs_everywhere_and_the_mac_default_stays_qwen(monkeypatch):
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    _linux(monkeypatch)
+    assert _runner("sherpa-tts")._available().ok
+    assert registry.for_capability(registry.TEXT_TO_SPEECH).code == "sherpa-tts"
+    _mac_arm(monkeypatch)
+    assert registry.for_capability(registry.TEXT_TO_SPEECH).code == "mlx-audio-tts"
+    assert [r.code for r in registry.available_runners(registry.TEXT_TO_SPEECH)] == [
+        "mlx-audio-tts", "sherpa-tts"]
+
+
+def test_a_mac_that_chooses_kokoro_resolves_to_it(monkeypatch):
+    """The supervisor resolves one runner per capability, never per model, so
+    this preference is how a Mac runs a Kokoro id (see `_runner_or_raise`)."""
+    _mac_arm(monkeypatch)
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: "sherpa-tts")
+    assert registry.for_capability(registry.TEXT_TO_SPEECH).code == "sherpa-tts"

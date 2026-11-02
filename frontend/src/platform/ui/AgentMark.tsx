@@ -4,7 +4,9 @@
 // or the Octocat, which are GitHub's to draw and not ours. Codex is the
 // exception, by the owner's own ask (docs/CODEX_BACKEND.md D18, 2026-10-21):
 // it draws OpenAI's mark, since that is how the owner wants OpenAI Codex
-// named on every surface.
+// named on every surface. Gemini follows the Copilot rule (docs/GEMINI_BACKEND.md
+// D18): a glyph of our own — a four-point star — and never Google's Gemini
+// mark, which is Google's to draw.
 //
 // Same contract as `ClaudeMark`: `currentColor`, `em`-sized off the caller's
 // type so it drops into every seat the ✻ once had, `aria-hidden` because the
@@ -13,7 +15,7 @@ import { ClaudeMark } from "./ClaudeMark";
 import { agentLabel } from "@platform/lib/agent-backends";
 
 export interface AgentMarkProps {
-  /** "claude" | "copilot" | "codex" — anything else, or nothing, is Claude. */
+  /** "claude" | "copilot" | "codex" | "gemini" — anything else, or nothing, is Claude. */
   backend?: string | null;
   className?: string;
   /** Multiple of the caller's font-size (see `ClaudeMark`). */
@@ -65,13 +67,33 @@ function CodexGlyph({ className, size = 1 }: { className?: string; size?: number
   );
 }
 
+/** The Gemini glyph: our own four-point star in a 24-unit box — a plain
+ *  signifier for "the Gemini agent", drawn here rather than Google's mark. */
+function GeminiGlyph({ className, size = 1 }: { className?: string; size?: number }) {
+  return (
+    <svg
+      className={className ? `c-claudemark c-agentmark-gemini ${className}` : "c-claudemark c-agentmark-gemini"}
+      viewBox="0 0 24 24"
+      width={`${size}em`}
+      height={`${size}em`}
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M12 1.5c.6 5.9 4.6 9.9 10.5 10.5-5.9.6-9.9 4.6-10.5 10.5C11.4 16.6 7.4 12.6 1.5 12 7.4 11.4 11.4 7.4 12 1.5z" />
+    </svg>
+  );
+}
+
 export function AgentMark({ backend, className, size = 1, word = false }: AgentMarkProps) {
   const id = backend || "claude";
   const glyph = id === "copilot"
     ? <CopilotGlyph className={className} size={size} />
     : id === "codex"
       ? <CodexGlyph className={className} size={size} />
-      : <ClaudeMark className={className} size={size} />;
+      : id === "gemini"
+        ? <GeminiGlyph className={className} size={size} />
+        : <ClaudeMark className={className} size={size} />;
   if (!word) return glyph;
   return (
     <span className="c-agentmark-word">

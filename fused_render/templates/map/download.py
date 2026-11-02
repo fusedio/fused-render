@@ -219,16 +219,21 @@ def _read_progress(target: Path) -> dict:
         return {}
 
 
+def _procutil():
+    # By path (the templates tree is staged as one unit); never os.kill(pid, 0):
+    # on Windows signal 0 is CTRL_C_EVENT.
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared", "procutil.py")
+    spec = importlib.util.spec_from_file_location("_fr_procutil", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _alive(pid) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # someone else's process: alive, not ours to judge
-        return True
-    return True
+    return _procutil().pid_alive(pid)  # EPERM counts as alive: not ours to judge
 
 
 def _resumable(candidate: Path, source: str) -> bool:

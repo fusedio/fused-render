@@ -22,7 +22,7 @@ import {
 } from "@platform/lib/api";
 import type { ArchiveFormat } from "@platform/lib/api";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import {
   normDir,
   join,
@@ -109,7 +109,7 @@ export function useFileOps({
   // Whether a folder row's menu offers Share (the sheet) or the plain
   // "Export App File" — see share-app-flag.ts; default off. Read here, at the
   // hook's top, not inside the menu closure (which is not a render).
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
   // Same reasoning: read once here, not inside fileGroups/folderGroups (plain
   // closures rebuilt per call, not renders of their own).
   const canRun = useCanRunInTerminal();

@@ -328,9 +328,14 @@ def test_greet_on_a_downloaded_local_model_says_hi(steps_bot, monkeypatch):
     ai.models.downloaded = True
     monkeypatch.setattr(botmod, "_fused_ai", lambda: ai)
     b.greet()
-    b.thread.join(5)
-    assert [(e["role"], e["text"]) for e in _events(b)] == [("done", "Hi, I'm Shopper.")]
-    assert "local-4b" in b.model_ready
+    # Not `b.thread.join`: the greeting thread hands its slot back
+    # (`self.thread = None`) as it ends, so on a fast or loaded runner the
+    # join raced a finished greeting (AttributeError on None, seen on CI).
+    # Wait on what the greeting did instead.
+    assert _wait_for(lambda: [(e["role"], e["text"]) for e in _events(b)]
+                     == [("done", "Hi, I'm Shopper.")])
+    assert _wait_for(lambda: "local-4b" in b.model_ready)
+    assert _wait_for(lambda: b.thread is None or not b.thread.is_alive())
 
 
 def test_local_task_downloads_on_yes_then_waits_for_a_cold_model(steps_bot, monkeypatch):
@@ -535,3 +540,49 @@ def test_bad_json_three_times_errors_the_task(steps_bot, monkeypatch):
     assert evs[-1]["role"] == "error" and "model kept returning invalid JSON" in evs[-1]["text"]
     assert b.meta["status"] == "error"
     assert os.path.isfile(os.path.join(b.cache_dir, "badjson", "1.txt"))
+
+
+def test_marketplace_install_asks_even_under_never_ask(steps_bot, monkeypatch):
+    """docs §15, the steps engine: `marketplace_search` runs with no card;
+    `marketplace_install` is ALWAYS_ASK, so the card is raised under "Never
+    ask" too, and the install runs only after the yes."""
+    from fused_render.bots import tools
+
+    b = steps_bot
+    b.meta["approval"] = "auto"  # "Never ask"
+    installs = []
+    monkeypatch.setattr(tools, "_market_search", lambda d: (
+        '1 app matches "sine" (slug: name version [category] — what it does).\n'
+        "- sine-starter: Sine Starter v1.0.0 [starters] — sine-starter app"))
+    monkeypatch.setattr(tools, "_market_target", lambda d: (str(d.get("slug") or ""), False, ""))
+    monkeypatch.setattr(tools, "_market_name", lambda slug: ("Sine Starter", "1.0.0"))
+    monkeypatch.setattr(tools, "_market_where", lambda slug: "/ws/app/sine-starter")
+    monkeypatch.setattr(tools, "_market_install", lambda bot, d: installs.append(d) or
+                        "Installed Sine Starter v1.0.0 at /ws/app/sine-starter. It is now in APPS as `sine-starter`.")
+    ai = FakeAI([
+        json.dumps({"thought": "Looking.", "action": "marketplace_search", "query": "sine"}),
+        json.dumps({"thought": "Installing.", "action": "marketplace_install", "slug": "sine-starter"}),
+        json.dumps({"thought": "Done.", "action": "done", "message": "Installed Sine Starter."}),
+    ])
+    monkeypatch.setattr(botmod, "_fused_ai", lambda: ai)
+
+    def approve():
+        assert _wait_for(lambda: b.asking)
+        assert installs == []  # nothing ran before the yes
+        b.send("approve")
+    t = threading.Thread(target=approve)
+    t.start()
+    b.start_task("install the sine app")
+    b.thread.join(15)
+    t.join(5)
+    assert not b.thread.is_alive()
+    evs = _events(b)
+    appr = next(e for e in evs if e["role"] == "approval")
+    assert appr["text"].startswith('About to install the Community app "Sine Starter" v1.0.0 into /ws/app/sine-starter. '
+                                   "It downloads this community app") and "forever" not in appr
+    assert [d["slug"] for d in installs] == ["sine-starter"]  # the whole decision rides to the seam
+    acts = [e for e in evs if e["role"] == "action"]
+    assert acts[0]["text"] == 'search the Community for "sine"' and not acts[0].get("thumb")  # _NO_THUMB
+    assert acts[1]["text"] == 'install the Community app "Sine Starter" v1.0.0 into /ws/app/sine-starter'
+    assert 'APPROVED by the user: install the Community app "Sine Starter"' in ai.calls[2][0]
+    assert evs[-1]["role"] == "done"

@@ -177,6 +177,60 @@ def test_delta_against_held_view_upserts_only_the_synthesized_node(tmp_path):
     assert ops[0]["row"]["udfName"] == "udf_4"
 
 
+def test_delta_retypes_a_node_whose_file_changed_kind(tmp_path):
+    """Claude turned `w.json` into `w.html`. The frame's Udf carries its kind
+    in metadata and never re-reads it from `file`, so a plain upsert would
+    leave a JSON-UI widget holding HTML. The delta is delete + full upsert
+    under the same name, and the edge set rides along (the delete drops the
+    node's edges in the frame)."""
+    w_row = {"udfName": "w", "x": 30, "y": 40, "width": 500, "height": 300, "zIndex": 2,
+             "title": "w"}
+    d = _clone(tmp_path, [dict(A_ROW), w_row], {"a.py": "A", "w.json": "{}"},
+               edges=[["a", "w"]])
+    disk = cs.compact_state_from_disk(d)
+    view = cs.held_view(disk, ["a", "w"], edges=[["a", "w"]], ids={},
+                        bodies={"a": "A", "w": "{}"}, embed_rows=None)
+    assert view["files"]["w"] == "w.json"
+    os.remove(os.path.join(d, "w.json"))
+    with open(os.path.join(d, "w.html"), "w") as fh:
+        fh.write("<p>hi</p>")
+    ops = cs.diff_views(cs.compact_state_from_disk(d), view)
+    assert [o["op"] for o in ops] == ["delete", "upsert", "edges"]
+    assert ops[0]["name"] == "w"
+    up = ops[1]
+    assert up["name"] == "w" and up["file"] == "w.html" and up["code"] == "<p>hi</p>"
+    assert up["node"]["position"] == {"x": 30, "y": 40}   # the node keeps its place
+    assert up["row"]["udfName"] == "w"
+    assert ops[2]["set"] == [["a", "w"]]
+
+
+def test_delta_same_kind_body_change_is_a_plain_upsert(tmp_path):
+    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
+    disk = cs.compact_state_from_disk(d)
+    view = cs.held_view(disk, ["a"], edges=[], ids={}, bodies={"a": "A"}, embed_rows=None)
+    with open(os.path.join(d, "a.py"), "w") as fh:
+        fh.write("B")
+    ops = cs.diff_views(cs.compact_state_from_disk(d), view)
+    assert [o["op"] for o in ops] == ["upsert"]
+    assert ops[0]["code"] == "B"
+
+
+def test_snapshot_deleting_a_node_reports_its_file(tmp_path):
+    """The host erases the chats filed on a deleted node's file: the snapshot
+    result names the files it removed (a folder in `deleted` has none)."""
+    b_row = {"udfName": "b", "x": 1, "y": 2, "width": 700, "height": 300, "zIndex": 5,
+             "title": "b"}
+    d = _clone(tmp_path, [dict(A_ROW), b_row], {"a.py": "A", "b.json": "{}"})
+    prev = cs.compact_state_from_disk(d)
+    new = _snapshot_new([_studio_node("a")], [{"slug": "a", "file": "a.py", "id": "ida"}])
+    trashed = []
+    result = cs.apply_snapshot(d, new, prev, backup=lambda rel, data: trashed.append(rel))
+    assert result["deleted"] == ["b"]
+    assert result["deleted_files"] == ["b.json"]
+    assert trashed == ["b.json"]
+    assert not os.path.exists(os.path.join(d, "b.json"))
+
+
 def _snapshot_new(nodes, udfs, base_nodes=None):
     """A compact_state the way compact_state() builds one."""
     body = {
@@ -472,3 +526,35 @@ def test_snapshot_rowless_delete_leaves_toml_untouched(tmp_path):
     result = cs.apply_snapshot(d, new, view)
     assert result["deleted"] == ["udf_4"] and result["changed"] is True
     assert (open(toml).read(), os.stat(toml).st_mtime_ns) == before
+
+
+def test_snapshot_hidden_udf_row_beats_stale_node_mirror():
+    """Hiding a node flips `udfs[].is_visible` only; the node's
+    `data.config.visible` mirror keeps the value it was loaded with. The
+    UDF row is the record, so the snapshot reads hidden — and a show
+    (`is_visible: true` beside a stale `false`) reads visible again."""
+    node = _studio_node("a")
+    node["data"]["config"] = {"visible": True}
+    new = _snapshot_new([node], [{"slug": "a", "file": "a.py", "id": "sid-a",
+                                  "is_visible": False}])
+    assert new["nodes"]["a"]["visible"] is False
+    node["data"]["config"] = {"visible": False}
+    new = _snapshot_new([node], [{"slug": "a", "file": "a.py", "id": "sid-a",
+                                  "is_visible": True}])
+    assert new["nodes"]["a"]["visible"] is True
+    # No row flag at all: the mirror still stands in.
+    new = _snapshot_new([node], [{"slug": "a", "file": "a.py", "id": "sid-a"}])
+    assert new["nodes"]["a"]["visible"] is False
+
+
+def test_snapshot_hidden_udf_lands_on_disk(tmp_path):
+    """End to end on the clone: a hide snapshot writes `visible = false`."""
+    d = _clone(tmp_path, [dict(A_ROW, visible=True)], {"a.py": "A"})
+    view = cs.compact_state_from_disk(d)
+    node = _studio_node("a")
+    node["data"]["config"] = {"visible": True}
+    new = _snapshot_new([node], [{"slug": "a", "file": "a.py", "id": "sid-a",
+                                  "is_visible": False}])
+    result = cs.apply_snapshot(d, new, view)
+    assert result["changed"] is True
+    assert _rows(d)[0]["visible"] is False

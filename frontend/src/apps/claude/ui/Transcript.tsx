@@ -36,13 +36,16 @@ import {
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { cn } from "@platform/lib/utils";
 
-import type { ChatController, ChatState, UserTurn } from "../protocol/controller-api";
+import type { AssistantTurn, ChatController, ChatState, UserTurn } from "../protocol/controller-api";
 import type { PermissionMode, Segment } from "../protocol/types";
+import { runAgent } from "../protocol/agent";
 import { CardStack, type CardActions } from "./CardStack";
 import { useHoldTail } from "./cardPolicy";
 import { TroubleView } from "./TroubleView";
 import type { Viewable } from "./attachApi";
 import { isOneLiner, Turn } from "./Turn";
+import { turnWorkedWords } from "./run-when";
+import { stampTitle } from "./stamp";
 import { WorkingLine } from "./WorkingLine";
 import { openCardRows } from "./WaitingBar";
 import "../styles/transcript.css";
@@ -96,7 +99,7 @@ export interface TranscriptTail {
 
 export interface TranscriptProps {
   state: ChatState;
-  actions: CardActions & Pick<ChatController, "stopRun">;
+  actions: CardActions & Pick<ChatController, "stopRun" | "addNote">;
   /** The live permission mode from poll — gates a perm card's escalation. */
   liveMode?: PermissionMode;
   /** The typewriter's current frame, or absent when nothing is streaming. */
@@ -709,6 +712,27 @@ export const Transcript = memo(function Transcript({
 
 
   const onStop = useCallback(() => void actions.stopRun(), [actions]);
+  // Ctrl+B / "background": one request at a time, so a double press cannot send twice.
+  const bgInFlight = useRef(false);
+  const onBackground = useCallback(() => {
+    const runId = state.runId;
+    const toolUseId = state.working?.activity?.tool?.id;
+    if (!runId || !toolUseId || bgInFlight.current) return;
+    bgInFlight.current = true;
+    const fail = (reason: string) => {
+      console.warn("[claude] background failed:", reason);
+      actions.addNote("Could not send that command to the background" + (reason ? ": " + reason : "."), "⏹");
+    };
+    runAgent("task_background", { run_id: runId, tool_use_id: toolUseId })
+      .then((res) => {
+        if ("error" in res && res.error) fail(String(res.error));
+        else if ((res as { backgrounded?: boolean }).backgrounded === false) fail("the command was not running yet");
+      })
+      .catch((err) => fail(err instanceof Error ? err.message : String(err)))
+      .finally(() => {
+        bgInFlight.current = false;
+      });
+  }, [actions, state.runId, state.working?.activity?.tool?.id]);
 
   // WHERE each parked card sits INSIDE its turn (#18). Passing a `<CardStack/>`
   // to every turn regardless would defeat `Turn`'s own memo — a fresh child
@@ -793,6 +817,12 @@ export const Transcript = memo(function Transcript({
     seeded.current = false;
   }
   const lastAssistant = lastAssistantKey(state.turns);
+  // THE "WORKED FOR" LINE, per turn key. Recomputed only when the turns change;
+  // the strings it hands `Turn` are stable, so a settled row's memo holds.
+  const worked = useMemo(
+    () => workedForPlan(state.turns, state.status !== "idle"),
+    [state.turns, state.status],
+  );
   // The open card is drawn in the tail pin, but the turn it belongs to is the
   // one the run is blocked in — and NOT, as this read for one release, whichever
   // reply happens to be newest (review #2): a card answered against a chip five
@@ -940,6 +970,7 @@ export const Transcript = memo(function Transcript({
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
+                  {...(worked.get(turn.key) ?? {})}
                   cwd={cwd}
                   collapsed={isFolded(folds.current.get(foldIds.current.get(turn.key) ?? turn.key))}
                   onToggleCollapse={onToggleCollapse}
@@ -997,7 +1028,7 @@ export const Transcript = memo(function Transcript({
                 actions={actions}
               />
               {state.working ? (
-                <WorkingLine working={state.working} status={state.status} onStop={onStop} tasks={state.tasks} />
+                <WorkingLine working={state.working} status={state.status} onStop={onStop} onBackground={onBackground} tasks={state.tasks} />
               ) : null}
             </div>
           </>
@@ -1209,6 +1240,39 @@ export function blockedTurnKey(
  *  leaves open (design.md §B). Exported for the test: "the last ASSISTANT
  *  turn", not "the last turn", because a note or an error row after a reply
  *  must not make that reply fold. */
+/** WHICH TURNS WEAR "Worked for …" and what it says: the LAST assistant turn
+ *  before the next user turn (a reply split by a follow-up or a card is still
+ *  one piece of work), measured from that user turn. Never a streaming turn,
+ *  and while a run is going the log's final turn is skipped too — more may
+ *  still land on it. */
+export function workedForPlan(
+  turns: ChatState["turns"],
+  running: boolean,
+): Map<string, { workedFor: string; workedHint?: string }> {
+  const out = new Map<string, { workedFor: string; workedHint?: string }>();
+  let startTs: number | undefined;
+  let last: AssistantTurn | null = null;
+  const flush = (atEnd: boolean) => {
+    if (last && !last.streaming && !(atEnd && running)) {
+      const words = turnWorkedWords(startTs, last.segments ?? [], last.endedAt);
+      if (words) {
+        const first = (last.segments ?? []).find((seg) => seg && typeof seg.ts === "number");
+        const hint = stampTitle(startTs ?? first?.ts);
+        out.set(last.key, { workedFor: words, ...(hint ? { workedHint: hint } : {}) });
+      }
+    }
+    last = null;
+  };
+  for (const t of turns) {
+    if (t.role === "user") {
+      flush(false);
+      startTs = t.ts;
+    } else if (t.role === "assistant") last = t;
+  }
+  flush(true);
+  return out;
+}
+
 export function lastAssistantKey(turns: ChatState["turns"]): string | null {
   for (let i = turns.length - 1; i >= 0; i--) if (turns[i].role === "assistant") return turns[i].key;
   return null;

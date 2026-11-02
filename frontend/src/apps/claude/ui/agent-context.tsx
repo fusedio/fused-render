@@ -12,9 +12,9 @@ import { createContext, useContext, type ReactNode } from "react";
 import { agentLabel, capsOf, defaultBackend, type AgentCaps } from "@platform/lib/agent-backends";
 
 export interface AgentFacts {
-  /** "claude" | "copilot" | "codex". */
+  /** "claude" | "copilot" | "codex" | "gemini". */
   backend: string;
-  /** "Claude" | "Copilot" | "Codex" — the word the copy uses. */
+  /** "Claude" | "Copilot" | "Codex" | "Gemini" — the word the copy uses. */
   label: string;
   caps: AgentCaps;
 }

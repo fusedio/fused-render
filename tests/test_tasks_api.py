@@ -602,6 +602,80 @@ def test_an_explicit_user_title_beats_the_ai_one(client, projects_dir):
     assert task["title_source"] == "user"
 
 
+def test_a_title_derived_from_the_entrys_own_message_is_not_a_user_name(
+        client, projects_dir):
+    """The one-box New task form saves the first line of the message as the
+    entry's title; that is not a name the user chose, so it must not block the
+    message / AI title steps."""
+    msg = "/development:investigate on windows:\nFused Render - problem report\n..."
+    _write_transcript(projects_dir, "sess-a", "/p", [_user(msg, T9)])
+    _seed_schedule([_entry("e1", msg, T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           title="/development:investigate on windows:")])
+    task = _tasks(client)[0]
+    assert task["title"] == "/development:investigate on windows:"
+    assert task["title_source"] == "message"
+
+
+_LONG_LINE = ("pull today's news and file it in the shared folder every "
+              "morning before standup")
+# What the New task form's shortTitle (TITLE_MAX = 60) makes of it: cut at the
+# last space within the first 61 characters.
+_LONG_CLAMP = "pull today's news and file it in the shared folder every"
+
+
+@pytest.mark.parametrize("title", [_LONG_CLAMP, _LONG_CLAMP + "\u2026"])
+def test_a_word_clamped_derived_title_is_not_a_user_name(
+        client, projects_dir, title):
+    msg = _LONG_LINE + "\nmore"
+    assert len(_LONG_LINE) > 60 and _LONG_CLAMP == _LONG_LINE[:56]
+    _write_transcript(projects_dir, "sess-a", "/p", [_user(msg, T9)])
+    _seed_schedule([_entry("e1", msg, T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           title=title)])
+    assert _tasks(client)[0]["title_source"] == "message"
+
+
+def test_a_title_that_merely_starts_the_message_stays_user(client, projects_dir):
+    """A caller naming a task "Fix" over "Fix the login redirect" chose that
+    name; a shared prefix is not a derivation."""
+    msg = "Fix the login redirect\nmore"
+    _write_transcript(projects_dir, "sess-a", "/p", [_user(msg, T9)])
+    _seed_schedule([_entry("e1", msg, T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           title="Fix")])
+    task = _tasks(client)[0]
+    assert (task["title"], task["title_source"]) == ("Fix", "user")
+
+
+def test_an_arbitrary_prefix_title_of_a_long_line_stays_user(client, projects_dir):
+    msg = _LONG_LINE + "\nmore"
+    _write_transcript(projects_dir, "sess-a", "/p", [_user(msg, T9)])
+    _seed_schedule([_entry("e1", msg, T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           title="pull today's news and file it")])
+    assert _tasks(client)[0]["title_source"] == "user"
+
+
+def test_an_explicit_title_unrelated_to_the_message_stays_user(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("pull the news", T9)])
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", claude_session_id="sess-a",
+                           title="Morning briefing")])
+    assert _tasks(client)[0]["title_source"] == "user"
+
+
+def test_a_renamed_title_still_beats_a_derived_entry_title(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("pull the news", T9)])
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", claude_session_id="sess-a",
+                           title="pull the news")])
+    assert _rename(client, "sess-a", "My name").status_code == 200
+    row = _tasks(client)[0]
+    assert (row["title"], row["title_source"]) == ("My name", "renamed")
+
+
 def test_a_corrupt_line_costs_that_line_and_nothing_else(client, projects_dir):
     """A truncated write — the shape a transcript takes for the seconds a turn
     is in flight — must not take the listing down with it."""
@@ -4507,6 +4581,120 @@ def test_background_work_under_a_dead_host_does_not_count(
     assert _by_key(client)["sess-a"]["background_jobs"] is None
 
 
+# ------------------------------------------------- a run that died mid-turn
+# The host killed with the app, a `kill -9`, an OOM: no `exited` event (the
+# host is what would have posted it), no error row in the transcript (the CLI
+# is what would have written it). The row read `done` with no reply under it
+# within ten seconds, while the chat still said "Running outside this app"
+# (Sina, 2026-10-31). What is left on disk is the run dir: a dead pid and an
+# `out.jsonl` that never reached the `result` row every turn ends on.
+
+
+def _asked_and_nothing_came(projects_dir):
+    """A hand-typed chat whose prompt is on file and nothing answered it."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("refactor the loader", T9, uuid="u1")])
+
+
+def _stage_dead(runs_dir, name, session_id, rows, pid=None, cancelled=False):
+    """A run dir as a process leaves it: `out.jsonl` holding `rows`, the CLI's
+    pid in `pid` (a dead one unless given), and the Stop button's marker when
+    `cancelled`."""
+    d = _stage_run(runs_dir, name, session_id)
+    (d / "out.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (d / "pid").write_text(str(_dead_pid() if pid is None else pid))
+    if cancelled:
+        (d / "cancelled").write_text("")
+    return d
+
+
+_INIT = {"type": "system", "subtype": "init", "session_id": "sess-a"}
+_ECHO = {"type": "user", "message": {"role": "user", "content": [
+    {"type": "text", "text": "refactor the loader"}]}}
+_TOOL = {"type": "assistant", "message": {"role": "assistant", "content": [
+    {"type": "tool_use", "name": "Bash", "input": {"command": "make"}}]}}
+_RESULT = {"type": "result", "subtype": "success"}
+
+
+def test_a_run_that_died_mid_turn_is_blocked_not_done(
+        client, projects_dir, parked, monkeypatch):
+    _asked_and_nothing_came(projects_dir)
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL,
+                                             # a subagent's rows are not this
+                                             # conversation's turn
+                                             {"type": "result",
+                                              "parent_tool_use_id": "t1"}])
+    _install_hosted(monkeypatch, parked.dir)
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "blocked"
+    assert task["failed"] is True
+    assert task["blocked_reason"] == "failed"
+    assert task["messages"][-1]["turn"] == "error"
+    # The thread reads the same word as the row.
+    thread = client.get("/api/tasks/sess-a/messages").json()["messages"]
+    assert thread[-1]["turn"] == "error"
+
+
+def test_a_run_that_finished_its_turn_before_dying_is_not_broken(
+        client, projects_dir, parked, monkeypatch):
+    """The ordinary end of every chat: the reply landed, the process went
+    away later (the app quit, the host reaped). `result` closes the turn."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("refactor the loader", T9, uuid="u1"),
+        _assistant("Done.", T9)])
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL, _RESULT,
+                                             {"type": "command_lifecycle"}])
+    _install_hosted(monkeypatch, parked.dir)
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "done"
+    assert task["failed"] is False
+
+
+def test_a_stopped_run_is_not_a_broken_one(client, projects_dir, parked,
+                                           monkeypatch):
+    """Stop kills the process before `result` too; its marker is the
+    difference, and a stopped turn reads as it always did."""
+    _asked_and_nothing_came(projects_dir)
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL],
+                cancelled=True)
+    _install_hosted(monkeypatch, parked.dir)
+    assert _by_key(client)["sess-a"]["status"] == "done"
+
+
+def test_a_prompt_answered_since_outvotes_an_old_dead_run(
+        client, projects_dir, parked, monkeypatch):
+    """A terminal resume, a later run under another id: the newest prompt HAS
+    a reply, so whatever the dead run dir says, nothing is broken."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("refactor the loader", T9, uuid="u1"),
+        _assistant("Done it from the terminal.", T10)])
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL])
+    _install_hosted(monkeypatch, parked.dir)
+    assert _by_key(client)["sess-a"]["status"] == "done"
+
+
+def test_only_the_sessions_newest_run_decides(client, projects_dir, parked,
+                                              monkeypatch):
+    """An older run that died is history: the turn after it ran in a newer
+    run, and that one is alive (or finished) — not broken."""
+    _asked_and_nothing_came(projects_dir)
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL])
+    _stage_dead(parked.dir, "r-2", "sess-a", [_INIT, _ECHO, _TOOL],
+                pid=os.getpid())
+    _install_hosted(monkeypatch, parked.dir, alive=("r-2",))
+    assert _by_key(client)["sess-a"]["status"] != "blocked"
+
+
+def test_a_run_still_spawning_has_not_died(client, projects_dir, parked,
+                                           monkeypatch):
+    """No `pid` file yet is a process being created, not one that is gone."""
+    _asked_and_nothing_came(projects_dir)
+    d = _stage_run(parked.dir, "r-1", "sess-a")
+    (d / "out.jsonl").write_text("")
+    _install_hosted(monkeypatch, parked.dir)
+    assert _by_key(client)["sess-a"]["status"] != "blocked"
+
+
 def test_a_live_host_pid_is_not_enough_without_its_claude(
         client, projects_dir, parked, monkeypatch, registry):
     """PID REUSE: `host.json` survives a reboot or a SIGKILL and an unrelated
@@ -6028,26 +6216,33 @@ def test_title_candidate_first_title_then_waits_three_prompts(tmp_path):
     assert _title_job(task, _title_rec(count=5), stored(4)) == []
 
 
-def test_title_candidate_skips_chosen_names_and_unended_turns(tmp_path):
+def test_title_candidate_skips_chosen_names_and_unstarted_turns(tmp_path):
     task = _title_task(tmp_path)
     for source in ("renamed", "user"):
         assert _title_job(task, _title_rec(), source=source) == []
     assert _title_job(task, _title_rec(), source="ai") != []
-    assert _title_job(task, _title_rec(), status="in_progress") == []
-    assert _title_job(task, _title_rec(), status="needs_attention") == []
+    for status in ("upcoming", "queued"):
+        assert _title_job(task, _title_rec(), status=status) == []
     assert _title_job(task, _title_rec(), reply=tasks_mod._QUEUED_REPLY) == []
-    for status in ("blocked", "archived"):
+    for status in ("blocked", "archived", "in_progress", "needs_attention"):
         assert len(_title_job(task, _title_rec(), status=status)) == 1
     assert _title_job(dict(task, session_id=""), _title_rec()) == []
     assert _title_job(task, {"tail": [], "count": 0}) == []
 
 
-def test_title_candidate_waits_out_the_settle_minute(tmp_path):
+def test_title_candidate_titles_a_running_session_at_once(tmp_path):
     task = _title_task(tmp_path)
-    young, = _title_job(task, _title_rec(age=30.0))
-    assert young["due"] > time.time()
-    old, = _title_job(task, _title_rec(age=120.0))
-    assert "due" not in old
+    job, = _title_job(task, _title_rec(age=1.0), status="in_progress", reply="")
+    assert job["want_title"] is True and job["want_recap"] is False
+    assert "due" not in job
+
+
+def test_title_candidate_merged_into_a_recap_job_keeps_its_due(tmp_path):
+    task = _title_task(tmp_path)
+    recap = {"session_id": "s", "for_uuid": "u1", "want_recap": True,
+             "want_title": False, "due": 123.0}
+    out = _title_job(task, _title_rec(age=30.0), out=[recap])
+    assert out == [recap] and recap["want_title"] is True and recap["due"] == 123.0
 
 
 def test_title_candidate_retries_a_failure_after_the_cooldown(tmp_path):

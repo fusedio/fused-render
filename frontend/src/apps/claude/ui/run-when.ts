@@ -62,6 +62,59 @@ export function runSpan(segs: readonly (Segment | null | undefined)[]): RunWhen 
   return Number.isFinite(started) ? { started, finished: Math.max(started, finished) } : null;
 }
 
+/** THE TURN'S OWN LINE, `Worked for 2m 10s` (Claude Code's `✻ Worked for …`
+ *  under a finished reply). Unlike the run hover above this is the WHOLE turn:
+ *  from the user message that prompted it (`startTs`; the first segment's stamp
+ *  when there is none) to the latest clock in its segments. A live turn's rows
+ *  carry no clock, so `endedAt` — the page's own stamp at the run's end — stands
+ *  in when the segments give nothing. Time the turn's tool calls sat on the
+ *  user (`ToolSegment.waited`, children included) is merged (overlapping
+ *  waits count once), clipped to the span, and split out: `Worked for 1m · waited 40m on you` (the wait part only
+ *  from a second up). Null when no span can be drawn or it is under a second.
+ *  Epoch seconds in. */
+export function turnWorkedWords(
+  startTs: number | null | undefined,
+  segs: readonly (Segment | null | undefined)[],
+  endedAt?: number | null,
+): string | null {
+  const span = runSpan(segs);
+  const ok = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
+  const start = ok(startTs) ? startTs : span?.started;
+  const end = span && span.finished > span.started ? span.finished : ok(endedAt) ? endedAt : span?.finished;
+  if (start === undefined || end === undefined || end - start < 1) return null;
+  const total = end - start;
+  const merged = mergedWait(waitIntervals(segs), start, end);
+  const wait = merged >= 1 ? merged : 0;
+  const words = "Worked for " + spanWords(total - wait);
+  return wait ? words + " · waited " + spanWords(wait) + " on you" : words;
+}
+
+function waitIntervals(segs: readonly (Segment | null | undefined)[], out: [number, number][] = []): [number, number][] {
+  for (const s of segs) {
+    if (!s || s.kind !== "tool") continue;
+    const w = s.waited;
+    if (Array.isArray(w) && w.length === 2 && Number.isFinite(w[0]) && Number.isFinite(w[1]) && w[0] < w[1]) out.push([w[0], w[1]]);
+    if (s.children) waitIntervals(s.children, out);
+  }
+  return out;
+}
+
+/** Length of the union of `ivs` clipped to [start, end]. */
+function mergedWait(ivs: [number, number][], start: number, end: number): number {
+  const clipped = ivs
+    .map(([a, b]) => [Math.max(a, start), Math.min(b, end)] as [number, number])
+    .filter(([a, b]) => a < b)
+    .sort((x, y) => x[0] - y[0]);
+  let n = 0;
+  let curEnd = -Infinity;
+  for (const [a, b] of clipped) {
+    if (b <= curEnd) continue;
+    n += b - Math.max(a, curEnd);
+    curEnd = b;
+  }
+  return n;
+}
+
 /** `3m ago · ran 12s` — the hover for ONE run: how long ago it finished,
  *  then how long it took, first call to last result. TIME FIRST, SPAN SECOND —
  *  the chip stamp hover's order (`chipHint`; Akshil, 2026-10-06: "the order is

@@ -130,7 +130,15 @@ export interface SettingEntry {
   /** Whether the running app can honour this at all (a server-reported
    *  capability). Absent = always. */
   available?: (ctx: SettingsContext) => boolean;
+  /** A device capability the row depends on. When the server lists it under
+   *  `prefs.unavailable`, the row stays visible but disabled, with the reason
+   *  in place of its status line (see `unavailableReason`). Unlike `available`,
+   *  which hides a row for logic, this is for "this machine lacks it". */
+  needs?: DeviceFeature;
 }
+
+/** The keys of `prefs.unavailable` (fused_render/shell/prefs.py). */
+export type DeviceFeature = "index" | "hf" | "fused" | "update" | "native_windows" | "terminal";
 
 export interface SettingsContext {
   prefs: Prefs;
@@ -164,12 +172,12 @@ const ENTRIES = [
   },
   {
     id: "native-windows",
+    needs: "native_windows",
     group: "general",
     section: "Windows",
     label: "Open in native windows",
     description: "Use the app's own windows instead of browser tabs. Turning this off closes them and opens everything in your default browser.",
     keywords: "browser tabs window desktop safari chrome",
-    available: ({ prefs }) => !!prefs.native_windows?.available,
   },
   {
     id: "launcher-hotkey",
@@ -200,6 +208,7 @@ const ENTRIES = [
   },
   {
     id: "auto-update",
+    needs: "update",
     group: "general",
     section: "Updates",
     label: "Download updates automatically",
@@ -233,6 +242,14 @@ const ENTRIES = [
     keywords: "openai codex chatgpt gpt agent backend cli sign in login",
   },
   {
+    id: "agent-gemini",
+    group: "ai",
+    section: "Agents",
+    label: "Google Gemini CLI",
+    description: "Runs chats and tasks with your Google account or a Gemini API key. Bots keep using Claude.",
+    keywords: "google gemini agent backend cli sign in login api key",
+  },
+  {
     id: "agent-default",
     group: "ai",
     section: "Agents",
@@ -240,10 +257,11 @@ const ENTRIES = [
     description: "With more than one agent on, new chats and tasks start here. A conversation keeps the agent it started with.",
     keywords: "default agent backend",
     child: true,
-    // Two or more of the three on: a default only means something when there
+    // Two or more of the four on: a default only means something when there
     // is a choice to make.
     available: ({ prefs }) =>
-      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex].filter(Boolean).length >= 2,
+      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex, prefs.agents?.gemini]
+        .filter(Boolean).length >= 2,
   },
   {
     id: "claude-model",
@@ -315,6 +333,26 @@ const ENTRIES = [
     keywords: "mcp memory connectors strict lean",
   },
   {
+    id: "canvas-screenshots",
+    group: "tasks",
+    section: "Canvas screenshots",
+    label: "Screen permission",
+    description: "Canvas screenshots — yours and your agent's — are taken natively, in under a second. On macOS that needs screen permission. The app photographs only its own workbench frame, only when a screenshot is asked for; the picture is saved to the app's screenshots folder and attached to that chat, nowhere else.",
+    keywords: "screenshot screen recording permission canvas capture native fast claude",
+    renderOnly: true,
+    macOnly: true,
+  },
+  {
+    id: "canvas-screenshots-fallback",
+    group: "tasks",
+    section: "Canvas screenshots",
+    label: "Fall back to in-canvas capture",
+    description: "When the native screenshot cannot be taken, let the workbench draw the canvas itself instead of failing. Slow: 5–30 s with the canvas locked meanwhile. Off by default on macOS, where allowing screen permission is the fix.",
+    keywords: "screenshot fallback slow canvas capture html-to-image",
+    renderOnly: true,
+    macOnly: true,
+  },
+  {
     id: "claude-default-permission",
     group: "tasks",
     section: "Running",
@@ -332,6 +370,7 @@ const ENTRIES = [
   },
   {
     id: "notify-terminal",
+    needs: "terminal",
     group: "tasks",
     section: "Notifications",
     label: "Notify for terminal sessions",
@@ -349,24 +388,19 @@ const ENTRIES = [
     keywords: "git push pull commit fast-forward sync github remote auto",
     renderOnly: true,
   },
+  // Owner 2026-10-27: what Share offers — Public link (this row), the
+  // GitHub card + install link (always, since 2026-10-29) and Remix. The
+  // Share button is always there (share-app-flag.ts `useAppShareOffered`);
+  // .fused file export always.
   {
     id: "share-sheet",
+    needs: "fused",
     group: "apps",
     section: "Sharing",
-    label: "Share sheet",
-    description: "Replace Export with one Share button: a public link on your Fused account, or a .fused file.",
-    keywords: "share export link publish .fused file public download",
+    label: "Public link",
+    description: "Share an app as a public link on your Fused account. The Share button offers it next to the .fused file.",
+    keywords: "share export link publish .fused file public download canvas account",
     renderOnly: true,
-  },
-  {
-    id: "github-link",
-    group: "apps",
-    section: "Sharing",
-    label: "Offer a GitHub install link",
-    description: "For an app whose folder is its own GitHub repository, once everything is pushed.",
-    keywords: "github udf.ai repo install link share",
-    renderOnly: true,
-    child: true,
   },
   {
     id: "live-previews",
@@ -377,10 +411,24 @@ const ENTRIES = [
     keywords: "thumbnail preview iframe cards live hover image",
     renderOnly: true,
   },
+  // Community: Remix on its own switch (docs/CONTRIB_LOOP.md §1), off by
+  // default. The Community store and the contribution loop stopped being
+  // switches on 2026-10-29 — always on, no row.
+  {
+    id: "contrib-remix",
+    group: "apps",
+    section: "Community",
+    label: "Remix",
+    description: "Publish your changed version as an app of your own, credited to the original.",
+    keywords: "community contribute remix fork publish credit original",
+    renderOnly: true,
+    badge: "Beta",
+  },
 
   // ── File index ───────────────────────────────────────────────────────────
   {
     id: "indexing",
+    needs: "index",
     group: "indexing",
     section: "Index",
     label: "File indexing",
@@ -390,6 +438,7 @@ const ENTRIES = [
   },
   {
     id: "ranked-search",
+    needs: "index",
     group: "indexing",
     section: "Index",
     label: "Rank results by relevance",
@@ -399,6 +448,7 @@ const ENTRIES = [
   },
   {
     id: "low-impact",
+    needs: "index",
     group: "indexing",
     section: "Index",
     label: "Low-impact indexing",
@@ -408,6 +458,7 @@ const ENTRIES = [
   },
   {
     id: "skipped-folders",
+    needs: "index",
     group: "indexing",
     section: "Scope",
     label: "Skipped folders",
@@ -417,6 +468,7 @@ const ENTRIES = [
   },
   {
     id: "rebuild-index",
+    needs: "index",
     group: "indexing",
     section: "Maintenance",
     label: "Rebuild the index",
@@ -428,6 +480,7 @@ const ENTRIES = [
   // ── Experimental flags ─────────────────────────────────────────────────────────────
   {
     id: "canvases",
+    needs: "fused",
     group: "features",
     section: "Sidebar",
     label: "Canvases",
@@ -437,6 +490,7 @@ const ENTRIES = [
   },
   {
     id: "canvases-embed-proxy",
+    needs: "fused",
     group: "features",
     section: "Sidebar",
     label: "Load a custom deployment's workbench through a local proxy",
@@ -447,13 +501,18 @@ const ENTRIES = [
     // Only means something while Canvases is offered at all.
     available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
+  // THE CLAUDE RAIL'S PREVIEW (shell/claude-rail): one rail on every page
+  // with a Claude panel — the canvas page, the app page, the explorer's file
+  // and folder views (2026-11-01) — so the switch is its own row, not a
+  // child of Canvases, and needs no Fused sign-in. The pref keeps its
+  // `canvas_rail_peek` name on the wire.
   {
-    id: "marketplace",
+    id: "canvases-rail-peek",
     group: "features",
     section: "Sidebar",
-    label: "Marketplace",
-    description: "Browse, install and update community apps from the sidebar.",
-    keywords: "store community apps gallery install",
+    label: "Preview chats from the collapsed Claude rail",
+    description: "With the Claude panel hidden — on an app page, in the explorer, on a canvas — hovering a chat on the rail at the right edge previews it as a floating card beside it; clicking keeps the card open, ready to type, and lets you resize it from its left corners. Click elsewhere, press Escape, or use its × or Open to close it.",
+    keywords: "rail hover click preview peek card chat collapsed claude panel popover canvas app explorer",
     renderOnly: true,
   },
   {
@@ -499,6 +558,7 @@ const ENTRIES = [
   // ── Accounts ─────────────────────────────────────────────────────────────
   {
     id: "fused-account",
+    needs: "fused",
     group: "integrations",
     section: "Sign-ins",
     label: "Fused account",
@@ -508,6 +568,7 @@ const ENTRIES = [
   },
   {
     id: "workbench-env",
+    needs: "fused",
     group: "integrations",
     section: "Sign-ins",
     label: "Default environment",
@@ -518,6 +579,7 @@ const ENTRIES = [
   },
   {
     id: "huggingface",
+    needs: "hf",
     group: "integrations",
     section: "Sign-ins",
     label: "Hugging Face",
@@ -528,9 +590,9 @@ const ENTRIES = [
     id: "agent-signin",
     group: "integrations",
     section: ELSEWHERE,
-    label: "Claude Code, Copilot and Codex sign-in",
+    label: "Claude Code, Copilot, Codex and Gemini sign-in",
     description: "Shown with each agent's health under Coding agents.",
-    keywords: "claude login anthropic copilot github codex openai chatgpt sign in",
+    keywords: "claude login anthropic copilot github codex openai chatgpt gemini google sign in",
     elsewhere: true,
   },
 
@@ -563,6 +625,7 @@ const ENTRIES = [
   },
   {
     id: "index-query",
+    needs: "index",
     group: "advanced",
     section: "Index query",
     label: "Query the file index",
@@ -600,6 +663,15 @@ export function isVisible(entry: SettingEntry, ctx: SettingsContext): boolean {
   if (entry.macOnly && !entry.available && !ctx.mac) return false;
   if (entry.available && !entry.available(ctx)) return false;
   return true;
+}
+
+/** Why this row is disabled on this device, or null when it is usable. */
+export function unavailableReason(
+  entry: Pick<SettingEntry, "needs">,
+  ctx: Pick<SettingsContext, "prefs"> | null | undefined,
+): string | null {
+  if (!entry.needs) return null;
+  return ctx?.prefs?.unavailable?.[entry.needs] ?? null;
 }
 
 /** The entry in this flavor's words: Fused Bot's `bot` overrides applied. */

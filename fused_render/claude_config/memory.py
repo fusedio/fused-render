@@ -5,7 +5,9 @@ projects/*/memory/*.md, grouped by project, with per-folder clear and per-file
 read/write/delete.
 
 main(action=...):
-  list   -> {projects: [{project, path, pathConfirmed, files}]}
+  list   -> {projects: [{project, path, pathConfirmed, pathGuess, files}]}
+            path: confirmed folder or None; pathGuess: a best-effort display
+            path (only when path is None, else None — see _best_effort_path).
             files: [{name, description}], description from the file's own
             YAML frontmatter (None when missing or malformed — never guessed).
   clear  -> {ok}              params: project  (delete the folder's *.md)
@@ -50,7 +52,9 @@ _MAX_SEGMENTS = 24
 #      server/routers/claude_sessions.py does — see the note on _transcript_cwd);
 #   2. failing that, reconstruct against the filesystem, keeping only a
 #      candidate whose every component actually exists;
-#   3. failing that, return None, and the UI shows the slug.
+#   3. failing that, path is None; the separate pathGuess (see
+#      _best_effort_path) is a labelled display-only guess, never a confirmed
+#      folder, and the UI shows the slug only when that is None too.
 
 
 def _transcript_cwd(slug_dir: str) -> Optional[str]:
@@ -130,14 +134,8 @@ def _rejoin(parts: list, base: str, fold: bool = False) -> Optional[str]:
     return None
 
 
-def _project_path(slug: str) -> Optional[str]:
-    """The real folder a project slug stands for, or None if we can't confirm
-    one. Never returns a path that was merely plausible."""
-    cwd = _transcript_cwd(os.path.join(PROJECTS_DIR, slug))
-    # A recorded cwd is the truth even if the folder has since been deleted:
-    # it is where those sessions ran, not a guess we are making now.
-    if cwd:
-        return cwd
+def _anchor(slug: str):
+    """(base, parts, fold) a slug's walk starts from, or None without an anchor."""
     # A munged absolute path carries its root as a recognizable prefix: POSIX's
     # leading "/" munges to a leading "-", while Windows' "C:\" munges to a
     # leading "C--" (the drive letter survives — it's alnum — then ":" and the
@@ -156,7 +154,86 @@ def _project_path(slug: str) -> Optional[str]:
     parts = rest.split("-") if rest else []
     if not parts or len(parts) > _MAX_SEGMENTS:
         return None
-    return _rejoin(parts, base, fold=bool(drive_match))
+    return base, parts, bool(drive_match)
+
+
+def _project_path(slug: str) -> Optional[str]:
+    """The real folder a project slug stands for, or None if we can't confirm
+    one. Never returns a path that was merely plausible."""
+    cwd = _transcript_cwd(os.path.join(PROJECTS_DIR, slug))
+    # A recorded cwd is the truth even if the folder has since been deleted:
+    # it is where those sessions ran, not a guess we are making now.
+    if cwd:
+        return cwd
+    anchor = _anchor(slug)
+    if anchor is None:
+        return None
+    base, parts, fold = anchor
+    return _rejoin(parts, base, fold=fold)
+
+
+def _deepest(parts: list, base: str, fold: bool) -> tuple:
+    """(segments consumed, path) for the deepest prefix of `parts` that maps to
+    real directories under `base`. Same munged-to-munged matching as _rejoin,
+    but keeps the best partial result instead of requiring a full match."""
+    best = (0, base)
+    if not parts:
+        return best
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        return best
+    for take in range(1, len(parts) + 1):
+        want = "-".join(parts[:take])
+        for entry in entries:
+            got = _munge(entry)
+            if (got.lower() != want.lower()) if fold else (got != want):
+                continue
+            candidate = os.path.join(base, entry)
+            if not os.path.isdir(candidate):
+                continue
+            n, path = _deepest(parts[take:], candidate, fold)
+            if take + n > best[0]:
+                best = (take + n, path)
+            if take + n == len(parts):
+                return best
+    return best
+
+
+def _best_effort_path(slug: str) -> Optional[str]:
+    """A display-only GUESS at the folder for a slug whose folder is gone.
+
+    Resolves the longest prefix of segments that maps to real directories, then
+    rebuilds the unresolved remainder heuristically: a "/" goes before a segment
+    that starts with an uppercase letter, that follows a capitalised segment
+    (a capitalised segment is a whole folder name), or that follows an empty
+    segment (a dot-file: "" + "x" -> "/.x"); any other boundary stays "-".
+    So "Documents-Fused-local-disk-cleaner" -> "Documents/Fused/local-disk-cleaner".
+    That is a convention (folders are often Capitalised, repos lower-kebab),
+    not knowledge — callers must label the result as unconfirmed.
+    """
+    anchor = _anchor(slug)
+    if anchor is None:
+        return None
+    base, parts, fold = anchor
+    n, resolved = _deepest(parts, base, fold)
+    out = []
+    dot = False
+    prev_upper = False
+    for seg in parts[n:]:
+        if seg == "":
+            dot = True
+            continue
+        prefix = "." if dot else ""
+        if not out:
+            out.append(os.sep + prefix + seg)
+        elif dot or seg[0].isupper() or prev_upper:
+            out.append(os.sep + prefix + seg)
+        else:
+            out.append("-" + seg)
+        dot = False
+        prev_upper = seg[0].isupper()
+    return resolved.rstrip(os.sep) + "".join(out) if out else resolved
 
 
 def _memory_dir(project: str) -> str:
@@ -244,6 +321,9 @@ def _list() -> dict:
                 # confirm"), so a client branches on a named flag instead of
                 # inferring policy from a null.
                 "pathConfirmed": path is not None,
+                # Display-only guess when the folder can't be confirmed; the
+                # UI labels it. None whenever `path` is set.
+                "pathGuess": None if path is not None else _best_effort_path(slug),
                 "files": files,
             })
     return {"projects": projects}

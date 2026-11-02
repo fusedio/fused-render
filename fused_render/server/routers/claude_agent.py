@@ -80,6 +80,7 @@ ACTIONS: dict[str, str] = {
     "poll": "_poll",
     "decide": "_decide",
     "app_state": "_answer_app_state",
+    "canvas_shot": "_answer_canvas_shot",
     "sessions": "_sessions",
     "live_run": "_live_run",
     "cards": "_cards",
@@ -98,6 +99,7 @@ ACTIONS: dict[str, str] = {
     "commands": "_commands",
     "task_output": "_task_output",
     "task_stop": "_task_stop",
+    "task_background": "_task_background",
     "tasks": "_run_tasks",
 }
 

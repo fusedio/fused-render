@@ -121,6 +121,12 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
           const id = r.id;
           setShown((cur) => (cur?.id === id && cur.runId === runId ? cur : { runId, id, note, baseTurns: turnsRef.current }));
         }
+        if (!dead && !(r.state === "note" && r.id && !dismissed.current.has(r.id))) {
+          // The server no longer holds the note we show (its turn ended, so it
+          // withdrew it): drop the card. The dismissed set is left alone.
+          const held = r.state === "note" ? r.id : undefined;
+          setShown((cur) => (cur?.runId === runId && cur.id !== held ? null : cur));
+        }
       } catch {
         // A failed poll is "nothing new"; the next tick asks again.
       }

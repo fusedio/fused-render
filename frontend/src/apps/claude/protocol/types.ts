@@ -14,6 +14,7 @@ export type Action =
   | "poll"
   | "decide"
   | "app_state"
+  | "canvas_shot"
   | "sessions"
   | "live_run"
   | "defaults"
@@ -31,6 +32,7 @@ export type Action =
   | "commands"
   | "task_output"
   | "task_stop"
+  | "task_background"
   | "tasks"
   | "cards";
 
@@ -55,7 +57,7 @@ export interface StartRequest {
   message: string;
   /** "" = a new session (T:16605-16623). */
   session_id: string;
-  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot" | "codex"
+  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot" | "codex" | "gemini"
    *  (docs/COPILOT_BACKEND.md D2). Chosen at the first turn and immutable: a
    *  send into an existing session must name the session's own. */
   backend?: string;
@@ -151,6 +153,15 @@ export interface AppStateRequest {
   state: string;
 }
 
+/** `canvas_shot {run_id, request_id, state}` — the page's answer to a
+ *  `canvas_screenshot` tool call. `state` is JSON: `{image, mime, udf}` (the
+ *  picture, uploaded into the shots dir) or `{error}`. */
+export interface CanvasShotRequest {
+  run_id: string;
+  request_id: string;
+  state: string;
+}
+
 export interface SendRequest {
   run_id: string;
   /** Must equal the session's agent; ignored otherwise (§8). */
@@ -234,6 +245,7 @@ export interface AgentRequests {
   poll: PollRequest;
   decide: DecideRequest;
   app_state: AppStateRequest;
+  canvas_shot: CanvasShotRequest;
   sessions: FileRequest;
   live_run: FileSessionRequest;
   /** `session_id` OPTIONAL, exactly as `live_run` takes it: with one the agent
@@ -256,6 +268,7 @@ export interface AgentRequests {
   commands: CommandsRequest;
   task_output: TaskOutputRequest;
   task_stop: TaskOutputRequest;
+  task_background: TaskBackgroundRequest;
   tasks: RunTasksRequest;
   cards: CardsRequest;
 }
@@ -305,6 +318,10 @@ export interface ToolSegment extends SegmentClock {
    *  whose `parent_tool_use_id` is this tool_use. One level: a subagent's own
    *  subagents are flattened into its group. Absent when it has none. */
   children?: Segment[];
+  /** The `[from, to]` epoch-seconds interval this call sat on the user's
+   *  approval/answer (agent.py perm-waits store); the turn's "Worked for" merges
+   *  every such interval, subtracts the union and shows it as "waited". */
+  waited?: [number, number];
   /** SPEC T-2: the task registry's id for the background task this call
    *  started (`Task`/`Agent`/`Monitor`/backgrounded `Bash`) — the key into
    *  `TaskRecord.id`. */
@@ -468,6 +485,24 @@ export interface AppStateRow {
   runId?: string;
 }
 
+/** One parked `canvas_screenshot` call (agent `_canvas_shot_requests`): what
+ *  the model asked to see. Answered by the canvas page through its own
+ *  capture (`useCanvasShotResponder`). */
+export interface CanvasShotRow {
+  id: string;
+  what: "canvas" | "udf";
+  /** The UDF name the model named, "" for "this chat's node". */
+  udf: string;
+  reason: string;
+  created_at: number;
+
+  // -- CLIENT-ONLY annotations (run-controller.ts). --
+  /** The run that asked. */
+  runId?: string;
+  /** How many polls this request has been seen unanswered for. */
+  pollsSeen?: number;
+}
+
 export interface SkillRow {
   id: string;
   skill: string;
@@ -570,6 +605,9 @@ export interface PollResponse {
   permissions: PermissionRow[];
   /** [] once done. */
   app_state: AppStateRow[];
+  /** Unanswered `canvas_screenshot` requests (agent `_canvas_shot_requests`);
+   *  absent on an older agent.py. */
+  canvas_shot?: CanvasShotRow[];
   /** Live permission mode (`_live_mode`). */
   mode: PermissionMode;
   skills: SkillRow[];
@@ -1065,6 +1103,7 @@ export interface AgentResponses {
   poll: PollResponse | PollRefused;
   decide: DecideResponse;
   app_state: AppStateResponse;
+  canvas_shot: AppStateResponse;
   sessions: SessionsResponse | ErrorOnly;
   live_run: RunIdResponse | ErrorOnly;
   defaults: DefaultsResponse | ErrorOnly;
@@ -1082,6 +1121,7 @@ export interface AgentResponses {
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
   task_stop: TaskStopResponse | ErrorOnly;
+  task_background: TaskBackgroundResponse | ErrorOnly;
   tasks: RunTasksResponse | ErrorOnly;
   cards: CardsResponse | ErrorOnly;
 }
@@ -1189,6 +1229,19 @@ export interface RunTasksResponse {
 /** `task_stop {run_id, task_id}`: `{ok: true}` once the CLI accepted it. */
 export interface TaskStopResponse {
   ok: true;
+  error?: undefined;
+}
+/** `task_background {run_id, tool_use_id}` (agent.py `_task_background`): send
+ *  the running foreground Bash call to the background. */
+export interface TaskBackgroundRequest {
+  run_id: string;
+  tool_use_id: string;
+}
+/** `task_background`: `{ok: true, backgrounded}` once the CLI answered; the
+ *  Bash tool then returns "manually backgrounded" and the turn carries on. */
+export interface TaskBackgroundResponse {
+  ok: true;
+  backgrounded: boolean;
   error?: undefined;
 }
 export interface TaskOutputResponse {

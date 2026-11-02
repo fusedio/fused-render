@@ -60,6 +60,7 @@ from fused_render import github_setup
 from fused_render import claude_health
 from fused_render.claude_health import (
     SUBPROCESS_KWARGS,
+    detached_argv,
     _too_old,
     executable,
     parse_version,
@@ -85,9 +86,18 @@ POSIX_CANDIDATES = (
 )
 
 
+# Windows installs: npm, WinGet and the install script. Expanded by the same
+# expanduser(expandvars()) the resolvers already apply.
+WINDOWS_CANDIDATES = (
+    r"%APPDATA%\npm\copilot.cmd",
+    r"%LOCALAPPDATA%\Microsoft\WinGet\Links\copilot.exe",
+    "~/.local/bin/copilot.exe",
+)
+
+
 def candidates() -> tuple:
     """The known install locations, unexpanded."""
-    return POSIX_CANDIDATES
+    return WINDOWS_CANDIDATES if sys.platform == "win32" else POSIX_CANDIDATES
 
 
 # The lowest `copilot` the host's spawn line is known to work with.
@@ -177,7 +187,7 @@ def _shell_probe() -> Optional[str]:
     for flags in (["-lic"], ["-l", "-c"], ["-ic"]):
         try:
             out = subprocess.run(
-                [shell, *flags, "command -v copilot"],
+                detached_argv([shell, *flags, "command -v copilot"]),
                 capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
                 **SUBPROCESS_KWARGS,
             ).stdout
@@ -847,9 +857,17 @@ def cached_models() -> Optional[list]:
 #: claude_install already runs. Windows is not a target of this package.
 INSTALL_COMMAND_POSIX = "curl -fsSL https://gh.io/copilot-install | bash"
 
+#: Windows: the gh.io script is bash-only, and `winget install GitHub.Copilot`
+#: needs a source-agreement acceptance a headless button cannot give. npm is
+#: the same prerequisite Codex and Gemini already have there, and the line
+#: runs unchanged in the in-app PowerShell terminal.
+INSTALL_COMMAND_WINDOWS = "npm install -g @github/copilot"
+
 
 def install_command() -> str:
     """The install line, as a user would type it."""
+    if sys.platform == "win32":
+        return INSTALL_COMMAND_WINDOWS
     return INSTALL_COMMAND_POSIX
 
 

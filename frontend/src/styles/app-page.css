@@ -19,12 +19,16 @@
    whatever the peek has taken — so the Tasks tab's own side peek
    (TaskPeekFrame, styles/task-peek.css) always measures against the row this
    slot leaves it, never against the git peek's edge directly. The two peeks
-   can never fight over one edge because of that nesting: this split's other
-   child is `.app-git-peek`, and TaskPeekFrame lives entirely inside the slot.
+   can never fight over one edge because of that nesting: the git peek's row
+   (`.app-page-left`) holds the slot and `.app-git-peek`, and TaskPeekFrame
+   lives entirely inside the slot.
 
    Always rendered, so a page with no peek open is the single-column layout it
    has always been: the slot filling the row, the peek collapsed to nothing. */
-/* `overflow: hidden` is what keeps a panel parked off the right edge (the git
+/* Since 2026-11-01 the split's two children are `.app-page-left` (the frame
+   slot and the git peek, below) and the Claude column or its rail
+   (AppPage.tsx "THE CLAUDE PANE AND ITS RAIL"). `.app-page-left`'s
+   `overflow: hidden` is what keeps a panel parked off its right edge (the git
    peek, `transform: translateX(100%)` while shut) from growing a horizontal
    page scrollbar — a transformed box's border box still counts toward
    scrollable overflow even with `visibility: hidden`. Same rule, same reason,
@@ -35,8 +39,43 @@
   min-width: 0;
   min-height: 0;
   display: flex;
+}
+
+/* THE GIT PEEK'S ROW, one level down since the Claude pane joined the split
+   (2026-11-01, AppPage.tsx "THE CLAUDE PANE AND ITS RAIL"): the frame slot and
+   the git peek, which is absolute over THIS box's right edge — so the Claude
+   column past it is never under the peek. The `position`/`overflow` that used
+   to be `.app-page-split`'s live here now, for the same reasons. */
+.app-page-left {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
   position: relative;
   overflow: hidden;
+}
+
+/* THE CLAUDE PANE (AppPage.tsx, useAppPageClaudePane.ts): the explorer
+   sidebar's seam, then the chat, at the width the hook gives it. The chat's
+   floor is the explorer sidebar's (MIN_W, apps/explorer/lib/side-width.ts);
+   on a row too narrow for both floors the pane yields the rest, so the app
+   never collapses to nothing (`.app-page-frame-slot`'s own floor). */
+.app-page-claude {
+  flex: 0 0 auto;
+  min-width: min(380px, calc(100% - 320px));
+  max-width: calc(100% - 320px);
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  background: var(--bg);
+}
+
+.app-page-claude-chat {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Width transitions on the same clock as the peek's own slide

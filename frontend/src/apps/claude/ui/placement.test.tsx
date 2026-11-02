@@ -103,6 +103,7 @@ function state(over: Partial<ChatState> = {}): ChatState {
     turns: [],
     permissions: [],
     appState: [],
+    canvasShot: [],
     skills: [],
     working: null,
     trouble: null,
@@ -129,6 +130,7 @@ const actions = {
   decidePlan: async () => {},
   dismissCard: () => {},
   stopRun: async () => {},
+  addNote: () => {},
 };
 
 /** Click the Nth assistant turn's ✻ mark — the collapse toggle (design.md §B).

@@ -61,7 +61,7 @@ _CONTENT_RE = re.compile(rb"content\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
 # else after the app marker, else after <meta charset>, else after <head>.
 _ANCHORS = (
     re.compile(r"<meta\s[^>]*name\s*=\s*[\"']?fused-api-version[\"']?[^>]*>", re.IGNORECASE),
-    re.compile(r"<meta\s[^>]*name\s*=\s*[\"']?fused-app[\"']?[^>]*>", re.IGNORECASE),
+    re.compile(r"<meta\s[^>]*name\s*=\s*(?:\"fused-app\"|'fused-app'|fused-app(?=[\s/>]))[^>]*>", re.IGNORECASE),
     re.compile(r"<meta\s[^>]*charset[^>]*>", re.IGNORECASE),
     re.compile(r"<head[^>]*>", re.IGNORECASE),
 )

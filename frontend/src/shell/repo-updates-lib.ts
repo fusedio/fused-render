@@ -243,6 +243,12 @@ export interface SyncFailure {
   output: string;
   push: boolean;
   at: number;
+  /** A GitHub-link copy's row (contrib §16.8): the server's own Fix with
+   *  Claude prompt (never push; bring in the author's latest keeping local
+   *  changes), used verbatim. Its `command` is "" and `push` false. */
+  prompt?: string;
+  /** "owner/repo" the copy follows, on those rows. */
+  follows?: string;
 }
 
 /** A recent auto-pull that brought commits in (the transient popup). */
@@ -256,6 +262,7 @@ export interface SyncPull {
 
 /** The Fix with Claude prompt for an auto-sync failure row. */
 export function syncFixPrompt(f: SyncFailure): string {
+  if (f.prompt) return f.prompt;
   return buildFixPrompt({
     action: f.action,
     command: f.command,

@@ -6,6 +6,7 @@ template backends and `claude_agent/agent.py` (which never import
 `fused_render`) load it by path from `templates/shared`."""
 from __future__ import annotations
 
+import errno
 import os
 import signal
 import subprocess
@@ -31,6 +32,15 @@ def _fileno(fh: Any) -> int:
     return fh if isinstance(fh, int) else fh.fileno()
 
 
+#: `msvcrt.locking` errnos that mean another process holds the byte:
+#: EACCES for a taken lock, EDEADLOCK when LK_LOCK gave up, EAGAIN for good
+#: measure — everything else is a real error.
+_WIN_LOCK_HELD_ERRNOS = tuple(
+    code for code in (getattr(errno, name, None)
+                      for name in ("EACCES", "EDEADLOCK", "EDEADLK", "EAGAIN"))
+    if code is not None)
+
+
 def flock(fh: Any, exclusive: bool = True, blocking: bool = True) -> bool:
     """Take an advisory lock on an open file or raw fd. True once held; False
     when `blocking=False` and another open file description holds it.
@@ -53,7 +63,12 @@ def flock(fh: Any, exclusive: bool = True, blocking: bool = True) -> bool:
         try:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return True
-        except OSError:
+        except OSError as exc:
+            # Only "somebody holds it" reads as held; a bad fd, a read-only
+            # volume or a quota error is a failure the caller must see, not a
+            # lock to wait for (it would wait for ever).
+            if exc.errno not in _WIN_LOCK_HELD_ERRNOS:
+                raise
             if not blocking:
                 return False
         # LK_LOCK gives up after ten tries, so a blocking wait polls LK_NBLCK.

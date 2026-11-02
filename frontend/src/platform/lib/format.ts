@@ -214,3 +214,14 @@ export function dirname(fsPath: string): string {
   if (idx <= 0) return idx === 0 ? "/" : "";
   return fsPath.slice(0, idx);
 }
+
+/** A release's date as people say it: "Mar 4", with the year only when it is
+ *  not this year ("Mar 4, 2025"). Null for a missing or unreadable ISO date.
+ *  The Marketplace's "release of <date>" wording (stage B) reads it. */
+export function releaseDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+}

@@ -1090,6 +1090,15 @@
   outline-offset: -2px;
 }
 
+/* The long one-line description must not squeeze the location column: keep
+   it on one line at its natural width, capped. overflow, ellipsis and
+   text-align come from .cc-lrow-meta. */
+.cc-skill-row .cc-lrow-meta {
+  flex: 0 0 auto;
+  max-width: 40%;
+  white-space: nowrap;
+}
+
 .cc-skill-title {
   display: flex;
   align-items: center;
@@ -1476,6 +1485,15 @@
   border-bottom: none;
 }
 
+.cc-srow-others {
+  padding-left: 18px;
+}
+
+.cc-srow-more {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
 .cc-srow-name {
   flex: 0 1 auto;
   max-width: 40%;
@@ -1496,6 +1514,20 @@
 .cc-skill-note-line {
   margin: 0 0 12px;
   font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* A dashed hint row under a list: "type to search more", with its button. */
+.cc-findmore {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  font-size: 12.5px;
   color: var(--fg-muted);
 }
 
@@ -1595,3 +1627,432 @@
   border: 1px solid var(--border);
   border-radius: 9px;
 }
+
+/* -- Skills page (/skills) ------------------------------------------------------ */
+
+.cc-skills-blurb {
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* A skills.sh row: the pick button is the row's body, Add sits at its edge. */
+.cc-srow-pick {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-srow-pick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cc-srow.is-active {
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.cc-skills-none {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.cc-skills-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cc-chip {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.cc-chip:hover,
+.cc-chip.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The preview column beside the list: a skills.sh skill, or the draft. */
+.cc-skill-aside {
+  display: flex;
+  flex: 0 0 360px;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  max-height: calc(100vh - 140px);
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  position: sticky;
+  top: 0;
+}
+
+/* Header bits keep their height; only the body below scrolls. */
+.cc-skill-aside > * {
+  flex: none;
+}
+
+/* The draft aside has no body region, so the whole aside scrolls. */
+.cc-skill-aside.cc-aside-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.cc-aside-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.cc-aside-src,
+.cc-aside-label {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-aside-actions,
+.cc-aside-readers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.cc-skill-aside > .cc-aside-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The README inside the preview: MarkdownView renders a bare div of plain
+   elements here, so the elements are styled from the aside body. Margins
+   are explicit because Tailwind runs without preflight. */
+.cc-skill-aside .cc-aside-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cc-skill-aside .cc-aside-body a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.cc-skill-aside .cc-aside-body h1,
+.cc-skill-aside .cc-aside-body h2,
+.cc-skill-aside .cc-aside-body h3,
+.cc-skill-aside .cc-aside-body h4 {
+  margin: 14px 0 6px;
+  line-height: 1.3;
+}
+
+.cc-skill-aside .cc-aside-body h1 {
+  font-size: 20px;
+}
+
+.cc-skill-aside .cc-aside-body h2 {
+  font-size: 16px;
+}
+
+.cc-skill-aside .cc-aside-body h3,
+.cc-skill-aside .cc-aside-body h4 {
+  font-size: 14px;
+}
+
+.cc-skill-aside .cc-aside-body > :first-child {
+  margin-top: 0;
+}
+
+.cc-skill-aside .cc-aside-body p,
+.cc-skill-aside .cc-aside-body ul,
+.cc-skill-aside .cc-aside-body ol,
+.cc-skill-aside .cc-aside-body pre,
+.cc-skill-aside .cc-aside-body blockquote,
+.cc-skill-aside .cc-aside-body table {
+  margin: 0 0 0.8em;
+}
+
+.cc-skill-aside .cc-aside-body ul,
+.cc-skill-aside .cc-aside-body ol {
+  padding-left: 1.5em;
+}
+
+.cc-skill-aside .cc-aside-body code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--border);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+
+.cc-skill-aside .cc-aside-body pre {
+  max-width: 100%;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.cc-skill-aside .cc-aside-body pre code {
+  padding: 0;
+  background: none;
+  overflow-wrap: normal;
+}
+
+.cc-skill-aside .cc-aside-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.cc-skill-aside .cc-aside-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.cc-skill-aside .cc-aside-body th,
+.cc-skill-aside .cc-aside-body td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.cc-aside-files {
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+@container (max-width: 900px) {
+  .cc-skills-page .settings-body {
+    flex-direction: column;
+  }
+
+  .cc-skill-aside {
+    position: static;
+    flex-basis: auto;
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .cc-skill-aside > .cc-aside-body {
+    flex: none;
+    max-height: 420px;
+  }
+}
+
+/* -- New skill (Draft with Claude) ---------------------------------------------- */
+
+.cc-new {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.cc-new-form {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  max-width: 640px;
+}
+
+.cc-new-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.cc-new-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.cc-new-label {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cc-new-opt {
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+.cc-new-lint {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-new-lint.is-ok {
+  color: var(--accent);
+}
+
+.cc-new-lint.is-err,
+.cc-new-problems {
+  color: var(--error);
+}
+
+.cc-new-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.cc-new-radio input {
+  margin-top: 3px;
+}
+
+.cc-new-sub {
+  display: block;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-new-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cc-new-note {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-new-btns,
+.cc-new-ask,
+.cc-new-rename {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.cc-new-ask > :first-child,
+.cc-new-rename > :first-child {
+  flex: 1 1 200px;
+}
+
+.cc-new-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.cc-new-problems {
+  padding-left: 18px;
+  font-size: 12.5px;
+}
+
+.cc-new-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cc-aside-raw {
+  max-height: 420px;
+  overflow: auto;
+  font: 12px/1.5 var(--font-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cc-aside-fm {
+  color: var(--accent);
+}
+
+@container (max-width: 900px) {
+  .cc-new {
+    flex-direction: column;
+  }
+}
+
+/* A long list's quiet "Show N more" row, inside the card. */
+.cc-showmore {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  text-align: left;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.cc-showmore:hover {
+  color: var(--accent);
+}
+
+/* Memory project path-search combobox */
+.cc-pathsearch .cc-pathlist {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 224px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--popover, var(--background));
+  box-shadow: 0 6px 20px var(--scrim-lift);
+}
+.cc-pathopt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cc-pathopt[data-active] { background: var(--accent); }
+.cc-pathopt-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-pathopt-tag { font-size: 11px; color: var(--muted-foreground); white-space: nowrap; }
+.cc-pathopt-count { min-width: 1.5em; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.cc-pathmark { background: color-mix(in srgb, var(--primary, currentColor) 22%, transparent); color: inherit; border-radius: 2px; }

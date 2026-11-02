@@ -1,0 +1,28 @@
+// The ONE hosted canvas fused-render's backend lives on — the page-side
+// mirror of fused_render/backend_canvas.py (owner 2026-10-27: "only have 1
+// canvas for all the backend required in fused-render"). Change the host or
+// the canvas path THERE and here, nowhere else. The server reads the canvas
+// for everything that needs a request (marketplace.py); the page only builds
+// links a person opens (the listing page, the GitHub install page).
+//
+// The canvas is public, addressed by name: `<host>/fc_public/<canvas>/<udf>.<ext>`.
+// The public path needs the extension (`.html` for a page); a bare name 404s.
+//
+// Not here: the canvases the user's own Fused account creates for public
+// sharing (share-app.ts) — those are the user's, not the backend's.
+
+export const BACKEND_CANVAS_HOST = "https://udf.ai";
+/** The public canvas's path: `fc_public/<canvas name>`. */
+export const BACKEND_CANVAS_PATH = "fc_public/fused_app_marketplace";
+/** `<host>/<path>` — what every UDF URL starts with. */
+export const BACKEND_CANVAS_BASE = `${BACKEND_CANVAS_HOST}/${BACKEND_CANVAS_PATH}`;
+
+/** The public listing page of a marketplace app (§18.3 B6). */
+export function listingPageUrl(slug: string): string {
+  return `${BACKEND_CANVAS_BASE}/fused_app_listing.html?slug=${encodeURIComponent(slug)}`;
+}
+
+/** The GitHub install page for `<owner>/<repo>` (share_app.py's install link). */
+export function githubLinkUrl(repo: string): string {
+  return `${BACKEND_CANVAS_BASE}/fused_app_github.html?repo=${encodeURI(repo)}`;
+}

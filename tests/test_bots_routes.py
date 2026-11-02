@@ -362,6 +362,35 @@ def test_last_user_ts_tracks_only_user_messages(client, ws):
     assert cold.summary(light=True)["last_user_ts"] == ev["ts"]
 
 
+def test_set_doing_is_transient_and_summary_reports_inbox(client, ws):
+    bid = make(client)
+    b = registry.get(bid)
+    updated = b.meta.get("updated")
+    b.set_doing("thinking")
+    since = b.meta["doing_since"]
+    b.set_doing("thinking")  # unchanged text: the clock keeps running
+    assert b.meta["doing_since"] == since
+    b.set_doing("search the web for x")
+    row = one(status(client), bid)
+    assert row["doing"] == "search the web for x" and row["inbox_n"] == 0 and b.meta.get("updated") == updated
+    assert "doing" not in botmod._read_meta(bid)  # never written to disk
+    b.inbox.append("hello?")
+    assert one(status(client), bid)["inbox_n"] == 1
+    b.set_doing("")
+    assert one(status(client), bid)["doing"] == ""
+
+
+def test_run_task_clears_doing(client, ws):
+    bid = make(client)
+    b = registry.get(bid)
+
+    def run(bot, task, label):
+        bot.set_doing("thinking")
+
+    botmod._run_task(run, b, "t", "t")
+    assert b.meta["doing"] == ""
+
+
 # ---- per-bot Terminal opt-in and the owned session lifecycle (docs §16) --------
 
 def test_terminal_setting_round_trips_and_defaults_off(client, ws):

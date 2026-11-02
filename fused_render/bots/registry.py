@@ -236,7 +236,7 @@ def _wait_for_pid(pid, budget_s: float = OLD_OWNER_WAIT_S) -> None:
     end = time.monotonic() + budget_s
     while time.monotonic() < end:
         try:
-            os.kill(pid, 0)
+            _platform.probe_pid(pid)
         except OSError:
             return
         time.sleep(0.2)
@@ -290,7 +290,10 @@ def _read_lock_record() -> dict | None:
 
 def _pid_alive(pid) -> bool:
     try:
-        os.kill(int(pid), 0)
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        _platform.probe_pid(pid)
         return True
     except (OSError, TypeError, ValueError):
         return False
@@ -530,6 +533,10 @@ def start() -> None:
     never wins never writes. A lean server never calls this (server/app.py)."""
     if _OWNER["lean"]:
         return
+    with _lock:
+        t = _sched["thread"]
+        if t is not None and t.is_alive():
+            return  # already running: no second election
     # One synchronous election first (the startup hook awaits this off the loop): a win runs _become_owner
     # BEFORE the first request can pass require_owner() and build Bots mid-migration, and the page's first
     # paint sees an owner that is ready rather than one up to 20 s away.
@@ -542,6 +549,46 @@ def start() -> None:
             t = threading.Thread(target=_scheduler, args=(stop,), daemon=True, name="bots-routines")
             _sched.update(thread=t, stop=stop)
             t.start()
+
+
+def has_been_used() -> bool:
+    """Has this machine used bots before? Plain filesystem checks, nothing
+    heavy imported: the Super Bot seed stamp exists, the bots home holds at
+    least one bot, or a FusedBot tree is waiting to be imported (a legacy bot
+    must not be stranded until someone happens to open the Bots page). The
+    boot hook starts the scheduler only when this is true; otherwise the first
+    bots API request does (`ensure_started`)."""
+    from fused_render.bots import fusedbot_import, store
+    try:
+        if os.path.exists(seed_stamp_path()):
+            return True
+        if store.list_ids():
+            return True
+        return bool(fusedbot_import.source_root()) and not os.path.exists(
+            fusedbot_import.stamp_path())
+    except Exception:  # noqa: BLE001 - unreadable home: treat as unused, a request starts it
+        return False
+
+
+def needs_start() -> bool:
+    """True when `start()` would do something: not lean and no live scheduler."""
+    if _OWNER["lean"]:
+        return False
+    with _lock:
+        t = _sched["thread"]
+        return t is None or not t.is_alive()
+
+
+_start_lock = threading.Lock()
+
+
+def ensure_started() -> None:
+    """Idempotent, serialised `start()` for the lazy path (first bots request).
+    Blocking (a win runs the migration/import/seed): call off the event loop."""
+    if not needs_start():
+        return
+    with _start_lock:
+        start()
 
 
 def _take_routines_lock() -> bool:

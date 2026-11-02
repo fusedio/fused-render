@@ -13,7 +13,8 @@
 // `helpKind` below is one of the download page's four tabs, so a heads-up and a
 // failure card send the user to the same place.
 import type { ClaudeHealth } from "./api";
-import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND, troubleHelpUrl, type TroubleKind } from "./trouble";
+import { isWindows } from "./platform";
+import { CLAUDE_INSTALL_COMMAND, CLAUDE_INSTALL_COMMAND_WINDOWS, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND, troubleHelpUrl, type TroubleKind } from "./trouble";
 
 /** One thing worth telling the user, already in their terms. */
 export interface ClaudeIssue {
@@ -63,6 +64,8 @@ export const CLAUDE_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN";
 export const COPILOT_BIN_ENV = "FUSED_RENDER_COPILOT_BIN";
 /** Codex's twin (fused_render/codex_health.py, docs/CODEX_BACKEND.md D10). */
 export const CODEX_BIN_ENV = "FUSED_RENDER_CODEX_BIN";
+/** Gemini's twin (fused_render/gemini_health.py, docs/GEMINI_BACKEND.md D10). */
+export const GEMINI_BIN_ENV = "FUSED_RENDER_GEMINI_BIN";
 
 /** What differs between the agents' setup copy. Everything else — the rules,
  *  the order, the ids — is the same for every agent. */
@@ -79,8 +82,8 @@ interface AgentSetupWords {
   /** `claude doctor` — the only agent with a diagnostics subcommand. */
   doctor: boolean;
   /** Offer the `link-path` repair. Never for Copilot (the UI has offered it
-   *  for Claude alone since the second agent); Codex's contract lists the
-   *  route (docs/CODEX_BACKEND.md D10). */
+   *  for Claude alone since the second agent); Codex's and Gemini's contracts
+   *  list the route (docs/CODEX_BACKEND.md D10, docs/GEMINI_BACKEND.md D10). */
   linkPath: boolean;
   /** The signed-out row's sentence: what pressing "Sign in" does. */
   signIn: string;
@@ -91,7 +94,7 @@ const SETUP_WORDS: Record<string, AgentSetupWords> = {
     name: "Claude Code",
     cli: "claude",
     binEnv: CLAUDE_BIN_ENV,
-    install: CLAUDE_INSTALL_COMMAND,
+    install: isWindows ? CLAUDE_INSTALL_COMMAND_WINDOWS : CLAUDE_INSTALL_COMMAND,
     update: CLAUDE_UPDATE_COMMAND,
     doctor: true,
     linkPath: true,
@@ -122,6 +125,19 @@ const SETUP_WORDS: Record<string, AgentSetupWords> = {
       + "to enter on OpenAI's page, and finishes on its own. A `codex login` "
       + "in a terminal counts too.",
   },
+  gemini: {
+    name: "Gemini CLI",
+    cli: "gemini",
+    binEnv: GEMINI_BIN_ENV,
+    install: GEMINI_INSTALL_COMMAND,
+    // npm reinstalls the newest over the old: the install line IS the update.
+    update: GEMINI_INSTALL_COMMAND,
+    doctor: false,
+    linkPath: true,
+    signIn: "Sign in with Google — Gemini CLI opens the page and finishes on "
+      + "its own. A `GEMINI_API_KEY` in the environment, or a sign-in from "
+      + "`gemini` in a terminal, counts too.",
+  },
 };
 
 function setupWords(backend: string): AgentSetupWords {
@@ -141,7 +157,7 @@ function setupWords(backend: string): AgentSetupWords {
  * reason the strip renders nothing at all most of the time.
  */
 /** The "Signed in" line for ANY agent, or null when it is not signed in.
- *  Copilot's three methods and Codex's two are their own words (D10); Claude's
+ *  Copilot's three methods, Codex's two and Gemini's four are their own words (D10); Claude's
  *  are the setup wizard's (shell/onboarding/ToolsStep `signedInHint`), which
  *  the caller passes in so there stays one copy of them. */
 export function agentAccountLine(
@@ -163,6 +179,14 @@ export function agentAccountLine(
     if (method === "api_key") return "Signed in with an OpenAI API key";
     return "Signed in";
   }
+  if (backend === "gemini") {
+    const who = health.account?.email ? ` as ${health.account.email}` : "";
+    if (method === "google") return `Signed in with Google${who}`;
+    if (method === "api_key") return "Signed in with a Gemini API key";
+    if (method === "vertex") return "Signed in through Vertex AI";
+    if (method === "gateway") return "Signed in through an AI API gateway";
+    return `Signed in${who}`;
+  }
   if (backend !== "copilot") return claudeLine(health);
   // The user, when the CLI named one (`account.login`), and the plan.
   const who = health.account?.login ? ` as ${health.account.login}` : "";
@@ -179,7 +203,7 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
 
 /**
  * The same classifier for EVERY agent (docs/COPILOT_BACKEND.md D10,
- * docs/CODEX_BACKEND.md D10): each health snapshot carries the same keys, so
+ * docs/CODEX_BACKEND.md D10, docs/GEMINI_BACKEND.md D10): each health snapshot carries the same keys, so
  * the rules are the rules — only the words change (`SETUP_WORDS`), and the
  * repairs an agent has no endpoint for (`doctor` but for Claude, `link-path`
  * for Copilot) are not offered. The Claude output is byte-identical to what
@@ -212,13 +236,13 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
       title: `The app can't find ${name}`,
       detail:
         `Fused Render uses ${name} on this computer to build and fix ` +
-        "things. Install it and the app will pick it up — no restart needed.",
+        "things. Run the command below in your terminal (or press Run) and the app " +
+        "will pick it up — no restart needed.",
       helpKind: "notfound",
       // THE SERVER'S LINE, not the module constant: the server knows its own
       // platform; the fallback is only for a payload from a server too old to
       // say.
       command: health.install_command || words.install,
-      action: { kind: "install", label: `Install ${name}` },
     });
     return issues; // everything below is about an install that exists
   }

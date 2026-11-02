@@ -20,6 +20,11 @@ import previewTile from "@assets/canvas-preview-tile.png";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
+  generateCanvasName,
+  sanitizeCanvasName,
+  validateCanvasName,
+} from "./canvas-name";
+import {
   CanvasOwnedError,
   ENV_NAMES,
   WORKBENCH_ENVS,
@@ -76,9 +81,6 @@ function effectiveEnv(s: CanvasesStatus, picked: WorkbenchEnv | null): Workbench
 // slower than this makes a completed sign-in feel stuck.
 const LOGIN_POLL_MS = 1500;
 
-// Same rule the server (and the CLI's push) enforces.
-const NAME_RE = /^[A-Za-z0-9_]{1,128}$/;
-
 // A canvas with no uploaded preview gets the hosted gallery's stand-in: one
 // dark map tile per UDF, laid out in a grid, so the card still reads as a
 // canvas of N things instead of an empty box. The tile is the workbench's own
@@ -131,7 +133,20 @@ export default function Canvases() {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false); // form visible
   const [newName, setNewName] = useState("");
+  // The line under the name box. Two sources, kept apart because only one
+  // gates Create: a rule the typed name breaks (`nameError`, per keystroke,
+  // disables Create) and the create call's failure (`submitError`, leaves
+  // Create on so the same name can be retried). Separate from `error` (the
+  // page banner) so a typo never paints a banner over the listing.
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
+  const newNameRef = useRef<HTMLInputElement | null>(null);
+  // The form mounts with the suggestion selected: Enter keeps it, typing
+  // replaces it (as the workbench's modal). Once per open, not per keystroke.
+  useEffect(() => {
+    if (creating) newNameRef.current?.select();
+  }, [creating]);
   // Preview URLs that failed to load (expired presigned URL, deleted asset) —
   // fall back to the monogram instead of a broken-image icon.
   const [brokenPreviews, setBrokenPreviews] = useState<Set<string>>(new Set());
@@ -275,6 +290,9 @@ export default function Canvases() {
     setPreviews({});
     previewsAskedRef.current = new Set();
     setError(null);
+    // So does the new-canvas form: its suggestion and its duplicate verdict
+    // were judged against the old env's listing.
+    closeCreate();
     // Stop watching the old env's browser sign-in: its stamp is the old
     // env's store (custom's is its own, D1412), so judging the new env by it
     // would call the sign-in done or failed wrongly. The sign-in itself
@@ -437,14 +455,69 @@ export default function Canvases() {
     }
   };
 
+  // Names the duplicate rule checks against: the LIVE listing, so a canvas
+  // that appears while the box is open (poll, another session) is caught by
+  // onCreate's re-check even if the keystroke validation missed it.
+  // null until the listing has loaded: there is no duplicate rule to apply
+  // against nothing, so the form stays closed (button disabled) rather than
+  // suggesting `canvas_1` and letting a taken name through.
+  const existingNames = useMemo(
+    () => (canvases === null ? null : canvases.map((c) => c.name)),
+    [canvases],
+  );
+
+  // The listing moves under an open form (poll, env switch, a canvas created
+  // elsewhere): re-judge the typed name against the names as they are now.
+  useEffect(() => {
+    if (!creating) return;
+    setNameError(
+      existingNames === null
+        ? "Loading canvases…"
+        : validateCanvasName(newName, existingNames),
+    );
+    // newName is judged on every keystroke already (onNewNameChange).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creating, existingNames]);
+
+  const openCreate = () => {
+    if (existingNames === null) return;
+    // The workbench prefills `canvas_<n>` and selects it, so Enter alone
+    // creates and typing replaces.
+    const suggested = generateCanvasName(existingNames);
+    setNewName(suggested);
+    setNameError(validateCanvasName(suggested, existingNames));
+    setSubmitError(null);
+    setCreating(true);
+  };
+
+  const closeCreate = () => {
+    setCreating(false);
+    setNewName("");
+    setNameError(null);
+    setSubmitError(null);
+  };
+
+  const onNewNameChange = (raw: string) => {
+    const name = sanitizeCanvasName(raw);
+    setNewName(name);
+    setNameError(
+      existingNames === null
+        ? "Loading canvases…"
+        : validateCanvasName(name, existingNames),
+    );
+    setSubmitError(null);
+  };
+
   const onCreate = async () => {
     const name = newName.trim();
-    if (!env) return;
-    if (!NAME_RE.test(name)) {
-      setError("Canvas names may only use letters, digits, and underscores.");
+    if (!env || existingNames === null) return;
+    const invalid = validateCanvasName(name, existingNames);
+    if (invalid) {
+      setNameError(invalid);
       return;
     }
     setCreateBusy(true);
+    setSubmitError(null);
     setError(null);
     try {
       await createCanvas(env, name);
@@ -452,10 +525,12 @@ export default function Canvases() {
       await startSyncForOpen(env, name);
       navigateUrl(canvasWorkspacePath(env, name));
     } catch (e) {
-      setError((e as Error).message);
+      setSubmitError((e as Error).message);
       setCreateBusy(false);
     }
   };
+
+  const createError = nameError ?? submitError;
 
   const filtered = useMemo(() => {
     if (canvases === null) return null;
@@ -480,7 +555,7 @@ export default function Canvases() {
   return (
     <div className="canvases-page">
       <div className="canvases-inner">
-        <div className="canvases-head">
+        <div className={"canvases-head" + (creating ? " is-creating" : "")}>
           <h1 className="canvases-title">Workbench Canvases</h1>
           {/* The picker shows signed out too: each env can be its own login
               (custom's `[auth]`, D1412), so a signed-out pick must still be
@@ -529,37 +604,56 @@ export default function Canvases() {
                         void onCreate();
                       }}
                     >
-                      <input
-                        className="field-control"
-                        autoFocus
-                        placeholder="new_canvas_name"
-                        value={newName}
-                        // Spaces aren't legal in canvas names — typing one lands
-                        // an underscore instead of silently disabling Create.
-                        onChange={(e) => setNewName(e.target.value.replace(/\s+/g, "_"))}
-                        disabled={createBusy}
-                      />
-                      <button
-                        className="btn btn-primary"
-                        type="submit"
-                        disabled={createBusy || !NAME_RE.test(newName.trim())}
-                      >
-                        {createBusy ? "Creating…" : "Create"}
-                      </button>
-                      <button
-                        className="btn"
-                        type="button"
-                        onClick={() => {
-                          setCreating(false);
-                          setNewName("");
-                        }}
-                        disabled={createBusy}
-                      >
-                        Cancel
-                      </button>
+                      <div className="canvases-new-row">
+                        <input
+                          ref={newNameRef}
+                          className="field-control canvases-new-name"
+                          autoFocus
+                          placeholder="new_canvas_name"
+                          value={newName}
+                          onChange={(e) => onNewNameChange(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape" && !createBusy) {
+                              e.preventDefault();
+                              closeCreate();
+                            }
+                          }}
+                          disabled={createBusy}
+                          aria-invalid={createError ? "true" : undefined}
+                          aria-describedby={createError ? "canvases-new-error" : undefined}
+                        />
+                        <button
+                          className="btn btn-primary"
+                          type="submit"
+                          disabled={createBusy || !!nameError}
+                        >
+                          {createBusy ? "Creating…" : "Create"}
+                        </button>
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={closeCreate}
+                          disabled={createBusy}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {createError && (
+                        <div
+                          id="canvases-new-error"
+                          className="canvases-new-error"
+                          title={createError}
+                        >
+                          {createError}
+                        </div>
+                      )}
                     </form>
                   ) : (
-                    <button className="btn btn-primary" onClick={() => setCreating(true)}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={openCreate}
+                      disabled={existingNames === null}
+                    >
                       + New canvas
                     </button>
                   )}

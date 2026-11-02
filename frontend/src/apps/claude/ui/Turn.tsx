@@ -104,6 +104,13 @@ export interface TurnProps {
    *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first. */
   cwd?: string | null;
+  /** `Worked for 2m 10s`, drawn muted at the foot of an OPEN settled reply.
+   *  Computed by `Transcript` (`workedForPlan`) because only the log knows which
+   *  reply is the last one for its user message. Not drawn on a folded row: the
+   *  fold is one line and nothing else. */
+  workedFor?: string;
+  /** The exact start time, for the line's hover. */
+  workedHint?: string;
 }
 
 /** MEMOIZED. Every 400 ms poll replaces `state.turns`, but a SETTLED turn's own
@@ -126,6 +133,8 @@ export const Turn = memo(function Turn({
   onPullPending,
   onFork,
   cwd,
+  workedFor,
+  workedHint,
 }: TurnProps) {
   const agent = useAgent();
   // BEFORE the early returns below: a hook may not sit behind one, and the id
@@ -456,6 +465,11 @@ export const Turn = memo(function Turn({
               {children}
             </>
           )}
+          {workedFor && !folded && !turn.streaming ? (
+            <div className="turn-worked" {...(workedHint ? { "data-hint": workedHint } : {})}>
+              {workedFor}
+            </div>
+          ) : null}
         </span>
       </div>
       {/* The run was stopped by the user: a note beside the conversation, not

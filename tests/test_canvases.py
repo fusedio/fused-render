@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.canvas_sync_state as canvas_sync_state_mod
+from fused_render import canvas_snapshot
 import fused_render.canvases as canvases_mod
 import fused_render.fusedcli as fusedcli_mod
 from fused_render.server import create_app
@@ -62,6 +63,9 @@ def main():
         json.dump(scenario.get("canvases", ["alpha", "beta"]), sys.stdout)
         return
     if plain[:2] == ["canvas", "pull"]:
+        if scenario.get("pull_fail"):
+            sys.stderr.write("Error: pull failed\n")
+            sys.exit(1)
         delay = scenario.get("pull_delay")
         if delay:
             import time as _t
@@ -131,6 +135,11 @@ def main():
                 f.write(content)
         return
     if plain[:2] == ["canvas", "push"]:
+        capture = scenario.get("push_capture")
+        if capture:
+            # What the push would have shipped, for tests that check it.
+            import shutil
+            shutil.copytree(plain[2], capture)
         lines = scenario.get("push_fail_lines")
         if lines:
             for ln in lines:
@@ -566,6 +575,48 @@ def test_create_canvas_runs_cli(harness):
     assert ["workbench", "canvas", "create", "gamma"] in harness.calls()
 
 
+def test_create_canvas_seeds_the_starter_udf_on_the_server(harness, tmp_path):
+    # The CLI creates an empty canvas; the starter UDF must reach the server
+    # before the clone, or the embed's full disk state wipes the workbench's
+    # client-only default.
+    harness.log_in()
+    shipped = tmp_path / "shipped"
+    harness.set_scenario({"push_capture": str(shipped)})
+    res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
+    assert res.status_code == 200
+    pushes = [c for c in harness.calls() if c[1:3] == ["canvas", "push"]]
+    assert len(pushes) == 1 and pushes[0][-2:] == ["--canvas", "gamma"]
+    assert "@fused.udf" in (shipped / "udf.py").read_text(encoding="utf-8")
+    doc = canvas_snapshot._load_toml(str(shipped / "canvas.toml"))
+    assert list(canvas_snapshot.rows_of_doc(doc)["nodes"]) == ["udf"]
+
+
+def test_create_canvas_does_not_seed_a_canvas_that_has_nodes(harness):
+    harness.log_in()
+    for files in (
+        {"canvas.toml": 'type = "canvas"\n[[canvas.nodes]]\nudfName = "a"\n', "a.py": "x = 1\n"},
+        # A source file with no row is the user's too: never overwritten.
+        {"canvas.toml": 'type = "canvas"\n', "udf.py": "mine = 1\n"},
+    ):
+        harness.log.unlink(missing_ok=True)
+        harness.set_scenario({"pull_files": files})
+        res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
+        assert res.status_code == 200
+        assert not [c for c in harness.calls() if c[1:3] == ["canvas", "push"]], files
+
+
+def test_create_canvas_succeeds_when_seeding_fails(harness):
+    harness.log_in()
+    for scenario, pushed in (({"pull_fail": True}, False),
+                             ({"push_fail_lines": ["Error: boom"]}, True)):
+        harness.log.unlink(missing_ok=True)
+        harness.set_scenario(scenario)
+        res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
+        assert res.status_code == 200
+        assert res.json() == {"ok": True, "name": "gamma"}
+        assert bool([c for c in harness.calls() if c[1:3] == ["canvas", "push"]]) is pushed
+
+
 def test_create_canvas_rejects_bad_names(harness):
     harness.log_in()
     for bad in ("a-b", "a b", ""):
@@ -660,6 +711,70 @@ def test_delete_canvas_cli_failure_keeps_clone(harness, monkeypatch):
     res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 502
     assert (harness.root / "alpha" / "canvas.toml").is_file()
+
+
+def test_forget_file_sessions_erases_the_files_chats_and_skips_running_ones(
+        tmp_path, monkeypatch):
+    """A node deleted in the canvas takes the chats filed on its file: every
+    non-running session `_cli_sessions` lists for the file is erased the way
+    the erase route does it (`erase_task`), its transcript backed up first;
+    a running one is left alone and reported."""
+    from fused_render.server.routers import tasks as tasks_router
+
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("{}\n")
+    rows = [
+        {"id": "s1", "running": False, "backend": "claude", "path": str(transcript)},
+        {"id": "s2", "running": True, "backend": "claude", "path": str(tmp_path / "s2.jsonl")},
+    ]
+
+    class Agent:
+        calls = []
+
+        def _cli_sessions(self, file, limit=30):
+            self.calls.append((file, limit))
+            return rows
+
+    agent = Agent()
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: agent)
+    monkeypatch.setattr(tasks_router, "_collect", lambda: {"s1": {"key": "s1", "session_id": "s1"}})
+    erased = []
+    monkeypatch.setattr(tasks_router, "erase_task", lambda key, task: erased.append((key, task["key"])))
+    backups = []
+    out = canvases_mod.forget_file_sessions(
+        ["/clone/udf_2.py"], backup=lambda rel, data: backups.append((rel, data)))
+    assert agent.calls == [("/clone/udf_2.py", None)]
+    assert erased == [("s1", "s1")]
+    assert out["erased"] == ["s1"] and out["skipped"] == ["s2"]
+    assert backups == [(os.path.join("_sessions", "claude", "s1.jsonl"), b"{}\n")]
+
+
+def test_forget_file_sessions_fallback_refusal_is_a_skip(tmp_path, monkeypatch):
+    """A transcript the Tasks page does not list goes through
+    `_erase_session_files` directly; a file that would not go leaves the
+    session's state alone and reports it skipped, not erased."""
+    from fused_render.server.routers import tasks as tasks_router
+
+    class Agent:
+        def _cli_sessions(self, file, limit=30):
+            return [{"id": "s9", "running": False, "backend": "claude",
+                     "path": str(tmp_path / "s9.jsonl")}]
+
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: Agent())
+    monkeypatch.setattr(tasks_router, "_collect", lambda: {})
+    monkeypatch.setattr(tasks_router, "_erase_session_files",
+                        lambda sid, path: (0, False, 0, 1))
+    forgotten = []
+    monkeypatch.setattr(tasks_router.sessions, "forget_triage", lambda sid: forgotten.append(sid))
+    out = canvases_mod.forget_file_sessions(["/clone/udf_9.py"])
+    assert out["erased"] == [] and out["skipped"] == ["s9"]
+    assert forgotten == []
+
+
+def test_forget_file_sessions_without_an_agent_module_is_a_no_op(monkeypatch):
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: None)
+    assert canvases_mod.forget_file_sessions(["/clone/udf_2.py"]) == {
+        "erased": [], "skipped": [], "files": 1}
 
 
 def test_delete_canvas_rejects_bad_names(harness):

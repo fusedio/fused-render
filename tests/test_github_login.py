@@ -35,6 +35,9 @@ def _clean(monkeypatch):
                         lambda: {"signed_in": False, "account": None})
     monkeypatch.setattr(github_login.subprocess, "run",
                         lambda argv, **kw: subprocess.CompletedProcess(argv, 0))
+    from fused_render.contrib import classify
+
+    monkeypatch.setattr(classify, "after_sign_in", lambda ident=None: {})
     yield
     login = github_login._active
     if login is not None:
@@ -333,6 +336,46 @@ def test_setup_git_never_runs_before_the_probe_confirms(monkeypatch):
     assert _settle(lambda: not github_login.status()["in_flight"])
     assert seen["setup_git_called_before_probe"] is False
     assert seen["setup_git_calls"] == 1
+
+
+def test_a_confirmed_sign_in_runs_the_contrib_follow_up_off_thread(monkeypatch):
+    """docs/CONTRIB_LOOP.md §16.1: a sign-in re-checks unchecked owners and
+    applies the commit identity — on its own thread, and a follow-up that
+    blows up never turns the sign-in into a failure."""
+    import threading
+
+    from fused_render.contrib import classify
+
+    _found(monkeypatch)
+    _signed_in(monkeypatch)
+    ran = threading.Event()
+
+    def boom(ident=None):
+        ran.set()
+        raise RuntimeError("store unreadable")
+
+    monkeypatch.setattr(classify, "after_sign_in", boom)
+    proc = _FakeProc(text="✓ Authentication complete.\n", code=0)
+    _spawn(monkeypatch, proc)
+    github_login.start()
+    proc.finish()
+    assert _settle(lambda: not github_login.status()["in_flight"])
+    assert ran.wait(5)
+    assert github_login.status()["error"] is None
+
+
+def test_a_denied_sign_in_runs_no_contrib_follow_up(monkeypatch):
+    from fused_render.contrib import classify
+
+    _found(monkeypatch)
+    calls = []
+    monkeypatch.setattr(classify, "after_sign_in", lambda ident=None: calls.append(1))
+    proc = _FakeProc(text="error: could not open a browser\n", code=1)
+    _spawn(monkeypatch, proc)
+    github_login.start()
+    proc.finish()
+    assert _settle(lambda: not github_login.status()["in_flight"])
+    assert calls == []
 
 
 def test_a_failed_sign_in_does_not_re_probe(monkeypatch):

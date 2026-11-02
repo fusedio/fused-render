@@ -359,6 +359,18 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_ORIGIN",
 
 
 @pytest.fixture(autouse=True)
+def _pretend_desktop_app(monkeypatch):
+    """Indexing defaults ON only inside the native desktop app
+    (`prefs.is_desktop_app`); pytest sets no desktop env, so without this the
+    suite would read as a browser install and every "default ON" premise
+    would flip. Same reason dev runs are kept from affecting pytest. Tests of
+    the default itself re-patch it; the test of `is_desktop_app` itself keeps a reference taken at
+    import time, before this fixture runs."""
+    import fused_render.shell.prefs as prefs_mod
+    monkeypatch.setattr(prefs_mod, "is_desktop_app", lambda: True)
+
+
+@pytest.fixture(autouse=True)
 def _no_archiving_of_missing_folders(monkeypatch):
     """The Tasks listing files away a task whose folder is gone from disk
     (`routers/tasks.py ARCHIVE_MISSING_FOLDERS`), and nearly every transcript
@@ -744,16 +756,6 @@ def _no_legacy_mounts_cleanup(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_startup_artifacts_warm(monkeypatch):
-    """`_startup_artifacts_warm` scans every transcript under the developer's
-    real ~/.claude on a daemon thread; no test that merely boots the app wants
-    that. The test ABOUT the handler restores the real target."""
-    from fused_render.server import app as app_mod
-
-    monkeypatch.setattr(app_mod, "_safe_artifacts_scan", lambda: None)
-
-
-@pytest.fixture(autouse=True)
 def _no_startup_index_scan(monkeypatch):
     """`create_app` schedules a background scan of the user's HOME dir.
 
@@ -1030,3 +1032,13 @@ def _real_core_templates_stay_untouched():
             f"FUSED_RENDER_HOME redirect — a process resolved home_dir() to the "
             f"real ~/.fused-render and restaged it with this checkout's "
             f"templates.", pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_engine_warm(monkeypatch):
+    """`/api/config` and `run_python` call `engine.ensure_warm()`, which would
+    cold-import fused and prime interpreters in every test that loads the shell.
+    Mark it already started; the tests ABOUT it reset the flag."""
+    from fused_render import engine
+
+    monkeypatch.setattr(engine, "_warm_started", True)

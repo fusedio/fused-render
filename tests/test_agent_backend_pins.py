@@ -2,7 +2,8 @@
 
 Each list here is spelled in more than one place because the readers cannot
 share an import: the frontend paints its first frame from a hand-kept copy of
-the catalog (`CLAUDE_FALLBACK` / `COPILOT_FALLBACK` / `CODEX_FALLBACK` in
+the catalog (`CLAUDE_FALLBACK` / `COPILOT_FALLBACK` / `CODEX_FALLBACK` /
+`GEMINI_FALLBACK` in
 frontend/src/platform/lib/agent-backends.ts) before `GET /api/agent-backends`
 answers; agent.py is stdlib-only and loaded by path, so it keeps its own
 effort and permission-mode tables; and the prefs and tasks routers validate
@@ -15,7 +16,7 @@ import importlib.util
 import os
 import re
 
-from fused_render.agent_backends import claude, codex, copilot, registry
+from fused_render.agent_backends import claude, codex, copilot, gemini, registry
 from fused_render.server.routers import tasks as tasks_mod
 from fused_render.shell import prefs
 
@@ -81,7 +82,8 @@ def test_the_frontends_fallback_rows_match_the_catalog():
     keys = ("id", "label", "models", "default_model", "efforts", "modes", "caps")
     for name, backend_id in (("CLAUDE_FALLBACK", "claude"),
                              ("COPILOT_FALLBACK", "copilot"),
-                             ("CODEX_FALLBACK", "codex")):
+                             ("CODEX_FALLBACK", "codex"),
+                             ("GEMINI_FALLBACK", "gemini")):
         client = _fallback(src, name)
         server = {k: rows[backend_id][k] for k in keys}
         # Of a model's catalog row the first frame knows id, label and
@@ -102,12 +104,18 @@ def test_claudes_models_are_the_default_model_prefs_vocabulary():
 
 
 def test_every_effort_list_is_one_list():
+    """...for the agents that take an effort. Gemini takes none at all
+    (docs/GEMINI_BACKEND.md D7): an empty vocabulary and every model
+    effortless, so no picker ever offers a level its spawn would drop."""
     agent = _agent()
     assert tuple(claude.EFFORTS) == tuple(copilot.EFFORTS)
     assert tuple(claude.EFFORTS) == tuple(codex.EFFORTS)
     assert tuple(claude.EFFORTS) == tuple(agent._EFFORT_LEVELS)
     assert tuple(claude.EFFORTS) == tuple(
         e for e in tasks_mod._VALID_EFFORTS if e)
+    assert gemini.EFFORTS == ()
+    assert all(not m.reasoning for m in gemini.MODELS)
+    assert all(m["efforts"] == [] for m in gemini.GEMINI.to_catalog(False)["models"])
 
 
 def test_copilots_effortless_models_are_agent_pys():
@@ -123,6 +131,12 @@ def test_the_permission_modes_are_agent_pys_and_the_others_are_a_subset():
     assert tuple(claude.MODES) == tuple(agent.PERMISSION_MODES)
     assert set(copilot.MODES) <= set(claude.MODES)
     assert set(codex.MODES) <= set(claude.MODES)
+    assert set(gemini.MODES) <= set(claude.MODES)
+    # Gemini's own ids, by the CLI-wire mode: agent.py's table covers every
+    # mode `_start` can send a non-Claude host, and the host's copy is
+    # pinned to it in tests/test_gemini_host.py.
+    assert set(agent._GEMINI_MODES) == {agent.PERMISSION_MODES[m] for m in gemini.MODES}
+    assert set(agent._GEMINI_MODES.values()) == {"default", "autoEdit", "yolo"}
 
 
 def test_every_agent_list_is_one_order():

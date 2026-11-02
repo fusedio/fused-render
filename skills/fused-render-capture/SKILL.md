@@ -9,7 +9,7 @@ Native capture → result = FILE on this machine: path known before recording en
 
 **Draw UI off `await fused.capture.sources()`** (never prompts — the permission dialog rides the first real capture) — `{video, audio, systemAudio, screenshot}`, EACH `{available, granted, reason}`, plus `displays` and `microphones`. Gate every control off its own key (mic button off `audio`, `audio: "system"`/`"both"` off `systemAudio`) — `available: false` always carries a `reason`, and a start rejects `unavailable` with that same sentence. `displays` empty on Linux/Wayland by design. Don't sniff platform; read refusals + `reason`s.
 
-Platform matrix:
+Platform matrix (Windows is not supported: there is no native capture backend, so every `fused.capture` start rejects `unavailable` and `sources()` reports each kind `available: false` with a `reason`):
 
 | | macOS | Linux |
 |---|---|---|

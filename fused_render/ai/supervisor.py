@@ -3094,6 +3094,9 @@ def _hub_catalog_refresh_tick() -> None:
             logger.exception("hub-catalog refresh failed for %s", capability)
 
 
+_hub_catalog_refresh_lock = threading.Lock()
+
+
 def start_hub_catalog_refresh() -> None:
     """Start the daily hub-catalog delta-refresh thread, once per process —
     modeled directly on `start_hardware_refresh`/`start_hub_metadata_refresh`
@@ -3102,6 +3105,9 @@ def start_hub_catalog_refresh() -> None:
     thread sleeps and re-sweeps forever). A failed sweep is logged and never
     kills the loop, same as its two siblings."""
     global _hub_catalog_refresh_thread
+    # Called on every AI catalog read (lazy start, no boot hook): the
+    # unlocked is_alive check is the cheap path; the lock makes two racing
+    # first calls start one thread.
     if _hub_catalog_refresh_thread is not None and _hub_catalog_refresh_thread.is_alive():
         return
 
@@ -3113,9 +3119,22 @@ def start_hub_catalog_refresh() -> None:
                 logger.exception("hub-catalog refresh tick failed")
             time.sleep(_HUB_CATALOG_REFRESH_INTERVAL_S)
 
-    _hub_catalog_refresh_thread = threading.Thread(
-        target=run, name="ai-hub-catalog-refresh", daemon=True)
-    _hub_catalog_refresh_thread.start()
+    with _hub_catalog_refresh_lock:
+        if (_hub_catalog_refresh_thread is not None
+                and _hub_catalog_refresh_thread.is_alive()):
+            return
+        _hub_catalog_refresh_thread = threading.Thread(
+            target=run, name="ai-hub-catalog-refresh", daemon=True)
+        _hub_catalog_refresh_thread.start()
+
+
+def start_hub_refreshers() -> None:
+    """Lazy start of the two Hub refresh threads (metadata sweep, daily catalog
+    delta). Neither runs at boot: the first AI catalog read starts them,
+    idempotently and cheaply on every later call. The one place both are
+    listed; add any further Hub refresher here."""
+    start_hub_metadata_refresh()
+    start_hub_catalog_refresh()
 
 
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to
@@ -3575,8 +3594,47 @@ def speech_job_id(uid: str) -> str:
     return SPEECH_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
+def _refuse_speech_engine_mismatch(model: str, serving: registry.Runner) -> None:
+    """Raise a SupervisorError when another registered speech runner is the
+    one that reads `model`'s files and `serving` is not.
+
+    The supervisor resolves ONE runner per capability, so a Kokoro id on a Mac
+    whose speech engine is Qwen3-TTS would otherwise download 0.39 GB and fail
+    at load inside the job. A cached snapshot is judged by its layout
+    (`hub_cache.cached_loaders`); an undownloaded id by the curated lists.
+
+    A claimer that cannot run HERE still counts: a Qwen3-TTS id on Linux is
+    Qwen's, and the 2.5 GB pull would fail at load in `serving`. Its own
+    unavailable reason is what the 409 says ("needs Apple Silicon"). No claim
+    from any registered speech runner means no opinion.
+    """
+    from fused_render.ai import hub_cache
+    loaders = hub_cache.cached_loaders(model)
+    codes = loaders if loaders else catalog.runners_offering(model)
+    claimers = []
+    for code in codes:
+        runner = registry.by_code(code)
+        if runner is not None and runner.capability == registry.TEXT_TO_SPEECH:
+            claimers.append(runner)
+    if not claimers or any(runner.code == serving.code for runner in claimers):
+        return
+    usable = [runner for runner in claimers if runner.available().ok]
+    if usable:
+        names = " or ".join(dict.fromkeys(runner.label for runner in usable))
+        raise SupervisorError(
+            f"{model} is read by the {names} speech engine, not {serving.label}; "
+            f"choose the {names} speech engine on the Engines tab")
+    names = " or ".join(dict.fromkeys(runner.label for runner in claimers))
+    reasons = "; ".join(dict.fromkeys(
+        runner.available().reason for runner in claimers if runner.available().reason))
+    raise SupervisorError(
+        f"{model} is read by the {names} speech engine, which cannot run here"
+        + (f": {reasons}" if reasons else "") + f"; {serving.label} cannot load it")
+
+
 def start_speech(model: str, request: dict, job: str, page: str = "", source: str = "",
                  requester_id: str = "", requester_label: str = "") -> None:
+    _refuse_speech_engine_mismatch(model, _runner_or_raise(registry.TEXT_TO_SPEECH))
     _start_render(registry.TEXT_TO_SPEECH, model, request, job, generate_speech,
                   noun="speech clip", thread_name="ai-speech", page=page, source=source,
                   title=request.get("text"), requester_id=requester_id,

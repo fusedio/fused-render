@@ -143,6 +143,12 @@ from fused_render.ai import registry
 #: argument `recommended` won one row at a time, applied to the page that
 #: shortlist sits on.
 #:
+#: **The two TEXT lists are the exception: six since SPEC AI-28b (the coding
+#: row), seven since the October 2026 refresh**, which added two mixture-of-
+#: experts rows per runner (Gemma 4 26B-A4B and LFM2.5 24B-A2B) against one
+#: retirement each. A deliberate loosening, recorded in DECISIONS.md; the
+#: ceiling test pins it.
+#:
 #: **The bounds are a budget, not a target.** Filling a list to five with rows
 #: that differ only in size is worse than a list of three where every row
 #: answers a different question, and the rule a row still has to pass is this
@@ -314,59 +320,77 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
         },
-        # Bonsai 27B (prism-ml). The family ships eight repos and most of them
+        # Bonsai 2 27B (prism-ml). The family ships eight repos and most of them
         # cannot run here: the Bonsai 2 PQ2_0 GGUF fails to load on 0.3.29's
         # llama.cpp with "invalid ggml type 142" (see D1413 before re-testing;
-        # the v1 GGUFs and PTQ1_0 were not tested), and the AWQ builds are both AWQ and image-text-to-text. The MLX ones are what is
+        # the v1 GGUFs and PTQ1_0 were not tested), and the AWQ builds are
+        # both AWQ and image-text-to-text. The MLX ones are what is
         # left, and only the 2-bit is listed — the 1-bit sibling is omitted
         # deliberately rather than forgotten (see the note below).
         #
         # Re-argued rather than assumed, every time this list is refreshed: it
         # loads (`model_type` is `qwen3_5`, which mlx-lm ships), and it is the
         # only way to have a 27B-class model inside this list's size budget —
-        # the other 27B here is 20GB, which is a 32GB machine. Two 27B rows
-        # 3.3x apart in download are not the same pick twice: they answer for
+        # the other 27B here is 20.7GB, which is a 32GB machine. Two 27B rows
+        # 2.4x apart in download are not the same pick twice: they answer for
         # two different machines, which is what earns this one a slot.
+        #
+        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9, the floor of the runner's
+        # `>=0.7.9,<0.8` range, resolved in the gate venv, through
+        # the worker's own `load`/`generate`: `model_type`
+        # `prism_hadamard_qwen35`, "Say hello." answered. Replaces
+        # `prism-ml/Ternary-Bonsai-27B-mlx-2bit`.
         {
-            "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+            "id": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
             "useCases": ["writing"],
             "params": "27B",
             "quantization": "Ternary 2-bit",
-            "label": "Ternary Bonsai 27B (MLX 2-bit)",
+            "label": "Ternary Bonsai 2 27B (MLX 2-bit)",
             "nickname": "Ternary Bonsai",
-            # 6.1, not the 8.5 the Hub's file listing adds up to: this is what
-            # the completed download MEASURES on disk, reported by the AI Models
-            # page's own scan. Where the two disagree the measurement wins —
-            # every other number on this page is bytes on a real filesystem, and
-            # a suggestion that overstates by 2.4GB is the one figure someone
-            # plans a download around.
-            "size_gb": 6.1,
-            "note": "27B-class answers for under a third of the Qwen3.6 27B's "
+            # 8.6 is the Hub's whole-snapshot byte sum (8.61GB, 2026-10-22).
+            # The first-generation Ternary-Bonsai-27B this row replaces
+            # MEASURED 6.1 on disk against 8.5 listed; this successor has not
+            # been re-measured on a completed download, so where the AI Models
+            # page's scan disagrees with this figure, the scan wins.
+            "size_gb": 8.6,
+            "note": "27B-class answers for well under half the Qwen3.8 27B's "
                     "download. Ternary quantization is new, so measure it "
                     "against a 4-bit model you already trust.",
         },
-        # The 9B slot, and the list is worse without it: 4B and 27B leave a
-        # 2.25x parameter gap over the range most 16-32GB machines actually
-        # sit in, and "download the 4B or the 20GB one" is not a choice a
-        # 24GB Mac has an answer to. It costs the Gemma E4B row, which was
-        # the same parameter class as the recommended 4B at 1.3x its download
-        # — two picks answering one question, where these two answer two.
-        # The cost is real and named rather than glossed: this list no longer
-        # carries a Google family row.
+        # LFM2.5 24B-A2B (Liquid AI): 24B of knowledge at about a 2B's speed.
+        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 (the floor of the runner's
+        # `>=0.7.9,<0.8` range, resolved in the gate venv) through the worker's own
+        # `load`/`generate` (`model_type` `lfm2_moe`). 13.59GB Hub whole-snapshot
+        # byte sum. LFM Open License v1.0, not Apache — the note says so.
         {
-            "id": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
-            # the FIRST tag picks the UI section: the recommended 4B leads
-            # `writing`, the larger generalists lead `reasoning`
+            "id": "LiquidAI/LFM2.5-24B-A2B-MLX-4bit",
+            "useCases": ["writing"],
+            "params": "24B (~2B active)",
+            "quantization": "MLX 4-bit",
+            "label": "LFM2.5 24B-A2B (MLX 4-bit)",
+            "nickname": "Liquid 2.5",
+            "size_gb": 13.6,
+            "note": "24B of knowledge answering at about a 2B's speed, though "
+                    "its 14GB of weights want a 24GB machine or more — a "
+                    "16GB laptop is not enough. Under Liquid's own license "
+                    "rather than Apache.",
+        },
+        # Gemma 4 26B-A4B (Google), Apache-2.0: the Google family row the
+        # 9B slot once cost this list, back as a mixture of experts.
+        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 (the floor of the runner's
+        # `>=0.7.9,<0.8` range, resolved in the gate venv) through the worker's own
+        # `load`/`generate` (`model_type` `gemma4`). 15.37GB Hub byte sum.
+        {
+            "id": "mlx-community/gemma-4-26B-A4B-it-4bit",
             "useCases": ["reasoning", "writing", "coding"],
-            "params": "9B",
-            "quantization": "OptiQ 4-bit",
-            "label": "Qwen3.5 9B (OptiQ 4-bit)",
-            "nickname": "Qwen 3.5",
-            # The 8.22GB the OptiQ-premium paragraph above measures, rounded
-            # the way every other row here is.
-            "size_gb": 8.2,
-            "note": "Better answers than the Qwen 4B for twice the download — "
-                    "tight on 16GB, so close other heavy apps first.",
+            "params": "26B (~4B active)",
+            "quantization": "MLX 4-bit",
+            "label": "Gemma 4 26B-A4B (MLX 4-bit)",
+            "nickname": "Gemma 4",
+            "size_gb": 15.4,
+            "note": "A second family beside Qwen: 26B of knowledge at about "
+                    "a 4B's speed, though its 15GB of weights want a 24GB "
+                    "machine or more.",
         },
         # Coding model (SPEC AI-28b). Qwen3-Coder-30B-A3B is a MoE — 30B of
         # code knowledge answering at about a 3B's speed — and the only
@@ -389,20 +413,25 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         # LAST, and the only entry here that is not a 16GB-machine model. It
         # lands at the bottom on size alone now, which happens to agree with
-        # where its memory cost belongs: 20GB of weights resident is a 32GB Mac,
+        # where its memory cost belongs: 20.7GB of weights resident is a 32GB Mac,
         # and the note says so instead of leaving someone to find out after the
         # download. Its 35B-A3B MoE sibling is omitted for the reason D310 gives
         # about mflux — 24.7GB resident on a 34GB machine already several GB
         # into swap is not something to suggest on one machine's evidence.
+        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 (the floor of the runner's
+        # `>=0.7.9,<0.8` range, resolved in the gate venv) through the worker's own
+        # `load`/`generate` (`model_type` `qwen3_5`); 20.68GB Hub byte sum.
+        # Replaces `mlx-community/Qwen3.6-27B-OptiQ-4bit`.
         {
-            "id": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
-            # first tag picks the UI section (see the 9B row)
+            "id": "mlx-community/Qwen3.8-27B-OptiQ-4bit",
+            # first tag picks the UI section: the recommended 4B leads
+            # `writing`, the larger generalists lead `reasoning`
             "useCases": ["reasoning", "writing", "coding"],
             "params": "27B",
             "quantization": "OptiQ 4-bit",
-            "label": "Qwen3.6 27B (OptiQ 4-bit)",
-            "nickname": "Qwen 3.6",
-            "size_gb": 20.0,
+            "label": "Qwen3.8 27B (OptiQ 4-bit)",
+            "nickname": "Qwen 3.8",
+            "size_gb": 20.7,
             "note": "The best answers here, and it needs 32GB — on a 16GB "
                     "machine this swaps rather than runs.",
         },
@@ -544,35 +573,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "above handles badly — it answers above its size class "
                     "for the download.",
         },
-        # The mixture-of-experts row, and it matters MORE here than its MLX
-        # twin does: this list's default build has no GPU, and a router that
-        # multiplies ~1B of an 8B model per token is the one architecture that
-        # turns a CPU into a reasonable place to run an 8B at all. Nothing in
-        # the runner has to know — MoE experts are ordinary tensors, only the
-        # COMPUTE is conditional, and llama.cpp does that inside the graph.
-        #
-        # **What we CANNOT do for it is placement**, and that is a binding
-        # limit rather than an oversight: llama.cpp's `--n-cpu-moe` (keep the
-        # expert tensors on the CPU, put attention on the GPU) is backed by
-        # `llama_model_params.tensor_buft_overrides`, which llama-cpp-python
-        # 0.3.29 exposes in the ctypes struct and NOT as a `Llama.__init__`
-        # keyword — checked against the installed signature, which offers only
-        # `n_gpu_layers`, `split_mode`, `main_gpu` and `tensor_split`. So on
-        # the Vulkan build this row is offloaded by whole layers like any
-        # dense model, leaving the trick unused. On the CPU build, which is
-        # what most machines resolve to, there is nothing left on the table.
-        {
-            "id": "LFM2.5-8B-A1B-Q4_K_M.gguf",
-            "useCases": ["writing"],
-            "params": "8B (~1B active)",
-            "quantization": "GGUF Q4_K_M",
-            "label": "LFM2.5 8B-A1B (Q4_K_M)",
-            "nickname": "Liquid 2.5",
-            "size_gb": 5.2,
-            "note": "8B of knowledge answering at about a 1B's speed — a "
-                    "mixture of experts, so only a fraction of it runs per "
-                    "token.",
-        },
         {
             "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
             # first tag picks the UI section: the recommended 4B leads
@@ -585,8 +585,58 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "size_gb": 13.1,
             "note": "The newest and largest model here, quantized hard to fit "
                     "the download — expect a bigger quality hit than the "
-                    "LFM2.5 8B-A1B above, and a laptop GPU to run it mostly "
+                    "Qwen3.5 4B above, and a laptop GPU to run it mostly "
                     "or entirely on the CPU rather than resident in VRAM.",
+        },
+        # The mixture-of-experts row. Only ~2B of the 24B is computed per
+        # token, which makes it fast, but the WHOLE file is resident at load
+        # regardless of active parameters — the 14.5GB is what a machine
+        # must hold, so this is a 24GB-class row, not a small-machine one.
+        # Nothing in the runner has to know — MoE experts are ordinary
+        # tensors, only the COMPUTE is conditional, and llama.cpp does that
+        # inside the graph.
+        #
+        # **What we CANNOT do for it is placement**, and that is a binding
+        # limit rather than an oversight: llama.cpp's `--n-cpu-moe` (keep the
+        # expert tensors on the CPU, put attention on the GPU) is backed by
+        # `llama_model_params.tensor_buft_overrides`, which llama-cpp-python
+        # 0.3.29 exposes in the ctypes struct and NOT as a `Llama.__init__`
+        # keyword — checked against the installed signature, which offers only
+        # `n_gpu_layers`, `split_mode`, `main_gpu` and `tensor_split`. So on
+        # the Vulkan build this row is offloaded by whole layers like any
+        # dense model, leaving the trick unused. On the CPU build, which is
+        # what most machines resolve to, there is nothing left on the table.
+        #
+        # **Load-gated 2026-10-22** on the pinned llama-cpp-python 0.3.29:
+        # `general.architecture` is `lfm2moe`, the file loads and answers a
+        # chat turn. Replaces `LFM2.5-8B-A1B-Q4_K_M.gguf`. 14.53GB Hub size.
+        {
+            "id": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+            "useCases": ["writing"],
+            "params": "24B (~2B active)",
+            "quantization": "GGUF Q4_K_M",
+            "label": "LFM2.5 24B-A2B (Q4_K_M)",
+            "nickname": "Liquid 2.5",
+            "size_gb": 14.5,
+            "note": "24B of knowledge answering at about a 2B's speed, though "
+                    "its 14.5GB file is resident whole — it wants a 24GB "
+                    "machine or a big GPU, and a 16GB laptop is not "
+                    "enough.",
+        },
+        # Gemma 4 26B-A4B (unsloth UD-Q4_K_M, 16.95GB Hub size), the GGUF twin
+        # of the MLX row. **Load-gated 2026-10-22** on llama-cpp-python 0.3.29:
+        # `general.architecture` is `gemma4`, loads and answers a chat turn.
+        {
+            "id": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+            "useCases": ["reasoning", "writing", "coding"],
+            "params": "26B (~4B active)",
+            "quantization": "GGUF UD-Q4_K_M",
+            "label": "Gemma 4 26B-A4B (UD-Q4_K_M)",
+            "nickname": "Gemma 4",
+            "size_gb": 17.0,
+            "note": "The strong second family: 26B of knowledge at about a "
+                    "4B's speed, but its 17GB of weights want a 24GB machine "
+                    "or a big GPU.",
         },
         # Coding model (SPEC AI-28b) — the GGUF twin of the MLX row of the
         # same model. unsloth's Q4_K_M is 18.56GB (Hub tree listing,
@@ -830,6 +880,25 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # The same distilled model; the same D310 4-step benchmark.
             "defaults": {"steps": 4},
         },
+        # Z-Image Turbo (Tongyi), Apache-2.0, October 2026 refresh. A distilled
+        # no-CFG model — 8 steps is its published setting — and it sorts
+        # between the two klein rows on its 5.9GB (Hub whole-snapshot byte
+        # sum, 2026-10-22). **Load-gated** with mflux 0.23.0: `ZImage` built
+        # over the snapshot, 8 steps at 256x256 rendered a clean apple, and so
+        # did the worker's own `load`/`generate`. No live preview: its 16-channel
+        # VAE has no row in `preview.PROJECTIONS` (see `formats.MFLUX_VARIANTS`).
+        {
+            "id": "mflux-community/z-image-turbo-mflux-q4",
+            "params": "6B",
+            "quantization": "MLX 4-bit",
+            "label": "Z-Image Turbo (MLX 4-bit)",
+            "nickname": "Z-Image",
+            "size_gb": 5.9,
+            "note": "A different family from klein for the same 8-step "
+                    "quickness — worth a try when klein's look is not the "
+                    "one you want.",
+            "defaults": {"steps": 8},
+        },
         # The 9B klein, and the reason this list has a second row at all: an
         # engine whose whole shortlist is one model gives a reader nothing to
         # do when its first image is not good enough, and klein publishes
@@ -901,6 +970,27 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # for an inpaint the way it reads a plain render's (AI-9f's edit
             # defaults are the one mode that bypasses the catalog).
             "defaults": {"steps": 28, "guidance": 30.0},
+        },
+        # Qwen-Image 2.1 Turbo (OsaurusAI's 4-bit mflux conversion), October
+        # 2026 refresh — LAST on its 10.6GB (Hub whole-snapshot byte sum,
+        # 2026-10-22). Qwen's research license (`license_name: qwen-research`,
+        # not Apache) — the note says so. **Load-gated** with mflux 0.23.0:
+        # `QwenImage21` over the snapshot, 8 steps at 256x256, a clean apple,
+        # and the same through the worker's own `load`/`generate`. Distilled
+        # and no-CFG: mflux raises on any guidance but 1, so its
+        # `MFLUX_VARIANTS` row pins it and the `defaults` below seed it
+        # (the worker refuses any other value). No live preview (see that row).
+        {
+            "id": "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit",
+            "params": "20B",
+            "quantization": "MLX 4-bit",
+            "label": "Qwen-Image 2.1 Turbo (MLX 4-bit)",
+            "nickname": "Qwen-Image",
+            "size_gb": 10.6,
+            "note": "The heaviest image model here, and the one to try for "
+                    "text drawn inside the picture — under Qwen's research "
+                    "license rather than Apache.",
+            "defaults": {"steps": 8, "guidance": 1.0},
         },
     ],
     # MLX conversions ONLY, and this is the third mutually unloadable Whisper
@@ -1631,6 +1721,26 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "size_gb": 4.54,
             "voiceMode": "clone",
             "note": "Clones a voice with the highest likeness.",
+        },
+    ],
+    # Kokoro on sherpa-onnx — the cross-platform speech row, and a different
+    # FORMAT from the list above (ONNX, not MLX), so it is its own list and not
+    # an alias in `_SHARED_SUGGESTIONS`. `instructable: False` is the curated
+    # copy of `formats.kokoro_traits()`'s flag, for a model that is not yet
+    # downloaded and so has no snapshot to read traits from.
+    "sherpa-tts": [
+        {
+            "id": "csukuangfj/kokoro-multi-lang-v1_1",
+            "recommended": True,
+            "params": "82M",
+            "quantization": "ONNX fp32",
+            "label": "Kokoro-82M v1.1 (sherpa-onnx)",
+            "nickname": "Kokoro",
+            "size_gb": 0.39,
+            "voiceMode": "preset",
+            "instructable": False,
+            "note": "103 preset English and Chinese voices; runs on any CPU in well "
+                    "under real time. Apache-2.0.",
         },
     ],
 }

@@ -125,6 +125,7 @@ const actions = {
   decidePlan: async () => {},
   dismissCard: () => {},
   stopRun: async () => {},
+  addNote: () => {},
 };
 
 const log = (turns: TurnRow[], over: Partial<ChatState> = {}) =>

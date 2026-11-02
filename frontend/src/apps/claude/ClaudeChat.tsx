@@ -157,6 +157,7 @@ import { planLocalCommand } from "./ui/local-commands";
 import { REMOTE_CONTROL_CONNECTING, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
 import { notify } from "@platform/lib/notifications";
 import { ScreenshotSeat } from "./ui/AnnStrip";
+import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
 import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
 import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
@@ -210,6 +211,7 @@ import {
   type Task,
 } from "@platform/lib/api";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
+import PanelIcon from "@platform/ui/PanelIcon";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -297,6 +299,12 @@ export interface ClaudeChatProps {
    *  mount without the ann strip (`noAnnTools`, the node pane) the seat is
    *  drawn beside the ⋮ instead, so the camera is where it always is. */
   canvasShot?: CanvasShot;
+  /** The host's "hide this panel": the chat sits in a collapsible side pane
+   *  the host owns (the canvas page's Claude pane), and the pane's close
+   *  control rides the FIRST seat of this chat's top row — the explorer
+   *  sidebar's SideCloseButton, same glyph, same place (the header's left
+   *  end, on the seam the pane collapses toward). Absent: no button. */
+  onHidePane?: () => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -1898,6 +1906,16 @@ function ChatBody(props: ChatBodyProps) {
     // `useAppStateResponder.test.tsx` for the seam.
   });
 
+  // ── the canvas-screenshot pull channel (`canvas_screenshot` tool) ──────────
+  // Every chat polls its run, so every chat sees the rows; only a canvas page
+  // (`canvasShot`) can take the picture, the rest answer "open the canvas"
+  // after giving it its chance (`useCanvasShotResponder`).
+  useCanvasShotResponder({
+    rows: state.canvasShot,
+    shot: props.canvasShot ?? null,
+    answer: controller.answerCanvasShot,
+  });
+
   // ── the ask, LATCHED PER MOUNT ─────────────────────────────────────────────
   //
   // THE ASK IS THIS MOUNT'S IDENTITY, NOT A LIVE PROP. The host keys the mount
@@ -2572,6 +2590,7 @@ function ChatBody(props: ChatBodyProps) {
    *      picture and the `label` on the wire have to be the same string, and an
    *      index can shift between now and any later read;
    *   2. ONE picture of the whole pane with every letter burned in at its spot,
+   *      plus a close-up of each note's target cut from that same bitmap,
    *      bounded and swallowing, because no screenshot is worth losing the
    *      user's message over;
    *   3. the picture folded back into the notes — which of them got a badge, and
@@ -2583,22 +2602,28 @@ function ChatBody(props: ChatBodyProps) {
   const takeAnnotations = useCallback(async (): Promise<{
     block: string | null;
     notes: Annotation[];
-    overview: Attachment | null;
+    pictures: Attachment[];
   }> => {
     const a = annRef.current;
-    if (!a) return { block: null, notes: [], overview: null };
+    if (!a) return { block: null, notes: [], pictures: [] };
     const { notes, overview } = await a.overviewForSend();
-    if (!notes.length) return { block: null, notes: [], overview: null };
-    let shot: Attachment | null = null;
+    if (!notes.length) return { block: null, notes: [], pictures: [] };
+    const pictures: Attachment[] = [];
     if (overview) {
       // A failed upload is a chip that says so, not a lost message: the same
-      // degradation the capture itself already has (`attachOverview`).
-      shot = await ATTACH_API.attachOverview(overview.capture).catch(() => null);
+      // degradation the capture itself already has (`attachOverview`). The
+      // overview leads; each note's crop follows.
+      const [shot, crops] = await Promise.all([
+        ATTACH_API.attachOverview(overview.capture).catch(() => null),
+        ATTACH_API.attachCrops(overview.capture).catch(() => [] as Attachment[]),
+      ]);
+      if (shot) pictures.push(shot);
+      pictures.push(...crops);
     }
     return {
       block: formatAnnotations(notes as AnnotationWire[], pane.noun),
       notes,
-      overview: shot,
+      pictures,
     };
   }, [pane.noun]);
 
@@ -2634,9 +2659,9 @@ function ChatBody(props: ChatBodyProps) {
       // block the tray's own do, first in the list, so it has to be in hand
       // before the tray is emptied (T:16549).
       const notes = pretaken
-        ? { block: null, notes: [] as Annotation[], overview: null }
+        ? { block: null, notes: [] as Annotation[], pictures: [] }
         : await takeAnnotations();
-      const mine = pretaken ?? takeAttachments(notes.overview ? [notes.overview] : []);
+      const mine = pretaken ?? takeAttachments(notes.pictures);
       // From here the tray is the NEXT line's: a line parked after this point
       // may snapshot it for itself (`dispatchSend`).
       trayTakenRef.current = true;
@@ -2680,7 +2705,7 @@ function ChatBody(props: ChatBodyProps) {
           // (T:16698-16708).
           if (!ok) {
             if (notes.notes.length) annRef.current?.unmarkSent(notes.notes);
-            if (notes.overview) ATTACH_API.revoke(notes.overview);
+            for (const pic of notes.pictures) ATTACH_API.revoke(pic);
           }
           // …then the tray's side, which judges landing by the ledger and not by
           // `ok`: a send handed back to the tray was already removed by
@@ -3061,13 +3086,13 @@ function ChatBody(props: ChatBodyProps) {
             // own pictures) reads the tray here, as `beginSend` would for it.
             const parkedOwn = parked && !parked.takeLater;
             const notes = parkedOwn
-              ? { block: null, notes: [] as Annotation[], overview: null }
+              ? { block: null, notes: [] as Annotation[], pictures: [] }
               : await takeAnnotations();
             const carried = parkedOwn
               ? parked.taken.items.some((a: Attachment) => !a.pending && !!a.view)
                 ? await copyToTaskShots(parked.taken.items).catch(() => [])
                 : []
-              : await carryForQueue(notes.overview ? [notes.overview] : []);
+              : await carryForQueue(notes.pictures);
             /**
              * THE BADGED PICTURE, PUT DOWN — on every road out of here, and it
              * is only ever the picture.
@@ -3085,7 +3110,7 @@ function ChatBody(props: ChatBodyProps) {
              * other road their chips stand.
              */
             const putDownQueuedShot = () => {
-              if (notes.overview) ATTACH_API.revoke(notes.overview);
+              for (const pic of notes.pictures) ATTACH_API.revoke(pic);
             };
             let verdict: Awaited<ReturnType<typeof admitQueueSend>> | null = null;
             try {
@@ -3972,6 +3997,7 @@ function ChatBody(props: ChatBodyProps) {
       decidePlan: controller.decidePlan,
       dismissCard: controller.dismissCard,
       stopRun: controller.stopRun,
+      addNote: controller.addNote,
     }),
     [controller],
   );
@@ -4750,6 +4776,7 @@ function ChatBody(props: ChatBodyProps) {
           paneNoun={pane.paneNoun}
           onOpen={openShot}
           onRemove={attach.remove}
+          notice={attach.refusal}
         >
           {/* The SAME pill a screenshot's chip is, in the same row: both are
               things this message is about to carry and both come off with the
@@ -5104,6 +5131,7 @@ function ChatBody(props: ChatBodyProps) {
           inert={sched.blocked}
           disabled={attach.capturing || sched.blocked}
           capturing={attach.capturing}
+          saving={attach.saving}
           onPick={(what) => void attach.capture(what)}
         />
       ) : (
@@ -5112,6 +5140,7 @@ function ChatBody(props: ChatBodyProps) {
           inert={sched.blocked}
           disabled={attach.capturing || sched.blocked}
           capturing={attach.capturing}
+          saving={attach.saving}
           onClick={() => void attach.capture(props.canvasShot!.targets[0])}
         />
       )}
@@ -5249,6 +5278,20 @@ function ChatBody(props: ChatBodyProps) {
           // state). `AnnStrip` returns null for itself when there is nothing to
           // photograph.
           <div className="c-anntools" ref={stripRef}>
+            {/* The host pane's close, the row's very first seat (`onHidePane`).
+                In BOTH views, landing and transcript: the pane is the host's,
+                not the conversation's. */}
+            {props.onHidePane ? (
+              <button
+                type="button"
+                className="bar-ctl bar-ctl-icon c-hide-pane"
+                title="Hide the Claude panel"
+                aria-label="Hide the Claude panel"
+                onClick={props.onHidePane}
+              >
+                <PanelIcon side="right" />
+              </button>
+            ) : null}
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
             {inChat && !mergedHeadRow ? backBtn : null}

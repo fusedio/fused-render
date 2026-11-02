@@ -39,6 +39,10 @@ def main() -> int:
     if env_name:
         fused._env(env_name)
 
+    from fused_render._fused_options import raise_request_timeout
+
+    raise_request_timeout()
+
     try:
         from fused.workbench import _auth  # fused >= 2.9 layout
     except ImportError:  # pragma: no cover - older package layout

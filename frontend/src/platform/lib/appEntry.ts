@@ -37,7 +37,7 @@
 // `openTargetFor` resolve the same target, so a new tab and a left click can't
 // land in different places.
 import { type AppInfo } from "./api";
-import { navigate, urlForFsPath } from "./router";
+import { encodeFsPathSegments, navigate, urlForFsPath } from "./router";
 
 // The ONE ordering every app grid uses (/home's strip, the /apps hub):
 // recently-OPENED desc; an app never opened falls back to its modified time,
@@ -115,6 +115,28 @@ export function openTargetFor(app: AppInfo): OpenTarget {
 // non-ASCII name encodes exactly as in-app navigation encodes it.
 export function hrefFor(app: AppInfo): string {
   return urlForFsPath(openTargetFor(app).path);
+}
+
+// A Marketplace copy that Fused's block list stops (hard) or asks about (soft,
+// not yet confirmed) does not open its page from a card (CONTRIB_LOOP.md
+// §18.4). A plain click is the card's to take (it asks, or goes to the app
+// page); a cmd-click, a middle-click or "Open in new tab" is the BROWSER's,
+// and the shell never sees it — so the anchor's own href must not be the
+// page either. It names the app page instead, whose open gate (the server's
+// 423) says why and offers the way through. A GitHub-link copy's block is a
+// warning only and changes nothing here.
+export type CardBlockGate = "stop" | "ask" | null;
+
+export function cardBlockGate(app: AppInfo): CardBlockGate {
+  const block = app.contrib?.block;
+  if (!block || app.contrib?.kind !== "marketplace") return null;
+  if (block.level === "hard") return "stop";
+  return block.confirmed ? null : "ask";
+}
+
+/** The app page's address for a card the block list gates, else null. */
+export function blockedCardHref(app: AppInfo): string | null {
+  return cardBlockGate(app) ? "/apps/" + encodeFsPathSegments(app.path) : null;
 }
 
 // An app clicked inside the shell lands on its entry page in the explorer, in

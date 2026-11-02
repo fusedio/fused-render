@@ -19,11 +19,13 @@ from fused_render.agent_backends.base import Backend
 from fused_render.agent_backends.claude import CLAUDE
 from fused_render.agent_backends.codex import CODEX
 from fused_render.agent_backends.copilot import COPILOT
+from fused_render.agent_backends.gemini import GEMINI
 
-BACKENDS: dict[str, Backend] = {CLAUDE.id: CLAUDE, COPILOT.id: COPILOT, CODEX.id: CODEX}
+BACKENDS: dict[str, Backend] = {CLAUDE.id: CLAUDE, COPILOT.id: COPILOT, CODEX.id: CODEX,
+                                GEMINI.id: GEMINI}
 #: The order every picker, the catalog and the prefs default re-point walk —
 #: also `agent_roots.BACKENDS` and `prefs.VALID_DEFAULT_BACKENDS`.
-ORDER = (CLAUDE.id, COPILOT.id, CODEX.id)
+ORDER = (CLAUDE.id, COPILOT.id, CODEX.id, GEMINI.id)
 DEFAULT = CLAUDE.id
 
 
@@ -39,8 +41,8 @@ def is_known(backend_id: Optional[str]) -> bool:
 
 def enabled_ids() -> list[str]:
     """In ORDER. Never empty: prefs refuses the PUT that would clear the last
-    one, and a hand-edited prefs.json that clears all three reads as Claude
-    on."""
+    one, and a hand-edited prefs.json that clears every switch reads as
+    Claude on."""
     from fused_render.shell import prefs
     ids = [b for b in ORDER if prefs.backend_enabled(b)]
     return ids or [DEFAULT]

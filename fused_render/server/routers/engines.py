@@ -143,6 +143,19 @@ async def api_engine_proxy(engine_id: str, path: str, request: Request,
     # safely re-runnable and a blanket at_most_once would give up that
     # resilience for no reason tied to its actual behavior.
     child = engine_host.current(engine_id)
+    # The open gate (docs/CONTRIB_LOOP.md §18.4 B4): a background app's
+    # daemon (`child.folder`) already running when Fused blocked its copy
+    # must not keep answering `fused.daemon.call()` / `.run()` — the same 423
+    # as start/restart. A template daemon has no folder; no child at all is
+    # the forwarder's own 409 (nothing runs).
+    if child is not None and child.folder:
+        from fused_render import marketplace
+
+        blocked = marketplace.open_gate(child.folder)
+        if blocked:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(blocked, status_code=423)
     at_most_once = (request.method == "POST"
                     and child is not None and not child.retry_post)
     # A child with a bounded lifetime (idle_timeout_s > 0, e.g. a `main =`

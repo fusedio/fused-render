@@ -88,6 +88,7 @@ export function SyncStrip({
   onBack,
   workbenchUrl,
   embedded = false,
+  pushErrors = null,
 }: {
   /** The canvas's environment, shown as a chip beside the way back: with a
    *  prod and an unstable canvas open at once, the strip is the one place on
@@ -116,6 +117,10 @@ export function SyncStrip({
    *  page header owns the way back, the env chip and the workbench link, so
    *  the strip draws none of them. */
   embedded?: boolean;
+  /** A failed push's errors, as a count pill at the strip's right: click
+   *  folds the detail panel (reason, Fix with Claude, the CLI's lines) open
+   *  and shut under the strip. Null while the push leg is not in error. */
+  pushErrors?: { count: number; open: boolean; onToggle: () => void } | null;
 }) {
   const now = useNow(tickFor(queue, server, true));
   const merged: MergedSyncState = mergeEmbedLeg(server, name, queue, failure, now);
@@ -219,7 +224,10 @@ export function SyncStrip({
         <span
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
-          style={{ display: "flex", alignItems: "center", gap: 8, flex: "0 1 auto", minWidth: 0, cursor: "default" }}
+          // `none`: the status text is the strip's only shrinking item — a
+          // shrinkable wrapper lost width in proportion to its basis and
+          // the Pull button read "P" beside the errors pill.
+          style={{ display: "flex", alignItems: "center", gap: 8, flex: "none", cursor: "default" }}
           title={
             serverChangesText(s2d) +
             ". Nothing here is published until you pull. Pull merges them with your local edits " +
@@ -233,7 +241,7 @@ export function SyncStrip({
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                minWidth: 0,
+                maxWidth: 240,
               }}
               title={pullErrorText}
             >
@@ -268,6 +276,33 @@ export function SyncStrip({
         >
           Open in workbench
         </a>
+      )}
+      {pushErrors && (
+        <button
+          type="button"
+          className="btn"
+          aria-expanded={pushErrors.open}
+          aria-label={`Push failed: ${pushErrors.count} ${pushErrors.count === 1 ? "error" : "errors"}`}
+          style={{
+            padding: "1px 8px",
+            fontSize: 12,
+            flex: "none",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            color: "rgb(220,60,60)",
+            borderColor: "rgba(220,60,60,0.45)",
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            pushErrors.onToggle();
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+          title={pushErrors.open ? "Hide the push errors" : "Show the push errors"}
+        >
+          {pushErrors.count} {pushErrors.count === 1 ? "error" : "errors"}
+          <span aria-hidden style={{ fontSize: 9, opacity: 0.8 }}>{pushErrors.open ? "▲" : "▼"}</span>
+        </button>
       )}
       {!owned && server && (
         // The four legs, local first, as bare dots (each names itself in its

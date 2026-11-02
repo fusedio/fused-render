@@ -27,6 +27,16 @@ import { isChunkLoadError } from "@platform/lib/chunk-load";
 
 const ClaudeChat = lazy(() => import("./ClaudeChat"));
 
+/** Fetch the chat's chunk ahead of a mount a host can see coming — the canvas
+ *  rail's hover card, where the first pointer-over would otherwise pay the
+ *  chunk load on top of the transcript read. Idempotent: the module graph
+ *  caches the import, and `lazy` above resolves against the same promise. */
+export function preloadChat(): void {
+  void import("./ClaudeChat").catch(() => {
+    /* the mount's own Suspense/boundary reports a failed chunk */
+  });
+}
+
 /**
  * THE CHUNK'S OWN FAILURE, which `Suspense` has no opinion about: a `lazy`
  * import that REJECTS throws from render, and with no boundary above it React
@@ -218,6 +228,8 @@ export interface ChatMountProps {
   /** The host can photograph its canvas on request (`shots/canvas-shot`):
    *  the Screenshot seat takes that picture (ClaudeChat). */
   canvasShot?: CanvasShot;
+  /** The host pane's close button at the top row's left end (ClaudeChat). */
+  onHidePane?: () => void;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -308,6 +320,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.preview ? { preview: true } : {})}
         {...(props.noAnnTools ? { noAnnTools: true } : {})}
         {...(props.canvasShot ? { canvasShot: props.canvasShot } : {})}
+        {...(props.onHidePane ? { onHidePane: props.onHidePane } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}

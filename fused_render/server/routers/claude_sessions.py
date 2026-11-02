@@ -34,9 +34,8 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
-import tempfile
+import tempfile  # noqa: F401 — the recap suite reaches the module through here
 import threading
 import time
 from datetime import datetime, timezone
@@ -44,9 +43,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from fused_render import _platform
+from fused_render import _platform, agent_oneshot
 from fused_render import claude_health, session_liveness, tasks_store
 from fused_render.agent_backends import roots
+from fused_render.shell import storage
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _require_fused
 
@@ -57,17 +57,17 @@ router = APIRouter()
 # Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
 # `agent_roots.claude_dir`), module-level because the tests of this router
 # and of `routers/tasks` patch it at a tmp dir. Every scan here walks
-# `projects_roots()`, which puts fused's own Copilot and Codex roots beside
-# it (docs/COPILOT_BACKEND.md D3, docs/CODEX_BACKEND.md D3): same bucket
-# layout, same row shape, so a Copilot or Codex session is a session on every
-# one of these surfaces.
+# `projects_roots()`, which puts fused's own Copilot, Codex and Gemini roots
+# beside it (docs/COPILOT_BACKEND.md D3, docs/CODEX_BACKEND.md D3,
+# docs/GEMINI_BACKEND.md D3): same bucket layout, same row shape, so a
+# non-Claude session is a session on every one of these surfaces.
 CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 
 
 def projects_roots() -> list[tuple[str, str]]:
-    """`[(backend, projects dir), ...]` — Claude's (as patched), Copilot's and
-    Codex's."""
+    """`[(backend, projects dir), ...]` — Claude's (as patched), Copilot's,
+    Codex's and Gemini's."""
     return roots.projects_roots(PROJECTS_DIR)
 
 # Mutable session state (custom names, triage). The retired bundled sessions
@@ -538,6 +538,12 @@ def claude_defaults():
     effort"). "" for a field the file does not set: the card keeps its own
     first option then, which is the same thing the CLI would have picked.
 
+    READ-ONLY, ON PURPOSE. There used to be a PUT here, the New app
+    composer's pickers wrote through it, and every later Claude run on the
+    machine moved with a dropdown that read as local. The Claude settings page
+    is the ONE editor of `~/.claude/settings.json` (Akshil, 2026-10-28); every
+    other model / thinking pick is its task's or app's own.
+
     THE READ ITSELF IS `agent._global_defaults`, which is also what a brand-new
     chat's `defaults` action answers with. One file, one reader: a card that
     promised a model the chat it books then opened on something else is the
@@ -550,94 +556,6 @@ def claude_defaults():
                             detail="the claude agent module did not load")
     model, effort = agent._global_defaults()
     return {"model": model, "effort": effort}
-
-
-class DefaultsPatch(BaseModel):
-    """One or both halves of the global pair. A field left out is left alone —
-    moving the Thinking dropdown must not restate the model."""
-    model: str | None = None
-    effort: str | None = None
-
-
-@router.put("/api/claude-sessions/defaults")
-def set_claude_defaults(patch: DefaultsPatch, x_fused: str | None = Header(default=None)):
-    """Write the GLOBAL model/effort — the pair every NEW chat and every new
-    task opens on.
-
-    ONE VALUE, TWO SURFACES THAT BOTH READ AND WRITE IT (Akshil, 2026-09-21,
-    after testing #1281: "I don't see this being followed"). The Explorer
-    composer's pills for a chat that has no session yet, and the New task
-    card's Model / Thinking dropdowns, are two views of the same setting. A
-    pick on either is a statement about what this machine runs next, so it goes
-    where the reader's deliberate choice already lives — `model` and
-    `effortLevel` in ~/.claude/settings.json, the pair the app's own Claude
-    settings page edits. Before this the composer's pick for a new chat went
-    into the ADDRESS BAR (`?model=`/`?effort=`) and nowhere else, which is why
-    one surface could show Opus / high while the other showed Fable / low.
-
-    THE WRITER IS `claude_config.preferences.main("patch", …)` — the settings
-    page's own, not a second copy of it. That is what keeps the read-modify-
-    write atomic, serialized by the config lock, and committed to the config
-    repo, and it is what preserves every other key in the file. Hand-rolling a
-    second writer over the same file is how two writers lose each other's edits.
-
-    A chat that HAS a session id is untouched by this route: its pill keeps
-    writing that conversation's own record (`/api/tasks/settings`), because a
-    running conversation's model is a fact about that conversation.
-    """
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    from fused_render.claude_config import preferences
-    from fused_render.server.routers import tasks as _tasks
-    agent = _tasks._agent_module()
-    if agent is None:
-        raise HTTPException(status_code=503,
-                            detail="the claude agent module did not load")
-    body: dict = {}
-    if patch.model is not None:
-        # The SETTINGS PAGE'S OWN vocabulary, not the composer's four names:
-        # this writes the field that page writes, and it offers the `[1m]`
-        # spellings too. `_global_defaults` collapses whatever lands here back
-        # to a short family name on the way out, so a pill that cannot say
-        # "opus[1m]" still reads a file that does.
-        model = patch.model.strip()
-        if model and model not in _settings_model_options():
-            raise HTTPException(status_code=400, detail=f"unknown model {model!r}")
-        body["model"] = model or None  # "" resets the key, as the page's own does
-    if patch.effort is not None:
-        effort = patch.effort.strip().lower()
-        if effort and effort not in agent._EFFORT_LEVELS:
-            raise HTTPException(status_code=400, detail=f"unknown effort {effort!r}")
-        body["effortLevel"] = effort or None
-    if body:
-        out = preferences.main("patch", json.dumps(body))
-        if not (isinstance(out, dict) and out.get("ok")):
-            detail = (out or {}).get("error") if isinstance(out, dict) else None
-            raise HTTPException(status_code=500,
-                                detail=detail or "could not write the Claude settings")
-    # READ BACK, never echo: what the caller asked for and what the file now
-    # says can differ (an `opus[1m]` written, an `opus` read back), and the two
-    # surfaces have to agree with the file rather than with each other.
-    model, effort = agent._global_defaults()
-    return {"model": model, "effort": effort}
-
-
-def _settings_model_options() -> set:
-    """The `model` row's own options in the Claude settings catalog — the list
-    the settings page renders. A catalog that
-    cannot be read at all accepts nothing but the four short names, which is
-    the vocabulary of the pills doing the writing."""
-    from fused_render.claude_config import lib as _cfg_lib
-    try:
-        for row in _cfg_lib.load_catalog():
-            if isinstance(row, dict) and row.get("key") == "model":
-                opts = row.get("options")
-                if isinstance(opts, list) and opts:
-                    return {str(o) for o in opts}
-    except Exception:  # noqa: BLE001 — a missing catalog is not a failed write
-        logger.debug("could not read the settings catalog", exc_info=True)
-    return {"fable", "opus", "sonnet", "haiku"}
 
 
 @router.get("/api/claude-sessions/history")
@@ -965,8 +883,7 @@ def _recap_tail(turns: list, ended: bool = False) -> str:
     TWO MODES. `ended=False` is the away fold (the endpoint): the last
     `_RECAP_TURNS` turns, and "" when the reader spoke last — an unanswered
     message is not news to them, and a recap taken now would be cached stale.
-    `ended=True` is the Tasks title worker, which only asks about a FINISHED
-    turn: when the last turns hold no assistant prose (a run that ended on tool
+    `ended=True` is the Tasks title worker: when the last turns hold no assistant prose (a run that ended on tool
     calls or a usage limit) the window reaches back to the most recent assistant
     prose and the user message before it, "" only when Claude never spoke in
     prose anywhere, and a user-last tail is fine. An interrupt marker is not a
@@ -1100,9 +1017,10 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
     the title prompt pair replaces the recap one on every backend and the
     reply comes back RAW for `_title_parse`.
 
-    A COPILOT session is recapped by Copilot (`_recap_copilot`) and a CODEX
-    session by Codex (`_recap_codex`), each from the same tail; everything
-    below is the Claude run.
+    A COPILOT session is recapped by Copilot (`_recap_copilot`), a CODEX
+    session by Codex (`_recap_codex`) and a GEMINI session by Gemini
+    (`_recap_gemini`), each from the same tail; everything below is the
+    Claude run.
 
     `--no-session-persistence` is the load-bearing flag: this run mints a
     session id of its own and must leave no `.jsonl` behind, or every recap
@@ -1145,6 +1063,11 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
     # the titles prompt with the fold's length rule.
     titles = _recap_titles_on()
     tail = _recap_tail(turns, ended)
+    if (not tail and ask is not None and not ask.get("want_recap")
+            and (ask.get("first") or "").strip()):
+        # A title asked mid-first-turn: no assistant prose yet, so the reader's
+        # own first message is all there is to title from.
+        tail = "User: " + ask["first"].strip()
     if not tail:
         if ended:
             raise _NothingToRecap
@@ -1156,6 +1079,8 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         return _recap_copilot(agent, tail, titles, prompts, raw)
     if backend == "codex":
         return _recap_codex(agent, tail, titles, prompts, raw)
+    if backend == "gemini":
+        return _recap_gemini(agent, tail, titles, prompts, raw)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": prompts[1] % tail}]}})
@@ -1202,143 +1127,56 @@ def _recap_reap(proc) -> None:
 #: file), while an allowlist naming only a tool that does not exist leaves the
 #: model with none (no tool definitions in the session's events, and a prompt
 #: asking it to read a file got "I don't have a tool available").
-_COPILOT_RECAP_NO_TOOLS = "fused_recap_no_tools"
+_COPILOT_RECAP_NO_TOOLS = agent_oneshot.COPILOT_NO_TOOLS
 
-_COPILOT_SESSION_ID_RE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_COPILOT_SESSION_ID_RE = agent_oneshot.COPILOT_SESSION_ID_RE
+
+
+def _recap_oneshot(agent, backend: str, tail: str, titles: bool | None,
+                   prompts: tuple[str, str] | None, raw: bool) -> str:
+    """The Copilot / Codex / Gemini twin of the Claude run above, through the
+    ONE one-shot runner (`agent_oneshot`, D1433) that `/api/ai`'s agent tiers
+    also use — the argv, the no-tools flags, the session cleanup and the
+    spawn rule live there, once. None of the three has a system-prompt flag,
+    so the system text leads the one user message (the runner prepends it).
+    The model is the registry row's default (`auto` for Copilot and Gemini,
+    the plan's default for Codex): the job is small and that is the model
+    the user's plan certainly runs. Every failure is "", as the Claude run's."""
+    system, template = prompts or _recap_prompts(titles)
+    try:
+        spec = agent_oneshot.prepare(backend, "", system, template % tail, agent=agent)
+        reply = agent_oneshot.run_sync(spec, _RECAP_TIMEOUT)
+    except agent_oneshot.OneShotError:
+        return ""
+    except Exception:  # noqa: BLE001 — a title nicety, never a fault
+        logger.debug("%s recap run failed", backend, exc_info=True)
+        return ""
+    return reply if raw else _recap_plain(reply, titles)
 
 
 def _recap_copilot(agent, tail: str, titles: bool | None = None,
                    prompts: tuple[str, str] | None = None,
                    raw: bool = False) -> str:
-    """The Copilot twin of the Claude run: one shot (`-p` mode, entered by a
-    prompt on stdin), silent (`-s`: the reply only, no stats), no tools
-    (`_COPILOT_RECAP_NO_TOOLS`), no repo instructions and no built-in MCP
-    servers, nothing it could stop to ask. Copilot has no `--system-prompt`,
-    so the system text leads the same user message the Claude run sends.
-
-    Copilot has no `--no-session-persistence` either: every run is a session
-    under `~/.copilot/session-state/<id>/`, which `copilot --resume` lists. So
-    the id is MINTED here (`--session-id`) and that one directory is removed
-    afterwards, whatever the outcome — verified live to leave nothing else
-    under session-state. (Copilot's own `session-store.db` index still gets
-    a row for the run; that file is Copilot's, and is not edited from here.)
-
-    The tail travels over stdin, never argv — the same rule as the Claude
-    run, and so does the spawn rule (no Popen `cwd`, `close_fds=False`). The
-    CLI is pointed at the temp dir with its own `-C` instead: a folder it
-    already trusts, so no trust question can stall a one-shot run. Every
-    failure is "", as there."""
-    import uuid
-
-    from fused_render import copilot_health
-
-    sid = str(uuid.uuid4())
-    state_dir = os.path.join(copilot_health.config_dir(), "session-state")
-    system, template = prompts or _recap_prompts(titles)
-    prompt = system + "\n\n" + template % tail
-    try:
-        proc = subprocess.Popen(
-            [agent._copilot_bin(), "-s", "--no-auto-update", "--model", "auto",
-             f"--available-tools={_COPILOT_RECAP_NO_TOOLS}",
-             "--no-custom-instructions", "--disable-builtin-mcps",
-             "--no-ask-user", "--session-id", sid,
-             "-C", tempfile.gettempdir()],
-            env=agent._spawn_env(backend="copilot"),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, **claude_health.SUBPROCESS_KWARGS)
-        try:
-            stdout, _ = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            _recap_reap(proc)
-            return ""
-        return (stdout if raw else _recap_plain(stdout, titles)) if proc.returncode == 0 else ""
-    finally:
-        if _COPILOT_SESSION_ID_RE.fullmatch(sid):
-            shutil.rmtree(os.path.join(state_dir, sid), ignore_errors=True)
+    return _recap_oneshot(agent, "copilot", tail, titles, prompts, raw)
 
 
 def _recap_codex(agent, tail: str, titles: bool | None = None,
                  prompts: tuple[str, str] | None = None,
                  raw: bool = False) -> str:
-    """The Codex twin of the Claude run (docs/CODEX_BACKEND.md D12, D16):
-    `codex exec`, Codex's one-shot, never the app-server the sessions use.
-    Codex's `exec` has no system-prompt flag either, so the system text leads
-    the one user message, as the Copilot run sends it.
+    return _recap_oneshot(agent, "codex", tail, titles, prompts, raw)
 
-    The flags, each checked against `codex exec --help` (0.163.0):
 
-    * `--ephemeral` is the load-bearing one, `--no-session-persistence`'s
-      twin: without it every recap would leave a rollout file under
-      `<CODEX_HOME>/sessions/`, which `codex resume` lists — a phantom
-      conversation in the user's own terminal. Nothing to clean up after, so
-      no minted id and no `finally` (unlike Copilot's run).
-    * `-s read-only`: Codex has no "no tools" switch, so the sandbox is the
-      bound — a run that went off and ran a command could read but not write.
-      `exec` never stops to ask (there is nobody to ask), so no approval
-      policy is needed for it not to stall.
-    * `-C <temp dir>` + `--skip-git-repo-check`: the working root is the
-      temp dir, which is not a git repo, and Codex refuses to run outside one
-      without the flag. Pointed there by Codex's own flag, NOT a Popen `cwd`
-      (the spawn rule below).
-    * `-m <the Codex row's default model>`: the recap is small, and the
-      catalog's default is the model the user's plan certainly runs.
-    * `-o <file>` (`--output-last-message`): the reply is read from the
-      file, not from stdout, which also carries Codex's own banner and
-      progress — the file holds the last agent message and nothing else.
-    * `-` reads the prompt from stdin: the tail travels over stdin, never
-      argv, the same rule as the Claude run.
+def _recap_gemini(agent, tail: str, titles: bool | None = None,
+                  prompts: tuple[str, str] | None = None,
+                  raw: bool = False) -> str:
+    return _recap_oneshot(agent, "gemini", tail, titles, prompts, raw)
 
-    `_spawn_env(backend="codex")` leaves `CODEX_HOME` exactly as found, so
-    the run signs in with the user's own credential. Same spawn rule as the
-    other two (no Popen `cwd`, `close_fds=False`), and every failure is "",
-    as there."""
-    from fused_render.agent_backends import registry
 
-    system, template = prompts or _recap_prompts(titles)
-    prompt = system + "\n\n" + template % tail
-    # ITS OWN EMPTY FOLDER as the working root, never the shared temp dir:
-    # Codex reads an `AGENTS.md` from its working directory into the
-    # instructions of every run (its project-doc discovery stops at the cwd
-    # when there is no `.git` above it — which is exactly the `-C` case), so
-    # a `/tmp/AGENTS.md` any local user can drop there would ride along into
-    # the recap. A fresh `mkdtemp` has nothing in it to read; the reply file
-    # lives inside it and the whole folder goes in `finally`. And NO WALK
-    # UPWARDS from it: Codex finds its project root by climbing from the cwd
-    # to the nearest `project_root_markers` entry (`.git` by default) and
-    # reads every `AGENTS.md` from that root down, so a `/tmp/.git` beside a
-    # `/tmp/AGENTS.md` — both any local user's to plant — would make the
-    # shared temp dir the project after all. An EMPTY marker list turns the
-    # climb off (Codex's own `agents_md.rs`: "An empty marker list disables
-    # parent traversal"); the override rides `-c`, TOML on the right-hand
-    # side, as `agent._codex_argv` spells its own.
-    work_dir = tempfile.mkdtemp(prefix="fused-codex-recap-")
-    out_path = os.path.join(work_dir, "reply.txt")
-    try:
-        proc = subprocess.Popen(
-            [agent._codex_bin(), "exec", "--skip-git-repo-check", "--ephemeral",
-             "-s", "read-only", "-C", work_dir,
-             "-c", "project_root_markers=[]",
-             "-m", registry.get("codex").default_model,
-             "-o", out_path, "-"],
-            env=agent._spawn_env(backend="codex"),
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, **claude_health.SUBPROCESS_KWARGS)
-        try:
-            proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            _recap_reap(proc)
-            return ""
-        if proc.returncode != 0:
-            return ""
-        try:
-            with open(out_path, encoding="utf-8", errors="replace") as fh:
-                reply = fh.read()
-        except OSError:
-            return ""
-        return reply if raw else _recap_plain(reply, titles)
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+# Kept as names for readers that import them; the facts live in agent_oneshot.
+_GEMINI_RECAP_POINTER = agent_oneshot.GEMINI_POINTER
+_GEMINI_RECAP_POLICY = agent_oneshot.GEMINI_POLICY
+_GEMINI_RECAP_POLICY_NAME = agent_oneshot.GEMINI_POLICY_NAME
+_gemini_recap_policy_path = agent_oneshot.gemini_policy_path
 
 
 def _stored_recap(session_id: str, for_uuid: str,
@@ -1486,7 +1324,7 @@ def _title_and_recap(agent, file: str, session_id: str, for_uuid: str,
                      transcript: str = "", *, want_recap: bool = False,
                      current: str = "", first: str = "",
                      prompts_seen: int = 0) -> tuple[str, str]:
-    """ONE haiku call for a finished turn's stable AI title and, when
+    """ONE haiku call for a session's stable AI title and, when
     `want_recap`, its recap too. Returns `(title, recap)`, "" for whichever
     failed, and stores what the call earned: the title through
     `record_ai_title(session_id, title, prompts_seen)` (an empty one stamps the
@@ -1658,8 +1496,30 @@ def api_claude_session_liveness(path: str):
     except OSError:
         return {"exists": False, "mtime": 0.0, "size": 0, "running": False}
     now = datetime.now(timezone.utc).timestamp()
+    running = session_liveness.transcript_turn_open(resolved, now)
+    if running:
+        # …UNLESS THE PROCESS THAT WAS WRITING IT IS GONE. A turn open in the
+        # file stays open for ever when its `claude` dies mid-reply (the host
+        # killed with the app, a crash) — `STALE_TAIL_SEC` is the only thing
+        # that closes it, so the chat said "Running outside this app" over a
+        # dead turn for the balance of that window (Sina, 2026-10-31). The
+        # live registry knows the departure within a tick
+        # (`tasks_watch.departed_before`: every process that held the session
+        # is gone, and nobody wrote the transcript after the last one left); a
+        # session never registered here has no such word, and the tail rule
+        # stands.
+        # Departed ONLY — not the registry's `idle`/`waiting` word, which a
+        # terminal session parked on its own permission card wears with a
+        # turn genuinely open — and never over this app's own send mark,
+        # which is the one fact about the first seconds of a turn no file
+        # has caught up with yet (`tasks_watch.mark_running`).
+        from fused_render import tasks_watch
+        session_id = os.path.splitext(os.path.basename(resolved))[0]
+        if (tasks_watch.departed_before(session_id, stat.st_mtime)
+                and not tasks_watch.is_marked_running(session_id)):
+            running = False
     return {"exists": True, "mtime": stat.st_mtime, "size": stat.st_size,
-            "running": session_liveness.transcript_turn_open(resolved, now)}
+            "running": running}
 
 
 class TriagePatch(BaseModel):

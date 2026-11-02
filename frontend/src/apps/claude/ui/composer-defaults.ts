@@ -346,13 +346,13 @@ export function useComposerDefaults(
 
   // ── THE GLOBAL PAIR — the answer for a chat that has no conversation yet ──
   //
-  // `~/.claude/settings.json`'s `model` / `effortLevel`, read (and written)
-  // through `platform/lib/claude-defaults`, which is the single home the New
-  // task card shares. It is the SAME answer the slow `defaults` read gives a
+  // `~/.claude/settings.json`'s `model` / `effortLevel`, read through
+  // `platform/lib/claude-defaults`, which is the single home the New task card
+  // shares. Only the Claude settings page writes it. It is the SAME answer the slow `defaults` read gives a
   // sessionless chat — `agent._global_defaults` is literally what that action
   // falls through to now — but it arrives off one JSON endpoint in
-  // milliseconds instead of a subprocess in seconds, and it MOVES: another
-  // surface changing it has to reach a composer that is already open.
+  // milliseconds instead of a subprocess in seconds, and it MOVES: a save on
+  // the settings page has to reach a composer that is already open.
   //
   // Consulted only while this chat has no session. A conversation that exists
   // answers for itself (record, then its own transcript) and the global must

@@ -37,9 +37,11 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import shutil
 import sys
 from typing import Optional
 
+from fused_render import _platform
 from fused_render.claude_health import executable
 
 
@@ -56,13 +58,28 @@ class TerminalProfile:
     cwd: str
 
 
+def _default_shells() -> tuple:
+    """Candidate shells in preference order: PowerShell 7, Windows
+    PowerShell, then cmd.exe on Windows; `$SHELL`, bash, sh elsewhere."""
+    if _platform.IS_WINDOWS:
+        return (shutil.which("pwsh"), shutil.which("powershell"),
+                os.environ.get("ComSpec"))
+    return (os.environ.get("SHELL"), "/bin/bash", "/bin/sh")
+
+
+def _is_powershell(shell: str) -> bool:
+    # Split on both separators: os.path.basename on POSIX ignores backslashes.
+    name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name in ("pwsh", "pwsh.exe", "powershell", "powershell.exe")
+
+
 def resolve_profile(cwd: Optional[str] = None, shells: Optional[tuple] = None) -> Optional[TerminalProfile]:
     """The resolved profile, or None when no usable shell is found."""
     # `$SHELL` can be SET but stale (a shell that was uninstalled, a path
     # that never existed on this machine) — that is not "the user asked for
     # no terminal," so this falls through to /bin/bash and then /bin/sh
     # instead of refusing on a machine that plainly has a POSIX shell.
-    for shell in (shells if shells is not None else (os.environ.get("SHELL"), "/bin/bash", "/bin/sh")):
+    for shell in (shells if shells is not None else _default_shells()):
         if shell and executable(shell):
             break
     else:
@@ -84,7 +101,13 @@ def resolve_profile(cwd: Optional[str] = None, shells: Optional[tuple] = None) -
     env["COLORTERM"] = "truecolor"
 
     argv = [shell]
-    if sys.platform == "darwin":
+    if _platform.IS_WINDOWS:
+        # No `-l` on Windows. PowerShell gets `-NoLogo` (the banner is noise
+        # in a drawer tab) and, unlike POSIX shells, `-NoProfile` is NOT
+        # passed: the user's $PROFILE should load. cmd.exe takes no flags.
+        if _is_powershell(shell):
+            argv.append("-NoLogo")
+    elif sys.platform == "darwin":
         argv.append("-l")
 
     resolved_cwd = cwd if cwd and os.path.isdir(cwd) else os.path.expanduser("~")

@@ -87,7 +87,11 @@ export default defineConfig({
     // `npm run dev` proxies API/render traffic to a running fused-render
     // server for hot-reload development of the shell itself.
     proxy: {
-      "/api": "http://127.0.0.1:1777",
+      // `ws: true`: the chat (`/api/claude/agent/ws`), the tasks change feed
+      // (`/api/tasks/changes/ws`), the terminal and the canvas sync all ride
+      // WebSockets under /api. Without it the dev shell's chat sits at
+      // "sending…" forever and task status lags behind the HTTP fallback.
+      "/api": { target: "http://127.0.0.1:1777", ws: true },
       "/render": "http://127.0.0.1:1777",
       "/static": "http://127.0.0.1:1777",
       "/template-assets": "http://127.0.0.1:1777",

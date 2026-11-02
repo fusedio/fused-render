@@ -91,6 +91,7 @@ import {
   splitDraft,
   taskDraftKey,
   useAutosave,
+  type ChatDraft,
   type DraftConflictRule,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
@@ -112,7 +113,9 @@ import {
   taskRunLabel,
   taskRunOptions,
 } from "./schedule-lib";
+import { whereParts } from "./where-label";
 import { ICON_CLOCK, ICON_CPU, ICON_FOLDER, ICON_PLUS, ICON_SHIELD } from "./ScheduleCalendar";
+import { CanvasGlyph } from "@apps/canvases/glyph";
 // `~/…` for a path under home — the one way this app shortens a folder, shared
 // with the Tasks page rather than written a second time here.
 // …and `projectMatches`, which is the Tasks toolbar's Project filter's OWN
@@ -646,6 +649,50 @@ function PropPill({
         </div>
       )}
     </div>
+  );
+}
+
+// THE WHERE PILL, READ-ONLY: the locked target stated in the words of the
+// place it was made from — `canvas › node`, or the canvas alone (NewJobModal
+// `lockedWhere`). PropPill's chassis and nothing of its control: no button, no
+// popover, no hover change. A tab stop all the same, so the keyboard can reach
+// the full path the hint carries (platform/lib/hints answers focus as well as
+// the pointer); its accessible name is the sentence, the visible parts are its
+// drawing.
+export function WherePill({
+  where,
+  path,
+}: {
+  where: { canvas: string; node?: string | null };
+  /** The full target, for the hint. */
+  path: string;
+}) {
+  const node = where.node || "";
+  const said = node
+    ? `Runs on canvas ${where.canvas}, node ${node}`
+    : `Runs on canvas ${where.canvas}`;
+  // Drawn middle-cut to a value pill's width (`where-label.ts`); the names in
+  // full are the accessible name's and the hint's.
+  const shown = whereParts(where.canvas, node);
+  return (
+    <span
+      className="pp pp--static"
+      role="note"
+      aria-label={said}
+      tabIndex={0}
+      data-hint={path || said}
+    >
+      <span className="pp-k" aria-hidden="true"><CanvasGlyph size={12} /></span>
+      <span className="pp-v pp-where" aria-hidden="true">
+        {shown.canvas}
+        {shown.node && (
+          <>
+            <span className="pp-where-sep">›</span>
+            {shown.node}
+          </>
+        )}
+      </span>
+    </span>
   );
 }
 
@@ -2659,6 +2706,91 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
   };
 }
 
+/**
+ * ONE CHAT RECORD, AS THE NEW TASK CARD OPENS ON IT (design "one record", §1).
+ *
+ * The hop no longer carries a sentence, a tray or a session in its URL — it
+ * carries the KEY, and this turns what is stored under that key into the seed
+ * the card already knows how to mount on (`DraftSeed`, the shape a reopened
+ * task draft uses). One seeding rule for both kinds of draft, which is what
+ * makes "the modal opens on the record" a true sentence rather than two
+ * near-identical paths.
+ *
+ * THE WORDS COME OUT OF `text`, SPLIT, and they go back into `text`, JOINED
+ * (contract §1: the words live in `text`, never in `form.description`; the
+ * modal splits and joins with `splitDraft`/`joinDraft`). So the composer's box
+ * and the card's two prose fields are two views of one string, and a hop out
+ * followed by Back to chat is lossless. Nothing here reads `form.title` — the
+ * title IS the first line, which is also what the listing row prints.
+ *
+ * `session_id` is the KEY when the key is a session: a hop out of a chat that
+ * has already run is a message into that thread, and that is what the Schedule
+ * payload's `sessionId` is built from. `new:<file>` has no thread to continue,
+ * and its `<file>` is the folder the card falls back to when the record names
+ * no target of its own.
+ *
+ * `at` IS WHAT A SESSION KEY CANNOT SAY (Akshil, 2026-09-16). A `new:<file>` key
+ * spells its folder; a session id spells only the thread, so this used to fall
+ * through to `""` and the card opened on the reader's HOME — and its first
+ * autosave then wrote that home path onto the conversation's own record as the
+ * target. Every door that knows the folder now states it: the hop's `?target=`
+ * (the composer's own `file`), or a draft row's `project`. The stored form still
+ * outranks it, because a form that names a target is a choice somebody made.
+ */
+export function chatHopSeed(
+  key: string,
+  record: ChatDraft | null,
+  at = "",
+): DraftSeed | null {
+  if (!record) return null;
+  const split = splitDraft(record.text);
+  const form = (record.form ?? {}) as Record<string, unknown>;
+  const newChat = key.startsWith(NEW_CHAT_PREFIX);
+  return {
+    id: "",
+    form: {
+      ...form,
+      title: split.title,
+      description: split.description,
+      attachments: record.attachments ?? [],
+      target: (typeof form.target === "string" && form.target)
+        || (newChat ? newChatFile(key) : "") || at || "",
+      session_id: newChat ? "" : key,
+    },
+  };
+}
+
+/**
+ * WHAT TIME A FORM THAT ALREADY EXISTS OPENS ON — its own, or none (Bugbot, PR
+ * #1126, 2026-09-12).
+ *
+ * `NEW_LINK_LEAD_MS` is an answer to a question a FRESH link asks: a card that
+ * has never been saved opens on now+2m because a deep link means "set this up",
+ * and a near-now time is the one to adjust from. A form that has been saved
+ * already answered that question, and the answer is in it — `when`, which the
+ * store keeps as null until somebody actually opens the when-row and picks one
+ * (NewJobModal `draftBody`). Null there means IMMEDIATE: a task to run, not a
+ * task to plan.
+ *
+ * Handing the lead date to such a form overwrote that. `creating` being a Date
+ * is what makes the card `planning`, `planning` is what makes `timePicked` open
+ * true, and `timePicked` is what puts `when` in the next autosave — so merely
+ * reopening an immediate draft rewrote it as one scheduled for two minutes'
+ * time, and Schedule sent it that way. So: the stored time when there is one,
+ * and nothing at all when there is not. Only the opening with no stored form
+ * behind it keeps the lead (see both call sites).
+ *
+ * An unreadable `when` reads as none here. The card seeds its own field from
+ * the string verbatim (`seededDraftForm`), so nothing is lost by this one
+ * declining to guess a Date out of it.
+ */
+export function reopenTime(seed: DraftSeed | null): Date | null {
+  const when = (seed?.form as { when?: unknown } | null | undefined)?.when;
+  if (typeof when !== "string" || !when) return null;
+  const at = new Date(when);
+  return Number.isNaN(at.getTime()) ? null : at;
+}
+
 export default function NewJobModal({
   initialTime,
   initialTarget,
@@ -2669,6 +2801,7 @@ export default function NewJobModal({
   chatBack,
   chatKey,
   lockTarget = false,
+  lockedWhere = null,
   sourceTask = null,
   editing,
   permissionModes,
@@ -2744,6 +2877,20 @@ export default function NewJobModal({
    * but one takes the reader out of the app they are standing in.
    */
   lockTarget?: boolean;
+  /**
+   * THE LOCKED TARGET, SAID IN THE PLACE'S OWN WORDS (Akshil, 2026-10-30: "a
+   * Where field that states the canvas and node name — this is the canvas and
+   * this is the node in that canvas on which this task will run").
+   *
+   * Set by the canvas page's rail (ClaudeRail), whose locked target is a clone
+   * dir or a node file in it — a path that names neither the canvas nor the
+   * node the reader is looking at. With `lockTarget` it brings back a WHERE
+   * pill the app Tasks tab goes without: read-only, `canvas › node` (or just
+   * the canvas), the full path on hover (`WherePill`). Absent, the card is
+   * exactly what it was — a locked card still has no WHERE pill. Display only:
+   * the saved target and Save's check are `initialTarget`'s, unchanged.
+   */
+  lockedWhere?: { canvas: string; node?: string | null } | null;
   /**
    * THE FOLDERS THIS PAGE CALLS PROJECTS — the very array the toolbar's Project
    * filter offers (Scheduled.tsx `projectOptions`), handed down rather than
@@ -5395,6 +5542,12 @@ export default function NewJobModal({
               WHERE popover: opening the pill drops the last few folders the
               user scheduled against with the field on top and Browse as the
               last row (Akshil, 2026-08-15). */}
+          {/* A CANVAS'S LOCKED CARD IS THE EXCEPTION (`lockedWhere`): its path is a
+              clone dir that names neither the canvas nor the node, so the pill
+              comes back read-only and says both (Akshil, 2026-10-30). */}
+          {lockTarget && lockedWhere && (
+            <WherePill where={lockedWhere} path={tildePath(target.trim(), home)} />
+          )}
           {!lockTarget && (
             <PropPill
               k=""

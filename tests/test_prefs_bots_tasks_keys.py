@@ -89,3 +89,15 @@ def test_readers_tolerate_a_hand_edited_file(tmp_path, monkeypatch):
     # Only a stored boolean moves a switch off its default.
     assert prefs.bots_autostage() is True and prefs.bots_clear_enabled() is False
     assert prefs.tasks_view_tabs() == ["list", "board"]
+
+
+def test_pinned_tasks_roundtrip_and_validation(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["pinned_tasks"] == []
+    r = client.put("/api/prefs", headers=FUSED, json={"pinned_tasks": ["a", "b", "a"]})
+    assert r.status_code == 200 and r.json()["pinned_tasks"] == ["a", "b"]
+    assert prefs.pinned_tasks() == ["a", "b"] and _stored()["pinned_tasks"] == ["a", "b"]
+    for bad in ("a", [""], [1], ["k"] * 501):
+        r = client.put("/api/prefs", headers=FUSED, json={"pinned_tasks": bad})
+        assert r.status_code == 400, bad
+    assert client.get("/api/prefs").json()["pinned_tasks"] == ["a", "b"]

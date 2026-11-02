@@ -27,7 +27,6 @@ export const STATE_LABEL: Record<AppCheckState, string> = {
   pass: "Passed",
   fail: "Failed",
   skip: "Not checked",
-  unrun: "Not run yet",
 };
 
 // Worst first — every ranking below (the header dot, the summary line, a
@@ -59,7 +58,7 @@ export function effectiveSeverity(check: AppCheck): Severity {
 
 /** The worst FAILING severity across `checks` (via `effectiveSeverity`), or
  *  null when nothing failed — a clean report, or a report with only
- *  skip/unrun rows. The one reduction the header dot on BOTH surfaces and the
+ *  skipped rows. The one reduction the header dot on BOTH surfaces and the
  *  modal read; do not re-derive it in a component. */
 export function worstSeverity(checks: AppCheck[]): Severity | null {
   let worst: Severity | null = null;
@@ -124,20 +123,19 @@ export function groupBySection(
 
 /** A tier for `sortByAttention` — lower sorts first. Failures split by
  *  `effectiveSeverity` (the same candidate discount `worstSeverity` applies,
- *  since this is also a cross-row comparison), then the rows nothing is
- *  known about yet, then the rows the doctor gave up on, then passes. */
+ *  since this is also a cross-row comparison), then the rows the doctor
+ *  gave up on, then passes. */
 function attentionTier(check: AppCheck): number {
   if (check.state === "fail") {
     const sev = effectiveSeverity(check);
     return sev === "critical" ? 0 : sev === "warning" ? 1 : 2;
   }
-  if (check.state === "unrun") return 3;
-  if (check.state === "skip") return 4;
-  return 5;
+  if (check.state === "skip") return 3;
+  return 4;
 }
 
 /** Worst-first within a group of rows: failing (critical before warning),
- *  then unrun, then skip, then pass. Returns a NEW array — `Array#sort` is
+ *  then skip, then pass. Returns a NEW array — `Array#sort` is
  *  stable in every engine this runs on, so rows within one tier keep the
  *  server's own order, which is what makes ties deterministic rather than
  *  re-shuffled on every call. Sorts WITHIN a group only — compose with
@@ -156,11 +154,7 @@ export const SECTION_LABEL: Record<string, string> = {
  *  judge each finding first (Review), a FACT row asks it to fix outright
  *  (Fix) — see app_doctor.doctor_prompt's own triage-vs-fix split. */
 export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
-  // An on-demand row (`cross-browser`) is a candidate too — a model read a
-  // rubric — but its findings arrive already written as what-to-change
-  // sentences, so the button says what the session will do: Fix (owner,
-  // 2026-09-22). The triage-first prompt still applies underneath.
-  return check.kind === "candidate" && !check.ondemand ? "Review" : "Fix";
+  return check.kind === "candidate" ? "Review" : "Fix";
 }
 
 /** A failing row's own state word — feeds both `rowStateAccessibleLabel`
@@ -182,11 +176,7 @@ export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
  *  `aria-label`/`title`, not this one. */
 export function rowStateDetailText(check: AppCheck): string {
   if (check.state !== "fail") return STATE_LABEL[check.state];
-  // Same carve-out as `rowActionLabel`: an on-demand row's button says Fix,
-  // so its detail must not count things "to review".
-  return check.kind === "candidate" && !check.ondemand
-    ? `${check.findings.length} to review`
-    : STATE_LABEL.fail;
+  return check.kind === "candidate" ? `${check.findings.length} to review` : STATE_LABEL.fail;
 }
 
 /** A failing row's ACCESSIBLE name — feeds `.appdoc-state`'s `aria-label`/
@@ -207,8 +197,8 @@ export function rowStateAccessibleLabel(check: AppCheck): string {
  *  for a passing row — every checklist label is already a complete statement
  *  ("pyproject.toml is valid TOML"), so a passing row needs no second
  *  sentence under it, and AppDoctorModal.tsx skips the `.appdoc-detail`
- *  element entirely when this returns "". A skip's or an unrun row's detail
- *  is the only place its reason appears, so those keep it.
+ *  element entirely when this returns "". A skipped row's detail is the
+ *  only place its reason appears, so it keeps it.
  *
  *  A failing row is prefixed with `rowStateDetailText` only when that prefix
  *  carries information the sentence does not already: a candidate's "N to
@@ -257,7 +247,7 @@ export function findingWhere(f: AppCheckFinding): string {
  *
  *  `readinessCount` counts what wants an answer when anything does, and what
  *  came back clean when nothing does. It never claims "All N" while a row
- *  went unanswered: a skipped or unrun row is neither a pass nor a failure,
+ *  went unanswered: a skipped row is neither a pass nor a failure,
  *  so the count says how many of the N actually passed. */
 export function readinessCount(checks: AppCheck[]): string {
   const failing = checks.filter((c) => c.state === "fail").length;
@@ -270,15 +260,7 @@ export function readinessCount(checks: AppCheck[]): string {
 export function readinessSentence(checks: AppCheck[]): string {
   const failing = checks.filter((c) => c.state === "fail").length;
   const skipped = checks.filter((c) => c.state === "skip").length;
-  const unrun = checks.filter((c) => c.state === "unrun").length;
-  // A skip could not be answered here; an unrun row is one nobody has asked
-  // yet (an on-demand model check) — two different facts, two clauses.
-  const rest = [
-    skipped > 0 ? `${skipped} could not be answered here` : "",
-    unrun > 0 ? `${unrun} ${unrun === 1 ? "waits" : "wait"} for Check` : "",
-  ]
-    .filter(Boolean)
-    .join(" and ");
+  const rest = skipped > 0 ? `${skipped} could not be answered here` : "";
   if (failing > 0) {
     return rest
       ? `checks need attention before this app is worth sharing, and ${rest}.`
@@ -292,11 +274,7 @@ export function readinessSentence(checks: AppCheck[]): string {
  *  findings and decides, rather than rewriting them outright. Empty when no
  *  candidate is failing — a footer with nothing to qualify says nothing. */
 export function reviewNote(checks: AppCheck[]): string {
-  // On-demand rows say Fix, not Review (`rowActionLabel`), so they are not
-  // "matches to read" in the footer's count either.
-  const n = checks.filter(
-    (c) => c.state === "fail" && c.kind === "candidate" && !c.ondemand,
-  ).length;
+  const n = checks.filter((c) => c.state === "fail" && c.kind === "candidate").length;
   if (n === 0) return "";
   return n === 1 ? "1 of these is a match to read, not a fix." : `${n} of these are matches to read, not fixes.`;
 }
@@ -310,7 +288,9 @@ export function failingCount(checks: AppCheck[]): number {
  *  header dot and `severityDotLabel` agree): the count excludes them, and a
  *  report whose only failing rows are info reads "Fix N suggestion(s)". */
 export function fixButtonLabel(checks: AppCheck[]): string {
-  const failing = checks.filter((c) => c.state === "fail");
+  // A contrib `git` row is not Claude's to fix (`isContribRow`): it never
+  // counts toward "Fix N issues".
+  const failing = checks.filter((c) => c.state === "fail" && !isContribRow(c));
   if (failing.length === 0) return "Nothing to fix";
   const issues = failing.filter((c) => effectiveSeverity(c) !== "info").length;
   if (issues > 0) return `Fix ${issues} ${issues === 1 ? "issue" : "issues"}`;
@@ -363,7 +343,23 @@ export function showsPullAction(check: AppCheck): boolean {
  *  is wrong with it, so this is available on a passing row too. False when
  *  the folder isn't in a repo this server can read (`gitRoot: null`). */
 export function showsOpenInGitAction(check: AppCheck): boolean {
-  return check.id === "git" && !!check.gitRoot;
+  return check.id === "git" && !!check.gitRoot && !isContribRow(check);
+}
+
+/** The `git` row the GitHub contribution engine writes for a copy it syncs
+ *  (`contrib: true`, app_doctor._contrib_git_row). Its failure is never
+ *  Claude's to fix from here: it is an overlap with the author's latest, or
+ *  a sign-in, and the app page is where that one decision is offered — so
+ *  the row's action is "Open app page" instead of Fix, and no "Open in git"
+ *  (no git words for these copies). */
+export function isContribRow(check: AppCheck): boolean {
+  return check.id === "git" && check.contrib === true;
+}
+
+/** The app page's Overview — where a contrib row's decision waits. Spelled
+ *  here for the same reason as `tasksTabUrl` above. */
+export function appOverviewUrl(dir: string): string {
+  return "/apps/" + encodeFsPathSegments(dir);
 }
 
 /** The `git` row's own remote check has not landed yet: local state is

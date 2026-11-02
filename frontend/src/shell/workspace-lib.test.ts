@@ -17,6 +17,7 @@ import {
   workspaceTasks,
   workspaceGroup,
   groupTasks,
+  ARCHIVE_IDLE_SECONDS,
   type WorkspaceFacts,
 } from "@shell/workspace-lib";
 
@@ -222,6 +223,10 @@ describe("workspaceKeyAction", () => {
     expect(press("k")).toBe("prev");
     expect(press("Enter")).toBe("open");
     expect(press("x")).toBe("close");
+    expect(press("p")).toBe("pin");
+    expect(press("p", { metaKey: true })).toBeNull();
+    expect(press("p", {}, { typing: true, paletteOpen: false })).toBeNull();
+    expect(press("p", {}, { typing: false, paletteOpen: true })).toBeNull();
     expect(press("c")).toBe("new");
     expect(press("/")).toBe("search");
     expect(press("n")).toBe("needs");
@@ -354,7 +359,7 @@ describe("workspaceGroup / groupTasks", () => {
       task({ key: "f", status: "queued" }),
       task({ key: "h", ...pr, ...idle }),
     ];
-    const grouped = groupTasks(rows, (t) => (t.key === "h" ? open : facts()), NOW);
+    const grouped = groupTasks(rows, (t) => (t.key === "h" ? open : facts()), NOW, new Set());
     expect(grouped.map((x) => [x.key, x.label, x.tasks.map((t) => t.key)])).toEqual([
       ["needs", "Needs you", ["b"]],
       ["working", "Working", ["f"]],
@@ -363,8 +368,25 @@ describe("workspaceGroup / groupTasks", () => {
       ["clear", "Safe to archive", ["a", "c"]],
       ["archived", "Archived", ["d"]],
     ]);
-    expect(groupTasks([rows[1], rows[3]], () => facts(), NOW).map((x) => x.key)).toEqual(["needs", "archived"]);
+    expect(groupTasks([rows[1], rows[3]], () => facts(), NOW, new Set()).map((x) => x.key)).toEqual(["needs", "archived"]);
   });
+});
+
+test("pinned tasks lead in their own group; archived ones stay archived; row order is kept", () => {
+  const idle = { last_active: NOW - 25 * 3600 };
+  const rows = [
+    task({ key: "a", ...idle }),
+    task({ key: "b", status: "needs_attention" }),
+    task({ key: "c", status: "archived" }),
+    task({ key: "d", ...idle }),
+  ];
+  const grouped = groupTasks(rows, () => facts(), NOW, new Set(["d", "b", "c", "gone"]));
+  expect(grouped.map((x) => [x.key, x.label, x.tasks.map((t) => t.key)])).toEqual([
+    ["pinned", "Pinned", ["b", "d"]],
+    ["clear", "Safe to archive", ["a"]],
+    ["archived", "Archived", ["c"]],
+  ]);
+  expect(groupCollapsed("pinned", {})).toBe(false);
 });
 
 test("a group shows GROUP_CAP cards until expanded", () => {
@@ -374,10 +396,11 @@ test("a group shows GROUP_CAP cards until expanded", () => {
   expect(visibleGroupTasks([1, 2], false)).toEqual({ shown: [1, 2], more: 0 });
 });
 
-test("only Safe to archive starts collapsed, and a stored choice wins", () => {
+test("Safe to archive and Archived start collapsed, and a stored choice wins", () => {
   expect(groupCollapsed("clear", {})).toBe(true);
   expect(groupCollapsed("turn", {})).toBe(false);
-  expect(groupCollapsed("archived", {})).toBe(false);
+  expect(groupCollapsed("archived", {})).toBe(true);
+  expect(groupCollapsed("archived", { archived: false })).toBe(false);
   expect(groupCollapsed("clear", { clear: false })).toBe(false);
   expect(groupCollapsed("turn", { turn: true })).toBe(true);
 });
@@ -424,4 +447,11 @@ describe("dirtyBadge", () => {
   test("dirtyTitle keeps the exact counts", () => {
     expect(dirtyTitle(["running", "3 uncommitted", "2 unpushed"])).toBe("3 uncommitted, 2 unpushed");
   });
+});
+
+test("a pinned idle task with no holds goes to Pinned; unpinned it is Safe to archive", () => {
+  const t = task({ key: "i", last_active: NOW - ARCHIVE_IDLE_SECONDS - 1 });
+  const keys = (pins: string[]) => groupTasks([t], () => facts(), NOW, new Set(pins)).map((x) => x.key);
+  expect(keys(["i"])).toEqual(["pinned"]);
+  expect(keys([])).toEqual(["clear"]);
 });

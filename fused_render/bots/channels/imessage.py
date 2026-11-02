@@ -23,7 +23,6 @@ imessage-state.json (this process' view, for a future worker / --status).
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import time
@@ -56,6 +55,8 @@ class ImessageChannel(Channel):
     def acquire(self) -> bool:
         lp = im.lock_path()
         os.makedirs(os.path.dirname(lp), exist_ok=True)
+        import fcntl  # POSIX-only: imported here so the module loads on Windows
+
         fh = open(lp, "a+", encoding="utf-8")
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -78,6 +79,8 @@ class ImessageChannel(Channel):
     def stop(self) -> None:
         if self.lock_fh:
             try:
+                import fcntl
+
                 self.lock_fh.seek(0)
                 self.lock_fh.truncate()
                 self.lock_fh.flush()

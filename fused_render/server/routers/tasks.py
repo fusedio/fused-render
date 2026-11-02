@@ -138,6 +138,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from fused_render import _platform
 from fused_render._platform import is_within
 from fused_render import netlog
 from fused_render import (
@@ -1400,9 +1401,20 @@ def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
     return messages
 
 
-def _turn_of_newest_chat(messages: list[dict], live: bool) -> None:
+def _turn_of_newest_chat(messages: list[dict], live: bool,
+                         dead: bool = False) -> None:
     """The newest chat message is the one whose turn may still be running; every
-    older one has been answered by definition."""
+    older one has been answered by definition.
+
+    `dead` is the caller's word that the run serving that prompt DIED WITHOUT
+    FINISHING IT (`_dead_turn`): its process is gone, its `out.jsonl` never
+    reached the `result` row every turn ends on, and nobody pressed Stop. Not
+    live and dead is `error` — the same word an API failure writes — so the
+    row reads Blocked with the red ring and Retry, instead of `done` with no
+    reply under it (the host killed mid-turn read Done within ten seconds,
+    while the chat still said "Running outside this app"; Sina, 2026-10-31).
+    Live outranks it: a run that is writing is not dead, whatever an older run
+    dir says."""
     for message in reversed(messages):
         if message["kind"] == "chat":
             # NOT over an API failure. The failed turn is a FACT read out of
@@ -1411,7 +1423,7 @@ def _turn_of_newest_chat(messages: list[dict], live: bool) -> None:
             # broken turn straight back to Done — the R2-3 defect surviving its
             # own fix, one function later.
             if message["turn"] != "error":
-                message["turn"] = "" if live else "idle"
+                message["turn"] = "" if live else ("error" if dead else "idle")
             return
 
 
@@ -2094,6 +2106,193 @@ def _hosted_runs() -> tuple[dict, dict]:
     return out, pending
 
 
+# run_dir -> ((out.jsonl size, mtime_ns), the turn is still open). The tail
+# read `_out_turn_open` memoizes; a dead run's file never changes again, so
+# one read per run is the whole cost. Pruned against the scan like `_bg_memo`.
+_dead_memo: dict[str, tuple] = {}
+
+# How far back `_out_turn_open` reads a run's out.jsonl. A turn's closing rows
+# (`result`, then the host's `command_lifecycle`) are small, and a tail this
+# long reaches past any `stream_event` burst the CLI writes before them.
+_DEAD_TAIL_BYTES = 64 * 1024
+
+
+def _out_turn_open(run_dir: str) -> bool:
+    """Does this run's `out.jsonl` end MID-TURN — is the newest row of the
+    conversation's own shape (a prompt echo, an assistant row) not followed by
+    the `result` row that closes every `claude -p` turn?
+
+    The transcript cannot answer this: a turn that was open when its process
+    died stays open in the file for ever, and the interrupt marker that
+    closes a stopped one is written by the CLI, not by a kill. The run dir's
+    own log is the one place the END of a turn is written by the process
+    that ended it. Read like `_poll`'s `saw_result` (agent.py), reduced to
+    the one question: top-level rows only (a subagent's `parent_tool_use_id`
+    rows are its own conversation), the newest `result` / `assistant` /
+    `user` / `system:init` decides, and `result` is the only closed answer.
+    A run with no log at all, or an empty one, is a prompt that went out and
+    was never even echoed back — open."""
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return True
+    stamp = (st.st_size, st.st_mtime_ns)
+    memo = _dead_memo.get(run_dir)
+    if memo is not None and memo[0] == stamp:
+        return memo[1]
+    # NO VERDICT IN THE WINDOW IS "CANNOT TELL", NOT "DEAD": a file bigger
+    # than the window whose closing rows sit past it (one enormous final
+    # reply) must not read as a crash. Only a log small enough to have been
+    # read whole, with nothing decisive in it, is a prompt nothing answered.
+    open_turn = st.st_size <= _DEAD_TAIL_BYTES
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, st.st_size - _DEAD_TAIL_BYTES))
+            chunk = fh.read().decode("utf-8", "replace")
+        lines = [ln for ln in chunk.split("\n") if ln.strip()]
+        if st.st_size > _DEAD_TAIL_BYTES and lines:
+            lines = lines[1:]  # the partial first line from the mid-file seek
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("parent_tool_use_id"):
+                continue
+            kind = row.get("type")
+            if kind in ("result", "assistant", "user") or (
+                    kind == "system" and row.get("subtype") == "init"):
+                open_turn = kind != "result"
+                break
+    except OSError:
+        open_turn = False
+    _dead_memo[run_dir] = (stamp, open_turn)
+    return open_turn
+
+
+def _pid_gone(run_dir: str) -> bool:
+    """Is the process this run's `pid` file names GONE — for certain? No file
+    (a run still spawning, or one that never got that far) is not gone, and
+    neither is a probe that cannot answer: `EPERM` is a live process owned by
+    somebody else, and any other failure is "cannot tell", which must never
+    read as dead (the one direction a wrong answer here costs a user a red
+    row)."""
+    try:
+        with open(os.path.join(run_dir, "pid"), encoding="utf-8") as fh:
+            pid = int(fh.read().strip())
+    except (OSError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    # `probe_pid`, never a bare `os.kill(pid, 0)`: on Windows signal 0 is
+    # CTRL_C_EVENT, so a listing lap would be interrupting the very process
+    # it asked about (Bugbot, PR #2063). The shared probe raises
+    # `ProcessLookupError` for a process that is gone on every platform, and
+    # returns — or raises something else — for one that exists or cannot be
+    # asked about.
+    try:
+        _platform.probe_pid(pid)
+    except ProcessLookupError:
+        return True
+    except Exception:  # noqa: BLE001 — EPERM, a Windows handle error: alive
+        return False
+    return False
+
+
+# How long a stop marker vouches for a dead run past the log's last write.
+# `_cancel` writes `cancelled` and then interrupts; a kill that follows lands
+# within this. A run stopped once, CONTINUED (the log written again, later),
+# and then killed is not stopped — see `_stopped`.
+_STOP_MARKER_SLACK_SEC = 5.0
+
+
+def _stopped(run_dir: str) -> bool:
+    """Did the Stop button end this run — a `cancelled` marker at least as new
+    as the log's last write? `_cancelled_marker_state` (agent.py) retires the
+    marker against a poll cursor this reader does not have; the mtimes carry
+    the same fact: a marker older than the newest row is one a later turn
+    outlived."""
+    marker = os.path.join(run_dir, "cancelled")
+    try:
+        marked_at = os.path.getmtime(marker)
+    except OSError:
+        return False
+    try:
+        written_at = os.path.getmtime(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        return True
+    return marked_at + _STOP_MARKER_SLACK_SEC >= written_at
+
+
+def _dead_turns() -> frozenset:
+    """Every session whose NEWEST run died mid-turn: the run's `claude` is gone
+    (`_pid_gone` — a `pid` file naming a dead process; a run still spawning
+    has none and is not this), its `out.jsonl` never reached `result`
+    (`_out_turn_open`), and nobody stopped it (`_stopped`; a stopped turn is
+    `done`, not broken). The host killed with the app, a `kill -9`, an OOM:
+    each leaves exactly this on disk and nothing else — no `exited` event
+    (the host is what would have posted it), no error row in the transcript
+    (the CLI is what would have written it).
+
+    NEWEST RUN ONLY, per session: `scan_runs` is newest-first, so the first
+    run naming a session is the one its last turn ran in; an older run that
+    died is history the turns after it have overtaken. `_dead_turn` applies
+    it only to a newest prompt with NO reply on file — a prompt answered
+    since (a terminal resume, a later run under another id) is answered,
+    whatever the old run dir says.
+
+    ASKED LAZILY: `_dead_turn` reaches this only for a row that is not live
+    and whose newest prompt nobody answered, which in the steady state is no
+    row at all — so the ordinary listing lap never walks the runs tree for
+    it. The walk itself is `scan_runs`' memoized one (one second), the tail
+    read is memoized on the file's size and mtime, and the pid probe — one
+    `kill(pid, 0)` for the newest run of each session in the window — is the
+    whole per-call cost; no memo of its own, because a probe is cheaper than
+    a stale "nobody" over a run that died a moment ago. NEVER RAISES: a
+    reader that cannot answer answers "nobody", and the row keeps the status
+    it had — a 500 over the whole listing for one unreadable run dir is the
+    wrong trade."""
+    dead: set[str] = set()
+    try:
+        agent = _agent_module()
+        if agent is not None:
+            seen: set[str] = set()
+            scanned: set[str] = set()
+            for run in project_queue.scan_runs(agent):
+                run_dir = run["run_dir"]
+                scanned.add(run_dir)
+                sessions = [s for s in run["sessions"] if s and s not in seen]
+                if not sessions:
+                    continue
+                seen.update(sessions)
+                if not _pid_gone(run_dir) or _stopped(run_dir):
+                    continue
+                if _out_turn_open(run_dir):
+                    dead.update(sessions)
+            for run_dir in [d for d in list(_dead_memo) if d not in scanned]:
+                _dead_memo.pop(run_dir, None)
+    except Exception:  # noqa: BLE001 — see the docstring: never over the listing
+        logger.exception("tasks: dead-run scan failed; no row is marked dead")
+        dead = set()
+    return frozenset(dead)
+
+
+def _dead_turn(prompts: list[dict], session_id: str, live: bool) -> bool:
+    """Is this task's newest prompt the one its dead run never finished? Both
+    halves, for the reason `_dead_turns` gives: the newest prompt has no reply
+    on file — `_mark_fate` stamps `failed` (True or False) on a prompt the
+    moment a reply lands, so its absence is "nothing ever answered this" —
+    AND the session's newest run died mid-turn. The cheap half first, and a
+    live session never asks: that is what keeps the runs walk off the
+    ordinary lap (`_dead_turns`)."""
+    if live or not session_id or not prompts:
+        return False
+    if prompts[-1].get("failed") is not None:
+        return False
+    return session_id in _dead_turns()
+
+
 def _background_jobs(held: tuple | None) -> dict | None:
     """The row's `background_jobs` off one `_hosted_runs` pending entry
     (`(run_dir, offset, jobs)`), or None when nothing is held.
@@ -2608,12 +2807,27 @@ def _failed(speaker: dict | None) -> bool:
 # ----------------------------------------------------------------- the titles
 
 
+# Must stay in step with `shortTitle` / `TITLE_MAX` in
+# frontend/src/shell/NewJobModal.tsx, the rule the New task form uses to derive
+# an entry's title from its message.
+_FORM_TITLE_MAX = 60
+
+
+def _form_short_title(line: str) -> str:
+    if len(line) <= _FORM_TITLE_MAX:
+        return line
+    boundary = line[:_FORM_TITLE_MAX + 1].rfind(" ")
+    return (line[:boundary] if boundary > 0
+            else line[:_FORM_TITLE_MAX]).rstrip()
+
+
 def _title(task: dict, rec: dict | None, first_prompt: str,
            custom: str = "") -> tuple[str, str]:
     """(title, where it came from). The precedence is §4's: a title the user
     typed over the task in the Tasks UI (`renamed`, the stored `custom_title`,
     passed in as `custom` so the caller's one settings read serves it), then
-    what the user called it (`user`), then Claude Code's own one-liner for the session (`ai`), then
+    what the user called it (`user`: a name the entry carries that is NOT just
+    the first line of its own message), then Claude Code's own one-liner for the session (`ai`), then
     the first line of the first message. No summarisation call anywhere — the
     title we want is already written into the transcript once per turn.
 
@@ -2654,6 +2868,20 @@ def _title(task: dict, rec: dict | None, first_prompt: str,
         return custom[:200], "renamed"
     for entry in reversed(task["entries"]):
         title = str(entry.get("title") or "").strip()
+        # The one-box New task form derives the entry's title from the first
+        # line of its message (`shortTitle`: the line itself, or clamped at a
+        # word boundary with a trailing "…"), so that is not a name the user
+        # chose — and treating it as one blocked stable AI titles for the task
+        # forever. Only an EXACT match of that derivation is skipped: a title
+        # that merely shares a prefix with the message ("Fix" over "Fix the
+        # login redirect") is a name a bot or API caller chose, hence `user`.
+        t = title.rstrip("…").strip()
+        if t:
+            first = next((ln.strip() for ln in
+                          str(entry.get("message") or "").splitlines()
+                          if ln.strip()), "")
+            if first and (t == first or t == _form_short_title(first)):
+                continue
         if title:
             return title[:200], "user"
     if rec is not None and rec.get("title"):
@@ -2952,7 +3180,7 @@ def _collect() -> dict[str, dict]:
             task["key_filed_at"] = tasks_store.archived_at(archived, key)
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
-            and not _bot_session(task)}
+            and not _bot_session(task) and not _merge_session(task)}
 
 
 def _bot_session(task: dict) -> bool:
@@ -2973,6 +3201,17 @@ def _bot_session(task: dict) -> bool:
     from fused_render.bots import paths as bot_paths  # noqa: PLC0415
     cwd = tasks_store.head(task["path"])[0]
     return bot_paths.is_bot_workdir(cwd)
+
+
+def _merge_session(task: dict) -> bool:
+    """A transcript a "Merge with Claude" round wrote: a headless helper
+    session in a scratch worktree that is deleted when the job ends, so its
+    row would open a folder that no longer exists. Same cwd test as
+    `_bot_session` (`contrib.merge_job.is_scratch_workdir`)."""
+    if not task["path"]:
+        return False
+    from fused_render.contrib import merge_job  # noqa: PLC0415
+    return merge_job.is_scratch_workdir(tasks_store.head(task["path"])[0])
 
 
 def _entries_for(keys) -> dict[str, list[dict]]:
@@ -3753,12 +3992,16 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
 
     Wanted when: there is a session and an anchor; the name is not one the
     person chose (`renamed` / `user` — never spend a call on it); the turn has
-    ended and is not a queued reply; and EITHER nothing is stored, or the
+    started running or ended (`in_progress`, `needs_attention`, `done`,
+    `blocked`, `archived`; a RUNNING session is titled at once, from the
+    reader's first message, instead of waiting out its first turn) and is not a
+    queued reply; and EITHER nothing is stored, or the
     reader has sent `TITLE_REFRESH_PROMPTS` more prompts since the stored one
     (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed. A
     failure inside that cooldown holds every trigger off, so a broken CLI is
-    not asked on each listing. The settle minute is the recap's own: the job
-    carries the same `due`. The current title handed to the model is the
+    not asked on each listing. A title-only job has no settle minute (that is
+    the recap's, for a reply still being written); merged into a recap job it
+    keeps that job's `due`. The current title handed to the model is the
     stored AI title, else the row's own (`title`: the first message line, a
     slash command, or Claude Code's `ai-title`)."""
     sid = task["session_id"]
@@ -3768,8 +4011,9 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
         return
     folder = task["project"]
     path = task.get("path") or ""
-    if not (status in ("done", "blocked", "archived") and reply != _QUEUED_REPLY
-            and (folder or path)):
+    if not (status in ("in_progress", "needs_attention", "done", "blocked",
+                       "archived")
+            and reply != _QUEUED_REPLY and (folder or path)):
         return
     stored = tasks_store.session_ai_title(settings or {}, sid)
     prompts = int(rec.get("count") or 0) if rec else 0
@@ -3795,8 +4039,6 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
            "transcript": path, "session_id": sid, "for_uuid": anchor,
            "reply_at": reply_at, "stale_before": 0.0, "want_recap": False,
            **fields}
-    if now - reply_at < _RECAP_SETTLE_S:
-        job["due"] = reply_at + _RECAP_SETTLE_S
     out.append(job)
 
 
@@ -4156,7 +4398,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # The tail's dicts ARE the merged list's dicts (a slice shares them), so the
     # liveness this writes onto the newest chat message is visible to the status
     # derivation below, which reads the whole thread.
-    _turn_of_newest_chat(tail, live)
+    _turn_of_newest_chat(tail, live,
+                         dead=_dead_turn(prompts, task["session_id"], live))
     for offset, message in enumerate(reversed(tail)):
         message["message_id"] = tasks_store.format_message_id(total - offset)
     _mark_unread(tail, task["key"], read)
@@ -4359,7 +4602,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # (`_row_settings`).
         "model": model,
         "effort": effort,
-        # WHICH AGENT runs this task — "claude" | "copilot" | "codex", never ""
+        # WHICH AGENT runs this task — "claude" | "copilot" | "codex" | "gemini", never ""
         # (D2: the backend is fixed at the first turn and every surface names it). The
         # recorded choice, else the root the transcript sits under, else the
         # entries, else Claude — see `_row_backend`.
@@ -5628,10 +5871,13 @@ def warm() -> None:
     try:
         snap = _rebuild_snapshot()
     except Exception:  # noqa: BLE001 — a warm that fails costs nothing but the warmth
+        # …and the builder still starts: with none, no snapshot is ever
+        # published, and `snapshot_rows` readers (the Monitor's labels) would
+        # see None for the life of the process. Its next build publishes one.
         logger.debug("tasks warm failed", exc_info=True)
-        return
-    logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
-    tasks_index.save(_SCAN, _BUILD_LOCK)
+    else:
+        logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
+        tasks_index.save(_SCAN, _BUILD_LOCK)
     if not tasks_watch.running():
         return
     global _builder_thread
@@ -5710,6 +5956,14 @@ def _rebuild_snapshot() -> _Snapshot:
         with _SNAP_COND:
             _building = False
             _SNAP_COND.notify_all()
+
+
+def snapshot_rows() -> list[dict] | None:
+    """The last published snapshot's rows, or None before the first build.
+    NEVER builds: for a reader outside the listing (the Monitor's process
+    labels, sysmon/labels.py) that may not pay for one, once a second."""
+    with _SNAP_COND:
+        return _snapshot.rows if _snapshot is not None else None
 
 
 def _await_snapshot(at_least: int, timeout: float) -> _Snapshot | None:
@@ -7031,7 +7285,8 @@ def _thread(task: dict, read: dict, now: float) -> list[dict]:
         # (bugbot). It is the newest by construction: `_merge` sorted the rest
         # ascending and the mark's `at` is the moment of the send.
         messages[-1]["message_id"] = tasks_store.format_message_id(len(messages))
-    _turn_of_newest_chat(messages, live)
+    _turn_of_newest_chat(messages, live,
+                         dead=_dead_turn(prompts, task["session_id"], live))
     _mark_unread(messages, task["key"], read)
     return messages
 
@@ -7100,7 +7355,8 @@ def _quoted(body: str, italic: bool = False) -> list[str]:
 def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
     """The turns as Markdown, in the Bots export's vocabulary. Lossy by
     design (tool results are not inlined); `format=json` is the full record."""
-    who = {"copilot": "Copilot", "codex": "Codex"}.get(str(backend or ""), "Claude")
+    who = {"copilot": "Copilot", "codex": "Codex",
+           "gemini": "Gemini"}.get(str(backend or ""), "Claude")
     title = " ".join(str(task.get("title") or "Task").split())
     out = [f"# {title} — transcript", ""]
     if task.get("target"):
@@ -7445,7 +7701,7 @@ class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
     effort: str = ""
-    # "claude" | "copilot" | "codex" | "" (not saying). Recorded once by the
+    # "claude" | "copilot" | "codex" | "gemini" | "" (not saying). Recorded once by the
     # spawn that starts a conversation; a later POST naming the same value is
     # a no-op and one naming another is refused — the backend never changes
     # (D2).
@@ -8328,7 +8584,15 @@ def api_task_erase(patch: ErasePatch,
     task = _collect().get(key)
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    return erase_task(key, task)
 
+
+def erase_task(key: str, task: dict) -> dict:
+    """The erase itself, past the route's own checks: `api_task_erase`'s
+    body, shared with the canvas sync, which erases the sessions filed on a
+    node's file when the node is deleted (canvases.forget_file_sessions).
+    `task` is `_collect()`'s row for `key`. Raises HTTPException 409 for a
+    running task and 500 when a file would not go, as the route does."""
     _place(task)
     # No `settings=` here: this single-row answer carries no pills, so the
     # per-session record is not read for it. A caller that starts drawing
@@ -8479,6 +8743,13 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     discipline: the id already passed the shape check above, and every hit
     must resolve inside one of the two Codex dirs with a `rollout-*-<sid>.jsonl`
     leaf, or it is not touched.
+
+    A transcript that went from under the GEMINI root takes Gemini CLI's own
+    chat file(s) with it (docs/GEMINI_BACKEND.md D15): `gemini --resume <sid>`
+    replays from `<gemini home>/tmp/<project>/chats/session-<ts>-<sid[:8]>.jsonl`
+    (`.json` for older releases). Found by `_gemini_chat_files` under the same
+    discipline — a leaf named by the id's first eight characters whose text
+    carries the whole id, resolving inside the dir it was globbed under.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
@@ -8517,6 +8788,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     removed, erased, failed, refused = 0, False, 0, 0
     copilot = False  # did a transcript go from under the Copilot root
     codex = False  # ... or from under the Codex root
+    gemini = False  # ... or from under the Gemini root
     seen: set[str] = set()
     for target in targets:
         resolved = os.path.realpath(target)
@@ -8539,6 +8811,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                     erased = True
                     copilot = copilot or projects[parent][1] == "copilot"
                     codex = codex or projects[parent][1] == "codex"
+                    gemini = gemini or projects[parent][1] == "gemini"
             else:
                 continue
         except OSError:
@@ -8565,6 +8838,14 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                 removed += 1
             except OSError:
                 logger.warning("erase: could not remove %s", rollout, exc_info=True)
+                failed += 1
+    if gemini and not failed and not refused:
+        for chat in _gemini_chat_files(session_id):
+            try:
+                os.remove(chat)
+                removed += 1
+            except OSError:
+                logger.warning("erase: could not remove %s", chat, exc_info=True)
                 failed += 1
     return removed, erased, failed, refused
 
@@ -8629,6 +8910,93 @@ def _codex_rollout_files(session_id: str) -> list[str]:
                     and os.path.isfile(resolved) and resolved not in out):
                 out.append(resolved)
     return out
+
+
+def _gemini_home() -> str:
+    """Gemini CLI's own data dir (`<GEMINI_CLI_HOME or ~>/.gemini`), NOT
+    fused's Gemini root (`agent_roots.gemini_dir()`) — the CLI keeps this one,
+    and erase (and the recap's cleanup) are its only readers. Resolved by
+    `gemini_health.config_dir`, the one place that reads the CLI's own
+    override, as `_codex_home` resolves Codex's. A function so a test can
+    point it at a tmp dir."""
+    from fused_render import gemini_health
+
+    return gemini_health.config_dir()
+
+
+_GEMINI_SHORT_ID_LEN = 8
+
+
+def _gemini_chat_files(session_id: str) -> list[str]:
+    """Every chat file Gemini CLI keeps for `session_id` — the realpaths,
+    ready to remove. `<gemini home>/tmp/<project>/chats/session-<ts>-<short>.jsonl`
+    (and `.json`, the older shape), where `<short>` is the id's first eight
+    characters (`deriveSessionShortId` in the CLI; verified in 0.65.0's
+    source, D15). Eight characters are not an id, so a hit counts only when
+    the chat's OWN recorded `sessionId` is this id: the first record of a
+    `.jsonl` (the CLI's metadata line) or the top-level key of a `.json` —
+    never a substring of the text, which another chat could carry in a
+    message that merely mentions this id. A neighbour sharing the prefix
+    stays, and so does an unreadable file.
+
+    Same discipline as `_codex_rollout_files`: the id is refused unless it is
+    a name, `glob.escape`d so it is never a pattern, and a hit is kept only
+    when its REALPATH is a regular file inside the realpath of the `tmp` dir
+    it was globbed under and its leaf still reads `session-…-<short>.json(l)`."""
+    import glob
+
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        return []
+    short = session_id[:_GEMINI_SHORT_ID_LEN]
+    if len(short) < _GEMINI_SHORT_ID_LEN:
+        return []
+    base = os.path.join(_gemini_home(), "tmp")
+    if not os.path.isdir(base):
+        return []
+    base_real = os.path.realpath(base)
+    out: list[str] = []
+    for ext in (".jsonl", ".json"):
+        suffix = "-" + short + ext
+        pattern = os.path.join(glob.escape(base), "*", "chats",
+                               "session-*" + glob.escape(suffix))
+        for hit in glob.glob(pattern):
+            resolved = os.path.realpath(hit)
+            leaf = os.path.basename(resolved)
+            if not (is_within(resolved, base_real, strict=True, fs_root_ok=False)
+                    and leaf.startswith("session-") and leaf.endswith(suffix)
+                    and os.path.isfile(resolved) and resolved not in out):
+                continue
+            try:
+                with open(resolved, "rb") as fh:
+                    head = fh.read(1 << 20).decode("utf-8", "replace")
+            except OSError:
+                continue
+            if _gemini_chat_owner(head, ext) == session_id:
+                out.append(resolved)
+    return out
+
+
+def _gemini_chat_owner(head: str, ext: str) -> str:
+    """The `sessionId` a Gemini chat file records as its own, from its first
+    MiB: the first line's record for `.jsonl`, the top-level object's key
+    for `.json` (the whole object when it fits, else the key where the CLI
+    writes it — first in the object). "" when the file does not say."""
+    if ext == ".jsonl":
+        first = head.lstrip().split("\n", 1)[0]
+        try:
+            record = json.loads(first)
+        except ValueError:
+            return ""
+    else:
+        try:
+            record = json.loads(head)
+        except ValueError:
+            m = re.match(r'\s*\{\s*"sessionId"\s*:\s*"([^"\\]*)"', head)
+            return m.group(1) if m else ""
+    if not isinstance(record, dict):
+        return ""
+    sid = record.get("sessionId")
+    return sid if isinstance(sid, str) else ""
 
 
 def _every_rule_behind(key: str) -> list[str]:
@@ -9664,6 +10032,15 @@ def api_queue_force(body: dict = Body(...),
     # user's answer away with them (review, 2026-09-21).
     answers = manager.held_answers(key)
     if not entry_id and not answers:
+        # A LIVE RUN WITH NOTHING WAITING is a row the client painted stale
+        # (`positions` no longer lists a resume marker, but a lap can be
+        # behind) or a task that is simply working — or parked on a card
+        # (`holds_live` counts those too), hence "live" and not "running".
+        # 409 — the queue's "not now" status — so the row's note reads as
+        # "wait", like a turn already open does (ScheduleTaskViews `force`).
+        if manager.holds_live(key):
+            return _error("This task is live — nothing is waiting to start",
+                          status=409)
         return _error("nothing waiting to start", status=400)
 
     entry: dict = {}
@@ -10100,7 +10477,7 @@ def api_task_create(body: dict = Body(...),
     """Start a task from a page: `{prompt, target?, title?, model?, effort?,
     backend?, permission_mode?, due?, queue?}` -> `{entry_id, key}`.
 
-    `backend` — "claude", "copilot" or "codex" — is which agent runs the task (D2).
+    `backend` — "claude", "copilot", "codex" or "gemini" — is which agent runs the task (D2).
     Omitted, it is the Preferences default AT CREATE: `schedule.create` pins
     `registry.default_id()` on the entry, so the `pending:` row and the run
     both name the agent the user saw, not the default of the day it fires. A

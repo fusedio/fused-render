@@ -11,6 +11,8 @@ import type { ArchiveFacts } from "@shell/task-selection";
 export function useArchiveConfirm(): {
   /** Run `go` now, or after the reader agrees when `task` is running. */
   guard: (task: ArchiveFacts, go: () => void) => void;
+  /** Drop a pending ask unanswered (the view it was about is gone). */
+  cancel: () => void;
   /** Render once, anywhere in the component. */
   node: ReactNode;
 } {
@@ -19,6 +21,7 @@ export function useArchiveConfirm(): {
     if (archiveNeedsConfirm(task)) setPending({ go });
     else go();
   }, []);
+  const cancel = useCallback(() => setPending(null), []);
   const node: ReactNode = pending ? (
     <ConfirmDialog
       title="Archive task"
@@ -33,5 +36,5 @@ export function useArchiveConfirm(): {
       onCancel={() => setPending(null)}
     />
   ) : null;
-  return { guard, node };
+  return { guard, cancel, node };
 }

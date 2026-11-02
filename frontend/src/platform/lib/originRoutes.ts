@@ -30,8 +30,9 @@
 export const ORIGIN_BY_ROUTE: Readonly<Record<string, string>> = {
   "/ai-models/local": "Local models",
   "/ai-models/benchmark": "Benchmark",
-  "/claude-config": "Claude setup",
+  "/claude-config": "Claude Code",
   "/preferences": "Preferences",
+  "/skills": "Skills",
   "/preferences?tab=indexing": "Explorer",
   "/tasks": "Scheduler",
 };

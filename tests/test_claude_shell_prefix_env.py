@@ -34,6 +34,20 @@ def test_spawn_env_sets_prefix_and_chat_log(agent, monkeypatch):
     assert (os.stat(log).st_mode & 0o077) == 0
 
 
+def test_windows_gets_no_prefix(agent, monkeypatch, tmp_path):
+    # The wrapper is a POSIX sh script: the CLI runs every MCP stdio server
+    # through it, so on Windows it would stop permission_server.py starting.
+    monkeypatch.setattr(agent, "CMD_LOGS", str(tmp_path / "cmds"))
+    monkeypatch.setattr(agent._platform, "IS_WINDOWS", True)
+    env = agent._spawn_env("chat-win")
+    assert "CLAUDE_CODE_SHELL_PREFIX" not in env
+    assert "FUSED_CLAUDE_CMD_LOG" not in env
+    monkeypatch.setattr(agent._platform, "IS_WINDOWS", False)
+    env = agent._spawn_env("chat-win")
+    assert env["CLAUDE_CODE_SHELL_PREFIX"].endswith("claude_shell_prefix.sh")
+    assert "FUSED_CLAUDE_CMD_LOG" in env
+
+
 def test_spawn_env_without_chat_id_leaves_prefix_off(agent):
     env = agent._spawn_env()
     assert "FUSED_CLAUDE_CMD_LOG" not in env

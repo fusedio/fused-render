@@ -103,6 +103,7 @@ from typing import Mapping
 import fused_render
 from fused_render import jobs
 from fused_render.ai import bench_store, catalog, registry, supervisor
+from fused_render.ai.runners import formats
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +230,10 @@ WORKLOADS: Mapping[str, Workload] = MappingProxyType({
             # changes how much work a step is on a classifier-free-guidance
             # pipeline: two models compared at different guidance are not
             # compared at all. The value is `/api/ai/image`'s own default, so a
-            # benchmark measures the pipeline a page actually gets.
+            # benchmark measures the pipeline a page actually gets. A model
+            # whose mflux recipe PINS guidance (a no-CFG checkpoint, which
+            # cannot run at any other value) is measured at its pin instead —
+            # see `_measure_image`; the value actually sent is in `metrics`.
             "guidance": 4.0,
         }),
     ),
@@ -758,13 +762,15 @@ def _measure_image(model: str, workload: Workload, *, timed: bool,
     """
     params = workload.params
     steps = int(params["steps"])
+    pinned = formats.MFLUX_VARIANTS.get(model, {}).get("guidance")
+    guidance = float(pinned) if pinned is not None else params["guidance"]
     with tempfile.TemporaryDirectory(prefix="fused-bench-") as tmp:
         request = {
             "prompt": params["prompt"],
             "width": params["width"],
             "height": params["height"],
             "steps": steps,
-            "guidance": params["guidance"],
+            "guidance": guidance,
             "seed": params["seed"],
             "out": os.path.join(tmp, "benchmark.png"),
         }
@@ -795,6 +801,7 @@ def _measure_image(model: str, workload: Workload, *, timed: bool,
         "steps": steps,
         "width": params["width"],
         "height": params["height"],
+        "guidance": guidance,
     }
 
 

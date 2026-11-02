@@ -206,3 +206,18 @@ def ca_pem() -> bytes:
 
     cert, _ = _ensure_ca()
     return cert.public_bytes(serialization.Encoding.PEM)
+
+
+def server_ssl_context(certfile: str, keyfile: str, alpn_protocols=None):
+    """A server-side context for the https listener, built from the stdlib class
+    rather than `ssl.SSLContext`, which `_system_trust` swaps for truststore's
+    client-side wrapper (its server handshake fails on macOS)."""
+    import ssl
+
+    from fused_render._system_trust import ORIGINAL_SSL_CONTEXT
+
+    ctx = ORIGINAL_SSL_CONTEXT(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(certfile, keyfile)
+    if alpn_protocols:
+        ctx.set_alpn_protocols(alpn_protocols)
+    return ctx

@@ -466,7 +466,7 @@ def test_relay_remote_job_row_origin_defaults_to_playground(monkeypatch):
 def test_relay_remote_job_row_origin_names_the_callers_page_when_given(
         monkeypatch):
     # A caller with its own real page (here, the Scheduler) gets its own
-    # honest caption rather than "Claude setup" — the same derivation
+    # honest caption rather than "Claude Code" — the same derivation
     # `_ai_relay`'s `page` argument already drives for the row's `page`.
     _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
     asyncio.run(_server_ai._ai_relay({"prompt": "hello"}, page="/tasks"))

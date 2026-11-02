@@ -26,11 +26,19 @@ file-UDF route, which this was lifted from):
      `<shared_udf_base_url>/<share_token>/<slug>.html` — the `.html` suffix is
      what makes udf.ai serve the returned string as a page.
 
-Public only, by decision: there is no team/private mode here, so the share
-token is never rotated by a scope flip after the first publish and every
-link handed out keeps working across updates. The ONE case a token is
-re-issued: adopting a canvas that some other tool left non-public (a token
-keeps the scope it was issued under, so a public flip needs `new_token`).
+Public by default: the share token is never rotated by a scope flip after
+the first publish and every link handed out keeps working across updates.
+The ONE case a token is re-issued: adopting a canvas that some other tool
+left non-public (a token keeps the scope it was issued under, so a public
+flip needs `new_token`).
+
+Team fallback: a deployment can forbid public canvases outright — the control
+plane answers `Public access is not allowed for this execution environment`
+to the create or the scope flip. `publish` catches exactly that message and
+redoes the scope step as `temporary` (team scope + a 30-minute session token
+on the link, the same plumbing share_file.py's second mode uses), reporting
+`public_refused` so the dialog can say why the link expires. Nothing else is
+retried: any other refusal is still the failure it was.
 
 Canvas names allow `[A-Za-z0-9_]` only (the control plane rejects a hyphen),
 and an app id is `<kebab>-<8 hex>`, so the name is the id with `-` → `_`.
@@ -51,6 +59,10 @@ import fused
 _env_name = os.environ.get("FUSED_ENV")
 if _env_name:
     fused._env(_env_name)
+
+from fused_render._fused_options import raise_request_timeout
+
+raise_request_timeout()
 
 from fused._global_api import get_api
 from fused._options import options as OPTIONS
@@ -231,6 +243,35 @@ def _workbench_url(handle: str, name: str) -> str:
 SESSION_MAX_AGE_S = 30 * 60  # 30 minutes — the plan's only non-public option
 
 
+_PUBLIC_REFUSED = "public access is not allowed"
+
+
+def _public_refused(exc: Exception) -> bool:
+    """The deployment-level veto on public scope (see the module header).
+    Matched on the sentence, not the status, because 403 also covers a dead
+    token. The SDK's raise_for_status only folds the JSON body into the
+    message when Content-Type is exactly `application/json`; with a charset
+    suffix the exception is a bare `403 Client Error`, so the response body
+    is read too."""
+    if _PUBLIC_REFUSED in str(exc).lower():
+        return True
+    response = getattr(exc, "response", None)
+    try:
+        return _PUBLIC_REFUSED in (getattr(response, "text", "") or "").lower()
+    except Exception:  # noqa: BLE001 — a body that cannot be read is no match
+        return False
+
+
+def _scope_and_share(api, collection_id: str, cname: str, current_scope: str, target_scope: str):
+    """Put the canvas in `target_scope` and share it. A token keeps the scope
+    it was issued under, so a flip needs a fresh one; the real name is
+    required by update_collection — passing anything else would rename."""
+    if current_scope != target_scope:
+        api.update_collection(collection_id, name=cname, access_scope=target_scope)
+        return api.share_collection(collection_id, new_token=True)
+    return api.share_collection(collection_id)
+
+
 def _mint_session(api, token: str) -> tuple[str, object]:
     """`_session_token`, mirroring artifact-sharing.md §3/§4. A mint can fail
     with "Session tokens are only supported for team-scoped tokens" when the
@@ -250,7 +291,8 @@ def publish(req: dict) -> dict:
     team-scoped and mints a 30-minute session token appended to the link
     (artifact-sharing.md §1-§2). A scope change always re-issues the share
     token — a token keeps the scope it was issued under, so a flip leaves
-    the old one unable to serve *or* to mint.
+    the old one unable to serve *or* to mint. A `public` request the
+    deployment vetoes (`_public_refused`) is finished as `temporary`.
     """
     share_id, name = req["share_id"], req["name"]
     viewer_token = req["viewer_token"]
@@ -277,25 +319,49 @@ def publish(req: dict) -> dict:
         fused.api.upload(local, remote)
         s3_uri = _resolve_remote(remote)
 
+    public_refused = False
     existing = _find_collection(api, cname)
     if existing:
         collection_id = existing["id"]
         current_scope = _scope(existing.get("access_scope"))
     else:
-        created = api.create_collection(name=cname, access_scope=target_scope)
-        collection_id = created.id
-        current_scope = _scope(created.access_scope)
+        try:
+            created = api.create_collection(name=cname, access_scope=target_scope)
+        except Exception as exc:
+            if target_scope != "public" or not _public_refused(exc):
+                raise
+            public_refused = True
+            mode, target_scope = "temporary", "team"
+            # Re-find before creating again: a veto after a partial insert
+            # would make a second create fail on the name, not on scope.
+            existing = _find_collection(api, cname)
+            created = None if existing else api.create_collection(name=cname, access_scope=target_scope)
+        if created is not None:
+            collection_id = created.id
+            current_scope = _scope(created.access_scope)
+        else:
+            collection_id = existing["id"]
+            current_scope = _scope(existing.get("access_scope"))
 
     api.import_collection_toml_zip(collection_id, _canvas_zip(cname, slug, name, s3_uri, viewer_token))
 
-    if current_scope != target_scope:
-        # The real name is required by update_collection; passing anything
-        # else would rename the canvas. A token keeps the scope it was
-        # issued under, so the flip needs a fresh one.
-        api.update_collection(collection_id, name=cname, access_scope=target_scope)
-        shared = api.share_collection(collection_id, new_token=True)
-    else:
-        shared = api.share_collection(collection_id)
+    try:
+        shared = _scope_and_share(api, collection_id, cname, current_scope, target_scope)
+    except Exception as exc:
+        if target_scope != "public" or not _public_refused(exc):
+            raise
+        public_refused = True
+        mode, target_scope = "temporary", "team"
+        # Re-read rather than trust `current_scope`: the refusal may have
+        # come from share_collection AFTER the flip to public landed. Best
+        # effort — an unreadable scope means an unconditional flip to team
+        # with a fresh token, which is correct either way.
+        try:
+            info = _find_collection(api, cname) or {}
+            current_scope = _scope(info.get("access_scope"))
+        except Exception:  # noqa: BLE001
+            current_scope = None
+        shared = _scope_and_share(api, collection_id, cname, current_scope, target_scope)
     token = shared.share_token
     if not token:
         raise ShareError("Fused shared the canvas but returned no share token.")
@@ -338,6 +404,7 @@ def publish(req: dict) -> dict:
         "mode": mode,
         "session_token": session_token,
         "session_expires": session_expires,
+        "public_refused": public_refused,
     }
 
 

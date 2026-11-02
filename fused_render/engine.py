@@ -769,8 +769,10 @@ _available_lock = threading.Lock()
 def warm() -> None:
     """Import the fused backend once off the request path and cache the result.
 
-    Startup daemon thread: on a fresh install the cold import is ~a minute and
-    left lazy it would freeze the first /api/config that resolves the engine."""
+    Runs on a daemon thread started by `ensure_warm()` (first shell load, i.e.
+    the first /api/config, or the first Python run — NOT at server boot): on a
+    fresh install the cold import is ~a minute. /api/config resolves the engine
+    through `available_nonblocking()`, so it never waits for this."""
     global _available_cached
     t0 = time.monotonic()
     ok = available()
@@ -799,9 +801,30 @@ def forced_override() -> str | None:
 
 
 def warm_unless_forced_builtin() -> None:
-    """Warm the engine in the background unless it is forced to builtin (startup hook)."""
+    """Warm the engine in the background unless it is forced to builtin (`ensure_warm`'s body)."""
     if forced_override() != "builtin":
         warm_in_background()
+
+
+_warm_started = False
+_warm_start_lock = threading.Lock()
+
+
+def ensure_warm() -> None:
+    """Start `warm_unless_forced_builtin()` at most once per process; never blocks.
+
+    Called on the first shell load (/api/config) and at the top of
+    `run_python`, replacing the boot hook so a server that never loads the UI or
+    runs Python never pays the cold import. `invalidate()` deliberately does NOT
+    reset this flag: it clears the cached availability (find_spec answers until
+    the next warm) and discards the pooled interpreters, and re-running the
+    cold import on every invalidate is not wanted."""
+    global _warm_started
+    with _warm_start_lock:
+        if _warm_started:
+            return
+        _warm_started = True
+    warm_unless_forced_builtin()
 
 
 def invalidate() -> None:
@@ -1209,6 +1232,7 @@ def _split_error(cleaned: str) -> tuple[str, str]:
 
 
 async def run_python(path: str, params: dict) -> dict:
+    ensure_warm()  # backstop for a server used without the UI; no-op after the first call
     if not os.path.isfile(path):
         return _error_dict("FileNotFoundError", f"no such Python file: {path}")
     try:

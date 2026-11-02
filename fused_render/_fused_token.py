@@ -23,6 +23,10 @@ _env_name = os.environ.get("FUSED_ENV")
 if _env_name:
     fused._env(_env_name)
 
+from fused_render._fused_options import raise_request_timeout
+
+raise_request_timeout()
+
 try:
     # fused >= 2.x agent-toolkit layout nests the legacy SDK under
     # fused.workbench (fused._auth aliases it today, but the nested path is

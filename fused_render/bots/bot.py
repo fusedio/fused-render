@@ -216,7 +216,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path. FOLDERS (when present) are the user's own folders they let you READ (`ls`, `find`, `readfile` with a path); you cannot write, move or delete anything there, and no other path on this Mac is readable.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready, and a card when one is stuck (Claude waits for an OK or an answer, fails, or hits its usage limit) whose button opens it under Builds. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
-- Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click. The Marketplace (Preferences › Experimental flags, off by default) is a catalog of community apps: when it is on, `marketplace_search` finds one and `marketplace_install` installs it under @APPS_ROOT@/<slug> behind an approval card, every time; an installed one is in APPS like any other app.
+- Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click. The Community is a catalog of apps people share: `marketplace_search` finds one and `marketplace_install` installs it under @APPS_ROOT@/<slug> behind an approval card, every time; an installed one is in APPS like any other app.
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
 - App skills: an app that ships a SKILL.md (marked [py] in APPS) tells you what each of its .py files does and how to call it; the `py` action runs one (its main(**args), exactly as the app's page would run it). Skills load only when needed: apps you built this task and apps the task names are mounted under APP SKILLS; `py` with an app and no file loads any other. Apps you build get a SKILL.md as part of the build; an older app without one can get it from an update build. Your own builds run at once; other apps' files ask the user first, showing the file's line from its SKILL.md.
 - Bots list: New bot, search, pin or hide a bot (pinned first, then bots waiting on the user, then most recent); "Clone" makes a new bot on your logins (sharing them, not a copy) with your memory, instructions and skills; "Delete" removes a bot, and its logins unless another bot shares them. The Usage button shows model calls per hour, day and bot. Other local scripts can hand you tasks through botsend.py; they show up as normal tasks.
@@ -668,7 +668,7 @@ class Bot:
         # Builds still in flight when the server last stopped: pick their watchers back up.
         for bd in list(self.meta.get("builds") or []):
             if not bd.get("done_at") and time.time() - float(bd.get("created_at") or 0) < BUILD_MAX_S:
-                self._watch_build(bd)
+                self._watch_build(bd, resumed=True)
 
     # -- persistence -------------------------------------------------------
     def save(self):
@@ -1891,6 +1891,15 @@ class Bot:
             self.save()
         self._write_still(still)
 
+    def set_doing(self, text):
+        """What the bot is doing right now ("thinking", "writing", a tool's label). Transient: kept in
+        memory only (no save(), no `updated`), read live by summary(). "" clears it."""
+        text = str(text or "")
+        with self.lock:
+            if self.meta.get("doing") != text:
+                self.meta["doing"] = text
+                self.meta["doing_since"] = time.time()
+
     @property
     def browser_id(self):
         return self.meta.get("browser_id") or self.id
@@ -1918,9 +1927,10 @@ class Bot:
         shot_ts = self.browser.shot_ts()
         with self.lock:  # hand-off watchers change rows in place (under this lock); copy them as they stand
             meta = dict(self.meta)
+            inbox_n = len(self.inbox)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
-        return {**meta, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(), "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
+        return {**meta, "inbox_n": inbox_n, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(), "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "terminal_id": self.terminal_id(), "terminal_available": _tools_mod().terminal_enabled(self),
@@ -3009,12 +3019,17 @@ class Bot:
                 f"started; Claude is {doing} now ({how}; a few minutes). Link for the user: {link} . "
                 f"Now `done`: tell the user you are {doing} \"{name}\", include that exact link, and that they will hear when it is ready.")
 
-    def _watch_build(self, bd):
+    def _watch_build(self, bd, resumed=False):
         """Background: poll the task until it settles, then tell the user (a `done`
-        event reaches the chat, and iMessage when that is on)."""
+        event reaches the chat, and iMessage when that is on).
+
+        `resumed`: picked back up after a server restart. The task ran before the
+        restart, so a `done` read now is the end of it, not a fresh row that has not
+        started: a build that finished while the server was down used to wait for an
+        `in_progress` it would never see again, and never told the user nor ticked the app."""
         def run():
             from urllib.parse import quote
-            seen_running, stable = False, ""
+            seen_running, stable = resumed, ""
             deadline = float(bd.get("created_at") or time.time()) + BUILD_MAX_S
             while time.time() < deadline:
                 time.sleep(BUILD_POLL_S)
@@ -3032,18 +3047,42 @@ class Bot:
                         stable = st
                         continue
                     reply = " ".join(((row or {}).get("last_reply") or "").split())[:400]
-                    # `app` lets the chat render an app card under this message (open inline / beside the chat).
-                    self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
-                              app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
+                    app = os.path.basename(str(bd.get("dir") or "").rstrip("/"))
+                    # Order matters across a restart: the asker's tick (idempotent) lands while done_at is still unset,
+                    # so a restart redoes it; done_at is on disk BEFORE the "ready" event, so a restart never resumes
+                    # this watcher (resumed ones accept `done` at once) to tell the user twice.
+                    self._trust_for_asker(bd.get("via"), app)
                     with self.lock:
                         bd["done_at"] = time.time()
                         # The app it just built is ticked under "Apps it may use without asking": its scripts run
                         # without a card from here on, and Settings shows that (tools.risk reads only the tick).
-                        apptools.trust_app(self.meta, os.path.basename(str(bd.get("dir") or "").rstrip("/")))
+                        apptools.trust_app(self.meta, app)
                         self.save()
+                    # `app` lets the chat render an app card under this message (open inline / beside the chat).
+                    self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
+                              app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
                     return
                 stable = ""
         threading.Thread(target=run, name=f"build-{(bd.get('entry_id') or '')[:8]}", daemon=True).start()
+
+    def _trust_for_asker(self, via, app):
+        """A build Super Bot handed off is ticked for Super Bot too (owner, 2026-11-02): it asked for the app and
+        told the user it is built, so its Settings must not show that app unticked. Outside this bot's lock: two
+        bots' locks are never held together."""
+        if (via or {}).get("kind") != chan.HANDOFF_KIND:
+            return
+        sid = str(via.get("addr") or "").partition(":")[0]
+        if not sid or sid == self.id or not Bot._exists(sid):
+            return
+        try:
+            sb = _registry().get(sid)
+        except Exception:  # noqa: BLE001
+            return
+        if sb.deleted:
+            return
+        with sb.lock:
+            if apptools.trust_app(sb.meta, app):
+                sb.save()
 
     def _surface_build_stall(self, bd, row, st):
         """A build that stopped moving is told in the chat of the bot that asked
@@ -3627,6 +3666,9 @@ def _run_task(run, bot, task, label):
     try:
         run(bot, task, label)
     finally:
+        _clear = getattr(bot, "set_doing", None)
+        if _clear:
+            _clear("")  # a stale "doing" never outlives its task
         with bot.lock:
             if bot.thread is threading.current_thread():
                 bot.task_via = dict(chan.WEB)

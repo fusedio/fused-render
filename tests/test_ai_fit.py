@@ -351,12 +351,12 @@ def test_parse_params_is_none_for_garbage_or_absent_input():
 #: neither gets a made-up bpp figure). `_weight_bytes` treats "quantization
 #: unrecognized" as a GENERAL property, not two special cases: an
 #: unrecognized row with a real `size_gb` uses it exactly rather than an
-#: unconditional (and, for these two, wildly wrong — 2.57x over and 0.28x
+#: unconditional (and, for these two, wildly wrong — 1.82x over and 0.28x
 #: under) `params x bpp` guess. The two ids below are referenced only to
 #: assert this build's own investigation stays true against a moving
 #: catalog, never to special-case them out of a check.
 _INVESTIGATED_UNRECOGNIZED_QUANT_ROW_IDS = frozenset({
-    "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+    "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
     "tonera/FLUX.2-klein-4B-int8-diffusers",
 })
 
@@ -450,14 +450,14 @@ def test_the_two_investigated_rows_snap_back_to_their_curated_size():
     by_id = {entry["id"]: entry
             for models in catalog.SUGGESTIONS.values() for entry in models}
 
-    ternary = by_id["prism-ml/Ternary-Bonsai-27B-mlx-2bit"]
+    ternary = by_id["prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"]
     ternary_params = fit.parse_params(ternary["params"])
     assert ternary_params is not None
     old_formula_gb = (ternary_params * fit.quant_bytes_per_param(ternary["quantization"])
                       / fit.GB_BYTES)
-    assert old_formula_gb == pytest.approx(15.66, abs=0.01)  # ~2.57x over size_gb
+    assert old_formula_gb == pytest.approx(15.66, abs=0.01)  # ~1.82x over size_gb
     fixed = fit._weight_bytes(ternary["size_gb"], ternary["params"], ternary["quantization"])
-    assert fixed == pytest.approx(6.1 * fit.GB_BYTES)  # == size_gb, not 15.66GB
+    assert fixed == pytest.approx(8.6 * fit.GB_BYTES)  # == size_gb, not 15.66GB
 
     flux = by_id["tonera/FLUX.2-klein-4B-int8-diffusers"]
     flux_params = fit.parse_params(flux["params"])

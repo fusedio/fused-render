@@ -31,10 +31,7 @@ because they need the runtime's own knowledge:
   parse failure — and `icon.svg` / `icon.png` parsing, when it is there at
   all (icon stays optional),
 * whether the folder's own git repo has everything committed,
-* whether the current branch has commits its upstream does not, and
-* — the one MODEL-BACKED row — whether the views render alike across
-  browsers (`cross-browser`, `app_doctor_ai.py`): on demand, cached on the
-  view files' checksum, read here from that cache only.
+* whether the current branch has commits its upstream does not.
 
 FACT VS CANDIDATE — MEASURED, NOT ASSUMED. A run of `ci/app_check.py` over
 the 8 apps in a real `~/Fused/local` produced 40 content findings, and every
@@ -68,7 +65,7 @@ import importlib.util
 import os
 import re
 
-from fused_render import app_listing, fused_api_version
+from fused_render import app_id, app_listing, fused_api_version
 from fused_render.skill_sources import skill_sources
 
 SKILL = "fused-render-app-doctor"
@@ -82,15 +79,6 @@ _SCRIPT_REL = os.path.join("ci", "app_check.py")
 PASS = "pass"
 FAIL = "fail"
 SKIP = "skip"
-# A check whose answer needs a Claude call rather than a deterministic
-# read — "not run yet, press to run" — contributes nothing to `ok` and
-# nothing to the severity dot until it has actually been run: an unreviewed
-# question is not a failure, and it is not a pass either. One check reports
-# it: `cross-browser` (`app_doctor_ai.py`), whose verdict is cached on a
-# checksum of the app's view files and read back here — a GET never spawns
-# the model, so a row that has never been run, or whose app changed since it
-# was, is UNRUN until someone presses Check.
-UNRUN = "unrun"
 
 # ------------------------------------------------------- section/severity/kind
 
@@ -102,21 +90,27 @@ UNRUN = "unrun"
 _CHECK_META: dict[str, tuple[str, str, str]] = {
     "secrets": ("essentials", "critical", "candidate"),
     "entry": ("essentials", "critical", "fact"),
+    # The app's own identity (`<meta name="fused-app-id">`, app_id.py): the
+    # Community lists and catalogs an app by it (its index slug IS this id,
+    # docs/CONTRIB_LOOP.md §18.2), and every export and share keys off it.
+    # A warning, not critical: the app runs without one; Publish to the
+    # Community refuses until it has one (`contrib/listing.py`).
+    "app-id": ("essentials", "warning", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
     "readme": ("essentials", "info", "fact"),
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
-    # The one MODEL-BACKED row (app_doctor_ai.py): on demand, cached on the
-    # app's content, never run by a GET. A candidate, not a fact — a model's
-    # reading of a rubric earns a second look before an edit, which is what
-    # the candidate prompt asks the fix session for.
-    "cross-browser": ("sharing", "warning", "candidate"),
     # Consolidated repo-health row (SPEC-doctor-git-ai-errors.md): committed +
     # pushed + not-behind-origin, in one. The first two are answered from
     # local refs only; "behind origin" needs a real fetch, which this never
     # performs inline — see `_repo_health_check`.
     "git": ("sharing", "warning", "fact"),
+    # The GitHub contribution loop (docs/CONTRIB_LOOP.md §4): a repo that
+    # commits its own `.fused/` ships the author's machine data to everyone
+    # who installs it. Only reported while `contrib.flags.sources()` is on
+    # (`_gated_checks`) — with the loop off the checklist is exactly today's.
+    "fused-dir-committed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
 }
@@ -147,13 +141,6 @@ def _meta(cid: str) -> tuple[str, str, str]:
     return _CHECK_META[cid]
 
 
-# The rows a person runs by pressing the row's own Check button rather than
-# the doctor answering on every GET (`POST /api/apps/doctor/run`). The modal
-# reads `ondemand` off the row to draw that button — and a Re-check on a
-# settled one — rather than keeping a second list of ids.
-ON_DEMAND = frozenset({"cross-browser"})
-
-
 def _check(cid: str, label: str, state: str, detail: str,
            findings: list | None = None, *, severity: str | None = None) -> dict:
     """`severity` overrides the table's default for ONE outcome — e.g. a
@@ -169,7 +156,6 @@ def _check(cid: str, label: str, state: str, detail: str,
         "state": state,
         "detail": detail,
         "findings": findings or [],
-        "ondemand": cid in ON_DEMAND,
     }
 
 
@@ -506,6 +492,29 @@ def _entry_check(entry: str | None) -> dict:
     )
 
 
+def _app_id_check(entry: str | None) -> dict:
+    """The entry page declares a well-formed `fused-app-id`. Skipped with no
+    entry page (the `entry` row already says that). The fix is a session's
+    (Fix with Claude, SKILL.md's `app-id` section): the detail names the
+    exact tag, so the session adds just that and commits it."""
+    label = "Has an app id"
+    if entry is None:
+        return _check("app-id", label, SKIP, "no entry page to read the app id off")
+    aid = app_id.app_id(entry)
+    name = os.path.basename(entry)
+    if aid is not None:
+        return _check("app-id", label, PASS, f"{name} declares {aid}")
+    return _check(
+        "app-id", label, FAIL,
+        f'{name} has no valid <meta name="{app_id.META_NAME}" content="…"> in its <head>. '
+        "The Community lists and catalogs apps by this id, so it can't be published "
+        f'without one. Add <meta name="{app_id.META_NAME}" content="<app-name>-<8 hex '
+        'digits>"> (for example "sine-starter-0a1b2c3d", lowercase) and commit it.',
+        [{"rule": "app-id:missing", "path": name, "line": 0,
+          "excerpt": f'<meta name="{app_id.META_NAME}"> missing or malformed'}],
+    )
+
+
 def _api_version_check(entry: str | None) -> dict:
     # Only askable of an entry, and only meaningful when the runtime knows
     # its own version (no migration docs = version 0, and nothing is behind 0).
@@ -558,6 +567,45 @@ def _content_family_checks(app_dir: str) -> dict[str, dict]:
             hits,
         )
     return out
+
+
+def _fused_dir_committed_check(app_dir: str) -> dict:
+    """Whether the app's own repository tracks anything under `.fused/` —
+    the folder that holds THIS machine's data for the app (D548). Local git
+    only (`ls-files`), no network. The contribution loop already keeps such
+    files from blocking a copy's updates (contrib/replay.py); this row is
+    the author's to fix at the source."""
+    from fused_render import git_upstream
+
+    label = "The repo leaves out the .fused folder"
+    root = git_upstream.repo_root(app_dir)
+    if root is None or root != os.path.realpath(app_dir):
+        return _check("fused-dir-committed", label, SKIP,
+                      "this app is not its own git repository")
+    r = git_upstream._run(root, "ls-files", "-z", "--", ".fused")
+    if not git_upstream._ok(r):
+        return _check("fused-dir-committed", label, SKIP, "could not read the repository")
+    tracked = [p for p in r[1].decode("utf-8", "replace").split("\0") if p]
+    if not tracked:
+        return _check("fused-dir-committed", label, PASS, "the .fused folder is not in the repo")
+    findings = [{"rule": "fused-dir:tracked", "path": p, "line": 0, "excerpt": p}
+                for p in tracked[:20]]
+    return _check("fused-dir-committed", label, FAIL,
+                  "This app's repo includes its .fused folder, which holds this "
+                  "machine's data. Remove it from the repo.", findings)
+
+
+def _gated_checks(app_dir: str) -> dict:
+    """Rows that exist only while a feature flag is on — absent, not skipped,
+    when it is off, so the checklist is byte-for-byte today's."""
+    try:
+        from fused_render.contrib import flags
+
+        if flags.sources():
+            return {"fused-dir-committed": _fused_dir_committed_check(app_dir)}
+    except Exception:  # noqa: BLE001 — a flag read never fails the report
+        pass
+    return {}
 
 
 def _generated_check(app_dir: str) -> dict:
@@ -707,6 +755,10 @@ def _repo_health_check(app_dir: str) -> dict:
     """
     from fused_render import git_upstream
 
+    contrib_row = _contrib_git_row(app_dir)
+    if contrib_row is not None:
+        return contrib_row
+
     g_state, g_pending = _git_pending(app_dir)
     p_state, p_subjects, p_skip_reason = _pushed_pending(app_dir)
 
@@ -854,6 +906,101 @@ def _repo_health_check(app_dir: str) -> dict:
     return row
 
 
+#: An own copy's stuck states (docs/CONTRIB_LOOP.md §16.7, `own_state`) and
+#: what the row says; the fix buttons are the app page's.
+_OWN_STATE_DETAIL = {
+    "github-changed": ("The version on GitHub changed in a way Fused can't combine on its "
+                       "own — open the app page to choose what to keep."),
+    "edits": ("Edits you haven't saved overlap the latest version on GitHub — open the "
+              "app page to save them and continue."),
+    "needs-merge": ("Your changes and the latest version on GitHub overlap — open the "
+                    "app page to combine them."),
+    "unknown": ("Fused can't tell whether the version on GitHub dropped something you had "
+                "published, so your latest edits are waiting — open the app page to "
+                "publish them or to use the version on GitHub."),
+}
+
+#: The record's `hold` (§16.12): work made while this was someone else's copy,
+#: waiting for Publish now.
+_HELD_DETAIL = ("This is your app now. Edits made before Fused knew that are waiting on "
+                "this computer — open the app page and press Publish now to send them to "
+                "GitHub.")
+
+
+def _contrib_git_row(app_dir: str) -> dict | None:
+    """The `git` row for a recorded copy of the contribution loop
+    (docs/CONTRIB_LOOP.md §16.8), or None for every other folder (the row
+    above, unchanged). A GitHub-link copy has no "unpushed" or "behind" in
+    the git sense — its changes stay on this computer on purpose, and the
+    engine brings the author's latest in itself — so the row says that in
+    plain words, carries `behind`/`ahead` 0 so no Pull/Push action is drawn,
+    and fails only on the decision the app page is waiting for (an overlap
+    with the author's latest). An own copy gets today's row, except in a
+    stuck `own_state` (§16.7), which the app page's buttons fix. Whatever
+    the flags: the kind is a fact about the copy (§16.0 P1)."""
+    from fused_render import git_upstream
+
+    try:
+        from fused_render.contrib import classify, store
+
+        root = git_upstream.repo_root(app_dir)
+        if root is None or root != os.path.realpath(app_dir):
+            return None
+        kind = classify.kind_of(root)
+        if not (classify.is_github_like(kind) or kind == "own"):
+            return None
+        rec = store.get(root) or {}
+    except Exception:  # noqa: BLE001 — fall back to the ordinary row
+        return None
+    # A read: no `note_app_opened` here (opening the app already syncs it).
+    if classify.is_github_like(kind):
+        if _contrib_overlaps(root):
+            state, detail = FAIL, ("The author's latest overlaps your changes — "
+                                   "open the app page to combine them.")
+        elif not rec.get("owner_checked"):
+            # Whose app this is is not known yet (signed out): if it turns
+            # out to be yours, it publishes as usual — never promise "stays".
+            state, detail = PASS, ("Your changes stay on this computer until fused knows "
+                                   "whether this app is yours.")
+        else:
+            state, detail = PASS, "Your changes stay on this computer until you propose them."
+    else:
+        own = rec.get("own_state")
+        own = own.get("state") if isinstance(own, dict) else own
+        hold = rec.get("hold") if classify.is_held(root) else None
+        if hold:
+            unknown = isinstance(hold, dict) and hold.get("why") == "unknown"
+            state, detail = FAIL, _OWN_STATE_DETAIL["unknown"] if unknown else _HELD_DETAIL
+        elif own in _OWN_STATE_DETAIL:
+            state, detail = FAIL, _OWN_STATE_DETAIL[own]
+        else:
+            return None
+    row = _check("git", "Repo in sync", state, detail, [])
+    # `contrib`: the page offers "Open app page" here instead of Fix with
+    # Claude, and Fix all leaves the row out (`doctor_prompt_all`).
+    row.update({"behind": 0, "ahead": 0, "gitRoot": root, "onDefault": True, "clean": True,
+                "contrib": True})
+    return row
+
+
+def _contrib_overlaps(root: str) -> bool:
+    """Whether bringing the author's latest into this GitHub-link copy
+    overlaps its changes — `engine.status`'s derived `needs_merge`
+    (docs/CONTRIB_LOOP.md §17.2: nothing is recorded; the record field is
+    gone). Cached in the engine on (head, main, proposal), so a read costs
+    no merge-tree when nothing moved. A status that can't be read, or is
+    still pending, is not a failure here (the app page says what it is)."""
+    try:
+        from fused_render.contrib import engine
+
+        st = engine.status(root)
+    except Exception:  # noqa: BLE001 — never fail the row on a read error
+        return False
+    if not isinstance(st, dict) or st.get("pending"):
+        return False
+    return bool(st.get("needs_merge")) or st.get("state") == "needs-merge"
+
+
 def _same_path(a, b) -> bool:
     if not a or not b:
         return False
@@ -906,22 +1053,9 @@ def _repo_health_advice(*, commit, push, behind, can_pull, on_default, clean,
     return joined + " so what you share matches what you tested"
 
 
-def _cross_browser_check(app_dir: str) -> dict:
-    """The model-backed row, FROM ITS CACHE ONLY — `app_doctor_ai.row_state`
-    never spawns anything. The run itself is the router's
-    `POST /api/apps/doctor/run`, which writes the cache this reads."""
-    from fused_render import app_doctor_ai
-
-    try:
-        state, detail, findings = app_doctor_ai.row_state(app_dir)
-    except Exception as exc:  # noqa: BLE001 — a doctor never crashes on its patient
-        state, detail, findings = UNRUN, f"could not read the last verdict: {exc}", []
-    return _check(app_doctor_ai.CHECK_ID, app_doctor_ai.LABEL, state, detail, findings)
-
-
 # One computation per check id, dispatched by `report` (which needs every row)
 # and `report_one` (which needs exactly one, without paying for the rest).
-_ENTRY_DEPENDENT = ("entry", "api-version")
+_ENTRY_DEPENDENT = ("entry", "app-id", "api-version")
 
 
 def _compute_entry(app_dir: str) -> str | None:
@@ -951,6 +1085,7 @@ def report(app_dir: str) -> dict:
 
     by_id: dict[str, dict] = {
         "entry": _entry_check(entry),
+        "app-id": _app_id_check(entry),
         "api-version": _api_version_check(entry),
         **_content_family_checks(app_dir),
         "generated": _generated_check(app_dir),
@@ -959,9 +1094,9 @@ def report(app_dir: str) -> dict:
         "pyproject": _pyproject_check(app_dir),
         "icon": _icon_check(app_dir),
         "git": _repo_health_check(app_dir),
-        "cross-browser": _cross_browser_check(app_dir),
+        **_gated_checks(app_dir),
     }
-    checks = [by_id[cid] for cid in CHECK_ORDER]
+    checks = [by_id[cid] for cid in CHECK_ORDER if cid in by_id]
 
     return {
         "path": app_dir,
@@ -989,6 +1124,8 @@ def report_one(app_dir: str, check_id: str) -> dict | None:
 
     if check_id in _ENTRY_DEPENDENT:
         entry = _compute_entry(app_dir)
+        if check_id == "app-id":
+            return _app_id_check(entry)
         return _entry_check(entry) if check_id == "entry" else _api_version_check(entry)
     if check_id in ("secrets", "device-paths"):
         return _content_family_checks(app_dir)[check_id]
@@ -1004,8 +1141,8 @@ def report_one(app_dir: str, check_id: str) -> dict | None:
         return _icon_check(app_dir)
     if check_id == "git":
         return _repo_health_check(app_dir)
-    if check_id == "cross-browser":
-        return _cross_browser_check(app_dir)
+    if check_id == "fused-dir-committed":
+        return _fused_dir_committed_check(app_dir)
     raise AssertionError(f"unreachable: {check_id!r} is in _CHECK_META but not dispatched")
 
 
@@ -1025,22 +1162,9 @@ _CHECK_ID_RE = re.compile(r"check `([a-z0-9-]+)`")
 
 
 def is_doctor_prompt(message: str) -> bool:
-    """A FIX task's prompt OR a CHECK task's (`check_prompt`) — both are App
-    Doctor tasks for the one-live-task-per-app gate (a check must not read
-    files a fix is rewriting, and a fix must not start on a verdict that is
-    still being written). `is_doctor_check_prompt` tells them apart."""
+    """A fix task's prompt — one row's or "Fix all"'s — for the
+    one-live-task-per-app gate."""
     return str(message or "").startswith(DOCTOR_PROMPT_PREFIX)
-
-
-# The words right after the prefix that mark a CHECK task (`check_prompt`)
-# rather than a fix: the on-demand row's own model run, which the panel
-# draws as "checking" rather than "Fix in progress".
-_CHECK_TASK_MARK = " — run check `"
-
-
-def is_doctor_check_prompt(message: str) -> bool:
-    text = str(message or "")
-    return text.startswith(DOCTOR_PROMPT_PREFIX + _CHECK_TASK_MARK)
 
 
 def doctor_task_check_id(message: str) -> str | None:
@@ -1081,9 +1205,6 @@ def _findings_block(detail: str, findings: list[dict]) -> str:
         "- " + (f"{f.get('path', '.')}:{f['line']}" if f.get("line") else
                 str(f.get('path', '.')))
         + f": {f.get('rule', '')}: {f.get('excerpt', '')}"
-        # A model-backed row (`cross-browser`) also says what to change; a
-        # deterministic row's findings have no such line and add nothing.
-        + (f" — suggested fix: {f['fix']}" if f.get("fix") else "")
         for f in findings
     )
     return "\n".join(lines)
@@ -1233,7 +1354,9 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
     whole run, appended after every row's block — never one per row, and
     only when there was at least one failing row to maybe act on."""
     entry_name = os.path.basename(entry_html)
-    failing = [c for c in checks if c["state"] == FAIL]
+    # A `contrib` row (`_contrib_git_row`) is resolved on the app page, never
+    # by a fix session running git in the folder.
+    failing = [c for c in checks if c["state"] == FAIL and not c.get("contrib")]
     if not failing:
         return (
             f"{DOCTOR_PROMPT_PREFIX} — check `{ALL}` (`{entry_name}` is its entry page, "
@@ -1257,66 +1380,4 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
         f"covering every failing row). Invoke the `{SKILL_QUALIFIED}` skill and follow "
         f"it end to end, one row at a time in the order given. {_CREDENTIAL_NOTE}\n\n"
         f"{body}\n\n{_COMMIT_STEP_ALL}"
-    )
-
-
-def check_prompt(entry_html: str, files: list[str]) -> str:
-    """The CHECK task's text for the on-demand `cross-browser` row
-    (`app_doctor_ai`): a session that READS the listed view files against the
-    cross-browser skill's trap table and answers in the chat — nothing else.
-
-    The task runs in the CLI's PLAN permission mode (`app_doctor_ai.
-    PERMISSION_MODE`), so it CANNOT edit, write or commit whatever the prompt
-    says; the read-only sentence below is a courtesy, the mode is the
-    guarantee. It also means the session cannot write the verdict file — so
-    the reply ends with the verdict as one fenced JSON block, and the server
-    lifts it off the transcript into the cache (`app_doctor_ai.
-    settle_from_task`) once the turn is filed ok.
-
-    Starts with `DOCTOR_PROMPT_PREFIX` so the one-live-task-per-app gate
-    counts it (`is_doctor_prompt`), then `_CHECK_TASK_MARK` + the id so
-    `is_doctor_check_prompt` and `doctor_task_check_id` both read it. The
-    shape (`app_doctor_ai.VERDICT_SHAPE`) is prose, read back leniently
-    (`_parse_verdict`) — a reply with no readable verdict is "no verdict",
-    never trusted. The checksum the row is cached on is never in the
-    prompt: the server computed it before the task existed."""
-    from fused_render import app_doctor_ai
-
-    entry_name = os.path.basename(entry_html)
-    listed = "\n".join(f"- {rel}" for rel in files) or "- (no .html/.css/.js/.svg files found)"
-    # The rubric rides IN the prompt: plan mode also gates the Skill tool, and
-    # the first live run spent its turn discovering that ("Plan mode block
-    # skill invoke too") instead of judging. Same trick `engine()` uses to
-    # load the floor script: read the sibling skill's SKILL.md by path.
-    rubric = app_doctor_ai.rubric() or (
-        f"(the `{app_doctor_ai.RUBRIC_SKILL}` skill is not installed on this server — "
-        f"judge by MDN Baseline: flag only features not Widely available, used without "
-        f"a fallback)")
-    return (
-        f"{DOCTOR_PROMPT_PREFIX}{_CHECK_TASK_MARK}{app_doctor_ai.CHECK_ID}` "
-        f"(`{entry_name}` is its entry page). This is a READ-ONLY check, not a fix.\n\n"
-        f"You are running in plan mode ON PURPOSE: it is what makes this check unable "
-        f"to edit anything. You are not being asked for a plan — do not write one, do "
-        f"not call ExitPlanMode, do not ask for permissions, do not invoke skills. "
-        f"Read the files below, judge them, answer in the chat.\n\n"
-        f"Judge ONLY by the rubric below, for DESKTOP browsers only — Chrome/Edge, "
-        f"Firefox, Safari and the macOS WKWebView. Ignore phones and tablets entirely: "
-        f"nothing about touch, viewport zoom or mobile layout is a finding. A finding is "
-        f"a concrete line in one of the files that will look or behave differently in "
-        f"one of those engines, with no fallback (`@supports`, or the `-webkit-` twin "
-        f"beside it). Nothing beyond the rubric; nothing about logic, style or "
-        f"performance. Few, certain findings; a problem repeated across lines is ONE "
-        f"finding at its first occurrence. Write for the app's author, who may not "
-        f"know CSS.\n\n"
-        f"# Rubric\n\n{rubric}\n\n"
-        f"Files to read (relative to the app folder; read nothing else):\n{listed}\n\n"
-        f"Reply in the chat with, in this order: the summary sentence; one short line "
-        f"per finding in plain words for the app's author — what a visitor would notice "
-        f"and in which browser, no code, no file paths, no CSS terms (nothing here when "
-        f"there were none); then, LAST, exactly one fenced ```json block holding the "
-        f"verdict in this shape:\n{app_doctor_ai.VERDICT_SHAPE}\n\n"
-        f"The JSON block is REQUIRED — a reply without it is discarded and the check "
-        f"reads as never answered — and it must be the last thing in your final "
-        f"message, even when there were no findings (`ok: true`, empty `findings`). "
-        f"Nothing after it."
     )

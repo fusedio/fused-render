@@ -63,11 +63,11 @@ export function StoreHeader({ tab, q, onQ, onSubmit, scrolled, updates, installe
             <Store size={15} strokeWidth={2.1} />
           </span>
           <span className="mp-brand-text">
-            <span className="mp-brand-title">Marketplace</span>
+            <span className="mp-brand-title">Community</span>
             <span className="mp-brand-sub">Community apps for Fused Render</span>
           </span>
         </a>
-        <nav className="mp-switch" aria-label="Marketplace sections">
+        <nav className="mp-switch" aria-label="Community sections">
           <a
             href={MARKETPLACE_HOME}
             onClick={go(MARKETPLACE_HOME)}

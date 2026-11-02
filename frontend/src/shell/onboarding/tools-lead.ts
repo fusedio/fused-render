@@ -7,8 +7,8 @@ export function toolsLead(o: { isBot: boolean; showGit: boolean; chromeApplies: 
   if (o.isBot) {
     return `Bots think with Claude Code running on this machine and drive a real Google Chrome window of their own. ${TAIL}`;
   }
-  const git = o.showGit ? ", fetches showcase apps with git," : "";
+  const git = o.showGit ? ", installs Community apps with git," : "";
   const chrome = o.chromeApplies ? " and drives Google Chrome for bots" : "";
   if (!o.showGit) return `${o.bundleName} hands your brief to Claude Code to build apps${chrome}. ${TAIL}`;
-  return `${o.bundleName} hands your brief to Claude Code to build apps${o.chromeApplies ? `${git} and drives Google Chrome for bots` : " and fetches showcase apps with git"}. ${TAIL}`;
+  return `${o.bundleName} hands your brief to Claude Code to build apps${o.chromeApplies ? `${git} and drives Google Chrome for bots` : " and installs Community apps with git"}. ${TAIL}`;
 }

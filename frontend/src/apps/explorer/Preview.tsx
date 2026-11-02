@@ -5,7 +5,7 @@
 // like everything else, via the "_render" sentinel (SPEC PT-12).
 import { canonFsPath } from "@platform/lib/path-url";
 import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   getAppEntry,
@@ -91,7 +91,8 @@ import {
 import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
-import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
+import { SideReopenEdge, SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
+import { ClaudeRail, RAIL_W } from "@shell/claude-rail/ClaudeRail";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
@@ -109,6 +110,19 @@ const NO_ANN_TOOLS = new URLSearchParams(location.search).get("_noann") === "1";
 // workbench on request (CanvasWorkspace's `fused-canvas-shot`) — the chat's
 // Screenshot seat takes that picture (ChatMount `canvasShot`).
 const CANVAS_SHOT = new URLSearchParams(location.search).get("_canvasshot") === "1";
+// `?_hidepane=1`: the host frames this chat in a pane it can shut (the canvas
+// page's Claude pane): the chat draws the pane's close at its top row's left
+// end, and a click asks the parent to shut it (`fused-canvas-hide-pane`).
+const HIDE_PANE = new URLSearchParams(location.search).get("_hidepane") === "1";
+const hidePaneInParent = () => {
+  window.parent.postMessage({ type: "fused-canvas-hide-pane" }, location.origin);
+};
+// `?_saveon=blur`: the host frames this document as a canvas node's code pane
+// (CanvasWorkspace). Forwarded onto the CONTENT frame's render URL, where the
+// code template reads it and saves on blur / Shift+Enter instead of 250 ms
+// after each edit (every save of a node file runs the node on the canvas).
+const SAVE_ON_FLAG =
+  new URLSearchParams(location.search).get("_saveon") === "blur" ? "&_saveon=blur" : "";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
@@ -1162,6 +1176,21 @@ function TemplatePreview({
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
   const sideSlot = usePreviewSideSlot();
+  // Where the rail stands while the column is shut (below): this file.
+  const railPlace = useMemo(() => ({ kind: "file" as const, file: fsPath }), [fsPath]);
+  // THE RAIL IS CLAUDE'S: it stands only where the Claude companion is ready
+  // to open (`sideTargets`, the settled list), and its door opens CLAUDE —
+  // not the last companion the toggle would (a git column reopened from a
+  // rail of chat rings would be a lie). A file whose only companion is git
+  // keeps the crumb bar's Show button and the bare reopen edge.
+  // …and never beside a FULL-BODY chat (`_mode=claude`, the content pane
+  // itself the chat): a rail of this file's chats next to this file's chat
+  // would be the same thing twice. The bar's Show button and the bare edge
+  // stand there, as they did.
+  const railHere = !!sideSlot && activeMode !== CHAT_MODE && sideTargets.some((e) => e.mode === "claude");
+  const openClaudeSide = () => setSide("claude");
+  // The rail's Git section opens the git companion where this file has one.
+  const railGitDoor = sideTargets.some((e) => e.mode === "git") ? () => setSide("git", "git") : undefined;
 
   // The one writer. `null` CLOSES, and closing is a value (`_side=off`) rather
   // than a deleted param now that absence means open — while choosing the
@@ -1751,7 +1780,7 @@ function TemplatePreview({
           // but not enforced either) that it happens to sit under this
           // app's `app_dir`.
           rewritePath: false,
-          extra: `&_file=${encodeURIComponent(fsPath)}${thumbFlags}`,
+          extra: `&_file=${encodeURIComponent(fsPath)}${thumbFlags}${SAVE_ON_FLAG}`,
         })
       : null;
   };
@@ -2111,7 +2140,7 @@ function TemplatePreview({
           Absent entirely when this file has no companion at all (no `claude`, no
           `git` in the parent, or a gate denied them): a control for
           nothing is worse than no control. */}
-      {sideTargetEntry && !activeSide && (
+      {sideTargetEntry && !activeSide && !railHere && (
         <SideToggleButton what={modeTitle(sideTargetEntry.mode)} onClick={toggleSide} />
       )}
     </>
@@ -2266,6 +2295,7 @@ function TemplatePreview({
                       { noAnnTools: true }
                     : {})}
                   {...(CANVAS_SHOT ? { canvasShot: CANVAS_SHOT_FROM_PARENT } : {})}
+                  {...(HIDE_PANE ? { onHidePane: hidePaneInParent } : {})}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}
@@ -2486,13 +2516,39 @@ function TemplatePreview({
       {mcpOpen && mcpSrc && (
         <McpDialog src={mcpSrc} folderName={basename(parentDir)} onClose={() => setMcpOpen(false)} />
       )}
-      {/* And when it is SHUT, the seam it left behind, into the same slot: drag
-          the split's right edge to pull the column back (SideChrome's
-          SideReopenEdge, which argues why a gesture is allowed here when a second
-          button would not be). Gated on exactly what the opener button is gated
-          on — a file with no companion at all gets no edge, because there would
-          be nothing on the other side of it. */}
-      {sideTargetEntry && !activeSide && sideSlot &&
+      {/* And when it is SHUT, THE CLAUDE RAIL takes the edge, into the same
+          slot (shell/claude-rail — the canvas page's rail, the same on every
+          page since 2026-11-01): the way back in (its panel button, which is
+          the crumb bar's Show button moved to the column's own edge — exactly
+          one opener on screen, SideChrome's rule), a + that opens the New
+          task card on this file, and one ring per chat ON THIS FILE in the
+          List's order — what the shut column's Claude tab was showing. Its
+          inner seam is the reopen drag the invisible SideReopenEdge used to
+          carry (startSideReopenPull). Only where Claude is a ready companion
+          (`railHere`): a file whose column holds git alone keeps the button
+          and the bare edge below, because there would be no chats on the
+          other side of a rail. */}
+      {sideTargetEntry && !activeSide && railHere && sideSlot &&
+        createPortal(
+          <ClaudeRail
+            place={railPlace}
+            newTask={{ target: fsPath, waiting: null, on: null }}
+            git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}
+            activeSessionId={new URLSearchParams(location.search).get("session_id")}
+            onOpen={openClaudeSide}
+            // A ring's door is this file's own URL with the chat's session
+            // (`taskHref`): the sidebar opens on it like any `_side=claude` link.
+            onOpenChat={(href) => navigateUrl(href)}
+            onPullStart={(e) =>
+              startSideReopenPull(e, e.currentTarget.closest<HTMLElement>(".stat-split"), openClaudeSide, RAIL_W)
+            }
+          />,
+          sideSlot,
+        )}
+      {/* …and with no Claude companion, the seam the shut column left behind
+          (SideReopenEdge): drag the split's right edge to pull the column
+          back, the way it always was. */}
+      {sideTargetEntry && !activeSide && !railHere && sideSlot &&
         createPortal(<SideReopenEdge onOpen={toggleSide} />, sideSlot)}
       {fileOps.overlays}
       {/* The App Doctor's dialog, off the file menu's row (useAppActionRows). */}
@@ -2701,6 +2757,23 @@ interface PreviewProps {
 }
 
 export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload }: PreviewProps) {
+  // Flush relay for a host framing THIS document (the canvas node pane, two
+  // frames up from the editor): the host asks this window, and the ask goes
+  // down to the shown content frame's own `__fusedFlushEdits` (the code
+  // template's), the way the mode switch above flushes before a remount. No
+  // editor up, or no buffer to flush: `{ok: true}`.
+  useEffect(() => {
+    const w = window as Window & { __fusedFlushEdits?: () => Promise<{ ok: boolean }> };
+    w.__fusedFlushEdits = async () => {
+      const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe.is-shown");
+      const flush = frame?.contentWindow && (frame.contentWindow as any).__fusedFlushEdits;
+      if (typeof flush !== "function") return { ok: true };
+      return flush();
+    };
+    return () => {
+      delete w.__fusedFlushEdits;
+    };
+  }, []);
   // The merged field, for a plain FILE — same condition as `usePreviewFileMenu`'s
   // own `ownsBar`, and as `Header`'s own `actionsInTopbar` check just below:
   // this IS the explorer's own file view, so its bar is the one the field

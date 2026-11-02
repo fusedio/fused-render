@@ -74,11 +74,25 @@ if "__file__" not in globals():
     __file__ = os.path.join(sys.path[0], "log.py")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-# `../shared/appenv.py` is how a template asks the app about its environment
-# (SPEC PY-15): env vars only, stdlib only, no `fused_render` import. The import
-# stays LAZY at its use site so an unreachable appenv is still the "cannot tell"
-# case that must read as a refusal.
-sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "shared"))
+
+
+def _load_shared(name):
+    """`../shared/<name>.py` BY PATH (the adding-a-shared-template-utility
+    rule; ops.py's twin): a same-named module elsewhere on `sys.path` can
+    never stand in. Stdlib only, no `fused_render` import (SPEC PY-15)."""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(_HERE), "shared", name + ".py")
+    spec = importlib.util.spec_from_file_location("_git_log_" + name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# The contribution loop's push/pull/reset guard (docs/CONTRIB_LOOP.md §17.8):
+# one copy, shared with ops.py and the server's classify.py. Loaded EAGERLY —
+# a guard that failed to load must not read as "not guarded".
+contrib_guard = _load_shared("contrib_guard")
 
 
 # ------------------------------------------------------------------- the bounds
@@ -542,6 +556,49 @@ def _identity(root):
     email = _git(root, "config", "--get", "user.email",
                 allow=(0, 1)).decode("utf-8", "replace").strip() or None
     return {"name": name, "email": email}
+
+
+def _guard_run(root, *args):
+    """`contrib_guard`'s injected runner: `(returncode, stdout_bytes)` for
+    one bounded git call. `_git` turns an unexpected exit code into a
+    refusal, but here every code is an answer (exit 1: a config key that is
+    not set; 128: no upstream, no HEAD) — only the ways git can fail to RUN
+    refuse, exactly as in `_git`."""
+    try:
+        proc = subprocess.run(_argv(root, args), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=TIMEOUT_S,
+                              **_popen_kwargs())
+    except FileNotFoundError as exc:
+        raise _Refused("no-git", "git is not installed, or not on this app's PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise _Refused("timeout", f"git took longer than {TIMEOUT_S:.0f}s to answer.") from exc
+    except OSError as exc:
+        raise _Refused("no-git", f"git could not be started: {exc}") from exc
+    return proc.returncode, proc.stdout
+
+
+def _guard(root):
+    """The contribution loop's guard facts for the overview
+    (docs/CONTRIB_LOOP.md §17.8, `contrib_guard`, ops.py refuses with the same
+    sentences): `{push_blocked, home_branch, follows, bring_in_label}`. A copy
+    of someone else's GitHub app never sends from here — its edits go out as a
+    proposal from the app page — so the view hides Push and says why; its
+    Get latest is a plain pull while it has nothing of its own, else the
+    loop's Bring in (`bring_in_label`). `home_branch` is the branch whose
+    history is the user's own there (reset is allowed on it only)."""
+    guarded = contrib_guard.guarded_who(root, _guard_run)
+    if guarded is None:
+        return {"push_blocked": None, "home_branch": None, "follows": None,
+                "bring_in_label": None, "guard": None}
+    who, _unknown, kind = guarded
+    # `guard.kind` (§18.4): on a marketplace copy the view's Get latest is
+    # ALWAYS the engine's get-latest — a plain pull would fetch the author's
+    # unreviewed tip.
+    return {"push_blocked": contrib_guard.push_blocked(root, _guard_run),
+            "home_branch": contrib_guard.HOME_BRANCH,
+            "follows": contrib_guard.owner_of(who),
+            "bring_in_label": contrib_guard.bring_in_label(who, kind),
+            "guard": {"kind": kind}}
 
 
 def _status(root, rel, is_dir):
@@ -1366,6 +1423,7 @@ def main(
                 "ahead": ahead,
                 "behind": behind,
                 "remote": remote,
+                **_guard(root),
             },
             "changes": changes,
             "changes_truncated": changes_truncated,

@@ -17,6 +17,7 @@ import { paneOfferable, paneSrcFor } from "../pane/paneUrl";
 import {
   attachFiles,
   attachOverview,
+  attachCrops,
   attachPane,
   attachPaneFromBlob,
   attachPaths,
@@ -65,6 +66,8 @@ export interface AttachApi {
    *  eleven are: a send that has to take a picture must be testable without a
    *  capture engine. */
   attachOverview: typeof attachOverview;
+  /** The same capture's per-note crops, uploaded. */
+  attachCrops: typeof attachCrops;
   attachFiles: typeof attachFiles;
   attachPaths: typeof attachPaths;
   readDirs: typeof readDirs;
@@ -87,6 +90,7 @@ export const ATTACH_API: AttachApi = {
   attachPane,
   attachPaneFromBlob,
   attachOverview,
+  attachCrops,
   attachFiles,
   attachPaths,
   readDirs,

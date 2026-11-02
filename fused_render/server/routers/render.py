@@ -4,7 +4,7 @@ import os
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import APIRouter, Header, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from fused_render.server.asset_version import rewrite_asset_refs, versioned
 from fused_render.server.common import _error
@@ -59,6 +59,21 @@ def render(
         q = [(k, v) for k, v in request.query_params.multi_items() if k != "path"]
         return RedirectResponse(
             "/render?" + urlencode([("path", entry), *q]), status_code=307)
+    # The open gate (docs/CONTRIB_LOOP.md §18.4 B4): no page of a copy whose
+    # running version Fused hard-blocked is served — a `_preview`/`_noopen`
+    # thumbnail runs the page's code too, so neither flag exempts it. 423:
+    # a browser or an iframe framing the app (Accept names text/html) gets
+    # the notice as a small HTML page with a link to the app page — raw JSON
+    # in a frame reads as a crash; anything else gets the JSON payload
+    # (`{"blocked": {...}}`, contrib.blocks.gate's).
+    from fused_render import marketplace
+
+    gated = marketplace.open_gate_at(path)
+    if gated:
+        root, blocked = gated
+        if "text/html" in (request.headers.get("accept") or "").lower():
+            return HTMLResponse(marketplace.blocked_page(root, blocked), status_code=423)
+        return JSONResponse(blocked, status_code=423)
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             html = f.read()
@@ -92,6 +107,12 @@ def render(
                 # git_upstream.py's module docstring for why this lives here
                 # rather than on /api/fs/list).
                 git_upstream.note_app_opened(app_dir)
+                # The contribution loop's refresh-on-open (proposal state,
+                # inbox, remix original) — same trigger, same posture:
+                # throttled per app, off the request thread, flag-gated.
+                from fused_render.contrib import refresh as contrib_refresh
+
+                contrib_refresh.note_app_opened(app_dir)
         except Exception:
             logger.warning("recording app open failed for %s", path, exc_info=True)
 

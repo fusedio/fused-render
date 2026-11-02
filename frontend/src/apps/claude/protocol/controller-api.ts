@@ -9,6 +9,7 @@
 import type {
   Activity,
   AppStateRow,
+  CanvasShotRow,
   ContextUsage,
   Decision,
   DecisionScope,
@@ -96,6 +97,12 @@ export interface AssistantTurn {
   streaming?: boolean;
   /** Which followup slice this bubble belongs to (D687, T: followupSeq). */
   followup?: number;
+  /** CLIENT-ONLY (never on the wire, never from history): epoch SECONDS this
+   *  page saw the reply end, stamped when a live run settles. Live delta rows
+   *  carry no clock (types.ts `SegmentClock`), so this is what the "Worked for"
+   *  line (ui/run-when `turnWorkedWords`) is measured to when the segments
+   *  have none; a restored turn reads its segments' clocks instead. */
+  endedAt?: number;
 }
 
 /**
@@ -230,7 +237,7 @@ export interface ChatState {
   file: string | null;
   sessionId: string | null;
   /**
-   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" | "codex" — as the
+   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" | "codex" | "gemini" — as the
    * server reported it (poll, history, defaults), or "" while nothing has
    * (docs/COPILOT_BACKEND.md D2). Immutable once a session has a turn: the
    * Agent pill fixes on it, and a send names it. "" for a brand-new chat,
@@ -266,6 +273,8 @@ export interface ChatState {
   permissions: PermissionRow[];
   /** Unanswered app-state requests the pane must answer (T:15758-15869). */
   appState: AppStateRow[];
+  /** Unanswered `canvas_screenshot` requests a canvas page must answer. */
+  canvasShot: CanvasShotRow[];
   skills: SkillRow[];
   working: Working | null;
   trouble: Trouble | null;
@@ -560,6 +569,9 @@ export interface ChatController {
 
   /** Answer an app-state request with a snapshot block (T:15804 answerAppState). */
   answerAppState(id: string, block: string): Promise<void>;
+  /** Answer a `canvas_screenshot` request: the uploaded picture's path (in the
+   *  shots dir) and mime, or a sentence saying why there is none. */
+  answerCanvasShot(id: string, answer: { image: string; mime: string; udf?: string } | { error: string }, askedBy?: string): Promise<boolean>;
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
   /** `backend`: the arriving conversation's agent, when the opener knows it

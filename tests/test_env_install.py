@@ -1214,15 +1214,26 @@ def test_a_superseded_mirror_does_not_touch_the_retrys_row(
     monkeypatch.setattr(
         envinstall, "_claim_token", lambda k: next(tokens, b"new-claim")
     )
+    # Only THIS row's writes count: `jobs` is module state shared with every
+    # other test in the process, and a mirror thread an earlier test left
+    # running can upsert ITS row while the patch is in place (read as
+    # `['upsert']` once on CI). A superseded mirror touching some other
+    # job's row is that test's business; this one pins the retry's row.
     touched = []
     real_upsert, real_clear = jobs.upsert, jobs.clear_cancel_requested
-    monkeypatch.setattr(
-        jobs, "upsert", lambda *a, **kw: touched.append("upsert") or real_upsert(*a, **kw)
-    )
-    monkeypatch.setattr(
-        jobs, "clear_cancel_requested",
-        lambda *a, **kw: touched.append("clear") or real_clear(*a, **kw),
-    )
+
+    def spy_upsert(body, *a, **kw):
+        if isinstance(body, dict) and body.get("id") == job_id:
+            touched.append("upsert")
+        return real_upsert(body, *a, **kw)
+
+    def spy_clear(jid, *a, **kw):
+        if jid == job_id:
+            touched.append("clear")
+        return real_clear(jid, *a, **kw)
+
+    monkeypatch.setattr(jobs, "upsert", spy_upsert)
+    monkeypatch.setattr(jobs, "clear_cancel_requested", spy_clear)
 
     envinstall._mirror_into_jobs(key, str(proj))
     for t in threading.enumerate():
@@ -2773,6 +2784,14 @@ def test_a_pid_this_module_did_not_spawn_is_never_reaped():
         "_pid_alive reaped a child it did not spawn, so its owner now reads the "
         "exit status as 0"
     )
+
+
+def test_pid_alive_without_wnohang_falls_through_to_probe(monkeypatch):
+    """Windows has no `os.WNOHANG`, yet `_spawn` records installer pids in
+    `_SPAWNED` there too: `_pid_alive` must not raise AttributeError."""
+    monkeypatch.delattr(os, "WNOHANG")
+    monkeypatch.setattr(envinstall, "_SPAWNED", {os.getpid()})
+    assert envinstall._pid_alive(os.getpid()) is True
 
 
 @requires_fused

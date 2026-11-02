@@ -6,7 +6,7 @@
 // stacked tokens, input bytes, a thinking estimate, a task count and a silence
 // timer in there — a dashboard, not a status (Akshil, 2026-08-28). Everything
 // that was a NUMBER is gone except the clock; what was a number is now a word.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { cn } from "@platform/lib/utils";
 
@@ -131,14 +131,90 @@ export interface WorkingLineProps {
   working: Working;
   status: RunStatus;
   onStop: () => void;
+  /** Send the running foreground Bash call to the background (Ctrl+B). Absent = not offered. */
+  onBackground?: () => void;
   /** `ChatState.tasks` — the run's background tasks, for the verb. */
   tasks?: readonly TaskRecord[] | null;
   /** Test seam. */
   now?: () => number;
 }
 
-export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: WorkingLineProps) {
+/** Only a running foreground Bash call can be sent to the background (Agent
+ *  backgrounding is unverified), and only on a run this page owns. The shell
+ *  only exists once the CLI's `task_started` for that tool_use_id has landed
+ *  (in auto mode the safety classifier runs first), and a request before that
+ *  is refused with `backgrounded: false` — so a matching running, not yet
+ *  backgrounded task is required. */
+export function backgroundable(working: Working, status: RunStatus, tasks?: readonly TaskRecord[] | null): boolean {
+  return (
+    !working.external &&
+    status !== "stopping" &&
+    working.phase === "tooling" &&
+    working.activity?.tool?.name === "Bash" &&
+    !!working.activity.tool.id &&
+    !!tasks?.some(
+      (t) => t.tool_use_id === working.activity?.tool?.id && t.status === "running" && !t.backgrounded,
+    )
+  );
+}
+
+/** The chat the user last clicked or focused, and the chats whose working line
+ *  currently claims Ctrl+B — together they pick the target of a loose keypress. */
+let lastChatRoot: Element | null = null;
+const claimants = new Set<Element>();
+let trackerInstalled = false;
+function installChatRootTracker() {
+  if (trackerInstalled) return;
+  trackerInstalled = true;
+  const note = (ev: Event) => {
+    lastChatRoot = (ev.target as Element | null)?.closest?.(".chat-root") ?? lastChatRoot;
+  };
+  document.addEventListener("pointerdown", note, true);
+  document.addEventListener("focusin", note, true);
+}
+/** Test-only: forget the recorded interaction and every claimant. */
+export function __resetBackgroundKeyState() {
+  lastChatRoot = null;
+  claimants.clear();
+}
+
+export function WorkingLine({ working, status, onStop, onBackground, tasks, now = Date.now }: WorkingLineProps) {
   const agent = useAgent();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const canBackground = !!onBackground && agent.backend === "claude" && backgroundable(working, status, tasks);
+  const bgRef = useRef(onBackground);
+  useLayoutEffect(() => {
+    bgRef.current = onBackground;
+  }, [onBackground]);
+  // Ctrl+B, claimed only while the button would render. A key aimed inside this
+  // chat is ours; a loose one (body/html/null) goes to the chat last clicked or
+  // focused, or to the only chat that could take it.
+  useEffect(() => {
+    if (!canBackground) return;
+    installChatRootTracker();
+    const root = rootRef.current?.closest(".chat-root") ?? null;
+    if (root) claimants.add(root);
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key.toLowerCase() !== "b" || !ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey || ev.defaultPrevented) return;
+      const t = ev.target as Node | null;
+      const loose = !t || t === document.body || t === document.documentElement;
+      if (!loose) {
+        if (!root || !root.contains(t)) return;
+      } else {
+        const last = lastChatRoot && lastChatRoot.isConnected ? lastChatRoot : null;
+        const mine = !!root && root === last;
+        const sole = !(last && claimants.has(last)) && claimants.size === 1;
+        if (!mine && !sole) return;
+      }
+      ev.preventDefault();
+      bgRef.current?.();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (root) claimants.delete(root);
+    };
+  }, [canBackground]);
   // One mood per line, drawn when it appears rather than per second.
   const thinkVerb = useRef(VERBS[Math.floor(Math.random() * VERBS.length)]);
   // When the poll last told us something NEW. The stream rows carry no clock,
@@ -211,6 +287,7 @@ export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: 
     <div
       className={cn("turn", "working", !stopping && working.phase === "awaiting" && "awaiting")}
       role="status"
+      ref={rootRef}
     >
       {/* The pulsing spark is the Claude mark now, not a `✻` (#5/#15) — the
           same shape the assistant avatar and the header draw. */}
@@ -219,6 +296,11 @@ export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: 
       </span>
       <span className="verb">{verb}</span>
       <span className="meta">{" (" + parts.join(" · ") + ")"}</span>
+      {canBackground ? (
+        <button type="button" className="stop background" title="Send this command to the background (Ctrl+B)" onClick={onBackground}>
+          background
+        </button>
+      ) : null}
       {stoppable ? (
         <button
           type="button"

@@ -241,6 +241,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const view: SettingsView = {
     tokens: searching ? tokens : null,
     flashId: flash,
+    prefs: prefs ?? undefined,
     jump: (id) => {
       const group = byId(id)?.group;
       if (group) showGroup(group, id);

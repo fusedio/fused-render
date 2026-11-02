@@ -796,3 +796,11 @@
     animation: none;
   }
 }
+
+/* The host pane's close (ClaudeChat `onHidePane`): the row's first seat. The
+   28px seat's glyph sits 6px in, so the button steps out by that much and the
+   glyph lines up with the row's 16px gutter like the text after it. */
+.chat-root .c-anntools .c-hide-pane {
+  flex: none;
+  margin-left: -6px;
+}

@@ -333,6 +333,11 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
     from fused_render import warm_run
     monkeypatch.setattr(warm_run, "refuse_new", lambda: order.append("latch-warm-run"))
     monkeypatch.setattr(warm_run, "shutdown", lambda: order.append("warm-run"))
+    from fused_render.contrib import ai as contrib_ai
+    monkeypatch.setattr(contrib_ai, "refuse_children",
+                        lambda: order.append("latch-contrib-claude"))
+    monkeypatch.setattr(contrib_ai, "stop_children",
+                        lambda: order.append("contrib-claude"))
     monkeypatch.setattr(engine_host, "stop_all", lambda: order.append("engines"))
     monkeypatch.setattr(supervisor, "unload_all", lambda: order.append("ai"))
     monkeypatch.setattr(pty_session.REGISTRY, "shutdown_all",
@@ -345,10 +350,10 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
 
     app_mod._stop_children(budget_s=2.0)
 
-    assert order[:5] == ["latch-engines", "latch-ai", "latch-bots", "latch-canvases",
-                         "latch-warm-run"]
-    assert set(order[5:]) == {"engines", "warm-run", "ai", "terminals", "index", "bots",
-                              "canvas-sync", "discovery"}
+    assert order[:6] == ["latch-engines", "latch-ai", "latch-bots", "latch-canvases",
+                         "latch-warm-run", "latch-contrib-claude"]
+    assert set(order[6:]) == {"engines", "warm-run", "ai", "terminals", "index", "bots",
+                              "canvas-sync", "contrib-claude", "discovery"}
 
 
 def test_children_rung_is_bounded_by_its_budget(monkeypatch):
@@ -374,6 +379,9 @@ def test_children_rung_is_bounded_by_its_budget(monkeypatch):
     from fused_render import warm_run
     monkeypatch.setattr(warm_run, "refuse_new", lambda: None)
     monkeypatch.setattr(warm_run, "shutdown", lambda: None)
+    from fused_render.contrib import ai as contrib_ai
+    monkeypatch.setattr(contrib_ai, "refuse_children", lambda: None)
+    monkeypatch.setattr(contrib_ai, "stop_children", lambda: None)
     monkeypatch.setattr(engine_host, "stop_all", lambda: never.wait(30))
     monkeypatch.setattr(supervisor, "unload_all", lambda: None)
     # Every other killer stubbed too: the real index path would cancel live runs

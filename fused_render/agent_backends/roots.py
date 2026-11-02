@@ -44,6 +44,7 @@ DEFAULT_BACKEND = _shared.DEFAULT_BACKEND
 claude_dir = _shared.claude_dir
 copilot_dir = _shared.copilot_dir
 codex_dir = _shared.codex_dir
+gemini_dir = _shared.gemini_dir
 base_dir = _shared.base_dir
 projects_dir = _shared.projects_dir
 sessions_dir = _shared.sessions_dir
@@ -57,22 +58,25 @@ backend_for_session = _shared.backend_for_session
 
 def projects_roots(claude_projects_dir: str) -> list[tuple[str, str]]:
     """`[("claude", <given>), ("copilot", <copilot projects dir>),
-    ("codex", <codex projects dir>)]` — the transcript root list for a
-    module whose Claude root is a constant it exposes for tests to patch.
-    The Copilot and Codex roots are read live, as the shared file reads them
+    ("codex", <codex projects dir>), ("gemini", <gemini projects dir>)]` —
+    the transcript root list for a module whose Claude root is a constant it
+    exposes for tests to patch. The non-Claude roots are read live, as the
+    shared file reads them
     (`FUSED_RENDER_HOME` is redirected per test by conftest). Same order as
     `BACKENDS`, so a reader that walks the list meets the roots in the order
     `transcript_roots()` gives."""
     return [("claude", claude_projects_dir),
             ("copilot", projects_dir("copilot")),
-            ("codex", projects_dir("codex"))]
+            ("codex", projects_dir("codex")),
+            ("gemini", projects_dir("gemini"))]
 
 
 def sessions_roots(claude_sessions_dir: str) -> list[tuple[str, str]]:
     """`projects_roots`'s twin for the live-session registries."""
     return [("claude", claude_sessions_dir),
             ("copilot", sessions_dir("copilot")),
-            ("codex", sessions_dir("codex"))]
+            ("codex", sessions_dir("codex")),
+            ("gemini", sessions_dir("gemini"))]
 
 
 def is_under(path: str, root: str) -> bool:

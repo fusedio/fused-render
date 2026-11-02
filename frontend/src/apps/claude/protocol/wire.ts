@@ -116,7 +116,7 @@ export function isInterruptMark(text: string | undefined | null): boolean {
 
 /** One entry of the `<pane-shot>` payload (T:16519 wire field mapping). */
 export interface PaneShotWire {
-  kind: "overview" | "pane" | "image" | "file" | string;
+  kind: "overview" | "crop" | "pane" | "image" | "file" | string;
   view: string | null;
   viewNote?: string;
   why?: string;
@@ -158,7 +158,10 @@ export function paneShotBlock(views: PaneShotWire[] | null | undefined, paneNoun
     "taken at send time with a red letter badge burned in at each annotated " +
     "spot — the letters match the `label` fields in the annotations block, and " +
     "this is THE picture to read when reconciling the user's comments with " +
-    'what is on screen; "pane" is a picture of the WHOLE visible ' +
+    'what is on screen; "crop" is a close-up of ONE note\'s target, cut from ' +
+    "that same overview picture, with only that note's letter burned in, and " +
+    "`name` says which note it belongs to — read it for detail the overview is " +
+    'too small to show; "pane" is a picture of the WHOLE visible ' +
     paneNoun +
     " pane, taken " +
     "here — read it when the question is about the layout as a whole (panels " +
@@ -278,7 +281,8 @@ export function formatAnnotations(arr: AnnotationWire[], targetNoun: string): st
       : " in the running app (left preview of this project's entry HTML)") +
     ". Each entry below is one spot they clicked; its bold letter is the red " +
     'badge burned into the attached "overview" screenshot at that spot, which ' +
-    "is the picture to read when reconciling a note with what is on screen. " +
+    "is the picture to read when reconciling a note with what is on screen, and " +
+    'a "crop" picture named for the same letter is a close-up of that spot. ' +
     (spoken
       ? "The timestamps are minutes:seconds into a spoken walkthrough — the " +
         "words under each entry are what the user said nearest that moment, " +

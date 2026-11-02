@@ -21,9 +21,9 @@ export function localModelArg(arg: string, backend = "claude"): string {
 }
 
 /** The agents whose full model ids are the provider's own, any shape
- *  ("gpt-5.4", "gpt-6-luna") — not Claude's `claude-…` ones. */
+ *  ("gpt-5.4", "gpt-6-luna", "gemini-2.5-pro") — not Claude's `claude-…` ones. */
 function rawModelIds(backend: string | undefined): boolean {
-  return backend === "copilot" || backend === "codex";
+  return backend === "copilot" || backend === "codex" || backend === "gemini";
 }
 
 /** `/effort <level>`'s argument as a pill value, or "" — one of the levels

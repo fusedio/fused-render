@@ -106,7 +106,7 @@ export interface Job {
   // already returns false for an empty `source`.
   source: string;
   // A short, human-readable label naming WHAT RAISED this job — "Playground",
-  // "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
+  // "Local models", "Benchmark", "Explorer", "Claude Code", "GitHub",
   // "Scheduler", "App install". Deliberately NOT `page` and never derived
   // from it: `page` answers "where does clicking this row go", `origin`
   // answers "who asked for this" — a Playground render's `page` is its own

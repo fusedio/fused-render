@@ -7,8 +7,8 @@ nothing persisted server-side, same unguarded-GET posture as the
 template-pack export.
 
 Opening has no user-facing route (D390): a ``.fused`` renders at its own
-``/explorer/view|embed/<path>`` URL through the ``fusedapp`` template, which
-is the INSTALL PAGE (AF-14, owner 2026-10-13): nothing in a file runs until
+``/explorer/view|embed/<path>`` URL as the shell's INSTALL PAGE (frontend
+apps/marketplace FusedFilePage, AF-14, owner 2026-10-13): nothing in a file runs until
 it is installed. The page reads ``GET /api/appfile/install`` (what installing
 would do: new / update / diverged / same / downgrade, the README, the member
 list — read-only, never an extraction), ``/api/appfile/icon`` and

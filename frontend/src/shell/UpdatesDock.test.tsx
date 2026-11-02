@@ -2,8 +2,9 @@
 // and the popover's composition, rendered through `UpdatesCardView` with a
 // fixed status — no poll, no network, no restart store.
 import { expect, test } from "bun:test";
-import { create, type ReactTestRendererJSON } from "react-test-renderer";
+import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
+import { registerTerminalDrawerMounted, resetTerminalDockForTests } from "@platform/lib/terminalDockStore";
 import type { UpdateStatus } from "@platform/lib/api";
 import { downloadProgressLine, UpdatesCardView, updatesChip, updatesDetail } from "@shell/UpdatesDock";
 
@@ -47,6 +48,12 @@ test("every update state has its own label, tone and progress", () => {
 test("the detail sentence names the version and carries one action", () => {
   expect(updatesDetail(st({ state: "available" }), "ready")?.action?.label).toBe("Download");
   expect(updatesDetail(st({ state: "available", check_only: true }), "ready")?.action).toBeNull();
+  expect(updatesDetail(st({ state: "available", check_only: true }), "ready")?.command).toBeUndefined();
+  expect(updatesDetail(st({ state: "available", check_only: true, latest_version: "0.6.99", manual_command: "uv tool upgrade fused-render" }), "ready")).toMatchObject({
+    detail: "v0.6.99 is out. Quit fused-render, then run in your terminal:",
+    command: "uv tool upgrade fused-render",
+    action: null,
+  });
   expect(updatesDetail(st({ state: "installed" }), "ready")?.action?.label).toBe("Restart now");
   expect(updatesDetail(st({ state: "error", error: "no network" }), "ready")).toMatchObject({ detail: "no network", error: true });
   expect(updatesDetail(st({ state: "idle" }), "ready")).toBeNull();
@@ -124,4 +131,25 @@ test("collapsed: no panel; a pending update keeps the Check button", () => {
   const pending = view(st({ state: "available" }), { collapsed: true });
   expect(texts(pending.toJSON()).join(" | ")).toContain("Update available");
   expect(pending.root.findAllByProps({ className: "upd-check-btn" }).length).toBe(1);
+});
+
+test("a check-only updater hides the auto-download toggle but still shows the manual command", () => {
+  const all = texts(
+    view(st({ state: "available", check_only: true, manual_command: "pip install -U fused-render" })).toJSON(),
+  ).join(" | ");
+  expect(all).not.toContain("Automatically download updates");
+  expect(all).toContain("pip install -U fused-render");
+});
+
+test("the manual self-upgrade command shows Copy but never Run, even with a terminal drawer mounted", () => {
+  let unregister!: () => void;
+  act(() => {
+    unregister = registerTerminalDrawerMounted();
+  });
+  const renderer = view(st({ state: "available", check_only: true, manual_command: "pip install -U fused-render" }));
+  const labels = renderer.root.findAllByType("button").map((b) => b.children.join(""));
+  expect(labels).toContain("Copy");
+  expect(labels).not.toContain("Run");
+  act(() => unregister());
+  resetTerminalDockForTests();
 });

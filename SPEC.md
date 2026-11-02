@@ -253,7 +253,21 @@ const { text, usage, response, provider } = await fused.ai.text({
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
   `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
-  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
+  take it. **Three more tiers are the agent CLIs** (D1433): `provider: "copilot" |
+  "codex" | "gemini"` runs the same tool-less, session-free one-shot the session
+  recaps use (`agent_oneshot.py`: prompt on stdin, no tools, nothing from the
+  server's cwd, no session left behind) — text only, `history`/`raw`/`images`
+  refused like the Claude tier, sampling knobs and `thinking` dropped into
+  `warnings[]`, `effort` passed where the CLI takes it (Copilot per model, Codex
+  as `model_reasoning_effort`, never Gemini), `model` passed through as Tasks pass
+  it (omitted = the agent's catalog default), **no streaming** (the whole text
+  arrives as one chunk then `done`), `usage` null. Gated on the agent's
+  Preferences switch: off → 409 `ai_unavailable` with `reason: "backend_disabled"`;
+  `"claude"` stays ungated (D17). These tiers are never inferred from a model's
+  shape — only an explicit `provider` reaches them. They are also the AI gateway
+  the canvas host runs for the embedded workbench (CanvasWorkspace.tsx module
+  doc, host-ai.ts): the host posts the enabled agents' models to the frame and
+  relays its inline AI requests to this route. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
   `.embed` and `.decide`** (their D413 envelopes grow that one key), and every reply of the six
   carries `provider`; those five have only a local tier today, so omitted means
   `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request
@@ -2071,20 +2085,22 @@ one gate before anything runs. Three payloads on the one `open` action:
   Finder double-click lands — where the user installs or updates the app.
   Nothing is written on the GET (D3); the page says whether a copy is
   installed, newer, older or diverged, and the install is its X-Fused POST.
-  A malformed payload (relative, not `.fused`) goes to Home carrying it under
-  `?_edit_appfile=`, which the shell's `FetchAppFileBoot` reads once, strips,
-  and reports as a toast — one error surface. *(Supersedes D889's clone-unasked +
+  A malformed payload (relative, not `.fused`) goes to the shell's `/install`
+  page carrying it under `?_edit_appfile=`, which reports it on the page —
+  one error surface. *(Supersedes D889's clone-unasked +
   overwrite-modal shape, 2026-10-13.)*
 - **DL-8** Hosted app file payload: `fused-render://open?url=<http(s) link to
   a .fused>`, the link percent-encoded once by the sender and decoded once
   here, verbatim to end-of-string like `git=`/`file=`. Render App's
   `render-app://open?url=` ported (fused-render-lite PRs #27/#30): a web
   page's "Open in fused-render" link. Same no-page shape as DL-7: `GET
-  /clone` answers a 303 to Home with the link as `?_fetch_appfile=` (nothing
-  is on disk yet, and nothing is written on the GET, D3; a non-http(s)
-  payload rides along verbatim so the shell reports it). The shell's
-  `FetchAppFileBoot` (top document, `!IS_EMBED`) reads the param once, strips
-  it before any async work, then **downloads without a confirm step** (the
+  /clone` answers a 303 to the shell's `/install` page with the link as
+  `?_fetch_appfile=` (nothing is on disk yet, and nothing is written on the
+  GET, D3; a non-http(s) payload rides along verbatim so the page reports
+  it). The page (`shell/InstallLinkPage.tsx`: the source, the running clock
+  and the one state are the whole window — not a toast over Home, which
+  read as "nothing is happening" while a clone ran; a failure shows on the
+  page with Try again) **downloads without a confirm step** (the
   link click is the gesture) through the X-Fused `POST /api/appfile/fetch
   {url} → {file}` (`appfetch.py`: http(s) only, every redirect hop
   re-checked, 1 GB cap by `Content-Length` and while streaming, temp file
@@ -2094,13 +2110,15 @@ one gate before anything runs. Three payloads on the one `open` action:
   `<name>-<url sha 8>.fused` for files that predate the id — and opens the
   saved file's **install page** (AF-14): the top document hard-loads the
   file's embed URL (a full load, since the embed/view prefix is read once at
-  module init), where the `fusedapp` template shows what installing would do
-  and installs on one click; nothing in the file runs before that. A re-click
+  module init), where the install page (`apps/marketplace FusedFilePage`,
+  rendered in place of the `fusedapp` template for every `.fused` open,
+  whatever `marketplace_enabled` says; the template draws card peeks only)
+  shows what installing would do and installs on one click; nothing in the file runs before that. A re-click
   on a link to a NEW version of an installed app lands on the same page
   reading "Update": one click replaces the copy's files and keeps everything
   in `.fused` — the page warns first when the copy was edited since install.
   Inside a native window the same load: a deep link always arrives in a
-  fresh native window parked on Home by the 303, and loading the page there
+  fresh native window parked on `/install` by the 303, and loading the page there
   makes that window the file's own, and the install's navigation the app's
   (the URL observer re-keys it, the title-bar Edit button is the way into the
   explorer) instead of leaving it orphaned beside a second one. In a browser
@@ -2113,8 +2131,8 @@ one gate before anything runs. Three payloads on the one `open` action:
   {owner}/{repo}` — that shape only (`.git` / trailing slash tolerated, the
   embedded URL may be percent-encoded), a repo holding ONE app at its ROOT
   (anything else → error). The app installs as a real GIT CLONE so the user
-  can push and open PRs (`appfile_git.py`). `GET /clone` 303s to Home with
-  the link as `?_fetch_appgit=`; `FetchAppFileBoot` posts it as `{git}` to
+  can push and open PRs (`appfile_git.py`). `GET /clone` 303s to `/install`
+  with the link as `?_fetch_appgit=`; the page posts it as `{git}` to
   the same `POST /api/appfile/fetch`, where `appfetch.download_github_app`
   runs `git clone --filter=blob:none` (the user's own git and credentials,
   PATH widened for a Finder-launched app's credential helpers, ssh in
@@ -2435,6 +2453,19 @@ not by choice.
   Views that never opted in receive none of it. A standalone view (no shell
   above it) gets no tokens, so authors write `var(--fused-x, fallback)` and only
   the fallbacks apply there — accepted.
+- **AP-17** **Every view wears the shell's scrollbar.** `runtime.js` puts a
+  sheet first in every view's `<head>`, opted in or not: the 10px hover-only
+  bar of `styles/scrollbars.css`, thumb inked from `currentColor`, so it reads
+  on any palette. Left to the engine, a dark view's bars can come out light
+  whatever `color-scheme` says, and apps were each pasting their own
+  `::-webkit-scrollbar` block. The view keeps control: every rule is
+  `*`-level, so an author's own `::-webkit-scrollbar*` rule wins by order and a
+  more specific one wins outright; a non-`auto` `scrollbar-width`/
+  `scrollbar-color` makes Chromium skip the pseudo rules; and
+  `data-fused-scrollbars="native"` on `<html>` skips the sheet. The viewport
+  bar's track is painted in the document's canvas colour (`<html>`'s
+  background, else `<body>`'s), because a transparent one shows the parent
+  document through the frame.
 
 ---
 
@@ -9666,8 +9697,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   `catalog.py` row with both `params` and `quantization` was checked.
   Before the fix above, `params x bytes_per_param` landed within a
   generous 60% band of the curated `size_gb` for all but two:
-  `prism-ml/Ternary-Bonsai-27B-mlx-2bit` ("Ternary 2-bit", estimate
-  15.66GB vs. a catalog-confirmed-accurate 6.1GB, ~2.57x over) —
+  `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` ("Ternary 2-bit", estimate
+  15.66GB vs. the catalog's 8.6GB — a Hub byte sum, not measured on disk —
+  ~1.82x over) —
   ternary/BitNet quantization (~1.58 bits/weight nominal) has no row in
   SPEC item 4's own table, so it fell to the ~4-bit-sized default; and
   `tonera/FLUX.2-klein-4B-int8-diffusers` ("int8 (torchao)", estimate
@@ -10115,6 +10147,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   default is `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (2.50 GB); each row has
   `voiceMode`, and a downloaded row adds `voices`/`languages`. Onboarding and
   the benchmark leave it out.
+  **A second runner, `sherpa-tts`, registered below it**: Kokoro-82M v1.1
+  (`csukuangfj/kokoro-multi-lang-v1_1`, ONNX, 0.39 GB) on sherpa-onnx's CPU
+  provider, on every platform, so the capability exists off Apple Silicon.
+  Preset voices only (103: three English, then Chinese `zf_*`/`zm_*`; the
+  default is the first), no clone and no design, and no `instruct`: a model whose
+  traits carry `instructable: False` is refused one (`has no style line`).
+  A snapshot is claimed by its layout (`model.onnx`, `voices.bin`, `tokens.txt`,
+  `espeak-ng-data/`), not by a `config.json`. The language follows the voice;
+  `language` is accepted and echoed. A Mac keeps Qwen3-TTS unless its speech
+  engine preference is Kokoro, since one runner serves a capability at a time.
+  The chunking and WAV writer both workers use are `runners/speech_common.py`.
 - **AI-33** **`image-to-text` ("Vision") and `fused.ai.vision({image, task,
   prompt, ...})` (D1354).** Tasks: `caption` (`length`), `query` (`prompt`,
   `reasoning`), `detect` and `point` (`prompt`, `maxObjects`). A model answers
@@ -11337,7 +11380,13 @@ platforms, one API, no field naming which one served you.
 - **CP-9** Packaging: `NSMicrophoneUsageDescription` in the bundle plist (an app
   that touches the mic without it is killed, not prompted) and
   `com.apple.security.device.audio-input` in the hardened-runtime entitlements
-  (without it the mic is refused whatever TCC says). Screen recording needs
+  (without it the mic is refused whatever TCC says). The camera is the same
+  pair — `NSCameraUsageDescription` plus `com.apple.security.device.camera` —
+  because a page's `getUserMedia({video})` in one of OUR windows — WKWebView or
+  Chromium (D1408) — is captured under this app's hardened runtime (tccd judges
+  the responsible app even when a helper opens the device); only the shell in
+  the user's own browser needed nothing from us. Without it tccd refuses with no
+  prompt and the page gets a track that never carries a frame. Screen recording needs
   neither — only the System Settings grant, which macOS 15+ re-confirms after
   ~30 idle days. Linux needs no packaging step at all: the still is
   ordinary D-Bus, and the recording permission is the browser's to ask for.
@@ -11897,11 +11946,10 @@ per-row fix.
   row is critical or warning, so a candidate still counts at its own severity
   for this one flag, though never in the modal's own presentation of it
   (AD-4).
-- **AD-3** Twelve checks, essentials then sharing, exactly:
+- **AD-3** Eleven checks, essentials then sharing, exactly:
   `secrets` (critical, candidate), `entry` (critical, fact), `api-version`
   (critical, fact), `pyproject` (warning, fact), `readme` (warning, fact),
-  `icon` (warning, fact) — then `device-paths` (warning, candidate),
-  `cross-browser` (warning, candidate, ON DEMAND — AD-8), `git`
+  `icon` (warning, fact) — then `device-paths` (warning, candidate), `git`
   (warning, fact), `pushed` (warning, fact), `generated` (warning, fact),
   `preview` (warning, fact). `pushed` (new, D767) reads ahead-of-upstream
   commits via `git rev-list --count @{upstream}..HEAD` — no network call,
@@ -11967,41 +12015,6 @@ per-row fix.
   0, the exact inverted urgency AD-2's severity table exists to prevent.
   Every finding still prints regardless of whether it blocks — only the exit
   code changes.
-- **AD-8** One row is MODEL-BACKED and ON DEMAND: `cross-browser`
-  (`fused_render/app_doctor_ai.py`), a one-shot `claude -p` at **Sonnet, low
-  effort** — fixed, not the user's pickers — over the app's `.html`/`.css`/
-  `.js`/`.svg` files (the `.fused` exporter's own gitignore-aware walk,
-  bounded to 40 files / 256 KB, numbered lines) with
-  `skills/fused-render-cross-browser/SKILL.md` read from disk as the rubric,
-  `--json-schema` for a structured verdict, prompt over stdin,
-  `--no-session-persistence`, `--tools=`. It NEVER
-  runs on a GET: `report()`/`report_one()` only read the cache at
-  `.fused/cache/app-doctor/cross-browser.json`, whose `checksum` is a sha256
-  of exactly the bytes the model was shown. Cache matches → the stored
-  verdict (pass, or fail with `{rule, path, line, excerpt}` findings); no
-  cache, or the view files changed since → `state: "unrun"` ("Not run yet"),
-  which counts toward neither `ok` nor the header dot. `POST
-  /api/apps/doctor/run` `{path, check, force?}` (`X-Fused` required, 400 for
-  a row not in `app_doctor.ON_DEMAND`, 502 with one sentence when the model
-  could not answer, previous verdict kept, single-flighted per folder) runs
-  it and returns the refreshed row; the panel draws **Check** on an unrun
-  row, swaps the returned row in place, and keeps an icon-only **Re-check**
-  (`force: true` — ask again although the cache still matches) on a settled
-  one for what the checksum cannot see (a rubric that moved on). THE VERDICT
-  IS WRITTEN FOR THE AUTHOR: the schema's own `description`s cap `summary`
-  at one plain sentence and give every finding a `what` (what a visitor sees
-  go wrong, in which browser, no code) and a `fix` (one sentence) — the
-  panel draws those as wrapping prose, never the source line, and the fix
-  prompt carries `fix` as "suggested fix". No free text rides in argv
-  (system prompt via `--system-prompt-file`).
-  Every row carries `ondemand: bool` so the panel never keeps its own list.
-  The row is a `candidate` (a model's reading earns a second look), so its
-  fix task is the ordinary per-row task with the triage-first prompt, routed
-  by the app-doctor skill's `cross-browser` section to
-  `fused-render-cross-browser`; `POST /api/apps/doctor` 409s a fix on an
-  unrun on-demand row, since its findings would describe a folder that no
-  longer exists. Verified live 2026-09-18: ~4 s on a two-line fixture, both
-  findings real.
 
 ## 49. App Python, Called Directly — Bots Run a Folder's `.py` Without the Page
 
@@ -12372,8 +12385,9 @@ and not a sync nicety.
   exists. `tests/test_browser_storage_allowlist.py` lists the files allowed to
   touch storage in code, each with its category; a new storage use anywhere
   else fails the suite.
-- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`
-  (`POST /api/current-apps/order`). Notifications seen/dismissed =
+- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`,
+  listed by recency (newest task activity, else added; no drag since
+  2026-10-23). Notifications seen/dismissed =
   `notifications.json` (`GET`/merge-`POST /api/notifications/state`). Tasks
   done-and-seen = `__seen_done__` in tasks `read.json`, carried by
   `/api/tasks/pulse`, replaced by `POST /api/tasks/seen`. Bot unread baseline =

@@ -8,7 +8,12 @@
 // Readme polish (OverviewTabs' trimReadme): a readme almost always opens with
 // `# <Name>` and the very screenshot the stage already shows — both are
 // dropped from the rendered copy, so the Overview starts with the prose.
-import type { ReactNode } from "react";
+//
+// Stage B (CONTRIB_LOOP.md §18.7): the byline credits a remix's original
+// ("Remix of <name>", a link to its page), the strip shows the last release,
+// remixes and contributors, and a Releases section lists every release with
+// its What's new — "Blocked" where Fused blocked it since.
+import { useEffect, useRef, type ReactNode } from "react";
 import { ArrowUpRight, ExternalLink, FolderOpen, LayoutPanelTop, Trash2 } from "lucide-react";
 import {
   AppIcon,
@@ -24,25 +29,34 @@ import {
   PreviewStage,
   TagsSection,
   TrustCard,
+  VerifiedMark,
   plainClick,
   type InfoStripItem,
 } from "@platform/ui/appstore";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
-import { formatSize } from "@platform/lib/format";
+import { formatSize, releaseDate } from "@platform/lib/format";
 import { navigateUrl } from "@platform/lib/router";
 import { openUninstallApp } from "@platform/lib/uninstall-app";
 import {
   MARKETPLACE_HOME,
   actionFor,
+  appDetailHref,
   appPageHref,
+  isMarketCopy,
+  isOwnCopy,
   categoryLabel,
+  isActive,
+  openInstalledApp,
   showInstalledFolder,
+  sourceUrlOf,
   useAppDetail,
   useJob,
   type AppEntry,
   type CatalogSnapshot,
+  type MarketRelease,
 } from "@platform/lib/marketplace";
-import { AppActionPill, CategoryGlyph, EmptyState, MarketCard } from "./shared";
+import { AppActionPill, CategoryGlyph, EmptyState, MarketCard, compactCount, openDetail, remixOf } from "./shared";
+import { onInstallStarted, replaceInstall } from "./install-flow";
 import { trustItemsFor } from "./trust";
 
 /** U+202F NARROW NO-BREAK SPACE: "12.4 MB" never wraps between number and
@@ -53,17 +67,64 @@ function githubUrl(handle: string): string {
   return `https://github.com/${encodeURIComponent(handle.replace(/^@/, ""))}`;
 }
 
-export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnapshot }) {
+export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap: CatalogSnapshot; bare?: boolean }) {
   const { detail, error, reload } = useAppDetail(slug);
   const fromCatalog = snap.catalog?.apps.find((a) => a.slug === slug) ?? null;
   const app: AppEntry | null = detail?.app ?? fromCatalog;
   const job = useJob(slug);
 
-  const back = {
-    label: "Marketplace",
-    href: MARKETPLACE_HOME,
-    onClick: plainClick(() => navigateUrl(MARKETPLACE_HOME)),
+  // AN INSTALL ASKED FOR HERE OPENS THE APP WHEN IT LANDS (owner, 2026-10-29).
+  // The pill stays on this page while the job runs; a reader who clicked Get
+  // (or Retry) and is still here when the job reaches `done` is taken to the
+  // app — in this window (openInstalledApp is a navigateUrl, never a new
+  // window). Three things keep it from firing when it should not:
+  //  * `intent` is set by THIS page's pill alone, and only by a Get or Retry
+  //    click — so an install started from a Discover card or a related-app
+  //    card and then watched from here does not open on its own, and a done
+  //    job the page merely finds (an earlier install, still listed) cannot
+  //    be one it asked for: the pill read Open then, not Get;
+  //  * `asked` is set only when THIS window's install flow reports a job
+  //    started for the slug (install-flow onInstallStarted) while that
+  //    intent stands — a "Before you install" or "Switch?" sheet the reader
+  //    cancels starts nothing, so a job another window starts later, which
+  //    the poll would surface here, never opens;
+  //  * both are refs on this mount, and the page is mounted per slug
+  //    (MarketplacePage keys it): leaving the page before the install
+  //    finishes — to Discover, to another app's page, anywhere — drops them,
+  //    and coming back starts clean: the reader who moved away is not
+  //    yanked back to the app.
+  const intent = useRef<string | null>(null);
+  const asked = useRef<string | null>(null);
+  useEffect(
+    () =>
+      onInstallStarted((started) => {
+        if (started === slug && intent.current === slug) {
+          asked.current = slug;
+          intent.current = null;
+        }
+      }),
+    [slug],
+  );
+  useEffect(() => {
+    if (!job || job.slug !== slug || asked.current !== slug || isActive(job)) return;
+    asked.current = null;
+    // On `error` the reader is back at Retry: another click arms it again.
+    // An update's Retry lands as an `update` job: the reader asked for the
+    // new version, not to be taken into the app.
+    if (job.state === "done" && job.action !== "update" && job.path) openInstalledApp(job.path);
+  }, [job, slug]);
+  const onAct = (action: { kind: string }) => {
+    intent.current = action.kind === "get" || action.kind === "retry" ? slug : null;
   };
+
+  // Bare (a listing link with the store off): nothing leads into the store.
+  const back = bare
+    ? undefined
+    : {
+        label: "Community",
+        href: MARKETPLACE_HOME,
+        onClick: plainClick(() => navigateUrl(MARKETPLACE_HOME)),
+      };
 
   if (!app) {
     return (
@@ -73,7 +134,7 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
             title={error.includes("404") || /not found/i.test(error) ? "App not found" : "Couldn't load this app"}
             body={
               /not found|404/i.test(error)
-                ? `There is no app called “${slug}” in the Marketplace.`
+                ? `There is no app called “${slug}” in the Community.`
                 : error
             }
             action={
@@ -96,6 +157,9 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
   const cat = categoryLabel(snap.catalog, app.category);
   const more = (snap.catalog?.apps ?? []).filter((a) => a.category === app.category && a.slug !== app.slug).slice(0, 6);
 
+  // Only a github.com address is linked (sourceUrlOf): the row's string is
+  // the catalog's, not ours.
+  const sourceUrl = sourceUrlOf(app);
   const menu: MenuEntry[] = [];
   if (installedPath) {
     menu.push({
@@ -109,8 +173,8 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
       onClick: () => showInstalledFolder(installedPath),
     });
   }
-  if (app.source_url) {
-    const src = app.source_url;
+  if (sourceUrl) {
+    const src = sourceUrl;
     menu.push({
       label: "View source on GitHub",
       icon: <ExternalLink size={14} strokeWidth={2} />,
@@ -128,8 +192,32 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
     });
   }
 
+  const block = app.installed?.block ?? null;
+  // Every listed row passed the review check; a hard block withdraws the mark.
+  const verified = block?.level !== "hard";
+  const market = isMarketCopy(app);
   let note: ReactNode = null;
-  if (action.kind === "update") {
+  if (block) {
+    note = (
+      <span className="is-warn" title={block.reason}>
+        {block.level === "hard" ? "Blocked by Fused · see the app page" : "Updates paused by Fused"}
+      </span>
+    );
+  } else if (action.kind === "open" && isOwnCopy(app)) {
+    note = <>Your app · you publish its releases</>;
+  } else if (action.kind === "update" && market) {
+    note = (
+      <>
+        A new release is waiting{releaseDate(app.last_release_at) ? <> · {releaseDate(app.last_release_at)}</> : null}
+      </>
+    );
+  } else if (action.kind === "open" && market) {
+    note = app.installed?.delisted ? (
+      <span className="is-warn">Installed · no longer in the Community</span>
+    ) : (
+      <>Installed · reviewed release</>
+    );
+  } else if (action.kind === "update") {
     note = (
       <>
         Update to <b>{app.version}</b>
@@ -145,7 +233,25 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
       <>Installed{app.installed.version ? <> · v{app.installed.version}</> : null}</>
     );
   } else if (action.kind === "retry") {
-    note = <span className="is-error">{action.error}</span>;
+    const replacePath = job?.code === "replace" ? job.replace_path : null;
+    note = (
+      <span className="is-error">
+        {action.error}
+        {replacePath && (
+          <>
+            {" "}
+            <button
+              type="button"
+              className="as-link-btn as-note-cta"
+              title={`Install the Community version in your apps folder; the data of the copy at ${replacePath} moves along and that folder is hidden (its files stay).`}
+              onClick={() => replaceInstall(app, replacePath)}
+            >
+              Replace it, keep its data
+            </button>
+          </>
+        )}
+      </span>
+    );
   } else if (action.kind === "progress") {
     note = job?.message || (job?.state === "installing" ? "Installing…" : "Downloading…");
   } else if (action.kind === "get") {
@@ -161,22 +267,40 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
   ) : (
     <span>{app.author?.name || "Unknown developer"}</span>
   );
+  const remix = remixOf(app, snap.catalog);
+  const remixLink = remix ? (
+    <a
+      href={appDetailHref(remix.slug)}
+      className="mp-author-link"
+      onClick={plainClick(() => openDetail(remix.slug))}
+    >
+      {remix.name}
+    </a>
+  ) : null;
 
+  const released = releaseDate(app.last_release_at ?? app.updated_at);
+  const remixes = app.remix_count ?? 0;
+  const people = app.contributor_count ?? 0;
+  const installs = app.install_count ?? 0;
   const strip: InfoStripItem[] = [
     { label: "Category", value: <CategoryGlyph id={app.category} size={18} />, caption: cat },
     { label: "Version", value: app.version, caption: app.installed?.version && app.installed.version !== app.version ? `You have ${app.installed.version}` : "Latest" },
-    { label: "Developer", value: <span className="mp-strip-dev">{app.author?.name || "—"}</span>, caption: app.author?.github ? "@" + app.author.github.replace(/^@/, "") : "Community" },
-    { label: "Size", value: app.size_bytes ? formatSize(app.size_bytes).replace(/\s/, NNBSP) : "—", caption: "Download" },
-    { label: "Python", value: app.requires_python ? "Required" : "Not required", caption: app.requires_python ? "Runs locally" : "Page only" },
-    { label: "Files", value: String(detail?.files.length ?? app.file_count), caption: "In folder" },
+    { label: "Released", value: <span className="mp-strip-dev">{released ?? "—"}</span>, caption: "Reviewed by Fused" },
+    { label: "Installs", value: compactCount(installs), caption: installs === 1 ? "Install" : "Installs", title: `${installs} installs` },
+    { label: "Remixes", value: String(remixes), caption: remix ? `Remix of ${remix.name}` : remixes === 1 ? "Remix" : "Remixes" },
   ];
+  // The row's releases (the catalog's, else the detail's when it sends the
+  // stage-B shape); an older server's package releases are not listed.
+  const releases: MarketRelease[] = (app.releases?.length ? app.releases : detail?.releases ?? []).filter(
+    (r): r is MarketRelease => !!r && typeof (r as MarketRelease).commit === "string",
+  );
 
   return (
     <DetailLayout
       back={back}
       topRight={
-        app.source_url ? (
-          <a className="as-toplink" href={app.source_url} target="_blank" rel="noopener noreferrer">
+        sourceUrl ? (
+          <a className="as-toplink" href={sourceUrl} target="_blank" rel="noopener noreferrer">
             Source <ArrowUpRight size={13} strokeWidth={2.2} aria-hidden="true" />
           </a>
         ) : undefined
@@ -184,11 +308,21 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
     >
       <DetailHero
         icon={<AppIcon src={app.icon_url} name={app.name} seed={app.slug} size={112} raised />}
-        name={app.name}
+        name={
+          <>
+            {app.name}
+            {verified && <VerifiedMark />}
+          </>
+        }
         subtitle={app.description}
-        author={<>by {author}</>}
+        author={
+          <>
+            by {author}
+            {remixLink && <> · Remix of {remixLink}</>}
+          </>
+        }
         tags={app.tags.filter((t) => t !== app.category)}
-        actions={<AppActionPill app={app} size="lg" emphasis="filled" />}
+        actions={<AppActionPill app={app} size="lg" emphasis="filled" onAct={onAct} />}
         actionsNote={note}
         menu={menu}
         menuLabel={`More actions for ${app.name}`}
@@ -204,6 +338,7 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
               files={detail?.files}
               fileCount={app.file_count}
             />
+            {releases.length > 0 && <ReleaseList releases={releases} current={app.installed?.commit ?? null} />}
           </>
         }
         aside={
@@ -211,12 +346,17 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
             <InfoList
               rows={[
                 { label: "Version", value: app.version },
+                ...(released ? [{ label: "Released", value: released }] : []),
+                ...(remixLink ? [{ label: "Remix of", value: remixLink }] : []),
                 { label: "Category", value: cat },
                 {
                   label: "Developer",
                   value: author,
                 },
-                { label: "Size", value: app.size_bytes ? formatSize(app.size_bytes) : "—" },
+                { label: "Size", value: app.size_bytes ? formatSize(app.size_bytes).replace(/\s/, NNBSP) : "—" },
+                { label: "Files", value: String(detail?.files.length ?? app.file_count) },
+                { label: "Contributors", value: people > 1 ? `${people} credited` : "The author" },
+                { label: "Python", value: app.requires_python ? "Required (runs locally)" : "Not required" },
                 ...(app.installed
                   ? [
                       {
@@ -229,12 +369,12 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
                       },
                     ]
                   : []),
-                ...(app.source_url
+                ...(sourceUrl
                   ? [
                       {
                         label: "Source",
                         value: (
-                          <a href={app.source_url} target="_blank" rel="noopener noreferrer">
+                          <a href={sourceUrl} target="_blank" rel="noopener noreferrer">
                             GitHub <ArrowUpRight size={12} strokeWidth={2.2} aria-hidden="true" />
                           </a>
                         ),
@@ -248,7 +388,7 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
           </>
         }
       />
-      {more.length > 0 && (
+      {more.length > 0 && !bare && (
         <DetailSection
           title={`More in ${cat}`}
           action={
@@ -269,5 +409,33 @@ export function AppDetailPage({ slug, snap }: { slug: string; snap: CatalogSnaps
         </DetailSection>
       )}
     </DetailLayout>
+  );
+}
+
+/** Every release of the row, newest first: its date and version, Fused's
+ *  What's new, and a "Blocked" tag where Fused blocked it since. The one
+ *  this machine runs says so. */
+function ReleaseList({ releases, current }: { releases: MarketRelease[]; current: string | null }) {
+  return (
+    <section className="mp-releases" aria-labelledby="mp-releases-title">
+      <h2 className="mp-releases-title" id="mp-releases-title">
+        Releases
+      </h2>
+      <ol className="mp-release-list">
+        {releases.map((r) => (
+          <li key={r.commit} className={"mp-release" + (r.blocked ? " is-blocked" : "")}>
+            <div className="mp-release-head">
+              <span className="mp-release-when">{releaseDate(r.at) ?? "Release"}</span>
+              {r.version && <span className="mp-release-v">v{r.version}</span>}
+              {current && r.commit === current && <span className="mp-release-tag is-current">You have this</span>}
+              {r.blocked && (
+                <span className="mp-release-tag is-blocked">Blocked</span>
+              )}
+            </div>
+            <p className="mp-release-new">{r.whats_new || "No notes for this release yet."}</p>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
