@@ -37,9 +37,10 @@ workspace: the main app and a `FUSED_RENDER_BRANCH` install both default to
 the same bots, firing a due routine twice. So an owner also flocks
 `<bots_root>/.routines.lock` (the workspace claim, beside `.migrate.lock`) and
 keeps it for its lifetime. Without the claim it still serves its home (chats,
-forwarding, the dock) but SKIPS `tick_routines()` and the steps that write the
-shared workspace (the v3 folder migration, the Super Bot seed, the browser
-sweep), logs "another fused-render owns routines for <bots_root>" once, and
+forwarding, the dock) but SKIPS `tick_routines()`, the hand-off sweep (its
+rows live in the Super Bot's bot.json in the workspace: two sweepers would
+start one queued hand-off twice) and the steps that write the shared
+workspace (the v3 folder migration, the Super Bot seed, the browser sweep), logs "another fused-render owns routines for <bots_root>" once, and
 re-tries the claim every pass, so a quitting main app hands routines over.
 The claim drops with the owner lock (`_drop_routines_lock`).
 
@@ -604,13 +605,13 @@ def _scheduler(stop: threading.Event) -> None:
 
 
 def _pass() -> None:
-    """One owner pass: the owner steps (once), the heartbeat, the hand-off sweep, and every bot's routine tick
-    only while this process holds the workspace claim (module docstring)."""
+    """One owner pass: the owner steps (once), the heartbeat, then the hand-off sweep and every bot's routine
+    tick only while this process holds the workspace claim (module docstring)."""
     _become_owner()
     _write_lock_record()  # the heartbeat (`ticked_at`), read by owner_info() in other processes
-    _sweep_handoffs()
     if not _claim_workspace():
-        return  # another home's owner ticks this workspace; re-tried next pass
+        return  # another home's owner sweeps and ticks this workspace; re-tried next pass
+    _sweep_handoffs()
     for b in all():
         try:
             b.tick_routines()

@@ -208,3 +208,23 @@ def test_rerun_after_lift_before_rewrite_still_rewrites(app_home):
     assert r["stamped"] is True and r["moved"] == 1
     assert bpaths.bot_inbox(bid) == inbox
     _check(bid, app_dir)
+
+
+def test_handoff_sweep_only_under_the_workspace_claim(app_home, monkeypatch):
+    # Hand-off rows live in the Super Bot's bot.json in the shared workspace: only the claim holder sweeps them.
+    fcntl = pytest.importorskip("fcntl")
+    sweeps = []
+    monkeypatch.setattr(registry, "_sweep_handoffs", lambda: sweeps.append(1))
+    monkeypatch.setattr(registry, "_become_owner", lambda: None)
+    monkeypatch.setattr(registry, "all", lambda: [])
+    other = open(os.path.join(bpaths.bots_root(), ".routines.lock"), "a+", encoding="utf-8")
+    try:
+        fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert registry._elect()
+        registry._pass()
+        assert sweeps == []
+    finally:
+        fcntl.flock(other.fileno(), fcntl.LOCK_UN)
+        other.close()
+    registry._pass()
+    assert sweeps == [1]
