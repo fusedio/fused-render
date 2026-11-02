@@ -113,7 +113,7 @@ def test_app_rows_keep_a_github_link_and_only_the_known_bounded_keys():
     assert rows[0]["source"] == {"kind": "github", "url": URL, "repo": REPO, "commit": "a" * 40}
 
 
-def test_row_state_github_installed_by_clone_or_app_id_else_missing(monkeypatch):
+def test_row_state_github_installed_by_clone_only_else_missing(monkeypatch):
     from fused_render import appfile
     from fused_render.bots import botfile
 
@@ -121,10 +121,11 @@ def test_row_state_github_installed_by_clone_or_app_id_else_missing(monkeypatch)
     app, _head = _gh_clone()
     st = botfile._row_state(_row(), None)
     assert st["state"] == "installed" and st["ticked"] and st["tickable"] and st["reason"]
-    # No clone of the repo, but a copy carrying the row's app id: also installed, same shape.
+    # No clone of the repo, only a copy carrying the row's app id: still "missing" (the install WILL clone; ids
+    # are public, so the match proves nothing and the page must not say "already installed").
     other = {**_row(url="https://github.com/other/repo", repo="other/repo"), "app_id": "abc123"}
     monkeypatch.setattr(appfile, "workspace_app_with_id", lambda app_id, **_k: app if app_id == "abc123" else None)
-    assert botfile._row_state(other, None) == st
+    assert botfile._row_state(other, None) == {"state": "missing", "ticked": True, "tickable": True}
 
 
 def test_offline_github_row_is_an_error_row_and_the_bot_is_still_made(monkeypatch, tmp_path):
@@ -222,9 +223,9 @@ def test_app_id_match_is_display_only_the_install_still_clones(monkeypatch, tmp_
 
     monkeypatch.setattr(appfetch, "download_github_app", offline)
     monkeypatch.setattr(bm.Bot, "greet", lambda self: None)  # no greeting thread outliving the test
-    assert [a["state"] for a in botfile.probe(path)["apps"]] == ["installed"]  # the page may say so
+    assert [a["state"] for a in botfile.probe(path)["apps"]] == ["missing"]  # the id match is not "installed"
     out = botfile.install(path, apps=["gh-app"], memory=False)
-    assert out["ok"] and cloned == [URL]  # ...but the install asked GitHub, it did not take the id's word
+    assert out["ok"] and cloned == [URL]  # and the install asked GitHub, it did not take the id's word
     assert out["apps"] == [{"folder": "gh-app", "ok": False, "state": "error",
                             "error": f"could not clone {REPO} from GitHub: network is unreachable"}]
     nb = registry.get(out["bot_id"])

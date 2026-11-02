@@ -309,23 +309,6 @@ def _github_clone(url: str) -> str | None:
         return None
 
 
-def _github_copy(row: dict) -> str | None:
-    """Where a github row's app already is, for DISPLAY only (`_row_state`): its clone (`_github_clone`), or a
-    copy carrying the row's app id wherever it sits. Never a short-circuit or a grant — app ids are public, so a
-    hand-made app sharing one is not proof the repo is here (`_install_github` and `_already_there` ask
-    `_github_clone` only)."""
-    clone = _github_clone(_str(row["source"].get("url")))
-    if clone:
-        return clone
-    app_id = row.get("app_id")
-    if isinstance(app_id, str) and app_id:
-        try:
-            return appfile.workspace_app_with_id(app_id)
-        except Exception:  # noqa: BLE001 - as above
-            logger.warning("bot package: app id lookup failed for %s", app_id, exc_info=True)
-    return None
-
-
 def _row_state(row: dict, staged: str | None) -> dict:
     """state / ticked / tickable / reason for one app row (§8)."""
     src = row["source"]
@@ -356,7 +339,9 @@ def _row_state(row: dict, staged: str | None) -> dict:
     elif kind == "marketplace":
         installed = _market_copy(_str(src.get("slug"))) is not None
     elif kind == "github":
-        installed = _github_copy(row) is not None
+        # A clone of the repo only. A hand-made app carrying the row's app id is NOT "installed": ids are public
+        # and the install will clone regardless, so saying so here would be a lie the page cannot qualify.
+        installed = _github_clone(_str(src.get("url"))) is not None
     else:
         return {"state": "unknown", "ticked": False, "tickable": False, "reason": "Unknown app source"}
     if installed:

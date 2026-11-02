@@ -2338,8 +2338,9 @@ a Retry is always safe. Apps first, in the order given: bundled → `appfile.ins
 package can never overwrite an app the user edited); starter →
 `starters.ensure([key])`; marketplace → `marketplace.start_install(slug)`,
 polled up to `tools.MARKET_INSTALL_WAIT_S` (240 s); github → `_install_github`:
-already a clone of the repo (`installed_clone_of`) → ok, nothing written; an
-`app_id` match alone is display only (ids are public), else
+already a clone of the repo (`installed_clone_of`) → ok, nothing written; a
+hand-made app carrying the row's `app_id` counts for nothing, on the probe or
+the install (ids are public), so the row reads `missing` and is cloned; else
 `appfetch.download_github_app(url)` (synchronous; the clone the `open?git=` deep
 link makes, packed into a staged `.fused`) then the bundled path on that file
 (`install_target`; `same` → ok with nothing written; `install_app_file`, never
