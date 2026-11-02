@@ -3,12 +3,14 @@
 // /package writes it. Top to bottom: who (face, name, the file name), what always goes (instructions, skills, the
 // model/effort/approval posture), Memory (private, so default OFF), Apps (every manifest row ticked on open; a row the
 // backend flagged with `problem` cannot travel and says why), a caution when something looks like a secret (export is
-// never blocked on it), and the footer total. After a write the footer becomes the result row: where it went, Reveal, Done.
+// never blocked on it), and the footer total. After a write the footer becomes the result row: where it went, Open in
+// explorer (the folder listing with the file selected — fused-render's own explorer, never Finder; owner 2026-11-02), Done.
 //
 // Same shell as every bots dialog (dialogs/shell.ts) and non-modal like Settings / Browsers. Errors stay in the dialog
 // (under the footer), never the page banner: the user is looking here, and the plan they trimmed must survive a retry.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PlusIcon, TriangleAlertIcon } from "lucide-react";
+import { navigate } from "@platform/lib/router";
 import { cn } from "@platform/lib/utils";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
@@ -126,10 +128,13 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
       if (live.current) setBusy(false);
     }
   };
-  const reveal = async () => {
+  // The explorer's own listing of the folder the file landed in, with the file highlighted (`sel` is relative to the
+  // destination, the value the listing itself writes back). In place, like the Bots page's drop → install-page hop.
+  const openInExplorer = () => {
     if (!result) return;
-    setErr("");
-    try { await api.reveal(bot.id, result); } catch (e) { if (live.current) setErr(errMsg(e)); }
+    const cut = result.lastIndexOf("/");
+    onClose();
+    navigate(cut > 0 ? result.slice(0, cut) : result, { isDir: true, sel: cut > 0 ? result.slice(cut + 1) : null });
   };
 
   const isSuper = bot.kind === "super" || !!plan?.super;
@@ -278,7 +283,7 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
           {result ? (
             <div className="flex w-full items-center gap-2">
               <span className="min-w-0 flex-1 truncate text-[13px]" title={result}>Saved to <span className="text-muted-foreground">{tail(result)}</span></span>
-              <Button variant="outline" onClick={() => { void reveal(); }}>Reveal folder</Button>
+              <Button variant="outline" onClick={openInExplorer}>Open in explorer</Button>
               <Button onClick={onClose}>Done</Button>
             </div>
           ) : (
