@@ -276,3 +276,106 @@ ALL_VERBS_SMALL = """
 image = { model = "black-forest-labs/FLUX.2-klein-4B", swappable = true }
 text = { model = "Qwen/Qwen3-4B-Instruct-GGUF", use = "Captions" }
 """
+
+
+# ------------------------------------------------- runtime substitution
+
+import asyncio  # noqa: E402
+from urllib.parse import quote  # noqa: E402
+
+from fastapi.responses import JSONResponse  # noqa: E402
+
+from fused_render.server import ai as server_ai  # noqa: E402
+
+DECLARED = {
+    "text-to-image": ("image", "decl/image", "/api/ai/image"),
+    "text-to-video": ("video", "decl/video", "/api/ai/video"),
+    "text-to-speech": ("speech", "decl/speech", "/api/ai/speech"),
+    "automatic-speech-recognition": ("transcribe", "decl/asr", "/api/ai/transcribe"),
+    "embeddings": ("embed", "decl/embed", "/api/ai/embed"),
+    "text-classification": ("decide", "decl/decide", "/api/ai/decide"),
+    "image-to-text": ("vision", "decl/vision", "/api/ai/vision"),
+}
+
+
+@pytest.fixture()
+def swapped_app(tmp_path):
+    lines = "\n".join(
+        f'{verb} = {{ model = "{model}", swappable = true }}'
+        for verb, model, _ in DECLARED.values())
+    lines += '\ntext = { model = "decl/text", swappable = true }'
+    d = _app(tmp_path, "[tool.fused-render.app.models]\n" + lines)
+    decl = app_models.load_declaration(d)
+    subs = {cap: f"sub/{decl[cap]['verb']}" for cap in decl}
+    app_models.write_state(d, True, app_models.declaration_hash(decl), subs)
+    return os.path.join(d, "index.html")
+
+
+@pytest.fixture()
+def rt(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    (tmp_path / "Fused").mkdir()
+    seen = []
+
+    def record(body, *a, **k):
+        seen.append(body.get("model"))
+        return JSONResponse({"error": "stop"}, status_code=400)
+
+    monkeypatch.setattr(ai_runtime, "_reject_unknown", record)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    client.seen = seen
+    return client
+
+
+def _post(rt, url, body, page):
+    return rt.post(url, json=body, headers={
+        "X-Fused": "1", "X-Fused-Page": quote(page, safe="")})
+
+
+@pytest.mark.parametrize("cap", list(DECLARED))
+def test_media_routes_swap_declared_and_omitted(rt, swapped_app, cap):
+    verb, declared, url = DECLARED[cap]
+    _post(rt, url, {"model": declared}, swapped_app)
+    _post(rt, url, {}, swapped_app)
+    _post(rt, url, {"model": "undeclared/x"}, swapped_app)
+    assert rt.seen == [f"sub/{verb}", f"sub/{verb}", "undeclared/x"]
+
+
+def test_media_routes_untouched_when_unaccepted(rt, swapped_app):
+    d = os.path.dirname(swapped_app)
+    app_models.write_state(d, False, "x", {"text-to-image": "sub/image"})
+    _post(rt, "/api/ai/image", {"model": "decl/image"}, swapped_app)
+    _post(rt, "/api/ai/image", {}, swapped_app)
+    assert rt.seen == ["decl/image", None]
+
+
+def test_download_route_fetches_the_substitute(rt, swapped_app, monkeypatch):
+    seen = []
+
+    def record(body, model):
+        seen.append(model)
+        return None, JSONResponse({"error": "stop"}, status_code=400)
+
+    monkeypatch.setattr(ai_runtime, "_resolve_capability", record)
+    _post(rt, "/api/ai/runtime/download",
+          {"model": "decl/image", "capability": "text-to-image"}, swapped_app)
+    _post(rt, "/api/ai/runtime/download", {"model": "decl/image"}, swapped_app)
+    assert seen == ["sub/image", "decl/image"]
+
+
+def test_text_relay_swaps(swapped_app, monkeypatch):
+    seen = []
+
+    def fake_local(model, *a, **k):
+        seen.append(model)
+        return JSONResponse({"ok": True})
+
+    monkeypatch.setattr(server_ai, "_local_relay", fake_local)
+    monkeypatch.setattr(server_ai, "_images_unsupported_by_runner", lambda m: None)
+    for model in ("decl/text", None, "other/untouched"):
+        body = {"prompt": "hi", **({"model": model} if model else {})}
+        asyncio.run(server_ai._ai_relay(body, page=swapped_app))
+    assert seen[0] == "sub/text"
+    assert seen[1] == "sub/text"
+    assert seen[2] == "other/untouched"

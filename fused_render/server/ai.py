@@ -1341,6 +1341,15 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             status=400)
 
     model = body.get("model")
+    if page and (model is None or isinstance(model, str)):
+        # The app's own substitute for its declared text model (app_models):
+        # resolved before validation so the substitute passes the shape check
+        # and provider inference like any other id.
+        from fused_render import app_models
+        from fused_render.ai import registry
+        model = app_models.resolve(page, registry.TEXT_GENERATION, model)
+        if model is not None:
+            body = {**body, "model": model}
     if model is not None and (
             not isinstance(model, str) or not _AI_MODEL_RE.fullmatch(model)):
         return _ai_error(
