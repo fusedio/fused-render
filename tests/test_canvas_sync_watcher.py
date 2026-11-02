@@ -549,8 +549,8 @@ def test_a_push_reconciles_the_clone_rows_with_its_files(
     seen: dict = {}
     _capture_push(monkeypatch, seen)
     clone = harness.root / "alpha"
-    ghost = '[[canvas.nodes]]\nudfName = "ghost"\n'
-    (clone / "canvas.toml").write_text(ghost)
+    (clone / "canvas.toml").write_text('[[canvas.nodes]]\nudfName = "ghost"\n[[canvas.nodes]]\nudfName = "b"\n')
+    (clone / "b.py").unlink()
     m = _start(harness)
     assert "ghost" in _toml(harness) and _toml(harness).startswith('type = "canvas"')
     assert m._take_fingerprint() != m._fingerprint
@@ -560,10 +560,10 @@ def test_a_push_reconciles_the_clone_rows_with_its_files(
     assert "ops" in cut and "ghost" not in json.dumps(cut["ops"]), cut
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert [r["udfName"] for r in _rows(str(clone))] == ["ghost", "a", "b", "orphan_x"]
+    assert [r["udfName"] for r in _rows(str(clone))] == ["ghost", "b", "a", "orphan_x"]
     shipped = rtoml.loads(seen["tomls"][0])["canvas"]["nodes"]
-    assert [r["udfName"] for r in shipped] == ["a", "b", "orphan_x"]
-    assert list(m._base_toml["nodes"]) == ["a", "b", "orphan_x"]
+    assert [r["udfName"] for r in shipped] == ["b", "a", "orphan_x"]
+    assert list(m._base_toml["nodes"]) == ["b", "a", "orphan_x"]
     assert m._base_files["canvas.toml"] == canvases_mod.hashlib.md5(
         seen["tomls"][0].encode()).hexdigest()
     trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/canvas.toml"))

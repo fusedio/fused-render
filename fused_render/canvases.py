@@ -3477,7 +3477,9 @@ class _SyncManager:
                 copy_dir = None
                 copy_error = str(exc)
             else:
-                self._reconcile_rows("disk_to_server", copy_dir, publish=True)
+                self._reconcile_rows("disk_to_server", copy_dir, publish=True, served={
+                    os.path.splitext(f)[0] for f in self._base_files or ()
+                    if f.endswith(canvas_snapshot.BODY_SUFFIXES)})
                 base_snapshot = self._take_file_hashes(copy_dir)
                 base_toml_snapshot = self._toml_rows(copy_dir)
         finally:

@@ -1162,7 +1162,7 @@ def add_canvas_type(clone_dir: str) -> None:
 
 
 def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterable[str] = (),
-                   publish: bool = False, add: bool = True,
+                   publish: bool = False, served: Iterable[str] = (), add: bool = True,
                    backup: Callable[[str, bytes], None] | None = None) -> dict:
     path = os.path.join(clone_dir, "canvas.toml")
     doc = _load_toml(path)
@@ -1179,16 +1179,13 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterabl
     for row in rows_in:
         name = row_name(row)
         if not is_folder(row) and (last[name] is not row or (
-                name not in files and (publish or name in drop))):
+                name not in files and ((publish and name not in served) or name in drop))):
             dropped.append(str(name))
             continue
         rows.append(row)
-    owners: dict[str, dict] = {}
-    for r in rows:
-        if is_folder(r) and isinstance(r.get("childUdfOrder"), list):
-            for c in r["childUdfOrder"]:
-                if isinstance(c, str):
-                    owners.setdefault(c, r)
+    owners = {c: r for r in reversed(rows) if is_folder(r)
+              and isinstance(r.get("childUdfOrder"), list)
+              for c in r["childUdfOrder"] if isinstance(c, str)}
     taken = {row_name(r) for r in rows} | set(pending)
     missing = [s for s in sorted(files) if add and s not in taken]
     z = max((_num(r.get("zIndex"), 0) for r in rows), default=0)
