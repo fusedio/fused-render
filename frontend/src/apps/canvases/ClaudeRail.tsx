@@ -120,6 +120,7 @@ import {
 import {
   cardTitleLine,
   draftRing,
+  isChatDraftTask,
   isDraftTask,
   liveJobRow,
   recapTitlesOn,
@@ -127,10 +128,12 @@ import {
   taskHref,
 } from "@shell/tasks-lib";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
-import NewJobModal from "@shell/NewJobModal";
+import NewJobModal, { chatHopSeed, reopenTime, type DraftSeed } from "@shell/NewJobModal";
+import { fetchDrafts } from "@platform/lib/drafts";
+import { lastChatId, setLastChat, useLastChat } from "@platform/lib/last-chat";
 import { draftHref, preloadChat } from "@apps/claude";
 import { hideHint } from "@platform/lib/hints";
-import { dotCleared, keepMarks, railRows, readMark, type RailRow, type ReadMark } from "./claude-rail-lib";
+import { dotCleared, keepMarks, railRows, railScope, readMark, type RailRow, type ReadMark } from "./claude-rail-lib";
 import { CanvasGlyph } from "./glyph";
 import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
@@ -168,6 +171,16 @@ interface Card {
   canvas: string;
   modes: string[];
   recents: string[];
+  /** A DRAFT REOPENED IN PLACE (owner, 2026-11-02: "draft open took user to
+   *  tasks page instead of just opening the modal"): the stored record the
+   *  card mounts on — the Tasks page's own seed (`chatHopSeed` for a chat
+   *  draft, the row's `form` for a task draft). Absent on the +. */
+  draft?: DraftSeed | null;
+  /** The chat record a chat draft's card autosaves back onto (NewJobModal
+   *  `chatKey`); "" for a task draft. */
+  chatKey?: string;
+  /** The time the stored form chose, or null (Scheduled `reopenTime`). */
+  time?: Date | null;
 }
 
 /** How long the + waits on the schedule before opening the card without it
@@ -401,8 +414,9 @@ export function ClaudeRail({
   // change when we filter tasks based on the selected node, only when we
   // click a task item". A press on a ring, either door; nothing else moves
   // it, and it survives the rail narrowing to a node and widening again.
-  const [lastPressed, setLastPressed] = useState<string | null>(null);
-  const pressId = (t: TaskPulseTask) => t.task_id || t.key;
+  // Shared with the pane's Recent chats list (platform/lib/last-chat), so
+  // the mark holds across the pane opening and shutting.
+  const lastPressed = useLastChat();
   const railRef = useRef<HTMLElement | null>(null);
   const peekRef = useRef<RailPeekHandle | null>(null);
   const ringEls = useRef(new Map<string, HTMLElement>());
@@ -511,8 +525,8 @@ export function ClaudeRail({
     setNoRoom(true);
     const href = pressedHref.current;
     pressedHref.current = null;
-    if (href) onOpenChat(href);
-  }, [intent, onOpenChat]);
+    if (href) openChatRef.current(href);
+  }, [intent]);
   useEffect(() => {
     if (!noRoom) return;
     const re = () => setNoRoom(false);
@@ -704,6 +718,80 @@ export function ClaudeRail({
       setCard({ seq: Date.now(), target: at, node: on, canvas: canvasName, ...got });
     });
   };
+  // A DRAFT'S DOOR, IN PLACE (header of `Card.draft`): the same New task card
+  // the + opens, on the draft's own record — what the Tasks page's row press
+  // does (Scheduled `openDraft`), without leaving the canvas. A chat draft is
+  // read by its key and seeded the Tasks page's way (`chatHopSeed`); a task
+  // draft carries its form on the row. Nothing is minted either way, and the
+  // card's autosave goes on writing the same record.
+  const openDraftCard = (row: Task) => {
+    // No clone yet: no node to name and no target to lock (the +'s gate).
+    if (opening || card || dir === null) return;
+    const chat = isChatDraftTask(row);
+    if (!chat && !row.draft_id) return;
+    setOpening(true);
+    const where = railScope(row, dir);
+    const base = {
+      target: row.target || target,
+      node: where.kind === "node" ? where.name : null,
+      canvas: name,
+    };
+    // READ FRESH, both kinds: the listing row's `form` can trail an edit
+    // made a moment ago (a close-and-reopen), and a card seeded on it would
+    // autosave the older words back over the newer. The row's own form is
+    // the fallback when the read fails or outlasts SCHEDULE_WAIT_MS — the
+    // +'s cap, so a hung read never holds the rail's doors shut.
+    const fallback: DraftSeed | null = chat
+      ? null
+      : { id: row.draft_id!, form: row.form ? { ...row.form } : null };
+    const stored = new Promise<DraftSeed | null>((resolve) => {
+      const timer = window.setTimeout(() => resolve(fallback), SCHEDULE_WAIT_MS);
+      fetchDrafts().then(
+        (all) => {
+          window.clearTimeout(timer);
+          if (!all) return resolve(fallback);
+          if (chat) return resolve(chatHopSeed(row.key, all.chat[row.key] ?? null, row.project || row.file || ""));
+          const form = all.task[row.draft_id!];
+          resolve(form ? { id: row.draft_id!, form: { ...form } } : fallback);
+        },
+        () => {
+          window.clearTimeout(timer);
+          resolve(fallback);
+        },
+      );
+    });
+    void Promise.all([cardSeed(), stored]).then(([got, seed]) => {
+      if (!alive.current) return;
+      setOpening(false);
+      setCard({
+        seq: Date.now(),
+        ...base,
+        ...got,
+        draft: seed,
+        chatKey: chat ? row.key : "",
+        time: reopenTime(seed),
+      });
+    });
+  };
+  // THE RAIL'S ONE DOOR: a draft's href opens its card here; every other
+  // href is the page's (`onOpenChat`). By href, because that is what the
+  // ring, the hover card's Open and the no-room press all hand over.
+  const draftByHref = useMemo(() => {
+    const map = new Map<string, Task>();
+    for (const { row } of seats) {
+      if (!row || !isDraftTask(row)) continue;
+      const href = draftHref(row);
+      if (href) map.set(href, row);
+    }
+    return map;
+  }, [seats]);
+  const openChat = (href: string) => {
+    const row = draftByHref.get(href);
+    if (row) openDraftCard(row);
+    else onOpenChat(href);
+  };
+  const openChatRef = useRef(openChat);
+  openChatRef.current = openChat;
 
   // ONE RING, as the list draws it — and as the foot draws the held outsider.
   const ringOf = ({ pulse: t, row }: RailRow) => {
@@ -751,7 +839,7 @@ export function ClaudeRail({
                     (peeked ? " peeked" : "") +
                     (peeked && pinned ? " is-pinned" : "") +
                     (peeked && held ? " is-held" : "") +
-                    (lastPressed !== null && pressId(t) === lastPressed ? " is-last" : "")
+                    (lastPressed !== null && lastChatId(t) === lastPressed ? " is-last" : "")
                   }
                   aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the
@@ -787,7 +875,7 @@ export function ClaudeRail({
                     // Opened, by either door below: read (header), and the
                     // last ring pressed (header).
                     clearUnread(t);
-                    setLastPressed(pressId(t));
+                    setLastChat(lastChatId(t));
                     if (peekOn && !noRoom) {
                       pressedHref.current = href;
                       requestAnimationFrame(() => {
@@ -805,7 +893,7 @@ export function ClaudeRail({
                       else if (e.detail === 0) focusCardSoon();
                       return;
                     }
-                    onOpenChat(href);
+                    openChat(href);
                   }}
                 >
                   <StatusIcon
@@ -941,7 +1029,7 @@ export function ClaudeRail({
           onHold={(on) => intent.hold(on)}
           onDismiss={dismissToRing}
           onNoRoom={onNoRoom}
-          onOpenChat={onOpenChat}
+          onOpenChat={openChat}
           onSelectNode={onSelectNode}
           selectedFile={nodeFile}
           held={held}
@@ -961,7 +1049,10 @@ export function ClaudeRail({
           // initialisers, so every opening must be a fresh mount
           // (Scheduled.tsx `openSeq`).
           key={card.seq}
-          initialTime={null}
+          initialTime={card.time ?? null}
+          // The draft's own record, when a draft row opened it (`Card.draft`).
+          initialDraft={card.draft ?? null}
+          chatKey={card.chatKey ?? ""}
           // SCOPED TO THE CLONE — or to the selected node's file in it — the
           // project page's Tasks tab's way
           // (CanvasPage.tsx `scope.project`, Scheduled.tsx `lockTarget`): a
@@ -975,7 +1066,7 @@ export function ClaudeRail({
           lockedWhere={{ canvas: card.canvas, node: card.node }}
           // From the List, not the calendar: a task typed here is one to run
           // now, and the when-row folds into More options.
-          planning={false}
+          planning={!!card.time}
           permissionModes={card.modes}
           recentTargets={card.recents}
           // Closed without creating: the card may have left a DRAFT behind,

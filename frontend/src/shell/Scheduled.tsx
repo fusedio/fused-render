@@ -77,10 +77,7 @@ import { draftChatUrl } from "@apps/claude";
 import {
   chatKeySession,
   fetchDrafts,
-  NEW_CHAT_PREFIX,
-  newChatFile,
 } from "@platform/lib/drafts";
-import type { ChatDraft } from "@platform/lib/drafts";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
@@ -92,7 +89,11 @@ import ScheduleCalendar, {
   ICON_VIEW_CARDS,
   ICON_VIEW_LIST,
 } from "./ScheduleCalendar";
-import NewJobModal, { seededDraftForm, splitDraft } from "./NewJobModal";
+import NewJobModal, { chatHopSeed, reopenTime, seededDraftForm } from "./NewJobModal";
+// Moved beside the card so the canvas rail can open a draft on it the same
+// way (apps may import NewJobModal, never this page); re-exported for readers
+// who learnt them here.
+export { chatHopSeed, reopenTime } from "./NewJobModal";
 import type { DraftSeed } from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -677,91 +678,6 @@ interface ChatHop {
 /** The opening that came from nowhere: every way into the form but the hop.
  *  A module constant so `openForm`'s default argument is one stable value. */
 const NO_HOP: ChatHop = { key: "", from: "" };
-
-/**
- * ONE CHAT RECORD, AS THE NEW TASK CARD OPENS ON IT (design "one record", §1).
- *
- * The hop no longer carries a sentence, a tray or a session in its URL — it
- * carries the KEY, and this turns what is stored under that key into the seed
- * the card already knows how to mount on (`DraftSeed`, the shape a reopened
- * task draft uses). One seeding rule for both kinds of draft, which is what
- * makes "the modal opens on the record" a true sentence rather than two
- * near-identical paths.
- *
- * THE WORDS COME OUT OF `text`, SPLIT, and they go back into `text`, JOINED
- * (contract §1: the words live in `text`, never in `form.description`; the
- * modal splits and joins with `splitDraft`/`joinDraft`). So the composer's box
- * and the card's two prose fields are two views of one string, and a hop out
- * followed by Back to chat is lossless. Nothing here reads `form.title` — the
- * title IS the first line, which is also what the listing row prints.
- *
- * `session_id` is the KEY when the key is a session: a hop out of a chat that
- * has already run is a message into that thread, and that is what the Schedule
- * payload's `sessionId` is built from. `new:<file>` has no thread to continue,
- * and its `<file>` is the folder the card falls back to when the record names
- * no target of its own.
- *
- * `at` IS WHAT A SESSION KEY CANNOT SAY (Akshil, 2026-09-16). A `new:<file>` key
- * spells its folder; a session id spells only the thread, so this used to fall
- * through to `""` and the card opened on the reader's HOME — and its first
- * autosave then wrote that home path onto the conversation's own record as the
- * target. Every door that knows the folder now states it: the hop's `?target=`
- * (the composer's own `file`), or a draft row's `project`. The stored form still
- * outranks it, because a form that names a target is a choice somebody made.
- */
-export function chatHopSeed(
-  key: string,
-  record: ChatDraft | null,
-  at = "",
-): DraftSeed | null {
-  if (!record) return null;
-  const split = splitDraft(record.text);
-  const form = (record.form ?? {}) as Record<string, unknown>;
-  const newChat = key.startsWith(NEW_CHAT_PREFIX);
-  return {
-    id: "",
-    form: {
-      ...form,
-      title: split.title,
-      description: split.description,
-      attachments: record.attachments ?? [],
-      target: (typeof form.target === "string" && form.target)
-        || (newChat ? newChatFile(key) : "") || at || "",
-      session_id: newChat ? "" : key,
-    },
-  };
-}
-
-/**
- * WHAT TIME A FORM THAT ALREADY EXISTS OPENS ON — its own, or none (Bugbot, PR
- * #1126, 2026-09-12).
- *
- * `NEW_LINK_LEAD_MS` is an answer to a question a FRESH link asks: a card that
- * has never been saved opens on now+2m because a deep link means "set this up",
- * and a near-now time is the one to adjust from. A form that has been saved
- * already answered that question, and the answer is in it — `when`, which the
- * store keeps as null until somebody actually opens the when-row and picks one
- * (NewJobModal `draftBody`). Null there means IMMEDIATE: a task to run, not a
- * task to plan.
- *
- * Handing the lead date to such a form overwrote that. `creating` being a Date
- * is what makes the card `planning`, `planning` is what makes `timePicked` open
- * true, and `timePicked` is what puts `when` in the next autosave — so merely
- * reopening an immediate draft rewrote it as one scheduled for two minutes'
- * time, and Schedule sent it that way. So: the stored time when there is one,
- * and nothing at all when there is not. Only the opening with no stored form
- * behind it keeps the lead (see both call sites).
- *
- * An unreadable `when` reads as none here. The card seeds its own field from
- * the string verbatim (`seededDraftForm`), so nothing is lost by this one
- * declining to guess a Date out of it.
- */
-export function reopenTime(seed: DraftSeed | null): Date | null {
-  const when = (seed?.form as { when?: unknown } | null | undefined)?.when;
-  if (typeof when !== "string" || !when) return null;
-  const at = new Date(when);
-  return Number.isNaN(at.getTime()) ? null : at;
-}
 
 export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
