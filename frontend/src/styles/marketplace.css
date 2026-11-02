@@ -2022,6 +2022,16 @@
   color: var(--error);
 }
 
+/* The way out of a refused install, inside the note itself (`job.code ===
+   "replace"`): a link-button in the accent, so the red sentence ends in
+   something to press. */
+.as-hero-note .as-note-cta {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .as-tags {
   display: flex;
   flex-wrap: wrap;
