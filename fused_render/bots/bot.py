@@ -3037,16 +3037,18 @@ class Bot:
                         stable = st
                         continue
                     reply = " ".join(((row or {}).get("last_reply") or "").split())[:400]
-                    # `app` lets the chat render an app card under this message (open inline / beside the chat).
-                    self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
-                              app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
                     app = os.path.basename(str(bd.get("dir") or "").rstrip("/"))
+                    # done_at is on disk BEFORE the "ready" event: a restart in between must not resume this watcher
+                    # (resumed ones accept `done` at once) and tell the user twice.
                     with self.lock:
                         bd["done_at"] = time.time()
                         # The app it just built is ticked under "Apps it may use without asking": its scripts run
                         # without a card from here on, and Settings shows that (tools.risk reads only the tick).
                         apptools.trust_app(self.meta, app)
                         self.save()
+                    # `app` lets the chat render an app card under this message (open inline / beside the chat).
+                    self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
+                              app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
                     self._trust_for_asker(bd.get("via"), app)
                     return
                 stable = ""
