@@ -173,8 +173,9 @@ def test_snapshot_deleting_a_node_reports_its_file(tmp_path):
     prev = cs.compact_state_from_disk(d)
     new = _snapshot_new([_studio_node("a")], [{"slug": "a", "file": "a.py", "id": "ida"}])
     trashed = []
-    result = cs.apply_snapshot(d, new, prev, backup=lambda rel, data: trashed.append(rel))
-    assert result["deleted"] == ["b"]
+    result = cs.apply_snapshot(d, new, prev, backup=lambda rel, data: (
+        trashed.append(rel), os.remove(os.path.join(d, rel))))
+    assert result["deleted"] == ["b"] and [r["udfName"] for r in _rows(d)] == ["a"]
     assert result["deleted_files"] == ["b.json"]
     assert trashed == ["b.json"]
     assert not os.path.exists(os.path.join(d, "b.json"))

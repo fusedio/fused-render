@@ -260,10 +260,7 @@ def _post_push(origin: str, name: str, env: str) -> tuple[int | None, dict]:
     environment's sync manager.
 
     status None        -> could not connect at all (server not around) — safe
-                           to fall through to the real CLI. No timeout: a
-                           push waits for the clone's lock and then for the
-                           CLI, and the server's own guarded push would race
-                           a second one started here.
+                           to fall through to the real CLI.
     """
     import urllib.error
     import urllib.request

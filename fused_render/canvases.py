@@ -197,11 +197,8 @@ _FRESH_WINDOW_S = 10.0
 # here also keeps the name safe as a path segment and an argv element.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
-# How long the manual push/pull endpoints wait for the manager's _flight_lock
-# (and a push or pull for each short _op_lock phase) before giving up with a
-# 409. Short on purpose: the caller is a Claude session that just asked to
-# publish, and "a sync operation is in flight, try again" is a better answer
-# than a request that hangs for the whole PUSH_TIMEOUT.
+# How long the manual pull endpoint waits for the manager's _flight_lock (and a
+# push or pull for each short _op_lock phase) before giving up with a 409.
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
 # How long /api/canvases/snapshot waits on _op_lock before answering 409.
 SNAPSHOT_LOCK_WAIT_S = 1.0
@@ -1533,8 +1530,8 @@ protection described above.
   canvas is rejected at push time and the error surfaces to the user.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
-  A row without a file is ignored, and a file without a row gets a default
-  row at push: write the row yourself when its place matters.
+  A file without a row gets a default row at push (write the row when its
+  place matters); to remove a node, delete its file and its row.
 - **Folders** are `[[canvas.nodes]]` rows with `type = "udf-folder"`. Give a
   folder row `udfName` equal to its `folderName`. Membership lives ONLY in
   the folder's `childUdfOrder` (the child rows' `udfName`s; one folder per
@@ -3300,17 +3297,14 @@ class _SyncManager:
 
     def _freeze_copy(self) -> str:
         """Copy the clone to `.sync/push/<name>/` (fresh each push) for the
-        CLI to read while _op_lock is free: dot-dirs, what `.fusedignore`
-        names (`canvas_snapshot.fusedignored`) and the files the workbench
-        created without a row yet are left out; `.fusedignore` itself
-        travels. Under _op_lock, so no snapshot write lands half-way
-        through the copy. Raises OSError/shutil.Error on failure."""
+        CLI to read while _op_lock is free: dot-dirs and what `.fusedignore`
+        names are left out; `.fusedignore` itself travels. Under _op_lock,
+        so no snapshot write lands half-way through the copy. Raises
+        OSError/shutil.Error on failure."""
         dest = self._push_copy_dir()
         _rmtree_quiet(dest)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         rules = canvas_snapshot.fusedignore_rules(self.dir)
-        files = canvas_snapshot.node_files(self.dir)
-        rowless = {files[n] for n in self._rowless if n in files}
         root = os.path.normpath(self.dir)
 
         def ignore(folder: str, names: list[str]) -> list[str]:
@@ -3318,7 +3312,7 @@ class _SyncManager:
             out = []
             for n in names:
                 is_dir = os.path.isdir(os.path.join(folder, n))
-                if ((is_dir and n.startswith(".")) or (at_root and n in rowless)
+                if ((is_dir and n.startswith("."))
                         or (n != ".fusedignore" and canvas_snapshot.fusedignored(
                             rules, n, is_dir=is_dir, at_root=at_root))):
                     out.append(n)
@@ -3992,7 +3986,7 @@ class _SyncManager:
             self._embed_view = None
             self._rowless = set()
             if self._fileless:
-                self._reconcile_rows("embed_to_disk", self.dir, drop=self._fileless)
+                self._reconcile_rows("embed_to_disk", self.dir, drop=self._fileless, add=False)
                 self._fileless = set()
             self._embed_applied = {}
             self._embed_max_seq = -1
@@ -5587,10 +5581,7 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
     # The flight lock, not _op_lock: _push takes _op_lock itself, only for its
     # short freeze and fold phases, and never across the CLI.
     before = manager.push_seq
-    if not manager._flight_lock.acquire(timeout=PUSH_TIMEOUT):
-        return _busy(
-            "a sync operation is in flight for this canvas; try again in a moment")
-    try:
+    with manager._flight_lock:
         # Re-checked under the lock: pause() sets the count and then waits on
         # this same lock, so holding it is what makes the answer stable.
         with manager.pause_lock:
@@ -5629,8 +5620,6 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
             if manager._push() == "busy":
                 return _busy(
                     "a sync operation is in flight for this canvas; try again in a moment")
-    finally:
-        manager._flight_lock.release()
     status = manager.status()
     # "The counter moved and no error" is success: the push LANDED. Not
     # `push_state == "idle"` — a write during the CLI run (not in the frozen

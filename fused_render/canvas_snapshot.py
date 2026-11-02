@@ -88,6 +88,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import pathlib
 import time
 from typing import Any, Callable, Iterable
 
@@ -591,8 +592,6 @@ IGNORED_BASENAMES = frozenset({"CLAUDE.md", ".fusedignore"})
 
 
 def fusedignore_rules(clone_dir: str) -> list[tuple[str, bool, bool, bool]]:
-    """The clone's `.fusedignore` as `(pattern, negated, dir_only, anchored)`
-    basename rules; a rule with an inner `/` is left to the CLI."""
     data = _read_bytes(os.path.join(clone_dir, ".fusedignore")) or b""
     rules = []
     for line in data.decode("utf-8", "replace").splitlines():
@@ -610,8 +609,6 @@ def fusedignore_rules(clone_dir: str) -> list[tuple[str, bool, bool, bool]]:
 
 
 def fusedignored(rules: list, name: str, *, is_dir: bool = False, at_root: bool = True) -> bool:
-    """Last matching rule wins; a file matches at the clone root only, a
-    directory at any depth unless the rule is anchored."""
     out = False
     for pattern, negated, dir_only, anchored in rules:
         if (dir_only and not is_dir) or (not at_root and (anchored or not is_dir)):
@@ -622,8 +619,6 @@ def fusedignored(rules: list, name: str, *, is_dir: bool = False, at_root: bool 
 
 
 def node_files(clone_dir: str) -> dict[str, str]:
-    """`{stem: basename}` of every source file at the clone root that can be
-    a node; `.py` wins over `.json`, `.md`, `.html` for a shared stem."""
     rules = fusedignore_rules(clone_dir)
     present = sorted(os.listdir(clone_dir))
     out: dict[str, str] = {}
@@ -639,8 +634,6 @@ def node_files(clone_dir: str) -> dict[str, str]:
 
 
 def rows_by_name(rows: list) -> dict[str, dict]:
-    """`{name: row}`: of two UDF rows sharing a name the LAST wins; a folder
-    keeps its name against any later row."""
     out: dict[str, dict] = {}
     for row in rows:
         name = row_name(row)
@@ -756,8 +749,7 @@ def apply_snapshot(
     overwritten. `rowless_prev` are the files this embed generation created
     that still have no row (the host's `rowless_files` so far): one this
     snapshot no longer lists (no UDF, no node, no row) has its file trashed
-    and is reported in `deleted`. A node the embed held before (`prev`)
-    whose row left disk is not re-added. Returns `{changed, upserted,
+    and is reported in `deleted`. Returns `{changed, upserted,
     deleted, deleted_files, renamed, created, written, fileless,
     rowless_files, deferred_deletes, folder_fixes}` (`deleted_files`: the
     source files this snapshot removed from the clone, by basename, a
@@ -807,7 +799,6 @@ def apply_snapshot(
     # What the embed KNEW: the previous snapshot, else its own hydration base.
     if prev is not None:
         known_before = set(prev["nodes"])
-        files_before = dict(prev.get("files", {}))
         ids_before = dict(prev.get("ids", {}))
     else:
         # KNOWN GAP (frame side): the embed's `base_nodes` lists UDF slugs
@@ -815,7 +806,6 @@ def apply_snapshot(
         # generation is not "known before" and survives on disk; the next
         # delta then re-sends it. Fixed where base_nodes is built.
         known_before = set(new.get("base_nodes") or ())
-        files_before = {}
         ids_before = {}
     vanished = sorted(known_before - set(new["nodes"]))
 
@@ -841,7 +831,7 @@ def apply_snapshot(
         nonlocal files_changed
         if file and os.path.isfile(os.path.join(clone_dir, file)):
             trash(file)
-            os.remove(os.path.join(clone_dir, file))
+            pathlib.Path(clone_dir, file).unlink(missing_ok=True)
             files_changed = True
             deleted_files.append(file)
 
@@ -1003,8 +993,7 @@ def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
               extra_names: Iterable[str] = ()) -> dict:
     """The view the embed holds after one of its own writes landed: `disk`
     (a `compact_state_from_disk` reading taken AFTER the write) restricted
-    to `names`, the nodes the embed is known to hold (a node whose file has
-    not arrived yet among them), plus `extra_names`
+    to `names`, the nodes the embed is known to hold, plus `extra_names`
     (`apply_snapshot`'s `deferred_deletes`: nodes its snapshot omitted while
     still listing their UDF, kept so the next snapshot can still delete
     them and no delta re-adds them meanwhile). `edges` are the embed's
@@ -1113,15 +1102,11 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
          canvas: {viewport, viewportBounds, comments}, files: {name: basename},
          ids: {name: server id} (from the remote manifest, when known),
          bodies: {name: text},   (every node's source file, all four kinds)
-         rowed: {name: row}}     (every row, a file-less one too)
+         rowed: {name: row}}
 
-    A row whose source file is not on disk is not a node, only a row in
-    `rowed`; a folder has no file and is always a node; `files` lists every
-    source file, a row-less one too. `edges` keep every edge between rowed
-    names. Same shape as `compact_state` where the keys
-    overlap, so it serves as `prev` for `apply_snapshot` too. Raises
-    FileNotFoundError when there is no canvas.toml and whatever rtoml raises
-    on a malformed one.
+    Same shape as `compact_state` where the keys overlap, so it serves as
+    `prev` for `apply_snapshot` too. Raises FileNotFoundError when there is
+    no canvas.toml and whatever rtoml raises on a malformed one.
     """
     doc = _load_toml(os.path.join(clone_dir, "canvas.toml"))
     canvas = doc.get("canvas") or {}
@@ -1177,13 +1162,8 @@ def add_canvas_type(clone_dir: str) -> None:
 
 
 def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterable[str] = (),
-                   publish: bool = False,
+                   publish: bool = False, add: bool = True,
                    backup: Callable[[str, bytes], None] | None = None) -> dict:
-    """Rows follow files: `type` set, every UDF name's LAST row kept, a
-    default row for each file none names (`pending` ones excepted, placed
-    inside the folder that lists them). A UDF row with no file is dropped
-    with its edges only when named in `drop` or when `publish` (the copy
-    the push ships), where edges to no row go too."""
     path = os.path.join(clone_dir, "canvas.toml")
     doc = _load_toml(path)
     before = copy.deepcopy(doc)
@@ -1210,7 +1190,7 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterabl
                 if isinstance(c, str):
                     owners.setdefault(c, r)
     taken = {row_name(r) for r in rows} | set(pending)
-    missing = [s for s in sorted(files) if s not in taken]
+    missing = [s for s in sorted(files) if add and s not in taken]
     z = max((_num(r.get("zIndex"), 0) for r in rows), default=0)
     for stem in missing:
         owner = owners.get(stem)
@@ -1345,8 +1325,7 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
         canvas {comments?, viewportBounds?} — the scalars that differ; the
                                            frame never moves its own camera
     A full state carries every node as an upsert plus `edges` and `canvas`;
-    the frame drops what is not listed. A node whose file is missing but whose
-    row remains is not deleted.
+    the frame drops what is not listed.
     """
     ops: list[dict] = []
     if view is None:

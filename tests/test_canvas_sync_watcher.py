@@ -149,9 +149,11 @@ def test_the_manual_push_waits_its_turn_behind_a_running_push(
     if write_while_waiting:
         (harness.root / "alpha" / "b.py").write_text("b2\n")
     second = threading.Thread(target=push)
+    monkeypatch.setattr(canvases_mod, "PUSH_TIMEOUT", 0.1)
     second.start()
     second.join(0.3)
     assert second.is_alive(), [a.json() for a in answers]
+    monkeypatch.setattr(canvases_mod, "PUSH_TIMEOUT", 180.0)
     release.set()
     first.join(10)
     second.join(10)
@@ -828,7 +830,7 @@ def test_a_rowless_file_gets_no_row_and_no_delta_op_until_its_node_arrives(
     assert 'udfName = "fresh"' not in _toml(harness)
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert "fresh.py" not in seen["files"][0] and "fresh.py" not in m._base_files
+    assert "fresh.py" in seen["files"][0] and 'udfName = "fresh"' in seen["tomls"][0]
     assert 'udfName = "fresh"' not in _toml(harness) and "fresh" in m._rowless
     _snapshot(harness, 2, FRESH_NODE_BODY)
     assert m._rowless == set()
@@ -867,11 +869,13 @@ def test_a_frame_reload_keeps_a_rowless_file_and_drops_a_fileless_row(
             "edges": [{"source": "n-fresh", "target": "n-1"}]}}})
     assert m._rowless == set() and m._fileless == {"udf_1"}
     assert 'udfName = "udf_1"' in _toml(harness)
+    (harness.root / "alpha" / "late.py").write_text("print(3)\n")
     _snapshot(harness, 1, EMPTY_SNAPSHOT, gen=2)
     assert (harness.root / "alpha" / "fresh.py").read_text() == "print(2)\n"
     assert m._rowless == set() and m._fileless == set()
     toml = _toml(harness)
     assert 'udfName = "fresh"' in toml and 'udfName = "udf_1"' not in toml and "edges = []" in toml
+    assert 'udfName = "late"' not in toml
 
 
 # -- third review round -------------------------------------------------------------
