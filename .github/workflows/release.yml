@@ -299,21 +299,23 @@ jobs:
           echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
           aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
-          # The installer pkg, only when signed: Gatekeeper refuses an
-          # unsigned pkg from the internet, so an unsigned one (no INSTALLER_*
-          # secrets yet) stays off the page and the Release. Same prefix as
+          # The installer pkg, only when signed AND carrying a stapled
+          # notarization ticket: Gatekeeper refuses an unsigned or
+          # unnotarized pkg from the internet, so either stays off the page
+          # and the Release. Same prefix as
           # the DMG it installs: covered by the CI role's policy and by the
           # invalidation below. The fixed-name copy is the link to hand
           # around; it always holds the latest release's installer.
           PKG_PATH="$(ls dist/*.pkg 2>/dev/null || true)"
-          if [[ -n "$PKG_PATH" ]] && pkgutil --check-signature "$PKG_PATH" | grep -q "Status: signed"; then
+          if [[ -n "$PKG_PATH" ]] && pkgutil --check-signature "$PKG_PATH" | grep -q "Status: signed" \
+            && xcrun stapler validate "$PKG_PATH" >/dev/null; then
             aws s3 cp "$PKG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$PKG_PATH")"
             aws s3 cp "$PKG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/FusedRender-Installer.pkg" \
               --cache-control no-cache
             echo "PKG_PATH=$PKG_PATH" >> "$GITHUB_ENV"
             echo "pkg_url=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$PKG_PATH")" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::installer pkg is unsigned or missing — not published (see docs/signing.md, Installer package)"
+            echo "::warning::installer pkg is unsigned, unnotarized or missing — not published (see docs/signing.md, Installer package)"
           fi
           # Exposed as job outputs for the split-out bump-homebrew job and the
           # publish-download-page job (which needs every platform's URL at
@@ -512,11 +514,12 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
           PKG_PATH="$(ls dist/*-x86_64.pkg 2>/dev/null || true)"
-          if [[ -n "$PKG_PATH" ]] && pkgutil --check-signature "$PKG_PATH" | grep -q "Status: signed"; then
+          if [[ -n "$PKG_PATH" ]] && pkgutil --check-signature "$PKG_PATH" | grep -q "Status: signed" \
+            && xcrun stapler validate "$PKG_PATH" >/dev/null; then
             aws s3 cp "$PKG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$PKG_PATH")"
             echo "PKG_PATH=$PKG_PATH" >> "$GITHUB_ENV"
           else
-            echo "::warning::Intel installer pkg is unsigned or missing — not published"
+            echo "::warning::Intel installer pkg is unsigned, unnotarized or missing — not published"
           fi
 
       # Before the manifest, unlike the arm64 job: the manifest writes a NEW

@@ -150,8 +150,9 @@ def test_workflow_builds_the_pkg_from_the_final_dmg_under_the_published_url():
         # The pkg pins the DMG under exactly the key the upload publishes.
         assert 'build_pkg.sh "$DMG_PATH" "https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")"' in job
         assert 's3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")' in job
-        # Only a signed pkg is published.
+        # Only a signed, notarized (stapled) pkg is published.
         assert 'pkgutil --check-signature "$PKG_PATH" | grep -q "Status: signed"' in job
+        assert 'xcrun stapler validate "$PKG_PATH"' in job
         # The installer cert is imported before the partition list is set.
         assert job.index("-T /usr/bin/productbuild") < job.index("set-key-partition-list")
     # Only the render job feeds the download page.

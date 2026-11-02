@@ -131,8 +131,8 @@ Then build with `FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY`.
 `scripts/build_pkg.sh` builds the **network installer**: a .pkg of a few
 hundred KB whose postinstall downloads the release's DMG from the CDN,
 verifies the sha256 pinned into the pkg at build time, and copies the app into
-`/Applications` (`scripts/pkg/postinstall`; background in
-`docs/MACOS_INSTALLER_RESEARCH.md`). It needs a **second certificate type**:
+`/Applications` (`scripts/pkg/postinstall`). It needs a **second
+certificate type**:
 
 | | signs | certificate |
 |---|---|---|
@@ -164,9 +164,10 @@ sudo installer -pkg dist/FusedRender-X.Y.Z.pkg -target /    # try it
 tail -50 /var/log/install.log                                # the postinstall's log
 ```
 
-Gatekeeper refuses an **unsigned** pkg downloaded from the internet, so
-`release.yml` publishes the pkg (download page, S3, GitHub Release) only when
-`pkgutil --check-signature` reports it signed. In CI the certificate comes
+Gatekeeper refuses an **unsigned** or **unnotarized** pkg downloaded from the
+internet, so `release.yml` publishes the pkg (download page, S3, GitHub
+Release) only when `pkgutil --check-signature` reports it signed and `xcrun
+stapler validate` finds its notarization ticket. In CI the certificate comes
 from three repository secrets, all optional until the cert exists:
 
 | Secret | Value |

@@ -86,6 +86,7 @@ log "downloading $APP_NAME $VERSION ($ARCH) from $DMG_URL"
 DMG="$WORK/$APP_NAME.dmg"
 if ! /usr/bin/curl --fail --location --silent --show-error \
     --retry 3 --retry-delay 2 --connect-timeout 20 \
+    --speed-limit 1024 --speed-time 60 \
     --output "$DMG" "$DMG_URL"; then
   fail "download failed — check the internet connection and run the installer again"
 fi
