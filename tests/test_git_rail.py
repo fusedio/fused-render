@@ -100,3 +100,10 @@ def test_a_remote_with_no_recorded_default_branch_is_still_a_remote(repo, tmp_pa
     out = gr.rail_check(str(repo["app_dir"]))
     assert out["repo"]["default_branch"] == "main"
     assert out["repo"]["ahead"] == 0 and out["repo"]["behind"] == 0
+
+
+def test_detached_head_has_no_branch_but_still_its_commits(repo):
+    _git("checkout", "-q", "--detach", cwd=repo["root"])
+    r = gr.rail_status(str(repo["app_dir"]))["repo"]
+    assert r["branch"] is None
+    assert [c["subject"] for c in r["commits"]] == ["v4", "v3", "v2"]

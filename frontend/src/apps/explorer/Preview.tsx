@@ -1183,7 +1183,11 @@ function TemplatePreview({
   // not the last companion the toggle would (a git column reopened from a
   // rail of chat rings would be a lie). A file whose only companion is git
   // keeps the crumb bar's Show button and the bare reopen edge.
-  const railHere = !!sideSlot && sideTargets.some((e) => e.mode === "claude");
+  // …and never beside a FULL-BODY chat (`_mode=claude`, the content pane
+  // itself the chat): a rail of this file's chats next to this file's chat
+  // would be the same thing twice. The bar's Show button and the bare edge
+  // stand there, as they did.
+  const railHere = !!sideSlot && activeMode !== CHAT_MODE && sideTargets.some((e) => e.mode === "claude");
   const openClaudeSide = () => setSide("claude");
   // The rail's Git section opens the git companion where this file has one.
   const railGitDoor = sideTargets.some((e) => e.mode === "git") ? () => setSide("git", "git") : undefined;
