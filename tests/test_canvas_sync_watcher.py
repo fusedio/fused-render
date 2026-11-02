@@ -560,10 +560,11 @@ def test_a_push_reconciles_the_clone_rows_with_its_files(
     assert "ops" in cut and "ghost" not in json.dumps(cut["ops"]), cut
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert [r["udfName"] for r in _rows(str(clone))] == ["ghost", "b", "a", "orphan_x"]
+    assert [r["udfName"] for r in _rows(str(clone))] == ["ghost", "a", "orphan_x"]
     shipped = rtoml.loads(seen["tomls"][0])["canvas"]["nodes"]
-    assert [r["udfName"] for r in shipped] == ["b", "a", "orphan_x"]
-    assert list(m._base_toml["nodes"]) == ["b", "a", "orphan_x"]
+    assert [r["udfName"] for r in shipped] == list(m._base_toml["nodes"]) == ["a", "orphan_x"]
+    assert [e["detail"] for e in m._log.since(0)["events"]
+            if e["action"] == "removed from server (no source file)"] == ["b"]
     assert m._base_files["canvas.toml"] == canvases_mod.hashlib.md5(
         seen["tomls"][0].encode()).hexdigest()
     trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/canvas.toml"))

@@ -1531,7 +1531,8 @@ protection described above.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
   A file without a row gets a default row at push (write the row when its
-  place matters); to remove a node, delete its file and its row.
+  place matters); to remove a node, delete its file and its row. A node
+  whose file is missing is removed from the server at the next push.
 - **Folders** are `[[canvas.nodes]]` rows with `type = "udf-folder"`. Give a
   folder row `udfName` equal to its `folderName`. Membership lives ONLY in
   the folder's `childUdfOrder` (the child rows' `udfName`s; one folder per
@@ -2658,16 +2659,17 @@ class _SyncManager:
         # a disk_rev move: count a manifest rotation as one.
         self._note_disk()
 
-    def _reconcile_rows(self, leg: str, directory: str, **kw) -> None:
+    def _reconcile_rows(self, leg: str, directory: str, **kw) -> list[str]:
         try:
             result = canvas_snapshot.reconcile_rows(directory, **kw)
         except Exception as exc:
             self.log_event(leg, "rows not reconciled", ok=False, detail=str(exc))
-            return
+            return []
         if result["changed"]:
             self.log_event(leg, "rows reconciled",
                            detail=f"dropped {', '.join(result['dropped']) or 'none'}; "
                                   f"added {', '.join(result['added']) or 'none'}")
+        return result["dropped"]
 
     def _new_trash_dir(self) -> str | None:
         """A fresh timestamped folder under .sync/trash/<name>/ for the files
@@ -3465,11 +3467,12 @@ class _SyncManager:
         if not self._op_lock.acquire(timeout=wait):
             return deferred("another sync step held the clone")
         try:
-            self._reconcile_rows(
-                "disk_to_server", self.dir, pending=self._rowless,
+            served = {os.path.splitext(f)[0] for f in self._base_files or ()
+                      if f.endswith(canvas_snapshot.BODY_SUFFIXES)}
+            dropped = self._reconcile_rows(
+                "disk_to_server", self.dir, pending=self._rowless, drop=served - self._fileless,
                 backup=lambda rel, data: self._backup_to(self._new_trash_dir(), rel, data))
-            frozen = self._take_fingerprint()
-            self._fingerprint = frozen
+            self._fingerprint = frozen = self._take_fingerprint()
             self._dirty_since = None
             try:
                 copy_dir = self._freeze_copy()
@@ -3477,11 +3480,13 @@ class _SyncManager:
                 copy_dir = None
                 copy_error = str(exc)
             else:
-                self._reconcile_rows("disk_to_server", copy_dir, publish=True, served={
-                    os.path.splitext(f)[0] for f in self._base_files or ()
-                    if f.endswith(canvas_snapshot.BODY_SUFFIXES)})
+                dropped += self._reconcile_rows("disk_to_server", copy_dir, publish=True)
                 base_snapshot = self._take_file_hashes(copy_dir)
                 base_toml_snapshot = self._toml_rows(copy_dir)
+                if gone := [n for n in sorted(served.intersection(dropped))
+                            if n not in base_toml_snapshot["nodes"]]:
+                    self.log_event("disk_to_server", "removed from server (no source file)",
+                                   ok=False, detail=", ".join(gone))
         finally:
             self._op_lock.release()
         if copy_dir is None:

@@ -1162,7 +1162,7 @@ def add_canvas_type(clone_dir: str) -> None:
 
 
 def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterable[str] = (),
-                   publish: bool = False, served: Iterable[str] = (), add: bool = True,
+                   publish: bool = False, add: bool = True,
                    backup: Callable[[str, bytes], None] | None = None) -> dict:
     path = os.path.join(clone_dir, "canvas.toml")
     doc = _load_toml(path)
@@ -1179,7 +1179,7 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterabl
     for row in rows_in:
         name = row_name(row)
         if not is_folder(row) and (last[name] is not row or (
-                name not in files and ((publish and name not in served) or name in drop))):
+                name not in files and (publish or name in drop))):
             dropped.append(str(name))
             continue
         rows.append(row)
@@ -1190,8 +1190,7 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterabl
     missing = [s for s in sorted(files) if add and s not in taken]
     z = max((_num(r.get("zIndex"), 0) for r in rows), default=0)
     for stem in missing:
-        owner = owners.get(stem)
-        if owner is None:
+        if (owner := owners.get(stem)) is None:
             continue
         kids = [r for r in rows if not is_folder(r) and owners.get(row_name(r)) is owner]
         kx = min((_num(r.get("x"), 0) for r in kids), default=_FOLDER_PADDING_PX)
@@ -1205,9 +1204,7 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterabl
             if is_folder(r) or row_name(r) not in owners]
     x = min((t[0] for t in tops), default=100)
     y = max((t[1] for t in tops), default=100 - _NODE_GAP_PX)
-    for stem in missing:
-        if stem in owners:
-            continue
+    for stem in (s for s in missing if s not in owners):
         z += 1
         rows.append(_default_row(stem, files[stem], x, y + _NODE_GAP_PX, z))
         y += _NODE_GAP_PX + rows[-1]["height"]
@@ -1217,17 +1214,12 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterabl
              if isinstance(e, list) and len(e) == 2
              and all(isinstance(end, str) and end not in gone and (end in kept or not publish)
                      for end in e)]
-    for key, value in (("nodes", rows), ("edges", edges)):
-        if canvas.get(key, []) != value:
-            canvas[key] = value
+    canvas.update({k: v for k, v in (("nodes", rows), ("edges", edges)) if canvas.get(k, []) != v})
     if canvas:
         doc["canvas"] = canvas
-    changed = doc != before
-    if changed:
-        if backup is not None:
-            old = _read_bytes(path)
-            if old is not None:
-                backup("canvas.toml", old)
+    if changed := doc != before:
+        if backup is not None and (old := _read_bytes(path)) is not None:
+            backup("canvas.toml", old)
         _write_atomic(path, _dump_toml(doc))
     return {"changed": changed, "dropped": dropped, "added": missing}
 
