@@ -750,14 +750,6 @@
 .canvas-rail-peek-titlerow:not(:has(.canvas-rail-peek-reply)) .canvas-rail-peek-title {
   flex: 1 1 auto;
 }
-/* With an aside, the title keeps at most ~55% of the row (the List row's
-   rule, tasks.css) so the recap is never squeezed out by a long message. */
-.canvas-rail-peek-titlerow:has(.canvas-rail-peek-reply) .canvas-rail-peek-title {
-  max-width: 60%;
-}
-.canvas-rail-peek-reply {
-  min-width: 40%;
-}
 .canvas-rail-peek-rename {
   width: 22px;
   height: 22px;

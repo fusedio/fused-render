@@ -75,15 +75,15 @@ import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import {
+  cardTitleLine,
   isDraftTask,
   messageStamp,
   nextRunAt,
+  recapTitlesOn,
   relativeWhen,
-  taskAside,
   taskColumn,
   taskHref,
   taskWhen,
-  titleLineSansRecap,
   type CardTitle,
 } from "@shell/tasks-lib";
 import { nodeName, railScope, type RailRow } from "./claude-rail-lib";
@@ -139,18 +139,17 @@ interface SeatFacts {
   renamable: boolean;
   /** The title line as the List row builds it (its `hint` is the whole text). */
   line: CardTitle;
-  /** The aside the List row prints after the title in italics: the turn's
-   *  recap when the server has one, else the last reply (tasks-lib
-   *  `taskAside`); "" when the row holds neither, or is pulse-only. */
+  /** The reply line the List row prints after the title in italics — only
+   *  with task recap titles OFF (with them on, the title IS the recap); ""
+   *  when the row holds none, or is pulse-only. */
   reply: string;
 }
 
 function seatFacts(seat: RailRow, dir: string | null): SeatFacts {
   const { pulse: t, row } = seat;
   const merged = row ? { ...row, status: t.status } : t;
-  // The title without the recap promoted into it; the recap (or, without
-  // one, the last reply) is the aside on the second row (tasks-lib).
-  const line = titleLineSansRecap(merged);
+  // The List's own title line (recap as the title once recaps are on).
+  const line = cardTitleLine(merged);
   const draft = !!row && isDraftTask(row);
   const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged);
   return {
@@ -172,7 +171,7 @@ function seatFacts(seat: RailRow, dir: string | null): SeatFacts {
     whenFull: row ? taskWhen(merged as Task).title : messageStamp(t.happened_at || t.last_active || 0),
     renamable: !!t.session_id && !draft && !/^(pending|draft|new):/.test(t.key),
     line,
-    reply: row ? taskAside(row) : "",
+    reply: row && !recapTitlesOn(row) ? (row.last_reply || "").trim() : "",
   };
 }
 
@@ -990,11 +989,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     {head.label}
                   </span>
                   {head.reply && (
-                    // THE REPLY LINE (owner, 2026-11-02: "we aren't showing
-                    // recap in this view?"): what the List prints after the
-                    // title in italics — the last turn's reply, with task
-                    // recap titles off (on, the title IS the recap). Same
-                    // hint as the title: both lines whole.
+                    // THE REPLY LINE: what the List prints after the title in
+                    // italics — the last turn's reply, with task recap titles
+                    // off (on, the title IS the recap — owner, 2026-11-02:
+                    // "show recap … like the Tasks view list"). Same hint as
+                    // the title: both lines whole.
                     <span
                       className="canvas-rail-peek-reply"
                       data-hint={head.reply}
