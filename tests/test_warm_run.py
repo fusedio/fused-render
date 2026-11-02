@@ -197,7 +197,10 @@ def test_timeout_kills_and_pool_recovers(tmp_path):
     out = run_b(path, timeout=1)
     assert out["ok"] is False and out["error"]["type"] == "TimeoutError"
     claimed = spares - set(warm_run.spare_pids())
-    assert len(claimed) == 1
+    # At least the one the timed-out run took; the pool can rotate another
+    # spare of its own accord in the same window (read as 2 once on CI), and
+    # every one that left must be dead before the pool is trusted again.
+    assert claimed
     assert wait_until(lambda: not any(pid_alive(p) for p in claimed), 2)
     assert run_b(script(tmp_path, TRIVIAL, "ok.py"))["ok"]
 

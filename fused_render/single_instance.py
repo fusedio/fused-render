@@ -420,7 +420,8 @@ def _zombie(pid: int) -> bool:
         return False
     try:
         out = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
-                             text=True, timeout=PS_TIMEOUT_S, check=False).stdout
+                             text=True, encoding="utf-8", errors="replace",
+                             timeout=PS_TIMEOUT_S, check=False).stdout
     except (OSError, subprocess.SubprocessError):
         return False
     return out.strip().startswith("Z")

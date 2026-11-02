@@ -613,8 +613,8 @@
   overflow: hidden;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg) 70%, transparent),
-    0 14px 36px rgba(0, 0, 0, 0.32),
-    0 2px 6px rgba(0, 0, 0, 0.2);
+    0 14px 36px var(--shadow-sm),
+    0 2px 6px var(--shadow-ink-soft);
   transform: translateX(6px);
   transition: transform var(--dur-med) var(--ease-out);
 }
@@ -815,8 +815,8 @@ button.canvas-rail-peek-scope.is-node:focus-visible {
   color: var(--fg-muted);
 }
 .canvas-rail-peek-pill.is-draft {
-  color: var(--error, #d64545);
-  border-color: color-mix(in srgb, var(--error, #d64545) 45%, transparent);
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
 }
 .canvas-rail-peek-plain-when {
   flex: 1 1 auto;
