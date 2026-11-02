@@ -404,6 +404,14 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
   // second pill row read as a stray form field in a strip of chips.
   const [sorting, setSorting] = useState(false);
   const sortRef = useRef<HTMLDivElement>(null);
+  const sortBtnRef = useRef<HTMLButtonElement>(null);
+  // Closing from inside the menu (a pick, or Escape on an item) unmounts the
+  // focused item; focus goes back to the button, not the body, so Tab carries
+  // on from the strip (CodeRabbit, #2055).
+  const closeSort = () => {
+    setSorting(false);
+    sortBtnRef.current?.focus();
+  };
   const sortLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "";
   const stripRef = useRef<HTMLDivElement>(null);
   // DRAG TO REORDER (Akshil, 2026-10-16): native HTML5 drag on the chips. The
@@ -464,7 +472,7 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
       if (e.key !== "Escape") return;
       e.stopPropagation();
       if (adding) setAdding(false);
-      else if (sorting) setSorting(false);
+      else if (sorting) closeSort();
       else onCancel();
     };
     window.addEventListener("keydown", onKey, true);
@@ -554,7 +562,10 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
             aria-expanded={adding}
             disabled={!available.length}
             title={available.length ? "Add view" : "Every view is on the row"}
-            onClick={() => setAdding((a) => !a)}
+            onClick={() => {
+              setSorting(false);
+              setAdding((a) => !a);
+            }}
           >
             {ICON_PLUS}
           </button>
@@ -590,7 +601,13 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
             aria-haspopup="menu"
             aria-expanded={sorting}
             title={`Sort by: ${sortLabel}`}
-            onClick={() => setSorting((o) => !o)}
+            ref={sortBtnRef}
+            // One menu open at a time: a keyboard press never reaches the
+            // pointerdown close, so opening one shuts the other here.
+            onClick={() => {
+              setAdding(false);
+              setSorting((o) => !o);
+            }}
           >
             {ICON_SORT}
           </button>
@@ -607,7 +624,7 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
                   data-sort={v}
                   onClick={() => {
                     onSortBy(v);
-                    setSorting(false);
+                    closeSort();
                   }}
                 >
                   <span className="schedule-view-add-name">{label}</span>
