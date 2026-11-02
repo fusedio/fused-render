@@ -1312,11 +1312,18 @@ class QueueManager:
         says which folder it is waiting on, and the task's own key is the dict
         key it is filed under."""
         for folder, rec in self._state["folders"].items():
+            printed = 0
             for i, item in enumerate(rec["line"]):
                 if item["task"] == task_key:
                     ahead = (rec["line"][i - 1]["task"] if i
                              else self._ahead_label(rec["owner"]))
-                    return {"key": folder, "position": i + 1, "ahead_key": ahead}
+                    return {"key": folder, "position": printed + 1, "ahead_key": ahead}
+                # The same count `positions()` prints: a resume marker is a
+                # process re-owned next, not a place in the line, so the slot
+                # an endpoint answers for the task behind it is the slot the
+                # listing shows (one number, two readers).
+                if not item.get("resumed"):
+                    printed += 1
         return _nowhere()
 
     # ------------------------------------------------------------ events
@@ -1976,7 +1983,9 @@ class QueueManager:
         the field meant before the manager existed and what the listing reads it
         as (`_queue_row` → `_row`). The task's own key is the dict key.
 
-        Blocked tasks hold nothing and stand in no line, so they are not here.
+        Blocked tasks hold nothing and stand in no line, so they are not here;
+        neither is a RESUME MARKER (`resumed`), which is a live run waiting to
+        be re-owned rather than a message waiting to be sent — see the loop.
         `priority` is the ⤒: true only at the head, and only when it got there by
         a skip or an answer, because that is the only case where the order the
         user sees is not the order they created. `ahead_key` is "" for an owner
@@ -2001,14 +2010,29 @@ class QueueManager:
             for folder, rec in self._state["folders"].items():
                 ahead = self._ahead_label(rec["owner"])
                 names = self._owner_page_names(rec["owner"])
+                printed = 0
                 for i, item in enumerate(rec["line"]):
                     if i:
                         ahead = rec["line"][i - 1]["task"]
                         names = self._item_page_names(rec["line"][i - 1])
-                    out[item["task"]] = {"key": folder, "position": i + 1,
+                    # A RESUME MARKER IS A PROCESS, NOT A MESSAGE (`_pump`,
+                    # `card_cleared`, `skip`): its run came back to life the
+                    # moment its card was answered and is editing the tree
+                    # right now, beside the owner. Listed here it read
+                    # `queued` — `_status` ranks the line above a live
+                    # transcript on purpose — so a task visibly working wore
+                    # a dashed ring, offered Force start, and that press
+                    # answered "nothing waiting to start" (Sina, 2026-10-31).
+                    # It still stands AHEAD of whatever is filed behind it:
+                    # the pump hands it the folder next, so the next printed
+                    # item is "behind" it and `ahead`/`names` above carry it.
+                    if item.get("resumed"):
+                        continue
+                    out[item["task"]] = {"key": folder, "position": printed + 1,
                                          "ahead_key": ahead,
                                          "ahead_names": list(names),
-                                         "priority": i == 0 and bool(item["promoted"])}
+                                         "priority": printed == 0 and bool(item["promoted"])}
+                    printed += 1
             return out
 
     def place(self, task_key: str) -> dict:

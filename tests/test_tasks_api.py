@@ -4581,6 +4581,120 @@ def test_background_work_under_a_dead_host_does_not_count(
     assert _by_key(client)["sess-a"]["background_jobs"] is None
 
 
+# ------------------------------------------------- a run that died mid-turn
+# The host killed with the app, a `kill -9`, an OOM: no `exited` event (the
+# host is what would have posted it), no error row in the transcript (the CLI
+# is what would have written it). The row read `done` with no reply under it
+# within ten seconds, while the chat still said "Running outside this app"
+# (Sina, 2026-10-31). What is left on disk is the run dir: a dead pid and an
+# `out.jsonl` that never reached the `result` row every turn ends on.
+
+
+def _asked_and_nothing_came(projects_dir):
+    """A hand-typed chat whose prompt is on file and nothing answered it."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("refactor the loader", T9, uuid="u1")])
+
+
+def _stage_dead(runs_dir, name, session_id, rows, pid=None, cancelled=False):
+    """A run dir as a process leaves it: `out.jsonl` holding `rows`, the CLI's
+    pid in `pid` (a dead one unless given), and the Stop button's marker when
+    `cancelled`."""
+    d = _stage_run(runs_dir, name, session_id)
+    (d / "out.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (d / "pid").write_text(str(_dead_pid() if pid is None else pid))
+    if cancelled:
+        (d / "cancelled").write_text("")
+    return d
+
+
+_INIT = {"type": "system", "subtype": "init", "session_id": "sess-a"}
+_ECHO = {"type": "user", "message": {"role": "user", "content": [
+    {"type": "text", "text": "refactor the loader"}]}}
+_TOOL = {"type": "assistant", "message": {"role": "assistant", "content": [
+    {"type": "tool_use", "name": "Bash", "input": {"command": "make"}}]}}
+_RESULT = {"type": "result", "subtype": "success"}
+
+
+def test_a_run_that_died_mid_turn_is_blocked_not_done(
+        client, projects_dir, parked, monkeypatch):
+    _asked_and_nothing_came(projects_dir)
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL,
+                                             # a subagent's rows are not this
+                                             # conversation's turn
+                                             {"type": "result",
+                                              "parent_tool_use_id": "t1"}])
+    _install_hosted(monkeypatch, parked.dir)
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "blocked"
+    assert task["failed"] is True
+    assert task["blocked_reason"] == "failed"
+    assert task["messages"][-1]["turn"] == "error"
+    # The thread reads the same word as the row.
+    thread = client.get("/api/tasks/sess-a/messages").json()["messages"]
+    assert thread[-1]["turn"] == "error"
+
+
+def test_a_run_that_finished_its_turn_before_dying_is_not_broken(
+        client, projects_dir, parked, monkeypatch):
+    """The ordinary end of every chat: the reply landed, the process went
+    away later (the app quit, the host reaped). `result` closes the turn."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("refactor the loader", T9, uuid="u1"),
+        _assistant("Done.", T9)])
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL, _RESULT,
+                                             {"type": "command_lifecycle"}])
+    _install_hosted(monkeypatch, parked.dir)
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "done"
+    assert task["failed"] is False
+
+
+def test_a_stopped_run_is_not_a_broken_one(client, projects_dir, parked,
+                                           monkeypatch):
+    """Stop kills the process before `result` too; its marker is the
+    difference, and a stopped turn reads as it always did."""
+    _asked_and_nothing_came(projects_dir)
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL],
+                cancelled=True)
+    _install_hosted(monkeypatch, parked.dir)
+    assert _by_key(client)["sess-a"]["status"] == "done"
+
+
+def test_a_prompt_answered_since_outvotes_an_old_dead_run(
+        client, projects_dir, parked, monkeypatch):
+    """A terminal resume, a later run under another id: the newest prompt HAS
+    a reply, so whatever the dead run dir says, nothing is broken."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("refactor the loader", T9, uuid="u1"),
+        _assistant("Done it from the terminal.", T10)])
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL])
+    _install_hosted(monkeypatch, parked.dir)
+    assert _by_key(client)["sess-a"]["status"] == "done"
+
+
+def test_only_the_sessions_newest_run_decides(client, projects_dir, parked,
+                                              monkeypatch):
+    """An older run that died is history: the turn after it ran in a newer
+    run, and that one is alive (or finished) — not broken."""
+    _asked_and_nothing_came(projects_dir)
+    _stage_dead(parked.dir, "r-1", "sess-a", [_INIT, _ECHO, _TOOL])
+    _stage_dead(parked.dir, "r-2", "sess-a", [_INIT, _ECHO, _TOOL],
+                pid=os.getpid())
+    _install_hosted(monkeypatch, parked.dir, alive=("r-2",))
+    assert _by_key(client)["sess-a"]["status"] != "blocked"
+
+
+def test_a_run_still_spawning_has_not_died(client, projects_dir, parked,
+                                           monkeypatch):
+    """No `pid` file yet is a process being created, not one that is gone."""
+    _asked_and_nothing_came(projects_dir)
+    d = _stage_run(parked.dir, "r-1", "sess-a")
+    (d / "out.jsonl").write_text("")
+    _install_hosted(monkeypatch, parked.dir)
+    assert _by_key(client)["sess-a"]["status"] != "blocked"
+
+
 def test_a_live_host_pid_is_not_enough_without_its_claude(
         client, projects_dir, parked, monkeypatch, registry):
     """PID REUSE: `host.json` survives a reboot or a SIGKILL and an unrelated
