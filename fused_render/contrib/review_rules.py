@@ -7,7 +7,7 @@ index's copy is THIS FILE, VERBATIM: the index's `run_fixtures.py` compares
 the two bytes-for-bytes when `FUSED_RENDER_SRC` points at a checkout. So:
 stdlib only, no `fused_render` import, nothing that needs the server.
 
-Three entry points:
+Four entry points:
 
 - `static_hits(diff=, files=, title=, body=)` — every rule over a proposal's
   ADDED lines (`contrib/ai.py` folds the hits into its Review; HARD hits
@@ -22,6 +22,11 @@ Three entry points:
   the app do (a new network host, files outside its folder, a new package,
   starting in the background, Claude tools). A unified diff (an update) or
   an app tree (a first listing). Non-empty means the author confirms.
+
+- `model_notes(files)` — SOFT notes for AI model ids an app names in
+  `fused.ai.*` calls but does not declare under
+  `[tool.fused-render.app.models]`. Never a hard hit: a declaration is
+  courtesy to the user, not a safety rule.
 
 An app tree (`files` for `hard_hits`/`powers`) is `[{"path", "text": str |
 None, "mode": "100644" | "100755" | "120000" | None, "binary": bool}]` or a
@@ -456,7 +461,7 @@ def _scan_line(add, old: set, file, line_no, text: str) -> None:
     if len(scan) >= _MINIFIED_LINE:
         add("minified", _KIND_DETAIL["minified"], file, line_no, text[:120], "soft")
     if file and os.path.basename(file).lower() == "pyproject.toml" and \
-            re.search(r"tool\.fused-render|\bdaemon\s*=|autostart|idle_timeout", flat):
+            re.search(r"tool\.fused-render(?!\.app\.models)|\bdaemon\s*=|autostart|idle_timeout", flat):
         add("background", _KIND_DETAIL["background"], file, line_no, text)
 
 
@@ -648,6 +653,57 @@ def hard_hits(files) -> list:
         if net and run_line:
             keep("runtime-fetch", _RUNTIME_FETCH, e["path"], run_line[0], run_line[1])
     return kept
+
+
+_AI_CALL = re.compile(
+    r"fused\.ai\.(?:text|image|video|speech|transcribe|embed|decide|vision)\s*\(")
+_AI_MODEL_LITERAL = re.compile(r"""["']?\bmodel["']?\s*[:=]\s*["']([^"'\n]+)["']""")
+_AI_DOWNLOAD = re.compile(r"""fused\.ai\.models\.download\(\s*["']([^"'\n]+)["']""")
+_MODEL_LOOKBACK = 6
+_MODEL_SUFFIXES = (".py", ".html", ".htm", ".js", ".mjs", ".ts", ".tsx", ".jsx")
+_MODELS_DETAIL = ("Uses an AI model it doesn't declare: {model}. Declare it under "
+                  "[tool.fused-render.app.models] so users see it before it downloads.")
+
+
+def _declared_models(tree) -> set:
+    out: set = set()
+    for e in tree:
+        if e["text"] is None or e["path"].lower() != "pyproject.toml":
+            continue
+        try:
+            table = tomllib.loads(e["text"])["tool"]["fused-render"]["app"]["models"]
+        except (tomllib.TOMLDecodeError, ValueError, KeyError, TypeError):
+            continue
+        if isinstance(table, dict):
+            out.update(v["model"].strip() for v in table.values()
+                       if isinstance(v, dict) and isinstance(v.get("model"), str))
+    return out
+
+
+def model_notes(files) -> list:
+    """Soft notes for model ids a literal `fused.ai.<verb>(... model="id")` or
+    `fused.ai.models.download("id")` names that the app's pyproject does not
+    declare. Regex only; same hit shape as `static_hits`, always soft."""
+    tree = app_files(files)
+    declared = _declared_models(tree)
+    notes: list = []
+    add = _adder(notes, set())
+    for e in tree:
+        if e["text"] is None or not e["path"].lower().endswith(_MODEL_SUFFIXES):
+            continue
+        openers: list = []
+        for n, line in enumerate(e["text"].splitlines(), 1):
+            openers.extend((n, m.start()) for m in _AI_CALL.finditer(line))
+            found = [m.group(1) for m in _AI_DOWNLOAD.finditer(line)]
+            for m in _AI_MODEL_LITERAL.finditer(line):
+                if any(n - o[0] <= _MODEL_LOOKBACK and o <= (n, m.start()) for o in openers):
+                    found.append(m.group(1))
+            for model in found:
+                model = model.strip()
+                if model and "${" not in model and model not in declared:
+                    add("models:undeclared", _MODELS_DETAIL.format(model=model[:80]),
+                        e["path"], n, line, "soft")
+    return notes
 
 
 def _hook_hits(add, e) -> None:
