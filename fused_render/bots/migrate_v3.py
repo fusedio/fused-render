@@ -819,7 +819,7 @@ def _lock(root: str):
     sharing one `~/Fused` both starting). Returns the open file to keep the lock, or False when not held."""
     if fcntl is None:
         return True
-    fh = open(os.path.join(root, LOCK), "a+")
+    fh = open(os.path.join(root, LOCK), "a+", encoding="utf-8")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
