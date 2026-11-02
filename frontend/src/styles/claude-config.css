@@ -1706,9 +1706,20 @@
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow-y: auto;
+  overflow: hidden;
   position: sticky;
   top: 0;
+}
+
+/* Header bits keep their height; only the body below scrolls. */
+.cc-skill-aside > * {
+  flex: none;
+}
+
+/* The draft aside has no body region, so the whole aside scrolls. */
+.cc-skill-aside.cc-aside-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .cc-aside-title {
@@ -1730,9 +1741,12 @@
   gap: 10px;
 }
 
-.cc-aside-body {
-  max-height: 340px;
+.cc-skill-aside > .cc-aside-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .cc-aside-files {
@@ -1751,6 +1765,12 @@
     flex-basis: auto;
     width: 100%;
     max-height: none;
+    overflow: visible;
+  }
+
+  .cc-skill-aside > .cc-aside-body {
+    flex: none;
+    max-height: 420px;
   }
 }
 
