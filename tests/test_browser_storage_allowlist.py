@@ -30,6 +30,7 @@ ALLOWED = {
     "platform/lib/agent-backends.ts": "signal",
     "platform/lib/bookmarks.ts": "tab",            # armed bookmark (sessionStorage)
     "platform/lib/claude-defaults.ts": "signal",
+    "platform/lib/last-chat.ts": "tab",            # last chat picked, per window (sessionStorage)
     "platform/lib/pending-claude-ask.ts": "tab",
     "platform/lib/presence.ts": "signal",
     "platform/lib/restart-store.ts": "signal",
