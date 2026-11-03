@@ -90,7 +90,9 @@ from AppKit import (
     NSButton,
     NSColor,
     NSControlSizeLarge,
+    NSFontWeightMedium,
     NSImage,
+    NSImageSymbolConfiguration,
     NSLayoutAttributeLeading,
     NSLayoutAttributeTrailing,
     NSTitlebarAccessoryViewController,
@@ -850,7 +852,7 @@ class _Window:
         nav = self._titlebar_group((  # left to right
             ("chevron.left", "Back", "Back (⌘[)", b"goBack:"),
             ("chevron.right", "Forward", "Forward (⌘])", b"goForward:"),
-        ), NSLayoutAttributeLeading)
+        ), NSLayoutAttributeLeading, symbol_pt=10)
         self.back_button, self.forward_button = nav
         tools = self._titlebar_group((  # left to right
             # Folder, not a pencil: the native twin of MenuIcons.folder — the
@@ -863,13 +865,19 @@ class _Window:
         self.sync_nav_buttons()
         self.sync_edit_button()
 
-    def _titlebar_group(self, specs, attribute) -> list:
+    def _titlebar_group(self, specs, attribute, symbol_pt: float | None = None) -> list:
         """One titlebar accessory holding ``specs`` as borderless symbol
         buttons, pinned to the ``attribute`` (leading/trailing) end. Returns
-        the buttons in spec order."""
+        the buttons in spec order. ``symbol_pt`` pins the glyph's point size
+        (the chevrons at the control's default size dwarf the traffic
+        lights); None leaves the control-size default."""
         buttons = []
         for symbol, desc, tip, action in specs:
             image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, desc)
+            if symbol_pt is not None:
+                conf = NSImageSymbolConfiguration.configurationWithPointSize_weight_(
+                    symbol_pt, NSFontWeightMedium)
+                image = image.imageWithSymbolConfiguration_(conf)
             button = NSButton.buttonWithImage_target_action_(
                 image, self.manager._menu_target, action)
             button.setBezelStyle_(NSBezelStyleRecessed)
