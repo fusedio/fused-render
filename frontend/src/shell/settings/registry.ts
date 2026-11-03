@@ -501,17 +501,19 @@ const ENTRIES = [
     // Only means something while Canvases is offered at all.
     available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
+  // THE CLAUDE RAIL'S PREVIEW (shell/claude-rail): one rail on every page
+  // with a Claude panel — the canvas page, the app page, the explorer's file
+  // and folder views (2026-11-01) — so the switch is its own row, not a
+  // child of Canvases, and needs no Fused sign-in. The pref keeps its
+  // `canvas_rail_peek` name on the wire.
   {
     id: "canvases-rail-peek",
-    needs: "fused",
     group: "features",
     section: "Sidebar",
     label: "Preview chats from the collapsed Claude rail",
-    description: "On a canvas with the Claude panel hidden, hovering a chat on the rail previews it as a floating card beside it; clicking keeps the card open, ready to type, and lets you resize it from its left corners. Click elsewhere, press Escape, or use its × or Open to close it.",
-    keywords: "canvas rail hover click preview peek card chat collapsed claude panel popover",
+    description: "With the Claude panel hidden — on an app page, in the explorer, on a canvas — hovering a chat on the rail at the right edge previews it as a floating card beside it; clicking keeps the card open, ready to type, and lets you resize it from its left corners. Click elsewhere, press Escape, or use its × or Open to close it.",
+    keywords: "rail hover click preview peek card chat collapsed claude panel popover canvas app explorer",
     renderOnly: true,
-    child: true,
-    available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
   {
     id: "monitor",

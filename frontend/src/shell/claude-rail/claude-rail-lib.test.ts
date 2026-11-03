@@ -1,15 +1,19 @@
 // The Claude rail's seats (claude-rail-lib): which of the pulse's rows a
-// canvas's rail draws, and in what order. Both rulings are the owner's
-// (2026-10-28): no archived rows, and the List view's order rather than a
-// sort of the rail's own.
+// rail draws — on a canvas, in a folder, on a file — and in what order. The
+// rulings are the owner's (2026-10-28): no archived rows, and the List view's
+// order rather than a sort of the rail's own; a folder's and a file's rail
+// hold what their pane's Recent list holds (2026-11-01).
 import { describe, expect, it } from "bun:test";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { sortForList } from "@shell/tasks-lib";
-import { dotCleared, keepMarks, onRail, railRows, railScope, readMark } from "./claude-rail-lib";
+import { dotCleared, keepMarks, onRail, placeName, railRows, railScope, readMark, type RailPlace } from "./claude-rail-lib";
 
-const PLACE = { env: "unstable" as const, name: "demo", dir: "/home/me/canvases/demo" };
+
+
+const PLACE: RailPlace = { kind: "canvas", env: "unstable", name: "demo", dir: "/home/me/canvases/demo" };
+const DIR = "/home/me/canvases/demo";
 /** The hover card's rail: drafts and scheduled rows admitted. */
-const PLACE_ALL = { ...PLACE, sessionless: true };
+const PLACE_ALL: RailPlace = { ...PLACE, sessionless: true };
 
 /** A full task row with every field the rail's order can read set to a
  *  harmless default; the test states only what it is about. */
@@ -21,8 +25,8 @@ function task(over: Partial<Task> & { key: string }): Task {
     unread: 0,
     last_active: 1_000,
     happened_at: 1_000,
-    project: PLACE.dir,
-    target: PLACE.dir,
+    project: DIR,
+    target: DIR,
     title: over.key,
     ...over,
   } as Task;
@@ -59,14 +63,49 @@ describe("onRail", () => {
   });
 
   it("railScope: a stamped node file, a legacy target under the clone, else the canvas", () => {
-    expect(railScope({ canvas: { env: "unstable", name: "demo", file: "hex.py" }, target: "", project: "" }, PLACE.dir))
+    expect(railScope({ canvas: { env: "unstable", name: "demo", file: "hex.py" }, target: "", project: "" }, PLACE))
       .toEqual({ kind: "node", name: "hex", file: "hex.py" });
-    expect(railScope({ target: `${PLACE.dir}/widget_5.json`, project: PLACE.dir }, PLACE.dir))
+    expect(railScope({ target: `${DIR}/widget_5.json`, project: DIR }, PLACE))
       .toEqual({ kind: "node", name: "widget_5", file: "widget_5.json" });
-    expect(railScope({ target: PLACE.dir, project: PLACE.dir }, PLACE.dir)).toEqual({ kind: "canvas" });
-    expect(railScope({ target: `${PLACE.dir}/sub/x.py`, project: PLACE.dir }, PLACE.dir)).toEqual({ kind: "canvas" });
-    expect(railScope({ canvas: { env: "unstable", name: "demo", file: "" }, target: "", project: "" }, null))
-      .toEqual({ kind: "canvas" });
+    expect(railScope({ target: DIR, project: DIR }, PLACE)).toEqual({ kind: "whole", word: "Canvas" });
+    expect(railScope({ target: `${DIR}/sub/x.py`, project: DIR }, PLACE)).toEqual({ kind: "whole", word: "Canvas" });
+    expect(railScope({ canvas: { env: "unstable", name: "demo", file: "" }, target: "", project: "" }, { ...PLACE, dir: null }))
+      .toEqual({ kind: "whole", word: "Canvas" });
+  });
+
+  it("a FOLDER's rail holds what its pane's Recent list holds: the folder, anything under it, its project", () => {
+    const FOLDER: RailPlace = { kind: "folder", dir: "/home/me/apps/demo", sessionless: true };
+    const onFolder = pulse(task({ key: "a", project: "/home/me/apps/demo", target: "/home/me/apps/demo" }));
+    const onFile = pulse(task({ key: "b", project: "/home/me/apps/demo", target: "/home/me/apps/demo/src/app.py" }));
+    const byProject = pulse(task({ key: "c", project: "/home/me/apps/demo", target: "" }));
+    const sibling = pulse(task({ key: "d", project: "/home/me/apps/demo2", target: "/home/me/apps/demo2" }));
+    const archived = pulse(task({ key: "e", project: "/home/me/apps/demo", target: "/home/me/apps/demo", status: "archived" }));
+    expect(onRail(onFolder, FOLDER)).toBe(true);
+    expect(onRail(onFile, FOLDER)).toBe(true);
+    expect(onRail(byProject, FOLDER)).toBe(true);
+    // `demo2` is not under `demo`: a prefix match on the bare string would say it was.
+    expect(onRail(sibling, FOLDER)).toBe(false);
+    expect(onRail(archived, FOLDER)).toBe(false);
+    // The card's chip: the file under the folder, else the whole, by the place's word.
+    expect(railScope(onFile, FOLDER)).toEqual({ kind: "file", name: "src/app.py", file: "/home/me/apps/demo/src/app.py" });
+    expect(railScope(onFolder, FOLDER)).toEqual({ kind: "whole", word: "Folder" });
+    expect(railScope(onFolder, { ...FOLDER, word: "App" })).toEqual({ kind: "whole", word: "App" });
+    expect(placeName(FOLDER)).toBe("demo");
+    expect(placeName({ ...FOLDER, dir: "/home/me/apps/demo/" })).toBe("demo");
+  });
+
+  it("a FILE's rail holds that file's chats alone", () => {
+    const FILE: RailPlace = { kind: "file", file: "/home/me/notes/plan.md", sessionless: true };
+    const onFile = pulse(task({ key: "a", project: "/home/me/notes", target: "/home/me/notes/plan.md" }));
+    const onFolder = pulse(task({ key: "b", project: "/home/me/notes", target: "/home/me/notes" }));
+    const other = pulse(task({ key: "c", project: "/home/me/notes", target: "/home/me/notes/plan.md.bak" }));
+    expect(onRail(onFile, FILE)).toBe(true);
+    expect(onRail(onFolder, FILE)).toBe(false);
+    expect(onRail(other, FILE)).toBe(false);
+    expect(railScope(onFile, FILE)).toEqual({ kind: "whole", word: "File" });
+    expect(placeName(FILE)).toBe("plan.md");
+    expect(placeName(PLACE)).toBe("this canvas");
+    expect(placeName({ ...PLACE, file: "hex.py" })).toBe("hex");
   });
 
   it("matches by `task.canvas` when the row carries it", () => {
@@ -85,7 +124,7 @@ describe("onRail", () => {
     const onNode = stamp("a", "udf_1.py");
     const onOther = stamp("b", "udf_2.py");
     const onCanvas = stamp("c", "");
-    const NODE = { ...PLACE, file: "udf_1.py" };
+    const NODE: RailPlace = { ...PLACE, file: "udf_1.py" };
     expect(onRail(onNode, NODE)).toBe(true);
     expect(onRail(onOther, NODE)).toBe(false);
     expect(onRail(onCanvas, NODE)).toBe(false);
@@ -94,9 +133,9 @@ describe("onRail", () => {
   });
 
   it("matches an unstamped row to the selected node by its target", () => {
-    const onNode = pulse(task({ key: "a", target: `${PLACE.dir}/udf_1.py` }));
+    const onNode = pulse(task({ key: "a", target: `${DIR}/udf_1.py` }));
     const onFolder = pulse(task({ key: "b" }));
-    const NODE = { ...PLACE, file: "udf_1.py" };
+    const NODE: RailPlace = { ...PLACE, file: "udf_1.py" };
     expect(onRail(onNode, NODE)).toBe(true);
     expect(onRail(onFolder, NODE)).toBe(false);
   });
@@ -104,11 +143,11 @@ describe("onRail", () => {
   it("matches the selected node by NAME: the page's file is a guess from the workbench's echo", () => {
     // The echo names the node only; the page guesses `widget_5.json`, the
     // row says the widget's real file.
-    const GUESS = { ...PLACE, file: "widget_5.json" };
+    const GUESS: RailPlace = { ...PLACE, file: "widget_5.json" };
     const stamped = pulse(task({ key: "a", canvas: { env: "unstable", name: "demo", file: "widget_5.html" } }));
-    const legacy = pulse(task({ key: "b", target: `${PLACE.dir}/widget_5.html` }));
+    const legacy = pulse(task({ key: "b", target: `${DIR}/widget_5.html` }));
     const other = pulse(task({ key: "c", canvas: { env: "unstable", name: "demo", file: "widget_50.json" } }));
-    const nested = pulse(task({ key: "d", target: `${PLACE.dir}/sub/widget_5.html` }));
+    const nested = pulse(task({ key: "d", target: `${DIR}/sub/widget_5.html` }));
     expect(onRail(stamped, GUESS)).toBe(true);
     expect(onRail(legacy, GUESS)).toBe(true);
     expect(onRail(other, GUESS)).toBe(false);

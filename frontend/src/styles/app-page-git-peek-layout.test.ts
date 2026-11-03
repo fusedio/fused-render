@@ -40,8 +40,11 @@ function block(selector: string): string {
   return found[0]!;
 }
 
-test("the split clips the parked peek instead of growing a page scrollbar", () => {
-  expect(block(".app-page-split")).toContain("overflow: hidden");
+test("the peek's row clips the parked peek instead of growing a page scrollbar", () => {
+  // `.app-page-left` since the Claude pane joined the split (2026-11-01):
+  // the peek parks over THIS box's right edge, not the split's.
+  expect(block(".app-page-left")).toContain("overflow: hidden");
+  expect(block(".app-page-left")).toContain("position: relative");
 });
 
 test("the frame slot's width runs off the same clock as the peek's own slide", () => {

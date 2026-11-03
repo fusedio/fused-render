@@ -81,7 +81,7 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, replaceSearch, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { confirmLeave, navigateUrl, replaceSearch, spaLinkProps, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
@@ -133,6 +133,9 @@ import { useTaskPeekEnabled } from "./task-peek-flag";
 import { useAppPageGitColumn } from "@shell/useAppPageGitColumn";
 import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
+import { chatDoorOnApp, useAppPageClaudePane } from "./useAppPageClaudePane";
+import { ClaudeRail } from "./claude-rail/ClaudeRail";
+import { ChatMount } from "@apps/claude";
 import { peekSearch } from "./task-peek-store";
 import {
   useAppContrib,
@@ -721,6 +724,66 @@ export default function AppPage({
   const gitPeekLayout = useAppPageGitPeekWidth(gitSplitRef);
   const gitTaken = gitOpen ? gitPeekLayout.width : 0;
 
+  // ---- THE CLAUDE PANE AND ITS RAIL ------------------------------------------
+  //
+  // The canvas page's right pane, on this page (owner, 2026-11-01: "replicate
+  // that same behaviour in explorer and app view — exact same behaviour"):
+  // the chat on this app folder — the one the explorer's `_side=claude`
+  // sidebar opens on the folder — beside the WHOLE page, header and tabs
+  // included, so it stands whatever tab is up. Open by default; its Hide is
+  // the chat's own top-row seat (`onHidePane`), its seam drags and shuts past
+  // the floor, and while it is shut THE CLAUDE RAIL takes the edge
+  // (shell/claude-rail): the way back in, a + that opens the New task card on
+  // this app, and one ring per chat on this app in the List's order — the
+  // same rail the canvas page and the explorer draw. Open/shut rides the URL
+  // as `side=off`; the width is the explorer sidebar's shared one
+  // (useAppPageClaudePane.ts has the argument for each).
+  //
+  // OUTSIDE the git peek's row: the peek is absolute over `.app-page-left`'s
+  // right edge, and this pane stands past that edge, so the two never share
+  // one — the same reason the git peek was lifted above the Tasks tab's own
+  // side peek (`.app-page-split`'s header).
+  const claudeSplitRef = useRef<HTMLDivElement | null>(null);
+  const claude = useAppPageClaudePane(claudeSplitRef);
+  // A ring's door (ClaudeRail `onOpenChat`, the card's Open, the chat's own
+  // Recent-list hops) is this app's explorer URL with the chat's session
+  // (`taskHref`): ON THIS PAGE, that chat opens in THIS pane — the page is
+  // the app, the pane is its Claude, and leaving for the explorer to see a
+  // chat that belongs here would be the hop the canvas page's rail refuses
+  // too. The session (and a queued entry's `queued`, a chosen backend) is
+  // carried onto this page's URL — the chat reads its params there
+  // (`paramsSource="url"`) — and the chat remounts on it (`claudeSeq`). A
+  // door that is not a chat on this app (a draft's New task card, another
+  // folder's chat) navigates as it says.
+  const [claudeSeq, setClaudeSeq] = useState(0);
+  const openChatHere = (href: string) => {
+    const door = chatDoorOnApp(href, dir);
+    if (!door) {
+      navigateUrl(href);
+      return;
+    }
+    // THE COMPOSER'S OWN LEAVE GUARD FIRST (platform/lib/router
+    // `confirmLeave`, what `navigateUrl` asks): a remount is a leave for the
+    // chat on screen, and words typed into it must not go without a word —
+    // the explorer's ring press and the canvas page's both go through
+    // `navigateUrl`, which asks.
+    void confirmLeave().then((ok) => {
+      if (!ok) return;
+      const next = new URL(location.href);
+      for (const k of ["session_id", "queued", "backend"]) {
+        const v = door.params[k];
+        if (v) next.searchParams.set(k, v);
+        else next.searchParams.delete(k);
+      }
+      next.searchParams.delete("side");
+      if (next.href !== location.href) replaceSearch(next.pathname + next.search + next.hash);
+      setClaudeSeq((n) => n + 1);
+      claude.show();
+    });
+  };
+  // Where the rail stands (claude-rail-lib `RailPlace`): this app's folder.
+  const railPlace = useMemo(() => ({ kind: "folder" as const, dir, word: "App" }), [dir]);
+
   // `home` is already forward-slash (getConfig folds it), matching `dir` and
   // the root, so the prefix test for "~/…" below compares like with like.
   const home = config.home;
@@ -798,9 +861,15 @@ export default function AppPage({
     // untouched, so the Tasks peek — when it opens — narrows to whatever room
     // THIS split has already left it, rather than reaching for the same edge.
     <div
-      className={"app-page-split" + (gitPeekLayout.dragging ? " is-dragging" : "")}
-      ref={gitSplitRef}
+      className={"app-page-split" + (gitPeekLayout.dragging || claude.dragging ? " is-dragging" : "")}
+      ref={claudeSplitRef}
     >
+      <div
+        // The git peek's row (its `position: relative`, its `overflow`):
+        // everything but the Claude column.
+        className="app-page-left"
+        ref={gitSplitRef}
+      >
       <div
         className="app-page-frame-slot"
         style={{ width: `calc(100% - ${gitTaken}px)` }}
@@ -1103,6 +1172,57 @@ export default function AppPage({
         onClose={closeGit}
         layout={gitPeekLayout}
       />
+      </div>
+      {claude.open ? (
+        <div className="app-page-claude" style={{ width: claude.width }}>
+          <div
+            // The explorer's seam, reused as-is (preview.css): one hairline
+            // that lights on hover and drag like every draggable seam here.
+            className={"preview-side-divider" + (claude.dragging ? " dragging" : "")}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Drag to resize the Claude panel"
+            title="Drag to resize"
+            onPointerDown={claude.onSeamPointerDown}
+          />
+          <div className="app-page-claude-chat">
+            <ChatMount
+              // Remounted on a ring's door (`openChatHere`): the session is
+              // read off the URL at boot.
+              key={claudeSeq}
+              file={dir}
+              chatOnly
+              paramsSource="url"
+              prChip
+              recap
+              // The app in the Overview frame is what the chat reads app
+              // state from and points its notes at (the explorer's sidebar
+              // hands its content frame over the same way).
+              annotateTarget={() => document.querySelector<HTMLIFrameElement>(".app-page-frame")}
+              // The pane's close, at the chat's top row's left end.
+              onHidePane={claude.hide}
+              onNavigate={openChatHere}
+            />
+          </div>
+        </div>
+      ) : (
+        <ClaudeRail
+          place={railPlace}
+          // The + makes a task ON THE FOLDER — what the pane's own composer
+          // (`ChatMount file={dir}`) makes one on, so the two doors agree
+          // whatever the entry probe has answered yet; the Tasks door routes
+          // by the row's own `entry` either way (tasks-lib `taskHref`).
+          newTask={{ target: dir, waiting: null, on: null }}
+          // The rail's Git section: this folder's repository; its door is
+          // the page's own git peek (App Doctor's "Open in git" opens the
+          // same one).
+          git={{ path: dir, onOpenGit: openGit }}
+          activeSessionId={new URLSearchParams(location.search).get("session_id")}
+          onOpen={claude.show}
+          onOpenChat={openChatHere}
+          onPullStart={claude.onRailPull}
+        />
+      )}
     </div>
   );
 }
