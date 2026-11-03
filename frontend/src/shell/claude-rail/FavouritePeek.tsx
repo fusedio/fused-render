@@ -13,7 +13,11 @@
 // (fav-peek-store, where each rail registers itself and its favourite
 // rings), and while no rail is up — the pane expanded, a page with no rail —
 // it hides, the chat kept alive, and shows again on the next rail. A bit
-// smaller than the list's card (`FAV_SIZE`), its bottom on its ring's.
+// smaller than the list's card (`FAV_SIZE`), and STUCK TO THE BOTTOM RIGHT
+// (owner: "it should stick to bottom so we can have it at bottom right all
+// the time and we can close and open it"): its bottom on the rail's, not on
+// its ring — the one place it is always found. Over the page's own header
+// bars (z-index, claude-rail.css), so its × is always reachable.
 //
 // WHICH favourite is the server's (`starred_open`, one at a time): the ×
 // here writes it closed, a favourite ring's press on any rail writes it open
@@ -28,13 +32,14 @@ import { pokeTasks, readListing, refreshListing, subscribeListing, useTasksPulse
 import { RailPeek } from "./RailPeek";
 import { publishFavBox, useFavPeekState } from "./fav-peek-store";
 import { useCanvasRailPeek } from "./rail-peek-flag";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import type { RailPlace, RailRow } from "./claude-rail-lib";
 import type { PeekWish } from "./rail-peek-lib";
 
 export const FAV_PEEK_ID = "claude-rail-fav-peek";
 
 /** A bit under the list card's 420×640 (owner: "by default the size of
- *  that preview could be a bit smaller"); the bottom on the ring's. */
+ *  that preview could be a bit smaller"); the bottom on the rail's. */
 const FAV_SIZE: PeekWish = { width: 380, maxHeight: 520, align: "bottom" };
 
 /** The place the card says the chat is on: the row's own canvas, else its
@@ -50,7 +55,9 @@ function placeOf(t: TaskPulseTask, row: Task | null): RailPlace {
 const noop = () => {};
 
 export function FavouritePeek() {
-  const on = useCanvasRailPeek();
+  const peekOn = useCanvasRailPeek();
+  const favsOn = useTaskFavourites();
+  const on = peekOn && favsOn;
   const rows = useTasksPulseRows(on);
   const [listing, setListing] = useState<Task[] | null>(() => readListing());
   useEffect(
@@ -60,16 +67,17 @@ export function FavouritePeek() {
       }),
     [],
   );
-  const { rail, rings } = useFavPeekState();
+  const { rail } = useFavPeekState();
   const open = useMemo(() => rows.find((t) => t.starred_open && t.status !== "archived") ?? null, [rows]);
   const seat = useMemo((): RailRow | null => {
     if (!open) return null;
     return { pulse: open, row: listing?.find((t) => t.key === open.key) ?? null };
   }, [open, listing]);
-  const ring = open ? (rings.get(open.key) ?? null) : null;
-  const shown = on && seat && rail && ring ? seat : null;
+  const shown = on && seat && rail ? seat : null;
   const kept = useMemo(() => (seat ? [seat] : []), [seat]);
-  const anchorOf = useCallback((key: string) => rings.get(key) ?? null, [rings]);
+  // The rail itself is the anchor: with `align: "bottom"` the card's bottom
+  // lands on the rail's, clamped inside the row — the bottom right, always.
+  const anchorOf = useCallback(() => rail, [rail]);
   const place = useMemo(() => (seat ? placeOf(seat.pulse, seat.row) : null), [seat]);
   // The × (RailPeek `onDismiss`): the record says closed; the pulse then
   // takes `open` away and the card goes with it.

@@ -14,8 +14,11 @@ import type { Task } from "@platform/lib/api";
 import { useNow } from "@platform/lib/clock";
 import { sortForList } from "@shell/tasks-lib";
 import { readListing, subscribeListing } from "@shell/tasksPulse";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 
 export function useFavouriteTasks(): Task[] {
+  // Behind the favourites switch (favourites-flag): off, no block.
+  const on = useTaskFavourites();
   const [listing, setListing] = useState<Task[] | null>(() => readListing());
   useEffect(
     () =>
@@ -28,7 +31,7 @@ export function useFavouriteTasks(): Task[] {
   );
   const now = useNow();
   return useMemo(
-    () => sortForList((listing ?? []).filter((t) => t.starred && t.status !== "archived"), now),
-    [listing, now],
+    () => (on ? sortForList((listing ?? []).filter((t) => t.starred && t.status !== "archived"), now) : []),
+    [on, listing, now],
   );
 }

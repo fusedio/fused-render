@@ -510,6 +510,17 @@ def canvas_rail_peek_enabled() -> bool:
     return read_prefs().get("canvas_rail_peek_enabled") is True
 
 
+def task_favourites_enabled() -> bool:
+    """Whether chats can be FAVOURITED (owner, 2026-11-03): the star on the
+    rail's preview card, the favourites section at the rail's foot, the
+    favourite's own card beside it, the pane's Favourites block. Default off.
+    Same idiom as `canvas_rail_peek_enabled`: only a stored `true` is on.
+    The favourites themselves (`tasks_store.FAVOURITES_FILE`) are kept
+    either way; the switch only shows or hides them.
+    """
+    return read_prefs().get("task_favourites_enabled") is True
+
+
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
@@ -1212,6 +1223,8 @@ def _prefs_response() -> dict:
         # click pins; there is no trigger choice (the old
         # `canvas_rail_peek_trigger` key is ignored if still on disk).
         "canvas_rail_peek": {"enabled": canvas_rail_peek_enabled()},
+        # Favourite chats (`task_favourites_enabled`; off by default).
+        "task_favourites": {"enabled": task_favourites_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1557,6 +1570,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["canvas_rail_peek_enabled"] = value
             changed = True
+        if "task_favourites_enabled" in body:
+            value = body.get("task_favourites_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'task_favourites_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["task_favourites_enabled"] = value
+            changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
             if not isinstance(value, bool):
@@ -1878,7 +1898,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
-                          "'canvas_rail_peek_enabled', "
+                          "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

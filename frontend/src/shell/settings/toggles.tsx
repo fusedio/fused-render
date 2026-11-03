@@ -10,6 +10,7 @@ import {
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putCanvasRailPeekEnabled,
+  putTaskFavouritesEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -25,6 +26,7 @@ import {
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
+import { publishTaskFavourites } from "@platform/lib/favourites-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
@@ -265,6 +267,25 @@ export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
         on
           ? "On — hovering a chat on the rail opens it as a card you can use; a click keeps it open."
           : "Off — hovering shows the chat's one-line caption; clicking opens it in the panel."
+      }
+      onChange={onChange}
+    />
+  );
+}
+
+// Published (favourites-flag.ts), like the rail preview above.
+export function TaskFavouritesControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.task_favourites?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="tasks-favourites"
+      checked={on}
+      put={putTaskFavouritesEnabled}
+      after={(next) => publishTaskFavourites(next.task_favourites)}
+      status={
+        on
+          ? "On — a star on the preview card keeps a chat in a Favourites section at the rail's foot, its own card open beside it on every page."
+          : "Off — no star, no Favourites section."
       }
       onChange={onChange}
     />

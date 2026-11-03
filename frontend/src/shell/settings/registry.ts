@@ -515,6 +515,19 @@ const ENTRIES = [
     keywords: "rail hover click preview peek card chat collapsed claude panel popover canvas app explorer",
     renderOnly: true,
   },
+  // FAVOURITE CHATS (owner, 2026-11-03): the star on that preview card, so
+  // a child of it — nothing to star without the card.
+  {
+    id: "tasks-favourites",
+    group: "features",
+    section: "Sidebar",
+    label: "Favourite chats",
+    description: "A star on the rail's preview card keeps a chat in a Favourites section at the foot of every Claude rail, and its own smaller card open at the bottom right on every page with a rail — close it with its ×, reopen it from its ring. The Claude panel lists favourites under Recent chats.",
+    keywords: "favourite favorite star pin keep chat rail card bottom",
+    renderOnly: true,
+    child: true,
+    available: ({ prefs }) => prefs.canvas_rail_peek?.enabled === true,
+  },
   {
     id: "monitor",
     group: "general",

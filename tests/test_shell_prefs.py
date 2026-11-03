@@ -1676,6 +1676,26 @@ def test_canvas_shot_slow_fallback_defaults_off_toggles_and_rejects_junk(tmp_pat
     assert prefs_mod.canvas_shot_slow_fallback_enabled() is False
 
 
+def test_task_favourites_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Favourite chats (the star on the rail card, the favourites section,
+    the favourite's card, the pane's block): same opt-in idiom."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["task_favourites"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"task_favourites_enabled": True},
+                      headers=FUSED).json()
+    assert body["task_favourites"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["task_favourites_enabled"] is True
+    assert prefs_mod.task_favourites_enabled() is True
+    bad = client.put("/api/prefs", json={"task_favourites_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "task_favourites_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"task_favourites_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.task_favourites_enabled() is False
+
+
 def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
     """The collapsed Claude rail's hover preview card (Settings › Canvases):
     same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""

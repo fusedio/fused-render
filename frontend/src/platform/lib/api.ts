@@ -1570,6 +1570,11 @@ export interface Prefs {
   // default). Optional: absent (older server) reads as off. A hover previews
   // and a click pins — there is no trigger choice any more.
   canvas_rail_peek?: { enabled: boolean };
+  // Favourite chats (`task_favourites_enabled`, shell/prefs.py; off by
+  // default): the star on the rail card, the rail's favourites section, the
+  // favourite's own card, the pane's Favourites block. Optional: absent
+  // (older server) reads as off.
+  task_favourites?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2043,6 +2048,10 @@ export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Pref
 
 export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvas_rail_peek_enabled: enabled });
+}
+
+export function putTaskFavouritesEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_favourites_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */

@@ -102,6 +102,7 @@ import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, MessageSquare, Pencil, Star, X } from "lucide-react";
 import { notify } from "@platform/lib/notifications";
 import { archiveTask, renameTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { pokeTasks } from "@shell/tasksPulse";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { shortTaskId } from "@platform/lib/task-id";
@@ -855,6 +856,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // stays hollow after its press reads as a dead button. The server's answer
   // is kept per key until the pulse agrees; the rail is told too
   // (`onStarred`), so its own rules (the close write) know before the pulse.
+  const favsOn = useTaskFavourites();
   const [starMark, setStarMark] = useState<{ key: string; on: boolean } | null>(null);
   const starOf = (t: RailRow["pulse"]): boolean =>
     starMark && starMark.key === t.key ? starMark.on : !!t.starred;
@@ -1068,9 +1070,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               >
                 <X size={14} aria-hidden="true" />
               </button>
-              {head.t.session_id && (
-              // Only a STARTED chat can be starred (a draft or a queued row
-              // has no key that lasts; the server refuses them too).
+              {favsOn && head.t.session_id && (
+              // Behind the favourites switch (favourites-flag). Only a
+              // STARTED chat can be starred (a draft or a queued row has no
+              // key that lasts; the server refuses them too).
               <button
                 type="button"
                 className={"claude-rail-peek-btn claude-rail-peek-star" + (starOf(head.t) ? " is-on" : "")}

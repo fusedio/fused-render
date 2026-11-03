@@ -183,7 +183,8 @@ import {
 import { CanvasGlyph } from "@apps/canvases/glyph";
 import { PEEK_GAP, PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
-import { registerFavRing, registerRail, useFavPeekState } from "./fav-peek-store";
+import { registerRail, useFavPeekState } from "./fav-peek-store";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useRailGit } from "./rail-git";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
@@ -392,7 +393,10 @@ export function ClaudeRail({
   // change.
   // THE FAVOURITES (header) draw in the foot, so a starred chat leaves the
   // list: it is one ring, in one place.
-  const favs = useMemo(() => favSeats(rows, full), [rows, full]);
+  // Behind the favourites switch (favourites-flag): off, no section, no
+  // favourite's card, and a starred ring is a ring like any other.
+  const favsOn = useTaskFavourites();
+  const favs = useMemo(() => (favsOn ? favSeats(rows, full) : []), [favsOn, rows, full]);
   const allSeats = useMemo(() => railRows(rows, full, seatPlace), [rows, full, seatPlace]);
   // ONLY AS MANY RINGS AS FIT, from the top — no scroll (owner, 2026-11-02:
   // "if we have more chats let's not add scroll, just clip them; basically we
@@ -588,8 +592,8 @@ export function ClaudeRail({
   // unstarred it) lets go of the card this effect opened. No focus is taken:
   // the page just loaded, the keyboard is not the card's to have.
   const openFavKey = useMemo(
-    () => rows.find((t) => t.starred_open && t.status !== "archived")?.key ?? null,
-    [rows],
+    () => (favsOn ? (rows.find((t) => t.starred_open && t.status !== "archived")?.key ?? null) : null),
+    [favsOn, rows],
   );
   // THE FAVOURITE'S CARD IS THE SHELL'S (FavouritePeek, mounted once above
   // every page): this rail only registers itself and its favourite rings
@@ -1049,10 +1053,9 @@ export function ClaudeRail({
                 <div key={t.key} role="listitem" className="claude-rail-seat">
                 <a
                   ref={(el) => {
-                    if (foot) {
-                      registerFavRing(t.key, el);
-                      return;
-                    }
+                    // The foot's ring anchors nothing: the favourite's card
+                    // stands on the rail's own bottom edge (FavouritePeek).
+                    if (foot) return;
                     if (el) ringEls.current.set(t.key, el);
                     else ringEls.current.delete(t.key);
                   }}
@@ -1106,7 +1109,7 @@ export function ClaudeRail({
                     // not this rail's. Always written, even when the pulse
                     // already says open: a × a moment ago may still be on
                     // the wire.
-                    if (peekOn && t.starred) {
+                    if (peekOn && favsOn && t.starred) {
                       hideHint();
                       openFavourite(t);
                       return;

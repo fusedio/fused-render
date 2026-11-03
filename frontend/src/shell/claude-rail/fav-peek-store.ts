@@ -3,29 +3,27 @@
 // change views why doesn't it stay as is, it flickers and reloads every
 // time"). The favourite's card is mounted ONCE, in the shell (FavouritePeek),
 // above every page; the rail is a page's own and comes and goes with it.
-// This store is how the two meet: each rail registers itself and its
-// favourite rings as they mount, the card reads them to stand beside the
-// right ring — and hides, chat still mounted, while no rail is on the page.
+// This store is how the two meet: each rail registers itself as it mounts,
+// the card reads it to stand on its bottom edge — and hides, chat still
+// mounted, while no rail is on the page.
 // The card's box goes the other way, so the rail's own card can keep above
 // it (RailPeek `bottomLimit`).
 //
-// WRITES COALESCE, READERS HEAR ONLY A REAL CHANGE: a ring's ref callback is
-// inline, so React calls it with null and then the element again on EVERY
-// render of the rail — two writes that land where they started. Notifying
-// on each would re-render the card, whose box write re-renders the rail,
-// whose refs write again (React #185). So a write only marks the store
-// dirty; a microtask later the live state is compared with the last one the
-// readers saw, and they hear of it only if something is actually different.
+// WRITES COALESCE, READERS HEAR ONLY A REAL CHANGE: the card's box write
+// re-renders the rail, whose own writes would re-render the card (React
+// #185 the first time round, with ring refs in the loop). So a write only
+// marks the store dirty; a microtask later the live state is compared with
+// the last one the readers saw, and they hear of it only if something is
+// actually different.
 import { useSyncExternalStore } from "react";
 import type { Box } from "./rail-peek-lib";
 
 export interface FavPeekState {
   rail: HTMLElement | null;
-  rings: ReadonlyMap<string, HTMLElement>;
   favBox: Box | null;
 }
 
-let live: FavPeekState = { rail: null, rings: new Map(), favBox: null };
+let live: FavPeekState = { rail: null, favBox: null };
 /** The state as the readers last heard it (`useSyncExternalStore`'s
  *  snapshot: one reference until a real change). */
 let seen: FavPeekState = live;
@@ -38,16 +36,10 @@ function sameBox(a: Box | null, b: Box | null): boolean {
   return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
 }
 
-function sameRings(a: ReadonlyMap<string, HTMLElement>, b: ReadonlyMap<string, HTMLElement>): boolean {
-  if (a.size !== b.size) return false;
-  for (const [k, v] of a) if (b.get(k) !== v) return false;
-  return true;
-}
-
 function flush(): void {
   dirty = false;
-  if (live.rail === seen.rail && sameBox(live.favBox, seen.favBox) && sameRings(live.rings, seen.rings)) {
-    // Back where it started (a ref's null-then-element): nothing to say.
+  if (live.rail === seen.rail && sameBox(live.favBox, seen.favBox)) {
+    // Back where it started: nothing to say.
     live = seen;
     return;
   }
@@ -71,16 +63,6 @@ export function registerRail(el: HTMLElement | null, was?: HTMLElement | null): 
   mark({ ...live, rail: el });
 }
 
-/** A favourite's ring on the rail (the foot's), by task key — or gone. */
-export function registerFavRing(key: string, el: HTMLElement | null): void {
-  const had = live.rings.get(key) ?? null;
-  if (had === el) return;
-  const rings = new Map(live.rings);
-  if (el) rings.set(key, el);
-  else rings.delete(key);
-  mark({ ...live, rings });
-}
-
 /** Where the favourite's card stands (null while closed). */
 export function publishFavBox(box: Box | null): void {
   if (sameBox(live.favBox, box)) return;
@@ -98,14 +80,14 @@ function subscribe(fn: () => void): () => void {
   };
 }
 
-/** The rail, rings and the favourite card's box as they stand, re-rendering
- *  on every real change. */
+/** The rail and the favourite card's box as they stand, re-rendering on
+ *  every real change. */
 export function useFavPeekState(): FavPeekState {
   return useSyncExternalStore(subscribe, favPeekState, favPeekState);
 }
 
 export function resetFavPeekStoreForTests(): void {
-  live = { rail: null, rings: new Map(), favBox: null };
+  live = { rail: null, favBox: null };
   seen = live;
   dirty = false;
 }

@@ -156,10 +156,13 @@
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
 }
-/* The favourite's card (FavouritePeek `#claude-rail-fav-peek`) stands over
-   the rail's own card where the two meet. */
+/* The favourite's card (FavouritePeek `#claude-rail-fav-peek`): ABOVE
+   EVERYTHING for now (owner, 2026-11-04: "the z-index should be above
+   everything" — the first cut sat under the page's header bars and its ×
+   could not be reached). Over the rail's own card (45), the modals, the
+   notifications. */
 #claude-rail-fav-peek {
-  z-index: 1;
+  z-index: 100000;
 }
 .claude-rail-favs > .claude-rail-seat,
 .claude-rail-held > .claude-rail-seat {
