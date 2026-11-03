@@ -3126,7 +3126,12 @@ class _SyncManager:
             rolled_back = True
         else:
             rolled_back = False
-        self._base_files = new_base
+        if not (rolled_back and self._base_files is None):
+            # A two-way merge that rolled back restored every file it wrote:
+            # the clone still has no sync point, and a partial dict here would
+            # pass for one (three-way Pulls, `_converged_deletes`, the push
+            # refusal's wording).
+            self._base_files = new_base
         if not rolled_back:
             remote_toml = bundle.get("canvas.toml")
             if remote_toml is not None:
@@ -3235,8 +3240,11 @@ class _SyncManager:
         # back again on every 10 s poll (a download, a validate run and a
         # trash snapshot each time). A new remote move, or a local change
         # since, gets a fresh try.
+        # Local content, not the fingerprint generation: a rollback rewrites
+        # the files it touched with the same bytes but new mtimes, so a
+        # generation key would re-arm the retry it exists to stop.
         key = (probe.get("last_updated"), tuple(sorted(self._udf_hashes(probe.get("udfs")).items())),
-               self._fp_gen)
+               tuple(sorted(self._take_file_hashes(self.dir).items())))
         if key == self._adopt_failed:
             return False
         bundle = self._fetch_bundle(probe)
