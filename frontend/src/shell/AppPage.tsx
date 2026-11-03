@@ -138,6 +138,8 @@ import { ClaudeRail } from "./claude-rail/ClaudeRail";
 import { ChatMount } from "@apps/claude";
 import { peekSearch } from "./task-peek-store";
 import {
+  ownsApp,
+  roleOf,
   useAppContrib,
   useLadder,
   type AppContribState,
@@ -442,7 +444,15 @@ export default function AppPage({
   // both answered, a folder with neither falls back to the default like any
   // unknown tab.
   const ladderAnswered = ladder.data !== null && ladder.data.reason !== "failed";
-  const communityOffered = (!!ladder.data?.ok && ladder.data.mine) || !!contrib.data;
+  // …or a role nobody knows yet with a reason to say (Sign in / Retry):
+  // the tab carries that sentence and its door.
+  const role = roleOf(ladder.data);
+  const switchedOn = !!ladder.data?.flags && (ladder.data.flags.sources || ladder.data.flags.marketplace);
+  const unknownSaid =
+    switchedOn &&
+    ((role.role === "unknown" && !!role.reason) ||
+      (contrib.pendingRole?.role === "unknown" && !!contrib.pendingRole.reason));
+  const communityOffered = (!!ladder.data?.ok && ownsApp(role.role)) || !!contrib.data || unknownSaid;
   const offered = (id: AppPageTab) =>
     id !== "community" ||
     communityOffered ||
