@@ -4,7 +4,7 @@
 // `.claude-rail-peek-card`, `.breakout-card` modifier); body is a plain
 // `ChatMount` in breakout posture: forked from the parent session on its first
 // send, research-only on the server (permission bridge), no queue, no nesting.
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentProps, type ComponentType, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChatMount } from "@apps/claude";
 import type { Turn } from "@apps/claude/protocol/controller-api";
@@ -20,7 +20,16 @@ import {
 
 const OFFSET = 28;
 
-export function Card({ card, index }: { card: BreakoutCard; index: number }) {
+export function Card({
+  card,
+  index,
+  mount: Mount = ChatMount,
+}: {
+  card: BreakoutCard;
+  index: number;
+  // Seam for tests to stub the chat without a process-wide mock.module.
+  mount?: ComponentType<ComponentProps<typeof ChatMount>>;
+}) {
   const state = useRef<{ sessionId: string; turns: readonly Turn[] }>({ sessionId: "", turns: [] });
   const [canSend, setCanSend] = useState(false);
   const onState = useCallback((s: { sessionId: string; turns: readonly Turn[] }) => {
@@ -145,7 +154,7 @@ export function Card({ card, index }: { card: BreakoutCard; index: number }) {
         </div>
         <div className="claude-rail-peek-body">
           <div className="claude-rail-peek-chat is-shown">
-          <ChatMount
+          <Mount
             file={card.file}
             sessionId={card.parentSessionId}
             breakout

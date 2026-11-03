@@ -1,12 +1,12 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, expect, mock, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
-// Only the chat is stubbed; the card chrome and drag logic are the real ones.
-mock.module("@apps/claude", () => ({ ChatMount: () => null }));
+import { Card } from "./BreakoutCards";
 
-const { Card } = await import("./BreakoutCards");
+// Only the chat is stubbed (via the Card `mount` prop); the card chrome and drag logic are the real ones.
+const NoChat = () => null;
 
 const bus = new EventTarget();
 Object.assign(window, {
@@ -27,7 +27,7 @@ const el = { getBoundingClientRect: () => rect };
 function mount() {
   let r!: ReturnType<typeof create>;
   act(() => {
-    r = create(<Card card={card} index={0} />, { createNodeMock: () => el });
+    r = create(<Card card={card} index={0} mount={NoChat} />, { createNodeMock: () => el });
   });
   const root = r.root;
   return {
@@ -44,8 +44,6 @@ const ev = (x: number, y: number, target: unknown = {}) => ({
   target,
   currentTarget: { setPointerCapture() {}, releasePointerCapture() {} },
 });
-
-afterEach(() => {});
 
 test("dragging the head switches the card from right/bottom to left/top", () => {
   const m = mount();
