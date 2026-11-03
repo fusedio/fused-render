@@ -347,6 +347,13 @@ export interface AppContrib {
   panel?: SourcePanel | null;
   actions?: ContribAction[];
   activity?: ActivityLine[];
+  /** Who the user is to this app, said once by the server. Absent on a
+   *  server one release older: read it through `roleOf`. */
+  role?: Role;
+  /** Why `role` is "unknown" (an `UnknownReason`); null otherwise. The same
+   *  field carries the refusal code of an `ok:false` answer, so it is typed
+   *  as a string — read it through `roleOf`. */
+  reason?: string | null;
 }
 
 /** What `GET /api/contrib/app` actually answers: the AppContrib above with
@@ -355,7 +362,7 @@ export interface AppContrib {
  *  classified in the background — poll again. */
 export type AppContribAnswer = Omit<Partial<AppContrib>, "copy"> & {
   ok?: boolean;
-  reason?: string;
+  reason?: string | null;
   pending?: boolean;
   copy?: CopyStatus | null;
 };
@@ -797,6 +804,10 @@ export interface AppContribState {
   answered: boolean;
   /** Re-read now. Resolves when the answer is painted. */
   refresh: () => Promise<void>;
+  /** While a first open is still being classified (`pending`, `data`
+   *  null): the role the pending answer carried, so an "unknown" with its
+   *  reason can show before `data` ever lands. Null otherwise. */
+  pendingRole?: RoleAnswer | null;
 }
 
 /** The app page's copy status for `dir`: read on mount, on window focus (plus
@@ -816,6 +827,7 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
   const [settled, setSettled] = useState(false);
   const [pending, setPending] = useState(false);
   const [answered, setAnswered] = useState(false);
+  const [pendingRole, setPendingRole] = useState<RoleAnswer | null>(null);
   // Generation token, AppPage's iconGenRef pattern: a folder switch (or a
   // newer read) makes every older in-flight answer stale, so app A's card can
   // never paint over app B's.
@@ -833,6 +845,7 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
       if (next.ok === false) {
         // Phase off, or not an app: nothing to show.
         setPending(false);
+        setPendingRole(null);
         setData(null);
         setAnswered(true);
       } else if (next.pending || !next.copy) {
@@ -840,9 +853,11 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
         // and stay UNSETTLED: a `?_tab=proposals` link must not fall back to
         // the Overview on an answer that is not one yet.
         setPending(true);
+        setPendingRole(roleOf(next));
         return;
       } else {
         setPending(false);
+        setPendingRole(null);
         setData(next as AppContrib);
         setAnswered(true);
       }
@@ -857,6 +872,7 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
     genRef.current += 1;
     setData(null);
     setPending(false);
+    setPendingRole(null);
     setAnswered(false);
     setSettled(!enabled);
     if (enabled) void read();
@@ -918,6 +934,7 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
     // Every flag off is a real answer too: there is no inbox to offer.
     answered: known && (!enabled || answered),
     refresh,
+    pendingRole: enabled ? pendingRole : null,
   };
 }
 
@@ -973,7 +990,9 @@ export function ladderListenerCount(dir: string): number {
  *  the switches ride in `flags`. */
 export interface LadderAnswer {
   ok: boolean;
-  reason?: string;
+  /** `ok:false`: the refusal code. `ok:true`: why `role` is "unknown" (an
+   *  `UnknownReason`), else null. */
+  reason?: string | null;
   message?: string;
   /** Null when `mine` is false (no ladder for someone else's app). */
   rung: 1 | 2 | 3 | null;
@@ -1004,6 +1023,79 @@ export interface LadderAnswer {
   /** `github_link`: an older server's copy of the install-link switch, now
    *  folded into `sources` — not read. */
   flags: { sources: boolean; marketplace: boolean; github_link?: boolean };
+  /** Who the user is to this app (`mine` = owner | remixer). Absent on a
+   *  server one release older: read it through `roleOf`. */
+  role?: Role;
+  // `reason` (above) doubles as why `role` is "unknown" on an `ok:true`
+  // answer (an `UnknownReason`, else null): read it through `roleOf`.
+}
+
+// ---- the app role ---------------------------------------------------------------
+
+/** Who the user is to this app, decided once on the server
+ *  (`ladder.role_of`): owner / remixer (the ladder's `mine`), a collaborator
+ *  with push rights, a contributor with a proposal out, a reader who follows,
+ *  a trier on a scratch Try copy, or unknown (see `UnknownReason`). */
+export type Role = "owner" | "remixer" | "collaborator" | "contributor" | "reader" | "trier" | "unknown";
+
+/** Why the role is not known: `identity` no GitHub login is known (door:
+ *  Sign in); `checking` the classification is still running (door: Retry);
+ *  `no-record` fused cannot make a record for this copy (door: install it
+ *  again from the Community). */
+export type UnknownReason = "identity" | "checking" | "no-record";
+
+export interface RoleAnswer {
+  role: Role;
+  /** Set only when `role` is "unknown" and the server (or the fallback)
+   *  knows why; null = nothing to say (not an app, the phase off). */
+  reason: UnknownReason | null;
+}
+
+/** The app is the user's own (the ladder's `mine`). */
+export function ownsApp(role: Role): boolean {
+  return role === "owner" || role === "remixer";
+}
+
+const UNKNOWN_REASONS: ReadonlySet<string> = new Set<UnknownReason>(["identity", "checking", "no-record"]);
+
+function unknownReason(x: string | null | undefined): UnknownReason | null {
+  return x && UNKNOWN_REASONS.has(x) ? (x as UnknownReason) : null;
+}
+
+function isLadder(src: LadderAnswer | AppContribAnswer): src is LadderAnswer {
+  return "mine" in src || "rung" in src;
+}
+
+/** The one place the UI asks who the user is to an app. Reads the server's
+ *  `role`/`reason` when sent; a server one release older omits them, so they
+ *  are derived from what it does send (the ladder's `mine`/`kind`/`pending`,
+ *  the copy's `kind`/`can_push`/`owner_checked`) — the same answers the UI
+ *  branched on before. */
+export function roleOf(src: LadderAnswer | AppContribAnswer | null | undefined): RoleAnswer {
+  if (!src) return { role: "unknown", reason: null };
+  if (src.role) return { role: src.role, reason: src.role === "unknown" ? unknownReason(src.reason) : null };
+  if (isLadder(src)) {
+    if (!src.ok) return { role: "unknown", reason: null };
+    if (src.mine) return { role: src.remix_of ? "remixer" : "owner", reason: null };
+    if (src.pending) return { role: "unknown", reason: "checking" };
+    if (src.kind === "scratch") return { role: "trier", reason: null };
+    if (src.kind === "github" || src.kind === "marketplace") return { role: "reader", reason: null };
+    return { role: "unknown", reason: null };
+  }
+  const answer = src as AppContribAnswer;
+  if (answer.ok === false) return { role: "unknown", reason: null };
+  const copy = answer.copy;
+  if (answer.pending || !copy) return { role: "unknown", reason: "checking" };
+  if (copy.kind === "own") return { role: copy.remix_of ? "remixer" : "owner", reason: null };
+  if (copy.kind === "scratch") return { role: "trier", reason: null };
+  if (copy.kind === "github") {
+    // Classified signed out: whether it is the user's own is not known yet.
+    if (copy.owner_checked === false) return { role: "unknown", reason: "identity" };
+    if (copy.can_push) return { role: "collaborator", reason: null };
+    if (answer.proposal) return { role: "contributor", reason: null };
+    return { role: "reader", reason: null };
+  }
+  return { role: "reader", reason: null };
 }
 
 export function getLadder(dir: string, opts?: { fresh?: boolean }): Promise<LadderAnswer> {

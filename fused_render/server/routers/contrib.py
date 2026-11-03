@@ -275,14 +275,16 @@ _UNKNOWN_PANEL = {"kind": None, "repo": None, "who": None, "last_checked": None,
                   "files": [], "unproposed": 0, "unpublished": 0, "github_new": 0}
 
 
-def _panel(app_dir: str, *, copy, proposal, github, pending=False) -> dict:
+def _panel(app_dir: str, *, copy, proposal, github, role=None, pending=False) -> dict:
     """`{panel, actions}` (`actions.for_app`) from the statuses this read
-    already computed. A failure still answers a panel with Check now (P6)."""
+    already computed (`role`: this read's `ladder.role_for`, handed down so
+    it is derived once). A failure still answers a panel with Check now (P6)."""
     if pending:
         decided = _safely("panel", _actions().decide, {"flags": {"sources": True}, "kind": None})
     else:
         decided = _safely("panel", _actions().for_app, app_dir, copy=copy,
-                          proposal=proposal, github=github)
+                          proposal=proposal, github=github,
+                          **({"role": role} if isinstance(role, dict) else {}))
     if not isinstance(decided, dict):
         decided = _undecided()
     return {"panel": decided.get("panel"), "actions": decided.get("actions") or []}
@@ -295,6 +297,15 @@ def _undecided() -> dict:
             "actions": [{"id": "check", "label": "Check now", "primary": True}]}
 
 
+def _role_fields(app_dir: str, *, ask: bool = True) -> tuple[dict, dict | None]:
+    """`({role, reason}, role_of answer or None)` — `ladder.role_for`
+    (§21), never failing the read: a failure is unknown/checking."""
+    role = _safely("role", _mod("ladder").role_for, app_dir, ask=ask)
+    if not isinstance(role, dict) or not role.get("role"):
+        return {"role": "unknown", "reason": "checking"}, None
+    return {"role": role["role"], "reason": role.get("reason")}, role
+
+
 @router.get("/api/contrib/app")
 def api_contrib_app(path: str = ""):
     """AppContrib for the app containing `path` (§12.1). Cached data only.
@@ -303,7 +314,14 @@ def api_contrib_app(path: str = ""):
     status says so and classifies it in the background) with nothing else
     worked out — not even the share link, whose answer depends on the
     record; the page polls. `engine.status` runs ONCE per read and is handed
-    to the share link."""
+    to the share link.
+
+    `role`/`reason` (§21) are top-level on every `ok:true` answer, the
+    pending one too: `ladder.role_for` — the one derivation the ladder
+    reads — run once here and handed to `actions.for_app`. `reason` is an
+    unknown role's why, else null; a refusal (`ok:false`, the switches-off
+    `disabled` one included) keeps its own refusal `reason` untouched and
+    computes no role. Read side only (P1); `copy` does not carry them."""
     app_dir = _app_dir(path)
     if app_dir is None:
         return _refuse("not-an-app", "That isn't an app in your Fused folder.")
@@ -314,7 +332,8 @@ def api_contrib_app(path: str = ""):
     copy = _safely("status", _mod("engine").status, app_dir)
     record = _mod("store").get(app_dir)
     pending = record is None or bool((copy or {}).get("pending"))
-    out = {"ok": True, "flags": flags, "pending": pending, "copy": copy,
+    fields, role = _role_fields(app_dir)
+    out = {"ok": True, "flags": flags, "pending": pending, **fields, "copy": copy,
            "proposal": None, "inbox": None, "contributors": None,
            "github": refresh.github_identity(), "share_url": None,
            "panel": None, "actions": [], "activity": []}
@@ -324,7 +343,8 @@ def api_contrib_app(path: str = ""):
         return out
     out["share_url"] = _share_url(app_dir, copy)
     out["proposal"] = _safely("proposal", _mod("proposals").view, app_dir)
-    out.update(_panel(app_dir, copy=copy, proposal=out["proposal"], github=out["github"]))
+    out.update(_panel(app_dir, copy=copy, proposal=out["proposal"], github=out["github"],
+                      role=role))
     out["activity"] = _safely("activity", _actions().activity, app_dir) or []
     if flags.get("inbox") and refresh.own_with_repo(record):
         out["inbox"] = _safely("inbox", refresh.inbox_snapshot, app_dir) or {

@@ -100,8 +100,10 @@ import {
   ladderListing,
   notifyLadderChanged,
   opensDoctor,
+  ownsApp,
   plainMessage,
   publishGithub,
+  roleOf,
   runAction,
   runJob,
   runListingAction,
@@ -314,7 +316,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(r
 
 /** An answer the ladder card can stand on: an own app's, with its facts. */
 function ownLadder(l: LadderAnswer | null | undefined): l is LadderAnswer {
-  return !!l && l.ok === true && l.mine === true && !!l.github;
+  return !!l && l.ok === true && ownsApp(roleOf(l).role) && !!l.github;
 }
 
 /** One prerequisite of rung 1: a tick (or an empty ring), what it is, the
@@ -497,7 +499,7 @@ export function SimpleShareCard({
     let last: LadderAnswer | null = null;
     for (let i = 0; i < PUBLISH_SETTLE_TRIES; i++) {
       last = await reload();
-      if (goneRef.current || (last?.ok && last.mine && (last.rung ?? 1) >= 2)) return last;
+      if (goneRef.current || (last?.ok && ownsApp(roleOf(last).role) && (last.rung ?? 1) >= 2)) return last;
       await sleep(PUBLISH_SETTLE_MS);
       if (goneRef.current) return last;
     }
@@ -1161,7 +1163,7 @@ export function GithubLadderCard({
     try {
       for (let i = 0; i < PUBLISH_SETTLE_TRIES; i++) {
         const next = await reload();
-        if (goneRef.current || (next?.ok && next.mine && (next.rung ?? 1) >= 2)) return;
+        if (goneRef.current || (next?.ok && ownsApp(roleOf(next).role) && (next.rung ?? 1) >= 2)) return;
         await sleep(PUBLISH_SETTLE_MS);
         if (goneRef.current) return;
       }
