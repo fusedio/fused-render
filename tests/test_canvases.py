@@ -581,14 +581,17 @@ def test_create_canvas_seeds_the_starter_udf_on_the_server(harness, tmp_path):
     # client-only default.
     harness.log_in()
     shipped = tmp_path / "shipped"
-    harness.set_scenario({"push_capture": str(shipped)})
+    harness.set_scenario({"push_capture": str(shipped), "pull_files": {"canvas.toml": ""}})
     res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
     assert res.status_code == 200
     pushes = [c for c in harness.calls() if c[1:3] == ["canvas", "push"]]
     assert len(pushes) == 1 and pushes[0][-2:] == ["--canvas", "gamma"]
     assert "@fused.udf" in (shipped / "udf.py").read_text(encoding="utf-8")
     doc = canvas_snapshot._load_toml(str(shipped / "canvas.toml"))
-    assert list(canvas_snapshot.rows_of_doc(doc)["nodes"]) == ["udf"]
+    assert doc["type"] == "canvas"
+    assert doc["canvas"]["nodes"] == [
+        {"udfName": "udf", "x": 100, "y": 100, "zIndex": 1, "width": 700, "height": 500,
+         "title": "udf", "visible": True, "nodeDescriptionScaleFactor": 1.5}]
 
 
 def test_create_canvas_does_not_seed_a_canvas_that_has_nodes(harness):

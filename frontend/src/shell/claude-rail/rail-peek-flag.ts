@@ -1,4 +1,4 @@
-// Whether the collapsed Claude rail on a canvas page shows a chat as a live
+// Whether a collapsed Claude rail (any page with one) shows a chat as a live
 // floating card (RailPeek.tsx) — the `canvas_rail_peek_enabled` preference
 // (shell/prefs.py), default OFF. A hover previews, a click pins: there is no
 // trigger choice (the `canvas_rail_peek_trigger` pref of 2026-10-31 is gone;
@@ -44,7 +44,7 @@ function read(): Promise<void> {
 }
 
 /** A known-fresh answer — the prefs payload a Settings control's PUT
- *  returned — so a canvas page in this tab follows the switch at once. */
+ *  returned — so a page with a rail in this tab follows the switch at once. */
 export function publishCanvasRailPeek(next: Prefs["canvas_rail_peek"]) {
   generation += 1;
   reading = Promise.resolve();

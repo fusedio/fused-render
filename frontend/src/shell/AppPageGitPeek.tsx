@@ -25,7 +25,7 @@
 //
 // WHERE THIS SITS RELATIVE TO THE TASKS TAB'S OWN PEEK (decided, not
 // discovered — see DECISIONS.md): OUTSIDE it, one level up. AppPage.tsx's
-// `.app-page-split` is the row both live in — this panel is one of its two
+// `.app-page-left` is the row both live in — this panel is one of its two
 // children, the other being the frame that holds `TaskPeekFrame` (which is
 // itself a row-inside-a-row on the Tasks tab). The two peeks can never share
 // a right edge: the Tasks peek's `.tasks-peek-host` is scoped to the width
