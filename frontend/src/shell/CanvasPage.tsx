@@ -108,6 +108,10 @@ type TabCtx = {
   /** The Sync panel's ref callback (a state setter: stable, and a portal
    *  target read from a ref on the first render would be null). */
   setSyncSlot: (el: HTMLElement | null) => void;
+  /** The rail's card is pinned or held (ClaudeRail `onCardPinned`): the
+   *  Overview's workbench must not take the focus on a pointer enter
+   *  meanwhile (CanvasWorkspace `railCardPinned`; Bugbot on #2091). */
+  railCardPinned: boolean;
 };
 
 type TabDef = {
@@ -124,13 +128,14 @@ const TAB_DEFS: Record<CanvasPageTab, TabDef> = {
     label: "Overview",
     Icon: AppWindow,
     keepMounted: true,
-    render: ({ env, name, onWorkbenchUrl, syncSlot }) => (
+    render: ({ env, name, onWorkbenchUrl, syncSlot, railCardPinned }) => (
       <CanvasWorkspace
         env={env}
         name={name}
         embedded
         onWorkbenchUrl={onWorkbenchUrl}
         syncSlot={syncSlot}
+        railCardPinned={railCardPinned}
       />
     ),
   },
@@ -259,9 +264,13 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
   const [headFit, headRef] = useAppHeadFit();
   const [tabbarFit, tabbarRef] = useAppTabbarFit();
   const [syncSlot, setSyncSlot] = useState<HTMLElement | null>(null);
+  // The rail's card pinned or held (below): the Overview's workbench stops
+  // taking the focus on a pointer enter meanwhile, as the editor's does
+  // (CanvasWorkspace `focusCanvasOnEnter`).
+  const [railCardPinned, setRailCardPinned] = useState(false);
   const ctx = useMemo<TabCtx>(
-    () => ({ env, name, dir, onWorkbenchUrl, syncSlot, setSyncSlot }),
-    [env, name, dir, onWorkbenchUrl, syncSlot],
+    () => ({ env, name, dir, onWorkbenchUrl, syncSlot, setSyncSlot, railCardPinned }),
+    [env, name, dir, onWorkbenchUrl, syncSlot, railCardPinned],
   );
 
   // THE CLAUDE PANE AND ITS RAIL (owner, 2026-11-03: "we show sidebar in
@@ -487,6 +496,7 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
           onOpen={claude.show}
           onOpenChat={openChatHere}
           onPullStart={claude.onRailPull}
+          onCardPinned={setRailCardPinned}
         />
       )}
     </div>

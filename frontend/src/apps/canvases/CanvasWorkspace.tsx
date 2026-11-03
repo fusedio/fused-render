@@ -551,6 +551,7 @@ export default function CanvasWorkspace({
   embedded = false,
   onWorkbenchUrl,
   syncSlot = null,
+  railCardPinned = false,
 }: {
   env: WorkbenchEnv;
   name: string;
@@ -578,6 +579,13 @@ export default function CanvasWorkspace({
    *  behind every tab; the panel is only where it is shown. Null while the
    *  Sync tab is not the one on screen: nothing is drawn, nothing stops. */
   syncSlot?: HTMLElement | null;
+  /** `embedded` only: the PROJECT PAGE's rail has a card pinned or held
+   *  (ClaudeRail `onCardPinned`, CanvasPage). The viewer draws no rail of its
+   *  own, but it still hands the frame focus on a pointer ENTER
+   *  (`focusCanvasOnEnter`), which would take the keyboard out of the card's
+   *  composer as the pointer crosses the workbench — the editor's own rail
+   *  sets `railCardPinnedRef` for the same reason (Bugbot on #2091). */
+  railCardPinned?: boolean;
 }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   // The workbench's own origin, for links a person opens: `baseUrl` is the
@@ -1495,12 +1503,15 @@ export default function CanvasWorkspace({
   // mid-drag from elsewhere or typing (header). `preventScroll`: a focus
   // must never shift the page.
   const railCardPinnedRef = useRef(false);
-  const focusCanvasOnEnter = useCallback((e: React.MouseEvent) => {
-    if (e.buttons !== 0) return;
-    if (railCardPinnedRef.current) return;
-    if (activeElementIsEditable(document)) return;
-    frameRef.current?.focus({ preventScroll: true });
-  }, []);
+  const focusCanvasOnEnter = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.buttons !== 0) return;
+      if (railCardPinnedRef.current || railCardPinned) return;
+      if (activeElementIsEditable(document)) return;
+      frameRef.current?.focus({ preventScroll: true });
+    },
+    [railCardPinned],
+  );
 
   // One embed snapshot → the clone, answered to the frame. A 409 is retried
   // here (SNAPSHOT_BUSY_WINDOW_MS), because the embed only re-posts on its
