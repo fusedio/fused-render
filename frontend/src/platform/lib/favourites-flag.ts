@@ -7,6 +7,7 @@
 // here in platform because the pane (apps/claude) reads it too.
 import { useEffect, useState } from "react";
 import { dropSharedPrefsRead, getPrefsShared, type Prefs } from "./api";
+import { onPrefsReread } from "./prefs-reread";
 
 let answer: boolean | null = null;
 let reading: Promise<void> | null = null;
@@ -24,7 +25,17 @@ function set(next: boolean) {
   for (const listener of listeners) listener(next);
 }
 
+/** Another window flipped the switch: the shared re-read (prefs-reread)
+ *  brings its answer here, like contrib-flags. */
+function onReread(p: Promise<Prefs>): void {
+  const departed = generation;
+  p.then((prefs) => {
+    if (generation === departed) set(fromPrefs(prefs.task_favourites));
+  }).catch(() => {});
+}
+
 function read(): Promise<void> {
+  onPrefsReread(onReread);
   if (reading) return reading;
   const departed = generation;
   reading = getPrefsShared()

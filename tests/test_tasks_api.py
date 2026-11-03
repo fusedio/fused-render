@@ -6542,6 +6542,20 @@ def test_archiving_a_favourite_keeps_the_star_and_closes_its_card(
     assert (row["starred"], row["starred_open"]) == (True, False)
 
 
+def test_an_archived_favourite_cannot_be_reopened_by_an_open_only_write(
+        client, projects_dir, state_dir):
+    """`archive_task` closed the card; an `open: true` with `on` omitted
+    (a fav ring press in a stale window) must not put it back."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    client.post("/api/tasks/archive", headers=_FUSED, json={"key": "sess-a"})
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "sess-a", "open": True})
+    assert r.status_code == 409
+    row = _by_key(client)["sess-a"]
+    assert (row["starred"], row["starred_open"]) == (True, False)
+
+
 def test_archiving_does_not_star_an_unstarred_task(client, projects_dir,
                                                    state_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])

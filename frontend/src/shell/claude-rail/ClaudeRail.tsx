@@ -189,6 +189,7 @@ import { CanvasGlyph } from "@apps/canvases/glyph";
 import { PEEK_GAP, PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { registerRail, useFavPeekState } from "./fav-peek-store";
+import { FAV_PEEK_ID } from "./FavouritePeek";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useRailGit } from "./rail-git";
@@ -1129,7 +1130,15 @@ export function ClaudeRail({
                         ...(peeked ? { "aria-controls": PEEK_ID } : {}),
                         onKeyDown: onRingKey(t.key),
                       }
-                    : {})}
+                    : peekOn && favRing
+                      ? {
+                          // A favourite's ring opens the shell's card
+                          // (FavouritePeek), a dialog of its own.
+                          "aria-haspopup": "dialog" as const,
+                          "aria-expanded": openFavKey === t.key,
+                          ...(openFavKey === t.key ? { "aria-controls": FAV_PEEK_ID } : {}),
+                        }
+                      : {})}
                   {...(peekOn && !favRing
                     ? {
                         onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(t.key, e),

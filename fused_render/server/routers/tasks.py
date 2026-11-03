@@ -7922,9 +7922,6 @@ def api_task_archive(patch: ArchivePatch,
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
     cancelled, filed, stopped = archive_task(task, _parked_runs())
-    # A filed favourite keeps its star but not its open card: the rail draws
-    # no ring for an archived chat, so a card open on it would stand on nothing.
-    tasks_store.set_favourite(key, None, False)
     # THE UNSENT TEXT IS NOT TOUCHED (Akshil, 2026-09-15; design.md, PR C:
     # "Archive/unarchive touch NO drafts").
     #
@@ -7981,9 +7978,19 @@ def api_task_favourite(patch: FavouritePatch,
         task = _collect().get(key)
         if task is None:
             raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
-        if patch.on and not task.get("session_id"):
+        # STARTED = a transcript on disk (`path`), not a session name alone:
+        # a scheduled message that names a session it has not begun is a
+        # session-keyed row with nothing to show in a card.
+        if patch.on and not (task.get("session_id") and task.get("path")):
             raise HTTPException(status_code=400,
                                 detail="only a started chat can be a favourite")
+        # An archived favourite keeps its star but never an open card
+        # (`archive_task`); an open-only write must not put one back.
+        if patch.on is None and patch.open:
+            row = _task_rows(only=frozenset({key}))
+            if row and row[0].get("status") == "archived":
+                raise HTTPException(status_code=409,
+                                    detail="an archived favourite has no open card")
     result = tasks_store.set_favourite(key, patch.on, patch.open)
     tasks_watch.notify(set(result["changed"]) | {key})
     return {"ok": True, "key": key, "starred": result["starred"],
@@ -8130,6 +8137,16 @@ def archive_task(task: dict, parked: dict, *,
         # drops it if the task ever runs, and Unarchive clears it.
         tasks_store.mark_archived(task["key"])
         task["key_filed_at"] = time.time()
+    # A filed favourite keeps its star but not its open card: the rail draws
+    # no ring for an archived chat, so a card open on it would stand on
+    # nothing. Here, not in the route, so a folder removal or the
+    # missing-folder pass files it the same way — and never in the way of
+    # the filing itself: a refused write costs the card, not the archive.
+    try:
+        tasks_store.set_favourite(task["key"], None, False)
+    except OSError as e:
+        logger.warning("archive: could not close the favourite card for %s: %s",
+                       task["key"], e)
     if teardown:
         task["teardown"] = _teardown_task(task, pre_tree=pre_tree)
     return cancelled, survives, stopped
@@ -8565,9 +8582,11 @@ def api_task_delete(patch: DeletePatch,
     # OUT OF THE QUEUE BEFORE THE TOMBSTONE, so nothing can be handed a folder
     # or a held answer for a row that is on its way out.
     _queue_drop_task(key)
-    tasks_store.mark_deleted(key)
-    # The star goes with the row (tasks_store.FAVOURITES_FILE).
+    # The star goes with the row (tasks_store.FAVOURITES_FILE) — BEFORE the
+    # tombstone: a refused star write then leaves a row still visible and
+    # deletable, not a tombstoned row whose star a revival would restore.
     tasks_store.set_favourite(key, False)
+    tasks_store.mark_deleted(key)
     # BOTH HALVES OF THIS SESSION'S UNSENT TEXT GO WITH THE ROW (design.md,
     # PR C). The row is the only place either could ever have been drawn — the
     # composer's own draft as the `✎ Draft` chip, a bound New task form as the
@@ -8761,9 +8780,9 @@ def erase_task(key: str, task: dict) -> dict:
         # it, so the keys the store hands back are announced with the task's.
         dropped = drafts.delete_bound(session_id)
 
-    tasks_store.mark_deleted(key)
-    # The star goes with the row (tasks_store.FAVOURITES_FILE).
+    # The star first, then the tombstone (as `api_task_delete`).
     tasks_store.set_favourite(key, False)
+    tasks_store.mark_deleted(key)
     tasks_watch.notify({key} | set(dropped))
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": erased, "removed": removed}
