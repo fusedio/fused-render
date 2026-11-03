@@ -49,7 +49,7 @@
 // `.app-page-tabbar`, `.app-page-body`, their fit hooks) as they are — the
 // same 1050px column and gutters on every tab as the app page (owner,
 // 2026-10-20: "the exact same gutters"). Only the panels are this page's.
-import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
   AppWindow,
   Files,
@@ -60,7 +60,7 @@ import {
 } from "lucide-react";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl } from "@platform/lib/router";
+import { confirmLeave, navigateUrl, replaceSearch } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { Button } from "@platform/shadcn/ui/button";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -82,6 +82,9 @@ import {
 } from "@apps/canvases/api";
 import { CanvasWorkspace } from "@apps/canvases";
 import { CanvasGlyph } from "@apps/canvases/glyph";
+import { ChatMount } from "@apps/claude";
+import { ClaudeRail } from "./claude-rail/ClaudeRail";
+import { chatDoorOnApp, chatDoorOnCanvas, useAppPageClaudePane } from "./useAppPageClaudePane";
 
 /** The Files tab always reads the LIVE clone: no version picker on this page,
  *  so the snapshot state AppFiles takes is one constant, never pending. */
@@ -261,7 +264,48 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
     [env, name, dir, onWorkbenchUrl, syncSlot],
   );
 
+  // THE CLAUDE PANE AND ITS RAIL (owner, 2026-11-03: "we show sidebar in
+  // projects page then we should show it in canvas page as well —
+  // consistency"): the app page's column, as is (AppPage.tsx "THE CLAUDE
+  // PANE AND ITS RAIL", useAppPageClaudePane.ts) — the canvas chat on the
+  // clone folder beside the WHOLE page, header and tabs included; open or
+  // shut by the shared flag and `side=off`; the Claude rail while shut, with
+  // the canvas's chats on it (claude-rail-lib `RailPlace` kind "canvas", no
+  // node: the whole canvas, as the editor's rail with nothing selected). The
+  // Overview's embedded workbench draws no pane of its own
+  // (CanvasWorkspace `embedded`), so the two never double up.
+  const claudeSplitRef = useRef<HTMLDivElement | null>(null);
+  const claude = useAppPageClaudePane(claudeSplitRef);
+  // A ring's door: the CANVAS chat opens in this pane (`chatDoorOnCanvas`;
+  // a queued row's explorer door on the clone folder too, `chatDoorOnApp`),
+  // behind the composer's leave guard; a NODE's chat, or anything else,
+  // navigates as it says — the editor shows a node's chat on that node.
+  const [claudeSeq, setClaudeSeq] = useState(0);
+  const openChatHere = (href: string) => {
+    const door = chatDoorOnCanvas(href, env, name) ?? (dir ? chatDoorOnApp(href, dir) : null);
+    if (!door) {
+      navigateUrl(href);
+      return;
+    }
+    void confirmLeave().then((ok) => {
+      if (!ok) return;
+      const next = new URL(location.href);
+      for (const k of ["session_id", "queued", "backend"]) {
+        const v = door.params[k];
+        if (v) next.searchParams.set(k, v);
+        else next.searchParams.delete(k);
+      }
+      next.searchParams.delete("side");
+      if (next.href !== location.href) replaceSearch(next.pathname + next.search + next.hash);
+      setClaudeSeq((n) => n + 1);
+      claude.show();
+    });
+  };
+  const railPlace = useMemo(() => ({ kind: "canvas" as const, env, name, dir }), [env, name, dir]);
+
   return (
+    <div className={"app-page-split" + (claude.dragging ? " is-dragging" : "")} ref={claudeSplitRef}>
+    <div className="app-page-left">
     <div className="app-page canvas-page">
       <header className="app-page-head" ref={headRef} data-fit={headFit}>
         <div className="app-page-title">
@@ -396,6 +440,55 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
           })}
         </div>
       </div>
+    </div>
+    </div>
+      {claude.open ? (
+        <div className="app-page-claude" style={{ width: claude.width }}>
+          <div
+            className={"preview-side-divider" + (claude.dragging ? " dragging" : "")}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Drag to resize the Claude panel"
+            title="Drag to resize"
+            onPointerDown={claude.onSeamPointerDown}
+          />
+          <div className="app-page-claude-chat">
+            {dir ? (
+              <ChatMount
+                // Remounted on a ring's door (`openChatHere`): the session is
+                // read off the URL at boot.
+                key={claudeSeq}
+                file={dir}
+                chatOnly
+                paramsSource="url"
+                // The workbench in the Overview is what the chat's notes point
+                // at (the editor hands its own frame over the same way).
+                annotateTarget={() => document.querySelector<HTMLIFrameElement>(".canvas-page-overview iframe")}
+                onHidePane={claude.hide}
+                onNavigate={openChatHere}
+              />
+            ) : (
+              <SkeletonLines rows={3} label="Loading the canvas" />
+            )}
+          </div>
+        </div>
+      ) : (
+        <ClaudeRail
+          place={railPlace}
+          // The + makes a task on the clone (the editor's own seed with no
+          // node selected); held until the clone folder is known.
+          newTask={{
+            target: dir,
+            waiting: dir === null ? "Loading the canvas…" : null,
+            on: null,
+            where: { canvas: name, node: null },
+          }}
+          activeSessionId={new URLSearchParams(location.search).get("session_id")}
+          onOpen={claude.show}
+          onOpenChat={openChatHere}
+          onPullStart={claude.onRailPull}
+        />
+      )}
     </div>
   );
 }

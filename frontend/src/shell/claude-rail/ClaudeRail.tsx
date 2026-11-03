@@ -147,6 +147,7 @@ import {
   keepMarks,
   nodeName,
   placeName,
+  placeRoot,
   railRows,
   railScope,
   readMark,
@@ -366,21 +367,27 @@ export function ClaudeRail({
   const allSeats = useMemo(() => railRows(rows, full, seatPlace), [rows, full, seatPlace]);
   // ONLY AS MANY RINGS AS FIT, from the top — no scroll (owner, 2026-11-02:
   // "if we have more chats let's not add scroll, just clip them; basically we
-  // only show the top chats"). The list takes the room the column leaves it
-  // (claude-rail.css `.claude-rail-chats`); how many whole seats that is, is
-  // measured off the list itself — its height, its row gap, one seat's
-  // height — and re-measured on every resize, so a taller window shows more
-  // and a shorter one fewer, never half a ring. `Infinity` until the first
-  // measure: the list must exist to be measured, and a first paint with
-  // every ring is clipped by the box the same frame.
+  // only show the top chats"). The list is its rings' height and the foot
+  // stands right under the last ring (owner, 2026-11-03: "the back to canvas
+  // button should be end of list"); the column's leftover is the ROOM, an
+  // empty box under the foot (claude-rail.css `.claude-rail-room`). How many
+  // whole seats the column holds is measured off the two together — the
+  // list's height plus the room's, the list's row gap, one seat's height —
+  // and re-measured when either resizes, so a taller window shows more and a
+  // shorter one fewer, never half a ring. (The list alone would not do: once
+  // cut to the rings that fit, it is their height, and a window growing
+  // taller would leave it there.) `Infinity` until the first measure: the
+  // list must exist to be measured, and a first paint with every ring is
+  // clipped by the box the same frame.
   const listRef = useRef<HTMLDivElement | null>(null);
+  const roomRef = useRef<HTMLDivElement | null>(null);
   const [fit, setFit] = useState<number>(Infinity);
   const anyRing = allSeats.length > 0;
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
     const measure = () => {
-      const h = el.clientHeight;
+      const h = el.clientHeight + (roomRef.current?.clientHeight ?? 0);
       const gap = parseFloat(getComputedStyle(el).rowGap) || 0;
       const seat = el.firstElementChild?.getBoundingClientRect().height || 28;
       setFit(Math.max(0, Math.floor((h + gap) / (seat + gap))));
@@ -388,6 +395,7 @@ export function ClaudeRail({
     measure();
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
     ro?.observe(el);
+    if (roomRef.current) ro?.observe(roomRef.current);
     return () => ro?.disconnect();
   }, [anyRing]);
   const baseSeats = useMemo(() => (fit < allSeats.length ? allSeats.slice(0, fit) : allSeats), [allSeats, fit]);
@@ -492,14 +500,21 @@ export function ClaudeRail({
   // BUT NEVER ACROSS PLACES: the explorer keeps this rail mounted from one
   // folder or file to the next, and a card pinned on the last place is not
   // this place's to hold — by key alone it would ride into the foot here
-  // (Bugbot on #2069). A place change lets the card go.
-  const placeRef = useRef(place);
+  // (Bugbot on #2069). A place change lets the card go. A NODE SELECTION IS
+  // NOT A PLACE CHANGE (owner, 2026-11-03: the canvas chat pinned, a node
+  // selected — "we showed it with a button above back to canvas button and
+  // we didn't hide or close that chat"): the canvas `place` is remade with
+  // the node's file, but it is the same canvas, so the held card stays and
+  // its ring rides into the foot (`heldExtra`). Compared by `placeRoot`,
+  // which leaves the node out.
+  const root = placeRoot(place);
+  const rootRef = useRef(root);
   useEffect(() => {
-    if (placeRef.current === place) return;
-    placeRef.current = place;
+    if (rootRef.current === root) return;
+    rootRef.current = root;
     setHeld(false);
     intent.dismiss();
-  }, [place, intent]);
+  }, [root, intent]);
   const heldKey = held ? peekKey : null;
   const heldExtra = useMemo((): RailRow | null => {
     if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return null;
@@ -1138,6 +1153,10 @@ export function ClaudeRail({
             )}
           </div>
         )}
+        {/* THE ROOM (header, `fit`): the column's leftover, measured, never
+            drawn in — so the foot keeps to the list's end and the Git
+            section to the column's. */}
+        <div ref={roomRef} className="claude-rail-room" aria-hidden="true" />
         {git && railGit.repo && (
           // THE GIT SECTION (header): past the left rail's own separator
           // (sidebar.css `.sidebar-rail-sep`), the repository the page sits

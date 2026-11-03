@@ -178,6 +178,16 @@ export function railScope(
 /** The place's own name for the rail's words ("Chats on …", the + title):
  *  the selected node, else the canvas; a folder's or file's last path
  *  segment. */
+/** WHERE the rail stands, with the canvas's node narrowing left out: the
+ *  same canvas with a node selected is the same place (ClaudeRail lets a held
+ *  card go on a place CHANGE — a hop from one folder or file to the next —
+ *  and a node selection on the canvas is not one: the held chat rides into
+ *  the foot instead; owner, 2026-11-03). */
+export function placeRoot(place: RailPlace): string {
+  if (place.kind === "canvas") return `canvas:${place.env}:${place.name}`;
+  return place.kind === "folder" ? `folder:${trimSlash(place.dir)}` : `file:${place.file}`;
+}
+
 export function placeName(place: RailPlace): string {
   if (place.kind === "canvas") return place.file ? nodeName(place.file) : "this canvas";
   const path = trimSlash(place.kind === "folder" ? place.dir : place.file);

@@ -170,6 +170,7 @@
 // mirrored off the frame's own URL (same origin) as it changes — and the next
 // frame on that node boots on it. In memory only: a reload starts over.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
+import { getSideHidden, setSideHidden } from "@platform/lib/side-hidden";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, SyntheticEvent } from "react";
 import { reopenWidth } from "@platform/lib/panel-drag";
@@ -376,11 +377,15 @@ function nodeFile(dir: string, node: NodeSel): string {
 /** Whether the right pane (canvas chat or node pane) is up. Shut rides this
  *  page's URL as `side=off` — the explorer's own word for a shut companion
  *  column (`_side=off`, apps/explorer/lib/preview-side.ts) — so a reload keeps
- *  it; absent means open, the default. */
+ *  it. A SILENT URL asks the one flag every Claude column shares
+ *  (platform/lib/side-hidden: the explorer's sidebar, the app page's pane;
+ *  owner, 2026-11-03: "the collapsed and opened state of it should persist
+ *  across views") — shut there, shut here; else open, the default. */
 const SIDE_OFF = "off";
 
 function sideOpenFromUrl(): boolean {
-  return new URLSearchParams(window.location.search).get("side") !== SIDE_OFF;
+  if (new URLSearchParams(window.location.search).get("side") === SIDE_OFF) return false;
+  return !getSideHidden();
 }
 
 /**
@@ -2290,9 +2295,12 @@ export default function CanvasWorkspace({
     }
   }, [node]);
 
-  // …and the right pane's shut state (`side=off`, see `sideOpenFromUrl`).
+  // …and the right pane's shut state (`side=off`, see `sideOpenFromUrl`) —
+  // and the shared flag with it, so the explorer and the app page open the
+  // way this page was left (platform/lib/side-hidden).
   useEffect(() => {
     if (embedded) return;
+    setSideHidden(!sideOpen);
     const url = new URL(window.location.href);
     if (sideOpen) url.searchParams.delete("side");
     else url.searchParams.set("side", SIDE_OFF);

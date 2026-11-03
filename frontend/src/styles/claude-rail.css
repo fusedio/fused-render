@@ -62,10 +62,14 @@
    (schedule.css `.schedule-ring`), centred in the 28px seat; the seat's hover
    wash and `.active` are the sidebar's. */
 .claude-rail-chats {
-  /* The room the column leaves between the + and the foot: as many whole
-     rings as fit, from the top, and NO scroll (owner, 2026-11-02; ClaudeRail
-     `fit` measures this box). The gap is the items column's own. */
-  flex: 1 1 auto;
+  /* As many whole rings as fit, from the top, and NO scroll (owner,
+     2026-11-02). The list is ITS RINGS' height, shrinking when the column
+     is short — not the column's leftover (owner, 2026-11-03: "the back to
+     canvas button should be end of list"): the foot stands right under the
+     last ring, as it did before #2069, and `.claude-rail-room` below takes
+     what is left. ClaudeRail `fit` measures this box plus the room. The gap
+     is the items column's own. */
+  flex: 0 1 auto;
   min-height: 0;
   width: 100%;
   display: flex;
@@ -73,6 +77,14 @@
   align-items: center;
   gap: 4px;
   overflow: hidden;
+}
+/* The column's leftover, under the foot and above the Git section: nothing
+   is drawn in it; it is what the list could grow into, and ClaudeRail `fit`
+   adds its height to the list's to know how many rings the column holds. */
+.claude-rail-room {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
 }
 /* The list item wraps the link (ClaudeRail: the popup attributes live on the
    link, not on a `listitem`); it is the 28px seat and nothing else. */
