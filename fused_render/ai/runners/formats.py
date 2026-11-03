@@ -368,9 +368,10 @@ def _installed_mflux_registry() -> dict[str, str]:
     try:
         from fused_render.ai import hub_loadable
     except ModuleNotFoundError as exc:
-        # Only "the fused_render package is not here" (the mflux worker venv)
-        # falls back; any other import failure is a real bug and surfaces.
-        if exc.name != "fused_render" and not (exc.name or "").startswith("fused_render."):
+        # Only "the root fused_render package is not here" (the mflux worker
+        # venv) falls back; a missing fused_render.* submodule is a broken
+        # server import and surfaces.
+        if exc.name != "fused_render":
             raise
         return _in_process_mflux_registry()
     return hub_loadable.mflux_available_models() or {}

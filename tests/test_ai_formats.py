@@ -1517,6 +1517,11 @@ def test_installed_registry_reader_only_swallows_a_missing_fused_render(monkeypa
     state["exc"] = ModuleNotFoundError("no fused_render", name="fused_render")
     monkeypatch.setattr(formats, "_in_process_mflux_registry", lambda: {"a/b": "k"})
     assert formats._installed_mflux_registry() == {"a/b": "k"}
+    # A missing SUBMODULE is a broken server import, not the worker venv.
+    state["exc"] = ModuleNotFoundError(
+        "no hub_architecture", name="fused_render.ai.hub_architecture")
+    with pytest.raises(ModuleNotFoundError, match="hub_architecture"):
+        formats._installed_mflux_registry()
 
 
 # -- mflux variants derived from the installed AVAILABLE_MODELS ------------------
