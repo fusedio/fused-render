@@ -130,9 +130,13 @@ test("a session with no task row yet is asked about AGAIN, and the number lands"
 
   // The row appears, and the retry that was already scheduled picks it up.
   answer = async () => ({ tasks: [{ key: SESSION, task_id: "TASK-042", status: "done" }] });
-  await act(async () => {
-    await new Promise((done) => setTimeout(done, ASK_AGAIN_MS[0] + 20));
-  });
+  // Wait for the retry to land, not a fixed 20 ms past its due time: a loaded
+  // runner fires the timer late.
+  for (let i = 0; i < 60 && labels[labels.length - 1] !== "TASK-042"; i++) {
+    await act(async () => {
+      await new Promise((done) => setTimeout(done, 50));
+    });
+  }
   expect(calls).toBe(2);
   expect(labels[labels.length - 1]).toBe("TASK-042");
 
