@@ -267,7 +267,7 @@ export function PublishDialog({
       title={editing ? "Edit the listing" : "Publish to the Community"}
       description={
         editing
-          ? "The app stays on its reviewed version; only how it reads in the Community changes. Fused reviews the change, usually in about 30 minutes."
+          ? "Changes how your app reads in the Community, not which version of it people get. Fused reviews the change, usually in about 30 minutes."
           : "Fused reviews your app before it is listed, usually in about 30 minutes. Anyone can then find and install it."
       }
       footer={

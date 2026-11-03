@@ -90,7 +90,7 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
         id, in-review included (the request is rewritten, as Send again
         does). No gate: the app's version does not move, so neither the
         tip nor App Doctor is asked."""
-        if not old_slug:
+        if not old_slug and lst.get("app_id"):  # no id: `_edit` would refuse `app-id`
             acts.append(_btn("edit-listing", "Edit details", dialog="listing"))
 
     def gates_ok() -> bool:
@@ -152,7 +152,8 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
         elif pr.get("kind") != "remove" and gates_ok():
             acts.append(_btn("publish-market", "Publish to Community", primary=True,
                              dialog="listing"))
-        if pr.get("kind") != "remove" and (listed or pr.get("commit")):
+        # A removal closed unmerged leaves the app listed: still editable.
+        if listed or (pr.get("kind") != "remove" and pr.get("commit")):
             edit_details()
         # A listed app can always be taken down, whatever request just failed
         # or was closed — the person is never stuck with a live row and no
