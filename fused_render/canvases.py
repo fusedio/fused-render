@@ -2279,6 +2279,10 @@ class _SyncManager:
         # The compact rows of canvas.toml at the sync point (merge_toml's base).
         self._base_toml: dict | None = None
         self.merge_rollback_seq = 0
+        self._last_validate_output: list[str] = []
+        # `_adopt_converged_deletes`' memo of the server state whose merge
+        # rolled back, so the poll does not retry it every tick.
+        self._adopt_failed: tuple | None = None
         # Cached answer to "is a Claude session live in this clone?" — see
         # AGENT_LIVE_CACHE_S. Written by whichever of the watcher thread and a
         # status request asks first; a lost race just means one extra scan, so
@@ -2736,6 +2740,11 @@ class _SyncManager:
             )
         except (subprocess.TimeoutExpired, OSError):
             return None
+        # Kept for the rollback's pull error: "validate failed" alone leaves
+        # the reader guessing which node or edge the merge broke.
+        self._last_validate_output = [
+            ln.strip() for ln in ((proc.stdout or "") + "\n" + (proc.stderr or "")).splitlines()
+            if ln.strip()][:_ERROR_DETAIL_MAX]
         return proc.returncode == 0
 
     def _log_folder_fixes(self, leg: str, fixes: list[str]) -> None:
@@ -2950,7 +2959,8 @@ class _SyncManager:
                 bundle[os.path.join(*rel.split("/"))] = data
         return bundle
 
-    def _merge_remote(self, probe: dict, bundle: dict[str, bytes] | None) -> bool:
+    def _merge_remote(self, probe: dict, bundle: dict[str, bytes] | None, *,
+                      two_way: bool = False) -> bool:
         """Apply remote changes into a DIRTY clone, per file, three-way.
         Under _op_lock; `bundle` is `_fetch_bundle(probe)`, fetched by the
         caller BEFORE taking the lock (None = that download failed).
@@ -2976,8 +2986,18 @@ class _SyncManager:
 
         Returns True when the remote state was reconciled (merged, rolled
         back, or nothing to do) and False on a transient failure (the zip
-        download) — the caller must NOT push over an unreconciled remote."""
+        download) — the caller must NOT push over an unreconciled remote.
+
+        `two_way` (an explicit Pull on a dirty clone with no sync point, e.g.
+        after its `.sync/<name>.json` was lost): merge against an EMPTY base
+        instead — every local file that differs from the server's wins, files
+        only the server has come in, nothing local is deleted, and
+        canvas.toml takes only the nodes local lacks. It used to be a
+        wholesale `pull --force` whose trash copy was the only one left of
+        the session's edits, and the next push published the old files."""
         base = self._base_files
+        if base is None and two_way:
+            base = {}
         if base is None:
             self._rotate_remote(probe)
             self._save_base()
@@ -3175,9 +3195,70 @@ class _SyncManager:
         # user's (or the session's) explicit act.
         self._note_server_stale(probe)
 
+    def _converged_deletes(self, probe: dict) -> list[str]:
+        """The UDFs the server deleted that this clone has ALREADY deleted
+        too, when that is the remote move's only UDF change; [] otherwise.
+
+        The common case is the workbench's own "Delete UDF permanently": a
+        workbench build that still deletes on the server while it also drops
+        the node from the snapshot, which removes the file here. Nothing is
+        in conflict, yet read as "server changed" it held every push until
+        someone pressed Pull — and a Claude session cannot press it. Under
+        _op_lock or not: it only reads."""
+        remote = self._remote
+        if remote is None or self._base_files is None:
+            return []
+        before = self._udf_hashes(remote.get("udfs"))
+        after = self._udf_hashes(probe.get("udfs"))
+        if any(slug not in before or before[slug] != after[slug] for slug in after):
+            return []  # an add or an edit on the server: a real pull
+        removed = sorted(set(before) - set(after))
+        if not removed:
+            return []
+        try:
+            local = canvas_snapshot.node_files(self.dir)
+        except OSError:
+            return []
+        return [] if any(slug in local for slug in removed) else removed
+
+    def _adopt_converged_deletes(self, probe: dict | None = None) -> bool:
+        """Fold a remote move that only deleted UDFs this clone has deleted as
+        well (`_converged_deletes`) into the sync point: the same three-way
+        merge a Pull runs (the layout keeps local edits), done without asking.
+        True when it landed and `server_stale` is clear. The caller holds
+        `_flight_lock` and NOT `_op_lock`; `probe` is fetched when not given."""
+        if probe is None:
+            probe = self._probe_remote()
+        if probe is None or not self._converged_deletes(probe):
+            return False
+        # One merge attempt per server state: one that rolled back would roll
+        # back again on every 10 s poll (a download, a validate run and a
+        # trash snapshot each time). A new remote move, or a local change
+        # since, gets a fresh try.
+        key = (probe.get("last_updated"), tuple(sorted(self._udf_hashes(probe.get("udfs")).items())),
+               self._fp_gen)
+        if key == self._adopt_failed:
+            return False
+        bundle = self._fetch_bundle(probe)
+        if bundle is None:
+            return False  # transient: retried next poll
+        with self._op_lock:
+            gone = self._converged_deletes(probe)  # re-read: disk may have moved
+            if not gone:
+                return False
+            rollbacks = self.merge_rollback_seq
+            if not self._merge_remote(probe, bundle):
+                return False  # transient: retried next poll
+            if self.merge_rollback_seq != rollbacks:
+                self._adopt_failed = key
+                return False
+        self.log_event("server_to_disk", "server delete adopted",
+                       detail=f"{', '.join(gone)}: already deleted here")
+        return True
+
     def _force_pull(self, probe: dict, cli) -> str | None:
-        """pull()'s shim-backed wholesale branch (clean clone, or dirty with no
-        merge base), after it has committed to writing: CLI force pull,
+        """pull()'s shim-backed wholesale branch (clean clone, or a hard
+        pull), after it has committed to writing: CLI force pull,
         post-pull divergence recheck, re-baseline.
 
         Returns None when the pull LANDED, else the user-facing reason it did
@@ -3731,6 +3812,10 @@ class _SyncManager:
                         # network call — so outside _op_lock; only adopting
                         # the answer takes it.
                         probe = self._probe_remote()
+                        if (probe is not None and self._remote is not None
+                                and self._remote_moved(self._remote, probe)
+                                and self._adopt_converged_deletes(probe)):
+                            continue  # the server only caught up with this clone
                         if probe is not None:
                             bundle = None
                             if self._stamp_only_move(probe):
@@ -3835,10 +3920,11 @@ class _SyncManager:
         → wholesale `pull --force` either way, trash snapshot first when
         dirty. Clears `server_stale` on success.
 
-        Only the merge KEEPS local edits. The two wholesale legs — external
-        CLI, and a dirty shim clone with no sync point to merge against —
-        replace them with the server's files; the trash snapshot is then the
-        only copy. That is deliberate rather than a refusal: on those legs
+        Only the merge KEEPS local edits (a dirty shim clone with no sync point
+        merges two-way: local wins every file it holds). The wholesale
+        external-CLI leg replaces them with the server's files; the trash
+        snapshot is then the only copy. That is deliberate rather than a
+        refusal: on that leg
         nothing else ever clears `server_stale` (the legacy detector and the
         sync point are both clean-only, and push 409s while it is set), so a
         refused pull would leave the clone with no exit at all. The banner and
@@ -3915,7 +4001,7 @@ class _SyncManager:
             probe = self._probe_remote()
             if probe is None:
                 return {"ok": False, "error": "could not read the canvas from the server"}
-            if dirty and self._base_files is not None and not hard:
+            if dirty and not hard:
                 bundle = self._fetch_bundle(probe)
                 if bundle is None:
                     return {"ok": False,
@@ -3924,15 +4010,19 @@ class _SyncManager:
                     return busy
                 try:
                     rollbacks_before = self.merge_rollback_seq
-                    if not self._merge_remote(probe, bundle):
+                    if not self._merge_remote(probe, bundle,
+                                              two_way=self._base_files is None):
                         return {"ok": False,
                                 "error": "could not download the canvas from the server; "
                                          "try again"}
                     if self.merge_rollback_seq != rollbacks_before:
+                        why = "; ".join(self._last_validate_output[:5])
                         return {"ok": False,
                                 "error": "merging the server's changes would break the canvas "
-                                         "(fused canvas validate failed); nothing was changed. "
-                                         "Publish or revert your local edits, then pull again"}
+                                         "(fused canvas validate failed"
+                                         + (f": {why}" if why else "") + "); nothing was "
+                                         "changed. Fix or revert the local files it names, "
+                                         "then pull again"}
                     self.pull_seq += 1
                     self.last_pull_at = time.time()
                     _seed_clone_claude_files(self.dir, self.name)
@@ -3945,9 +4035,8 @@ class _SyncManager:
                 finally:
                     self._op_lock.release()
             else:
-                # Clean — or dirty with no sync point to merge against, where
-                # the server wins and the trash keeps what it overwrote.
-                # `_force_pull` rotates the baseline (clearing `server_stale`)
+                # Clean (or a hard pull): the server's copy wholesale, trash
+                # snapshot first. `_force_pull` rotates the baseline (clearing `server_stale`)
                 # only on the path where the pull landed.
                 if self.agent_run_id(fresh=True):
                     return agent_live
@@ -5594,32 +5683,41 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         with manager.pause_lock:
             if manager.pause_count > 0 or manager.stop_event.is_set():
                 return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
-        if manager.server_stale is not None:
+        if manager.server_stale is not None and manager._adopt_converged_deletes():
+            pass  # the server only deleted what this clone already deleted
+        elif manager.server_stale is not None:
             # What a hosted tab's save does while the server moved: refuse until
             # the user pulls. Carries the list so a session can say what changed.
             changed = ", ".join(
                 f"{u['slug']} ({u['kind']})" for u in manager.server_stale.get("udfs", [])
             ) or "the canvas layout"
-            # Promise "kept" only where pull() merges: a manifest shim AND a sync
-            # point. The external-CLI leg and a dirty clone with no sync point pull
-            # wholesale (see pull()), and a session told its edits survive would
-            # pull and lose them — so name the trash copy instead.
+            # Promise "kept" only where pull() merges: a manifest shim. The
+            # external-CLI leg pulls wholesale (see pull()), and a session told
+            # its edits survive would pull and lose them — so name the trash
+            # copy instead.
             cli = fused_cli()
             trash = os.path.join(manager.root, ".sync", "trash", name)
             if cli is None or _shim_manifest_command(cli) is None:
                 kept = ("this fused CLI cannot merge, so the pull REPLACES your local "
                         f"edits with the server's files; a copy is kept under {trash}")
             elif manager._base_files is None:
-                kept = ("there is no sync point to merge against, so the pull REPLACES "
-                        f"your local edits with the server's files; a copy is kept under {trash}")
+                kept = ("there is no sync point, so every file you changed is kept "
+                        "as it is and only what the server added comes in")
             else:
                 kept = "your edits are merged with them and kept"
+            # A Pull that was pressed and failed is the one thing a session
+            # told "pull first" cannot see from here: the refusal reads the
+            # same before and after it. Say so, verbatim, or the session
+            # reports a landed pull and a "stale guard" (the HLS_Tiff loop).
+            pull_error = manager._last_pull_error
+            failed = (f" The last Pull did NOT land: {pull_error}" if pull_error else "")
             return JSONResponse(
                 {"error": "the canvas changed on the server since the last sync "
                           f"({changed}); pull first — the Pull button in the canvas view "
                           f"brings those changes into this folder ({kept}), "
-                          "then push again",
-                 "code": "server_changed", "server_stale": manager.server_stale},
+                          "then push again." + failed,
+                 "code": "server_changed", "server_stale": manager.server_stale,
+                 "pull_error": pull_error},
                 status_code=409)
         if manager.push_seq == before or manager._dirty_since is not None \
                 or manager._take_fingerprint() != manager._fingerprint:
@@ -5670,8 +5768,8 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
     "Server changes · Pull" (the hosted workbench's pull, for this tab).
     Clean clone: force pull. Dirty: the three-way merge, canvas.toml per
     node, local edits kept; the held push then ships the merged folder —
-    except with no shim or no sync point, where the pull is wholesale and the
-    trash holds the overwritten edits (see _SyncManager.pull). Returns the
+    except with no shim, where the pull is wholesale and the trash holds the
+    overwritten edits (see _SyncManager.pull). Returns the
     status with `ok`, false (plus `pull_error`) when the pull did not land."""
     guard = _require_fused(x_fused)
     if guard is not None:
