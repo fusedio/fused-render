@@ -295,15 +295,32 @@ def _metas_on_disk() -> list[dict] | None:
     """Every bot.json as written (no Bot built), or None when one is unreadable:
     a decision about deleting logins must not be made on a partial list."""
     from fused_render.bots import store
-    out = []
-    for bid in store.list_ids():
+    # Straight off the bots root, not store.list_ids(): the folder index leaves out a folder whose bot.json is
+    # torn (or a symlink, or claims an id twice), and that bot's browser would then read as an orphan.
+    out = store.read_all_metas()
+    if out is None:
+        return None
+    # Bots still in the pre-v3 legacy tree (the migration has not lifted them yet) name browsers too; reading them
+    # here is what keeps the sweep from removing their logins in the window before the stamp.
+    # …and bots the v3 migration parked under `<bots_root>/.unmigrated/<id>/` (unreadable bot.json or a bad id):
+    # the user may repair them by hand, so their logins stay until then. A parked bot.json that cannot be read is
+    # a partial list like any other (its `browser_id` may be a shared browser's, not its folder name): None.
+    legacy = bpaths.legacy_data_dir()
+    parked = os.path.join(bpaths.bots_root(), ".unmigrated")
+    for base in (legacy, parked):
         try:
-            m = store.read_meta(bid)
-        except Exception:  # noqa: BLE001
+            names = sorted(os.listdir(base)) if os.path.isdir(base) else []
+        except OSError:
             return None
-        if not isinstance(m, dict):
-            return None
-        out.append({**m, "id": m.get("id") or bid})
+        for n in names:
+            meta = os.path.join(base, n, "bot.json")
+            # lexists, not isfile: a DANGLING bot.json symlink is a bot.json nobody can read, not "no bot.json".
+            if not os.path.lexists(meta):
+                continue
+            m = store._read_object(meta)  # None for a symlink, a non-regular file, bad JSON or a non-object
+            if m is None:
+                return None
+            out.append({**m, "id": m.get("id") or n})
     return out
 
 

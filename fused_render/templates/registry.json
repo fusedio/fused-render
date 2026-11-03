@@ -685,5 +685,9 @@
   ".fused": [
     "fusedapp",
     "claude"
+  ],
+  ".fusedbot": [
+    "fusedbot",
+    "claude"
   ]
 }

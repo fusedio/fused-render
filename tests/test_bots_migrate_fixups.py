@@ -1,0 +1,320 @@
+"""Bots v3 review fix-ups (PR #2057): the migrated Inbox index points at .fused/inbox, the Super Bot seed waits
+for the v3 stamp, and one owner per WORKSPACE ticks routines (registry module docstring)."""
+from _bots_conftest import *  # noqa: F401,F403 — app_home (autouse) etc.
+import json
+import os
+
+import pytest
+
+from fused_render.bots import migrate_v3, registry, store
+from fused_render.bots import paths as bpaths
+
+
+def _touch(path, text="x"):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _legacy(app_home, bid, name, **meta):
+    d = os.path.join(str(app_home), "bots", "data", "bots", bid)
+    _touch(os.path.join(d, "bot.json"), json.dumps({"id": bid, "name": name, "created": 1.0, **meta}))
+    _touch(os.path.join(d, "memory.md"), "remember me")
+    return d
+
+
+def _rows(old_inbox, app_dir):
+    """Pre-v3 rows as bot.py _record_artifact wrote them (artifacts_dir was `<bots_root>/<slug>`), plus a build row
+    naming an app folder and a torn line."""
+    return "".join([
+        json.dumps({"ts": 1.0, "name": "out.txt", "path": os.path.join(old_inbox, "20260101-0900-t1", "out.txt"),
+                    "kind": "save", "size": 3, "task": "t1", "folder": "20260101-0900-t1"}) + "\n",
+        "{not json\n",
+        json.dumps({"ts": 2.0, "name": "myapp", "path": app_dir, "kind": "build", "size": 0, "task": "t2",
+                    "folder": "apps", "title": "myapp"}) + "\n",
+        json.dumps({"ts": 3.0, "name": "b.md", "path": os.path.join(old_inbox, "20260101-0900-t1", "b.md"),
+                    "kind": "save", "size": 1, "task": "t1", "folder": "20260101-0900-t1"}) + "\n",
+    ])
+
+
+def _old_inbox(old, app_dir):
+    _touch(os.path.join(old, "20260101-0900-t1", "out.txt"), "out")
+    _touch(os.path.join(old, "20260101-0900-t1", "b.md"), "b")
+    _touch(os.path.join(old, "index.jsonl"), _rows(old, app_dir))
+
+
+def _check(bid, app_dir):
+    inbox = bpaths.bot_inbox(bid)
+    with open(os.path.join(inbox, "index.jsonl"), encoding="utf-8") as f:
+        lines = f.readlines()
+    assert lines[1] == "{not json\n"  # torn line kept verbatim
+    assert json.loads(lines[2])["path"] == app_dir  # a build row is never rewritten
+    arts = registry.get(bid).artifacts()
+    saves = [r for r in arts if r["kind"] == "save"]
+    assert sorted(r["name"] for r in saves) == ["b.md", "out.txt"]
+    for r in saves:
+        assert r["path"].startswith(inbox + os.sep) and os.path.isfile(r["path"])
+    assert any(r["kind"] == "build" for r in arts)
+    return lines
+
+
+def test_migrated_inbox_rows_point_under_dot_fused_inbox(app_home, tmp_path):
+    bid = "a1b2c3d4"
+    root = bpaths.bots_root()
+    old = os.path.join(root, "daily-digest")
+    app_dir = os.path.join(os.environ["FUSED_RENDER_DIR"], "app", "myapp")
+    os.makedirs(app_dir)
+    _old_inbox(old, app_dir)
+    _legacy(app_home, bid, "Daily Digest", artifacts_dir=old)
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and r["moved"] == 1
+    lines = _check(bid, app_dir)
+    # Idempotent: the bot's folder IS the old Inbox's name, so the new paths also start with the old prefix.
+    idx = os.path.join(bpaths.bot_inbox(bid), "index.jsonl")
+    assert migrate_v3._rewrite_index(idx, [old], bpaths.bot_inbox(bid)) is False
+    with open(idx, encoding="utf-8") as f:
+        assert f.readlines() == lines
+    assert not os.path.exists(idx + ".tmp")
+
+
+def test_staged_inbox_after_a_crash_is_rewritten_too(app_home):
+    # A run that staged the Inbox to `.inbox-<id>/<name>/` and died: the rows still name `<bots_root>/<name>/`
+    # (never the stage), and the rerun lifts and rewrites them.
+    bid = "b1b2c3d4"
+    root = bpaths.bots_root()
+    old = os.path.join(root, "renamed-once")
+    app_dir = os.path.join(os.environ["FUSED_RENDER_DIR"], "app", "myapp")
+    os.makedirs(app_dir)
+    _old_inbox(old, app_dir)
+    os.makedirs(os.path.join(root, f".inbox-{bid}"))
+    os.rename(old, os.path.join(root, f".inbox-{bid}", "renamed-once"))
+    _legacy(app_home, bid, "Research", artifacts_dir=old)
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and r["moved"] == 1
+    assert not os.path.exists(os.path.join(root, f".inbox-{bid}"))
+    _check(bid, app_dir)
+
+
+# ----------------------------------------------------------- registry ---
+@pytest.fixture
+def quiet_owner(monkeypatch):
+    """_become_owner without the router, the takeover walk, the import or the wake agent."""
+    for name in ("_start_router", "_reconcile", "_import_fusedbot", "sync_wake"):
+        monkeypatch.setattr(registry, name, lambda: None)
+    monkeypatch.setattr(bpaths, "migrate_layout", lambda: None)
+
+
+def _supers():
+    from fused_render.bots import bot as bm
+    return [b for b in store.list_ids() if bm.is_super(store.read_meta(b))]
+
+
+def test_failed_migration_does_not_seed_a_second_super_bot(app_home, quiet_owner, monkeypatch):
+    _legacy(app_home, "c1c2c3c4", "Super Bot", kind="super")
+    real = registry._migrate_v3
+
+    def boom():
+        raise RuntimeError("migration failed")
+
+    monkeypatch.setattr(registry, "_migrate_v3", boom)
+    registry._become_owner()
+    assert not os.path.exists(registry.seed_stamp_path())
+    assert _supers() == []
+    # The next start: the migration lifts the legacy Super Bot, and the seed sees it.
+    registry._drop_routines_lock()
+    monkeypatch.setattr(registry, "_migrate_v3", real)
+    registry._become_owner()
+    assert os.path.exists(migrate_v3.stamp_path())
+    assert _supers() == ["c1c2c3c4"]
+
+
+def test_failed_migration_then_success_seeds_once(app_home, quiet_owner, monkeypatch):
+    _legacy(app_home, "d1d2d3d4", "Helper")
+    real = registry._migrate_v3
+
+    def boom():
+        raise RuntimeError("migration failed")
+
+    monkeypatch.setattr(registry, "_migrate_v3", boom)
+    registry._become_owner()
+    assert not os.path.exists(registry.seed_stamp_path()) and _supers() == []
+    registry._drop_routines_lock()
+    monkeypatch.setattr(registry, "_migrate_v3", real)
+    registry._become_owner()
+    assert os.path.exists(registry.seed_stamp_path())
+    assert len(_supers()) == 1
+    registry._drop_routines_lock()
+    registry._become_owner()
+    assert len(_supers()) == 1
+
+
+def test_routines_tick_only_under_the_workspace_claim(app_home, monkeypatch):
+    fcntl = pytest.importorskip("fcntl")
+    ticks, ws_steps = [], []
+
+    class Fake:
+        id = "e1e2e3e4"
+
+        def tick_routines(self):
+            ticks.append(1)
+
+    monkeypatch.setattr(registry, "all", lambda: [Fake()])
+    monkeypatch.setattr(registry, "_sweep_handoffs", lambda: None)
+    for name in ("_start_router", "_reconcile", "_import_fusedbot", "sync_wake"):
+        monkeypatch.setattr(registry, name, lambda: None)
+    monkeypatch.setattr(bpaths, "migrate_layout", lambda: None)
+    for name in ("_migrate_v3", "_seed_super", "_sweep_browsers"):
+        monkeypatch.setattr(registry, name, lambda n=name: ws_steps.append(n))
+    path = os.path.join(bpaths.bots_root(), ".routines.lock")
+    other = open(path, "a+", encoding="utf-8")  # another home's owner on the same workspace
+    try:
+        fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert registry._elect()
+        registry._pass()
+        registry._pass()
+        assert ticks == [] and ws_steps == []  # serves its home, never ticks or writes the workspace
+        assert registry.owns()
+    finally:
+        fcntl.flock(other.fileno(), fcntl.LOCK_UN)
+        other.close()
+    registry._pass()  # the other owner quit: the claim is won on the next pass
+    assert ticks == [1]
+    assert ws_steps == ["_migrate_v3", "_seed_super", "_sweep_browsers"]
+    registry._pass()
+    assert ticks == [1, 1] and len(ws_steps) == 3  # the workspace steps ran once
+    registry._drop_routines_lock()
+    probe = open(path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # released with the ownership
+    finally:
+        probe.close()
+
+
+def test_rerun_after_lift_before_rewrite_still_rewrites(app_home):
+    # A run that lifted the Inbox into the bot's folder (named like the old Inbox) and died before the rewrite and
+    # the bot.json: the stage is gone and the pin is now the bot's folder, yet the rows still get rewritten.
+    bid = "f1f2f3f4"
+    root = bpaths.bots_root()
+    old = os.path.join(root, "daily-digest")
+    app_dir = os.path.join(os.environ["FUSED_RENDER_DIR"], "app", "myapp")
+    os.makedirs(app_dir)
+    inbox = os.path.join(old, ".fused", "inbox")
+    _touch(os.path.join(inbox, "20260101-0900-t1", "out.txt"), "out")
+    _touch(os.path.join(inbox, "20260101-0900-t1", "b.md"), "b")
+    _touch(os.path.join(inbox, "index.jsonl"), _rows(old, app_dir))
+    _touch(os.path.join(old, ".fused", ".bot-id"), bid)  # place() marked it as this bot's before the crash
+    _legacy(app_home, bid, "Daily Digest", artifacts_dir=old)
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and r["moved"] == 1
+    assert bpaths.bot_inbox(bid) == inbox
+    _check(bid, app_dir)
+
+
+def test_handoff_sweep_only_under_the_workspace_claim(app_home, monkeypatch):
+    # Hand-off rows live in the Super Bot's bot.json in the shared workspace: only the claim holder sweeps them.
+    fcntl = pytest.importorskip("fcntl")
+    sweeps = []
+    monkeypatch.setattr(registry, "_sweep_handoffs", lambda: sweeps.append(1))
+    monkeypatch.setattr(registry, "_become_owner", lambda: None)
+    monkeypatch.setattr(registry, "all", lambda: [])
+    other = open(os.path.join(bpaths.bots_root(), ".routines.lock"), "a+", encoding="utf-8")
+    try:
+        fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert registry._elect()
+        registry._pass()
+        assert sweeps == []
+    finally:
+        fcntl.flock(other.fileno(), fcntl.LOCK_UN)
+        other.close()
+    registry._pass()
+    assert sweeps == [1]
+
+
+def test_two_old_inboxes_with_one_task_file_keep_both_rows(app_home):
+    # "Foo" renamed to "Bar": the pin still names the old slug folder foo/, and an orphaned bar/ Inbox exists too.
+    # Both hold `<task>/out.txt` with DIFFERENT bytes and an index.jsonl. bar/ lifts first (sorted), so foo's
+    # out.txt and index.jsonl clash into legacy-leftovers; every row must still name its own Inbox's file, and
+    # foo's rows must be merged into the primary index (the only one artifacts() reads).
+    bid = "c1c2c3c4"
+    root = bpaths.bots_root()
+    task = "20260101-0900-t1"
+    for name in ("foo", "bar"):
+        old = os.path.join(root, name)
+        _touch(os.path.join(old, task, "out.txt"), f"from {name}")
+        _touch(os.path.join(old, task, f"only-{name}.md"), name)
+        _touch(os.path.join(old, "index.jsonl"), "".join(
+            json.dumps({"ts": t, "name": fn, "path": os.path.join(old, task, fn), "kind": "save", "size": 1,
+                        "task": name, "folder": task}) + "\n"
+            for t, fn in ((1.0, "out.txt"), (2.0, f"only-{name}.md"))))
+    _legacy(app_home, bid, "Bar", artifacts_dir=os.path.join(root, "foo"))
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and r["moved"] == 1
+
+    inbox = bpaths.bot_inbox(bid)
+    leftovers = os.path.join(os.path.dirname(inbox), migrate_v3.LEFTOVERS)
+    primary, extra = os.path.join(inbox, "index.jsonl"), os.path.join(leftovers, "inbox", "index.jsonl")
+    assert os.path.isfile(extra)  # the clashed index stays as the backup
+    saves = [row for row in registry.get(bid).artifacts() if row["kind"] == "save"]
+    outs = {row["task"]: row["path"] for row in saves if row["name"] == "out.txt"}
+    assert set(outs) == {"foo", "bar"} and outs["foo"] != outs["bar"]
+    assert outs["bar"] == os.path.join(inbox, task, "out.txt")
+    assert outs["foo"] == os.path.join(leftovers, "inbox", task, "out.txt")
+    for row in saves:
+        with open(row["path"], encoding="utf-8") as f:
+            want = f"from {row['task']}" if row["name"] == "out.txt" else row["task"]
+            assert f.read() == want
+    assert sorted(row["name"] for row in saves) == ["only-bar.md", "only-foo.md", "out.txt", "out.txt"]
+
+    # Idempotent: a second run, a direct re-merge and a direct re-rewrite add or change nothing.
+    with open(primary, encoding="utf-8") as f:
+        before = f.read()
+    assert len(before.splitlines()) == 4
+    migrate_v3.migrate_once()
+    assert migrate_v3._merge_index(primary, extra) is False
+    olds = [os.path.join(root, "foo"), os.path.join(root, "bar"), os.path.dirname(os.path.dirname(inbox))]
+    assert migrate_v3._rewrite_index(primary, olds, inbox) is False
+    assert migrate_v3._rewrite_index(extra, olds, inbox) is False
+    with open(primary, encoding="utf-8") as f:
+        assert f.read() == before
+
+
+def test_legacy_drop_folder_lands_in_dot_fused_drop_not_the_inbox(app_home):
+    """The legacy `data/<id>/inbox/` was botsend's drop folder (loose .txt tasks), never the Inbox: it lands in
+    .fused/drop/, where the scheduler drains it, and no Inbox row or folder names it."""
+    bid = "d1d2d3d4"
+    d = _legacy(app_home, bid, "Dropper")
+    _touch(os.path.join(d, "inbox", "task.txt"), "check the news")
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and r["moved"] == 1
+    assert os.path.isfile(migrate_v3.drop_stamp_path())  # a home migrated by this build never needs the fixup
+    drop = bpaths.bot_drop(bid)
+    with open(os.path.join(drop, "task.txt"), encoding="utf-8") as f:
+        assert f.read() == "check the news"
+    inbox = bpaths.bot_inbox(bid)
+    assert "task.txt" not in os.listdir(inbox)
+    idx = os.path.join(inbox, "index.jsonl")
+    assert not os.path.exists(idx) or "task.txt" not in open(idx, encoding="utf-8").read()
+
+
+def test_drop_fixup_moves_botsend_files_out_of_the_inbox_once(app_home):
+    """A home stamped by an earlier v3 build (no `.layout-v3-drop`): botsend-named files sitting directly in
+    .fused/inbox/ move to .fused/drop/ once; task folders, index.jsonl and a user's notes.txt stay."""
+    bid = "e1e2e3e4"
+    _legacy(app_home, bid, "Fixme")
+    assert migrate_v3.migrate_once()["stamped"] is True
+    os.remove(migrate_v3.drop_stamp_path())  # as an earlier build left it
+    inbox, drop = bpaths.bot_inbox(bid), bpaths.bot_drop(bid)
+    _touch(os.path.join(inbox, "20261101-120000-4242.txt"), "a queued task")
+    _touch(os.path.join(inbox, "notes.txt"), "mine")
+    _touch(os.path.join(inbox, "20261101-1200-t1", "20261101-120000-9.txt"), "task output")
+    _touch(os.path.join(inbox, "index.jsonl"), "")
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and os.path.isfile(migrate_v3.drop_stamp_path())
+    assert os.listdir(drop) == ["20261101-120000-4242.txt"]
+    assert sorted(os.listdir(inbox)) == ["20261101-1200-t1", "index.jsonl", "notes.txt"]
+    assert os.listdir(os.path.join(inbox, "20261101-1200-t1")) == ["20261101-120000-9.txt"]
+    # stamped: a rerun is a no-op
+    _touch(os.path.join(inbox, "20261102-080000-7.txt"), "a later file")
+    migrate_v3.migrate_once()
+    assert os.listdir(drop) == ["20261101-120000-4242.txt"]
+    assert "20261102-080000-7.txt" in os.listdir(inbox)

@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from fused_render.bots import paths as bpaths
 from fused_render.bots import agent_engine, apptools, tools
 from fused_render.bots import bot as botmod
 
@@ -34,6 +35,9 @@ JPEG = b"\xff\xd8\xff\xe0fakejpeg\xff\xd9"
 
 
 # ----------------------------------------------------------------- fakes ---
+B1 = "b1b1b1b1"  # ids are 8 hex (paths._ID_RE)
+
+
 def _el(ref, tag, text="", **kw):
     return {"ref": ref, "tag": tag, "text": text, **kw}
 
@@ -122,9 +126,12 @@ class FakeBot:
     def serving_task(self):
         yield
 
-    def __init__(self, bid="b1"):
+    def __init__(self, bid=B1):
         self.id = bid
         self.meta = {"name": "Tester", "model": "haiku", "effort": "low", "approval": "ask", "routines": []}
+        # agent_engine.run resolves the bot's cache dir by id (paths.bot_cache_dir), which needs a placed folder
+        # under <ws>/bots/ (app_home gives every test its own FUSED_RENDER_DIR)
+        bpaths.place(bid, self.meta["name"])
         self.browser = FakeBrowser()
         self.events = []
         self.statuses = []
@@ -456,7 +463,7 @@ def test_text_then_done(server, fake_cli, monkeypatch):
         assert f.read() == agent_engine.SYSTEM_PROMPT
     cfg = json.load(open(argv[argv.index("--mcp-config") + 1]))
     srv = cfg["mcpServers"]["bot"]
-    assert srv["args"][1:3] == [server, "b1"] and srv["timeout"] == (agent_engine.APPROVAL_WAIT_S + 60) * 1000
+    assert srv["args"][1:3] == [server, B1] and srv["timeout"] == (agent_engine.APPROVAL_WAIT_S + 60) * 1000
     tools_listed = fake_cli("tools")[0]["tools"]
     assert "goto" in tools_listed and "tool" not in tools_listed and "text" not in tools_listed
     first = fake_cli("user")[0]["user"]
@@ -670,7 +677,7 @@ def test_stale_token(server, fake_cli, monkeypatch):
             agent_engine.handle_tool(bot, "not-the-token", "observe", {})
         with pytest.raises(agent_engine.StaleToken):
             agent_engine.roster_for(bot, None)
-        req = urllib.request.Request(f"{server}/api/bots/b1/tool", method="POST",
+        req = urllib.request.Request(f"{server}/api/bots/{B1}/tool", method="POST",
                                      data=json.dumps({"name": "observe", "args": {}, "token": "old"}).encode(),
                                      headers={"X-Fused": "1", "Content-Type": "application/json"})
         with pytest.raises(urllib.error.HTTPError) as e:
@@ -1213,7 +1220,7 @@ def test_botmcp_stale_token_is_a_tool_error(server):
 # prompts as approval cards, built-in calls as action rows, a bigger step cap,
 # and the web guard.
 def super_bot():
-    bot = FakeBot("ea1")
+    bot = FakeBot("ea1ea1ea")
     bot.meta.update({"name": "Super Bot", "kind": "super", "super_access": "ask", "model": "sonnet"})
     return bot
 
@@ -1411,7 +1418,7 @@ def test_builtin_label():
 class ConvBot(FakeBot):
     """FakeBot plus the conversation record `run()` resumes (bot.py's surface, in memory)."""
 
-    def __init__(self, bid="c1"):
+    def __init__(self, bid="c1c1c1c1"):
         super().__init__(bid)
         self.seq = 0
         self.conv = {"session_id": None, "tokens": 0, "since_seq": 0, "summary": "", "sent": {}, "prompt_hash": "",

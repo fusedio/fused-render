@@ -9,13 +9,15 @@ The loop itself is an ENGINE: `steps_engine.run(bot, task, label)` (OpenBot's
 JSON-action loop over `fused_ai.text`) or `agent_engine.run(bot, task, label)`
 (Claude Code with native tools over MCP). `start_task` picks one.
 
-State on disk (paths.py): `<home>/bots/data/bots/<id>/` (bot.json, events.jsonl,
-memory.md, skills/, profile/, downloads/, files/, inbox/), `<home>/bots/cache/bots/<id>/`
-(shot.png, steps/<seq>.jpg, badjson/), the Inbox `~/Fused/bots/<bot name>/`
-and the apps `~/Fused/app/` (`FUSED_RENDER_DIR` overrides `~/Fused`).
+State on disk (paths.py): one folder per bot, `~/Fused/bots/<folder>/` (named for the
+bot at creation, never renamed): the public half at its root (bot.json, skills/) and
+everything private under `<folder>/.fused/` (state.json, events.jsonl, memory.md,
+files/, downloads/, the Inbox `inbox/<task>/`, and `cache/`: shot.png, steps/<seq>.jpg,
+badjson/). The apps live in `~/Fused/app/` (`FUSED_RENDER_DIR` overrides `~/Fused`).
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -199,10 +201,6 @@ def _builds_root() -> str:
     return bpaths.apps_root()
 
 
-def _artifacts_root() -> str:
-    return bpaths.artifacts_root()
-
-
 # Mounted into the step prompt only when the task or a recent user message touches an
 # app topic (see APP_GUIDE_TRIGGER), like a skill: the bot can explain every setting
 # and feature without paying for the text on ordinary browsing steps. `@APPS_ROOT@`
@@ -213,7 +211,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
 - Live view: clicking your screenshot widens your browser into the page (the chat becomes a side rail) with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Done, hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers (the live view itself cannot show a passkey prompt: while the user watches it, a passkey request offers them the real window, and declining makes the page fall back, e.g. Google's "Try another way"; with nobody watching, a passkey prompt just waits, so pick another sign-in option or use `login`). Your `login` action hands the page over the same way and waits until the user clicks Done (or replies in chat).
-- Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path. FOLDERS (when present) are the user's own folders they let you READ (`ls`, `find`, `readfile` with a path); you cannot write, move or delete anything there, and no other path on this Mac is readable.
+- Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/.fused/inbox/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path. FOLDERS (when present) are the user's own folders they let you READ (`ls`, `find`, `readfile` with a path); you cannot write, move or delete anything there, and no other path on this Mac is readable.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready, and a card when one is stuck (Claude waits for an OK or an answer, fails, or hits its usage limit) whose button opens it under Builds. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
 - Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click. The Community is a catalog of apps people share: `marketplace_search` finds one and `marketplace_install` installs it under @APPS_ROOT@/<slug> behind an approval card, every time; an installed one is in APPS like any other app.
@@ -558,21 +556,28 @@ class Bot:
 
     def __init__(self, bid):
         self.id = bid
-        self.dir = bpaths.bot_dir(bid)
+        self.dir = bpaths.bot_dir(bid)  # PRIVATE: <folder>/.fused (state, events, memory, inbox, cache)
+        self.public_dir = bpaths.bot_folder(bid)  # PUBLIC: <folder> (bot.json, skills/, README.md)
         self.cache_dir = bpaths.bot_cache_dir(bid)
         self.events_path = os.path.join(self.dir, "events.jsonl")
         self.lock = threading.RLock()
         self._last_user_ts = None  # ts of the newest user event; lazily read from events.jsonl (last_user_ts)
         self._news = None  # (line count, seq of the newest message row); lazily read from events.jsonl (news_seq)
         self.meta = _read_meta(bid)
+        # Read-only: this home's owner does not hold the workspace claim (registry module docstring), so another
+        # fused-render runs this bot and writes its files. The bot loads from disk as-is: no adoption, no load-time
+        # reconcile below, no event, nothing saved (registry.get rebuilds it once the claim is won).
+        self.read_only = _registry().workspace_read_only()
         # The browser (its logins) is a folder of its own, maybe shared with other bots (browsers.py).
         # A bot from before browsers existed is adopted: its profile moves, nothing is copied.
-        if not self.meta.get("browser_id") or not browsers.exists(self.meta["browser_id"]):
+        if self.read_only:
+            self.meta["browser_id"] = self.meta.get("browser_id") or bid  # in memory only
+        elif not self.meta.get("browser_id") or not browsers.exists(self.meta["browser_id"]):
             self.meta["browser_id"] = browsers.adopt(bid, self.dir, self.cache_dir, self.meta)
             store.write_meta(bid, self.meta)
         self.browser = Browser(self.dir, self.cache_dir, proc=browsers.get(self.meta["browser_id"]))
         # Bots from before the live view was the only take-over path recorded a popped-out desktop window here.
-        if self.meta.pop("visible", None) is not None:
+        if not self.read_only and self.meta.pop("visible", None) is not None:
             store.write_meta(bid, self.meta)
         self.last_looked = time.time()  # when the page last polled with this bot selected (routes._status_bot); a bot just
         # loaded counts as looked at, so a shared Chrome never sleeps under it in the first poll after a restart
@@ -603,11 +608,34 @@ class Bot:
         self._skills_loaded = []
         self._handoff_queue = []  # hand-offs waiting for this bot to go idle: [(super bot id, hand-off id)], FIFO
         self._held_lock = threading.Lock()  # one _flush_held at a time: one hand back can release control twice
+        if self.read_only:
+            # No reconcile on a read-only load: the status, hand-over, held messages and hand-offs below are the
+            # claimant's live state, not leftovers. An id-less routine still needs an id to be addressed: a
+            # transient one, never saved from here.
+            for r in self.meta.get("routines") or []:
+                if isinstance(r, dict) and not r.get("id"):
+                    r["id"] = uuid.uuid4().hex[:6]
+            return
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
         # Per-tool "Always approve" rules and finished builds become ticks under "Apps it may use without asking".
         if _tools_mod().migrate_app_rules(self.meta):
+            dirty = True
+        # The Inbox is <folder>/.fused/inbox now, derived, never pinned: an old pin names a folder that is gone.
+        # A routine row without an id cannot be split between bot.json and state.json (store.ROUTINE_PUBLIC_KEYS
+        # rejoins the halves by id), so it would travel whole and churn the public file on every tick: mint one.
+        for r in self.meta.get("routines") or []:
+            if isinstance(r, dict) and not r.get("id"):
+                r["id"] = uuid.uuid4().hex[:6]
+                dirty = True
+        if self.meta.pop("artifacts_dir", None) is not None:
+            dirty = True
+        # The apps manifest (what an export packs) is seeded once, after the rules above became trusted_apps;
+        # from then on the export dialog edits it and the bot never regrows it.
+        if "apps" not in self.meta:
+            from fused_render.bots import migrate_v3  # lazy: it pulls in apptools/presets/package at call time
+            self.meta["apps"] = migrate_v3.seed_apps(self.meta)
             dirty = True
         if not is_super(self.meta):
             # iMessage is Super Bot's alone (docs §10): an ordinary bot's leftover handle and contacts grant nothing
@@ -762,13 +790,13 @@ class Bot:
             return self._last_user_ts
 
     # -- step thumbnails -------------------------------------------------------
-    # One small JPEG per action, under cache/<id>/steps/, referenced from the
+    # One small JPEG per action, under .fused/cache/steps/, referenced from the
     # action event so the transcript can show what the page looked like after
     # each step. Cache only: a missing file just leaves the chip without an image.
     STEP_THUMBS = 200
 
     def _keep_bad_reply(self, raw, step):
-        """Write a reply `_parse` rejected to cache/<id>/badjson/<step>.txt and
+        """Write a reply `_parse` rejected to .fused/cache/badjson/<step>.txt and
         return a one-line summary for the error event."""
         raw = raw or ""
         d = os.path.join(self.cache_dir, "badjson")
@@ -1206,7 +1234,7 @@ class Bot:
 
     @property
     def skills_dir(self):
-        return os.path.join(self.dir, "skills")
+        return os.path.join(self.public_dir, "skills")  # public: skills travel with the bot's folder
 
     @staticmethod
     def _parse_skill(text):
@@ -1510,44 +1538,20 @@ class Bot:
         self._record_artifact(p, "save")
         return p
 
-    # -- inbox (artifacts): ~/Fused/bots/<name>/<task>/ --------------------------
+    # -- inbox (artifacts): <folder>/.fused/inbox/<task>/ --------------------------
     @property
     def artifacts_dir(self):
-        """The bot's Inbox folder. Pinned in bot.json the first time it is used,
-        so a rename afterwards does not split the bot's output across folders."""
-        d = self.meta.get("artifacts_dir")
-        if d:
-            return d
-        root = _artifacts_root()
-        base = _slug(self.meta.get("name")) or self.id
-        d = os.path.join(root, base)
-        if os.path.isdir(d):
-            others = []
-            for o in _list_ids():
-                if o == self.id:
-                    continue
-                try:
-                    others.append(_read_meta(o).get("artifacts_dir"))
-                except Exception:  # noqa: BLE001
-                    continue
-            if d in others:
-                d = os.path.join(root, f"{base}-{self.id[:4]}")  # another bot with the same name owns it
-        return d
-
-    def _pin_artifacts_dir(self):
-        d = self.artifacts_dir
-        if self.meta.get("artifacts_dir") != d:
-            with self.lock:
-                self.meta["artifacts_dir"] = d
-                self.save()
-        return d
+        """The bot's Inbox folder, `<folder>/.fused/inbox`. Derived from the bot's
+        folder (named once at creation, never renamed), so a rename cannot split
+        the bot's output across folders and nothing needs pinning in bot.json."""
+        return bpaths.bot_inbox(self.id)
 
     def task_folder(self):
         """This task's folder in the Inbox, created on the first artifact."""
         if not self.task_dir:
             stamp = time.strftime("%Y%m%d-%H%M", time.localtime(self.task_started or time.time()))
             slug = _slug(self.meta.get("task") or "task")[:40].rstrip("-") or "task"
-            root = self._pin_artifacts_dir()
+            root = self.artifacts_dir
             cand, n = os.path.join(root, f"{stamp}-{slug}"), 1
             while os.path.isdir(cand) and self.task_dir is None and n < 50:
                 n += 1
@@ -1564,8 +1568,7 @@ class Bot:
             size = 0
         row = {"ts": time.time(), "name": os.path.basename(path), "path": path, "kind": kind, "size": size,
                "task": (self.meta.get("task") or "")[:160], "folder": os.path.basename(os.path.dirname(path)), **extra}
-        root = self._pin_artifacts_dir()
-        os.makedirs(root, exist_ok=True)
+        root = self.artifacts_dir
         with self.lock:
             with open(os.path.join(root, "index.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(row) + "\n")
@@ -1842,18 +1845,24 @@ class Bot:
         return ([{**f, "kind": "saved"} for f in self.browser.list_files(self.files_dir, 12)]
                 + [{**f, "kind": "download"} for f in self.browser.list_files(self.browser.downloads, 12)])
 
-    # -- file inbox: any local process drops a .txt task here (see botsend.py) --
+    # -- drop folder: any local process drops a .txt task in <folder>/.fused/drop/ (see botsend.py) --
     @property
-    def inbox_dir(self):
-        return os.path.join(self.dir, "inbox")
+    def drop_dir(self):
+        """botsend.py's drop folder, `<folder>/.fused/drop`. Never the Inbox (artifacts_dir): that holds the
+        user's files and is Super Bot's cwd, so draining it would eat a `notes.txt` or start a task from it."""
+        return bpaths.bot_drop(self.id)
 
     def drain_file_inbox(self):
         try:
-            names = sorted(n for n in os.listdir(self.inbox_dir) if n.endswith(".txt"))
-        except OSError:
+            drop = self.drop_dir
+            if os.path.normcase(os.path.realpath(drop)) == os.path.normcase(os.path.realpath(self.artifacts_dir)):
+                logger.error("bot %s: drop folder %s is the Inbox; not draining it", self.id, drop)
+                return
+            names = sorted(n for n in os.listdir(drop) if n.endswith(".txt"))
+        except (OSError, LookupError):  # LookupError: the bot's folder is gone
             return
         for n in names:
-            p = os.path.join(self.inbox_dir, n)
+            p = os.path.join(drop, n)
             try:
                 with open(p, encoding="utf-8") as f:
                     task = f.read().strip()
@@ -3140,7 +3149,10 @@ class Bot:
     @staticmethod
     def _exists(bid):
         """bot.json is still on disk: a deleted bot must never be written back by a late save."""
-        return bool(bid) and os.path.isfile(os.path.join(bpaths.bot_dir(bid), "bot.json"))
+        try:
+            return bool(bid) and os.path.isfile(store.meta_path(bid))
+        except LookupError:
+            return False  # no folder carries the id any more (deleted, or never placed)
 
     def _handoff_target(self, name):
         """(Bot, "") for an ordinary bot's name (exact, case-insensitive, then a
@@ -4309,8 +4321,6 @@ def manage_settings(bot, target_name, args):
                 t.meta["face"] = dict(raw)
                 said.append(f"face {old} → {words}")
             elif field == "name":
-                if t.meta.get("artifacts_dir") and not os.path.isdir(t.meta["artifacts_dir"]):
-                    t.meta.pop("artifacts_dir", None)  # never used on disk: let the new name pick the folder (routes._settings)
                 t.meta["name"] = new
                 said.append(f"name {old!r} → {new!r}")
             elif field == "instructions":
@@ -4334,11 +4344,15 @@ def _registry():
 
 
 def _write_new_meta(bid, meta):
-    os.makedirs(bpaths.bot_dir(bid), exist_ok=True)
+    bpaths.place(bid, meta.get("name"))  # the folder is named for the bot now and never renamed after
     store.write_meta(bid, meta)
 
 
-def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True, browser=""):
+class BotIdTaken(ValueError):
+    """create(bot_id=) refused an id some folder already claims, before anything was written."""
+
+
+def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True, browser="", *, bot_id=None):
     """A new bot: bot.json, a `created` line, the greeting (background). Returns the Bot.
     With `preset` (a key under bots/presets/) its playbooks, brand face, standing
     rules and starter apps are applied before the greeting, so it introduces them;
@@ -4346,7 +4360,20 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
     `kind="super"` makes Super Bot (KINDS): one per install, a Claude model, its own
     face and standing rules unless the user typed some; a preset does not apply.
     `greet=False` skips the model-written hello (the seeded Super Bot writes a fixed line).
-    `browser` is an existing browser id to share (another bot's logins); default a browser of its own."""
+    `browser` is an existing browser id to share (another bot's logins); default a browser of its own.
+    `bot_id` is an id the caller minted (botfile's install, which must know its bot's id even when this raises
+    after bot.json exists); one that is malformed or already a bot is refused before anything is written."""
+    if bot_id is not None:
+        if not isinstance(bot_id, str) or not bpaths._ID_RE.fullmatch(bot_id):
+            raise ValueError(f"bad bot id {bot_id!r}")
+        try:
+            bpaths.bot_folder(bot_id)
+            taken = True
+        except LookupError:
+            # raw_ids, not list_ids: the index drops an id two folders claim, which would read as free here
+            taken = bot_id in bpaths.raw_ids()
+        if taken:  # place() reuses a folder holding this id: without this a duplicate would overwrite, not refuse
+            raise BotIdTaken(f"there is already a bot {bot_id}")
     preset = (preset or "").strip()
     browser = os.path.basename(browser or "")
     if browser and not browsers.exists(browser):
@@ -4362,7 +4389,7 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
         from fused_render.bots import presets as presets_mod
         if presets_mod.get(preset) is None:  # refuse before bot.json exists: no orphan bot
             raise ValueError(f"unknown preset {preset!r}")
-    bid = uuid.uuid4().hex[:8]
+    bid = bot_id or uuid.uuid4().hex[:8]
     n = len(_list_ids())
     meta = {"id": bid, "name": name or f"Bot {n}", "model": model if model in MODELS else DEFAULT_MODEL,
             "effort": effort if effort in EFFORTS else DEFAULT_EFFORT, "status": "idle", "instructions": (instructions or "").strip(),
@@ -4412,7 +4439,7 @@ def clone(src_id, name="", share=True):
     if is_super(src.meta):
         raise ValueError("Super Bot cannot be cloned; there is one per Mac")
     bid = uuid.uuid4().hex[:8]
-    os.makedirs(bpaths.bot_dir(bid), exist_ok=True)
+    bpaths.place(bid, name or f"{src.meta.get('name', 'Bot')} copy")  # same name as the meta below
     resealed = False
     if not share:
         if src.browser.sealed() and not src.browser.alive():
@@ -4437,6 +4464,9 @@ def clone(src_id, name="", share=True):
             "trusted_apps": apptools.clean_trusted_apps(src.meta.get("trusted_apps")),
             "allow_rules": _tools_mod().clean_allow_rules(src.meta.get("allow_rules")),
             "folders": clean_folders(src.meta.get("folders")),
+            # The apps manifest as the source has it (export-dialog edits included); present, so __init__ does
+            # not reseed it. Rows copied, so the two bots never share one dict.
+            "apps": copy.deepcopy(list(src.meta.get("apps") or [])),
             "status": "idle", "created": time.time(), "task": "", "step": 0, "url": None, "title": None}
     if src.meta.get("engine"):
         meta["engine"] = src.meta["engine"]
@@ -4497,7 +4527,7 @@ def set_browser(b, target, fresh=False):
 
 
 def delete(bid):
-    """Stop the bot's task and Chrome, forget it, remove its data and cache folders."""
+    """Stop the bot's task and Chrome, forget it, remove its folder (public files, .fused/ and its cache)."""
     reg = _registry()
     b = reg.get(bid)
     b.deleted = True  # first: a watcher or starter racing the shutdown below must not start or save it
@@ -4505,10 +4535,17 @@ def delete(bid):
     # home); an unreadable bot.json counts as shared, since removing logins on a partial list is the worse mistake.
     shared = browsers.used_on_disk(b.browser_id, except_id=bid) is not False
     b.shutdown(browser=not shared, seal=None if shared else False)  # a shared browser stays up for the other bots
-    # Folders go BEFORE forget(): between forget and rmtree, registry.get would find bot.json on disk and build a
-    # fresh Bot with deleted=False that could save the folder back. With the folder gone, get() has nothing to load.
-    shutil.rmtree(bpaths.bot_dir(bid), ignore_errors=True)
-    shutil.rmtree(bpaths.bot_cache_dir(bid), ignore_errors=True)
+    # The folder goes BEFORE reg.forget(): between forget and rmtree, registry.get would find bot.json on disk and
+    # build a fresh Bot with deleted=False that could save the folder back. With the folder gone, get() has nothing
+    # to load. bpaths.forget() follows the rmtree so a late writer's lookup raises LookupError instead of
+    # recreating `.fused/` under a folder that no longer holds the bot.
+    try:
+        folder = bpaths.bot_folder(bid)
+    except LookupError:
+        folder = None  # already gone (a second delete, or removed by hand)
+    if folder:
+        shutil.rmtree(folder, ignore_errors=True)
+    bpaths.forget(bid)
     if not shared:
         browsers.remove(b.browser_id)  # its logins go with it
     # A deleted Super Bot's queued hand-offs would otherwise sit at the head of each target's in-memory queue

@@ -831,8 +831,14 @@ def test_no_hub_refresh_hooks_at_boot_and_catalog_read_starts_them(tmp_path, mon
 
 def _bots_home_fixture(tmp_path, monkeypatch):
     from fused_render.bots import paths as bpaths
+    from fused_render.bots import registry as bots_registry
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    # bots v3: a bot's folder lives under <workspace>/bots/, so the workspace is per test too, and the id ->
+    # folder map (cached per process) and the registry's Bot cache must forget the previous test's
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "ws"))
+    bpaths._reset_folders()
+    bots_registry.reset_for_tests()
     return bpaths
 
 
@@ -883,7 +889,7 @@ def test_bots_has_been_used_counts_a_bot_and_a_pending_fusedbot_tree(tmp_path, m
     assert bots_registry.has_been_used() is True  # legacy import pending
     import shutil
     shutil.rmtree(legacy)
-    bot_dir = os.path.join(bpaths.data_dir(), "b1")
-    os.makedirs(bot_dir)
-    open(os.path.join(bot_dir, "bot.json"), "w").write("{}")
+    folder = bpaths.place("b1b1b1b1", "One")  # <ws>/bots/one/: a bot once its bot.json is written
+    assert bots_registry.has_been_used() is False
+    open(os.path.join(folder, "bot.json"), "w").write('{"id": "b1b1b1b1"}')
     assert bots_registry.has_been_used() is True

@@ -8,7 +8,9 @@ apps hub), and a `/api/bots/apps/*` spelling would be swallowed by the
 Each route is one branch of OpenBot's `agents._main` (the page used to call
 `main(action=…)`; here every action is a route). Reads are plain GETs; every
 POST/DELETE needs `X-Fused: 1`. Errors are `{"error": "<sentence>"}`:
-`ValueError` / `RuntimeError` from the bot layer -> 400, an unknown bot -> 404.
+`ValueError` / `RuntimeError` from the bot layer -> 400, an unknown bot -> 404,
+`registry.WorkspaceBusy` (another home's owner holds the workspace claim, so a
+door that would start a bot engine or write a bot's files refuses: `_ws`) -> 409.
 
 The bot layer (`registry`, `bot`, `store`, `apps`) is imported lazily so the
 server imports this router without pulling in Chrome/CDP code.
@@ -175,12 +177,14 @@ def _starters():
 
 
 def _handled(fn):
-    """ValueError/RuntimeError -> 400 (404 for an unknown bot), plus the slow-call log."""
+    """WorkspaceBusy -> 409, ValueError/RuntimeError -> 400 (404 for an unknown bot), plus the slow-call log."""
     @functools.wraps(fn)
     def wrap(*args, **kwargs):
         t0 = time.time()
         try:
             return fn(*args, **kwargs)
+        except registry.WorkspaceBusy as e:  # a ValueError: before the 400 branch
+            return _error(str(e), 409)
         except (ValueError, RuntimeError) as e:
             msg = str(e) or e.__class__.__name__
             return _error(msg, 404 if msg.startswith("no such bot") else 400)
@@ -188,6 +192,14 @@ def _handled(fn):
             registry.slow_log(fn.__name__, int((time.time() - t0) * 1000),
                               kwargs.get("bid") or kwargs.get("shot_for") or "", bool(kwargs.get("fast") in ("1", "true", True)))
     return wrap
+
+
+def _ws(bid):
+    """The bot (404 for an unknown id first), then the workspace gate: a home without the workspace claim is
+    read-only for bot state (registry module docstring), since the claimant's next save would revert the write."""
+    b = _bot(bid)
+    registry.require_workspace()
+    return b
 
 
 def _truthy(v) -> bool:
@@ -352,6 +364,7 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     if not isinstance(browser, str):
         raise ValueError("browser_id must be a browser id")
     terminal = _check_terminal(bm, body, kind == "super")  # before the bot exists: a 400 leaves nothing behind
+    registry.require_workspace()  # its greeting thread may start a preset's setup task (bot.greet)
     b = registry.create(body.get("name") or "", body.get("model") or "", body.get("effort") or "", body.get("instructions") or "",
                         preset=preset, kind=kind, browser=browser)
     if body.get("approval") in ("ask", "auto"):
@@ -413,8 +426,10 @@ def bots_browser_op(bid: str, body: dict = Body(...), x_fused: str | None = Head
     if not bots or not browsers.exists(bid):
         raise ValueError("no such browser")
     op = body.get("op") or ""
-    if op == "rename":
+    if op == "rename":  # browser.json is this home's (data/browsers): no bot file moves
         return {"ok": True, "name": browsers.rename(bid, body.get("name") or "")}
+    if op in ("encrypt", "profile", "signin", "delete"):
+        registry.require_workspace()  # each writes the bots' bot.json (set_encrypt, take-over, set_browser)
     if op == "encrypt":
         bots[0].set_encrypt(_truthy(body.get("on")))
         return {"ok": True}
@@ -587,6 +602,7 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
     if not text:
         raise ValueError("empty message")
     answers = body.get("answers")  # a relayed card's button (docs §11): the seq the click meant, else None
+    registry.require_workspace()
     try:
         _bot(bid).send(text, reply_to=body.get("reply_to"), forever=bool(body.get("forever")),
                        answers=int(answers) if answers is not None else None)
@@ -595,9 +611,56 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
     return {"ok": True}
 
 
+def _package():
+    from fused_render.bots import package
+    return package
+
+
+# Before the `/api/bots/{bid}/{op}` POST catch-all, like `/send`: registered later, "package" would be swallowed as
+# an unknown op.
+@router.get("/api/bots/{bid}/package")
+@_handled
+def bot_package_plan(bid: str):
+    """What exporting this bot as a `.fusedbot` would carry (package.plan): the export dialog's whole model."""
+    from fused_render.bots.bot import is_super
+    try:
+        if is_super(_store().read_meta(bid)):  # before the plan: no scan of a bot that can never be exported
+            raise ValueError("Super Bot cannot be exported: it is this machine's own assistant")
+    except (FileNotFoundError, LookupError):
+        raise ValueError(f"no such bot {bid}")
+    except OSError as e:
+        raise ValueError(f"cannot read bot {bid}: {e}")
+    try:
+        return _package().plan(bid)
+    except OSError as e:
+        raise ValueError(f"cannot read bot {bid}: {e}")
+
+
+@router.post("/api/bots/{bid}/package")
+@_handled
+def bot_package_write(bid: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
+    """Write the `.fusedbot` into Downloads (the same folder the app file export saves to) and answer its path, so
+    the dialog can offer Reveal. Body: `{memory: bool, apps: [folder], file_name?: str}`."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.server.routers.appfile import _export_destination_dir
+    body = body if isinstance(body, dict) else {}
+    apps = body.get("apps") if body.get("apps") is not None else []
+    path = _package().write(bid, memory=_truthy(body.get("memory")), apps=apps,
+                            file_name=body.get("file_name") if isinstance(body.get("file_name"), str) else None,
+                            dest_dir=_export_destination_dir())
+    return {"ok": True, "path": path}
+
+
 _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "takeover",
             "giveback": "giveback", "popout": "popout", "dock": "dock", "wake": "wake_browser", "open": "opened",
             "clear": "clear_context"}
+# The control ops that save the bot or append to its chat with no task thread behind them (`_ws`). pause / resume /
+# stop (and the app door's app_stop) act only on a live task thread, none of which runs without the claim; `dock`
+# and `open` stay open by design. The `_POSTS` helpers gate themselves, so the phone's door (which calls them
+# directly) is gated too.
+_WS_OPS = frozenset({"takeover", "giveback", "popout", "wake", "clear"})
 
 
 @router.post("/api/bots/{bid}/{op}")
@@ -612,6 +675,14 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
     if guard is not None:
         return guard
     body = body if isinstance(body, dict) else {}
+    if op == "open":
+        _bot(bid)  # elects lazily (require_owner); an unknown bot is still a 404
+        if not registry.workspace_claimed():
+            # Super Bot's first task starts from here, but the page calls `open` on every landing and asks again
+            # while setup is "pending": without the workspace claim it waits quietly instead of a 409 per click.
+            return {"ok": True, "setup": "pending"}
+    if op in _WS_OPS:
+        _ws(bid)
     if op in _CONTROL:
         out = getattr(_bot(bid), _CONTROL[op])()
         return {"ok": True, **(out if isinstance(out, dict) else {})}
@@ -628,6 +699,7 @@ def _goto(bid, body):
     url = (body.get("url") or "").strip()
     if not url:
         raise ValueError("no url")
+    _ws(bid)
     from fused_render.bots.browser import NAV_SETTLE_S  # lazy, like the rest of the bot layer (module docstring)
     info = _bot(bid).browser.goto(url, settle=NAV_SETTLE_S) or {}
     return {"ok": True, "url": info.get("url")}
@@ -637,12 +709,12 @@ def _nav(bid, body):
     op = body.get("op")
     if op not in ("back", "forward", "reload"):
         raise ValueError("op must be back|forward|reload")
-    info = getattr(_bot(bid).browser, op)() or {}
+    info = getattr(_ws(bid).browser, op)() or {}  # drives Chrome on the bot folder's cache (window.json)
     return {"ok": True, "url": info.get("url")}
 
 
 def _tab(bid, body):
-    b = _bot(bid)
+    b = _ws(bid)
     tab, index = body.get("tab"), body.get("index")
     if tab == "new":
         info = b.browser.tab_new(body.get("url") or "about:blank")
@@ -664,12 +736,12 @@ def _attach(bid, body):
         raise ValueError(f"{name}: not base64") from None
     if len(data) > ATTACH_MAX:
         raise ValueError(f"{name}: too large ({len(data) // 1048576} MB; limit {ATTACH_MAX // 1048576} MB)")
-    return {"ok": True, "name": _bot(bid).save_bytes(name, data)}
+    return {"ok": True, "name": _ws(bid).save_bytes(name, data)}
 
 
 def _react(bid, body):
     """One emoji per message, keyed by seq in meta["reactions"] ("" clears)."""
-    b = _bot(bid)
+    b = _ws(bid)
     try:
         seq = int(body.get("seq"))
     except (TypeError, ValueError):
@@ -700,7 +772,7 @@ def _seen(bid, body):
     seq = body.get("seq")
     if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
         raise ValueError("seen needs an integer seq >= 0")
-    b = _bot(bid)
+    b = _ws(bid)
     with b.lock:
         cur = b.meta.get("seen_seq")
         if not isinstance(cur, int) or isinstance(cur, bool) or seq > cur:
@@ -712,7 +784,7 @@ def _seen(bid, body):
 
 def _flag(bid, body):
     """Sidebar bookkeeping: pinned / hidden / avatar face."""
-    b = _bot(bid)
+    b = _ws(bid)
     with b.lock:
         if body.get("pinned") is not None:
             b.meta["pinned"] = bool(body["pinned"])
@@ -729,7 +801,7 @@ def _settings(bid, body):
     """OpenBot `rename`: the Settings dialog."""
     from fused_render.bots import imessage
     bm = _botmod()
-    b = _bot(bid)
+    b = _ws(bid)
     name = (body.get("name") or "").strip()
     model, effort = body.get("model") or "", body.get("effort") or ""
     max_steps = body.get("max_steps")
@@ -738,8 +810,6 @@ def _settings(bid, body):
     # edits in memory for the next save() to persist.
     folders = bm.clean_folders(body["folders"]) if isinstance(body.get("folders"), list) else None  # ValueError -> 400
     terminal = _check_terminal(bm, body, bm.is_super(b.meta))
-    if name and name != b.meta.get("name") and b.meta.get("artifacts_dir") and not os.path.isdir(b.meta["artifacts_dir"]):
-        b.meta.pop("artifacts_dir", None)  # never used on disk: let the new name pick the folder
     b.meta["name"] = name or b.meta.get("name")
     if body.get("instructions") is not None:
         b.meta["instructions"] = str(body["instructions"]).strip()
@@ -808,18 +878,19 @@ def _settings(bid, body):
 
 
 def _profile(bid, body):
-    _botmod().import_profile(_bot(bid), body.get("profile") or "")
+    _botmod().import_profile(_ws(bid), body.get("profile") or "")
     return {"ok": True}
 
 
 def _clone(bid, body):
     share = body.get("share")
+    _ws(bid)  # the copy's greeting runs on it (bot.clone -> greet)
     b = registry.clone(bid, body.get("name") or "", share=True if share is None else _truthy(share))
     return {"ok": True, "id": b.id}
 
 
 def _routines(bid, body):
-    b = _bot(bid)
+    b = _ws(bid)  # every op: an edit made here would be reverted by the claimant's next save
     op = body.get("op") or ""
     if op == "add":
         r = b.routine_add(body.get("text") or "", body.get("kind") or "", minutes=body.get("minutes"),
@@ -845,7 +916,7 @@ def _routines(bid, body):
 
 
 def _skills(bid, body):
-    b = _bot(bid)
+    b = _ws(bid)
     op = body.get("op") or ""
     if op == "save":
         b.skill_save(body.get("name"), body.get("trigger") if body.get("trigger") is not None else body.get("url"),
@@ -895,7 +966,7 @@ def _viewport(bid, body):
         w, h = int(body.get("w")), int(body.get("h"))
     except (TypeError, ValueError):
         raise ValueError("w and h must be integers") from None
-    w, h = _bot(bid).browser.set_viewport(w, h)
+    w, h = _ws(bid).browser.set_viewport(w, h)  # remembered in the bot folder's cache (window.json)
     return {"ok": True, "viewport": [w, h]}
 
 
@@ -1032,6 +1103,7 @@ def _app_send(bid, body, x_fused_page=None):
     def before():
         return save_files(b, text, decoded, names)
 
+    registry.require_workspace()
     try:
         started = b.receive_app(text, via, follow_up=bool(addr), before=before)
     except Exception as e:  # noqa: BLE001
@@ -1079,7 +1151,7 @@ def bot_delete(bid: str, x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    _bot(bid)  # 404 for an unknown id before anything is touched
+    _ws(bid)  # 404 for an unknown id before anything is touched, then the workspace gate
     registry.delete(bid)
     return {"ok": True}
 
