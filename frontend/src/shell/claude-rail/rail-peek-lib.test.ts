@@ -63,6 +63,18 @@ describe("peekPlacement", () => {
 });
 
 
+describe("peekPlacement aligned on the ring's bottom (the favourite's card)", () => {
+  it("puts its bottom on the ring's bottom, and never below the row's inset", () => {
+    const r = ring(700);
+    const box = peekPlacement(r, RAIL, ROW, { width: 380, maxHeight: 520, align: "bottom" })!;
+    expect(box.width).toBe(380);
+    expect(box.height).toBe(520);
+    expect(box.top + box.height).toBe(r.top + r.height);
+    const high = peekPlacement(ring(42), RAIL, ROW, { maxHeight: 520, align: "bottom" })!;
+    expect(high.top).toBe(ROW.top + PEEK_INSET);
+  });
+});
+
 describe("peekPlacement with a wish (a pinned card's remembered size)", () => {
   it("takes the asked width and height, right edge still against the rail", () => {
     const box = peekPlacement(ring(60), RAIL, ROW, { width: 600, maxHeight: 800 })!;

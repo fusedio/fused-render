@@ -6,7 +6,17 @@
 import { describe, expect, it } from "bun:test";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { sortForList } from "@shell/tasks-lib";
-import { dotCleared, keepMarks, onRail, placeName, railRows, railScope, readMark, type RailPlace } from "./claude-rail-lib";
+import {
+  dotCleared,
+  favSeats,
+  keepMarks,
+  onRail,
+  placeName,
+  railRows,
+  railScope,
+  readMark,
+  type RailPlace,
+} from "./claude-rail-lib";
 
 
 
@@ -248,5 +258,27 @@ describe("readMark / dotCleared / keepMarks", () => {
     expect(keepMarks(kept, [row(2)])).toBe(kept);
     const empty = new Map();
     expect(keepMarks(empty, [row(2)])).toBe(empty);
+  });
+});
+
+describe("favSeats", () => {
+  it("lists every starred, un-archived row from anywhere, newest first, with its listing row", () => {
+    const old = pulse(task({ key: "old", happened_at: 100 }), { starred: true });
+    const fresh = pulse(task({ key: "fresh", happened_at: 900, project: "/elsewhere", target: "/elsewhere" }), {
+      starred: true,
+    });
+    const archived = pulse(task({ key: "gone", status: "archived", happened_at: 950 }), { starred: true });
+    const plain = pulse(task({ key: "plain", happened_at: 990 }));
+    const listed = task({ key: "fresh" });
+    const seats = favSeats([old, archived, plain, fresh], new Map([["fresh", listed]]));
+    expect(seats.map((s) => s.pulse.key)).toEqual(["fresh", "old"]);
+    expect(seats[0]!.row).toBe(listed);
+    expect(seats[1]!.row).toBeNull();
+  });
+
+  it("orders ties by key so the foot does not reshuffle", () => {
+    const b = pulse(task({ key: "b", happened_at: 5 }), { starred: true });
+    const a = pulse(task({ key: "a", happened_at: 5 }), { starred: true });
+    expect(favSeats([b, a], new Map()).map((s) => s.pulse.key)).toEqual(["a", "b"]);
   });
 });

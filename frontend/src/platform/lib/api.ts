@@ -1570,6 +1570,11 @@ export interface Prefs {
   // default). Optional: absent (older server) reads as off. A hover previews
   // and a click pins — there is no trigger choice any more.
   canvas_rail_peek?: { enabled: boolean };
+  // Favourite chats (`task_favourites_enabled`, shell/prefs.py; off by
+  // default): the star on the rail card, the rail's favourites section, the
+  // favourite's own card, the pane's Favourites block. Optional: absent
+  // (older server) reads as off.
+  task_favourites?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2043,6 +2048,10 @@ export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Pref
 
 export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvas_rail_peek_enabled: enabled });
+}
+
+export function putTaskFavouritesEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_favourites_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */
@@ -3795,6 +3804,13 @@ export interface TaskBackgroundJobs {
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
+  // FAVOURITE (owner, 2026-11-03): the star on the rail card. Server-side,
+  // global (`tasks_store.FAVOURITES_FILE`), so every rail and every pane on
+  // every page lists the same starred tasks. `starred_open` is whether its
+  // preview card is up right now — at most ONE favourite is open at a time,
+  // the server keeps that rule. Both absent on an older server.
+  starred?: boolean;
+  starred_open?: boolean;
   project: string; // the FOLDER: a task on ~/x/foo.py belongs to project ~/x
   target: string; // what the task actually points at (may be that file)
   // The app page a FOLDER target opens as, "" when the folder is not an app:
@@ -4211,6 +4227,8 @@ export type TaskPulseTask = Pick<
   // here: the notice ignores them, the Tasks cards do not.
   | "title_mode"
   | "last_message"
+  | "starred"
+  | "starred_open"
 > &
   // Optional: a pulse row from a server that predates it carries none.
   Partial<Pick<Task, "title_source">>;
@@ -4809,6 +4827,25 @@ export function removeTaskWorktrees(
  *  trimmed, capped). */
 export function renameTask(key: string, title: string): Promise<{ ok: boolean; title: string }> {
   return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
+}
+
+/** THE STAR (owner, 2026-11-03): make a task a favourite, or take it back.
+ *  `on` is the star; `open` is whether its preview card is up — the server
+ *  keeps at most one favourite open, so opening one closes the others.
+ *  Starring with `open` omitted opens it (the card is what the reader just
+ *  starred); unstarring closes it. `on: null` leaves the star alone and
+ *  moves only `open` — a no-op on a task that is not starred, so a card's
+ *  close can never re-star what another window unstarred. The answer is the
+ *  stored state. */
+export function setTaskFavourite(
+  key: string,
+  on: boolean | null,
+  open?: boolean,
+): Promise<{ ok: boolean; key: string; starred: boolean; open: boolean }> {
+  return postJson<{ ok: boolean; key: string; starred: boolean; open: boolean }>(
+    "/api/tasks/favourite",
+    { key, ...(on === null ? {} : { on }), ...(open === undefined ? {} : { open }) },
+  );
 }
 
 // Taking the filing back — the drag out of the Archive lane, and the exact

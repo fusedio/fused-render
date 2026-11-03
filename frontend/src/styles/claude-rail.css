@@ -65,7 +65,9 @@
   /* The room the column leaves between the + and the foot: as many whole
      rings as fit, from the top, and NO scroll (owner, 2026-11-02; ClaudeRail
      `fit` measures this box). The gap is the items column's own. */
-  flex: 1 1 auto;
+  /* Basis 0, so the list takes exactly what the foot and the git section
+     leave — never competes with them for room (ClaudeRail `fit`). */
+  flex: 1 1 0;
   min-height: 0;
   width: 100%;
   display: flex;
@@ -124,11 +126,51 @@
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  /* Never shrinks: the foot is the rail's fixed part, and the list above it
+     (basis 0) is what gives way — a favourite is a thing the reader chose to
+     keep in view, so it is never the thing that clips. */
   flex: 0 0 auto;
   width: 28px;
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--rail-sep);
+}
+/* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): the rail's last
+   section, under the git seats and a tight hairline of its own. Every
+   favourite draws — the list above gives up rings first (`.claude-rail-chats`,
+   basis 0). The ring whose card is up (`.is-open`, the shell's FavouritePeek)
+   wears the pinned wash. */
+.claude-rail-favs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.claude-rail .sidebar-rail-sep.is-tight {
+  margin: 6px 0;
+}
+/* 4px at the foot, not 10, while favourites stand there (owner, 2026-11-03:
+   "a bit of padding below which needs to be removed"): they are the rail's
+   last section, on the edge. Without them the rail keeps its padding. */
+.claude-rail.has-favs {
+  padding-bottom: 4px;
+}
+.claude-rail-chat.is-fav.is-open::after {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
+/* The favourite's card (FavouritePeek `#claude-rail-fav-peek`): ABOVE
+   EVERYTHING for now (owner, 2026-11-04: "the z-index should be above
+   everything" — the first cut sat under the page's header bars and its ×
+   could not be reached). Over the rail's own card (45), the modals, the
+   notifications. */
+#claude-rail-fav-peek {
+  z-index: 100000;
+}
+.claude-rail-favs > .claude-rail-seat,
+.claude-rail-held > .claude-rail-seat {
+  flex: 0 0 auto;
 }
 /* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
    of a pinned chat that is not the selected node's, above the canvas glyph
@@ -151,17 +193,17 @@
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
 }
-/* …and the ring whose card the reader HELD with its pin (ClaudeRail
-   `.is-held`; owner, 2026-11-02: "the item which is active on right sidebar
-   gets border accent as well"): the accent, the card's own held border, so
-   the ring and the card read as one thing while the pointer is anywhere. */
+/* …and, with favourites OFF (favourites-flag), the ring whose card the
+   reader HELD with its pin (ClaudeRail `.is-held`; owner, 2026-11-02: "the
+   item which is active on right sidebar gets border accent as well"): the
+   accent, the card's own held border. */
 .claude-rail-chat.peeked.is-held::after {
   box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 /* THE LAST RING PRESSED (ClaudeRail `.is-last`; owner, 2026-11-02): the
    sidebar's own current-place wash, a step firmer, with a hairline — so the
    chat the reader last opened is found again at a glance, on a rail that
-   may have narrowed to a node and back since. Under the held accent. */
+   may have narrowed to a node and back since. */
 .claude-rail-chat.is-last::after {
   background: rgba(var(--tint), 0.12);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.28);
@@ -299,10 +341,9 @@
 .claude-rail-peek.is-on .claude-rail-peek-card {
   transform: none;
 }
-/* A HELD card (the pin pressed; RailPeek `.is-held`) wears the accent on its
-   edge, the whole way round (owner, 2026-11-02: "in pin, we make border
-   accent of the whole preview window") — the one card on the page that an
-   outside press will not close should look held. The halo keeps its job. */
+/* A HELD card with favourites OFF (the pin pressed; RailPeek `.is-held`)
+   wears the accent on its edge, the whole way round (owner, 2026-11-02: "in
+   pin, we make border accent of the whole preview window"). */
 .claude-rail-peek.is-held .claude-rail-peek-card {
   border-color: var(--accent);
   box-shadow:
@@ -311,7 +352,7 @@
     0 2px 6px var(--shadow-ink-soft);
 }
 /* The head, TWO ROWS (owner, 2026-11-02): the first row is the facts and
-   the seats — pin, number, where-chip, then at the right the unread count
+   the seats — ×, star, number, where-chip, then at the right the unread count
    and age, archive, Open, ⋮ — and the second row is the title alone, full
    width. 12px, like the rail's own captions. */
 .claude-rail-peek-head {
@@ -416,8 +457,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The pin: pressed, it is the × (held card). Bootstrap's filled angled pin
-   at rest (RailPeek `PinAngleFill`); the seat's own hover wash either way. */
+/* The × and the star (RailPeek, 2026-11-03): both are `.claude-rail-peek-btn`;
+   a favourite's star is filled in the accent. */
+.claude-rail-peek-btn.claude-rail-peek-star.is-on {
+  color: var(--accent);
+}
 /* THE PULSE SEAT: "2 ▭ 3m ago" as muted words (no chip), and the archive
    button standing over the words' right end, shown on hover or focus — the
    List row's hover-revealed actions (owner, 2026-11-02: "only on hover over

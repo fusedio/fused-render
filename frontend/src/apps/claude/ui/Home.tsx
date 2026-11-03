@@ -6,6 +6,7 @@ import "../styles/home.css";
 import type { Task } from "@platform/lib/api";
 import { HomeCard, type HomeCardProps } from "./HomeCard";
 import { Lists } from "./Lists";
+import { useFavouriteTasks } from "./useFavouriteTasks";
 import { useLandingReads } from "./useLandingReads";
 
 export interface HomeProps extends HomeCardProps {
@@ -56,6 +57,9 @@ export function Home({
     snapInvalidation,
   );
 
+  // THE FAVOURITES (owner, 2026-11-03): global, under the lists (`Lists`).
+  const favourites = useFavouriteTasks();
+
   return (
     <div className="c-home">
       {/* NO CONTROL ROW OF ITS OWN (P2-1). The landing used to draw one here
@@ -81,6 +85,7 @@ export function Home({
             {...(onFillDraft ? { onFillDraft } : {})}
             onNavigate={cardProps.onNavigate}
             disabled={listsDisabled}
+            favourites={favourites}
           />
         </div>
       </div>

@@ -1435,3 +1435,77 @@ def test_a_custom_title_rides_on_the_settings_record_and_goes_with_an_erase(stat
     tasks_store.record_title("sess-a", "Again")
     tasks_store.forget_session("sess-a")
     assert tasks_store.session_title(tasks_store.settings_state(), "sess-a") == ""
+
+
+# ---------------------------------------------------------------- favourites
+
+
+def test_a_star_is_recorded_open_by_default_and_keeps_its_first_stamp(state_dir):
+    out = tasks_store.set_favourite("a", True, now=100.0)
+    assert out == {"starred": True, "open": True, "changed": ["a"]}
+    assert tasks_store.favourite_of(tasks_store.favourites_state(), "a") == (True, True)
+
+    again = tasks_store.set_favourite("a", True, open=False, now=200.0)
+    assert again["open"] is False
+    rec = json.loads((state_dir / "favourites.json").read_text())["a"]
+    assert rec == {"at": 100.0, "open": False}, "the original `at` stands"
+
+
+def test_at_most_one_favourite_is_open_at_a_time(state_dir):
+    tasks_store.set_favourite("a", True, now=1.0)
+    out = tasks_store.set_favourite("b", True, now=2.0)
+    assert sorted(out["changed"]) == ["a", "b"], "both flipped, both reported"
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, False)
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+
+    # Starring one closed leaves the open one alone.
+    out = tasks_store.set_favourite("c", True, open=False, now=3.0)
+    assert out["changed"] == ["c"]
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+
+
+def test_unstarring_removes_the_record(state_dir):
+    tasks_store.set_favourite("a", True)
+    out = tasks_store.set_favourite("a", False)
+    assert out == {"starred": False, "open": False, "changed": ["a"]}
+    assert tasks_store.favourite_of(tasks_store.favourites_state(), "a") == (False, False)
+    assert tasks_store.set_favourite("a", False)["changed"] == []
+
+
+def test_a_corrupt_favourite_record_reads_tolerantly(state_dir):
+    (state_dir / "favourites.json").write_text(json.dumps(
+        {"junk": "x", "odd": {"at": "nope", "open": "yes"}, "ok": {"at": 1, "open": True}}))
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "junk") == (False, False)
+    assert tasks_store.favourite_of(state, "odd") == (True, False)
+    assert tasks_store.favourite_of(state, "missing") == (False, False)
+    # And opening another closes the good one without tripping on the bad ones.
+    out = tasks_store.set_favourite("new", True, now=5.0)
+    assert out["changed"] == ["new", "ok"]
+    (state_dir / "favourites.json").write_text("not json")
+    assert tasks_store.favourites_state() == {}
+
+
+def test_an_update_only_call_on_an_unstarred_key_is_a_no_op(state_dir):
+    out = tasks_store.set_favourite("a", None, True)
+    assert out == {"starred": False, "open": False, "changed": []}
+    assert tasks_store.favourites_state() == {}
+    assert not (state_dir / "favourites.json").exists(), "nothing written"
+
+
+def test_an_update_only_call_flips_open_and_closes_the_others(state_dir):
+    tasks_store.set_favourite("a", True, now=1.0)
+    tasks_store.set_favourite("b", True, open=False, now=2.0)
+    out = tasks_store.set_favourite("b", None, True)
+    assert out["starred"] is True and out["open"] is True
+    assert sorted(out["changed"]) == ["a", "b"]
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, False)
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+    assert state["b"]["at"] == 2.0, "update-only never re-stamps"
+
+    out = tasks_store.set_favourite("b", None, False)
+    assert out == {"starred": True, "open": False, "changed": ["b"]}
+    assert tasks_store.favourite_of(tasks_store.favourites_state(), "b") == (True, False)
