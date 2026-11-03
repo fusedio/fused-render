@@ -1232,13 +1232,14 @@ export interface TaskStopResponse {
   error?: undefined;
 }
 /** `task_background {run_id, tool_use_id}` (agent.py `_task_background`): send
- *  the running foreground Bash call to the background. */
+ *  the running foreground Bash call or subagent to the background. */
 export interface TaskBackgroundRequest {
   run_id: string;
   tool_use_id: string;
 }
 /** `task_background`: `{ok: true, backgrounded}` once the CLI answered; the
- *  Bash tool then returns "manually backgrounded" and the turn carries on. */
+ *  Bash tool then returns "manually backgrounded" (an Agent call returns its
+ *  async-launch result) and the turn carries on. */
 export interface TaskBackgroundResponse {
   ok: true;
   backgrounded: boolean;

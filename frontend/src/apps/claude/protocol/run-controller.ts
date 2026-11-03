@@ -1019,14 +1019,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * controller drops it (`dropOptimisticUser`, and `returnSend` for the roads
    * that refuse inside).
    */
-  const postOptimisticUser = (text: string, pending?: UserTurn["pending"]): string => {
+  const postOptimisticUser = (text: string): string => {
     if (disposed || !text) return "";
-    const key = addUser(text).key;
-    // THE TAG RIDES THE ROW, not a side list: the page outbox's bubble IS this
-    // turn, and `addUser`'s adoption rebuilds the turn without `pending` — which
-    // is exactly when the tag should go, because the run has the words.
-    if (pending) setOptimisticPending(key, pending);
-    return key;
+    return addUser(text).key;
   };
 
   const dropOptimisticUser = (key: string): void => {
@@ -1034,23 +1029,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     dropTurn(key);
   };
 
-  const setOptimisticPending = (key: string, pending: UserTurn["pending"] | undefined): void => {
-    if (!key || !state.turns.some((t) => t.key === key && t.role === "user")) return;
-    emit({
-      turns: state.turns.map((t) => {
-        if (t.key !== key || t.role !== "user") return t;
-        const { pending: _was, ...rest } = t;
-        return pending ? { ...rest, pending } : rest;
-      }),
-    });
-  };
-
   /** "Fork from here" — see `ChatController.beginFork`. */
   const beginFork = (turnKey: string): string | null => {
     if (disposed || sending || state.status !== "idle" || curBackend() !== "claude") return null;
     const at = state.turns.findIndex((t) => t.key === turnKey);
     const turn = state.turns[at];
-    if (at < 0 || !turn || turn.role !== "user" || !turn.uuid || turn.pending) return null;
+    if (at < 0 || !turn || turn.role !== "user" || !turn.uuid) return null;
     // A second fork while one is parked re-forks from what is still visible;
     // the newly hidden turns come earlier in the transcript than the ones
     // already parked, so they go first and cancelFork restores transcript order.
@@ -2933,44 +2917,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
       runId = activeRun;
     }
     if (!runId) {
-      // A PARKED LINE OPENS A FRESH TURN INSTEAD (`SendOptions.orStart`): the
-      // run it was parked behind ended before the drain got here, and the
-      // words were typed to be said either way. Same bubble — `sendMessage`
-      // adopts the row this follow-up already adopted — and the queue entry
-      // goes, because the line is no longer waiting behind anything.
-      if (opts.orStart && logGen === gen && !disposed) {
-        // SERIALIZED (Bugbot 4122227219): two parked lines can sit here
-        // together — a follow-up into a live run opens the latch at once — and
-        // if both took this road the second would hit `sendMessage`'s `sending`
-        // gate and be REFUSED, the very "third message swallowed" this queue
-        // exists to end. So only the first opens the turn; a later one waits
-        // for that turn to have a run and follows it in, in order.
-        if (!sending) {
-          drop();
-          const { orStart: _o, ...rest } = opts;
-          await sendMessage(text, { ...rest, optimisticKey: bubble.key });
-          return;
-        }
-        for (let tries = 0; !runId && tries < FOLLOWUP_WAIT_TRIES; tries++) {
-          await sleep(FOLLOWUP_WAIT_MS);
-          runId = activeRun;
-        }
+      // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`). This road has
+      // slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample room
+      // for a Back (or an `openOtherSession`) to land — and an unguarded
+      // handback posts the red trouble card and re-injects the text into
+      // whatever transcript is now current: the landing, or a different
+      // conversation entirely. A stale failure stays quiet; `newChat` has
+      // already cleared the queue and the bubble it would give back.
+      if (logGen === gen) {
+        giveBack();
+        addError("Could not send: no run to attach this message to.");
       }
-      if (!runId) {
-        // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`, :1443). This road
-        // has slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample
-        // room for a Back (or an `openOtherSession`) to land — and an unguarded
-        // handback posts the red trouble card and re-injects the text into
-        // whatever transcript is now current: the landing, or a different
-        // conversation entirely. A stale failure stays quiet; `newChat` has
-        // already cleared the queue and the bubble it would give back
-        // (QA, PR #1061).
-        if (logGen === gen) {
-          giveBack();
-          addError("Could not send: no run to attach this message to.");
-        }
-        return;
-      }
+      return;
     }
     try {
       const res = (await run(
@@ -4678,7 +4636,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     sendFollowUp,
     postOptimisticUser,
     dropOptimisticUser,
-    setOptimisticPending,
     beginFork,
     cancelFork,
     stopRun,

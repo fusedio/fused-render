@@ -77,11 +77,10 @@ export interface HeadsUpApi {
 
 /**
  * User rows the run actually received: the CLI's interrupt marker is a user row
- * nobody typed, and a row with `pending` is still queued / unsent (the run
- * controller drops `pending` when the real send adopts the row).
+ * nobody typed.
  */
-export function countUserTurns(turns: ReadonlyArray<{ role: string; text?: string; pending?: unknown }>): number {
-  return turns.reduce((n, t) => (t.role === "user" && !t.pending && !isInterruptMark(t.text) ? n + 1 : n), 0);
+export function countUserTurns(turns: ReadonlyArray<{ role: string; text?: string }>): number {
+  return turns.reduce((n, t) => (t.role === "user" && !isInterruptMark(t.text) ? n + 1 : n), 0);
 }
 
 export function useHeadsUp({ runId, running, enabled, userTurns, controller, timing }: UseHeadsUpArgs): HeadsUpApi {

@@ -117,7 +117,7 @@ export {
   openCardIds,
 } from "./Transcript";
 export type { TranscriptProps, TranscriptTail } from "./Transcript";
-export { Turn, collapsedLine } from "./Turn";
+export { HeldTurn, Turn, collapsedLine } from "./Turn";
 export type { TurnProps, CollapsedLine } from "./Turn";
 export { formatStamp, stampTitle } from "./stamp";
 export { SegmentView } from "./SegmentView";

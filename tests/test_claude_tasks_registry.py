@@ -122,6 +122,53 @@ def test_an_agent_task_tracks_usage_and_status(agent, run_dir):
     assert rec["ended_at"] is not None
 
 
+def test_a_foreground_agent_sent_to_the_background(agent, run_dir):
+    """The row sequence CLI 2.1.304 writes when a `background_tasks` request
+    backgrounds a foreground Agent call: the patch flips `backgrounded`, the
+    Agent call's async-launch result closes the tool (the working line moves
+    off it), and the subagent's `task_notification` ends the record."""
+    _append(run_dir, [{"type": "stream_event", "session_id": "s", "event": {
+                          "type": "content_block_start", "index": 1, "content_block": {
+                              "type": "tool_use", "id": "toolu_a", "name": "Agent", "input": {}}}},
+                      _tool("toolu_a", "Agent", {"description": "Sleep", "subagent_type": "general-purpose",
+                                                 "run_in_background": False}),
+                      _sys("task_started", task_id="a1", tool_use_id="toolu_a",
+                           description="Sleep", subagent_type="general-purpose",
+                           is_backgrounded=False, task_type="local_agent")])
+    data = agent._poll("run")
+    rec = _rec(data, "a1")
+    assert rec["kind"] == "agent" and rec["backgrounded"] is False
+    assert rec["status"] == "running" and rec["tool_use_id"] == "toolu_a"
+    assert data["activity"]["tool"]["id"] == "toolu_a"
+
+    _append(run_dir, [
+        _sys("background_tasks_changed", tasks=[{"task_id": "a1", "task_type": "local_agent",
+                                                 "subagent_type": "general-purpose",
+                                                 "description": "Sleep"}]),
+        _sys("task_updated", task_id="a1", patch={"is_backgrounded": True}),
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_a", "content": [
+                {"type": "text", "text": "Async agent launched successfully.\nagentId: a1"}]}]}}])
+    data = agent._poll("run")
+    rec = _rec(data, "a1")
+    assert rec["backgrounded"] is True and rec["status"] == "running"
+    assert rec["ended_at"] is None
+    assert data["activity"]["tool"] is None
+    assert data["activity"]["tasks"] == [{"id": "a1", "description": "Sleep"}]
+
+    _append(run_dir, [_sys("task_updated", task_id="a1", patch={"status": "completed"}),
+                      _sys("task_notification", task_id="a1", tool_use_id="toolu_a",
+                           status="completed", summary="done"),
+                      _sys("background_tasks_changed", tasks=[])])
+    data = agent._poll("run")
+    rec = _rec(data, "a1")
+    assert rec["status"] == "completed" and rec["ended_at"] is not None
+    assert rec["summary"] == "done" and rec["backgrounded"] is True
+    assert data["activity"]["tasks"] == []
+    seg = data["segments"][0]
+    assert seg["name"] == "Agent" and seg["task_id"] == "a1"
+
+
 def test_a_subagent_type_alone_makes_an_agent(agent, run_dir):
     _append(run_dir, [_sys("task_started", task_id="x", description="d",
                            subagent_type="Plan")])
@@ -629,6 +676,16 @@ def test_task_background_writes_a_background_tasks_request(agent, run_dir, monke
     assert res == {"ok": True, "backgrounded": True}
     assert seen == {"subtype": "background_tasks", "tool_use_id": "toolu_1",
                     "timeout": 10.0}
+
+
+def test_task_background_sends_an_agent_calls_tool_use_id_the_same_way(agent, run_dir, monkeypatch):
+    """The action is tool-agnostic: a foreground Agent call is backgrounded by
+    its own `tool_use_id`, the id its `task_started` row carries."""
+    seen = _fake_host(agent, monkeypatch, run_dir, {"backgrounded": True})
+    res = agent.main("task_background", run_id="run", tool_use_id="toolu_01CUcGj2w5tDoXcu8N4fYASg")
+    assert res == {"ok": True, "backgrounded": True}
+    assert seen == {"subtype": "background_tasks",
+                    "tool_use_id": "toolu_01CUcGj2w5tDoXcu8N4fYASg", "timeout": 10.0}
 
 
 def test_task_background_passes_the_clis_refusal_through(agent, run_dir, monkeypatch):

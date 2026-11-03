@@ -710,21 +710,14 @@ describe("admission, in the send window", () => {
   });
 });
 
-describe("a follow-up into this chat's own running turn", () => {
-  it("draws no row, no card and no footnote under the flag", () => {
-    // Three plain bubbles and a composer footnote counting them was the shipped
-    // state; then a chip counting them was the fix; and both were chrome for the
-    // ONE waiting state with nothing to act on — no entry to be behind, nothing
-    // to run next, nothing to delete, and a live host draining them in seconds.
+describe("a line typed into this chat's own running turn", () => {
+  it("is a held row from the outbox, with no waiting card and no footnote", () => {
     expect(CHAT).not.toContain("state.queued.length");
     expect(CHAT).not.toContain('kind="inbox"');
     expect(WAITING).not.toContain("follow-up");
-    // The composer's note is gated on the flag, and the words are untouched for
-    // the build that still shows them.
-    expect(COMPOSER).toContain("{count > 0 && !queueOn ? (");
-    expect(COMPOSER).toContain('"1 follow-up is queued for this turn."');
-    expect(COMPOSER).toContain("follow-ups are queued for this turn.");
-    expect(CHAT).toContain("queueOn,");
+    expect(COMPOSER).not.toContain("follow-ups are queued for this turn.");
+    expect(COMPOSER).not.toContain("queueOn");
+    expect(CHAT).toContain("<HeldTurn");
   });
 });
 
@@ -1005,14 +998,4 @@ describe("a follow-up the live run is still holding", () => {
     expect(inbox).not.toContain("dashed");
   });
 
-  it("counts inbox rows in the composer's queued line, flag off", () => {
-    // A reload drops `state.queued` (page memory) but the run still reports the
-    // inbox; `inboxRows` is already deduped against it, so appending is safe.
-    expect(CHAT).toContain(
-      "queued: [...state.queued, ...inboxRows.map((r) => r.text)],",
-    );
-    expect(CHAT).toContain("      state.queued,\n      inboxRows,\n");
-    // The Composer draws that line only with the flag off.
-    expect(COMPOSER).toContain("!queueOn");
-  });
 });

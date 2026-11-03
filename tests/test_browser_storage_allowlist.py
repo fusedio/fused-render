@@ -62,6 +62,7 @@ ALLOWED = {
     "apps/claude/protocol/run-controller.ts": "tab",
     "apps/claude/ui/TasksPanel.tsx": "display",     # Agents & shells strip open/closed (per viewer)
     "apps/claude/ui/debug-sent.ts": "dev",
+    "apps/claude/ui/outbox.ts": "tab",              # queued lines survive a reload of this tab
     "apps/claude/ui/useRecentTasks.ts": "tab",
     "apps/explorer/lib/fs-clipboard.ts": "tab",
     "apps/marketplace/install-flow.tsx": "import",

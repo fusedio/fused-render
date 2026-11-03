@@ -11,7 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@platform/lib/utils";
 
 import type { RunStatus, Working } from "../protocol/controller-api";
-import { explicitModelLabel, taskVerb } from "../protocol/tasks";
+import { explicitModelLabel, isAgentTool, taskVerb } from "../protocol/tasks";
 import type { Activity, RetryInfo, TaskRecord } from "../protocol/types";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { useAgent } from "./agent-context";
@@ -131,7 +131,7 @@ export interface WorkingLineProps {
   working: Working;
   status: RunStatus;
   onStop: () => void;
-  /** Send the running foreground Bash call to the background (Ctrl+B). Absent = not offered. */
+  /** Send the running foreground Bash call or subagent to the background (Ctrl+B). Absent = not offered. */
   onBackground?: () => void;
   /** `ChatState.tasks` — the run's background tasks, for the verb. */
   tasks?: readonly TaskRecord[] | null;
@@ -139,22 +139,22 @@ export interface WorkingLineProps {
   now?: () => number;
 }
 
-/** Only a running foreground Bash call can be sent to the background (Agent
- *  backgrounding is unverified), and only on a run this page owns. The shell
- *  only exists once the CLI's `task_started` for that tool_use_id has landed
- *  (in auto mode the safety classifier runs first), and a request before that
- *  is refused with `backgrounded: false` — so a matching running, not yet
- *  backgrounded task is required. */
+/** A running foreground Bash call or subagent (`Agent`, or its older name
+ *  `Task`) can be sent to the background, only on a run this page owns. The
+ *  shell or subagent only exists once the CLI's `task_started` for that
+ *  tool_use_id has landed (in auto mode the safety classifier runs first), and
+ *  a request before that is refused with `backgrounded: false` — so a matching
+ *  running, not yet backgrounded task is required. */
 export function backgroundable(working: Working, status: RunStatus, tasks?: readonly TaskRecord[] | null): boolean {
+  const tool = working.activity?.tool;
   return (
     !working.external &&
     status !== "stopping" &&
     working.phase === "tooling" &&
-    working.activity?.tool?.name === "Bash" &&
-    !!working.activity.tool.id &&
-    !!tasks?.some(
-      (t) => t.tool_use_id === working.activity?.tool?.id && t.status === "running" && !t.backgrounded,
-    )
+    !!tool &&
+    (tool.name === "Bash" || isAgentTool(tool.name)) &&
+    !!tool.id &&
+    !!tasks?.some((t) => t.tool_use_id === tool.id && t.status === "running" && !t.backgrounded)
   );
 }
 
@@ -297,7 +297,11 @@ export function WorkingLine({ working, status, onStop, onBackground, tasks, now 
       <span className="verb">{verb}</span>
       <span className="meta">{" (" + parts.join(" · ") + ")"}</span>
       {canBackground ? (
-        <button type="button" className="stop background" title="Send this command to the background (Ctrl+B)" onClick={onBackground}>
+        <button type="button" className="stop background" title={
+            isAgentTool(working.activity?.tool?.name ?? "")
+              ? "Send this subagent to the background (Ctrl+B)"
+              : "Send this command to the background (Ctrl+B)"
+          } onClick={onBackground}>
           background
         </button>
       ) : null}
