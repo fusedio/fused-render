@@ -142,7 +142,7 @@ def _copy_that_checks_final_is_absent(monkeypatch, final):
 def test_place_copy_publishes_the_final_name_only_once_complete(tmp_path, monkeypatch, links_in_dest):
     """The source cannot be hard-linked (first os.link fails): the copy goes to a hidden temp in dest and the final
     `.fusedbot` name appears only after the bytes are in — by a hard link from the temp, or (no links at all) by a
-    rename over an exclusive claim. No temp is left behind."""
+    no-replace rename. No temp is left behind."""
     from fused_render.bots import package
 
     tmp = tmp_path / "package.fusedbot"
@@ -169,6 +169,65 @@ def test_place_copy_publishes_the_final_name_only_once_complete(tmp_path, monkey
     assert calls[0] == (str(tmp), str(final))
     if links_in_dest:
         assert os.path.basename(calls[1][0]).startswith(".bot.fusedbot.part-") and calls[1][1] == str(final)
+
+
+def _noreplace_or_skip(src, dst):
+    from fused_render.bots import package
+
+    try:
+        package._rename_noreplace(src, dst)
+    except FileExistsError:
+        raise
+    except OSError as e:
+        if e.errno in package._NO_NOREPLACE:
+            pytest.skip(f"no no-replace rename here: {e}")
+        raise
+
+
+def test_publish_without_hard_links_refuses_an_existing_name_and_keeps_its_bytes(tmp_path, monkeypatch):
+    from fused_render.bots import package
+
+    probe_a, probe_b = tmp_path / "probe-a", tmp_path / "probe-b"
+    probe_a.write_bytes(b"x")
+    _noreplace_or_skip(str(probe_a), str(probe_b))  # the platform can do it (renamex_np / renameat2 / os.rename)
+    part, dst = tmp_path / ".bot.part", tmp_path / "bot.fusedbot"
+    part.write_bytes(b"PKG")
+    dst.write_bytes(b"SOMEONE ELSE'S")
+    _no_hard_links(monkeypatch)
+    with pytest.raises(FileExistsError):
+        package._publish_exclusive(str(part), str(dst))
+    assert dst.read_bytes() == b"SOMEONE ELSE'S"
+    assert part.read_bytes() == b"PKG"
+    dst.unlink()
+    package._publish_exclusive(str(part), str(dst))
+    assert dst.read_bytes() == b"PKG" and not part.exists()
+
+
+def test_publish_falls_back_to_claim_and_replace_when_the_filesystem_rejects_noreplace(tmp_path, monkeypatch):
+    from fused_render.bots import package
+
+    def unsupported(*_a, **_k):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    replaced = []
+    real_replace = os.replace
+
+    def replace(src, dst, *a, **k):
+        replaced.append((src, dst, os.path.getsize(dst)))  # dst is the empty exclusive claim at this point
+        return real_replace(src, dst, *a, **k)
+
+    _no_hard_links(monkeypatch)
+    monkeypatch.setattr(package, "_rename_noreplace", unsupported)
+    monkeypatch.setattr(os, "replace", replace)
+    part, dst = tmp_path / ".bot.part", tmp_path / "bot.fusedbot"
+    part.write_bytes(b"PKG")
+    package._publish_exclusive(str(part), str(dst))
+    assert replaced == [(str(part), str(dst), 0)]
+    assert dst.read_bytes() == b"PKG" and not part.exists()
+    part.write_bytes(b"NEW")
+    with pytest.raises(FileExistsError):  # the claim still refuses a taken name
+        package._publish_exclusive(str(part), str(dst))
+    assert dst.read_bytes() == b"PKG"
 
 
 # ---------------------------------------------------------- edited starter ---

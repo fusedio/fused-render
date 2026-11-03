@@ -377,3 +377,183 @@ def test_reinstall_whose_bot_update_fails_reports_a_settings_row_and_retries(mon
     assert [(r["folder"], r["ok"], r["state"]) for r in again["apps"]] == [("app-a", True, "same")]
     assert again["warnings"] == []
     _linked_once(bid)
+
+
+def test_new_install_whose_settings_and_trust_saves_fail_retries_after_a_reload(monkeypatch, tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, registry, store
+
+    path = _package_with_app(monkeypatch, tmp_path)
+    fired = _flaky_trust_save(monkeypatch, "app-a")
+    real, settings_fired = bm.Bot.save, []
+
+    def save(self):  # the settings save: routines set, trust not yet (the origin save carries neither)
+        if not settings_fired and "routines" in self.meta and "trusted_apps" not in self.meta:
+            settings_fired.append(1)
+            raise OSError("disk full")
+        return real(self)
+
+    monkeypatch.setattr(bm.Bot, "save", save)
+    out = botfile.install(path, apps=["app-a"], memory=False)
+    assert fired and settings_fired
+    _settings_row(out)
+    bid = out["bot_id"]
+    registry.forget(bid)  # the Retry loads the bot from disk: origin must be there, not only in memory
+    assert store.read_meta(bid)["origin"]["package_sha"] == botfile._package_sha(botfile._index(path))
+    again = botfile.install(path, apps=["app-a"], memory=False, bot_id=bid)
+    assert [(r["folder"], r["ok"]) for r in again["apps"]] == [("app-a", True)] and again["warnings"] == []
+    _linked_once(bid)
+
+
+def test_origin_save_failing_removes_the_bot_and_refuses(monkeypatch, tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, store
+
+    path = _package_with_app(monkeypatch, tmp_path)
+    real = bm.Bot.save
+
+    def save(self):
+        if "origin" in self.meta:
+            raise OSError("disk full")
+        return real(self)
+
+    monkeypatch.setattr(bm.Bot, "save", save)
+    with pytest.raises(botfile.BotFileError, match="could not create the bot: disk full"):
+        botfile.install(path, apps=[], memory=False)
+    assert store.list_ids() == []
+
+
+# ------------------------------------------------------------------ id races ---
+def _dupe_id_folders() -> str:
+    """Two folders under bots_root whose bot.json carry one id: the index resolves neither."""
+    from fused_render.bots import bot as bm
+
+    b = bm.create("Orig", "", "", "x", greet=False)
+    folder = bpaths.bot_folder(b.id)
+    import shutil
+    shutil.copytree(folder, folder + "-copy")
+    bpaths._reset_folders()
+    with pytest.raises(LookupError):
+        bpaths.bot_folder(b.id)
+    return b.id
+
+
+def test_create_refuses_an_id_two_folders_claim(app_home):
+    from fused_render.bots import bot as bm
+
+    bid = _dupe_id_folders()
+    before = sorted(os.listdir(bpaths.bots_root()))
+    with pytest.raises(bm.BotIdTaken, match="already a bot"):
+        bm.create("Third", "", "", "x", greet=False, bot_id=bid)
+    assert sorted(os.listdir(bpaths.bots_root())) == before
+    for n in before:
+        with open(os.path.join(bpaths.bots_root(), n, "bot.json"), encoding="utf-8") as f:
+            assert json.load(f)["name"] == "Orig"
+
+
+def test_mint_id_skips_an_id_two_folders_claim(app_home, monkeypatch):
+    import uuid
+    from fused_render.bots import botfile
+
+    bid = _dupe_id_folders()
+    fresh = "fedcba98"
+    seq = iter([uuid.UUID(bid + "0" * 24), uuid.UUID(fresh + "0" * 24)])
+    monkeypatch.setattr(botfile.uuid, "uuid4", lambda: next(seq))
+    assert botfile._mint_id() == fresh
+
+
+def test_id_taken_between_mint_and_create_is_a_retry_never_an_adoption(monkeypatch, tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, package, store
+
+    src = bm.create("Src", "", "", "do things", greet=False)
+    path = package.write(src.id, memory=False, apps=[], file_name=None, dest_dir=str(tmp_path / "out"))
+    _second_machine(tmp_path, monkeypatch)
+    real = bm.create
+
+    def sniped(*a, bot_id=None, **kw):  # another creator takes the minted id first
+        real("Other", "", "", "mine", greet=False, bot_id=bot_id)
+        return real(*a, bot_id=bot_id, **kw)
+
+    monkeypatch.setattr(bm, "create", sniped)
+    with pytest.raises(botfile.BotFileError, match="id taken, retry"):
+        botfile.install(path, apps=[], memory=False)
+    [other] = store.list_ids()
+    meta = store.read_meta(other)
+    assert meta["name"] == "Other" and "origin" not in meta
+
+
+def test_create_raising_after_another_name_was_written_is_not_adopted(monkeypatch, tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, package, store
+
+    src = bm.create("Src", "", "", "do things", greet=False)
+    path = package.write(src.id, memory=False, apps=[], file_name=None, dest_dir=str(tmp_path / "out"))
+    _second_machine(tmp_path, monkeypatch)
+    real = bm.create
+
+    def odd(*a, bot_id=None, **kw):  # a bot.json lands under our id, but not the one we asked for
+        real("Other", "", "", "mine", greet=False, bot_id=bot_id)
+        raise RuntimeError("first emit failed")
+
+    monkeypatch.setattr(bm, "create", odd)
+    with pytest.raises(botfile.BotFileError, match="could not create the bot: first emit failed"):
+        botfile.install(path, apps=[], memory=False)
+    [other] = store.list_ids()
+    assert "origin" not in store.read_meta(other)
+
+
+# ------------------------------------------------------------------ member checks ---
+def _lying_container(monkeypatch, path, index, members, lie_on):
+    from fused_render import appfile_container
+
+    real = appfile_container._put_member
+
+    def lying(data, rel, src, offset):
+        entry = real(data, rel, src, offset)
+        return {**entry, "sha256": "0" * 64} if lie_on(rel) else entry
+
+    monkeypatch.setattr(appfile_container, "_put_member", lying)
+    try:
+        return _container(path, index, members)
+    finally:
+        monkeypatch.setattr(appfile_container, "_put_member", real)
+
+
+def test_corrupt_memory_fails_the_full_probe_like_install(client, tmp_path, monkeypatch):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile
+
+    monkeypatch.setattr(bm.Bot, "greet", lambda self: None)
+    path = _lying_container(monkeypatch, tmp_path / "mem.fusedbot", {},
+                            [("bot.json", b'{"name": "Hand"}'), (".fused/memory.md", b"remember\n")],
+                            lambda rel: rel == ".fused/memory.md")
+    assert botfile.probe(path, light=True)["memory"]
+    with pytest.raises(botfile.BotFileError) as probed:
+        botfile.probe(path)
+    with pytest.raises(botfile.BotFileError) as installed:
+        botfile.install(path, apps=[], memory=True)
+    assert str(probed.value) == str(installed.value) == ".fused/memory.md does not match its declared size or hash"
+    with open(path, "rb") as f:
+        status, _h, raw = client.post("/api/botfile/upload?name=mem.fusedbot", f.read(), raw=True)
+    assert status == 400 and json.loads(raw)["error"] == str(probed.value)
+
+
+def test_corrupt_bundled_member_refuses_the_upload_but_not_the_probe(client, tmp_path, monkeypatch):
+    from fused_render import appfetch
+    from fused_render.bots import botfile
+
+    # The member is not named by an `apps` row, so the full probe stages nothing: it never reads bundled members.
+    path = _lying_container(monkeypatch, tmp_path / "app.fusedbot", {},
+                            [("bot.json", b'{"name": "Hand"}'), ("apps/x.fused", b"x" * 5000)],
+                            lambda rel: rel.startswith("apps/"))
+    assert botfile.probe(path, light=True)["ok"] and botfile.probe(path)["ok"]
+    with open(path, "rb") as f:
+        status, _h, raw = client.post("/api/botfile/upload?name=app.fusedbot", f.read(), raw=True)
+    assert status == 400 and json.loads(raw)["error"] == "apps/x.fused does not match its declared size or hash"
+    assert [n for n in os.listdir(appfetch.downloads_dir()) if not n.startswith(".")] == []
+
+    good = _container(tmp_path / "good.fusedbot", {}, [("bot.json", b'{"name": "Hand"}'), ("apps/x.fused", b"x" * 5000)])
+    with open(good, "rb") as f:
+        status, _h, raw = client.post("/api/botfile/upload?name=good.fusedbot", f.read(), raw=True)
+    assert status == 200

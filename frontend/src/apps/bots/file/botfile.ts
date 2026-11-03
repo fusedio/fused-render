@@ -81,6 +81,22 @@ export function newRequestId(): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+/** The warnings the install page shows: the first install's plus each row's latest Retry's (deduped). A first
+ *  install whose bot update failed (`link_apps`) says `settings: …` AND flips its installed rows to `settings`;
+ *  once Retries leave no row in `settings`, that warning is stale and dropped. Only when the first install HAD such
+ *  a row (`firstHadSettings`): a `settings: …` from the bot's own settings step (`apply_meta`) flips no row, no
+ *  Retry fixes it, and it stays. Every other first-install warning stays too. */
+export function visibleWarnings(
+  first: string[],
+  firstHadSettings: boolean,
+  rows: Record<string, BotFileAppResult>,
+  rowWarnings: Record<string, string[]>,
+): string[] {
+  const fixed = firstHadSettings && !Object.values(rows).some((r) => r.state === "settings");
+  const kept = fixed ? first.filter((w) => !w.startsWith("settings:")) : first;
+  return [...new Set([...kept, ...Object.values(rowWarnings).flat()])];
+}
+
 /** The upload's cap, the server's too. */
 export const UPLOAD_MAX_BYTES = 1 << 30;
 

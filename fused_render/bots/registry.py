@@ -37,11 +37,16 @@ workspace: the main app and a `FUSED_RENDER_BRANCH` install both default to
 the same bots, firing a due routine twice. So an owner also flocks
 `<bots_root>/.routines.lock` (the workspace claim, beside `.migrate.lock`) and
 keeps it for its lifetime. Without the claim it still serves its home (reads,
-forwarding, the dock, settings) but runs NO bot engine: every door that starts
-one (a send, an app send, a phone message, a channel text — the router texts
-back —, a routine run, a new bot's greeting, a hand-off start) refuses through `require_workspace()` with `WorkspaceBusy`
-(a 409 on the routes), since the claimant may be running that very bot's engine
-on the same bot folder. It also SKIPS `tick_routines()`, the hand-off sweep (its
+forwarding, the dock, the export) but runs NO bot engine and is READ-ONLY for
+bot state: every door that starts an engine (a send, an app send, a phone
+message, a channel text — the router texts back —, a routine run, a new bot's
+greeting, a hand-off start) and every POST that writes a bot's files (settings,
+routines, skills, flags, reactions, the read mark, attachments, the browser
+drive, take-over, delete, clone, install) refuses through `require_workspace()`
+with `WorkspaceBusy` (a 409 on the routes), since the claimant may be running
+that very bot's engine on the same bot folder and its next save would revert the
+edit. A Bot built here then loads as-is (`Bot.read_only`: no load-time reconcile,
+no event, nothing saved) and `get()` rebuilds it from disk once the claim is won. It also SKIPS `tick_routines()`, the hand-off sweep (its
 rows live in the Super Bot's bot.json in the workspace: two sweepers would
 start one queued hand-off twice) and the steps that read or write the shared
 workspace (the v3 folder migration, the Super Bot seed, the takeover walk — it
@@ -147,6 +152,17 @@ def get(bid: str):
     key = _key(bid)
     with _lock:
         b = _bots.get(key)
+        if b is not None and getattr(b, "read_only", False) and not workspace_read_only():
+            # Built while another home held the workspace claim (Bot.read_only): its meta is the snapshot it loaded
+            # and it never ran the load-time reconcile. Now that this process may write, rebuild it from disk, or its
+            # first save would put that stale snapshot over everything the claimant wrote since. It holds no thread
+            # (every engine door refused); its view leaves the shared Chrome process, the Chrome stays up.
+            try:
+                b.browser.proc.detach(b.browser)
+            except Exception:  # noqa: BLE001
+                pass
+            _bots.pop(key, None)
+            b = None
         if b is None:
             from fused_render.bots import store
             try:
@@ -258,6 +274,17 @@ def workspace_claimed() -> bool:
     if _OWNER["ws_fh"] is None and not _claim_workspace():
         return False
     return bool(_OWNER["ws_ready"] or not _OWNER["ready"])
+
+
+def workspace_read_only() -> bool:
+    """Is bot state read-only here (`Bot.read_only`, module docstring)? True in an owner that cannot hold the
+    workspace claim. A Bot built in a non-owner (a test's bare Bot) is not read-only, and no lock file yet means no
+    claimant: answered without creating one (a bare `bot.create` must not leave `.routines.lock` behind)."""
+    if not owns():
+        return False
+    if _OWNER["ws_fh"] is None and not os.path.exists(os.path.join(bpaths.bots_root(), WS_LOCK)):
+        return False
+    return not workspace_claimed()
 
 
 def require_workspace() -> None:

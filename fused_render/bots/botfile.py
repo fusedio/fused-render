@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zlib
 
 from fused_render import appfile, appfile_container
 from fused_render.bots import paths as bpaths
@@ -225,15 +226,62 @@ def _skills(path: str, idx: dict) -> list[dict]:
     return out
 
 
-def _validate(path: str, idx: dict, *, members: bool = True) -> tuple[dict, list[dict], list[dict] | None]:
+def _member_check(path: str, idx: dict, rel: str) -> None:
+    """Stream-verify one member against its declared size + sha256 without holding its bytes (a bundled app
+    can be hundreds of MB): `appfile_container.extract`'s bounded-inflate loop, hashing into nothing."""
+    entry = appfile_container.find(idx, rel)
+    if entry is None:
+        return
+    bad = BotFileError(f"{rel} does not match its declared size or hash")
+    declared, chunk_max = entry["size"], 1 << 20
+    d, h, got, remaining = zlib.decompressobj(), hashlib.sha256(), 0, entry["csize"]
+    try:
+        with open(path, "rb") as f:
+            f.seek(idx["_data_start"] + entry["offset"])
+            while remaining > 0:
+                chunk = f.read(min(chunk_max, remaining))
+                if not chunk:
+                    raise bad
+                remaining -= len(chunk)
+                while chunk:
+                    piece = d.decompress(chunk, max_length=min(chunk_max, declared - got + 1))
+                    got += len(piece)
+                    if got > declared:
+                        raise bad
+                    h.update(piece)
+                    chunk = d.unconsumed_tail
+            tail = d.flush(min(chunk_max, declared - got + 1))
+            got += len(tail)
+            h.update(tail)
+    except zlib.error:
+        raise bad from None
+    except OSError as e:
+        raise BotFileError(f"not a readable bot package: {e}") from None
+    if got != declared or h.hexdigest() != entry.get("sha256"):
+        raise bad
+
+
+def _validate(path: str, idx: dict, *, members: bool = True,
+              bundled: bool = False) -> tuple[dict, list[dict], list[dict] | None]:
     """Every read-only check a package must pass before anything opens it -> (public bot.json, app rows, skills).
     The probe and the upload route both call this, so a file the upload saves is one the install page can open:
-    the text budget, bot.json, the `apps` list, and (with `members`) every playbook member read in full through
-    _member_bytes' size + sha256 check. `members=False` is the light probe's peek (no member reads; skills None)."""
+    the text budget, bot.json, the `apps` list, and (with `members`) every playbook member and `.fused/memory.md`
+    read in full through _member_bytes' size + sha256 check. `members=False` is the light probe's peek (no member
+    reads; skills None). `bundled` (the upload only: a probe must not pay for it on every open) also
+    stream-verifies every `apps/*.fused` member's size + sha256."""
     _check_text_budget(idx)
     pub = _bot_json(path, idx)
     rows = _app_rows(idx)
-    return pub, rows, (_skills(path, idx) if members else None)
+    skills = None
+    if members:
+        skills = _skills(path, idx)
+        _total, text_cap = _caps()
+        _member_bytes(path, idx, ".fused/memory.md", text_cap)  # the read install(memory=True) makes
+    if bundled:
+        for f in idx.get("files") or []:
+            if _BUNDLED_RE.match(f.get("path") or ""):
+                _member_check(path, idx, f["path"])
+    return pub, rows, skills
 
 
 # ------------------------------------------------------------------ staging ---
@@ -814,15 +862,18 @@ def _copy_folder_members(path: str, idx: dict, bid: str, warnings: list[str]) ->
 
 
 def _mint_id() -> str:
-    """A fresh bot id (create()'s shape: 8 hex) that is neither a bot nor a placed folder yet."""
-    from fused_render.bots import store
+    """A fresh bot id (create()'s shape: 8 hex) that no folder claims yet. Not a reservation: create() refuses
+    an id taken in between (BotIdTaken), and _install_new answers that as a retry, never an adoption.
+    raw_ids, not list_ids: the index drops an id two folders claim, which would read as free."""
+    taken = bpaths.raw_ids()
     while True:
         bid = uuid.uuid4().hex[:8]
+        if bid in taken:
+            continue
         try:
-            bpaths.bot_folder(bid)
+            bpaths.bot_folder(bid)  # a folder place() registered whose bot.json and marker are not written yet
         except LookupError:
-            if bid not in store.list_ids():
-                return bid
+            return bid
 
 
 def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
@@ -850,23 +901,49 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     # nothing — the index is the file author's word, and trust is the importer's to give.
     trusted = [r["folder"] for r in done]
 
-    # From create() on the request always answers 200 with the bot id: the page retries a non-200 by
-    # re-POSTing, which would mint a second bot. Later failures become `warnings`. create() itself can raise
-    # AFTER its bot.json exists (the registry build, the first emit), so the id is minted HERE and handed in:
-    # after a raise, a bot.json under THAT id is this request's bot. (Diffing the ids on disk would adopt a bot
-    # some other request created in the same window, and overwrite its settings below.)
+    # Once the bot's `origin` is on disk the request always answers 200 with the bot id: the page retries a
+    # non-200 by re-POSTing, which would mint a second bot. Later failures become `warnings`. Before that (create
+    # refused, or the origin save failed and the bot was deleted again) no bot remains, so a non-200 and a
+    # re-POST are safe. create() itself can raise AFTER its bot.json exists (the registry build, the first emit),
+    # so the id is minted HERE and handed in: after a raise, a bot.json under THAT id carrying the name we
+    # passed is this request's bot. (Diffing the ids on disk would adopt a bot some other request created in the
+    # same window, and overwrite its settings below.) The mint is not a reservation: an id another creator took
+    # in between is BotIdTaken, refused before create writes anything, and answered as a retry, never adopted.
+    name = _str(pub.get("name")) or _str(idx.get("name")) or "Bot"  # never empty: create() would invent one
     bid = _mint_id()
     warnings: list[str] = []
     try:
-        b = bm.create(_str(pub.get("name")) or _str(idx.get("name")), _str(pub.get("model")), _str(pub.get("effort")),
-                      _str(pub.get("instructions")), greet=False, bot_id=bid)
+        b = bm.create(name, _str(pub.get("model")), _str(pub.get("effort")), _str(pub.get("instructions")),
+                      greet=False, bot_id=bid)
+    except bm.BotIdTaken:
+        raise BotFileError("could not create the bot: id taken, retry") from None
     except Exception as e:  # noqa: BLE001 - see above
         from fused_render.bots import registry
-        if bid not in store.list_ids():
+        try:
+            ours = bm.Bot._exists(bid) and store.read_meta(bid).get("name") == name
+        except (OSError, ValueError):
+            ours = False
+        if not ours:
             raise BotFileError(f"could not create the bot: {e or e.__class__.__name__}") from e
         logger.warning("bot package: create() raised after writing bot %s; continuing", bid, exc_info=True)
         warnings.append(f"create: {e or e.__class__.__name__}")
         b = registry.get(bid)
+
+    # `origin` first, in a save of its own: re-install mode (the per-row Retry) checks it, so it must be durable
+    # before any later save can fail. Failing here is a failed request: the bot is removed again (nothing else of
+    # the file was written to it yet) so the page's re-POST does not leave a second bot behind.
+    try:
+        with b.lock:
+            # package_sha (private, like all of origin): re-install mode accepts only this very package.
+            b.meta["origin"] = {**_origin(idx), "package_sha": _package_sha(idx)}
+            b.save()
+    except Exception as e:  # noqa: BLE001 - any failure: undo the bot, then refuse
+        logger.warning("bot package: could not record the origin of %s; removing it", b.id, exc_info=True)
+        try:
+            bm.delete(b.id)
+        except Exception:  # noqa: BLE001 - a cleanup failure must not mask the origin error
+            logger.warning("bot package: could not remove %s after a failed origin save", b.id, exc_info=True)
+        raise BotFileError(f"could not create the bot: {e or e.__class__.__name__}") from e
 
     def step(what, fn) -> bool:
         try:
@@ -881,13 +958,12 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
         with b.lock:
             b.meta.update(settings)
             b.meta["routines"] = routines
-            # package_sha (private, like all of origin): re-install mode accepts only this very package.
-            b.meta["origin"] = {**_origin(idx), "package_sha": _package_sha(idx)}
             b.save()
 
     def link_apps():
-        # Its own save, after origin is on disk: when THIS one fails, each installed row says so (state
-        # "settings") and its Retry, re-install mode, finds the origin it needs.
+        # Its own save; origin is already durable (saved alone above), so when THIS one fails (or the settings
+        # save did too) each installed row says so (state "settings") and its Retry, re-install mode, finds the
+        # origin on disk even after the bot is reloaded.
         with b.lock:
             b.meta["apps"] = rows
             b.meta["trusted_apps"] = apptools.clean_trusted_apps(trusted)

@@ -92,7 +92,8 @@ def test_write_meta_splits_public_and_private_halves():
     assert store.GEN_KEY not in store.public_json(public)  # the export text never carries the save stamp
     with open(store.state_path(B1), encoding="utf-8") as f:
         private = json.load(f)
-    priv_row = {"id": "r1", **{k: v for k, v in routine.items() if k not in store.ROUTINE_PUBLIC_KEYS}}
+    priv_row = {"id": "r1", **{k: v for k, v in routine.items() if k not in store.ROUTINE_PUBLIC_KEYS},
+                store.SCHED_REV_KEY: store._sched_rev(public["routines"][0])}
     priv_keys = {k: v for k, v in meta.items() if k not in store.PUBLIC_KEYS}
     assert private == {**priv_keys, "routines": [priv_row], store.PUBLIC_GEN_KEY: gen}
     assert "last" in priv_row and "status" in priv_keys
@@ -117,6 +118,23 @@ def _routine_meta(bid, minutes=30):
                           "enabled": True, "next": 1234.0, "last": 99.0, "fails": 1}]}
 
 
+_REAL_WRITE_JSON_ATOMIC = store.write_json_atomic
+
+
+def test_pre_upgrade_rows_without_sched_rev_keep_the_gen_rule_alone():
+    """A state.json from before sched_rev beside a torn bot.json whose schedule changed: only `next` drops."""
+    bpaths.place(B1, "Gen")
+    folder = bpaths.bot_folder(B1)
+    public, private = store.split_meta(_routine_meta(B1, minutes=30))
+    for r in private["routines"]:
+        del r[store.SCHED_REV_KEY]
+    public["routines"][0]["minutes"] = 5
+    _touch(os.path.join(folder, "bot.json"), store._file_text(public, "new"))
+    _touch(os.path.join(folder, ".fused", "state.json"), json.dumps({**private, store.PUBLIC_GEN_KEY: "old"}))
+    row = store.read_meta(B1)["routines"][0]
+    assert row["minutes"] == 5 and "next" not in row and row["last"] == 99.0 and row["enabled"] is True
+
+
 def test_write_meta_stamps_both_halves_with_one_gen():
     bpaths.place(B1, "Gen")
     store.write_meta(B1, _routine_meta(B1))
@@ -139,20 +157,86 @@ def test_write_meta_stamps_both_halves_with_one_gen():
 
 
 def test_torn_save_drops_next_and_keeps_the_rest(monkeypatch):
-    """A crash between bot.json (new schedule) and state.json (old `next`): the pair's gens differ, so the
-    load drops `next` (the scheduler recomputes it from the current schedule) and keeps enabled/last/fails."""
+    """A crash between bot.json (new public half) and state.json (old run state) that left the schedule alone:
+    the pair's gens differ, so the load drops `next` (the scheduler recomputes it) and keeps enabled/last/fails
+    (the routine's sched_rev still matches its schedule)."""
     bpaths.place(B1, "Gen")
     store.write_meta(B1, _routine_meta(B1, minutes=30))
 
     def crash(path, obj):
         raise OSError("power cut")
     monkeypatch.setattr(store, "write_json_atomic", crash)
+    meta = _routine_meta(B1, minutes=30)
+    meta["name"], meta["routines"][0]["task"] = "Renamed", "t2"  # public, but not schedule
     with pytest.raises(OSError):
-        store.write_meta(B1, _routine_meta(B1, minutes=5))
-    row = store.read_meta(B1)["routines"][0]
-    assert row["minutes"] == 5  # the new public half landed
+        store.write_meta(B1, meta)
+    m = store.read_meta(B1)
+    row = m["routines"][0]
+    assert m["name"] == "Renamed" and row["task"] == "t2"  # the new public half landed
     assert "next" not in row and row["enabled"] is True and row["last"] == 99.0 and row["fails"] == 1
-    assert store.read_meta(B1)["browser_id"] == "feedf00d"  # non-routine private state kept
+    assert store.SCHED_REV_KEY not in row
+    assert m["browser_id"] == "feedf00d"  # non-routine private state kept
+
+
+def _two_routine_meta(bid):
+    return {"id": bid, "name": "Gen",
+            "routines": [{"id": "r1", "task": "t", "kind": "interval", "minutes": 30, "anchor": 10.0,
+                          "created": 1.0, "enabled": True, "next": 1234.0, "last": 99.0, "fails": 1},
+                         {"id": "r2", "task": "u", "kind": "daily", "time": "09:00", "weekdays": [0, 1],
+                          "created": 2.0, "enabled": False, "next": 5678.0, "last": 77.0, "fails": 2}]}
+
+
+def test_torn_save_that_changed_a_schedule_drops_that_routines_last(monkeypatch):
+    """An edit flipped r1 to `once` (the edit cleared its `last`), then a crash between the two writes: the OLD
+    private `last` sits beside the NEW once-schedule, and `_next_run` would never fire a once with `last` set.
+    r1's sched_rev no longer matches, so r1 drops `next` AND `last` (keeps `enabled`/`fails`); r2's rev matches,
+    so r2 keeps `last` and loses only `next` (the gen-torn rule, every row)."""
+    bpaths.place(B1, "Gen")
+    store.write_meta(B1, _two_routine_meta(B1))
+    priv = json.load(open(store.state_path(B1), encoding="utf-8"))
+    assert all(isinstance(r[store.SCHED_REV_KEY], str) for r in priv["routines"])
+
+    def crash(path, obj):
+        raise OSError("power cut")
+    monkeypatch.setattr(store, "write_json_atomic", crash)
+    meta = _two_routine_meta(B1)
+    r1 = meta["routines"][0]
+    for k in ("minutes", "anchor"):
+        del r1[k]
+    r1.update(kind="once", at=9e9, last=None, next=9e9)
+    with pytest.raises(OSError):
+        store.write_meta(B1, meta)
+    monkeypatch.setattr(store, "write_json_atomic", _REAL_WRITE_JSON_ATOMIC)
+    got = {r["id"]: r for r in store.read_meta(B1)["routines"]}
+    assert got["r1"]["kind"] == "once" and got["r1"]["at"] == 9e9
+    assert "last" not in got["r1"] and "next" not in got["r1"]
+    assert got["r1"]["enabled"] is True and got["r1"]["fails"] == 1
+    assert got["r2"]["last"] == 77.0 and "next" not in got["r2"]
+    assert got["r2"]["enabled"] is False and got["r2"]["fails"] == 2
+    assert all(store.SCHED_REV_KEY not in r for r in got.values())
+    # the bot's next whole save heals the pair: revs and gens match again, nothing is dropped
+    store.write_meta(B1, meta)
+    assert {r["id"]: r for r in store.read_meta(B1)["routines"]}["r1"]["next"] == 9e9
+
+
+def test_sched_rev_matching_keeps_last_and_mismatch_drops_it_without_a_tear():
+    bpaths.place(B1, "Gen")
+    meta = _two_routine_meta(B1)
+    store.write_meta(B1, meta)
+    assert store.read_meta(B1) == meta  # matching revs, matching gens: everything kept, no rev in the meta
+    # the rev is private: never in bot.json, the public half, or what a package ships
+    pub = json.load(open(store.meta_path(B1), encoding="utf-8"))
+    assert all(store.SCHED_REV_KEY not in r for r in pub["routines"])
+    pub_half, priv_half = store.split_meta({**meta, "routines": [{**r, store.SCHED_REV_KEY: "x"}
+                                                                 for r in meta["routines"]]})
+    assert store.SCHED_REV_KEY not in store.public_json(pub_half)
+    assert all(r[store.SCHED_REV_KEY] != "x" for r in priv_half["routines"])  # recomputed from the schedule
+    # a hand edit / git pull that changed r2's schedule (gens untouched: not a tear) drops r2's next+last only
+    pub["routines"][1]["time"] = "10:30"
+    _touch(store.meta_path(B1), json.dumps(pub))
+    got = {r["id"]: r for r in store.read_meta(B1)["routines"]}
+    assert got["r1"]["next"] == 1234.0 and got["r1"]["last"] == 99.0
+    assert "next" not in got["r2"] and "last" not in got["r2"] and got["r2"]["fails"] == 2
 
 
 def test_old_pair_without_gens_loads_unchanged():
@@ -160,6 +244,8 @@ def test_old_pair_without_gens_loads_unchanged():
     folder = bpaths.bot_folder(B1)
     meta = _routine_meta(B1)
     public, private = store.split_meta(meta)
+    for r in private["routines"]:
+        del r[store.SCHED_REV_KEY]  # a pre-upgrade state.json: no gens, no sched_rev
     _touch(os.path.join(folder, "bot.json"), store.public_json(public))
     _touch(os.path.join(folder, ".fused", "state.json"), json.dumps(private))
     assert store.read_meta(B1) == meta
@@ -1006,6 +1092,26 @@ def test_browser_sweep_skips_when_a_parked_bot_json_is_unreadable(app_home, ws):
     assert browsers.used_on_disk("cafef00d") is None
     assert browsers.sweep([]) == 0
     assert os.path.isdir(orphan)
+
+
+def test_browser_sweep_skips_when_a_parked_bot_json_is_a_dangling_symlink(app_home, ws):
+    """isfile() is False for a dangling link, which read as "no bot.json" and let the sweep call the list complete."""
+    from fused_render.bots import browsers
+    d = os.path.join(ws, "bots", ".unmigrated", "a1b2c3d4")
+    os.makedirs(d)
+    os.symlink(os.path.join(ws, "gone", "bot.json"), os.path.join(d, "bot.json"))
+    orphan = os.path.join(browsers.data_dir(), "cafef00d")
+    _touch(os.path.join(orphan, "browser.json"), "{}")
+    assert browsers._metas_on_disk() is None
+    assert browsers.used_on_disk("cafef00d") is None
+    assert browsers.sweep([]) == 0 and os.path.isdir(orphan)
+    # a dangling bot.json in a bot folder is caught by store.read_all_metas too
+    os.remove(os.path.join(d, "bot.json"))
+    bad = os.path.join(ws, "bots", "dangling")
+    os.makedirs(bad)
+    os.symlink(os.path.join(ws, "gone", "bot.json"), os.path.join(bad, "bot.json"))
+    assert store.read_all_metas() is None and browsers._metas_on_disk() is None
+    assert browsers.sweep([]) == 0 and os.path.isdir(orphan)
 
 
 def test_browser_sweep_skips_when_a_bot_folder_bot_json_is_unreadable(app_home, ws):

@@ -284,6 +284,7 @@ def phone_delete(bid: str, x_fused: str | None = Header(default=None)):
     b = routes._bot(bid)  # 404 for an unknown id before anything is touched
     if _botmod().is_super(b.meta):
         raise ValueError("Super Bot cannot be deleted from the phone")
+    registry.require_workspace()  # read-only for bot state without the workspace claim (routes._ws)
     registry.delete(bid)
     return {"ok": True}
 
@@ -351,8 +352,10 @@ def _routines(b, body, _device):
     return routes._routines(b.id, body)
 
 
-def _control(name):
+def _control(name, gated=False):
     def run(b, _body, _device):
+        if gated:
+            registry.require_workspace()  # writes the bot with no task thread behind it (routes._WS_OPS)
         getattr(b, name)()
         return {"ok": True}
     return run
@@ -362,7 +365,7 @@ def _control(name):
 # open, goto, nav, tab, viewport, profile, clone, flag, react, skills, reveal, tool, failures, the app door.
 _OPS = {"send": _send, "settings": _settings, "routines": _routines,
         "pause": _control("pause"), "resume": _control("resume"), "stop": _control("stop"),
-        "clear": _control("clear_context")}
+        "clear": _control("clear_context", gated=True)}
 
 
 @router.post(PREFIX + "/{bid}/{op}")

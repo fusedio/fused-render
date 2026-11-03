@@ -10,7 +10,7 @@ Each route is one branch of OpenBot's `agents._main` (the page used to call
 POST/DELETE needs `X-Fused: 1`. Errors are `{"error": "<sentence>"}`:
 `ValueError` / `RuntimeError` from the bot layer -> 400, an unknown bot -> 404,
 `registry.WorkspaceBusy` (another home's owner holds the workspace claim, so a
-door that would start a bot engine refuses) -> 409.
+door that would start a bot engine or write a bot's files refuses: `_ws`) -> 409.
 
 The bot layer (`registry`, `bot`, `store`, `apps`) is imported lazily so the
 server imports this router without pulling in Chrome/CDP code.
@@ -192,6 +192,14 @@ def _handled(fn):
             registry.slow_log(fn.__name__, int((time.time() - t0) * 1000),
                               kwargs.get("bid") or kwargs.get("shot_for") or "", bool(kwargs.get("fast") in ("1", "true", True)))
     return wrap
+
+
+def _ws(bid):
+    """The bot (404 for an unknown id first), then the workspace gate: a home without the workspace claim is
+    read-only for bot state (registry module docstring), since the claimant's next save would revert the write."""
+    b = _bot(bid)
+    registry.require_workspace()
+    return b
 
 
 def _truthy(v) -> bool:
@@ -418,8 +426,10 @@ def bots_browser_op(bid: str, body: dict = Body(...), x_fused: str | None = Head
     if not bots or not browsers.exists(bid):
         raise ValueError("no such browser")
     op = body.get("op") or ""
-    if op == "rename":
+    if op == "rename":  # browser.json is this home's (data/browsers): no bot file moves
         return {"ok": True, "name": browsers.rename(bid, body.get("name") or "")}
+    if op in ("encrypt", "profile", "signin", "delete"):
+        registry.require_workspace()  # each writes the bots' bot.json (set_encrypt, take-over, set_browser)
     if op == "encrypt":
         bots[0].set_encrypt(_truthy(body.get("on")))
         return {"ok": True}
@@ -646,6 +656,11 @@ def bot_package_write(bid: str, body: dict = Body(default=None), x_fused: str | 
 _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "takeover",
             "giveback": "giveback", "popout": "popout", "dock": "dock", "wake": "wake_browser", "open": "opened",
             "clear": "clear_context"}
+# The control ops that save the bot or append to its chat with no task thread behind them (`_ws`). pause / resume /
+# stop (and the app door's app_stop) act only on a live task thread, none of which runs without the claim; `dock`
+# and `open` stay open by design. The `_POSTS` helpers gate themselves, so the phone's door (which calls them
+# directly) is gated too.
+_WS_OPS = frozenset({"takeover", "giveback", "popout", "wake", "clear"})
 
 
 @router.post("/api/bots/{bid}/{op}")
@@ -666,6 +681,8 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
             # Super Bot's first task starts from here, but the page calls `open` on every landing and asks again
             # while setup is "pending": without the workspace claim it waits quietly instead of a 409 per click.
             return {"ok": True, "setup": "pending"}
+    if op in _WS_OPS:
+        _ws(bid)
     if op in _CONTROL:
         out = getattr(_bot(bid), _CONTROL[op])()
         return {"ok": True, **(out if isinstance(out, dict) else {})}
@@ -682,7 +699,7 @@ def _goto(bid, body):
     url = (body.get("url") or "").strip()
     if not url:
         raise ValueError("no url")
-    registry.require_workspace()
+    _ws(bid)
     from fused_render.bots.browser import NAV_SETTLE_S  # lazy, like the rest of the bot layer (module docstring)
     info = _bot(bid).browser.goto(url, settle=NAV_SETTLE_S) or {}
     return {"ok": True, "url": info.get("url")}
@@ -692,12 +709,12 @@ def _nav(bid, body):
     op = body.get("op")
     if op not in ("back", "forward", "reload"):
         raise ValueError("op must be back|forward|reload")
-    info = getattr(_bot(bid).browser, op)() or {}
+    info = getattr(_ws(bid).browser, op)() or {}  # drives Chrome on the bot folder's cache (window.json)
     return {"ok": True, "url": info.get("url")}
 
 
 def _tab(bid, body):
-    b = _bot(bid)
+    b = _ws(bid)
     tab, index = body.get("tab"), body.get("index")
     if tab == "new":
         info = b.browser.tab_new(body.get("url") or "about:blank")
@@ -719,12 +736,12 @@ def _attach(bid, body):
         raise ValueError(f"{name}: not base64") from None
     if len(data) > ATTACH_MAX:
         raise ValueError(f"{name}: too large ({len(data) // 1048576} MB; limit {ATTACH_MAX // 1048576} MB)")
-    return {"ok": True, "name": _bot(bid).save_bytes(name, data)}
+    return {"ok": True, "name": _ws(bid).save_bytes(name, data)}
 
 
 def _react(bid, body):
     """One emoji per message, keyed by seq in meta["reactions"] ("" clears)."""
-    b = _bot(bid)
+    b = _ws(bid)
     try:
         seq = int(body.get("seq"))
     except (TypeError, ValueError):
@@ -755,7 +772,7 @@ def _seen(bid, body):
     seq = body.get("seq")
     if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
         raise ValueError("seen needs an integer seq >= 0")
-    b = _bot(bid)
+    b = _ws(bid)
     with b.lock:
         cur = b.meta.get("seen_seq")
         if not isinstance(cur, int) or isinstance(cur, bool) or seq > cur:
@@ -767,7 +784,7 @@ def _seen(bid, body):
 
 def _flag(bid, body):
     """Sidebar bookkeeping: pinned / hidden / avatar face."""
-    b = _bot(bid)
+    b = _ws(bid)
     with b.lock:
         if body.get("pinned") is not None:
             b.meta["pinned"] = bool(body["pinned"])
@@ -784,7 +801,7 @@ def _settings(bid, body):
     """OpenBot `rename`: the Settings dialog."""
     from fused_render.bots import imessage
     bm = _botmod()
-    b = _bot(bid)
+    b = _ws(bid)
     name = (body.get("name") or "").strip()
     model, effort = body.get("model") or "", body.get("effort") or ""
     max_steps = body.get("max_steps")
@@ -861,19 +878,19 @@ def _settings(bid, body):
 
 
 def _profile(bid, body):
-    _botmod().import_profile(_bot(bid), body.get("profile") or "")
+    _botmod().import_profile(_ws(bid), body.get("profile") or "")
     return {"ok": True}
 
 
 def _clone(bid, body):
     share = body.get("share")
-    registry.require_workspace()  # the copy's greeting runs on it (bot.clone -> greet)
+    _ws(bid)  # the copy's greeting runs on it (bot.clone -> greet)
     b = registry.clone(bid, body.get("name") or "", share=True if share is None else _truthy(share))
     return {"ok": True, "id": b.id}
 
 
 def _routines(bid, body):
-    b = _bot(bid)
+    b = _ws(bid)  # every op: an edit made here would be reverted by the claimant's next save
     op = body.get("op") or ""
     if op == "add":
         r = b.routine_add(body.get("text") or "", body.get("kind") or "", minutes=body.get("minutes"),
@@ -892,7 +909,6 @@ def _routines(bid, body):
         r = next((x for x in b.routines() if x["id"] == rid), None)
         if not r:
             raise ValueError("no such routine")
-        registry.require_workspace()
         b.routine_fire(r, manual=True)
     else:
         raise ValueError("op must be add|edit|delete|enable|disable|run")
@@ -900,7 +916,7 @@ def _routines(bid, body):
 
 
 def _skills(bid, body):
-    b = _bot(bid)
+    b = _ws(bid)
     op = body.get("op") or ""
     if op == "save":
         b.skill_save(body.get("name"), body.get("trigger") if body.get("trigger") is not None else body.get("url"),
@@ -950,7 +966,7 @@ def _viewport(bid, body):
         w, h = int(body.get("w")), int(body.get("h"))
     except (TypeError, ValueError):
         raise ValueError("w and h must be integers") from None
-    w, h = _bot(bid).browser.set_viewport(w, h)
+    w, h = _ws(bid).browser.set_viewport(w, h)  # remembered in the bot folder's cache (window.json)
     return {"ok": True, "viewport": [w, h]}
 
 
@@ -1135,7 +1151,7 @@ def bot_delete(bid: str, x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    _bot(bid)  # 404 for an unknown id before anything is touched
+    _ws(bid)  # 404 for an unknown id before anything is touched, then the workspace gate
     registry.delete(bid)
     return {"ok": True}
 

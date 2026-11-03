@@ -64,6 +64,7 @@ import {
   type BotFileAppResult,
   type BotFileInstallResult,
   type BotFileProbe,
+  visibleWarnings,
 } from "./botfile";
 
 // -- Formatting -------------------------------------------------------------------------------------------------
@@ -144,8 +145,9 @@ type Phase =
   | { kind: "idle" }
   | { kind: "installing" }
   // `rowWarnings`: the latest per-row Retry's warnings by folder, replaced on each Retry of that row (so a warning a
-  // Retry fixed goes away); the page shows the first install's warnings plus these.
-  | { kind: "done"; result: BotFileInstallResult; rowWarnings?: Record<string, string[]> }
+  // Retry fixed goes away); the page shows the first install's warnings plus these (botfile.visibleWarnings).
+  // `firstHadSettings`: the first install left a row in `settings` (its `settings: …` warning goes once none is).
+  | { kind: "done"; result: BotFileInstallResult; firstHadSettings: boolean; rowWarnings?: Record<string, string[]> }
   | { kind: "error"; message: string };
 
 /** The selection the first submit sent: every Retry with the same `request_id` re-sends exactly this. */
@@ -226,7 +228,9 @@ export function BotFilePage({ path }: { path: string }) {
   const busy = sent !== null || phase.kind === "installing" || phase.kind === "done";
   const results = phase.kind === "done" ? new Map(phase.result.apps.map((r) => [r.folder, r])) : null;
   const warnings =
-    phase.kind === "done" ? [...new Set([...(phase.result.warnings ?? []), ...Object.values(phase.rowWarnings ?? {}).flat()])] : [];
+    phase.kind === "done"
+      ? visibleWarnings(phase.result.warnings ?? [], phase.firstHadSettings, Object.fromEntries(results ?? []), phase.rowWarnings ?? {})
+      : [];
 
   const toggle = (folder: string, on: boolean) =>
     setTicked((s) => {
@@ -248,7 +252,7 @@ export function BotFilePage({ path }: { path: string }) {
     setPhase({ kind: "installing" });
     try {
       const r = await install(path, { apps: body.apps, memory: body.memory, request_id: requestId.current });
-      setPhase({ kind: "done", result: r });
+      setPhase({ kind: "done", result: r, firstHadSettings: r.apps.some((a) => a.state === "settings") });
       const failed = r.apps.filter((a) => !a.ok).length;
       const notInstalled = r.apps.filter((a) => !a.ok && a.state !== "settings").length;
       notify({

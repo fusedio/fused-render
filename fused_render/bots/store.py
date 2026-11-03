@@ -10,6 +10,7 @@ FUSED_RENDER_HOME / FUSED_RENDER_DIR can be redirected after import (tests do).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -69,7 +70,23 @@ STATE_FILE = "state.json"
 GEN_KEY = "_gen"
 PUBLIC_GEN_KEY = "_public_gen"
 ROUTINE_TORN_KEYS = ("next",)
+# The gen pair cannot tell WHICH routine a torn save changed, and dropping `last` on every torn load would re-fire
+# finished one-shots. So each private routine row also carries SCHED_REV_KEY, a hash of the public schedule fields
+# (ROUTINE_SCHED_KEYS) it was saved beside: a row whose rev no longer matches its bot.json twin (a torn save, a git
+# pull, a hand edit that changed the schedule) drops `next` AND `last` (ROUTINE_RESCHED_KEYS), since an old `last`
+# would end a routine flipped to `once` for good. A row without a rev (pre-upgrade) keeps the gen rule alone.
+# The rev is private: split_meta routes it to state.json, _merge pops it, so it never reaches the meta or a package.
+ROUTINE_SCHED_KEYS = ROUTINE_PUBLIC_KEYS - {"id", "task", "created"}
+SCHED_REV_KEY = "sched_rev"
+ROUTINE_RESCHED_KEYS = ("next", "last")
 _torn_warned: set = set()
+
+
+def _sched_rev(row: dict) -> str:
+    """Short hash of a routine row's public schedule fields (ROUTINE_SCHED_KEYS); see SCHED_REV_KEY."""
+    sched = {k: row[k] for k in sorted(ROUTINE_SCHED_KEYS) if k in row}
+    text = json.dumps(sched, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
 def bot_dir(bid: str) -> str:
@@ -155,8 +172,12 @@ def _merge(public: dict, private: dict, where: str, warn: bool = True) -> dict:
         for row in public["routines"]:
             if isinstance(row, dict) and row.get("id") in by_id:
                 priv = by_id[row["id"]]
-                row = {**row, **{k: v for k, v in priv.items()
-                                 if k not in ROUTINE_PUBLIC_KEYS and not (torn and k in ROUTINE_TORN_KEYS)}}
+                rev = priv.get(SCHED_REV_KEY)
+                drop = set(ROUTINE_TORN_KEYS) if torn else set()
+                if rev is not None and rev != _sched_rev(row):
+                    drop.update(ROUTINE_RESCHED_KEYS)  # the schedule changed under this run state
+                drop.add(SCHED_REV_KEY)
+                row = {**row, **{k: v for k, v in priv.items() if k not in ROUTINE_PUBLIC_KEYS and k not in drop}}
             merged.append(row)
         out["routines"] = merged
     return out
@@ -234,10 +255,11 @@ def split_meta(meta: dict) -> tuple[dict, dict]:
                                                     row.get("task"))
                 pub_rows.append(dict(row))
                 continue
-            pub_rows.append({k: v for k, v in row.items() if k in ROUTINE_PUBLIC_KEYS})
+            pub_row = {k: v for k, v in row.items() if k in ROUTINE_PUBLIC_KEYS}
+            pub_rows.append(pub_row)
             rest = {k: v for k, v in row.items() if k not in ROUTINE_PUBLIC_KEYS}
-            if rest:
-                priv_rows.append({"id": row["id"], **rest})
+            # Every id'd row gets a private twin carrying the rev of the schedule it is saved beside (SCHED_REV_KEY).
+            priv_rows.append({"id": row["id"], **rest, SCHED_REV_KEY: _sched_rev(pub_row)})
         public["routines"] = pub_rows
         if priv_rows:
             private["routines"] = priv_rows

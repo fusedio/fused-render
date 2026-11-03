@@ -722,10 +722,11 @@ def _copy_exclusive(src: str, dst: str) -> None:
 
 def _publish_exclusive(part: str, dst: str) -> None:
     """Give the finished file `part` the name `dst`, FileExistsError if `dst` exists. `os.link` is atomic and refuses
-    a taken name. Where hard links are unsupported, `dst` is claimed with an exclusive create and `part` renamed over
-    the claim: a racing writer's claim fails, so nothing is overwritten. Known limitation of that fallback: between
-    the claim and the rename `dst` exists EMPTY (a reader sees an empty file, never a partial one). A failed rename
-    removes the claim."""
+    a taken name. Where hard links are unsupported, an atomic no-replace rename (_rename_noreplace) does the same.
+    Last resort, for a filesystem that rejects that too: `dst` is claimed with an exclusive create and `part` renamed
+    over the claim with os.replace. That path is NOT airtight: between the claim and the rename `dst` exists EMPTY,
+    and if another writer unlinks our claim and puts its own file at `dst` in that window, os.replace overwrites it.
+    A failed rename removes the claim."""
     try:
         os.link(part, dst)
         return
@@ -733,6 +734,14 @@ def _publish_exclusive(part: str, dst: str) -> None:
         raise
     except OSError as e:
         if e.errno not in _NO_HARD_LINK:
+            raise
+    try:
+        _rename_noreplace(part, dst)
+        return
+    except FileExistsError:
+        raise
+    except OSError as e:
+        if e.errno not in _NO_NOREPLACE:
             raise
     os.close(os.open(dst, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o666))
     try:
@@ -743,6 +752,59 @@ def _publish_exclusive(part: str, dst: str) -> None:
         except OSError:
             pass
         raise
+
+
+# errnos meaning "this OS/filesystem has no no-replace rename": _publish_exclusive falls back to claim + os.replace
+_NO_NOREPLACE = frozenset(
+    {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, getattr(errno, "EOPNOTSUPP", errno.ENOTSUP)}
+)
+_noreplace_fn = None  # (callable, flavor) once resolved; (None, None) when the platform has none
+
+
+def _rename_noreplace(src: str, dst: str) -> None:
+    """Rename `src` to `dst` atomically, never replacing: FileExistsError when `dst` exists (symlink included),
+    OSError otherwise; an errno in _NO_NOREPLACE when the OS or filesystem cannot do it. macOS: renamex_np with
+    RENAME_EXCL; Linux: renameat2 with RENAME_NOREPLACE; Windows: os.rename, which already refuses a taken name."""
+    global _noreplace_fn
+    if os.name == "nt":
+        os.rename(src, dst)
+        return
+    if _noreplace_fn is None:
+        _noreplace_fn = _load_noreplace()
+    fn, flavor = _noreplace_fn
+    if fn is None:
+        raise OSError(errno.ENOSYS, "no-replace rename is not available on this platform", src, None, dst)
+    import ctypes
+
+    s, d = os.fsencode(src), os.fsencode(dst)
+    rc = fn(s, d, 4) if flavor == "darwin" else fn(-100, s, -100, d, 1)  # RENAME_EXCL / AT_FDCWD, RENAME_NOREPLACE
+    if rc == 0:
+        return
+    err = ctypes.get_errno()
+    raise OSError(err, os.strerror(err), src, None, dst)  # EEXIST maps to FileExistsError
+
+
+def _load_noreplace():
+    """(callable, flavor) for the platform's no-replace rename, or (None, None) when there is none."""
+    import sys
+
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        if sys.platform == "darwin":
+            fn = libc.renamex_np
+            fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            fn.restype = ctypes.c_int
+            return fn, "darwin"
+        if sys.platform.startswith("linux"):
+            fn = libc.renameat2  # glibc >= 2.28
+            fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            fn.restype = ctypes.c_int
+            return fn, "linux"
+    except (OSError, AttributeError, ImportError):
+        log.debug("no-replace rename unavailable", exc_info=True)
+    return None, None
 
 
 def _require_app(folder: str) -> None:

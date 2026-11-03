@@ -294,7 +294,6 @@ def users(bid: str, bots) -> list:
 def _metas_on_disk() -> list[dict] | None:
     """Every bot.json as written (no Bot built), or None when one is unreadable:
     a decision about deleting logins must not be made on a partial list."""
-    import json
     from fused_render.bots import store
     # Straight off the bots root, not store.list_ids(): the folder index leaves out a folder whose bot.json is
     # torn (or a symlink, or claims an id twice), and that bot's browser would then read as an orphan.
@@ -315,14 +314,11 @@ def _metas_on_disk() -> list[dict] | None:
             return None
         for n in names:
             meta = os.path.join(base, n, "bot.json")
-            if not os.path.isfile(meta):
+            # lexists, not isfile: a DANGLING bot.json symlink is a bot.json nobody can read, not "no bot.json".
+            if not os.path.lexists(meta):
                 continue
-            try:
-                with open(meta, encoding="utf-8") as f:
-                    m = json.load(f)
-            except (OSError, ValueError):
-                return None
-            if not isinstance(m, dict):
+            m = store._read_object(meta)  # None for a symlink, a non-regular file, bad JSON or a non-object
+            if m is None:
                 return None
             out.append({**m, "id": m.get("id") or n})
     return out

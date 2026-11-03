@@ -298,6 +298,53 @@ def _scan(root: str) -> tuple[dict, frozenset]:
     return out, names
 
 
+def raw_ids() -> set[str]:
+    """Every id any folder on disk claims, read straight off disk with no index: for a minter or create(bot_id=)
+    asking "is this id free?". The index (folders/list_ids) drops an id two folders claim (`_scan`), so it would
+    read as free and a third folder could be written under it. Counts `<bots_root>/*/bot.json` (no symlink or
+    `.fused` filters: anything claiming the id takes it), `.fused/.bot-id` markers (a placed folder whose
+    bot.json is not written yet), and the legacy tree and `.unmigrated/` parked folders (the migration lifts
+    those under their own id). Unreadable entries are skipped; never raises."""
+    out: set[str] = set()
+
+    def claim(meta: str) -> None:
+        try:
+            with open(meta, encoding="utf-8") as f:
+                bid = (json.load(f) or {}).get("id")
+        except (OSError, ValueError, AttributeError, TypeError, RecursionError):
+            return
+        if isinstance(bid, str) and _ID_RE.fullmatch(bid):
+            out.add(bid)
+
+    root = _bots_root_path()
+    try:
+        with os.scandir(root) as it:
+            entries = list(it)
+    except OSError:
+        entries = []
+    for e in entries:
+        if e.name.startswith("."):
+            continue
+        claim(os.path.join(e.path, _META))
+        try:
+            with open(os.path.join(e.path, _PRIVATE, _MARKER), encoding="utf-8") as f:
+                text = f.read(64).strip()
+            if _ID_RE.fullmatch(text):
+                out.add(text)
+        except (OSError, ValueError):
+            pass
+    for base in (legacy_data_dir(), os.path.join(root, ".unmigrated")):
+        try:
+            names = os.listdir(base)
+        except OSError:
+            continue
+        for n in names:
+            if _ID_RE.fullmatch(n):
+                out.add(n)  # legacy and parked dirs are named by id
+            claim(os.path.join(base, n, _META))
+    return out
+
+
 def _rescan_locked(root: str) -> None:
     """Rescan `root` into the cache. Keeps a folder place() registered whose bot.json is not written yet (place
     runs before store.write_meta), as long as its directory still exists and no scanned bot claims it."""

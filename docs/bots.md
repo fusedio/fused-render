@@ -230,7 +230,12 @@ runtime saves leave a git checkout of the folder clean. `bot.json` also carries
 `_gen`, re-minted only when its public content changes, and `state.json` carries
 `_public_gen` (the gen it was saved beside; bot.json is written first): a pair
 whose gens differ (a crash between the two writes) loads with each routine's
-`next` dropped so the scheduler recomputes it. `read_meta` raises
+`next` dropped so the scheduler recomputes it. Each `state.json` routine row
+also carries `sched_rev` (a short sha256 of its bot.json twin's schedule
+fields, `kind minutes anchor time weekdays at`); a row whose rev no longer
+matches (a torn save, git pull or hand edit that changed the schedule) loads
+with `next` AND `last` dropped, so a routine flipped to `once` still fires; a
+row without one keeps the gen rule alone. `read_meta` raises
 `FileNotFoundError` when `bot.json` is missing. `apps` is the bot's app
 manifest, `[{folder, name, app_id, source: {kind: "bundled"|"marketplace"|
 "starter", …}}]`: seeded once (on load when absent, and by `migrate_v3`) from
@@ -1120,13 +1125,23 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
   workspace (the main app and a `FUSED_RENDER_BRANCH` install both default to
   `~/Fused/bots`), so an owner also flocks `<bots_root>/.routines.lock` (the
   workspace claim). Without it the owner serves its home (reads, forwarding,
-  the dock, settings) but starts no bot engine: send, app send, a phone
-  message, a channel text (the router texts back "another fused-render
-  instance owns the bots in this workspace"), a routine's Run, goto, creating or cloning a bot (its greeting may
-  start a preset's setup) all refuse through `registry.require_workspace()`
+  the dock, the export plan and `.fusedbot` write, `open`) but starts no bot
+  engine and is read-only for bot state (the claimant's next save would
+  revert an edit): send, app send and app stop, a phone message, a channel
+  text (the router texts back "another fused-render instance owns the bots in
+  this workspace"), every routines op (add, edit, delete, enable, disable,
+  Run), settings, profile import, flag, react, seen, attach, skills (save,
+  delete, learn), goto / nav / tab / viewport (the browser drive writes the
+  bot folder's `window.json`), take-over, give back, pop out, wake, Clear
+  context, delete, creating, cloning or installing a bot, the browser
+  settings' encrypt / profile / sign-in / delete, and the phone's settings,
+  routines, Clear and delete all refuse through `registry.require_workspace()`
   with `WorkspaceBusy` → 409 "another fused-render instance owns the bots in
   this workspace (<bots_root>); use that window or quit it", and `open`
-  answers `setup: "pending"`. It also skips the routine ticks, the hand-off
+  answers `setup: "pending"`. A Bot built there loads as-is (`Bot.read_only`:
+  no browser adoption, no load-time reconcile — running stays running, an
+  open hand-off stays open —, no event, an id-less routine gets a transient
+  id); `registry.get` rebuilds it from disk once the claim is won. It also skips the routine ticks, the hand-off
   sweep and the workspace steps (v3 migration, Super Bot seed, the takeover
   walk, which would stop the claimant's running tasks as stale, the browser
   sweep); the pass that later wins the claim runs those steps once, and the

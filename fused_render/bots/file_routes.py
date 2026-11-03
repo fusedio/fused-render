@@ -200,6 +200,14 @@ async def botfile_install(request: Request, x_fused: str | None = Header(default
             except Exception:  # noqa: BLE001 - the snapshot heals on its own TTL
                 pass
         return fwd
+    try:
+        # Served here (this process owns; a forward was gated by the owner's own copy of this check): an install
+        # writes a bot folder and its apps, and a home without the workspace claim is read-only for bot state.
+        await asyncio.to_thread(registry.require_workspace)
+    except registry.WorkspaceBusy as e:
+        return _error(str(e), 409)
+    except registry.NotOwner as e:  # lost the flock since the forward check
+        return _error(str(e), 503)
     bf = _botfile()
     if request_id is not None and not (isinstance(request_id, str) and bf.REQUEST_ID_RE.match(request_id)):
         return _error("request_id must be 1-64 letters, digits, '-' or '_'")
@@ -276,11 +284,13 @@ async def botfile_upload(request: Request, name: str = Query(""), x_fused: str |
         except appfile_container.ContainerError as e:
             return _error(str(e))
         # The install page's probe runs the same read-only checks (botfile._validate: text budget, bot.json, the
-        # app list, every playbook member's size + hash): refuse here with the probe's own sentence rather than
-        # save a file the next page cannot open. The temp file is unlinked in `finally`; nothing is placed yet.
+        # app list, every playbook and memory member's size + hash): refuse here with the probe's own sentence
+        # rather than save a file the next page cannot open. Upload only (`bundled`): every apps/*.fused member is
+        # stream-verified too, a cost the probe must not pay on every open. The temp file is unlinked in
+        # `finally`; nothing is placed yet.
         bf = _botfile()
         try:
-            await asyncio.to_thread(bf._validate, tmp, idx)
+            await asyncio.to_thread(lambda: bf._validate(tmp, idx, bundled=True))
         except bf.BotFileError as e:
             return _error(str(e))
         # No-clobber placement: link() fails on an existing name, so a racing upload of the same name takes

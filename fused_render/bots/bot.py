@@ -564,14 +564,20 @@ class Bot:
         self._last_user_ts = None  # ts of the newest user event; lazily read from events.jsonl (last_user_ts)
         self._news = None  # (line count, seq of the newest message row); lazily read from events.jsonl (news_seq)
         self.meta = _read_meta(bid)
+        # Read-only: this home's owner does not hold the workspace claim (registry module docstring), so another
+        # fused-render runs this bot and writes its files. The bot loads from disk as-is: no adoption, no load-time
+        # reconcile below, no event, nothing saved (registry.get rebuilds it once the claim is won).
+        self.read_only = _registry().workspace_read_only()
         # The browser (its logins) is a folder of its own, maybe shared with other bots (browsers.py).
         # A bot from before browsers existed is adopted: its profile moves, nothing is copied.
-        if not self.meta.get("browser_id") or not browsers.exists(self.meta["browser_id"]):
+        if self.read_only:
+            self.meta["browser_id"] = self.meta.get("browser_id") or bid  # in memory only
+        elif not self.meta.get("browser_id") or not browsers.exists(self.meta["browser_id"]):
             self.meta["browser_id"] = browsers.adopt(bid, self.dir, self.cache_dir, self.meta)
             store.write_meta(bid, self.meta)
         self.browser = Browser(self.dir, self.cache_dir, proc=browsers.get(self.meta["browser_id"]))
         # Bots from before the live view was the only take-over path recorded a popped-out desktop window here.
-        if self.meta.pop("visible", None) is not None:
+        if not self.read_only and self.meta.pop("visible", None) is not None:
             store.write_meta(bid, self.meta)
         self.last_looked = time.time()  # when the page last polled with this bot selected (routes._status_bot); a bot just
         # loaded counts as looked at, so a shared Chrome never sleeps under it in the first poll after a restart
@@ -602,6 +608,14 @@ class Bot:
         self._skills_loaded = []
         self._handoff_queue = []  # hand-offs waiting for this bot to go idle: [(super bot id, hand-off id)], FIFO
         self._held_lock = threading.Lock()  # one _flush_held at a time: one hand back can release control twice
+        if self.read_only:
+            # No reconcile on a read-only load: the status, hand-over, held messages and hand-offs below are the
+            # claimant's live state, not leftovers. An id-less routine still needs an id to be addressed: a
+            # transient one, never saved from here.
+            for r in self.meta.get("routines") or []:
+                if isinstance(r, dict) and not r.get("id"):
+                    r["id"] = uuid.uuid4().hex[:6]
+            return
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
@@ -4286,6 +4300,10 @@ def _write_new_meta(bid, meta):
     store.write_meta(bid, meta)
 
 
+class BotIdTaken(ValueError):
+    """create(bot_id=) refused an id some folder already claims, before anything was written."""
+
+
 def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True, browser="", *, bot_id=None):
     """A new bot: bot.json, a `created` line, the greeting (background). Returns the Bot.
     With `preset` (a key under bots/presets/) its playbooks, brand face, standing
@@ -4304,9 +4322,10 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
             bpaths.bot_folder(bot_id)
             taken = True
         except LookupError:
-            taken = bot_id in _list_ids()
+            # raw_ids, not list_ids: the index drops an id two folders claim, which would read as free here
+            taken = bot_id in bpaths.raw_ids()
         if taken:  # place() reuses a folder holding this id: without this a duplicate would overwrite, not refuse
-            raise ValueError(f"there is already a bot {bot_id}")
+            raise BotIdTaken(f"there is already a bot {bot_id}")
     preset = (preset or "").strip()
     browser = os.path.basename(browser or "")
     if browser and not browsers.exists(browser):

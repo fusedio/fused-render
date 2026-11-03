@@ -88,6 +88,10 @@ def test_require_workspace_raises_while_another_home_holds_the_claim():
 def test_doors_refuse_without_the_claim_and_open_after_the_pass(client, ws, walks):
     started = ws
     bid = _make(client)
+    st, out = j(client.post(f"/api/bots/{bid}/routines", {"op": "add", "text": "check", "kind": "interval",
+                                                          "minutes": 60}))
+    assert st == 200
+    rid = out["routine"]["id"]
     msg = f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window or quit it"
     other = OtherHome().__enter__()
     try:
@@ -99,8 +103,7 @@ def test_doors_refuse_without_the_claim_and_open_after_the_pass(client, ws, walk
         assert (st, out["error"]) == (409, msg)
         st, out = j(client.post(f"/api/bots/{bid}/routines", {"op": "add", "text": "check", "kind": "interval",
                                                               "minutes": 60}))
-        assert st == 200  # a settings edit is not an engine start
-        rid = out["routine"]["id"]
+        assert (st, out) == (409, {"error": msg})  # read-only for bot state: the claimant's next save would revert it
         assert j(client.post(f"/api/bots/{bid}/routines", {"op": "run", "rid": rid}))[0] == 409
         assert j(client.post("/api/bots", {"name": "Second"}))[0] == 409
         assert j(client.post(f"/api/bots/{bid}/open", {})) == (200, {"ok": True, "setup": "pending"})
@@ -267,3 +270,138 @@ def test_router_uses_the_real_registry_gate():
         assert b.received == [] and ch.sent == [("+1", rmod.BUSY_REPLY)]
     r.dispatch(ch, Inbound(addr="+1", text="hi"))
     assert b.received == ["hi"]
+
+
+# ------------------------------------------------ read-only without the claim (CodeRabbit round 3) ---
+def _files(bid):
+    """Every byte of the bot's state a read-only home must never touch."""
+    out = {}
+    for name, path in (("bot.json", store.meta_path(bid)), ("state.json", store.state_path(bid)),
+                       ("events.jsonl", store.events_path(bid))):
+        try:
+            with open(path, "rb") as f:
+                out[name] = f.read()
+        except FileNotFoundError:
+            out[name] = None
+    return out
+
+
+def _stale(client):
+    """A bot as the claimant leaves it mid-task: running, an open hand-off, a hand-over with a held message, an
+    id-less routine — everything the load-time reconcile would rewrite."""
+    bid = _make(client)
+    meta = store.read_meta(bid)
+    meta.update(status="running", task="find a laptop", control=True, control_by="user", control_since=1.0,
+                held=[{"seq": 1, "text": "and a mouse"}],
+                handoffs=[{"id": "h1h1h1h1", "target": "t1t1t1t1", "target_name": "Other", "task": "look",
+                           "state": "running", "created_at": 1.0}],
+                routines=[{"task": "check", "kind": "interval", "minutes": 60, "enabled": True, "created": 1.0,
+                           "last": None, "last_result": ""}])
+    store.write_meta(bid, meta)
+    registry.forget(bid)  # the next get() builds it from disk
+    return bid
+
+
+def test_unclaimed_load_leaves_the_bot_files_byte_identical(client, ws, walks):
+    bid = _stale(client)
+    before = _files(bid)
+    assert before["bot.json"] and before["state.json"]
+    with OtherHome():
+        b = registry.get(bid)
+        assert b.read_only is True
+        assert b.meta["status"] == "running" and b.meta["control"] is True and b.meta.get("held")
+        assert b.meta["handoffs"][0]["state"] == "running" and not b.meta["handoffs"][0].get("done_at")
+        rid = b.meta["routines"][0]["id"]
+        assert rid  # a transient id, in memory only
+        assert registry.get(bid) is b and registry.all() == [b]
+        st, out = j(client.get("/api/bots"))
+        assert st == 200 and [x["id"] for x in out["bots"]] == [bid]
+        assert j(client.get("/api/bots/pulse"))[0] == 200
+        assert j(client.get(f"/api/phone/bots/{bid}"))[0] == 200
+        assert j(client.get(f"/api/bots/{bid}/package"))[0] == 200  # the export plan reads
+        assert _files(bid) == before
+        assert "id" not in store.read_meta(bid)["routines"][0]
+    # Claim won: the read-only Bot is rebuilt from disk and reconciles once, as a fresh load would.
+    b2 = registry.get(bid)
+    assert b2 is not b and b2.read_only is False
+    assert b2.meta["status"] == "idle" and b2.meta["handoffs"][0]["state"] == "failed"
+    assert b not in b2.browser.proc.views
+    disk = store.read_meta(bid)
+    assert disk["status"] == "idle" and disk["routines"][0]["id"]
+
+
+def _gated(bid, rid, brid):
+    b64 = "aGk="
+    p, ph = f"/api/bots/{bid}", f"/api/phone/bots/{bid}"
+    return [
+        ("post", f"{p}/routines", {"op": "add", "text": "x", "kind": "interval", "minutes": 60}),
+        ("post", f"{p}/routines", {"op": "edit", "rid": rid, "text": "y", "kind": "interval", "minutes": 30}),
+        ("post", f"{p}/routines", {"op": "enable", "rid": rid}),
+        ("post", f"{p}/routines", {"op": "disable", "rid": rid}),
+        ("post", f"{p}/routines", {"op": "delete", "rid": rid}),
+        ("post", f"{p}/routines", {"op": "run", "rid": rid}),
+        ("post", f"{p}/settings", {"name": "Renamed"}),
+        ("post", f"{p}/profile", {"profile": "Default"}),
+        ("post", f"{p}/flag", {"pinned": True}),
+        ("post", f"{p}/react", {"seq": 1, "emoji": "+1"}),
+        ("post", f"{p}/seen", {"seq": 99}),
+        ("post", f"{p}/attach", {"name": "a.txt", "data": b64}),
+        ("post", f"{p}/skills", {"op": "save", "name": "S", "trigger": "t", "text": "do it"}),
+        ("post", f"{p}/skills", {"op": "delete", "rid": "s"}),
+        ("post", f"{p}/skills", {"op": "learn"}),
+        ("post", f"{p}/goto", {"url": "https://example.com"}),
+        ("post", f"{p}/nav", {"op": "reload"}),
+        ("post", f"{p}/tab", {"tab": "new"}),
+        ("post", f"{p}/viewport", {"w": 800, "h": 600}),
+        ("post", f"{p}/takeover", {}),
+        ("post", f"{p}/giveback", {}),
+        ("post", f"{p}/popout", {}),
+        ("post", f"{p}/wake", {}),
+        ("post", f"{p}/clear", {}),
+        ("post", f"{p}/clone", {"name": "Copy"}),
+        ("post", f"{p}/send", {"text": "hi"}),
+        ("post", f"/api/bots/browsers/{brid}", {"op": "encrypt", "on": True}),
+        ("post", f"/api/bots/browsers/{brid}", {"op": "delete"}),
+        ("post", f"{ph}/settings", {"name": "Renamed"}),
+        ("post", f"{ph}/routines", {"op": "enable", "rid": rid}),
+        ("post", f"{ph}/clear", {}),
+        ("post", f"{ph}/send", {"text": "hi"}),
+        ("delete", ph, None),
+        ("delete", p, None),
+        ("post", "/api/botfile/install", {"path": "/nowhere/x.fusedbot", "apps": [], "bot_id": bid}),
+    ]
+
+
+def test_every_bot_write_refuses_without_the_claim_and_works_after(client, ws, walks):
+    bid = _stale(client)
+    registry.get(bid)  # reconciled under the claim: the routine has its id on disk now
+    rid = store.read_meta(bid)["routines"][0]["id"]
+    brid = store.read_meta(bid)["browser_id"]
+    registry.forget(bid)
+    before = _files(bid)
+    ids_before = store.list_ids()
+    msg = f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window or quit it"
+    other = OtherHome().__enter__()
+    try:
+        registry._pass()  # a started owner without the claim
+        for method, path, body in _gated(bid, rid, brid):
+            resp = client.delete(path) if method == "delete" else client.post(path, body)
+            st, out = j(resp)
+            assert (st, out.get("error")) == (409, msg), (path, body, st, out)
+            assert _files(bid) == before, (path, body)
+        assert store.list_ids() == ids_before
+        # Reads, the dock and the export plan stay open.
+        assert j(client.get("/api/bots"))[0] == 200
+        assert j(client.get(f"/api/bots/{bid}/package"))[0] == 200
+        assert j(client.get(f"/api/bots/{bid}/export"))[0] == 200
+        assert j(client.post(f"/api/bots/{bid}/open", {})) == (200, {"ok": True, "setup": "pending"})
+        assert _files(bid) == before
+        other.release()
+        registry._pass()  # wins the claim and runs the workspace steps
+        assert j(client.post(f"/api/bots/{bid}/flag", {"pinned": True})) == (200, {"ok": True})
+        assert store.read_meta(bid)["pinned"] is True
+        st, out = j(client.post(f"/api/bots/{bid}/routines", {"op": "disable", "rid": rid}))
+        assert st == 200, out
+        assert store.read_meta(bid)["routines"][0]["enabled"] is False
+    finally:
+        other.release()
