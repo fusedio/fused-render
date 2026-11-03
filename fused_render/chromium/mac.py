@@ -3,7 +3,7 @@ giving `mac_window.py` a view that fits where its WKWebView goes.
 
 `FusedChromium.framework` (source in `native/`) wraps the Chromium Embedded
 Framework in one `NSView` subclass, `FRChromiumView`, whose surface mirrors
-the WKWebView selectors `mac_window` uses (`URL`/`title` under KVO,
+the WKWebView selectors `mac_window` uses (`URL`/`title`/`canGoBack`/`canGoForward` under KVO,
 `loadRequest:`, `reload`, `goBack`, `evaluateJavaScript:completionHandler:`,
 …) and one delegate protocol, `FRChromiumViewDelegate`, that asks the same
 questions WebKit's navigation/UI/download delegates ask. `_ChromiumDelegate`

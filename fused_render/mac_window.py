@@ -90,7 +90,10 @@ from AppKit import (
     NSButton,
     NSColor,
     NSControlSizeLarge,
+    NSFontWeightMedium,
     NSImage,
+    NSImageSymbolConfiguration,
+    NSLayoutAttributeLeading,
     NSLayoutAttributeTrailing,
     NSTitlebarAccessoryViewController,
     NSView,
@@ -149,6 +152,7 @@ USER_AGENT_MARKER = f"FusedRender/{__version__}"
 
 # The titlebar paints the app's `--bg` token (frontend/src/styles/tokens.css),
 # so the window chrome and the page read as one surface. Keep in step with it.
+MIN_TITLEBAR_BUTTON_W = 22  # pt; chevrons and other slim symbols pad out to this
 TITLEBAR_BG = {"dark": (0x13, 0x14, 0x17), "light": (0xFF, 0xFF, 0xFF)}
 # Name of the WKScriptMessageHandler the shell posts its theme preference to.
 THEME_HANDLER_NAME = "fusedTheme"
@@ -708,8 +712,9 @@ class _WebDelegate(NSObject):
 
 
 def follow_page(manager, window, key: str, view) -> None:
-    """The KVO body: the window's title and identity follow its page (either
-    engine's view exposes `title` and `URL` under KVO)."""
+    """The KVO body: the window's title and identity follow its page, and
+    its Back/Forward buttons its history (either engine's view exposes
+    `title`, `URL`, `canGoBack` and `canGoForward` under KVO)."""
     if window is None or manager is None:
         return
     if key == "title":
@@ -730,6 +735,9 @@ def follow_page(manager, window, key: str, view) -> None:
             manager.hand_frame(
                 window, window_policy.frame_autosave_name(window.key, window.view))
         window.sync_edit_button()
+        window.sync_nav_buttons()
+    elif key in ("canGoBack", "canGoForward"):
+        window.sync_nav_buttons()
 
 
 for _sel in (_SEL_POINTER_LOCK_REQUEST, _SEL_POINTER_LOCK_LOST, _SEL_GEOLOCATION,
@@ -805,7 +813,7 @@ class _Window:
         self.webview.setAllowsBackForwardNavigationGestures_(True)
         self.ns.setContentView_(self.webview)
 
-        for path in ("title", "URL"):
+        for path in ("title", "URL", "canGoBack", "canGoForward"):
             self.webview.addObserver_forKeyPath_options_context_(
                 self.delegate, path, NSKeyValueObservingOptionNew, None)
         self.ns.setDelegate_(self.delegate)
@@ -832,23 +840,44 @@ class _Window:
             self.ns.setAppearance_(appearance_for_pref(pref))
 
     def _add_titlebar_buttons(self) -> None:
-        """"Edit" and "Open in Browser" at the right end of the title bar —
-        Edit leftmost. A titlebar accessory keeps the standard titled window
-        (title stays centred, traffic lights untouched) — no toolbar row, no
-        full-size-content-view mask. Same actions as the ⌘⇧E / ⌘⇧L menu
-        items; Home stays a menu item (⌘⇧H) with no titlebar button. Edit
-        means something only while the window runs an app
-        (`sync_edit_button`)."""
-        specs = (  # left to right
+        """Back / Forward at the left end of the title bar (right after the
+        traffic lights) and "Edit" / "Open in Browser" at the right end —
+        Edit leftmost of that pair. Titlebar accessories keep the standard
+        titled window (title stays centred, traffic lights untouched) — no
+        toolbar row, no full-size-content-view mask. Same actions as the
+        ⌘[ / ⌘] / ⌘⇧E / ⌘⇧L menu items; Home stays a menu item (⌘⇧H) with
+        no titlebar button. Back/Forward follow the page's history
+        (`sync_nav_buttons`); Edit means something only while the window
+        runs an app (`sync_edit_button`)."""
+        nav = self._titlebar_group((  # left to right
+            ("chevron.left", "Back", "Back (⌘[)", b"goBack:"),
+            ("chevron.right", "Forward", "Forward (⌘])", b"goForward:"),
+        ), NSLayoutAttributeLeading, symbol_pt=10)
+        self.back_button, self.forward_button = nav
+        tools = self._titlebar_group((  # left to right
             # Folder, not a pencil: the native twin of MenuIcons.folder — the
             # glyph "Open in Explorer" wears in the sidebar/app-card menus,
             # since Edit opens that same explorer view.
             ("folder", "Edit", "Edit (⌘⇧E)", b"editApp:"),
             ("safari", "Open in Browser", "Open in Browser (⌘⇧L)", b"openInBrowser:"),
-        )
+        ), NSLayoutAttributeTrailing)
+        self.edit_button = tools[0]
+        self.sync_nav_buttons()
+        self.sync_edit_button()
+
+    def _titlebar_group(self, specs, attribute, symbol_pt: float | None = None) -> list:
+        """One titlebar accessory holding ``specs`` as borderless symbol
+        buttons, pinned to the ``attribute`` (leading/trailing) end. Returns
+        the buttons in spec order. ``symbol_pt`` pins the glyph's point size
+        (the chevrons at the control's default size dwarf the traffic
+        lights); None leaves the control-size default."""
         buttons = []
         for symbol, desc, tip, action in specs:
             image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, desc)
+            if symbol_pt is not None:
+                conf = NSImageSymbolConfiguration.configurationWithPointSize_weight_(
+                    symbol_pt, NSFontWeightMedium)
+                image = image.imageWithSymbolConfiguration_(conf)
             button = NSButton.buttonWithImage_target_action_(
                 image, self.manager._menu_target, action)
             button.setBezelStyle_(NSBezelStyleRecessed)
@@ -856,9 +885,13 @@ class _Window:
             button.setToolTip_(tip)
             button.setControlSize_(NSControlSizeLarge)
             button.sizeToFit()
+            # A narrow glyph (the chevrons fit in 10pt) is a mean click
+            # target; every button gets at least a square-ish hit box.
+            size = button.frame().size
+            button.setFrameSize_(NSMakeSize(max(size.width, MIN_TITLEBAR_BUTTON_W), size.height))
             buttons.append(button)
         gap = 6   # between buttons
-        pad = 10  # breathing room from the window's right edge
+        pad = 10  # breathing room from the window edge / traffic lights
         bh = max(b.frame().size.height for b in buttons)
         # Title-bar height; the accessory is bottom-aligned, so a holder this
         # tall with the buttons centred lines them up with the title text.
@@ -866,7 +899,9 @@ class _Window:
         hh = max(bh, bar)
         total = sum(b.frame().size.width for b in buttons) + gap * (len(buttons) - 1)
         holder = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, total + pad, hh))
-        x = 0.0
+        # The pad sits on the side facing the window chrome: after the
+        # traffic lights for a leading group, before the edge for a trailing one.
+        x = float(pad) if attribute == NSLayoutAttributeLeading else 0.0
         for b in buttons:
             b.setFrameOrigin_(NSMakePoint(x, round((hh - b.frame().size.height) / 2)))
             holder.addSubview_(b)
@@ -874,14 +909,22 @@ class _Window:
 
         vc = NSTitlebarAccessoryViewController.alloc().init()
         vc.setView_(holder)
-        vc.setLayoutAttribute_(NSLayoutAttributeTrailing)
+        vc.setLayoutAttribute_(attribute)
         self.ns.addTitlebarAccessoryViewController_(vc)
-        self.edit_button = buttons[0]
-        self.sync_edit_button()
+        return buttons
 
     def edit_path(self) -> str | None:
         """The explorer URL path Edit opens for this window, or None."""
         return window_policy.edit_target(self.view, self.key)
+
+    def sync_nav_buttons(self) -> None:
+        """Back / Forward follow the page's history (`canGoBack` /
+        `canGoForward` KVO on either engine's view)."""
+        back = getattr(self, "back_button", None)
+        if back is None or self.webview is None:
+            return
+        back.setEnabled_(bool(self.webview.canGoBack()))
+        self.forward_button.setEnabled_(bool(self.webview.canGoForward()))
 
     def sync_edit_button(self) -> None:
         """Edit follows the page (URL KVO): enabled while the window runs an
@@ -1011,7 +1054,7 @@ class _Window:
             return
         self._torn = True
         self.save_frame()
-        for path in ("title", "URL"):
+        for path in ("title", "URL", "canGoBack", "canGoForward"):
             try:
                 webview.removeObserver_forKeyPath_(delegate, path)
             except Exception:  # noqa: BLE001 — already removed; nothing to undo
