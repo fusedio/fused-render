@@ -263,7 +263,7 @@ def test_a_big_geoparquet_is_read_by_row_group_in_a_worker_the_build_makes():
     assert '"hyparquet":' in package and '"hyparquet-compressors":' in package
 
 
-def _geoparquet(path: Path, crs=None) -> None:
+def _geoparquet(path: Path, crs=None, encoding="WKB") -> list:
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
 
@@ -277,33 +277,37 @@ def _geoparquet(path: Path, crs=None) -> None:
         for _ in range(500):
             x, y = 10 + qx + rng.random() * 0.9, 40 + qy + rng.random() * 0.9
             rows.append((x, y))
+    ids = [f"{rng.getrandbits(160):040x}" for _ in rows]
     table = pa.table({
-        "id": pa.array([f"{rng.getrandbits(160):040x}" for _ in rows]),
+        "id": pa.array(ids),
         "geometry": pa.array([square(x, y) for x, y in rows], pa.binary()),
         "bbox": pa.array([{"xmin": x, "ymin": y, "xmax": x + 0.01, "ymax": y + 0.01} for x, y in rows],
                          pa.struct([(k, pa.float32()) for k in ("xmin", "ymin", "xmax", "ymax")])),
         "class": pa.array([rng.choice(["house", None]) for _ in rows]),
         "height": pa.array([round(rng.random() * 30, 1) for _ in rows]),
     })
-    column = {"encoding": "WKB", "geometry_types": ["Polygon"]}
+    column = {"encoding": encoding, "geometry_types": ["Polygon"]}
     if crs is not None:
         column["crs"] = crs
     geo = {"version": "1.0.0", "primary_column": "geometry", "columns": {"geometry": column}}
     table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode()})
     pq.write_table(table, path, row_group_size=500)
+    return ids
 
 
-def _worker(path: Path, ops: list) -> list:
+def _worker(path: Path, ops: list, ranges: bool = True) -> tuple:
     script = r'''
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
-const [bundle, file, ops] = process.argv.slice(1);
+const [bundle, file, ops, ranges] = process.argv.slice(1);
 const bytes = fs.readFileSync(file);
 const sent = [];
+let wholeGets = 0;
 globalThis.self = globalThis;
 globalThis.postMessage = message => sent.push(message);
 globalThis.fetch = async (url, init = {}) => {
   if (init.method === "HEAD") return new Response(null, { status: 200, headers: { "content-length": String(bytes.length) } });
+  if (ranges !== "yes") { wholeGets += 1; return new Response(bytes, { status: 200 }); }
   const [start, end] = new Headers(init.headers).get("range").replace("bytes=", "").split("-").map(Number);
   return new Response(bytes.subarray(start, end + 1), { status: 206 });
 };
@@ -311,7 +315,7 @@ import(pathToFileURL(bundle).href).then(async () => {
   const out = [];
   let key;
   for (const [id, op] of JSON.parse(ops).entries()) {
-    await self.onmessage({ data: { id, ...op, key } });
+    await self.onmessage({ data: { id, key, ...op } });
     const reply = sent.pop();
     if (!reply.ok) { out.push({ error: reply.error }); continue; }
     if (op.op === "open") key = reply.result.key;
@@ -319,18 +323,23 @@ import(pathToFileURL(bundle).href).then(async () => {
       ? { ...reply.result, buffer: JSON.parse(new TextDecoder().decode(reply.result.buffer)) } : reply.result;
     out.push(result);
   }
-  console.log(JSON.stringify(out));
+  console.log(JSON.stringify({ out, wholeGets }));
 }).catch(error => { console.error(error); process.exit(1); });
 '''
-    return json.loads(_run_js(script, str(VENDOR / "parquet.worker.bundle.mjs"), str(path), json.dumps(ops), timeout=60))
+    result = json.loads(_run_js(script, str(VENDOR / "parquet.worker.bundle.mjs"), str(path), json.dumps(ops),
+                                "yes" if ranges else "no", timeout=60))
+    return result["out"], result["wholeGets"]
+
+
+def _open(name: str) -> dict:
+    return {"op": "open", "url": f"http://bucket.test/{name}", "budget": 48 << 20, "key": 1}
 
 
 def test_the_worker_indexes_row_groups_by_their_bbox_and_reads_one_at_a_time(tmp_path):
     path = tmp_path / "buildings.parquet"
-    _geoparquet(path)
-    opened, group, attributes = _worker(path, [{"op": "open", "url": "http://bucket.test/buildings.parquet",
-                                                "budget": 48 << 20},
-                                               {"op": "read", "index": 3}, {"op": "row", "row": 1501}])
+    ids = _geoparquet(path)
+    (opened, group, attributes), _ = _worker(path, [_open("buildings.parquet"), {"op": "read", "index": 3},
+                                                    {"op": "row", "row": 1501}])
     assert opened["rows"] == 2000 and len(opened["rowGroups"]) == 4 and opened["geometryName"] == "geometry"
     assert opened["fields"] == ["class", "height"] and opened["extraFields"] == ["id"]
     boxes = [g["bbox"] for g in opened["rowGroups"]]
@@ -342,11 +351,23 @@ def test_the_worker_indexes_row_groups_by_their_bbox_and_reads_one_at_a_time(tmp
     assert features[1]["id"] == 1501 and set(features[1]["properties"]) <= {"class", "height"}
     x, y = features[1]["geometry"]["coordinates"][0][0]
     assert 11 <= x <= 12 and 41 <= y <= 42
-    assert list(attributes) == ["id"] and len(attributes["id"]) == 40
+    assert attributes == {"id": ids[1501]}
+
+
+def test_a_server_that_ignores_ranges_is_read_once_not_once_per_row_group(tmp_path):
+    path = tmp_path / "buildings.parquet"
+    _geoparquet(path)
+    (opened, first, second), whole_gets = _worker(path, [_open("buildings.parquet"), {"op": "read", "index": 0},
+                                                         {"op": "read", "index": 2}], ranges=False)
+    assert opened["key"] == 1 and first["count"] == second["count"] == 500
+    assert whole_gets == 1
 
 
 def test_the_worker_declines_what_it_cannot_draw_in_degrees(tmp_path):
     path = tmp_path / "mercator.parquet"
     _geoparquet(path, crs={"id": {"authority": "EPSG", "code": 3857}, "type": "ProjectedCRS"})
-    [opened] = _worker(path, [{"op": "open", "url": "http://bucket.test/mercator.parquet", "budget": 48 << 20}])
+    [opened], _ = _worker(path, [_open("mercator.parquet")])
     assert opened == {"problem": "geometry is in a projected CRS"}
+    _geoparquet(path, encoding="wkb")
+    [opened], _ = _worker(path, [_open("mercator.parquet")])
+    assert opened == {"problem": "geometry encoded as wkb, not WKB"}

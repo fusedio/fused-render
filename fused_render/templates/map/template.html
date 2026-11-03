@@ -1287,10 +1287,10 @@ async function colorByExpression(layer, r) {
   return { field, signature, expression, legend: { type: "cats", items, more: counts.size > items.length } };
 }
 
-const STREAM_VIEW_BYTES = 48 << 20, STREAM_CACHE_BYTES = 128 << 20, STREAM_PARALLEL = 2;
-const STREAM_CLOSE_ZOOM = 14, STREAM_RETRY_MS = 10000;
+const STREAM_VIEW_BYTES = 48 << 20, STREAM_CACHE_BYTES = 256 << 20, STREAM_PARALLEL = 2;
+const STREAM_CLOSE_ZOOM = 14, STREAM_RETRY_MS = 10000, STREAM_RETRIES = 3;
 const parquetReader = {
-  worker: null, seq: 0, pending: new Map(),
+  worker: null, seq: 0, keys: 0, pending: new Map(),
   call(op, args = {}) {
     if (!this.worker) {
       const worker = new Worker("/template-assets/parquet.worker.bundle.mjs", { type: "module" });
@@ -1324,17 +1324,20 @@ function geometryCategory(types) {
   const kinds = new Set(types.map(t => /point/i.test(t) ? "point" : /line/i.test(t) ? "line" : /polygon/i.test(t) ? "polygon" : "mixed"));
   return kinds.size === 1 ? [...kinds][0] : kinds.size ? "mixed" : "unknown";
 }
-function viewBox(pad) {
+const widerCategory = (a, b) => a === "unknown" || a === b ? b : b === "unknown" ? a : "mixed";
+function viewBoxes(pad) {
   const b = map.getBounds();
-  let w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
-  const dx = (e - w) * pad, dy = (n - s) * pad;
-  w -= dx; e += dx; s -= dy; n += dy;
-  if (e - w >= 360) { w = -180; e = 180; }
-  return [Math.max(w, -180), Math.max(s, -90), Math.min(e, 180), Math.min(n, 90)];
+  const dx = (b.getEast() - b.getWest()) * pad, dy = (b.getNorth() - b.getSouth()) * pad;
+  const s = Math.max(b.getSouth() - dy, -90), n = Math.min(b.getNorth() + dy, 90);
+  const width = b.getEast() - b.getWest() + 2 * dx;
+  if (width >= 360) return [[-180, s, 180, n]];
+  const w = ((b.getWest() - dx + 180) % 360 + 360) % 360 - 180, e = w + width;
+  return e > 180 ? [[w, s, 180, n], [-180, s, e - 360, n]] : [[w, s, e, n]];
 }
+const inView = (g, boxes) => boxes.some(box => boxesMeet(g.bbox, box));
 function nearestFirst(groups) {
-  const c = map.getCenter();
-  const away = g => Math.hypot((g.bbox[0] + g.bbox[2]) / 2 - c.lng, (g.bbox[1] + g.bbox[3]) / 2 - c.lat);
+  const c = map.getCenter().wrap();
+  const away = g => Math.hypot((((g.bbox[0] + g.bbox[2]) / 2 - c.lng) % 360 + 540) % 360 - 180, (g.bbox[1] + g.bbox[3]) / 2 - c.lat);
   return groups.slice().sort((a, b) => away(a) - away(b));
 }
 function setPaint(id, paint, visible) {
@@ -1351,10 +1354,10 @@ const STREAM_KINDS = ["fill", "line", "circle"];
 const streamed = {
   async add(layer, plan, r) {
     let meta;
-    try { meta = await parquetReader.call("open", { url: httpUrl(plan.path), budget: STREAM_VIEW_BYTES }); }
+    try { meta = await parquetReader.call("open", { url: httpUrl(plan.path), budget: STREAM_VIEW_BYTES, key: ++parquetReader.keys }); }
     catch (error) { console.warn("[map] streaming reader:", plan.path, error.message); return false; }
     if (meta.problem) { console.info("[map] not streamed by view:", plan.path, meta.problem); return false; }
-    const h = r.handle = `s-${layer.id}-${++seq}`;
+    const h = r.handle = `s${++seq}-${layer.id}`;
     const groups = meta.rowGroups.filter(g => g.rows > 0);
     r.stream = { key: meta.key, groups, extraFields: meta.extraFields, loaded: new Map(), loading: new Set(),
                  queue: [], failed: new Map(), wanted: new Set(), over: false, closed: false };
@@ -1374,9 +1377,8 @@ const streamed = {
     const filter = ["!", ["in", ["get", "i"], ["literal", [...r.stream.loaded.keys()]]]];
     for (const id of [`${r.handle}-cov-fill`, `${r.handle}-cov-line`]) map.setFilter(id, filter);
   },
-  kinds(r) {
-    const g = r.info.geometryType;
-    return g === "polygon" ? ["fill", "line"] : g === "line" ? ["line"] : g === "point" ? ["circle"] : STREAM_KINDS;
+  kinds(category) {
+    return category === "polygon" ? ["fill", "line"] : category === "line" ? ["line"] : category === "point" ? ["circle"] : STREAM_KINDS;
   },
   paint(layer, r) {
     const st = vector.style(layer, r), o = layer.opacity;
@@ -1401,6 +1403,7 @@ const streamed = {
     setPaint(label, paint.label, layer.visible);
   },
   restyle(layer, r) {
+    if (r.stream.closed) return;
     const paint = this.paint(layer, r);
     for (const kind of ["cov-fill", "cov-line"]) setPaint(`${r.handle}-${kind}`, paint[kind], layer.visible);
     for (const i of r.stream.loaded.keys()) this.styleGroup(layer, r, i, paint);
@@ -1409,18 +1412,18 @@ const streamed = {
   plan(r) {
     const s = r.stream, layer = docLayer(r.id);
     if (s.closed) return;
-    const view = viewBox(0), near = viewBox(0.5);
-    const hits = layer && layer.visible ? nearestFirst(s.groups.filter(g => boxesMeet(g.bbox, view))) : [];
+    const view = viewBoxes(0), near = viewBoxes(0.5);
+    const hits = layer && layer.visible ? nearestFirst(s.groups.filter(g => inView(g, view))) : [];
     const fit = [];
     let budget = STREAM_VIEW_BYTES;
     for (const g of hits) { if (g.bytes > budget) break; fit.push(g); budget -= g.bytes; }
     const want = fit.length === hits.length || map.getZoom() >= STREAM_CLOSE_ZOOM ? fit : [];
     const now = Date.now();
     s.over = want.length < hits.length;
-    s.wanted = new Set([...want, ...s.groups.filter(g => s.loaded.has(g.index) && boxesMeet(g.bbox, near))].map(g => g.index));
+    s.wanted = new Set([...want, ...s.groups.filter(g => s.loaded.has(g.index) && inView(g, near))].map(g => g.index));
     for (const i of s.wanted) { const entry = s.loaded.get(i); if (entry) entry.used = now; }
-    s.queue = want.filter(g => !s.loaded.has(g.index) && !s.loading.has(g.index)
-                               && now - (s.failed.get(g.index) ?? 0) >= STREAM_RETRY_MS);
+    const retry = i => !s.failed.has(i) || (s.failed.get(i).count < STREAM_RETRIES && now - s.failed.get(i).at >= STREAM_RETRY_MS);
+    s.queue = want.filter(g => !s.loaded.has(g.index) && !s.loading.has(g.index) && retry(g.index));
     for (const i of s.loading) if (!s.wanted.has(i)) parquetReader.call("cancel", { key: s.key, index: i }).catch(() => {});
     this.pump(r);
     scheduleUi(false);
@@ -1432,30 +1435,33 @@ const streamed = {
   async load(r, g) {
     const s = r.stream;
     s.loading.add(g.index);
-    let out = null;
+    let aborted = false;
     try {
-      out = await parquetReader.call("read", { key: s.key, index: g.index });
-      if (!out || s.closed || r.disposed) return;
-      const id = `${r.handle}-g${g.index}`;
+      const out = await parquetReader.call("read", { key: s.key, index: g.index });
+      aborted = !out;
+      if (aborted || s.closed || r.disposed) return;
+      const id = `${r.handle}-g${g.index}`, category = geometryCategory(out.types);
       const url = URL.createObjectURL(new Blob([out.buffer], { type: "application/json" }));
       map.addSource(id, { type: "geojson", data: url });
       map.getSource(id).once("data", () => URL.revokeObjectURL(url));
-      s.loaded.set(g.index, { url, count: out.count, bytes: g.bytes, used: Date.now() });
+      s.loaded.set(g.index, { url, count: out.count, bytes: out.buffer.byteLength, used: Date.now() });
       s.failed.delete(g.index);
-      if (r.info.geometryType === "unknown" && out.types.length) r.info.geometryType = geometryCategory(out.types);
-      for (const kind of this.kinds(r)) map.addLayer({ id: `${id}-${kind}`, type: kind, source: id, filter: STREAM_FILTER[kind] }, `${r.handle}-top`);
+      r.info.geometryType = widerCategory(r.info.geometryType, category);
+      for (const kind of this.kinds(category)) map.addLayer({ id: `${id}-${kind}`, type: kind, source: id, filter: STREAM_FILTER[kind] }, `${r.handle}-top`);
       const layer = docLayer(r.id);
       if (layer) this.styleGroup(layer, r, g.index, this.paint(layer, r));
       this.evict(r);
       this.showUnloaded(r);
     } catch (error) {
       if (s.closed) return;
-      s.failed.set(g.index, Date.now());
+      const count = (s.failed.has(g.index) ? s.failed.get(g.index).count : 0) + 1;
+      s.failed.set(g.index, { at: Date.now(), count, message: error.message });
+      if (count < STREAM_RETRIES) setTimeout(() => this.plan(r), STREAM_RETRY_MS);
       console.warn("[map] row group", g.index, "of", r.id, error);
     } finally {
       s.loading.delete(g.index);
       if (!s.closed) {
-        if (!out && s.wanted.has(g.index) && !s.failed.has(g.index)) s.queue.unshift(g);
+        if (aborted && s.wanted.has(g.index)) s.queue.unshift(g);
         this.pump(r);
         scheduleUi(false);
       }
@@ -1492,7 +1498,8 @@ const streamed = {
   values(r, field) {
     const s = r.stream;
     const indexes = s.loaded.size ? [...s.loaded.keys()] : nearestFirst(s.groups).slice(0, 3).map(g => g.index);
-    return parquetReader.call("values", { key: s.key, indexes, field });
+    return parquetReader.call("values", { key: s.key, indexes, field })
+      .catch(error => { console.warn("[map] values of", field, error); return []; });
   },
   pickable(r) {
     return [...r.stream.loaded.keys()].flatMap(i => STREAM_KINDS.map(kind => `${r.handle}-g${i}-${kind}`));
@@ -1502,7 +1509,7 @@ const streamed = {
     const popup = showPopup(lngLat, title, rows);
     if (!r.stream.extraFields.length || !Number.isInteger(feature.id)) return;
     parquetReader.call("row", { key: r.stream.key, row: feature.id })
-      .then(extra => { if (popup.isOpen()) popup.setHTML(popupHtml(title, [...rows, ...Object.entries(extra)])); })
+      .then(extra => { if (extra && popup.isOpen()) popup.setHTML(popupHtml(title, [...rows, ...Object.entries(extra)])); })
       .catch(error => console.warn("[map] feature attributes", error));
   },
   loadedFeatures(r) {
@@ -1511,8 +1518,10 @@ const streamed = {
     return n;
   },
   busy(r) { return !!(r.stream.loading.size || r.stream.queue.length); },
+  unreadable(r) { return [...r.stream.failed.values()].filter(f => f.count >= STREAM_RETRIES); },
   status(r) {
-    const s = r.stream, n = s.groups.length;
+    const s = r.stream, n = s.groups.length, unreadable = this.unreadable(r);
+    if (unreadable.length) return `${unreadable.length} of ${n} row groups could not be read: ${unreadable[0].message}`;
     if (this.busy(r)) return `streaming ${s.loading.size + s.queue.length} of ${n} row groups…`;
     if (!s.loaded.size) return s.over ? "zoom in to load features" : "streamed by view";
     const text = `${this.loadedFeatures(r).toLocaleString()} loaded from ${s.loaded.size} of ${n} row groups`;
@@ -2392,6 +2401,7 @@ function layerFacts(layer) {
       facts.row_groups = r.stream.groups.length;
       facts.loaded_row_groups = r.stream.loaded.size;
       facts.loaded_features = streamed.loadedFeatures(r);
+      facts.unreadable_row_groups = streamed.unreadable(r).length;
     }
     if (r.colorBy && r.colorBy.legend) facts.legend = r.colorBy.legend;
   } else if (r.engine === "zarr") {

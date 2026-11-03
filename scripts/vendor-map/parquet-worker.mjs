@@ -2,11 +2,12 @@ import { asyncBufferFromUrl, parquetMetadataAsync, parquetReadObjects, parquetSc
 import { compressors } from "hyparquet-compressors";
 
 const MAX_VALUES = 200000;
+const VALUE_BATCH = 3;
 const HEAVY_BYTES_PER_ROW = 8;
 const BOX = ["xmin", "ymin", "xmax", "ymax"];
 const files = new Map();
 const reads = new Map();
-let nextKey = 0;
+let nextRead = 0;
 
 const PRIMITIVE = new Set(["BOOLEAN", "INT32", "INT64", "INT96", "FLOAT", "DOUBLE"]);
 const TEXT_LOGICAL = new Set(["STRING", "ENUM", "JSON", "UUID", "DECIMAL"]);
@@ -22,7 +23,8 @@ function crsIsLonLat(crs) {
 }
 
 const boxArea = b => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
-const isLonLatBox = b => !!b && b.every(Number.isFinite) && b[0] >= -180.5 && b[2] <= 180.5 && b[1] >= -90.5 && b[3] <= 90.5;
+const isLonLatBox = b => !!b && b.every(Number.isFinite) && b[0] >= -180.5 && b[2] <= 180.5 && b[1] >= -90.5 && b[3] <= 90.5
+  && b[0] <= b[2] && b[1] <= b[3];
 
 function textual(element) {
   const logical = element.logical_type && element.logical_type.type;
@@ -41,7 +43,7 @@ function describe(metadata, budget) {
   const column = (geo && geo.columns && geo.columns[geometryName]) || {};
   const logical = geometry.element.logical_type || {};
   const encoding = column.encoding || (isGeometryType(geometry) ? "WKB" : null);
-  if (String(encoding).toUpperCase() !== "WKB") return { problem: `geometry encoded as ${encoding || "unknown"}, not WKB` };
+  if (encoding !== "WKB") return { problem: `geometry encoded as ${encoding || "unknown"}, not WKB` };
   if (!crsIsLonLat("crs" in column ? column.crs : logical.crs)) return { problem: "geometry is in a projected CRS" };
 
   const columns = top
@@ -96,11 +98,11 @@ function describe(metadata, budget) {
   const groups = rowGroups.filter(g => g.rows > 0);
   if (!groups.length || !groups.every(g => isLonLatBox(g.bbox))) return { problem: "its row groups carry no longitude/latitude bounding boxes" };
   const boxes = groups.map(g => g.bbox);
-  const extent = [Math.min(...boxes.map(b => b[0])), Math.min(...boxes.map(b => b[1])),
-                  Math.max(...boxes.map(b => b[2])), Math.max(...boxes.map(b => b[3]))];
+  const extent = boxes.reduce((e, b) => [Math.min(e[0], b[0]), Math.min(e[1], b[1]), Math.max(e[2], b[2]), Math.max(e[3], b[3])],
+                              [Infinity, Infinity, -Infinity, -Infinity]);
   const areas = boxes.map(boxArea).sort((a, b) => a - b);
   if (groups.reduce((sum, g) => sum + g.bytes, 0) > budget
-      && (Math.max(...groups.map(g => g.bytes)) > budget || areas[Math.floor(areas.length / 2)] > boxArea(extent) / 4)) {
+      && (groups.some(g => g.bytes > budget) || areas[Math.floor(areas.length / 2)] > boxArea(extent) / 4)) {
     return { problem: "its row groups are too broad to narrow a view down" };
   }
   return {
@@ -130,13 +132,18 @@ function properties(row, names) {
   return out;
 }
 
-async function open({ url, budget }) {
-  const file = await asyncBufferFromUrl({ url });
+async function open({ url, budget, key }) {
+  let whole = false;
+  const fetchNoting = async (...args) => {
+    const response = await fetch(...args);
+    if (response.status === 200 && new Headers(args[1] && args[1].headers).has("range")) whole = true;
+    return response;
+  };
+  const file = await asyncBufferFromUrl({ url, fetch: fetchNoting });
   const metadata = await parquetMetadataAsync(file);
   const summary = describe(metadata, budget);
   if (summary.problem) return summary;
-  const key = ++nextKey;
-  files.set(key, { url, metadata, summary, file });
+  files.set(key, { url, metadata, summary, byteLength: file.byteLength, whole: whole ? file : null });
   return { key, ...summary };
 }
 
@@ -149,54 +156,64 @@ function handle(key) {
 const readGroup = ({ metadata, file }, group, columns) =>
   parquetReadObjects({ file, metadata, columns, compressors, rowStart: group.start, rowEnd: group.start + group.rows });
 
-async function read({ key, index }) {
-  const entry = handle(key), { summary } = entry, group = summary.rowGroups[index];
+async function reading(key, tag, run) {
+  const entry = handle(key);
   const controller = new AbortController();
-  const id = `${key}:${index}`;
+  const id = `${key}:${tag}`;
   reads.set(id, controller);
-  let rows;
   try {
-    const file = await asyncBufferFromUrl({ url: entry.url, byteLength: entry.file.byteLength,
-                                           requestInit: { signal: controller.signal } });
-    rows = await readGroup({ ...entry, file }, group, [summary.geometryName, ...summary.fields]);
+    const file = entry.whole || await asyncBufferFromUrl({ url: entry.url, byteLength: entry.byteLength,
+                                                          requestInit: { signal: controller.signal } });
+    return await run({ ...entry, file });
   } catch (error) {
     if (controller.signal.aborted) return null;
     throw error;
   } finally {
     reads.delete(id);
   }
-  const features = [];
-  const types = new Set();
-  rows.forEach((row, k) => {
-    const geometry = row[summary.geometryName];
-    if (!geometry || !geometry.type) return;
-    types.add(geometry.type);
-    features.push({ type: "Feature", id: group.start + k, geometry, properties: properties(row, summary.fields) });
+}
+
+function read({ key, index }) {
+  return reading(key, index, async entry => {
+    const { summary } = entry, group = summary.rowGroups[index];
+    const rows = await readGroup(entry, group, [summary.geometryName, ...summary.fields]);
+    const features = [];
+    const types = new Set();
+    rows.forEach((row, k) => {
+      const geometry = row[summary.geometryName];
+      if (!geometry || !geometry.type) return;
+      types.add(geometry.type);
+      features.push({ type: "Feature", id: group.start + k, geometry, properties: properties(row, summary.fields) });
+    });
+    const bytes = new TextEncoder().encode(JSON.stringify({ type: "FeatureCollection", features }));
+    return { buffer: bytes.buffer, count: features.length, types: [...types] };
   });
-  const bytes = new TextEncoder().encode(JSON.stringify({ type: "FeatureCollection", features }));
-  return { buffer: bytes.buffer, count: features.length, types: [...types] };
 }
 
-async function values({ key, indexes, field }) {
-  const entry = handle(key);
-  if (!entry.summary.fields.includes(field)) return [];
-  const groups = await Promise.all(indexes.map(index => readGroup(entry, entry.summary.rowGroups[index], [field])));
-  const out = [];
-  for (const row of groups.flat()) {
-    const value = plainValue(row[field]);
-    if (value !== undefined) out.push(value);
-    if (out.length >= MAX_VALUES) break;
-  }
-  return out;
+function values({ key, indexes, field }) {
+  return reading(key, `values-${++nextRead}`, async entry => {
+    if (!entry.summary.fields.includes(field)) return [];
+    const out = [];
+    for (let k = 0; k < indexes.length && out.length < MAX_VALUES; k += VALUE_BATCH) {
+      const batch = indexes.slice(k, k + VALUE_BATCH).map(index => readGroup(entry, entry.summary.rowGroups[index], [field]));
+      for (const row of (await Promise.all(batch)).flat()) {
+        const value = plainValue(row[field]);
+        if (value !== undefined) out.push(value);
+        if (out.length >= MAX_VALUES) break;
+      }
+    }
+    return out;
+  });
 }
 
-async function row({ key, row: index }) {
-  const { metadata, summary, file } = handle(key);
-  const columns = summary.extraFields;
-  if (!columns.length) return {};
-  const [values] = await parquetReadObjects({ file, metadata, columns, compressors, useOffsetIndex: true,
-                                              rowStart: index, rowEnd: index + 1 });
-  return properties(values || {}, columns);
+function row({ key, row: index }) {
+  return reading(key, `row-${++nextRead}`, async ({ metadata, summary, file }) => {
+    const columns = summary.extraFields;
+    if (!columns.length) return {};
+    const [values] = await parquetReadObjects({ file, metadata, columns, compressors, useOffsetIndex: true,
+                                                rowStart: index, rowEnd: index + 1 });
+    return properties(values || {}, columns);
+  });
 }
 
 function cancel({ key, index }) {

@@ -74,10 +74,10 @@ row-group footprints until the view is close enough that the row groups under
 it fit a 48 MB budget, then fetches only those (geometry plus the light
 primitive columns, two at a time, nearest the centre first), decodes them in
 the worker and hands each to MapLibre as its own GeoJSON source. A read whose
-row group leaves the view before it lands is aborted. Loaded row groups stay
-cached up to 128 MB. Columns averaging more than 8 bytes a row (an id, a long
-text) are left out of what is drawn and read for one feature when it is
-clicked.
+row group leaves the view before it lands is aborted, and a failed one is
+retried after 10 s. Loaded row groups stay cached up to 256 MB of decoded
+GeoJSON. Columns averaging more than 8 bytes a row (an id, a long text) are
+left out of what is drawn and read for one feature when it is clicked.
 
 The worker declines, and the file goes to DuckDB as before, when the geometry
 is not WKB, is in a projected CRS, the row groups carry no longitude/latitude

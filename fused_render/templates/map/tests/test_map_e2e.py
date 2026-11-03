@@ -410,7 +410,10 @@ class _RangeHandler(_CorsHandler):
     def do_GET(self):
         header = self.headers.get("Range")
         path = self.translate_path(self.path)
+        name = os.path.basename(path)
         if not header or not os.path.isfile(path):
+            if os.path.isfile(path):
+                _RangeHandler.served[name] = _RangeHandler.served.get(name, 0) + os.path.getsize(path)
             return super().do_GET()
         size = os.path.getsize(path)
         first, last = header.removeprefix("bytes=").split("-")
@@ -419,7 +422,6 @@ class _RangeHandler(_CorsHandler):
         with open(path, "rb") as f:
             f.seek(start)
             body = f.read(end - start + 1)
-        name = os.path.basename(path)
         _RangeHandler.served[name] = _RangeHandler.served.get(name, 0) + len(body)
         self.send_response(206)
         self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
@@ -627,7 +629,7 @@ def test_a_big_remote_geoparquet_streams_only_the_row_groups_in_view(page, bucke
     assert {"use", "height"} <= set(f["fields"]) and "uid" not in f["fields"]
     west, south, east, north = f["bounds"]
     assert 9.99 < west < 10.01 and 44.99 < south < 45.01 and 11.99 < east < 12.01 and 46.99 < north < 47.01
-    assert p.js("return window.__map.getLayersOrder().filter(id => /^s-tiled-.*-cov-fill$/.test(id)).length;") == 1
+    assert p.js("return window.__map.getLayersOrder().filter(id => /^s\\d+-tiled-cov-fill$/.test(id)).length;") == 1
 
     p.js("window.__map.jumpTo({center: [10.25, 45.25], zoom: 12});")
     p.page.wait_for_function("() => fusedMap.describeLayer('tiled').loaded_row_groups > 0", timeout=60000)
@@ -642,6 +644,7 @@ def test_a_big_remote_geoparquet_streams_only_the_row_groups_in_view(page, bucke
     inside = frame.cx[10.2:10.3, 45.2:45.3].iloc[0]
     west, south, east, north = inside.geometry.bounds
     _settled(p)
+    p.page.wait_for_function("() => window.__map.loaded() && window.__map.areTilesLoaded()", timeout=30000)
     x, y = p.js("const pt = window.__map.project(arg); return [pt.x, pt.y];", [(west + east) / 2, (south + north) / 2])
     p.page.mouse.click(x, y)
     p.page.wait_for_function("uid => (document.querySelector('.maplibregl-popup') || {}).textContent?.includes(uid)",
@@ -650,8 +653,21 @@ def test_a_big_remote_geoparquet_streams_only_the_row_groups_in_view(page, bucke
 
     p.js("fm.execute({op: 'remove_layer', id: 'tiled'});")
     p.idle()
-    assert p.js("return window.__map.getLayersOrder().filter(id => id.startsWith('s-tiled-'));") == []
-    assert p.js("return Object.keys(window.__map.getStyle().sources).filter(id => id.startsWith('s-tiled-'));") == []
+    assert p.js("return window.__map.getLayersOrder().filter(id => /^s\\d+-tiled-/.test(id));") == []
+    assert p.js("return Object.keys(window.__map.getStyle().sources).filter(id => /^s\\d+-tiled-/.test(id));") == []
+
+
+def test_a_view_across_the_antimeridian_loads_row_groups_on_both_sides(page, data, remote):
+    rng = np.random.default_rng(6)
+    xs = np.concatenate([rng.uniform(179.0, 179.9, 500), rng.uniform(-179.9, -179.0, 500)])
+    frame = gpd.GeoDataFrame({"n": np.arange(xs.size)}, crs=4326,
+                             geometry=[box(x, y, x + 1e-3, y + 1e-3) for x, y in zip(xs, rng.uniform(0, 1, xs.size))])
+    frame.to_parquet(data / "dateline.parquet", write_covering_bbox=True, row_group_size=500)
+    p = page()
+    p.js("window.__map.jumpTo({center: [180, 0.5], zoom: 7});")
+    p.js("fm.execute({op: 'add_layer', source: arg + '/dateline.parquet', id: 'dateline'});", remote)
+    f = by_id(p.idle())["dateline"]
+    assert f["render_mode"] == "stream" and f["row_groups"] == 2 and f["loaded_row_groups"] == 2, f
 
 
 def test_a_remote_geoparquet_without_row_group_bounds_is_tiled_as_before(page, bucket, cdn):
