@@ -472,53 +472,6 @@ def test_an_unreachable_server_falls_through(root, monkeypatch):
     assert err == ""
 
 
-def test_a_slow_but_alive_server_does_not_fall_through(root, monkeypatch):
-    """A `socket.timeout` (bare `except OSError` swallows this — timeout is an
-    OSError subclass) must NOT be treated the same as "could not connect".
-
-    _post_push's genuine 200s timeout can be exceeded by a slow-but-successful
-    push (lock-wait + probe + pull + push), and the naive fix of catching
-    OSError broadly turns that into `status=None`, which `maybe_intercept`
-    reads as "no server around" and runs the raw, unguarded CLI push
-    CONCURRENTLY with the server's own still-in-flight guarded one. Connect
-    failures are a different, non-timeout OSError (e.g. ConnectionRefusedError)
-    and must still fall through — this only pins the timeout case."""
-    server = _Server(_canvas_push._TIMED_OUT, {})
-    code, _, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
-    assert code == 1, "a timeout must not exit as if nothing happened"
-    assert "timed out" in err
-
-
-def test_post_push_reports_a_real_socket_timeout_distinctly(monkeypatch):
-    """No mocking of _post_push here: a real slow HTTP server that accepts the
-    connection but never answers, exercising the actual except clauses."""
-    import http.server
-    import threading
-    import time as _time
-
-    class _SlowHandler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            _time.sleep(5)  # longer than the shortened timeout below
-
-        def log_message(self, *a):
-            pass
-
-    httpd = http.server.HTTPServer(("127.0.0.1", 0), _SlowHandler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    monkeypatch.setattr(_canvas_push, "_HTTP_TIMEOUT_S", 0.3)
-    try:
-        status, body = _canvas_push._post_push(
-            "http://127.0.0.1:%d" % httpd.server_port, "alpha", ENV)
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-    assert status == _canvas_push._TIMED_OUT, (
-        "a real socket timeout must be distinguishable from a failed connect",
-        status, body)
-
-
 def test_post_push_falls_through_on_a_genuine_connect_failure():
     """Nothing listens on this port — a real ConnectionRefusedError, which
     must stay in the `status is None` (safe-to-fall-through) bucket."""

@@ -1,26 +1,38 @@
 // WHICH CHATS THE CLAUDE RAIL DRAWS, AND IN WHAT ORDER (ClaudeRail.tsx). Pure,
-// so the two rulings below are testable without a DOM:
+// so the rulings below are testable without a DOM.
 //
-//   - THIS CANVAS'S CHATS, minus Archive (owner, 2026-10-28: "let's not show
-//     archived tasks there"). A row that predates `task.canvas` is matched by
-//     its project (the clone dir). Archive is read off the PULSE's status —
-//     fresher than the listing — through the same `taskColumn` the Tasks page
-//     buckets by, so a Cancelled or Skipped row leaves the rail the moment it
-//     leaves the Board's live lanes.
-//   - THE SELECTED NODE'S CHATS ONLY, while a node is selected (owner,
+// WHERE A RAIL STANDS (`RailPlace`) is one of three things, and the rail is
+// the same rail on each (owner, 2026-11-01: "replicate that same behaviour in
+// explorer and app view — exact same behaviour"):
+//
+//   - A CANVAS (the canvas page): this canvas's chats, minus Archive (owner,
+//     2026-10-28: "let's not show archived tasks there"). A row that predates
+//     `task.canvas` is matched by its project (the clone dir). Archive is read
+//     off the PULSE's status — fresher than the listing — through the same
+//     `taskColumn` the Tasks page buckets by, so a Cancelled or Skipped row
+//     leaves the rail the moment it leaves the Board's live lanes.
+//     THE SELECTED NODE'S CHATS ONLY, while a node is selected (owner,
 //     2026-10-29: "collapsed sidebar should behave exact same way as expanded
 //     sidebar"): the open pane shows the node's own chat then, and its Recent
 //     list holds that node's chats alone, so the rail narrows the same way. A
 //     node chat is one whose target is the node's file (`task.canvas.file`,
 //     routers/tasks.py `_task_canvas`); with no node selected the rail holds
 //     every chat on the canvas, as before.
-//   - THE LIST VIEW'S ORDER (owner, 2026-10-28: "the order/sort there should
-//     be similar to what we have in list view"): `sortForList`, the one
-//     ordering function every Tasks view reads (tasks-lib, design.md §5), over
-//     the listing's full rows with the pulse's status laid on top. The rail
-//     used to sort newest-first by `last_active` on its own, which put a Done
-//     chat above a running one whenever it had been touched more recently —
-//     the exact drift that single function exists to end.
+//   - A FOLDER (the app page, the explorer's folder view): the chats the
+//     folder's own pane lists in its Recent list — ClaudeChat's `here` rule,
+//     restated: a row whose target IS the folder, or lies under it, or whose
+//     project is the folder. The rail is that list in rings, so the two must
+//     agree on membership, and this is the one place the rule is restated.
+//   - A FILE (the explorer's file view): the file's own chats — a row whose
+//     target is exactly that file — which is what the file's pane shows.
+//
+//   - THE LIST VIEW'S ORDER everywhere (owner, 2026-10-28: "the order/sort
+//     there should be similar to what we have in list view"): `sortForList`,
+//     the one ordering function every Tasks view reads (tasks-lib, design.md
+//     §5), over the listing's full rows with the pulse's status laid on top.
+//     The rail used to sort newest-first by `last_active` on its own, which
+//     put a Done chat above a running one whenever it had been touched more
+//     recently — the exact drift that single function exists to end.
 //
 // A pulse row the listing does not hold yet (a chat made seconds ago, the
 // listing's re-read still 600ms out, or a re-read that failed) is ranked
@@ -30,7 +42,7 @@
 // its place under the running ones, not the rail's head.
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { isDraftTask, sortForList, taskColumn } from "@shell/tasks-lib";
-import type { WorkbenchEnv } from "./api";
+import type { WorkbenchEnv } from "@apps/canvases/api";
 
 /** One rail seat: the pulse row (live status) and, once the listing holds it,
  *  the full row the caption is built from. */
@@ -39,18 +51,50 @@ export interface RailRow {
   row: Task | null;
 }
 
-/** Where the rail stands: the canvas, its clone dir once it exists, and the
- *  selected node's file (basename, as `task.canvas.file` names it) — null or
- *  absent for the canvas as a whole. */
-export interface RailPlace {
-  env: WorkbenchEnv;
-  name: string;
-  dir: string | null;
-  file?: string | null;
-  /** Admit rows with no session yet (drafts, scheduled tasks). The canvas
-   *  rail always does (owner, 2026-10-30); the option exists so the two
-   *  rulings stay provable apart. */
-  sessionless?: boolean;
+/** Where the rail stands (header). `sessionless` admits rows with no session
+ *  yet (drafts, scheduled tasks); every rail passes it (owner, 2026-10-30) —
+ *  the option exists so the two rulings stay provable apart. */
+export type RailPlace =
+  | {
+      kind: "canvas";
+      env: WorkbenchEnv;
+      name: string;
+      /** The clone dir once it exists (task rows that predate `task.canvas`
+       *  name it as their project). */
+      dir: string | null;
+      /** The selected node's file (basename, as `task.canvas.file` names it)
+       *  — null or absent for the canvas as a whole. */
+      file?: string | null;
+      sessionless?: boolean;
+    }
+  | {
+      kind: "folder";
+      /** The folder (an app folder, the listing's folder). */
+      dir: string;
+      /** What the card calls the whole of it: "App" on the app page,
+       *  "Folder" (the default) in the explorer. */
+      word?: string;
+      sessionless?: boolean;
+    }
+  | {
+      kind: "file";
+      /** The file's full path. */
+      file: string;
+      sessionless?: boolean;
+    };
+
+/** A path without its trailing slashes, for prefix tests. */
+function trimSlash(p: string): string {
+  return p.replace(/\/+$/, "");
+}
+
+/** The folder's own rule (ClaudeChat `here`, the pane's Recent list): the
+ *  row's target is the folder, or lies under it, or its project is the
+ *  folder. */
+function inFolder(t: Pick<TaskPulseTask, "target" | "project">, dir: string): boolean {
+  const d = trimSlash(dir);
+  const target = t.target || "";
+  return target === d || target.startsWith(d + "/") || t.project === d;
 }
 
 /** Is this row one of the rail's: a row on THIS canvas — on the selected
@@ -63,6 +107,8 @@ export interface RailPlace {
 export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
   if (!t.session_id && !place.sessionless) return false;
   if (taskColumn(t) === "archived") return false;
+  if (place.kind === "folder") return inFolder(t, place.dir);
+  if (place.kind === "file") return (t.target || "") === place.file;
   const named = !!t.canvas && t.canvas.env === place.env && t.canvas.name === place.name;
   if (!named && !(place.dir !== null && t.project === place.dir)) return false;
   if (!place.file) return true;
@@ -74,7 +120,7 @@ export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
   const want = nodeName(place.file);
   if (named) return !!t.canvas!.file && nodeName(t.canvas!.file) === want;
   if (place.dir === null) return false;
-  const base = place.dir.replace(/\/+$/, "") + "/";
+  const base = trimSlash(place.dir) + "/";
   const rest = (t.target || "").startsWith(base) ? t.target!.slice(base.length) : "";
   return !!rest && !rest.includes("/") && nodeName(rest) === want;
 }
@@ -86,27 +132,56 @@ export function nodeName(file: string): string {
   return dot > 0 ? file.slice(0, dot) : file;
 }
 
-/** WHERE A ROW LIVES on the canvas: the canvas as a whole, or one node
- *  (RailPeek's head says which — owner, 2026-10-30: "I don't know if that
- *  chat is associated with a node or not"). A row the server stamped names
- *  its node file; one that predates `task.canvas` is read off its target
- *  under the clone. The node's name is the file's stem, as the workbench
- *  names it (CanvasWorkspace `nodeHopFromUrl`). */
+/** WHERE A ROW LIVES in its place (RailPeek's head says which — owner,
+ *  2026-10-30: "I don't know if that chat is associated with a node or not"):
+ *   - on a canvas: the canvas as a whole, or one NODE. A row the server
+ *     stamped names its node file; one that predates `task.canvas` is read
+ *     off its target under the clone. The node's name is the file's stem, as
+ *     the workbench names it (CanvasWorkspace `nodeHopFromUrl`).
+ *   - in a folder: the folder as a whole, or one FILE under it (its path
+ *     relative to the folder — a chat on `src/app.py` in an app says so).
+ *   - on a file: always the whole — every row on a file rail is that file's.
+ *  `whole.word` is what the card calls the whole: "Canvas", "Folder", "App",
+ *  "File". */
+export type RailScope =
+  | { kind: "whole"; word: string }
+  | { kind: "node"; name: string; file: string }
+  | { kind: "file"; name: string; file: string };
+
 export function railScope(
   t: Pick<TaskPulseTask, "canvas" | "target" | "project">,
-  dir: string | null,
-): { kind: "canvas" } | { kind: "node"; name: string; file: string } {
+  place: RailPlace,
+): RailScope {
+  if (place.kind === "file") return { kind: "whole", word: "File" };
+  if (place.kind === "folder") {
+    const base = trimSlash(place.dir) + "/";
+    const target = t.target || "";
+    if (target.startsWith(base)) {
+      const rest = target.slice(base.length);
+      if (rest) return { kind: "file", name: rest, file: target };
+    }
+    return { kind: "whole", word: place.word || "Folder" };
+  }
   let file = t.canvas?.file || "";
-  if (!file && dir) {
-    const base = dir.replace(/\/+$/, "") + "/";
+  if (!file && place.dir) {
+    const base = trimSlash(place.dir) + "/";
     const target = t.target || "";
     if (target.startsWith(base)) {
       const rest = target.slice(base.length);
       if (rest && !rest.includes("/")) file = rest;
     }
   }
-  if (!file) return { kind: "canvas" };
+  if (!file) return { kind: "whole", word: "Canvas" };
   return { kind: "node", name: nodeName(file), file };
+}
+
+/** The place's own name for the rail's words ("Chats on …", the + title):
+ *  the selected node, else the canvas; a folder's or file's last path
+ *  segment. */
+export function placeName(place: RailPlace): string {
+  if (place.kind === "canvas") return place.file ? nodeName(place.file) : "this canvas";
+  const path = trimSlash(place.kind === "folder" ? place.dir : place.file);
+  return path.slice(path.lastIndexOf("/") + 1) || path;
 }
 
 /**
@@ -151,19 +226,6 @@ export function railRows(
     })
     .filter((r): r is RailRow => r !== null);
 }
-
-// A PRESS ON A RING CLEARS ITS DOT (owner, 2026-11-01: "on click it should
-// be unread, the dot should go away"). The write is the List's own
-// whole-task read (api.markWholeTaskRead); the pulse reports the new count
-// on its next poll, ~600ms later, and the dot must not stand for those
-// 600ms. So the rail holds a MARK per pressed ring — what the row reported
-// at the press — and draws the ring hollow while the row still says exactly
-// that. The moment the row says anything else, the mark is spent:
-//   - unread 0: the server confirmed the read — the mark is not needed;
-//   - a new `happened_at` or another count: something landed after the
-//     press, and that IS news — the dot comes back on the server's word,
-//     never hidden by a stale mark.
-// A refused write drops the mark (ClaudeRail), the List's rollback.
 
 /** What a pressed ring's row reported at the press. */
 export interface ReadMark {

@@ -723,6 +723,7 @@ body.embed #sidebar,
 body.embed .sidebar-resize-handle,
 body.embed #breadcrumb,
 body.embed .preview-side-reopen,
+body.embed .claude-rail,
 body.embed .preview-header {
   display: none;
 }

@@ -24,7 +24,7 @@ import {
 } from "@platform/lib/api";
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import { publishCanvasRailPeek } from "@apps/canvases/rail-peek-flag";
+import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
@@ -250,7 +250,7 @@ export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps)
   );
 }
 
-// Published (rail-peek-flag.ts), so a canvas page in THIS tab follows the
+// Published (rail-peek-flag.ts), so a page with a rail in THIS tab follows the
 // switch at once. Another tab's shell holds its first answer until it reloads
 // — the same deal every published flag here offers.
 export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
