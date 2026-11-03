@@ -1,6 +1,6 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
 import { Card } from "./BreakoutCards";
@@ -8,16 +8,37 @@ import { Card } from "./BreakoutCards";
 // Only the chat is stubbed (via the Card `mount` prop); the card chrome and drag logic are the real ones.
 const NoChat = () => null;
 
+// Stub per-suite and restore: bun shares one globalThis across files, so a permanent overwrite
+// would reroute every later suite's addEventListener onto this private bus.
 const bus = new EventTarget();
-Object.assign(window, {
+const winStubs: Record<string, unknown> = {
   addEventListener: bus.addEventListener.bind(bus),
   removeEventListener: bus.removeEventListener.bind(bus),
   innerWidth: 2000,
   innerHeight: 1500,
-});
-Object.assign(globalThis, {
+};
+const globalStubs: Record<string, unknown> = {
   requestAnimationFrame: (fn: () => void) => (fn(), 1),
   cancelAnimationFrame: () => {},
+};
+const targets: [Record<string, unknown>, Record<string, unknown>][] = [
+  [window as unknown as Record<string, unknown>, winStubs],
+  [globalThis as unknown as Record<string, unknown>, globalStubs],
+];
+const saved: { obj: Record<string, unknown>; k: string; had: boolean; value: unknown }[] = [];
+beforeAll(() => {
+  for (const [obj, stubs] of targets)
+    for (const [k, v] of Object.entries(stubs)) {
+      saved.push({ obj, k, had: k in obj, value: obj[k] });
+      obj[k] = v;
+    }
+});
+afterAll(() => {
+  for (const { obj, k, had, value } of saved.reverse()) {
+    if (had) obj[k] = value;
+    else delete obj[k];
+  }
+  saved.length = 0;
 });
 
 const card = { id: "b1", parentSessionId: "s1", file: "/w/proj" } as never;

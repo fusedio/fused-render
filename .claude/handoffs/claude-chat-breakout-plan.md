@@ -139,3 +139,5 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 
 ### Fix round 4
 - CI frontend lane: `BreakoutCards.test.tsx` used `mock.module("@apps/claude", ...)`, which is process-wide and irreversible in bun, so later files (`ChatMount.render.test.tsx`, `paneState.test.tsx`) got the stub and failed. Removed. `Card` now takes an optional `mount` prop (default the real `ChatMount`); the test passes `mount={NoChat}` and imports `Card` statically. Production path unchanged. Dropped the empty `afterEach`.
+
+- Fix round 5: CI frontend lane failed JobPopupCard "iframe taking focus" because `bun test` shares one globalThis and draft-run/new-task-form tests set `window = globalThis`; BreakoutCards.test.tsx and breakouts.test.ts then overwrote `addEventListener`/`removeEventListener` (and rAF) at module scope, so later suites registered blur listeners on a private bus. Both files now save the originals, install stubs in `beforeAll`, and restore (or delete if absent) in `afterAll`.

@@ -1,6 +1,6 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import {
   buildHandoffDraft,
   closeBreakout,
@@ -11,12 +11,28 @@ import {
   sendBackBreakout,
 } from "./breakouts";
 
-// The shim's window is inert; route its event methods through a real target.
+// The shim's window is inert; route its event methods through a real target for this suite only,
+// then restore (bun shares one globalThis across files).
 const bus = new EventTarget();
-Object.assign(window, {
+const stubs: Record<string, unknown> = {
   addEventListener: bus.addEventListener.bind(bus),
   removeEventListener: bus.removeEventListener.bind(bus),
   dispatchEvent: bus.dispatchEvent.bind(bus),
+};
+const w = window as unknown as Record<string, unknown>;
+const saved = new Map<string, { had: boolean; value: unknown }>();
+beforeAll(() => {
+  for (const [k, v] of Object.entries(stubs)) {
+    saved.set(k, { had: k in w, value: w[k] });
+    w[k] = v;
+  }
+});
+afterAll(() => {
+  for (const [k, { had, value }] of saved) {
+    if (had) w[k] = value;
+    else delete w[k];
+  }
+  saved.clear();
 });
 
 afterEach(() => resetBreakouts());
