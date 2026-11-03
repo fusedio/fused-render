@@ -1203,6 +1203,10 @@ const vector = {
   },
   async add(layer, plan, r) {
     if (plan.layers) { r.sourceLayers = plan.layers; return; }
+    const parquet = plan.format === "geoparquet" && !plan.geojson;
+    let size = Infinity;
+    if (parquet && !isRemote(plan.path)) { try { size = (await fused.stat(plan.path)).size; } catch (_) {} }
+    if (parquet && size > STREAM_BYTES && await streamed.add(layer, plan, r)) return;
     const vc = this.control();
     r.handle = `v-${layer.id}-${++seq}`;
     const options = { id: r.handle, name: layer.name, fitBounds: false, visible: layer.visible,
@@ -1223,8 +1227,6 @@ const vector = {
       if (plan.format === "geoparquet") {
         // Query a big file in place, a range read per tile; load a smaller one
         // into memory once, which tiles faster from then on.
-        let size = Infinity;
-        if (!isRemote(plan.path)) { try { size = (await fused.stat(plan.path)).size; } catch (_) {} }
         options.ingestMode = size > STREAM_BYTES ? "stream" : "table";
       }
     }
@@ -1237,13 +1239,20 @@ const vector = {
     if (s.color_by && (!r.colorBy || r.colorBy.signature !== colorBySignature(s))) {
       r.colorBy = await colorByExpression(layer, r);
     } else if (!s.color_by) r.colorBy = null;
+    if (r.stream) { streamed.restyle(layer, r); return; }
     vc.setLayerStyle(r.handle, this.style(layer, r));
     vc.setLayerOpacity(r.handle, layer.opacity);
     vc.setLayerVisibility(r.handle, layer.visible);
     r.info = vc.getLayer(r.handle) || r.info;
   },
-  remove(r) { if (this.ctl && r.handle && this.ctl.getLayer(r.handle)) this.ctl.removeLayer(r.handle); },
-  setBefore(r, beforeId) { this.ctl.setLayerBeforeId(r.handle, beforeId || undefined); },
+  remove(r) {
+    if (r.stream) streamed.remove(r);
+    else if (this.ctl && r.handle && this.ctl.getLayer(r.handle)) this.ctl.removeLayer(r.handle);
+  },
+  setBefore(r, beforeId) {
+    if (r.stream) { for (const id of ownedLayerIds(r)) map.moveLayer(id, beforeId || undefined); return; }
+    this.ctl.setLayerBeforeId(r.handle, beforeId || undefined);
+  },
   bounds(r) { return (r.info && r.info.bbox) || null; },
 };
 const colorBySignature = s => JSON.stringify([s.color_by, s.color_mode || "", s.colormap || "viridis"]);
@@ -1253,7 +1262,7 @@ const colorBySignature = s => JSON.stringify([s.color_by, s.color_mode || "", s.
 // rather than pulled into the page.
 async function colorByExpression(layer, r) {
   const s = layer.style, field = s.color_by;
-  const values = (await vector.ctl.getLayerPropertyValues(r.handle, field)) || [];
+  const values = (await (r.stream ? streamed.values(r, field) : vector.ctl.getLayerPropertyValues(r.handle, field))) || [];
   const present = values.filter(v => v !== null && v !== undefined && v !== "");
   const numbers = present.map(Number).filter(Number.isFinite);
   const mode = s.color_mode || (numbers.length && numbers.length >= present.length * 0.95 ? "graduated" : "categorized");
@@ -1277,6 +1286,242 @@ async function colorByExpression(layer, r) {
     ...items.flatMap(item => [item.value, item.color]), "#9ca3af"];
   return { field, signature, expression, legend: { type: "cats", items, more: counts.size > items.length } };
 }
+
+const STREAM_VIEW_BYTES = 48 << 20, STREAM_CACHE_BYTES = 128 << 20, STREAM_PARALLEL = 2;
+const STREAM_CLOSE_ZOOM = 14, STREAM_RETRY_MS = 10000;
+const parquetReader = {
+  worker: null, seq: 0, pending: new Map(),
+  call(op, args = {}) {
+    if (!this.worker) {
+      const worker = new Worker("/template-assets/parquet.worker.bundle.mjs", { type: "module" });
+      worker.onmessage = ({ data }) => {
+        const call = this.pending.get(data.id);
+        if (!call) return;
+        this.pending.delete(data.id);
+        if (data.ok) call.resolve(data.result);
+        else call.reject(new Error(data.error));
+      };
+      worker.onerror = event => {
+        event.preventDefault();
+        const error = new Error(event.message || "the Parquet reader stopped");
+        for (const call of this.pending.values()) call.reject(error);
+        this.pending.clear();
+        if (this.worker === worker) this.worker = null;
+        worker.terminate();
+      };
+      this.worker = worker;
+    }
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.worker.postMessage({ id, op, ...args });
+    });
+  },
+};
+const boxesMeet = (a, b) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+const boxPolygon = b => ({ type: "Polygon", coordinates: [[[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]]]] });
+function geometryCategory(types) {
+  const kinds = new Set(types.map(t => /point/i.test(t) ? "point" : /line/i.test(t) ? "line" : /polygon/i.test(t) ? "polygon" : "mixed"));
+  return kinds.size === 1 ? [...kinds][0] : kinds.size ? "mixed" : "unknown";
+}
+function viewBox(pad) {
+  const b = map.getBounds();
+  let w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
+  const dx = (e - w) * pad, dy = (n - s) * pad;
+  w -= dx; e += dx; s -= dy; n += dy;
+  if (e - w >= 360) { w = -180; e = 180; }
+  return [Math.max(w, -180), Math.max(s, -90), Math.min(e, 180), Math.min(n, 90)];
+}
+function nearestFirst(groups) {
+  const c = map.getCenter();
+  const away = g => Math.hypot((g.bbox[0] + g.bbox[2]) / 2 - c.lng, (g.bbox[1] + g.bbox[3]) / 2 - c.lat);
+  return groups.slice().sort((a, b) => away(a) - away(b));
+}
+function setPaint(id, paint, visible) {
+  for (const [key, value] of Object.entries(paint)) map.setPaintProperty(id, key, value);
+  map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+}
+const POINTS = ["literal", ["Point", "MultiPoint"]];
+const STREAM_FILTER = {
+  fill: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+  line: ["!", ["in", ["geometry-type"], POINTS]],
+  circle: ["in", ["geometry-type"], POINTS],
+};
+const STREAM_KINDS = ["fill", "line", "circle"];
+const streamed = {
+  async add(layer, plan, r) {
+    let meta;
+    try { meta = await parquetReader.call("open", { url: httpUrl(plan.path), budget: STREAM_VIEW_BYTES }); }
+    catch (error) { console.warn("[map] streaming reader:", plan.path, error.message); return false; }
+    if (meta.problem) { console.info("[map] not streamed by view:", plan.path, meta.problem); return false; }
+    const h = r.handle = `s-${layer.id}-${++seq}`;
+    const groups = meta.rowGroups.filter(g => g.rows > 0);
+    r.stream = { key: meta.key, groups, extraFields: meta.extraFields, loaded: new Map(), loading: new Set(),
+                 queue: [], failed: new Map(), wanted: new Set(), over: false, closed: false };
+    r.info = { featureCount: meta.rows, bbox: meta.extent, fields: meta.fields, renderMode: "stream",
+               geometryType: geometryCategory(meta.geometryTypes) };
+    map.addSource(`${h}-cov`, { type: "geojson", data: { type: "FeatureCollection", features: groups.map(g => (
+      { type: "Feature", geometry: boxPolygon(g.bbox), properties: { i: g.index } })) } });
+    map.addLayer({ id: `${h}-cov-fill`, type: "fill", source: `${h}-cov` });
+    map.addLayer({ id: `${h}-cov-line`, type: "line", source: `${h}-cov`, paint: { "line-dasharray": [2, 2] } });
+    map.addLayer({ id: `${h}-top`, type: "line", source: `${h}-cov`, filter: false });
+    r.kind = "vector";
+    this.showUnloaded(r);
+    this.restyle(layer, r);
+    return true;
+  },
+  showUnloaded(r) {
+    const filter = ["!", ["in", ["get", "i"], ["literal", [...r.stream.loaded.keys()]]]];
+    for (const id of [`${r.handle}-cov-fill`, `${r.handle}-cov-line`]) map.setFilter(id, filter);
+  },
+  kinds(r) {
+    const g = r.info.geometryType;
+    return g === "polygon" ? ["fill", "line"] : g === "line" ? ["line"] : g === "point" ? ["circle"] : STREAM_KINDS;
+  },
+  paint(layer, r) {
+    const st = vector.style(layer, r), o = layer.opacity;
+    return {
+      fill: { "fill-color": st.fillColorExpression ?? st.fillColor, "fill-opacity": st.fillOpacity * o },
+      line: { "line-color": st.lineColorExpression ?? st.lineColor, "line-width": st.lineWidth, "line-opacity": o },
+      circle: { "circle-color": st.circleColorExpression ?? st.circleColor, "circle-radius": st.circleRadius,
+                "circle-opacity": st.circleOpacity * o, "circle-stroke-color": "#ffffff", "circle-stroke-width": 1,
+                "circle-stroke-opacity": o },
+      label: { "text-color": "#333333", "text-halo-color": "#ffffff", "text-halo-width": 1, "text-opacity": o },
+      "cov-fill": { "fill-color": st.fillColor, "fill-opacity": 0.12 * o },
+      "cov-line": { "line-color": st.lineColor, "line-opacity": 0.8 * o },
+    };
+  },
+  styleGroup(layer, r, i, paint) {
+    const id = `${r.handle}-g${i}`;
+    for (const kind of STREAM_KINDS) if (map.getLayer(`${id}-${kind}`)) setPaint(`${id}-${kind}`, paint[kind], layer.visible);
+    const label = `${id}-label`, field = layer.style.label_field;
+    if (!field) { if (map.getLayer(label)) map.removeLayer(label); return; }
+    if (!map.getLayer(label)) map.addLayer({ id: label, type: "symbol", source: id, layout: { "text-size": 12 } }, `${r.handle}-top`);
+    map.setLayoutProperty(label, "text-field", ["to-string", ["get", field]]);
+    setPaint(label, paint.label, layer.visible);
+  },
+  restyle(layer, r) {
+    const paint = this.paint(layer, r);
+    for (const kind of ["cov-fill", "cov-line"]) setPaint(`${r.handle}-${kind}`, paint[kind], layer.visible);
+    for (const i of r.stream.loaded.keys()) this.styleGroup(layer, r, i, paint);
+    this.plan(r);
+  },
+  plan(r) {
+    const s = r.stream, layer = docLayer(r.id);
+    if (s.closed) return;
+    const view = viewBox(0), near = viewBox(0.5);
+    const hits = layer && layer.visible ? nearestFirst(s.groups.filter(g => boxesMeet(g.bbox, view))) : [];
+    const fit = [];
+    let budget = STREAM_VIEW_BYTES;
+    for (const g of hits) { if (g.bytes > budget) break; fit.push(g); budget -= g.bytes; }
+    const want = fit.length === hits.length || map.getZoom() >= STREAM_CLOSE_ZOOM ? fit : [];
+    const now = Date.now();
+    s.over = want.length < hits.length;
+    s.wanted = new Set([...want, ...s.groups.filter(g => s.loaded.has(g.index) && boxesMeet(g.bbox, near))].map(g => g.index));
+    for (const i of s.wanted) { const entry = s.loaded.get(i); if (entry) entry.used = now; }
+    s.queue = want.filter(g => !s.loaded.has(g.index) && !s.loading.has(g.index)
+                               && now - (s.failed.get(g.index) ?? 0) >= STREAM_RETRY_MS);
+    for (const i of s.loading) if (!s.wanted.has(i)) parquetReader.call("cancel", { key: s.key, index: i }).catch(() => {});
+    this.pump(r);
+    scheduleUi(false);
+  },
+  pump(r) {
+    const s = r.stream;
+    while (!s.closed && s.loading.size < STREAM_PARALLEL && s.queue.length) this.load(r, s.queue.shift());
+  },
+  async load(r, g) {
+    const s = r.stream;
+    s.loading.add(g.index);
+    let out = null;
+    try {
+      out = await parquetReader.call("read", { key: s.key, index: g.index });
+      if (!out || s.closed || r.disposed) return;
+      const id = `${r.handle}-g${g.index}`;
+      const url = URL.createObjectURL(new Blob([out.buffer], { type: "application/json" }));
+      map.addSource(id, { type: "geojson", data: url });
+      map.getSource(id).once("data", () => URL.revokeObjectURL(url));
+      s.loaded.set(g.index, { url, count: out.count, bytes: g.bytes, used: Date.now() });
+      s.failed.delete(g.index);
+      if (r.info.geometryType === "unknown" && out.types.length) r.info.geometryType = geometryCategory(out.types);
+      for (const kind of this.kinds(r)) map.addLayer({ id: `${id}-${kind}`, type: kind, source: id, filter: STREAM_FILTER[kind] }, `${r.handle}-top`);
+      const layer = docLayer(r.id);
+      if (layer) this.styleGroup(layer, r, g.index, this.paint(layer, r));
+      this.evict(r);
+      this.showUnloaded(r);
+    } catch (error) {
+      if (s.closed) return;
+      s.failed.set(g.index, Date.now());
+      console.warn("[map] row group", g.index, "of", r.id, error);
+    } finally {
+      s.loading.delete(g.index);
+      if (!s.closed) {
+        if (!out && s.wanted.has(g.index) && !s.failed.has(g.index)) s.queue.unshift(g);
+        this.pump(r);
+        scheduleUi(false);
+      }
+    }
+  },
+  drop(r, i) {
+    const s = r.stream, id = `${r.handle}-g${i}`;
+    for (const kind of [...STREAM_KINDS, "label"]) if (map.getLayer(`${id}-${kind}`)) map.removeLayer(`${id}-${kind}`);
+    if (map.getSource(id)) map.removeSource(id);
+    URL.revokeObjectURL(s.loaded.get(i).url);
+    s.loaded.delete(i);
+  },
+  evict(r) {
+    const s = r.stream;
+    let total = 0;
+    for (const entry of s.loaded.values()) total += entry.bytes;
+    const idle = [...s.loaded.entries()].filter(([i]) => !s.wanted.has(i)).sort((a, b) => a[1].used - b[1].used);
+    for (const [i, entry] of idle) {
+      if (total <= STREAM_CACHE_BYTES) break;
+      this.drop(r, i);
+      total -= entry.bytes;
+    }
+  },
+  remove(r) {
+    const s = r.stream;
+    if (s.closed) return;
+    s.closed = true;
+    s.queue = [];
+    for (const id of ownedLayerIds(r)) map.removeLayer(id);
+    for (const i of [...s.loaded.keys()]) this.drop(r, i);
+    if (map.getSource(`${r.handle}-cov`)) map.removeSource(`${r.handle}-cov`);
+    parquetReader.call("close", { key: s.key }).catch(() => {});
+  },
+  values(r, field) {
+    const s = r.stream;
+    const indexes = s.loaded.size ? [...s.loaded.keys()] : nearestFirst(s.groups).slice(0, 3).map(g => g.index);
+    return parquetReader.call("values", { key: s.key, indexes, field });
+  },
+  pickable(r) {
+    return [...r.stream.loaded.keys()].flatMap(i => STREAM_KINDS.map(kind => `${r.handle}-g${i}-${kind}`));
+  },
+  inspect(r, feature, lngLat) {
+    const title = (docLayer(r.id) || {}).name || r.id, rows = Object.entries(feature.properties || {});
+    const popup = showPopup(lngLat, title, rows);
+    if (!r.stream.extraFields.length || !Number.isInteger(feature.id)) return;
+    parquetReader.call("row", { key: r.stream.key, row: feature.id })
+      .then(extra => { if (popup.isOpen()) popup.setHTML(popupHtml(title, [...rows, ...Object.entries(extra)])); })
+      .catch(error => console.warn("[map] feature attributes", error));
+  },
+  loadedFeatures(r) {
+    let n = 0;
+    for (const entry of r.stream.loaded.values()) n += entry.count;
+    return n;
+  },
+  busy(r) { return !!(r.stream.loading.size || r.stream.queue.length); },
+  status(r) {
+    const s = r.stream, n = s.groups.length;
+    if (this.busy(r)) return `streaming ${s.loading.size + s.queue.length} of ${n} row groups…`;
+    if (!s.loaded.size) return s.over ? "zoom in to load features" : "streamed by view";
+    const text = `${this.loadedFeatures(r).toLocaleString()} loaded from ${s.loaded.size} of ${n} row groups`;
+    return s.over ? `${text} · zoom in for the rest` : text;
+  },
+};
+map.on("moveend", () => {
+  for (const r of runtime.values()) if (r.stream && !r.disposed) streamed.plan(r);
+});
 
 /* zarr --------------------------------------------------------------------- */
 // A store over the shell's raw endpoint: zarr asks for keys ("/temp/.zarray"),
@@ -2143,6 +2388,11 @@ function layerFacts(layer) {
     facts.geometry = info.geometryType;
     facts.fields = info.fields || [];
     facts.render_mode = info.renderMode;
+    if (r.stream) {
+      facts.row_groups = r.stream.groups.length;
+      facts.loaded_row_groups = r.stream.loaded.size;
+      facts.loaded_features = streamed.loadedFeatures(r);
+    }
     if (r.colorBy && r.colorBy.legend) facts.legend = r.colorBy.legend;
   } else if (r.engine === "zarr") {
     facts.variables = r.meta.variables;
@@ -2179,6 +2429,7 @@ function whenIdle(timeout = 120000) {
         const r = runtime.get(l.id);
         if (!r || r.status === "loading") return true;
         if (r.status !== "ready") return false;
+        if (r.stream) return streamed.busy(r);
         if (r.engine === "zarr") return !!r.zarrLoading;
         if (r.engine === "pointcloud") return r.lidar.isStreamingLoading(r.info.id);
         if (r.engine === "raster") { const info = raster.info(r) || {}; return !info.bounds && !info.error; }
@@ -2268,7 +2519,7 @@ function statusLine(layer, r) {
   const bits = [];
   if (r.engine === "vector") {
     if (f.features != null) bits.push(`${Number(f.features).toLocaleString()} ${f.geometry || "feature"}${f.features === 1 ? "" : "s"}`);
-    bits.push(f.render_mode === "tiles" ? "tiled in the browser" : "GeoJSON");
+    bits.push(r.stream ? streamed.status(r) : f.render_mode === "tiles" ? "tiled in the browser" : "GeoJSON");
   } else if (r.engine === "raster") {
     bits.push(`${f.bands} band${f.bands === 1 ? "" : "s"}`);
   } else if (r.engine === "zarr") {
@@ -2679,7 +2930,7 @@ function vectorControls(body, layer, r) {
   if (isPoint) {
     body.appendChild(sliderCtl("Point radius", 1, 20, 0.5, s.circle_radius ?? 4, v => v.toFixed(1),
       (v, dragging) => setStyle(layer.id, { circle_radius: v }, dragging)));
-    if (info.renderMode !== "tiles")
+    if (info.renderMode === "geojson")
       body.appendChild(selectCtl("Draw points as", [["circle", "Circles"], ["heatmap", "Heatmap"], ["cluster", "Clusters"]],
         s.point_mode || "circle", v => setStyle(layer.id, { point_mode: v === "circle" ? null : v })));
   }
@@ -2691,7 +2942,8 @@ function vectorControls(body, layer, r) {
   stat.textContent = [
     info.featureCount != null ? `${Number(info.featureCount).toLocaleString()} features` : "",
     geom && `Geometry: ${geom}`,
-    info.renderMode === "tiles" ? "Tiled in the browser by DuckDB-WASM" : "Drawn as GeoJSON",
+    r.stream ? `Streamed by view, each row group read by HTTP range request when the map shows it: ${streamed.status(r)}`
+      : info.renderMode === "tiles" ? "Tiled in the browser by DuckDB-WASM" : "Drawn as GeoJSON",
     fields.length ? `Fields: ${fields.join(", ")}` : "",
     r.note || "",
   ].filter(Boolean).join("\n");
@@ -2907,10 +3159,22 @@ function pointcloudControls(body, layer, r) {
 // A vector feature opens the vector engine's own popup; otherwise report the
 // value under the cursor from the top visible raster or Zarr layer.
 let pixelPopup = null;
+const popupHtml = (title, rows) => `<b>${esc(title)}</b><table class="px-table">${rows.length
+  ? rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("") : "<tr><td>No attributes</td></tr>"}</table>`;
+function showPopup(lngLat, title, rows) {
+  if (pixelPopup) pixelPopup.remove();
+  pixelPopup = new maplibregl.Popup({ closeButton: true, maxWidth: "320px" })
+    .setLngLat(lngLat).setHTML(popupHtml(title, rows)).addTo(map);
+  return pixelPopup;
+}
 map.on("click", async event => {
-  const vectorIds = new Set();
-  for (const r of runtime.values()) if (r.engine === "vector" && r.status === "ready") ownedLayerIds(r).forEach(id => vectorIds.add(id));
-  const hit = vectorIds.size && map.queryRenderedFeatures(event.point).some(f => vectorIds.has(f.layer.id));
+  const vectorIds = new Map();
+  for (const r of runtime.values()) {
+    if (r.engine !== "vector" || r.status !== "ready") continue;
+    for (const id of r.stream ? streamed.pickable(r) : ownedLayerIds(r)) vectorIds.set(id, r);
+  }
+  const hit = vectorIds.size ? map.queryRenderedFeatures(event.point).find(f => vectorIds.has(f.layer.id)) : null;
+  if (hit && vectorIds.get(hit.layer.id).stream) { streamed.inspect(vectorIds.get(hit.layer.id), hit, event.lngLat); return; }
   if (hit) return;
   const { lng, lat } = event.lngLat;
   for (const layer of doc.layers.slice().reverse()) {
@@ -2932,11 +3196,7 @@ map.on("click", async event => {
       }
     } catch (error) { console.warn("[map] inspect", error); }
     if (!rows) continue;
-    if (pixelPopup) pixelPopup.remove();
-    pixelPopup = new maplibregl.Popup({ closeButton: true, maxWidth: "280px" })
-      .setLngLat([lng, lat])
-      .setHTML(`<b>${esc(layer.name)}</b><table class="px-table">${rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>`)
-      .addTo(map);
+    showPopup([lng, lat], layer.name, rows);
     return;
   }
 });

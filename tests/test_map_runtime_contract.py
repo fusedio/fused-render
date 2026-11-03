@@ -9,8 +9,11 @@ of a user.
 from __future__ import annotations
 
 import importlib.util
+import json
+import random
 import re
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -151,13 +154,14 @@ def test_the_mcp_side_imports_nothing_outside_the_stdlib(name):
         assert module in allowed, f"{name} imports {module} at module level"
 
 
-def _run_js(script: str) -> None:
+def _run_js(script: str, *args: str, timeout: int = 30) -> str:
     node = shutil.which("node")
     if not node:
         pytest.skip("node is needed to run the template's vector engine")
-    result = subprocess.run([node, "-e", script], capture_output=True, text=True,
-                            encoding="utf-8", timeout=30)
+    result = subprocess.run([node, "-e", script, *args], capture_output=True, text=True,
+                            encoding="utf-8", timeout=timeout)
     assert result.returncode == 0, result.stderr
+    return result.stdout
 
 
 FAKE_VECTOR_CONTROL = r'''
@@ -247,3 +251,102 @@ def test_the_bundle_stylesheet_carries_the_vector_librarys_own():
         assert selector in css, selector
     build = (ROOT / "scripts" / "vendor-map" / "build.sh").read_text(encoding="utf-8")
     assert "maplibre-gl-vector/dist/maplibre-gl-vector.css" in build
+
+
+def test_a_big_geoparquet_is_read_by_row_group_in_a_worker_the_build_makes():
+    html = _template()
+    assert 'new Worker("/template-assets/parquet.worker.bundle.mjs", { type: "module" })' in html
+    assert (VENDOR / "parquet.worker.bundle.mjs").exists()
+    build = (ROOT / "scripts" / "vendor-map" / "build.sh").read_text(encoding="utf-8")
+    assert "parquet-worker.mjs" in build and "$VENDOR/parquet.worker.bundle.mjs" in build
+    package = (ROOT / "scripts" / "vendor-map" / "package.json").read_text(encoding="utf-8")
+    assert '"hyparquet":' in package and '"hyparquet-compressors":' in package
+
+
+def _geoparquet(path: Path, crs=None) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+
+    def square(x, y, size=0.01):
+        ring = [(x, y), (x + size, y), (x + size, y + size), (x, y + size), (x, y)]
+        return struct.pack("<BIII", 1, 3, 1, len(ring)) + b"".join(struct.pack("<dd", *p) for p in ring)
+
+    rng = random.Random(5)
+    rows = []
+    for qx, qy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+        for _ in range(500):
+            x, y = 10 + qx + rng.random() * 0.9, 40 + qy + rng.random() * 0.9
+            rows.append((x, y))
+    table = pa.table({
+        "id": pa.array([f"{rng.getrandbits(160):040x}" for _ in rows]),
+        "geometry": pa.array([square(x, y) for x, y in rows], pa.binary()),
+        "bbox": pa.array([{"xmin": x, "ymin": y, "xmax": x + 0.01, "ymax": y + 0.01} for x, y in rows],
+                         pa.struct([(k, pa.float32()) for k in ("xmin", "ymin", "xmax", "ymax")])),
+        "class": pa.array([rng.choice(["house", None]) for _ in rows]),
+        "height": pa.array([round(rng.random() * 30, 1) for _ in rows]),
+    })
+    column = {"encoding": "WKB", "geometry_types": ["Polygon"]}
+    if crs is not None:
+        column["crs"] = crs
+    geo = {"version": "1.0.0", "primary_column": "geometry", "columns": {"geometry": column}}
+    table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode()})
+    pq.write_table(table, path, row_group_size=500)
+
+
+def _worker(path: Path, ops: list) -> list:
+    script = r'''
+const fs = require("node:fs");
+const { pathToFileURL } = require("node:url");
+const [bundle, file, ops] = process.argv.slice(1);
+const bytes = fs.readFileSync(file);
+const sent = [];
+globalThis.self = globalThis;
+globalThis.postMessage = message => sent.push(message);
+globalThis.fetch = async (url, init = {}) => {
+  if (init.method === "HEAD") return new Response(null, { status: 200, headers: { "content-length": String(bytes.length) } });
+  const [start, end] = new Headers(init.headers).get("range").replace("bytes=", "").split("-").map(Number);
+  return new Response(bytes.subarray(start, end + 1), { status: 206 });
+};
+import(pathToFileURL(bundle).href).then(async () => {
+  const out = [];
+  let key;
+  for (const [id, op] of JSON.parse(ops).entries()) {
+    await self.onmessage({ data: { id, ...op, key } });
+    const reply = sent.pop();
+    if (!reply.ok) { out.push({ error: reply.error }); continue; }
+    if (op.op === "open") key = reply.result.key;
+    const result = reply.result && reply.result.buffer
+      ? { ...reply.result, buffer: JSON.parse(new TextDecoder().decode(reply.result.buffer)) } : reply.result;
+    out.push(result);
+  }
+  console.log(JSON.stringify(out));
+}).catch(error => { console.error(error); process.exit(1); });
+'''
+    return json.loads(_run_js(script, str(VENDOR / "parquet.worker.bundle.mjs"), str(path), json.dumps(ops), timeout=60))
+
+
+def test_the_worker_indexes_row_groups_by_their_bbox_and_reads_one_at_a_time(tmp_path):
+    path = tmp_path / "buildings.parquet"
+    _geoparquet(path)
+    opened, group, attributes = _worker(path, [{"op": "open", "url": "http://bucket.test/buildings.parquet",
+                                                "budget": 48 << 20},
+                                               {"op": "read", "index": 3}, {"op": "row", "row": 1501}])
+    assert opened["rows"] == 2000 and len(opened["rowGroups"]) == 4 and opened["geometryName"] == "geometry"
+    assert opened["fields"] == ["class", "height"] and opened["extraFields"] == ["id"]
+    boxes = [g["bbox"] for g in opened["rowGroups"]]
+    assert all(10 <= b[0] < b[2] <= 12.01 and 40 <= b[1] < b[3] <= 42.01 for b in boxes)
+    assert boxes[0][2] < 11 and boxes[3][0] > 11 and boxes[3][1] > 41
+    assert opened["extent"][0] >= 10 and opened["extent"][3] <= 42.01
+    features = group["buffer"]["features"]
+    assert group["count"] == 500 == len(features) and group["types"] == ["Polygon"]
+    assert features[1]["id"] == 1501 and set(features[1]["properties"]) <= {"class", "height"}
+    x, y = features[1]["geometry"]["coordinates"][0][0]
+    assert 11 <= x <= 12 and 41 <= y <= 42
+    assert list(attributes) == ["id"] and len(attributes["id"]) == 40
+
+
+def test_the_worker_declines_what_it_cannot_draw_in_degrees(tmp_path):
+    path = tmp_path / "mercator.parquet"
+    _geoparquet(path, crs={"id": {"authority": "EPSG", "code": 3857}, "type": "ProjectedCRS"})
+    [opened] = _worker(path, [{"op": "open", "url": "http://bucket.test/mercator.parquet", "budget": 48 << 20}])
+    assert opened == {"problem": "geometry is in a projected CRS"}

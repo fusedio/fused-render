@@ -25,6 +25,9 @@ Build workspace for the Map Viewer's browser rendering stack, committed under
     layer and hides its panel
 - `map.worker.bundle.mjs` — the GeoTIFF tile decoder the raster reader runs off
   the main thread.
+- `parquet.worker.bundle.mjs`: the streaming GeoParquet reader
+  (`parquet-worker.mjs`, on `hyparquet` + `hyparquet-compressors`). See
+  "Streaming a big GeoParquet" below.
 - `laz-perf.wasm` — the LAZ decoder the point-cloud library loads; `build.sh`
   points the bundle at this copy instead of unpkg, so LAZ/COPC opens offline.
 - `map.bundle.css` — MapLibre's, the vector library's and the point-cloud
@@ -58,6 +61,29 @@ Run the buffer reuse, lookup and picking tests with:
 ```sh
 node --test pointcloud-gpu.test.mjs
 ```
+
+## Streaming a big GeoParquet
+
+A remote GeoParquet, or a local one over 256 MB, is first offered to
+`parquet.worker.bundle.mjs` rather than DuckDB. The worker reads the footer
+(a HEAD for the size, then one range request for the last 512 KB) and indexes
+every row group by its bounding box: the GeoParquet 1.1 `covering` column's
+statistics, an Overture-style `bbox` struct's, or native Parquet geospatial
+statistics. The layer is ready as soon as that index exists; the map shows the
+row-group footprints until the view is close enough that the row groups under
+it fit a 48 MB budget, then fetches only those (geometry plus the light
+primitive columns, two at a time, nearest the centre first), decodes them in
+the worker and hands each to MapLibre as its own GeoJSON source. A read whose
+row group leaves the view before it lands is aborted. Loaded row groups stay
+cached up to 128 MB. Columns averaging more than 8 bytes a row (an id, a long
+text) are left out of what is drawn and read for one feature when it is
+clicked.
+
+The worker declines, and the file goes to DuckDB as before, when the geometry
+is not WKB, is in a projected CRS, the row groups carry no longitude/latitude
+bounding boxes, or they are too broad to narrow a view down (over the budget
+in total, with one row group over it or the median row group covering more
+than a quarter of the extent). The page logs the reason.
 
 ## Why the map renders in the browser
 
