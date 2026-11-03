@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -147,3 +149,101 @@ def test_the_mcp_side_imports_nothing_outside_the_stdlib(name):
     for line in top:
         module = re.match(r"^(?:from|import) ([\w.]+)", line).group(1).split(".")[0]
         assert module in allowed, f"{name} imports {module} at module level"
+
+
+def _run_js(script: str) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is needed to run the template's vector engine")
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True,
+                            encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+FAKE_VECTOR_CONTROL = r'''
+const assert = require("node:assert/strict");
+const CONTAINERS = { "/data/two.gpkg": ["classes", "review_polygon"], "/data/three.zip": ["a", "b", "c"] };
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+class SelectionCancelled extends Error {}
+class FakeVectorControl {
+  constructor(options) { this.options = options; this.layers = new Map(); this.listed = []; }
+  async addData(source, options) {
+    if (this.layers.has(options.id)) throw new Error(`Layer "${options.id}" already exists`);
+    const path = new URL(source).searchParams.get("path");
+    const names = CONTAINERS[path] || [path];
+    let chosen = [options.sourceLayer || names[0]];
+    if (!options.sourceLayer && !["geojson", "geoparquet", "csv"].includes(options.format)) {
+      await sleep(names.length === 2 ? 40 : 5);
+      if (names.length > 1) {
+        this.listed.push(path);
+        const select = this.options.selectLayers;
+        const picked = select === false ? null
+          : select ? await select(names, { sourceName: options.name, format: options.format })
+          : await new Promise(() => {});
+        if (picked && picked.length === 0) throw new SelectionCancelled(`No layers were selected from ${path}.`);
+        chosen = picked || names;
+      }
+    }
+    const infos = chosen.map(name => {
+      const id = chosen.length > 1 ? `${options.id}-${name}` : options.id;
+      const info = { id, name: options.name, sourceLayer: options.sourceLayer || (chosen.length > 1 ? name : undefined),
+                     bbox: [0, 0, 1, 1], layerIds: [id + "-fill"] };
+      this.layers.set(id, info);
+      return info;
+    });
+    return infos[0];
+  }
+  getLayer(id) { return this.layers.get(id); }
+}
+const M = { VectorControl: FakeVectorControl };
+const map = { addControl() {} };
+const location = { origin: "http://render.test" };
+const fused = { stat: async () => ({ size: 1 }) };
+const shade = hex => hex;
+let seq = 0;
+'''
+
+
+def _vector_engine() -> str:
+    html = _template()
+    between = lambda start, end: start + html.split(start, 1)[1].split(end, 1)[0]
+    return between("const isRemote = ", "\nconst RASTER_EXT") + between("const STREAM_BYTES", "\nconst colorBySignature")
+
+
+def test_a_multi_layer_file_is_listed_never_picked_and_each_load_is_one_control_layer():
+    _run_js(FAKE_VECTOR_CONTROL + _vector_engine() + r'''
+const layer = (id, options = {}) => ({ id, name: id, visible: true, opacity: 1, style: {}, options });
+const cases = [
+  [layer("two"), { load: "vector", path: "/data/two.gpkg", format: "geopackage" }],
+  [layer("three"), { load: "vector", path: "/data/three.zip", format: "shapefile" }],
+  [layer("one"), { load: "vector", path: "/data/one.gpkg", format: "geopackage" }],
+  [layer("pinned", { source_layer: "review_polygon" }), { load: "vector", path: "/data/two.gpkg", format: "geopackage" }],
+  [layer("roads"), { load: "vector", path: "/data/roads.geojson", format: "geojson" }],
+];
+const runs = cases.map(([l, plan]) => { const r = { color: "#336699" }; return vector.add(l, plan, r).then(() => r); });
+const hung = sleep(5000).then(() => { throw new Error("a vector load never resolved"); });
+Promise.race([Promise.all(runs), hung]).then(([two, three, one, pinned, roads]) => {
+  assert.deepEqual(two.sourceLayers, ["classes", "review_polygon"]);
+  assert.deepEqual(three.sourceLayers, ["a", "b", "c"]);
+  assert.equal(two.info, undefined);
+  assert.equal(three.info, undefined);
+  for (const r of [one, pinned, roads]) {
+    assert.equal(r.sourceLayers, undefined);
+    assert.equal(r.info.id, r.handle);
+  }
+  assert.equal(pinned.info.sourceLayer, "review_polygon");
+  assert.deepEqual([...vector.ctl.layers.keys()].sort(), [one.handle, pinned.handle, roads.handle].sort());
+  assert.deepEqual(vector.ctl.listed.sort(), ["/data/three.zip", "/data/two.gpkg"]);
+  assert.throws(() => vector.ctl.options.selectLayers(["x", "y"], { sourceName: "x", format: "kml" }),
+                error => error.sourceLayers.join() === "x,y");
+  process.exit(0);
+}).catch(error => { console.error(error); process.exit(1); });
+''')
+
+
+def test_the_bundle_stylesheet_carries_the_vector_librarys_own():
+    css = (VENDOR / "map.bundle.css").read_text(encoding="utf-8")
+    for selector in (".vector-control-panel {", ".vector-control-popup {", ".vector-control-popup-table td {"):
+        assert selector in css, selector
+    build = (ROOT / "scripts" / "vendor-map" / "build.sh").read_text(encoding="utf-8")
+    assert "maplibre-gl-vector/dist/maplibre-gl-vector.css" in build
