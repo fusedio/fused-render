@@ -298,6 +298,16 @@ export interface RailPeekProps {
   /** The star was pressed and the server answered: `on` is the star as it
    *  now stands. Ahead of the pulse, for the rail's own bookkeeping. */
   onStarred?: (key: string, on: boolean) => void;
+  /** A FIXED SIZE AND EDGE (the favourite's card, shell/claude-rail
+   *  FavouritePeek): the card takes this wish for every seat instead of the
+   *  default / stored sizes, and never grows on a pin. */
+  size?: PeekWish;
+  /** The card keeps above this viewport y (the favourite's card stands
+   *  below the list's card; the two must not cover each other). */
+  bottomLimit?: number | null;
+  /** Where the card stands now, or null while it is closed — for a host
+   *  that places another card around it. */
+  onBox?: (box: Box | null) => void;
   /** The card is PINNED (PeekIntent: a ring press, a press inside) — not a
    *  passing hover. Only a pinned card wears the corner grips
    *  and takes the remembered size (header). */
@@ -368,6 +378,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     held,
     onHeld,
     onStarred,
+    size,
+    bottomLimit = null,
+    onBox,
     pinned,
   },
   ref,
@@ -440,10 +453,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     else setGrown(true);
   }, [pinned]);
   const wishFor = (key: string): PeekWish => {
+    if (size) return size;
     if (!kept.find((s) => s.pulse.key === key)?.pulse.session_id) return { maxHeight: PEEK_PLAIN_HEIGHT };
-    const size = grownRef.current ? storedPeekSize() : null;
-    if (!size) return { maxHeight: PEEK_MAX_HEIGHT };
-    return { width: size.width, maxHeight: size.height };
+    const stored = grownRef.current ? storedPeekSize() : null;
+    if (!stored) return { maxHeight: PEEK_MAX_HEIGHT };
+    return { width: stored.width, maxHeight: stored.height };
   };
   // The rail's left edge as of the last placement: where the bridge below
   // ends. A ref, not state — `place` runs before every `setBox`, so the
@@ -460,7 +474,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (!anchor || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
-    return peekPlacement(anchor.getBoundingClientRect(), rail, row.getBoundingClientRect(), wishFor(key));
+    const r = row.getBoundingClientRect();
+    // Above the other card (`bottomLimit`): the row ends where it begins.
+    const bounds: Box =
+      bottomLimit !== null && bottomLimit < r.top + r.height
+        ? { left: r.left, top: r.top, width: r.width, height: Math.max(0, bottomLimit - r.top) }
+        : r;
+    return peekPlacement(anchor.getBoundingClientRect(), rail, bounds, wishFor(key));
   };
   // THE CORNER DRAG (header). `resizing` names the held grip while a drag is
   // on: the card drops its glide transitions and the placement effects stand
@@ -534,7 +554,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the follow-the-ring paths would stand back for good (reviewer), and a
   // release would save a size that was about the old chat (CodeRabbit).
   const visible = on && box !== null && shownKey !== null;
-  const gripsOn = pinned && visible && !!view?.pulse.session_id;
+  // The host that places another card around this one hears where it is.
+  const onBoxRef = useRef(onBox);
+  onBoxRef.current = onBox;
+  useEffect(() => {
+    onBoxRef.current?.(visible ? box : null);
+  }, [visible, box]);
+  useEffect(() => () => onBoxRef.current?.(null), []);
+  const gripsOn = pinned && !size && visible && !!view?.pulse.session_id;
   const dragKey = useRef<string | null>(null);
   useEffect(() => {
     if (dragStart.current && (!gripsOn || dragKey.current !== shownKey)) endDrag(false);

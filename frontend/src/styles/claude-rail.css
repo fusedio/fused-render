@@ -14,7 +14,9 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 10px 0;
+  /* 4px at the foot, not 10 (owner, 2026-11-03: "a bit of padding below
+     which needs to be removed"): the favourites stand last, on the edge. */
+  padding: 10px 0 4px;
   box-sizing: border-box;
   border-left: 1px solid var(--border);
   background: var(--bg);
@@ -135,15 +137,29 @@
   padding-top: 6px;
   border-top: 1px solid var(--rail-sep);
 }
-/* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): one ring each, a
-   column in the foot under its hairline. Every favourite draws — the list
-   above gives up rings first (`.claude-rail-chats`, basis 0). */
+/* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): the rail's last
+   section, under the git seats and a tight hairline of its own. Every
+   favourite draws — the list above gives up rings first (`.claude-rail-chats`,
+   basis 0). The ring whose card is up (`.is-open`, the shell's FavouritePeek)
+   wears the pinned wash. */
 .claude-rail-favs {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+}
+.claude-rail .sidebar-rail-sep.is-tight {
+  margin: 6px 0;
+}
+.claude-rail-chat.is-fav.is-open::after {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
+/* The favourite's card (FavouritePeek `#claude-rail-fav-peek`) stands over
+   the rail's own card where the two meet. */
+#claude-rail-fav-peek {
+  z-index: 1;
 }
 .claude-rail-favs > .claude-rail-seat,
 .claude-rail-held > .claude-rail-seat {

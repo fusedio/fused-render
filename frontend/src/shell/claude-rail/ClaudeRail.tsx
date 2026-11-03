@@ -181,8 +181,9 @@ import {
   type ReadMark,
 } from "./claude-rail-lib";
 import { CanvasGlyph } from "@apps/canvases/glyph";
-import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
+import { PEEK_GAP, PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
+import { registerFavRing, registerRail, useFavPeekState } from "./fav-peek-store";
 import { useRailGit } from "./rail-git";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
@@ -392,11 +393,7 @@ export function ClaudeRail({
   // THE FAVOURITES (header) draw in the foot, so a starred chat leaves the
   // list: it is one ring, in one place.
   const favs = useMemo(() => favSeats(rows, full), [rows, full]);
-  const favKeys = useMemo(() => new Set(favs.map((s) => s.pulse.key)), [favs]);
-  const allSeats = useMemo(
-    () => railRows(rows, full, seatPlace).filter((s) => !favKeys.has(s.pulse.key)),
-    [rows, full, seatPlace, favKeys],
-  );
+  const allSeats = useMemo(() => railRows(rows, full, seatPlace), [rows, full, seatPlace]);
   // ONLY AS MANY RINGS AS FIT, from the top — no scroll (owner, 2026-11-02:
   // "if we have more chats let's not add scroll, just clip them; basically we
   // only show the top chats"). The list takes the room the column leaves it
@@ -540,30 +537,23 @@ export function ClaudeRail({
   // EXCEPT A FAVOURITE'S OPEN CARD (header): it was not opened on this place,
   // it is the reader's, and it travels (owner, 2026-11-03).
   const placeRef = useRef(place);
-  const rowsRef = useRef(rows);
-  rowsRef.current = rows;
   useEffect(() => {
     if (placeRef.current === place) return;
     placeRef.current = place;
-    const shown = intent.current;
-    if (shown && rowsRef.current.find((t) => t.key === shown)?.starred_open) return;
     setHeld(false);
     intent.dismiss();
   }, [place, intent]);
   const heldKey = held ? peekKey : null;
   const heldExtra = useMemo((): RailRow | null => {
-    if (!heldKey || favKeys.has(heldKey) || baseSeats.some((s) => s.pulse.key === heldKey)) return null;
+    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return null;
     const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
     return pulse ? { pulse, row: full.get(heldKey) ?? null } : null;
-  }, [baseSeats, favKeys, heldKey, rows, full]);
+  }, [baseSeats, heldKey, rows, full]);
   // Every seat the rail draws — the list's, the favourites', plus the held
   // outsider — for the card's anchors, the kept mounts and the prune; the LIST
   // itself is `baseSeats`, and the favourites and the outsider draw in the
   // foot (below).
-  const seats = useMemo(
-    () => (heldExtra ? [...baseSeats, ...favs, heldExtra] : favs.length > 0 ? [...baseSeats, ...favs] : baseSeats),
-    [baseSeats, favs, heldExtra],
-  );
+  const seats = useMemo(() => (heldExtra ? [...baseSeats, heldExtra] : baseSeats), [baseSeats, heldExtra]);
   // THE LAST RING PRESSED (owner, 2026-11-02): "the active css to the last
   // selected task… keep by task id so it is easier to spot; it doesn't
   // change when we filter tasks based on the selected node, only when we
@@ -597,60 +587,49 @@ export function ClaudeRail({
   // answered by a reopen. The record going away (another window pressed ×, or
   // unstarred it) lets go of the card this effect opened. No focus is taken:
   // the page just loaded, the keyboard is not the card's to have.
-  const openFav = useMemo(
+  const openFavKey = useMemo(
     () => rows.find((t) => t.starred_open && t.status !== "archived")?.key ?? null,
     [rows],
   );
-  const autoOpenedRef = useRef<string | null>(null);
+  // THE FAVOURITE'S CARD IS THE SHELL'S (FavouritePeek, mounted once above
+  // every page): this rail only registers itself and its favourite rings
+  // (fav-peek-store) so that card can stand beside the right ring, and keeps
+  // its own card above that one (`bottomLimit`). A press on a favourite —
+  // its foot ring, or its ring in the list — OPENS THAT CARD (the server's
+  // one open favourite), never this rail's: "two different previews".
+  const { favBox } = useFavPeekState();
   useEffect(() => {
-    if (!peekOn) return;
-    if (openFav === null) {
-      const was = autoOpenedRef.current;
-      autoOpenedRef.current = null;
-      if (was && intent.current === was) {
+    const el = railRef.current;
+    registerRail(el);
+    return () => registerRail(null, el);
+  }, []);
+  // ONE CHAT, ONE MOUNT: this rail's card lets go of the chat the
+  // favourite's card is taking — on the press here, and again when the pulse
+  // names the open favourite (a star pressed in this card, another window's
+  // press): two live mounts of one session would be two composers on one
+  // draft.
+  const letGo = useCallback(
+    (key: string) => {
+      if (intent.current === key) {
         setHeld(false);
         intent.dismiss();
       }
-      return;
-    }
-    if (openFav === autoOpenedRef.current) return;
-    // Another window moved the open favourite while the reader is typing in
-    // THIS card: not now — a swap would take their keyboard (PeekIntent
-    // `show` blurs the card). The next pulse asks again.
-    const a = document.activeElement;
-    if (a && document.getElementById(PEEK_ID)?.contains(a)) return;
-    autoOpenedRef.current = openFav;
-    intent.press(openFav);
-    setHeld(true);
-  }, [peekOn, openFav, intent]);
-  // THE CARD LEAVING A FAVOURITE WRITES "CLOSED" (header): whatever the door
-  // — the ×, Open, a swap to another ring, archive from the card, a place
-  // change — a favourite whose card is no longer up is no longer the open
-  // one, or it would be back on the next page. One rule on the shown key,
-  // not one per door. The ref is let go first, so the pulse's echo is not
-  // read as another window's close. Update-only (`on: null`): a star another
-  // window took back is not put back by this.
-  // `starredHere` is what THIS window starred ahead of the pulse (RailPeek
-  // `onStarred`): a × a beat after the star must still write "closed", and
-  // the pulse may not have said "starred" yet. Update-only on the server, so
-  // a write for a key that is not starred after all costs nothing.
-  const starredHere = useRef(new Set<string>());
-  const onStarred = useCallback((key: string, on: boolean) => {
-    if (on) starredHere.current.add(key);
-    else starredHere.current.delete(key);
-  }, []);
-  const prevPeekRef = useRef<string | null>(null);
+      setKept((k) => (k.includes(key) ? k.filter((x) => x !== key) : k));
+    },
+    [intent],
+  );
   useEffect(() => {
-    const prev = prevPeekRef.current;
-    prevPeekRef.current = peekKey;
-    if (!prev || prev === peekKey) return;
-    const row = rowsRef.current.find((t) => t.key === prev);
-    if (!row?.starred && !starredHere.current.has(prev) && autoOpenedRef.current !== prev) return;
-    if (autoOpenedRef.current === prev) autoOpenedRef.current = null;
-    setTaskFavourite(prev, null, false).then(pokeTasks, (err: Error) =>
-      notify({ title: err.message, tone: "error" }),
-    );
-  }, [peekKey]);
+    if (openFavKey) letGo(openFavKey);
+  }, [openFavKey, letGo]);
+  const openFavourite = useCallback(
+    (t: TaskPulseTask) => {
+      letGo(t.key);
+      setTaskFavourite(t.key, null, true).then(pokeTasks, (err: Error) =>
+        notify({ title: err.message, tone: "error" }),
+      );
+    },
+    [letGo],
+  );
   // JSON, not a joined string: a key is free to contain any delimiter.
   const seatKeys = JSON.stringify(seats.map((s) => s.pulse.key));
   useEffect(() => {
@@ -1032,7 +1011,7 @@ export function ClaudeRail({
   const plusLabel = waiting ?? (newTask.on ? `New task on ${newTask.on}` : "New task");
 
   // ONE RING, as the list draws it — and as the foot draws the held outsider.
-  const ringOf = ({ pulse: t, row }: RailRow) => {
+  const ringOf = ({ pulse: t, row }: RailRow, foot = false) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
               // Hollow since the press, until the pulse agrees (header).
@@ -1058,7 +1037,10 @@ export function ClaudeRail({
               // pinned (owner, 2026-10-31: "show me the tooltip title so I
               // know what other chat it is at least"): that ring gets its
               // title back, the title alone.
-              const titleOnly = peekOn && pinned && peekKey !== null && peekKey !== t.key;
+              // …and a FAVOURITE's ring: the foot's always, the list's while
+              // its card (the shell's) is up — a hover there opens nothing.
+              const favRing = foot || (t.starred === true && openFavKey === t.key);
+              const titleOnly = (peekOn && pinned && peekKey !== null && peekKey !== t.key) || favRing;
               const captionless = peekOn && !titleOnly;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
@@ -1067,6 +1049,10 @@ export function ClaudeRail({
                 <div key={t.key} role="listitem" className="claude-rail-seat">
                 <a
                   ref={(el) => {
+                    if (foot) {
+                      registerFavRing(t.key, el);
+                      return;
+                    }
                     if (el) ringEls.current.set(t.key, el);
                     else ringEls.current.delete(t.key);
                   }}
@@ -1076,6 +1062,8 @@ export function ClaudeRail({
                     (activeSessionId && t.session_id === activeSessionId ? " active" : "") +
                     (peeked ? " peeked" : "") +
                     (peeked && pinned ? " is-pinned" : "") +
+                    (foot ? " is-fav" : "") +
+                    (foot && openFavKey === t.key ? " is-open" : "") +
                     (lastPressed !== null && lastChatId(t) === lastPressed ? " is-last" : "")
                   }
                   aria-label={`${label} — ${words}`}
@@ -1089,7 +1077,7 @@ export function ClaudeRail({
                   // Beside the ring, not at the pointer (platform/lib/hints
                   // `placeBeside`): a 48px column at the window's edge.
                   data-hint-side="left"
-                  {...(peekOn
+                  {...(peekOn && !favRing
                     ? {
                         "aria-haspopup": "dialog" as const,
                         "aria-expanded": peeked,
@@ -1098,7 +1086,7 @@ export function ClaudeRail({
                         onKeyDown: onRingKey(t.key),
                       }
                     : {})}
-                  {...(peekOn
+                  {...(peekOn && !favRing
                     ? {
                         onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(t.key, e),
                         onPointerLeave: () => intent.leaveRing("pointer"),
@@ -1113,24 +1101,21 @@ export function ClaudeRail({
                     // last ring pressed (header).
                     clearUnread(t);
                     setLastChat(lastChatId(t));
+                    // A FAVOURITE'S PRESS — the foot ring's, or its list
+                    // ring's — opens the shell's favourite card (header),
+                    // not this rail's. Always written, even when the pulse
+                    // already says open: a × a moment ago may still be on
+                    // the wire.
+                    if (peekOn && t.starred) {
+                      hideHint();
+                      openFavourite(t);
+                      return;
+                    }
                     if (peekOn && !noRoom) {
                       pressedHref.current = href;
                       requestAnimationFrame(() => {
                         pressedHref.current = null;
                       });
-                      // A FAVOURITE'S PRESS opens its card for the server too
-                      // (header): the one open favourite is this one now.
-                      // Always written, even when the pulse already says
-                      // open — a × a moment ago may still be on the wire. The
-                      // ref first, so the pulse's echo of the write is not
-                      // answered as news; a refused write lets it go again.
-                      if (t.starred) {
-                        autoOpenedRef.current = t.key;
-                        setTaskFavourite(t.key, null, true).then(pokeTasks, (err: Error) => {
-                          if (autoOpenedRef.current === t.key) autoOpenedRef.current = null;
-                          notify({ title: err.message, tone: "error" });
-                        });
-                      }
                       // Shown now and pinned (header) — over a hover card of
                       // this ring it only pins; over another's, it swaps.
                       intent.press(t.key);
@@ -1218,22 +1203,16 @@ export function ClaudeRail({
             role="list"
             aria-label={`Chats on ${scope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
           >
-            {baseSeats.map(ringOf)}
+            {baseSeats.map((seat) => ringOf(seat))}
           </div>
         )}
-        {(favs.length > 0 || node || heldExtra) && (
-          // THE FOOT, under the list's hairline: the favourites' rings
-          // (header), the held outsider's ring, then the way back to the
-          // whole canvas — the canvas glyph, which deselects the node in the
-          // workbench. BELOW the list, not its last row: the list clips to
-          // the rings that fit, and a way out that was clipped off is no way
-          // out.
+        {(node || heldExtra) && (
+          // THE FOOT, under the list's hairline: the held outsider's ring
+          // (header), then the way back to the whole canvas — the canvas
+          // glyph, which deselects the node in the workbench. BELOW the list,
+          // not its last row: the list clips to the rings that fit, and a
+          // way out that was clipped off is no way out.
           <div className="claude-rail-all-seat">
-            {favs.length > 0 && (
-              <div className="claude-rail-favs" role="list" aria-label="Favourite chats">
-                {favs.map(ringOf)}
-              </div>
-            )}
             {heldExtra && (
               <div className="claude-rail-held" role="list" aria-label={node ? "Pinned chat, not on this node" : "Pinned chat, past the list's room"}>
                 {ringOf(heldExtra)}
@@ -1370,6 +1349,19 @@ export function ClaudeRail({
             </div>
           </>
         )}
+        {favs.length > 0 && (
+          // THE FAVOURITES, LAST (owner, 2026-11-03: "favourite should be
+          // below git"): past their own hairline, one ring per starred chat
+          // from anywhere — the chat the shell's favourite card stands
+          // beside (`.is-open`). A ring here previews nothing on hover (its
+          // caption stays); its press opens that card.
+          <>
+            <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
+            <div className="claude-rail-favs" role="list" aria-label="Favourite chats">
+              {favs.map((seat) => ringOf(seat, true))}
+            </div>
+          </>
+        )}
       </div>
       {peekOn && keptSeats.length > 0 && (
         <RailPeek
@@ -1392,7 +1384,7 @@ export function ClaudeRail({
           {...(onSelectNode ? { onSelectNode } : {})}
           held={held}
           onHeld={setHeld}
-          onStarred={onStarred}
+          bottomLimit={favBox ? favBox.top - PEEK_GAP : null}
           pinned={pinned}
           onPin={() => {
             const key = intent.current;

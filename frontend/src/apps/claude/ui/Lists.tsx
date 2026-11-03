@@ -112,7 +112,7 @@ export interface ListsProps {
 
 export function Lists({
   file,
-  recent: recentAll,
+  recent,
   artifacts = null,
   snaps,
   onOpen,
@@ -121,13 +121,6 @@ export function Lists({
   disabled,
   favourites,
 }: ListsProps) {
-  // A STARRED CHAT DRAWS ONCE (owner, 2026-11-03): in the Favourites block
-  // below, not in Recent chats as well — the rail's rule too (ClaudeRail
-  // `allSeats` drops the favourites' keys; they stand in the foot).
-  const recent = useMemo(
-    () => (recentAll && favourites && favourites.length > 0 ? recentAll.filter((t) => !t.starred) : recentAll),
-    [recentAll, favourites],
-  );
   /**
    * Which list is showing is the BLOCK's state rather than the page's: leaving
    * for a chat and coming back keeps the tab you were on (T:18260-18265). This
