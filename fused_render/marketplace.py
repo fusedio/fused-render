@@ -1351,15 +1351,16 @@ def pulse() -> dict:
 
     Never the CREATOR of a cache, only what lets one age out: with nothing
     installed there is nothing to report and the catalog is not touched at
-    all; with no cache yet it reads like `installed_list` (`cached_snapshot`)
-    rather than starting a build every tick from every window."""
+    all; with no cache yet it answers from the copies alone (no build — a
+    failed build writes no cache, so building here would retry it every
+    tick from every window, each holding a worker thread for the Community's
+    timeout). The store page's own read builds the first cache."""
     copies = installed_copies()
     if not copies:
         return {"apps": []}
+    snap = None
     if _read_cache() is not None:
         snap, _error = get_snapshot(refresh=False, background=True)
-    else:
-        snap, _error = cached_snapshot()
     apps = (snap or {}).get("apps") or {}
     fresh = _fresh(snap)
     out = []

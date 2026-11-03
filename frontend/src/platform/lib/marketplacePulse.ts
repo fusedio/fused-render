@@ -93,6 +93,11 @@ async function poll() {
       // the cue to re-read it; `again` because a read already in flight may
       // predate the rebuild. refreshCatalog publishes here on landing.
       if (pulse.updates !== before && peekCatalog().catalog) void refreshCatalog({ again: true });
+    } else {
+      // A publish landed while this poll was out (an uninstall's event with
+      // no catalog loaded, say): this answer may predate it, so ask again
+      // once settled rather than waiting out the tick (CodeRabbit, #2078).
+      again = true;
     }
   } catch {
     // Offline, or a restart mid-poll: not news. The last answer stands.
