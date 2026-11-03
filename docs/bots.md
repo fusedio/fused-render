@@ -129,7 +129,7 @@ tests/test_bots_*.py        store, routes (fake claude), steps engine, agent eng
 docs/bots.md             this file
 ```
 
-State is split in two roots (v3, 2026-11-02, D1456). Everything per-bot lives
+State is split in two roots (v3, 2026-11-02, D1458). Everything per-bot lives
 in one folder under the workspace (`FUSED_RENDER_DIR` overrides `~/Fused`):
 public files at the folder root, private and transient ones under its
 gitignored `.fused/`. Cross-bot machine state stays home-side
@@ -2250,7 +2250,7 @@ and the apps it uses. Export writes it from the bot's menu or Settings footer
 ("Export bot…"; the old `export` action is now labelled "Export transcript");
 opening one shows an install page; installing always makes a NEW bot. Design
 page with the owner's answers: <https://claude.ai/artifact/MgZLky3CyjTzH3mNZsXDr6>
-(D1456 layout, D1457 package).
+(D1458 layout, D1459 package).
 
 **The file.** The `.fused` app file's container (`appfile_container.py`, D870:
 magic `FUSEDAPP`, deflated JSON index, per-member deflate streams), told apart

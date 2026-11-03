@@ -419,6 +419,29 @@ def _no_git_auto_sync_threads(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_dev_machine_mflux_registry():
+    """No test reads THIS machine's installed mflux registry: the derived
+    mflux variants (`formats.mflux_variant_recipe`) would otherwise make a
+    dev box with the mflux venv installed resolve ids a CI box refuses. A
+    test that wants a registry calls `formats.set_mflux_registry_reader`."""
+    import sys
+
+    from fused_render.ai.runners import formats
+
+    def empty():
+        formats.set_mflux_registry_reader(lambda: {})
+        # The mflux worker imports its own top-level `formats` module, a
+        # second instance with its own reader.
+        worker_formats = sys.modules.get("formats")
+        if worker_formats is not None and hasattr(worker_formats, "set_mflux_registry_reader"):
+            worker_formats.set_mflux_registry_reader(lambda: {})
+
+    empty()
+    yield
+    empty()
+
+
+@pytest.fixture(autouse=True)
 def _no_queue_manager_across_tests():
     """No test inherits another test's queue index.
 

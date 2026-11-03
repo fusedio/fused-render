@@ -64,3 +64,29 @@ test("the inert variant, a streaming tail, and a chat with no opener never linki
   expect(linkifyEnabled({ links: true, enhance: false, hasOpener: true })).toBe(false);
   expect(linkifyEnabled({ links: true, enhance: true, hasOpener: false })).toBe(false);
 });
+
+test("~/ paths stat and link at the absolute home path; without a home they are left alone", async () => {
+  const el = code("~/Documents/r.html");
+  const asked: string[] = [];
+  const n = await linkifyPaths(rootOf([el]), {
+    cwd: "/w",
+    home: "/home/u",
+    stat: async (p) => (asked.push(p), true),
+  });
+  expect(n).toBe(1);
+  expect(asked).toEqual(["/home/u/Documents/r.html"]);
+  expect(el.attrs["data-path"]).toBe("/home/u/Documents/r.html");
+
+  const lone = code("~/Documents/r.html");
+  const none: string[] = [];
+  expect(await linkifyPaths(rootOf([lone]), { cwd: "/w", stat: async (p) => (none.push(p), true) })).toBe(0);
+  expect(none).toEqual([]);
+});
+
+test("a ~ that is not a leading ~/ is never linked", async () => {
+  const els = [code("~"), code("a~b.ts"), code("~user/x.ts"), code("echo ~/x.ts")];
+  const asked: string[] = [];
+  const n = await linkifyPaths(rootOf(els), { cwd: "/w", home: "/h", stat: async (p) => (asked.push(p), true) });
+  expect(n).toBe(0);
+  expect(asked).toEqual([]);
+});

@@ -1,4 +1,4 @@
-"""Bot package export (`.fusedbot`, docs/bots.md §17, D1457): the public bot.json member never carries routine run
+"""Bot package export (`.fusedbot`, docs/bots.md §17, D1459): the public bot.json member never carries routine run
 state, the skills/memory text budget is split so memory can be left out, the no-hard-link save never overwrites,
 and a starter or marketplace copy with local edits is bundled (with a `fallback`) instead of travelling as a
 reference that would drop them. _bots_conftest points FUSED_RENDER_HOME and FUSED_RENDER_DIR at tmp dirs; nothing

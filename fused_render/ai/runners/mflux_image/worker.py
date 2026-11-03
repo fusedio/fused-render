@@ -137,12 +137,11 @@ def _pin_stream():
 #: Models page needs BOTH halves to tag a cached repo honestly: a snapshot can
 #: have perfect MLX components and still be a model this build cannot name a
 #: variant class for.
-_VARIANTS = formats.MFLUX_VARIANTS
 
 #: The EDIT counterpart (`fused.ai.image({image})`, mflux-only) is read
 #: through `formats.mflux_edit_recipe`, not through a binding here — its
-#: `variant`/`module` come from `formats.MFLUX_EDIT_VARIANTS`, and its
-#: `config`/`vae` are DERIVED from `_VARIANTS`'s row for the same id rather
+#: `variant`/`module` come from `formats.MFLUX_EDIT_VARIANTS` (or the derived
+#: family), and its `config`/`vae` are DERIVED from the plain recipe for the same id rather
 #: than duplicated, since those two are facts about the checkpoint (same
 #: weights, same latent space) and not about which class denoises it. See
 #: `formats.MFLUX_EDIT_VARIANTS`'s own comment for why copying them would be
@@ -172,10 +171,10 @@ def download(model_id):
 
 def _recipe_for(model_id, mode):
     """The full recipe for `model_id` under `mode` ('generate' or 'edit'), or
-    None. `"generate"` reads `_VARIANTS` directly — the untouched path every
+    None. `"generate"` reads `formats.mflux_variant_recipe` (the override table, else the variant derived from the installed mflux's `AVAILABLE_MODELS`) — the untouched path every
     caller who never passes `image` stays on (Decision 3). `"edit"` goes
     through `formats.mflux_edit_recipe`, which derives `config`/`vae` off the
-    SAME `_VARIANTS` row rather than a second copy — see that table's own
+    SAME plain recipe rather than a second copy — see that table's own
     comment. Keying `load()` by `(model_id, mode)` (Gate B) means, in this
     one-process-per-model worker, choosing between these two lookups and
     re-running `_build_variant` when the resident mode differs from what a
@@ -183,7 +182,7 @@ def _recipe_for(model_id, mode):
 
     `"fill"` (`fused.ai.image({image, mask})`, issue #1439) reads
     `formats.mflux_fill_recipe` — a standalone third table for a DIFFERENT
-    checkpoint, never derived from `_VARIANTS` (see that table's comment),
+    checkpoint, never derived from the plain recipe (see that table's comment),
     which is why a Klein request carrying `mask` and a Fill request carrying
     no mask both land on `None` here and are refused by the caller.
     """
@@ -191,7 +190,7 @@ def _recipe_for(model_id, mode):
         return formats.mflux_edit_recipe(model_id)
     if mode == "fill":
         return formats.mflux_fill_recipe(model_id)
-    return _VARIANTS.get(model_id)
+    return formats.mflux_variant_recipe(model_id)
 
 
 def _build_variant(model_id, fetched, mode):
@@ -225,7 +224,7 @@ def _build_variant(model_id, fetched, mode):
                 "variant class named for this repo. Try "
                 "mflux-community/flux-1-dev-fill-mflux-q4.")
         if mode == "edit":
-            # Reached only if a model appears in `_VARIANTS` (so `load()`
+            # Reached only if a model is generable (so `load()`
             # accepted it for plain generation) but `formats.mflux_edit_
             # recipe` has no edit row for it — every model this build knows
             # about today has both, so this is a future-model gap, not

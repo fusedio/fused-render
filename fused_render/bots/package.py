@@ -1,4 +1,4 @@
-"""Export a bot as one `.fusedbot` file (docs/bots.md §17, D1457).
+"""Export a bot as one `.fusedbot` file (docs/bots.md §17, D1459).
 
 A `.fusedbot` is the `.fused` container codec (appfile_container) with the
 `bot` kind key: the same hardened reader, a different index key, so neither

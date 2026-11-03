@@ -1,4 +1,4 @@
-"""`/api/botfile/*` — the `.fusedbot` install page's HTTP API (docs/bots.md §17, D1457).
+"""`/api/botfile/*` — the `.fusedbot` install page's HTTP API (docs/bots.md §17, D1459).
 
 Not under `/api/bots/`: `/api/bots/{bid}/{op}` would read "file" as a bot id. So these routes are outside
 routes.OWNED_PREFIXES and `forward_middleware` never sees them; the one route that needs the bots owner (the
