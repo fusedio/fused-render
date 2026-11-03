@@ -5,7 +5,10 @@ policy (docs/bots.md §10).
     inbound   poll thread, every POLL_S: channel.poll() -> the channel's door
               (Super Bot, and only from the address set on it; anything else
               is dropped) -> map a numbered answer back to its option, stamp
-              the answer to a texted approval card -> bot.receive(text, via)
+              the answer to a texted approval card -> bot.receive(text, via).
+              Never in a home without the workspace claim (registry module
+              docstring): a message there would start an engine beside the
+              claimant's, so dispatch refuses it and texts BUSY_REPLY back.
     outbound  bot.emit() calls on_event(); a queue + one send thread, so a slow
               osascript never blocks a task thread. targets() is the policy:
               reply to the channel the task came from, and nothing else (no
@@ -37,6 +40,8 @@ logger = logging.getLogger(__name__)
 POLL_S = 3
 SEND_RETRIES = 3
 SEND_RETRY_WAIT_S = 5
+# The one line a sender gets when this home does not hold the workspace claim (registry.workspace_claimed).
+BUSY_REPLY = "another fused-render instance owns the bots in this workspace"
 CLOCK_SLACK_S = 2  # the phone's clock may run a little behind the Mac's: a reply this much older than the card still counts
 
 
@@ -128,6 +133,7 @@ class Router:
         self._parked: dict[str, list] = {}  # door bot id -> [(bot, ev)] cards waiting their turn, FIFO
         self._errors: dict[str, str] = {}         # kind -> last router-side error for Settings
         self._lock = threading.Lock()
+        self._busy_logged = False  # the "refused: no workspace claim" line went out (once per refusal streak)
 
     # ---------------------------------------------------------------- lifecycle
     def add(self, ch: Channel) -> None:
@@ -181,6 +187,9 @@ class Router:
         bid, text = self.resolve(ch, m)
         if bid is None or not (text or "").strip():
             return
+        if not self._workspace_claimed():
+            self._refuse_busy(ch, m)
+            return
         bot = self._registry.get(bid)
         with self._lock:
             seq, opts = self._pending.pop(bid, (None, []))
@@ -209,6 +218,32 @@ class Router:
             via["answers"] = card["seq"]
         text = map_answer(text, opts)
         bot.receive(text, via=via)
+
+    def _workspace_claimed(self) -> bool:
+        """registry.workspace_claimed(); a registry without it (a test double) counts as claimed."""
+        fn = getattr(self._registry, "workspace_claimed", None)
+        if fn is None:
+            return True
+        try:
+            ok = bool(fn())
+        except Exception:  # noqa: BLE001 — unsure is not claimed: never start an engine on a guess
+            ok = False
+        if ok:
+            self._busy_logged = False
+        return ok
+
+    def _refuse_busy(self, ch: Channel, m: Inbound) -> None:
+        """Another home's owner runs this workspace's bots: the message is not received here. The sender gets
+        BUSY_REPLY on its own channel; a channel that cannot send gets one log line per refusal streak."""
+        try:
+            ch.send(m.addr, BUSY_REPLY)
+            sent = True
+        except Exception:  # noqa: BLE001
+            sent = False
+        if not self._busy_logged:
+            self._busy_logged = True
+            logger.info("channel %s: a message was refused (another fused-render owns the bots in this workspace)%s",
+                        ch.kind, "" if sent else "; the reply could not be sent")
 
     def _relay(self, ch: Channel, door, card: dict, text: str, ts: float, via: dict) -> bool:
         """A reply while a relayed card is the live texted card. True when it was

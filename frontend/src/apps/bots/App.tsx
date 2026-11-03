@@ -8,7 +8,7 @@
 // mirrors OpenBot: layout first (useLayout, before paint), then the store's poll loop, the builds feed,
 // notifications and the face animator. The theme is the shell's (`data-theme` on <html>); the page only maps it
 // onto its own tokens.
-import { useEffect } from "react";
+import { useEffect, type DragEvent } from "react";
 import { useBotsFeeder } from "@platform/lib/botsPulse";
 import "./styles/bots.css";
 import { AppsPanel } from "./apps/AppsPanel";
@@ -25,7 +25,8 @@ import { openApps } from "./apps/apps";
 import { getSideApp, sideAppBrowser, sideAppShow } from "./apps/side";
 import { useBotsRoute } from "./hooks/useBotsRoute";
 import { prefsHref, searchSansTask } from "./routes";
-import { navigateUrl } from "@platform/lib/router";
+import { navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
+import { UPLOAD_MAX_BYTES, upload } from "./file/botfile";
 import { PrefsPanel } from "./components/PrefsPanel";
 import { useLayout } from "./hooks/useLayout";
 import { handBack, openFull } from "./lib/cdp";
@@ -34,7 +35,7 @@ import { fitViewport } from "./lib/live-page";
 import { installNotify } from "./lib/notify";
 import { botsRoot, detachPortalHost, portalHost, setBotsRoot } from "./lib/root";
 import { isBot } from "@platform/lib/flavor";
-import { getState, goChat, hideBanner, hydrateBotsPrefs, openDialog, openMenu, poll, startStore, subscribe, useBotsSelector } from "./state/store";
+import { errMsg, getState, goChat, hideBanner, hydrateBotsPrefs, openDialog, openMenu, poll, showBanner, startStore, subscribe, useBotsSelector } from "./state/store";
 
 /** Stage follows the store's `fast` (the live view is open). A store listener, not an effect: it runs inside the commit, so
  *  openFull's flushSync(setFast(true)) has #full laid out in the column before it focuses anything there. On entry the
@@ -65,6 +66,31 @@ function installStage(): () => void {
   // The live page's Chrome window takes the stage's size once, when the gutter is let go (fitViewport holds while root.dragging).
   onDragEnd(fitViewport);
   return () => { stop(); onStageOpen(null); onStageShut(null); onDragEnd(null); if (on) setStage(false); };
+}
+
+/** A `.fusedbot` dropped anywhere on the page: the drop carries bytes, not a path, so they land on disk first
+ *  (POST /api/botfile/upload) and the page navigates to that file's explorer view — the install page (shell/App.tsx
+ *  BotFileView), the one place a package is installed from. The composer and the Apps panel handle their own drops
+ *  (both preventDefault without stopping propagation), so a drop they already took is left alone here. */
+function dragHasFiles(e: DragEvent<HTMLDivElement>): boolean {
+  return !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+}
+function onPageDragOver(e: DragEvent<HTMLDivElement>): void {
+  if (!e.defaultPrevented && dragHasFiles(e)) e.preventDefault();
+}
+function onPageDrop(e: DragEvent<HTMLDivElement>): void {
+  if (e.defaultPrevented || !dragHasFiles(e)) return;
+  e.preventDefault();  // never let the browser open the dropped file in place of the page
+  const files = Array.from(e.dataTransfer.files || []);
+  const file = files.length === 1 && /\.fusedbot$/i.test(files[0].name) ? files[0] : null;
+  if (!file) { showBanner("Drop one .fusedbot bot package here to install it; attach other files in the message box."); return; }
+  if (file.size > UPLOAD_MAX_BYTES) { showBanner(`${file.name} is ${(file.size / 1073741824).toFixed(1)} GB; bot packages are limited to 1 GB.`); return; }
+  void (async () => {
+    try {
+      const r = await upload(file);
+      navigateUrl(viewUrlForFsPath(r.path), { isDir: false });
+    } catch (err) { showBanner(`Could not open ${file.name}: ${errMsg(err)}`); }
+  })();
 }
 
 function Banner() {
@@ -119,7 +145,7 @@ export function Bots() {
   useEffect(() => installNotify(), []);
   useFaceAnimator();
   return (
-    <div className="bots-page" ref={setBotsRoot}>
+    <div className="bots-page" ref={setBotsRoot} onDragOver={onPageDragOver} onDrop={onPageDrop}>
       <Banner />
       <main>
         <BotList

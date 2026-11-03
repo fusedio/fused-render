@@ -161,15 +161,15 @@ class FakeAI:
 def steps_bot(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     monkeypatch.setenv("FUSED_RENDER_DIR", str(ws))
+    reset_bots_caches()
     os.makedirs(bpaths.apps_root())
     monkeypatch.setattr(apptools, "ROOTS", [bpaths.apps_root()])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])
     monkeypatch.setattr(apptools, "_apps_cache_at", 0.0)
     monkeypatch.setattr(apptools, "_cache_at", 0.0)
     monkeypatch.setattr(botmod, "Browser", FakeBrowser)
-    registry.reset_for_tests()
-    bid = "s1"
-    os.makedirs(bpaths.bot_dir(bid))
+    bid = "5e5e5e5e"
+    bpaths.place(bid, "Shopper")  # the folder (<ws>/bots/shopper/) must exist before the meta is written
     store.write_meta(bid, {"id": bid, "name": "Shopper", "model": "sonnet", "effort": "low", "status": "idle",
                            "instructions": "", "created": time.time(), "task": "", "step": 0, "url": None, "title": None})
     b = registry.get(bid)

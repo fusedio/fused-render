@@ -567,10 +567,11 @@ def super_mode(bot) -> str | None:
 
 
 def _super_cwd(bot, fallback: str) -> str:
-    """Super Bot's working directory: its Inbox folder (created now, so relative
-    paths land where the user can find them); the cache dir if that fails."""
-    pin = getattr(bot, "_pin_artifacts_dir", None)
-    d = _call(pin, None) if pin else None
+    """Super Bot's working directory: its Inbox, `<folder>/.fused/inbox` (created
+    now, so relative paths land where the user can find them); the cache dir if
+    that fails. Read through _call: the property resolves the bot's folder and
+    raises LookupError for a bot whose folder is gone."""
+    d = _call(lambda: bot.artifacts_dir, None)
     if not d:
         return fallback
     try:

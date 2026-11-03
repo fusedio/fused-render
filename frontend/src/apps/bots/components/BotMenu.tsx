@@ -2,7 +2,7 @@
 // or the preview header's ☰ (live, alignRight). Rows and icons come from menuIcons.tsx. Clamped into the window
 // once laid out; closes on an outside click, Escape and window blur.
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { cloneBot, deleteBot, exportBot } from "../dialogs/actions";
+import { cloneBot, deleteBot, exportBot, exportBotFile } from "../dialogs/actions";
 import { api, type Bot } from "../lib/api";
 import { openLive } from "../lib/cdp";
 import { act, botById, closeMenu, cur, getState, markSeen, openDialog, select, useBotsSelector } from "../state/store";
@@ -20,6 +20,7 @@ export function runMenuAction(a: MenuAction, b: Bot): void {
   if (a === "clone") { void cloneBot(id); return; }  // shares this bot's logins
   if (a === "cloneCopy") { void cloneBot(id, false); return; }
   select(id);
+  if (a === "exportFile") { exportBotFile(id); return; }
   if (a === "export") { void exportBot(cur()); return; }
   if (a === "delete") { void deleteBot(cur()); return; }
   openDialog({ kind: "settings", id, ...(a === "settings" ? {} : { tab: a }) });  // settings, or its Skills / Routines section

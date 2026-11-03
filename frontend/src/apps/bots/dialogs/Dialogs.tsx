@@ -1,10 +1,10 @@
 // The modal host: routes the store's ui.dialog request (newBot → preset chooser → create form, settings, usage,
-// browsers) to its dialog, and always mounts the confirm above them (an imperative promise queue, dialogs/ask.ts; it
+// browsers, exportBot) to its dialog, and always mounts the confirm above them (an imperative promise queue, dialogs/ask.ts; it
 // is mounted after the slot so it paints on top). Each request mounts a fresh dialog, so forms start clean exactly as
 // OpenBot reset them per open. Every dialog wears the one shell (dialogs/shell.ts).
 //
 // For the bot menu / chat header: openDialog({kind: "settings", id, tab?}) or the helpers re-exported below
-// (exportBot, deleteBot, cloneBot) and askConfirm. `tab` names a Settings section: "phone" from Preferences' Phone row
+// (exportBot = the transcript, exportBotFile = the `.fusedbot` dialog, deleteBot, cloneBot) and askConfirm. `tab` names a Settings section: "phone" from Preferences' Phone row
 // and the seeded greeting, "skills" / "routines" from the bot menu and the preview pane (their dialogs were folded
 // into Settings, 2026-10-09).
 import { useEffect, useRef } from "react";
@@ -14,11 +14,12 @@ import { BotSettings } from "./BotSettings";
 import { BrowsersDialog } from "./Browsers";
 import { Confirm } from "./Confirm";
 import { CreateBot } from "./CreateBot";
+import { ExportBotDialog } from "./ExportBot";
 import { FailuresDialog } from "./Failures";
 import { PresetPicker } from "./PresetPicker";
 import { UsageDialog } from "./Usage";
 
-export { cloneBot, createBot, deleteBot, exportBot, saveSettings } from "./actions";
+export { cloneBot, createBot, deleteBot, exportBot, exportBotFile, saveSettings } from "./actions";
 export { askConfirm } from "./ask";
 
 /** A counter that moves whenever a new request object arrives (the dialog's React key). */
@@ -57,6 +58,8 @@ export function Dialogs() {
   }
   if (req?.kind === "usage") dialog = <UsageDialog key={key} onClose={closeDialog} />;
   if (req?.kind === "browsers") dialog = <BrowsersDialog key={key} onClose={closeDialog} />;
+  // Export bot… (the `.fusedbot` package): reads its own plan, so no detail gate like Settings'.
+  if (req?.kind === "exportBot" && b) dialog = <ExportBotDialog key={key} bot={b} onClose={closeDialog} />;
   // "N failed" in the usage strip or the Usage table: the bot's failed calls with their errors. `back` = reopen Usage on
   // close (one dialog slot, so the table's cell hands over and takes back).
   if (req?.kind === "failures" && id) dialog = <FailuresDialog key={key} id={id} name={b?.name} onClose={() => (req.back ? openDialog({ kind: "usage" }) : closeDialog())} />;

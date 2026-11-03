@@ -1,8 +1,8 @@
 // The bot-level flows behind the dialogs and the bot menu (OpenBot dialogs.js): create, save settings, delete,
-// clone, export. Each runs its calls through act() so the page shows the effect and errors land in the banner.
+// clone, export (transcript, and the opener of the Export bot… dialog). Each runs its calls through act() so the page shows the effect and errors land in the banner.
 import { api, type AllowRule, type Bot, type Face } from "../lib/api";
 import { loginValue } from "../lib/botform";
-import { act, cur, getState, select, setState } from "../state/store";
+import { act, cur, getState, openDialog, select, setState } from "../state/store";
 import { askConfirm } from "./ask";
 
 /** What the bot dialogs hand back on OK (OpenBot botDialog's read()). CreateBot fills the fields it does not show
@@ -96,7 +96,7 @@ export async function cloneBot(id: string | undefined = getState().sel || undefi
   if (r?.id) select(r.id);
 }
 
-/** Export transcript…: the thread as Markdown, downloaded. Defaults to the selected bot. */
+/** Export transcript: the thread as Markdown, downloaded. Defaults to the selected bot. */
 export async function exportBot(b: Bot | undefined = cur()): Promise<void> {
   if (!b) return;
   const r = await act(() => api.exportTranscript(b.id), true);
@@ -104,4 +104,10 @@ export async function exportBot(b: Bot | undefined = cur()): Promise<void> {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([r.text], { type: "text/markdown" })); a.download = r.name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+/** Export bot…: the `.fusedbot` package dialog (dialogs/ExportBot.tsx), from the bot menu and Settings' footer. A
+ *  request, not a call: the dialog reads the plan itself. Defaults to the selected bot. */
+export function exportBotFile(id: string | undefined = getState().sel || undefined): void {
+  if (id) openDialog({ kind: "exportBot", id });
 }

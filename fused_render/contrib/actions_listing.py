@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 
 #: The ids the frontend posts to `/api/contrib/listing-action` (never to
 #: `/api/contrib/action`, which does not know them).
-LISTING_IDS = ("publish-market", "publish-update", "confirm-powers", "fix-with-claude",
-               "check-listing", "remove-market")
+LISTING_IDS = ("publish-market", "publish-update", "edit-listing", "confirm-powers",
+               "fix-with-claude", "check-listing", "remove-market")
 #: Ids the listing route also offers in place of a gated publish.
 ROUTE_IDS = ("publish-now", "open-doctor", "sign-in")
 
@@ -83,6 +83,15 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
         return {"state": "unknown",
                 "sentence": f"fused hasn't checked the Community for {name} yet.",
                 "actions": [_btn("check-listing", "Check the Community", primary=True)]}
+
+    def edit_details() -> None:
+        """Edit details (`listing.edit_listing`): the row's text at its own
+        commit — offered wherever there is a row to edit under the app's
+        id, in-review included (the request is rewritten, as Send again
+        does). No gate: the app's version does not move, so neither the
+        tip nor App Doctor is asked."""
+        if not old_slug and lst.get("app_id"):  # no id: `_edit` would refuse `app-id`
+            acts.append(_btn("edit-listing", "Edit details", dialog="listing"))
 
     def gates_ok() -> bool:
         """Publish is offered only when it would not be refused; the
@@ -143,6 +152,9 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
         elif pr.get("kind") != "remove" and gates_ok():
             acts.append(_btn("publish-market", "Publish to Community", primary=True,
                              dialog="listing"))
+        # A removal closed unmerged leaves the app listed: still editable.
+        if listed or (pr.get("kind") != "remove" and pr.get("commit")):
+            edit_details()
         # A listed app can always be taken down, whatever request just failed
         # or was closed — the person is never stuck with a live row and no
         # way out (owner, 2026-10-27).
@@ -157,6 +169,8 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
         if review.get("confirmed"):
             sentence += " You confirmed its new abilities."
         acts.append(_btn("check-listing", "Check again", primary=True))
+        if not removing:
+            edit_details()
     elif listed:
         state = "live"
         when = L.day((lst.get("approved") or {}).get("at"))
@@ -168,6 +182,7 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
                 acts.append(_btn("publish-update", "Publish update", primary=True))
         if old_slug:
             extra.append(old_slug)
+        edit_details()
         acts.append(_btn("remove-market", "Remove from Community", danger=True,
                          confirm=REMOVE_CONFIRM.format(name=name)))
         acts.append(_btn("check-listing", "Check again"))

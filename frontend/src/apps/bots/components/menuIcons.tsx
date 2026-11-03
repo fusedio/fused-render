@@ -1,6 +1,6 @@
 // The bot context menu's line icons and item list (OpenBot chat.js MI + openMenu's markup). components/BotMenu.tsx
 // renders these; the action for each `a` is BotMenu's job (pin/hide → api.flag, read → markSeen, live → the live
-// view, clone, settings/routines/skills/export/delete → dialogs).
+// view, clone, settings/routines/skills/exportFile/export/delete → dialogs).
 import type { ReactNode } from "react";
 import type { Bot } from "../lib/api";
 
@@ -8,7 +8,7 @@ const mi = (d: ReactNode) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
 );
 
-export type MenuIcon = "live" | "settings" | "routines" | "skills" | "export" | "clone" | "pin" | "unpin" | "hide" | "unhide" | "read" | "delete";
+export type MenuIcon = "live" | "settings" | "routines" | "skills" | "export" | "package" | "clone" | "pin" | "unpin" | "hide" | "unhide" | "read" | "delete";
 
 export const MI: Record<MenuIcon, ReactNode> = {
   live: mi(<><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></>),
@@ -16,6 +16,7 @@ export const MI: Record<MenuIcon, ReactNode> = {
   routines: mi(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>),
   skills: mi(<path d="m12 3 2.4 5.2 5.6.7-4.1 3.9 1 5.6L12 15.7l-4.9 2.7 1-5.6L4 8.9l5.6-.7z" />),
   export: mi(<><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></>),
+  package: mi(<><path d="M21 8 12 3 3 8v8l9 5 9-5z" /><path d="m3 8 9 5 9-5" /><path d="M12 13v8" /></>),
   clone: mi(<><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>),
   pin: mi(<><path d="M12 17v5" /><path d="M9 3h6v6l2 3H7l2-3z" /></>),
   unpin: mi(<><path d="M12 17v5" /><path d="M9 3h6v6l2 3H7l2-3z" /><path d="m4 4 16 16" /></>),
@@ -25,7 +26,7 @@ export const MI: Record<MenuIcon, ReactNode> = {
   delete: mi(<><path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path d="M6 7l1 13h10l1-13" /><path d="M9 7V4h6v3" /></>),
 };
 
-export type MenuAction = "live" | "settings" | "routines" | "skills" | "export" | "clone" | "cloneCopy" | "pin" | "hide" | "read" | "delete";
+export type MenuAction = "live" | "settings" | "routines" | "skills" | "exportFile" | "export" | "clone" | "cloneCopy" | "pin" | "hide" | "read" | "delete";
 export type MenuItem = { a: MenuAction; label: string; icon: ReactNode; danger?: boolean } | "hr";
 
 /** openMenu's rows, in order, the same wherever the menu opens (a row's right-click or the preview header's ☰, which
@@ -37,7 +38,9 @@ export function menuItems(b: Bot, opts: { live?: boolean } = {}): MenuItem[] {
   // There is one Super Bot per Mac: no clone (the backend refuses it).
   out.push({ a: "skills", label: "Skills…", icon: MI.skills });
   out.push({ a: "routines", label: "Routines…", icon: MI.routines });
-  out.push({ a: "export", label: "Export transcript…", icon: MI.export });
+  // Export bot… writes the `.fusedbot` package (dialogs/ExportBot.tsx); Super Bot is one per Mac and never travels.
+  if (!ea) out.push({ a: "exportFile", label: "Export bot…", icon: MI.package });
+  out.push({ a: "export", label: "Export transcript", icon: MI.export });
   // Clone shares the source's logins (one browser); the second row is the old behaviour, a copy of them.
   if (!ea) out.push({ a: "clone", label: "Clone", icon: MI.clone }, { a: "cloneCopy", label: "Clone with a copy of its logins", icon: MI.clone });
   out.push("hr",
