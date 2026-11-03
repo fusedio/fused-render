@@ -244,3 +244,79 @@ def test_available_is_false_and_sticky_when_the_engine_is_not_on_disk(mac, monke
     # sticky: a later call does not retry (CEF init is once per process)
     monkeypatch.setattr(chromium, "is_ready", lambda *a, **k: (_ for _ in ()).throw(AssertionError("retried")))
     assert mac.available() is False
+
+
+# ---- visibility diagnostics (black window after a Space switch / relaunch) ----
+
+class _FakeNS:
+    def __init__(self, state):
+        self.state = state
+    def occlusionState(self): return self.state["occlusion"]
+    def isOnActiveSpace(self): return True
+    def isKeyWindow(self): return False
+    def isVisible(self): return True
+    def screen(self): return None
+    def frame(self): return types.SimpleNamespace(origin=types.SimpleNamespace(x=1, y=2), size=types.SimpleNamespace(width=3, height=4))
+
+
+def _observable(mac):
+    d, manager, window, *_ = _delegate(mac)
+    state = {"occlusion": mac.NS_WINDOW_OCCLUSION_STATE_VISIBLE}
+    window.ns = _FakeNS(state)
+    return d, window, state
+
+
+def test_occlusion_visible_reads_appkits_bit(mac):
+    assert mac.occlusion_visible(mac.NS_WINDOW_OCCLUSION_STATE_VISIBLE)
+    assert mac.occlusion_visible(mac.NS_WINDOW_OCCLUSION_STATE_VISIBLE | 1)
+    assert not mac.occlusion_visible(0)
+    assert not mac.occlusion_visible(1)
+
+
+def test_occlusion_transitions_are_logged_once_each(mac, caplog):
+    import logging
+
+    d, window, state = _observable(mac)
+    with caplog.at_level(logging.INFO, logger="fused_render.chromium.mac"):
+        d.windowDidChangeOcclusionState_(None)   # born visible: no transition
+        state["occlusion"] = 0
+        d.windowDidChangeOcclusionState_(None)
+        d.windowDidChangeOcclusionState_(None)   # still occluded: no repeat
+        state["occlusion"] = mac.NS_WINDOW_OCCLUSION_STATE_VISIBLE
+        d.windowDidChangeOcclusionState_(None)
+    msgs = [r.getMessage() for r in caplog.records]
+    assert [m.split(": ")[0] for m in msgs] == ["chromium window /a occluded", "chromium window /a visible again"]
+    assert "onActiveSpace=True" in msgs[1] and "frame=1,2 3x4" in msgs[1]
+
+
+def test_key_space_and_activation_events_are_logged(mac, caplog):
+    import logging
+
+    d, window, state = _observable(mac)
+    with caplog.at_level(logging.INFO, logger="fused_render.chromium.mac"):
+        d.windowDidBecomeKey_(None)
+        d.windowDidResignKey_(None)
+        d.activeSpaceDidChange_(None)
+        d.appDidBecomeActive_(None)
+        d.appDidResignActive_(None)
+    heads = [r.getMessage().split(": ")[0] for r in caplog.records]
+    assert heads == ["chromium window /a became key", "chromium window /a resigned key",
+                     "chromium window /a active Space changed", "chromium window /a app active",
+                     "chromium window /a app inactive"]
+
+
+def test_diagnostics_without_a_window_do_not_raise(mac, caplog):
+    d, manager, window, *_ = _delegate(mac)   # window.ns is None
+    d.windowDidChangeOcclusionState_(None)
+    d.activeSpaceDidChange_(None)
+    d._window = None
+    d.windowDidResignKey_(None)
+    d.detachDiagnostics()
+    d.detachDiagnostics()  # idempotent
+
+
+def test_attach_is_a_no_op_without_appkit_notifications(mac):
+    """The stubbed AppKit has no NSWorkspace: the delegate must still be
+    built (attach is best-effort) and report itself as not observing."""
+    d, *_ = _delegate(mac)
+    assert d._observing is False

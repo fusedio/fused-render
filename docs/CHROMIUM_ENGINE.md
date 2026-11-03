@@ -72,6 +72,26 @@ Rules the window layer follows:
 * The right-click menu is built by the framework (CEF ships none for links or
   images) and curated by the same `window_policy.context_menu_item` rule under
   WebKit's identifiers, so "Open Link in Browser" reads the same.
+* macOS 26+: Chromium's "manual occlusion detection" is switched off at engine
+  start (`FRDisableManualOcclusionDetectionOnMacOS26`, FRChromiumEngine.mm).
+  Chromium 139's WebContentsOcclusionCheckerMac walks `-[NSApp orderedWindows]`
+  and marks a page covered by whole-frame containment; on macOS 26 that list
+  lags window switches (Mission Control, Cmd-`, the Dock, a Space change), so
+  with two overlapping same-size windows the one brought forward is marked
+  occluded, its renderer hidden, and the window stays black until a reload
+  (crbug.com/448103577). Chromium 143 fixed it by answering NO from the
+  version gate on macOS 26 (chromium f198a1988); the engine installs the same
+  answer by swizzling that class method. Covered windows keep painting, as in
+  Chromium ≥ 143 on this OS. A future engine without the method logs and no-ops.
+* Visibility diagnostics: every occlusion / Space / key-window / app-activation
+  transition of a Chromium window is logged at INFO (`chromium window <key>
+  occluded: …`, `_ChromiumDelegate._log_visibility`), and the shell reports
+  `visibilitychange`, focus and rAF stalls to `POST /api/health/visibility`
+  (`visibility.jsonl` beside `outages.jsonl`). Both exist to catch the
+  black-window-until-⌘R report after a Space switch / relaunch handoff,
+  which did not reproduce in isolation (2026-11-03: occlusion, 60 s hide,
+  1x↔2x display moves, theme flips while hidden, a transparent same-app
+  window in front, the placeholder handoff — all repaint).
 * Camera / microphone / geolocation from our own origin are granted; from
   anything else denied (WebKit showed its own prompt for third-party media).
 * The user agent carries `Chrome/<major>` plus the usual `FusedRender/<version>`

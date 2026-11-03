@@ -1018,6 +1018,10 @@ class _Window:
                 pass
         if self.engine == "chromium":
             webview.setDelegate_(None)
+            try:
+                delegate.detachDiagnostics()
+            except Exception:  # noqa: BLE001 — the window is going away regardless
+                logger.debug("detachDiagnostics failed", exc_info=True)
         else:
             webview.setNavigationDelegate_(None)
             webview.setUIDelegate_(None)

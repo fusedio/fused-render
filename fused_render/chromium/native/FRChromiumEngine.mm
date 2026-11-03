@@ -19,6 +19,39 @@
 static FRChromiumEngine *g_engine = nil;
 static NSString *g_lastError = nil;
 
+// Chromium's macOS "manual occlusion detection" (WebContentsOcclusionCheckerMac,
+// content/app_shim_remote_cocoa) decides a page is covered by walking
+// -[NSApplication orderedWindows] and testing whole-frame containment. On
+// macOS 26 that list lags window switches (Mission Control, Cmd-`, the Dock,
+// a Space change): with two overlapping same-size windows the one just
+// brought forward is marked occluded, its renderer is hidden, and the window
+// stops painting — black until a reload (crbug.com/448103577). Upstream's fix
+// for this very Chromium line was to answer NO from
+// +manualOcclusionDetectionSupportedForPackedVersion: on macOS 26 and later
+// (chromium f198a1988, "[Mac] Fix rendering bug for manual occlusion detection on
+// macOS 26", Chromium 143); the engine here is Chromium 139, so the same
+// answer is installed from outside: the class method that every check in the
+// file funnels through is swizzled to return NO, before any browser exists.
+// macOS then decides occlusion alone (NSWindowOcclusionStateVisible), which
+// is exactly what Chromium ≥ 143 does on this OS. A newer engine that no
+// longer has the method is left alone (logged, no-op).
+static void FRDisableManualOcclusionDetectionOnMacOS26(void) {
+  if (@available(macOS 26.0, *)) {
+  } else {
+    return;
+  }
+  Class checker = NSClassFromString(@"WebContentsOcclusionCheckerMac");
+  SEL sel = NSSelectorFromString(@"manualOcclusionDetectionSupportedForCurrentMacOSVersion");
+  Method m = checker ? class_getClassMethod(checker, sel) : nullptr;
+  if (!m) {
+    NSLog(@"FusedChromium: WebContentsOcclusionCheckerMac gate not found; manual occlusion left as is");
+    return;
+  }
+  IMP no = imp_implementationWithBlock(^BOOL(id self) { return NO; });
+  method_setImplementation(m, no);
+  NSLog(@"FusedChromium: manual window occlusion detection disabled on macOS 26+ (crbug.com/448103577)");
+}
+
 // ---- NSApp as a CefAppProtocol ----------------------------------------------
 //
 // CEF requires the NSApplication to implement CefAppProtocol
@@ -206,6 +239,7 @@ static const int64_t kMaxTimerDelayMs = 1000 / 30;
     g_lastError = [NSString stringWithFormat:@"CefInitialize failed (exit code %d)", CefGetExitCode()];
     return nil;
   }
+  FRDisableManualOcclusionDetectionOnMacOS26();
   engine->_cefVersion = [NSString stringWithFormat:@"%d.%d.%d+chromium-%d.%d.%d.%d",
                          CEF_VERSION_MAJOR, CEF_VERSION_MINOR, CEF_VERSION_PATCH,
                          CHROME_VERSION_MAJOR, CHROME_VERSION_MINOR, CHROME_VERSION_BUILD,
