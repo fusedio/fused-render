@@ -5608,6 +5608,8 @@ export default function NewJobModal({
               popClassName="nt-pop--where"
               align="end"
             >
+              {/* The heading the other four popovers have (Akshil, 2026-11-03). */}
+              <div className="nt-pop-h">Folder</div>
               <input
                 ref={pathRef}
                 type="text"
