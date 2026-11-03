@@ -509,14 +509,20 @@ function isBotFileInstallView(fsPath: string): boolean {
 }
 
 // The bot install page in place of StatView; records the file in recents like
-// FusedFileView.
+// FusedFileView. Framed the way MarketplacePage frames FusedFilePage: the
+// `.mp-page` scroller and the centred `.mp-inner` column (styles/marketplace.css)
+// — always bare, since no store header ever sits above a bot package.
 function BotFileView({ fsPath }: { fsPath: string }) {
   useRecentsTracking(fsPath, false, null);
   return (
     <div id="content">
-      <Suspense fallback={<RouteFallback />}>
-        <BotFilePage path={fsPath} />
-      </Suspense>
+      <div className="mp-page is-bare">
+        <main className="mp-inner">
+          <Suspense fallback={<RouteFallback />}>
+            <BotFilePage path={fsPath} />
+          </Suspense>
+        </main>
+      </div>
     </div>
   );
 }

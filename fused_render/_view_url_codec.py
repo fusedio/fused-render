@@ -73,13 +73,14 @@ def rooted_fs_path(joined: str) -> str:
 def view_url_path(fs_path: str) -> str:
     """Explorer URL path (no host/port) for an absolute fs path."""
     norm = canonical_fs_path(fs_path)
-    if fs_path.lower().endswith(".fused"):
+    if fs_path.lower().endswith((".fused", ".fusedbot")):
         # An OS-delivered .fused open (Finder double-click, a desktop "Open
         # with") lands on the file's own EMBED URL: the fusedapp preview
         # template extracts and renders the app chrome-free — the app
         # experience, not the explorer (SPEC §43, D390). An in-explorer click
         # uses the ordinary /explorer/view prefix (shell chrome kept), which
-        # needs no special case anywhere.
+        # needs no special case anywhere. A .fusedbot bot package (docs/bots.md
+        # §17) opens the same way, on its own install page.
         return embed_url_path(fs_path)
     segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
     return "/explorer/view/" + "/".join(segments)
