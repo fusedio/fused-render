@@ -336,10 +336,13 @@ def main() -> None:
         # no minted id — which is the pre-`--session-id` behaviour, not an
         # error.
         req.get("new_session_id", ""), req.get("resume_at", ""),
-        strict_mcp=bool(req.get("strict_mcp", False)))
+        strict_mcp=bool(req.get("strict_mcp", False)),
+        breakout=bool(req.get("breakout", False)))
     # The session this run's turn is IN: a fork resumes the old id but runs in
-    # the NEW one, so there the minted id wins.
-    own_sid = (req.get("new_session_id", "") if req.get("resume_at")
+    # the NEW one, so there the minted id wins. A breakout forked at the tip
+    # has no `resume_at` but is a fork all the same.
+    own_sid = (req.get("new_session_id", "")
+               if req.get("resume_at") or req.get("breakout")
                else req["session_id"] or req.get("new_session_id", ""))
 
     out_fh = _append_private(os.path.join(run_dir, "out.jsonl"))

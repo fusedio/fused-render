@@ -78,6 +78,9 @@ def _file_owner(params: dict, result: dict, body: dict | None = None,
         action = str(params.get("action") or "")
         if action not in ("start", "send"):
             return
+        if str(params.get("breakout") or "") in ("1", "resume"):
+            # Never the folder's owner (see `_folder_busy`).
+            return
         key = _queue_target(params)
         if not key:
             return
@@ -248,6 +251,10 @@ def _folder_busy(params: dict, body: dict | None = None) -> str:
     try:
         action = str(params.get("action") or "")
         if action not in ("start", "send"):
+            return ""
+        if str(params.get("breakout") or "") in ("1", "resume"):
+            # A breakout is a side conversation, not a task: it never claims
+            # the folder slot and never waits on whoever holds it.
             return ""
         key = _queue_target(params)
         if not key:

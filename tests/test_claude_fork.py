@@ -125,9 +125,9 @@ def start(agent, tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "_session_transcript_path",
                         lambda wd, sid: _transcript(tmp_path, holder["rows"]))
 
-    def go(fork_at, session_id="OLD", backend="claude"):
+    def go(fork_at, session_id="OLD", backend="claude", **kw):
         out = agent._start(str(project), "new prompt", session_id, "", "",
-                           backend=backend, fork_at=fork_at)
+                           backend=backend, fork_at=fork_at, **kw)
         run_dir = os.path.join(agent.RUNS, out["run_id"]) \
             if "run_id" in out else ""
         return out, seen.get("req"), run_dir
@@ -178,3 +178,133 @@ def test_start_fork_copilot_refused(agent, start, monkeypatch):
     assert out["reason"] == "unsupported"
     assert "Claude" in out["error"]
     assert not os.path.isdir(agent.RUNS) or not os.listdir(agent.RUNS)
+
+
+# ----------------------------------------------------------------- breakout
+#
+# A breakout is a fork that is read-only by policy and ephemeral: it forks the
+# session (at a message, or at the tip when `fork_at` is empty), runs in
+# `default` permission mode whatever the page asked for, loses the `fused` CLI
+# pre-allowance, and tells the permission bridge where its one writable
+# directory is.
+
+
+def test_argv_breakout_forks_at_tip(agent, tmp_path):
+    argv = _argv(agent, tmp_path, session_id="OLD", new_session_id="NEW",
+                 breakout=True)
+    assert argv[argv.index("--resume") + 1] == "OLD"
+    assert "--fork-session" in argv
+    assert argv[argv.index("--session-id") + 1] == "NEW"
+    assert "--resume-session-at" not in argv
+
+
+def test_argv_breakout_keeps_resume_at_for_a_message(agent, tmp_path):
+    argv = _argv(agent, tmp_path, session_id="OLD", new_session_id="NEW",
+                 resume_at="P", breakout=True)
+    assert argv[argv.index("--resume-session-at") + 1] == "P"
+
+
+def test_argv_breakout_forces_default_mode_and_drops_fused_cli(
+        agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_fused_cli_dir", lambda: "/x/bin")
+    plain = _argv(agent, tmp_path, cli_mode="acceptEdits")
+    assert plain[plain.index("--permission-mode") + 1] == "acceptEdits"
+    assert "Bash(fused:*)" in plain[plain.index("--allowed-tools") + 1]
+    argv = _argv(agent, tmp_path, cli_mode="acceptEdits", breakout=True)
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert "Bash(fused:*)" not in argv[argv.index("--allowed-tools") + 1]
+    # No mode at all still pins default for a breakout.
+    argv = _argv(agent, tmp_path, cli_mode=None, breakout=True)
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+
+
+def test_argv_breakout_hands_the_bridge_the_handoff_dir(agent, tmp_path):
+    argv = _argv(agent, tmp_path, session_id="OLD", new_session_id="NEW",
+                 breakout=True)
+    with open(argv[argv.index("--mcp-config") + 1]) as fh:
+        env = json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]["env"]
+    assert env["FUSED_BREAKOUT_HANDOFF_DIR"] == os.path.join(
+        agent._workdir("/tmp/f"), ".claude", "handoffs")
+    plain = _argv(agent, tmp_path / "other")
+    with open(plain[plain.index("--mcp-config") + 1]) as fh:
+        env = json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]["env"]
+    assert "FUSED_BREAKOUT_HANDOFF_DIR" not in env
+
+
+def test_breakout_prompt_names_the_handoff_dir(agent):
+    plain = agent._appended_prompt("/tmp/f", False)
+    assert "breakout" not in plain.lower()
+    text = agent._appended_prompt("/tmp/f", False, breakout=True)
+    assert "breakout" in text.lower()
+    assert os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs") in text
+
+
+def test_start_breakout_at_tip(agent, start):
+    out, req, run_dir = start("", breakout=True)
+    assert "error" not in out, out
+    new = out["session_id"]
+    assert _UUID4.match(new) and new != "OLD"
+    assert req["session_id"] == "OLD" and "resume_at" not in req
+    assert req["new_session_id"] == new and req["breakout"] is True
+    meta = _meta(run_dir)
+    assert meta["breakout"] is True and meta["forked_from"] == "OLD"
+    assert meta["session_id"] == new and meta["resumed_from"] == ""
+    assert "fork_at" not in meta
+
+
+def test_start_breakout_at_a_message(agent, start):
+    out, req, run_dir = start("u2", breakout=True)
+    assert "error" not in out, out
+    assert req["resume_at"] == "t2" and req["breakout"] is True
+    assert _meta(run_dir)["breakout"] is True
+
+
+def test_start_without_breakout_leaves_no_flag(agent, start):
+    out, req, run_dir = start("u2")
+    assert "breakout" not in _meta(run_dir) and "breakout" not in req
+
+
+def test_start_breakout_needs_a_session(agent, start):
+    out, _, _ = start("", session_id="", breakout=True)
+    assert out["reason"] == "unsupported"
+    assert not os.path.isdir(agent.RUNS) or not os.listdir(agent.RUNS)
+
+
+def test_start_breakout_copilot_refused(agent, start, monkeypatch):
+    monkeypatch.setattr(agent, "_backend_for_session",
+                        lambda sid, wd, hint="": "copilot")
+    monkeypatch.setattr(agent, "_backend_enabled", lambda b: True)
+    out, _, _ = start("", breakout=True)
+    assert out["reason"] == "unsupported"
+    assert "Claude" in out["error"]
+    assert not os.path.isdir(agent.RUNS) or not os.listdir(agent.RUNS)
+
+
+def test_main_forwards_breakout(agent, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(agent, "_start", lambda *a, **kw: seen.update(kw) or {})
+    agent.main(action="start", file="/tmp/f", message="m", session_id="S",
+               breakout="1")
+    assert seen["breakout"] is True
+    seen.clear()
+    agent.main(action="start", file="/tmp/f", message="m", session_id="S")
+    assert seen["breakout"] is False
+
+
+def test_start_breakout_resume_continues_without_forking(agent, start):
+    out, req, run_dir = start("", session_id="BRK", breakout=True,
+                              breakout_resume=True)
+    assert "error" not in out, out
+    assert req["session_id"] == "BRK" and req["new_session_id"] == ""
+    assert "resume_at" not in req and req["breakout"] is True
+    meta = _meta(run_dir)
+    assert meta["breakout"] is True and "forked_from" not in meta
+    assert meta["resumed_from"] == "BRK"
+
+
+def test_main_breakout_resume_param(agent, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(agent, "_start", lambda *a, **kw: seen.update(kw) or {})
+    agent.main(action="start", file="/tmp/f", message="m", session_id="S",
+               breakout="resume")
+    assert seen["breakout"] is True and seen["breakout_resume"] is True

@@ -963,6 +963,45 @@ def mark_deleted(key: str, now: float | None = None) -> None:
     _update(DELETED_FILE, mutate)
 
 
+# ----------------------------------------------------------- breakouts.json
+#
+#     {"<session-id>": {"at": 1755300000.0}}
+#
+# A BREAKOUT is a research-only side chat forked from a chat (agent.py
+# `_start(breakout=...)`). It is a real Claude session with a real transcript,
+# and that transcript stays, but it is not a task: the Tasks scan drops these
+# sessions (`_breakout` in routers/tasks.py). Marked by the router from the
+# start's answer, keyed by session like `deleted.json` and for the same
+# reasons, and with no revival rule: a breakout that is marked stays one.
+
+BREAKOUTS_FILE = "breakouts.json"
+
+
+def breakout_state() -> dict:
+    """The breakout store, as saved. Missing/corrupt reads as {} — nothing is
+    a breakout — so degrading shows an extra row and never hides a task."""
+    return load_state(BREAKOUTS_FILE)
+
+
+def is_breakout(key: str) -> bool:
+    return bool(key) and isinstance(breakout_state().get(str(key)), dict)
+
+
+def mark_breakout(key: str, now: float | None = None) -> None:
+    """Record one session as a breakout. Idempotent; an empty key is ignored."""
+    if not key:
+        return
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        if isinstance(state.get(str(key)), dict):
+            return None, False
+        state[str(key)] = {"at": stamp}
+        return None, True
+
+    _update(BREAKOUTS_FILE, mutate)
+
+
 # ------------------------------------------------------------ archived.json
 #
 #     {"<task-key>": {"at": 1755300000.0}}

@@ -1435,3 +1435,25 @@ def test_a_custom_title_rides_on_the_settings_record_and_goes_with_an_erase(stat
     tasks_store.record_title("sess-a", "Again")
     tasks_store.forget_session("sess-a")
     assert tasks_store.session_title(tasks_store.settings_state(), "sess-a") == ""
+
+
+# ------------------------------------------------------------ breakouts.json
+# A breakout (a research-only side chat forked from a chat) is never a task:
+# the Tasks scan reads this store and drops its sessions.
+
+
+def test_breakout_marks_round_trip(state_dir):
+    assert tasks_store.breakout_state() == {}
+    assert not tasks_store.is_breakout("sess-b")
+    tasks_store.mark_breakout("sess-b")
+    assert tasks_store.is_breakout("sess-b")
+    assert not tasks_store.is_breakout("sess-a")
+    assert "sess-b" in json.loads((state_dir / "breakouts.json").read_text())
+    tasks_store.mark_breakout("sess-b")  # idempotent
+    assert list(tasks_store.breakout_state()) == ["sess-b"]
+
+
+def test_breakout_mark_ignores_an_empty_key(state_dir):
+    tasks_store.mark_breakout("")
+    assert tasks_store.breakout_state() == {}
+    assert not tasks_store.is_breakout("")
