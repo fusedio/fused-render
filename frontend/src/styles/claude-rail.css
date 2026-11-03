@@ -14,9 +14,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  /* 4px at the foot, not 10 (owner, 2026-11-03: "a bit of padding below
-     which needs to be removed"): the favourites stand last, on the edge. */
-  padding: 10px 0 4px;
+  padding: 10px 0;
   box-sizing: border-box;
   border-left: 1px solid var(--border);
   background: var(--bg);
@@ -151,6 +149,12 @@
 }
 .claude-rail .sidebar-rail-sep.is-tight {
   margin: 6px 0;
+}
+/* 4px at the foot, not 10, while favourites stand there (owner, 2026-11-03:
+   "a bit of padding below which needs to be removed"): they are the rail's
+   last section, on the edge. Without them the rail keeps its padding. */
+.claude-rail.has-favs {
+  padding-bottom: 4px;
 }
 .claude-rail-chat.is-fav.is-open::after {
   background: rgba(var(--tint), 0.14);

@@ -1200,7 +1200,7 @@ export function ClaudeRail({
   return (
     <aside
       ref={railRef}
-      className="claude-rail"
+      className={"claude-rail" + (favs.length > 0 ? " has-favs" : "")}
       aria-label="Claude"
       onPointerMove={(e) => {
         lastPointer.current = { x: e.clientX, y: e.clientY };
