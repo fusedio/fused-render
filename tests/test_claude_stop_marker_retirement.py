@@ -128,7 +128,7 @@ def _start(agent, monkeypatch, stub_cli, target, message="m1"):
 def test_a_stop_does_not_read_as_a_crash_to_a_second_viewer(
         agent, monkeypatch, stub_cli, target):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: agent._host_alive(run_dir))
 
     result = agent._cancel(run_id)
     assert result["still_queued"] == []
@@ -168,7 +168,7 @@ def test_a_stop_does_not_read_as_a_crash_to_a_second_viewer(
 def test_a_later_completed_turn_clears_the_stale_stop_marker(
         agent, monkeypatch, stub_cli, target):
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
-    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    assert _wait_for(lambda: agent._host_alive(run_dir))
 
     agent._cancel(run_id)
     poll = agent._poll(run_id)
