@@ -15,6 +15,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 
 from fused_render.bots import paths as _bpaths
 
@@ -59,6 +60,16 @@ PUBLIC_KEYS = frozenset({"id", "name", "model", "effort", "instructions", "face"
 # disabled anyway (botfile).
 ROUTINE_PUBLIC_KEYS = frozenset({"id", "task", "kind", "created", "minutes", "anchor", "time", "weekdays", "at"})
 STATE_FILE = "state.json"
+# The two halves are two atomic replaces, not one: a crash between them would pair a NEW routine schedule with the
+# OLD `next` (or the reverse), and the routine would fire once at a time nobody committed. So bot.json carries
+# GEN_KEY, minted afresh only when its PUBLIC text changes (a private-only save must not touch the git-facing file),
+# and state.json carries PUBLIC_GEN_KEY = the gen of the bot.json it was saved beside. read_meta calls a pair whose
+# gens differ torn and drops the schedule-derived run state (ROUTINE_TORN_KEYS) so the scheduler recomputes it.
+# Neither key ever reaches the merged meta (read_meta pops both) nor an export (public_json strips GEN_KEY).
+GEN_KEY = "_gen"
+PUBLIC_GEN_KEY = "_public_gen"
+ROUTINE_TORN_KEYS = ("next",)
+_torn_warned: set = set()
 
 
 def bot_dir(bid: str) -> str:
@@ -121,6 +132,21 @@ def read_meta(bid: str) -> dict:
         logging.getLogger(__name__).warning("bots: %s unreadable (%s); moved to %s, starting the bot with empty "
                                             "state", spath, e, os.path.basename(aside))
         private = {}
+    return _merge(public, private, spath)
+
+
+def _merge(public: dict, private: dict, where: str, warn: bool = True) -> dict:
+    """bot.json overlaid on state.json, routines joined by `id`, the gen stamps checked and removed (GEN_KEY).
+    Takes ownership of both dicts (callers pass freshly parsed ones). `warn` off for read-only observers, which
+    can land between a live save's two replaces (not a crash)."""
+    gen = public.pop(GEN_KEY, None)
+    torn = PUBLIC_GEN_KEY in private and private.pop(PUBLIC_GEN_KEY) != gen
+    if torn and warn:
+        key = (where, gen)
+        if key not in _torn_warned:
+            _torn_warned.add(key)
+            logging.getLogger(__name__).warning("bots: %s was saved beside a different bot.json (a save torn between "
+                                                "the two files); routine run times are recomputed", where)
     priv_routines = private.pop("routines", None)
     out = {**private, **public}
     if isinstance(public.get("routines"), list):
@@ -129,17 +155,71 @@ def read_meta(bid: str) -> dict:
         for row in public["routines"]:
             if isinstance(row, dict) and row.get("id") in by_id:
                 priv = by_id[row["id"]]
-                row = {**row, **{k: v for k, v in priv.items() if k not in ROUTINE_PUBLIC_KEYS}}
+                row = {**row, **{k: v for k, v in priv.items()
+                                 if k not in ROUTINE_PUBLIC_KEYS and not (torn and k in ROUTINE_TORN_KEYS)}}
             merged.append(row)
         out["routines"] = merged
     return out
+
+
+def read_all_metas() -> list[dict] | None:
+    """Every bot folder's merged meta, read straight off `<bots_root>/*/` (NOT through the folder index, which
+    leaves out a folder whose bot.json is torn, foreign-id'd or claimed twice), or None when ANY folder holding a
+    bot.json cannot be read whole: a bot.json or .fused/state.json that is a symlink, not a regular file, not
+    UTF-8 JSON or not an object, or a `.fused` that is a symlink. For callers that delete things no bot names
+    (browsers.sweep): a partial list would read as "nobody uses this". Read-only (a corrupt state.json is NOT
+    moved aside, unlike read_meta). Each row's `id` is its bot.json id when that is a string, else the folder
+    name. A missing bots root is no bots; an unlistable one is None."""
+    root = _bpaths.bots_root()
+    try:
+        with os.scandir(root) as it:
+            entries = sorted(it, key=lambda e: e.name)
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return None
+    out = []
+    for e in entries:
+        if e.name.startswith("."):
+            continue  # .unmigrated/ and other dot folders are not bot folders (browsers reads .unmigrated itself)
+        meta = os.path.join(e.path, BOT_FILE)
+        if not os.path.lexists(meta):
+            continue  # not a bot folder (or placed, bot.json not written yet: it names no browser)
+        try:
+            if not e.is_dir(follow_symlinks=False):
+                return None  # a symlinked "folder" that holds a bot.json: whose bot it is cannot be trusted
+        except OSError:
+            return None
+        public = _read_object(meta)
+        priv_dir = os.path.join(e.path, _bpaths._PRIVATE)
+        if public is None or os.path.islink(priv_dir):
+            return None
+        spath = os.path.join(priv_dir, STATE_FILE)
+        private = _read_object(spath) if os.path.lexists(spath) else {}
+        if private is None:
+            return None
+        m = _merge(public, private, spath, warn=False)
+        out.append({**m, "id": m["id"] if isinstance(m.get("id"), str) and m["id"] else e.name})
+    return out
+
+
+def _read_object(path: str) -> dict | None:
+    """The JSON object in a regular, non-symlink file, or None."""
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            obj = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def split_meta(meta: dict) -> tuple[dict, dict]:
     """(public, private) halves of a meta dict, as NEW dicts (Bot.meta is live; never mutate it). Public to
     package.py, which ships exactly the public half."""
     public = {k: v for k, v in meta.items() if k in PUBLIC_KEYS}
-    private = {k: v for k, v in meta.items() if k not in PUBLIC_KEYS}
+    private = {k: v for k, v in meta.items() if k not in PUBLIC_KEYS and k not in (GEN_KEY, PUBLIC_GEN_KEY)}
     routines = meta.get("routines")
     if isinstance(routines, list):
         pub_rows, priv_rows = [], []
@@ -165,17 +245,30 @@ def split_meta(meta: dict) -> tuple[dict, dict]:
 
 
 def public_json(public: dict) -> str:
-    """bot.json's exact text: a human- and git-facing file, so indented, key-sorted, newline-terminated, and
-    deterministic — write_meta compares this text to decide whether the file needs writing at all."""
-    return json.dumps(public, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    """The public half as text: indented, key-sorted, newline-terminated, deterministic. What a package ships
+    (package.py), so GEN_KEY is stripped: the gen is this machine's save bookkeeping, not part of the bot.
+    bot.json on disk is this text plus the gen (_file_text)."""
+    return json.dumps({k: v for k, v in public.items() if k != GEN_KEY}, indent=2, sort_keys=True,
+                      ensure_ascii=False) + "\n"
+
+
+def _file_text(public: dict, gen: str | None) -> str:
+    """bot.json's exact on-disk text: public_json plus GEN_KEY (absent when None: a file from before the stamp
+    keeps its text until its public content changes). write_meta compares this to decide whether to write."""
+    body = {k: v for k, v in public.items() if k != GEN_KEY}
+    if gen is not None:
+        body[GEN_KEY] = gen
+    return json.dumps(body, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def write_meta(bid: str, meta: dict) -> None:
-    """Save the bot's meta: state.json always (atomically), bot.json only when its text would change. The
-    second rule keeps a bot folder git-clean: the runtime saves on every status flip and routine tick, and
-    none of that may touch the public file. state.json goes first, so a bot.json that appears (a new bot)
-    always has its private half beside it. Raises LookupError when the bot has no folder (place() first)."""
-    # Not atomic across the two files: private (state.json) then public (bot.json), no shared generation stamp.
+    """Save the bot's meta: bot.json only when its public content changed, then state.json always (each
+    atomically). The first rule keeps a bot folder git-clean: the runtime saves on every status flip and routine
+    tick, and none of that may touch the public file. A changed bot.json gets a fresh GEN_KEY and state.json
+    records the gen it was saved beside (PUBLIC_GEN_KEY), so a crash between the two replaces (new public, old
+    private) reads back as torn (read_meta drops the schedule-derived run state) instead of a mismatched pair.
+    A new bot's bot.json may briefly exist without state.json (empty private state: a valid bot). Raises
+    LookupError when the bot has no folder (place() first)."""
     # One owner per workspace (registry's workspace routine claim) is what keeps the writers to one process.
     public, private = split_meta(meta)
     # bot.json's `id` is what paths.folders() keys the folder by: a missing or foreign one would lose the bot on
@@ -186,14 +279,31 @@ def write_meta(bid: str, meta: dict) -> None:
                                                 bid, public["id"], bid)
         public["id"] = bid
     path = meta_path(bid)
-    write_json_atomic(state_path(bid), private)
-    text = public_json(public)
+    spath = state_path(bid)
+    gen = _write_public(path, public)
+    private[PUBLIC_GEN_KEY] = gen
+    write_json_atomic(spath, private)
+
+
+def _write_public(path: str, public: dict) -> str | None:
+    """Write bot.json unless its content (gen aside) is unchanged; returns the gen the file now carries."""
     try:
         with open(path, encoding="utf-8") as f:
-            if f.read() == text:
-                return
+            existing = f.read()
     except (OSError, ValueError):
-        pass  # missing, unreadable or not UTF-8: it differs, rewrite it
+        existing = None  # missing, unreadable or not UTF-8: it differs, rewrite it
+    if existing is not None:
+        try:
+            old = json.loads(existing)
+        except ValueError:
+            old = None
+        old_gen = old.get(GEN_KEY) if isinstance(old, dict) else None
+        if not isinstance(old_gen, str):
+            old_gen = None
+        if existing == _file_text(public, old_gen):
+            return old_gen
+    gen = uuid.uuid4().hex
+    text = _file_text(public, gen)
     tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -205,6 +315,7 @@ def write_meta(bid: str, meta: dict) -> None:
                 os.remove(tmp)
             except OSError:
                 pass
+    return gen
 
 
 def list_ids(strict: bool = False) -> list[str]:

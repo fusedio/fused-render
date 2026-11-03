@@ -124,6 +124,53 @@ def test_place_without_hard_links_leaves_no_partial_file_when_the_copy_fails(tmp
     assert os.listdir(dest) == []
 
 
+def _copy_that_checks_final_is_absent(monkeypatch, final):
+    """Wrap shutil.copyfileobj: record whether `final` existed while the bytes were being written."""
+    real = shutil.copyfileobj
+    seen = []
+
+    def copy(*a, **k):
+        seen.append(os.path.lexists(final))
+        real(*a, **k)
+        seen.append(os.path.lexists(final))
+
+    monkeypatch.setattr(shutil, "copyfileobj", copy)
+    return seen
+
+
+@pytest.mark.parametrize("links_in_dest", [True, False])
+def test_place_copy_publishes_the_final_name_only_once_complete(tmp_path, monkeypatch, links_in_dest):
+    """The source cannot be hard-linked (first os.link fails): the copy goes to a hidden temp in dest and the final
+    `.fusedbot` name appears only after the bytes are in — by a hard link from the temp, or (no links at all) by a
+    rename over an exclusive claim. No temp is left behind."""
+    from fused_render.bots import package
+
+    tmp = tmp_path / "package.fusedbot"
+    tmp.write_bytes(b"PKG" * 1000)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    final = dest / "bot.fusedbot"
+    real_link = os.link
+    calls = []
+
+    def link(src, dst, *a, **k):
+        calls.append((src, dst))
+        if len(calls) == 1 or not links_in_dest:
+            raise OSError(errno.EPERM, "Operation not permitted")
+        return real_link(src, dst, *a, **k)
+
+    monkeypatch.setattr(os, "link", link)
+    seen = _copy_that_checks_final_is_absent(monkeypatch, str(final))
+    got = package._place(str(tmp), str(dest), "bot.fusedbot", lambda d, n: os.path.join(d, n))
+    assert got == str(final)
+    assert seen == [False, False]  # the final name did not exist at any point of the copy
+    assert final.read_bytes() == b"PKG" * 1000
+    assert os.listdir(dest) == ["bot.fusedbot"]
+    assert calls[0] == (str(tmp), str(final))
+    if links_in_dest:
+        assert os.path.basename(calls[1][0]).startswith(".bot.fusedbot.part-") and calls[1][1] == str(final)
+
+
 # ---------------------------------------------------------- edited starter ---
 @pytest.fixture
 def starter_app(tmp_path, monkeypatch):
@@ -216,3 +263,47 @@ def test_marketplace_copy_with_own_edits_is_bundled(monkeypatch, state, want_dir
         assert got == {"kind": "bundled", "fallback": {"kind": "marketplace", "code": "dirty", "slug": "cool"}}
     else:
         assert got == {"kind": "marketplace", "slug": "cool", "repo": "a/b", "commit": "abc123"}
+
+
+def _git(cwd, *args):
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+                   env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+                        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"})
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_marketplace_copy_whose_only_edit_is_a_new_file_is_bundled(monkeypatch):
+    """The share sheet's count leaves untracked files out (a proposal makes them opt-in), but a slug reference would
+    lose them: a real clone with one new, non-ignored file is bundled; fused's own `.fused/` state and ignored files
+    are not edits."""
+    from fused_render import share_app
+    from fused_render.bots import package
+    from fused_render.contrib import store as cstore
+
+    app = os.path.join(bpaths.apps_root(), "cool")
+    os.makedirs(app)
+    with open(os.path.join(app, "index.html"), "w", encoding="utf-8") as f:
+        f.write(APP_HTML.format(t="Cool"))
+    with open(os.path.join(app, ".gitignore"), "w", encoding="utf-8") as f:
+        f.write("secret.txt\n")
+    _git(app, "init", "-q")
+    _git(app, "add", "-A")
+    _git(app, "commit", "-q", "-m", "init")
+    monkeypatch.setattr(cstore, "get_raw", lambda _k: {"kind": "marketplace", "slug": "cool", "repo": "a/b"})
+    monkeypatch.setattr(share_app, "github_link_state", lambda *_a, **_k: {"ok": True, "code": "contributor",
+                                                                           "changes": 0})
+    os.makedirs(os.path.join(app, ".fused"))
+    with open(os.path.join(app, ".fused", "state.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
+    with open(os.path.join(app, "secret.txt"), "w", encoding="utf-8") as f:
+        f.write("ignored")
+    assert package.resolve_source(app) == {"kind": "marketplace", "slug": "cool", "repo": "a/b"}
+
+    os.makedirs(os.path.join(app, "data"))
+    with open(os.path.join(app, "data", "notes.csv"), "w", encoding="utf-8") as f:
+        f.write("a,b\n")
+    assert package.resolve_source(app) == {"kind": "bundled",
+                                           "fallback": {"kind": "marketplace", "code": "dirty", "slug": "cool"}}

@@ -143,7 +143,9 @@ function openBot(id: string) {
 type Phase =
   | { kind: "idle" }
   | { kind: "installing" }
-  | { kind: "done"; result: BotFileInstallResult }
+  // `rowWarnings`: the latest per-row Retry's warnings by folder, replaced on each Retry of that row (so a warning a
+  // Retry fixed goes away); the page shows the first install's warnings plus these.
+  | { kind: "done"; result: BotFileInstallResult; rowWarnings?: Record<string, string[]> }
   | { kind: "error"; message: string };
 
 /** The selection the first submit sent: every Retry with the same `request_id` re-sends exactly this. */
@@ -223,6 +225,8 @@ export function BotFilePage({ path }: { path: string }) {
   // From the first submit on the selection is the pinned one, in the error phase too (a Retry resends it).
   const busy = sent !== null || phase.kind === "installing" || phase.kind === "done";
   const results = phase.kind === "done" ? new Map(phase.result.apps.map((r) => [r.folder, r])) : null;
+  const warnings =
+    phase.kind === "done" ? [...new Set([...(phase.result.warnings ?? []), ...Object.values(phase.rowWarnings ?? {}).flat()])] : [];
 
   const toggle = (folder: string, on: boolean) =>
     setTicked((s) => {
@@ -246,8 +250,9 @@ export function BotFilePage({ path }: { path: string }) {
       const r = await install(path, { apps: body.apps, memory: body.memory, request_id: requestId.current });
       setPhase({ kind: "done", result: r });
       const failed = r.apps.filter((a) => !a.ok).length;
+      const notInstalled = r.apps.filter((a) => !a.ok && a.state !== "settings").length;
       notify({
-        title: failed ? `${name} installed · ${failed} app${failed === 1 ? "" : "s"} did not install` : `${name} installed`,
+        title: notInstalled ? `${name} installed · ${notInstalled} app${notInstalled === 1 ? "" : "s"} did not install` : `${name} installed`,
         tone: "info",
       });
       // Every app landed and nothing to say: a beat for the pill's check, then the bot. Otherwise stay, so the
@@ -260,8 +265,9 @@ export function BotFilePage({ path }: { path: string }) {
 
   // One failed row again, into the bot the first install made: only that folder (one of the pinned selection's: a
   // failed row comes from the pinned install's results), never the memory (the bot has it already, or was installed
-  // without it), a fresh request id (this is a new request, not a resend). Its warnings (a `settings: …` one = the
-  // app installed but the bot was not updated) join the page's.
+  // without it), a fresh request id (this is a new request, not a resend). Its warnings replace that row's previous
+  // Retry's, so one a later Retry fixed goes away. The answer row is matched by the index folder we sent; a lone row
+  // that came back under another spelling is still ours (we asked for exactly one) and keeps the index folder.
   const retryRow = async (folder: string) => {
     if (phase.kind !== "done" || !sent?.apps.includes(folder)) return;
     const botId = phase.result.bot_id;
@@ -270,7 +276,8 @@ export function BotFilePage({ path }: { path: string }) {
     let more: string[] = [];
     try {
       const r = await install(path, { apps: [folder], memory: false, bot_id: botId, request_id: newRequestId() });
-      row = r.apps.find((a) => a.folder === folder) ?? { folder, ok: false, state: "missing", error: "The server did not answer for this app." };
+      const hit = r.apps.find((a) => a.folder === folder) ?? (r.apps.length === 1 ? r.apps[0] : undefined);
+      row = hit ? { ...hit, folder } : { folder, ok: false, state: "missing", error: "The server did not answer for this app." };
       more = r.warnings ?? [];
     } catch (e) {
       row = { folder, ok: false, state: "error", error: (e as Error).message || "Install failed" };
@@ -278,9 +285,7 @@ export function BotFilePage({ path }: { path: string }) {
     setPhase((ph) => {
       if (ph.kind !== "done") return ph;
       const apps = ph.result.apps.some((a) => a.folder === folder) ? ph.result.apps.map((a) => (a.folder === folder ? row : a)) : [...ph.result.apps, row];
-      const had = ph.result.warnings ?? [];
-      const warnings = [...had, ...more.filter((w) => !had.includes(w))];
-      return { ...ph, result: { ...ph.result, apps, warnings } };
+      return { ...ph, result: { ...ph.result, apps }, rowWarnings: { ...ph.rowWarnings, [folder]: more } };
     });
     setRetrying((s) => {
       const next = new Set(s);
@@ -297,13 +302,20 @@ export function BotFilePage({ path }: { path: string }) {
     note = sent?.apps.length ? "Installing its apps, then the bot…" : "Creating the bot…";
   } else if (phase.kind === "done") {
     const id = phase.result.bot_id;
-    const failed = phase.result.apps.filter((a) => !a.ok).length;
-    const warnings = phase.result.warnings ?? [];
+    const failed = phase.result.apps.filter((a) => !a.ok && a.state !== "settings").length;
+    const unlinked = phase.result.apps.filter((a) => !a.ok && a.state === "settings").length;
     pill = { state: "open", label: "Open bot", onClick: () => openBot(id) };
     note =
-      failed || warnings.length ? (
+      failed || unlinked || warnings.length ? (
         <span className="is-warn">
-          {["Installed", failed ? `${failed} app${failed === 1 ? "" : "s"} did not install` : "", ...warnings].filter(Boolean).join(" · ")}
+          {[
+            "Installed",
+            failed ? `${failed} app${failed === 1 ? "" : "s"} did not install` : "",
+            unlinked ? `${unlinked} app${unlinked === 1 ? "" : "s"} not added to the bot` : "",
+            ...warnings,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </span>
       ) : (
         <b>Installed · opening…</b>
@@ -394,6 +406,8 @@ export function BotFilePage({ path }: { path: string }) {
         <ul className="flex flex-col">
           {p.apps.map((a) => {
             const res = results?.get(a.folder);
+            // A settings row's error repeats the label before its reason; show only the reason.
+            const reason = res?.error && res.state === "settings" ? res.error.replace(/^installed, but the bot could not be updated:\s*/i, "") : res?.error;
             const on = a.tickable && ticked.has(a.folder);
             return (
               <li key={a.folder} className={"flex items-start gap-2.5 border-b border-border py-2 last:border-b-0" + (a.tickable ? "" : " opacity-60")}>
@@ -412,16 +426,20 @@ export function BotFilePage({ path }: { path: string }) {
                     <span className="as-tag shrink-0">{SOURCE[a.source.kind] ?? a.source.kind}</span>
                   </div>
                   <span className="truncate text-[12px] text-muted-foreground" title={a.folder}>
-                    {a.folder} · {res ? (res.ok ? "Installed" : "Not installed") : stateText(a)}
+                    {a.folder} · {res ? (res.ok || res.state === "settings" ? "Installed" : "Not installed") : stateText(a)}
                   </span>
                   {!a.tickable && a.reason && !res && <span className="text-[12px] text-muted-foreground">{a.reason}</span>}
                   {res && !res.ok && (
                     <span className="flex items-start gap-2 text-[12px] text-destructive">
                       <span className="flex min-w-0 flex-1 flex-col">
-                        <span>{FAILED[a.source.kind] ?? "Could not install it."}</span>
-                        {res.error && (
-                          <span className="truncate text-muted-foreground" title={res.error}>
-                            {res.error}
+                        <span>
+                          {res.state === "settings"
+                            ? "Installed, but the bot could not be updated."
+                            : (FAILED[a.source.kind] ?? "Could not install it.")}
+                        </span>
+                        {reason && (
+                          <span className="truncate text-muted-foreground" title={reason}>
+                            {reason}
                           </span>
                         )}
                       </span>

@@ -4,7 +4,7 @@ A `.fusedbot` is the `.fused` container codec (appfile_container) with the
 `bot` kind key: the same hardened reader, a different index key, so neither
 kind ever half-opens as the other. Members:
 
-    bot.json             the public half, BYTES as on disk (store.meta_path)
+    bot.json             the public half: store.public_json, i.e. the disk file minus its `_gen` stamp
     skills/<name>.md     every playbook, sorted
     README.md            when the user wrote one (never generated)
     icon.svg             when the user put one at the folder root (the install page's picture, else the face)
@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import tempfile
 from datetime import datetime, timezone
@@ -122,15 +123,29 @@ _GITHUB_FALLBACK_CODES = ("dirty", "unpushed", "no_default")
 def _marketplace_edited(app_dir: str) -> bool:
     """Whether a marketplace copy carries edits of its own, which a slug reference would drop: the count the share
     sheet uses (`share_app.github_link_state` -> `_contributor_link`: the contrib engine's changed files against the
-    approved line plus one for uncommitted tracked edits; local git only, no network). Untracked new files are not
-    counted (the engine's rule). Any failure keeps the reference — the behaviour before this check existed."""
+    approved line plus one for uncommitted tracked edits), OR any new file git neither tracks nor ignores
+    (`contrib.proposals.untracked`, the Propose dialog's list: `replay.edits`' `??` entries, `.fused/`, `.venv` and
+    generated files excluded). The share sheet leaves untracked files out because a proposal makes them opt-in, but
+    a reference would lose them outright. Local git only, bounded, no network. Each failure keeps the reference
+    (the behaviour before this check existed) as far as that half of the check goes."""
     from fused_render import share_app
+    from fused_render.contrib import follow, proposals
 
+    real = os.path.realpath(app_dir)
     try:
-        state = share_app.github_link_state(os.path.realpath(app_dir))
-        return state.get("code") == "contributor" and int(state.get("changes") or 0) > 0
+        state = share_app.github_link_state(real)
+        if state.get("code") == "contributor" and int(state.get("changes") or 0) > 0:
+            return True
     except Exception:  # noqa: BLE001 - see docstring
         log.debug("marketplace change count failed for %s", app_dir, exc_info=True)
+    try:
+        # Only the copy's OWN repo (contrib's rule): in a folder that is not one, `git status` would answer for an
+        # enclosing checkout.
+        if follow.is_repo_root(real) is None:
+            return False
+        return bool(proposals.untracked(real))
+    except Exception:  # noqa: BLE001 - see docstring
+        log.debug("marketplace untracked-file check failed for %s", app_dir, exc_info=True)
         return False
 
 
@@ -250,8 +265,8 @@ def _github_source(app_dir: str) -> dict | None:
 # -------------------------------------------------------------- reading the bot ---
 def _public(bid: str) -> tuple[str, bytes, dict, dict]:
     """(bot.json path, the bytes that ship, parsed). The bytes are `store.public_json` of the PUBLIC half of the
-    merged meta: byte-identical to the file on disk once the split is complete (write_meta writes exactly that
-    text), and filtered down to PUBLIC_KEYS when it is not (a bot.json from before the split, or hand-edited with a
+    merged meta: the file on disk minus its `_gen` save stamp once the split is complete (read_meta pops it,
+    public_json strips it), and filtered down to PUBLIC_KEYS when it is not (a bot.json from before the split, or hand-edited with a
     private key in it) — a stranger's package must never carry browser ids, allow rules or folders."""
     try:
         path = store.meta_path(bid)
@@ -650,9 +665,8 @@ _NO_HARD_LINK = (errno.EPERM, errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP)
 def _place(tmp: str, dest_dir: str, file_name: str, unique) -> str:
     """Move the finished package to its final name without ever overwriting: `os.link` fails with EEXIST when a
     racing writer took the name since `unique()` looked (os.replace would silently win that race), so the next free
-    name is tried. A filesystem without hard links gets the same guarantee from an exclusive create
-    (`O_CREAT|O_EXCL`) that the bytes are then copied into: a name taken meanwhile is skipped, never overwritten, and
-    a copy that fails leaves no partial file behind."""
+    name is tried. A filesystem without hard links gets the same guarantee from _copy_exclusive: a name taken
+    meanwhile is skipped, never overwritten, and a copy that fails leaves nothing behind."""
     final = unique(dest_dir, file_name)
     copy = False
     for _ in range(20):
@@ -684,14 +698,45 @@ def _place(tmp: str, dest_dir: str, file_name: str, unique) -> str:
 
 
 def _copy_exclusive(src: str, dst: str) -> None:
-    """Copy `src` to a NEW file `dst`: FileExistsError (nothing written) when `dst` exists, symlink included; on any
-    other failure the partial `dst` is removed before the error propagates."""
-    fd = os.open(dst, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o666)
+    """Copy `src` to a NEW file `dst` that only ever appears complete: the bytes go to a hidden sibling
+    (`.<name>.part-<pid>-<rand>`, which a `.fusedbot` probe such as `GET /api/botfile/install` never matches) and are
+    fsync'd, and only then published under `dst` without overwriting (_publish_exclusive). FileExistsError when `dst`
+    is taken, symlink included; on that or any other failure the temp file is removed and `dst` is left as it was."""
+    d, base = os.path.split(dst)
+    part = os.path.join(d, f".{base}.part-{os.getpid()}-{secrets.token_hex(4)}")
+    fd = os.open(part, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o666)
     try:
         with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
             shutil.copyfileobj(inp, out, 1024 * 1024)
             out.flush()
             os.fsync(out.fileno())
+        _publish_exclusive(part, dst)
+    finally:
+        try:
+            os.unlink(part)  # still there after a link or a failure; already gone after a rename
+        except FileNotFoundError:
+            pass
+        except OSError:
+            log.debug("could not remove %s", part, exc_info=True)
+
+
+def _publish_exclusive(part: str, dst: str) -> None:
+    """Give the finished file `part` the name `dst`, FileExistsError if `dst` exists. `os.link` is atomic and refuses
+    a taken name. Where hard links are unsupported, `dst` is claimed with an exclusive create and `part` renamed over
+    the claim: a racing writer's claim fails, so nothing is overwritten. Known limitation of that fallback: between
+    the claim and the rename `dst` exists EMPTY (a reader sees an empty file, never a partial one). A failed rename
+    removes the claim."""
+    try:
+        os.link(part, dst)
+        return
+    except FileExistsError:
+        raise
+    except OSError as e:
+        if e.errno not in _NO_HARD_LINK:
+            raise
+    os.close(os.open(dst, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o666))
+    try:
+        os.replace(part, dst)
     except BaseException:
         try:
             os.unlink(dst)

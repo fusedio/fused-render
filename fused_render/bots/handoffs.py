@@ -198,8 +198,13 @@ def _relay_card(sb, t, hd, ev, card):
 
 # ---------------------------------------------------------------- sweep ---
 def sweep(registry) -> None:
-    """One pass over the loaded Super Bot's open rows. Never raises."""
+    """One pass over the loaded Super Bot's open rows. Never raises. Only under the workspace claim
+    (registry module docstring): the rows live in the shared Super Bot's bot.json, a queued row starts a task,
+    and `mine` is read off THIS process's threads, so a home without the claim would fail rows the claimant runs.
+    The scheduler's pass already checks; Bot deletion's sweep relies on this one."""
     try:
+        if not registry.workspace_claimed():
+            return
         bm = _botmod()
         sid = bm.super_id()
         if not sid:

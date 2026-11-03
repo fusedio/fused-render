@@ -296,15 +296,11 @@ def _metas_on_disk() -> list[dict] | None:
     a decision about deleting logins must not be made on a partial list."""
     import json
     from fused_render.bots import store
-    out = []
-    for bid in store.list_ids():
-        try:
-            m = store.read_meta(bid)
-        except Exception:  # noqa: BLE001
-            return None
-        if not isinstance(m, dict):
-            return None
-        out.append({**m, "id": m.get("id") or bid})
+    # Straight off the bots root, not store.list_ids(): the folder index leaves out a folder whose bot.json is
+    # torn (or a symlink, or claims an id twice), and that bot's browser would then read as an orphan.
+    out = store.read_all_metas()
+    if out is None:
+        return None
     # Bots still in the pre-v3 legacy tree (the migration has not lifted them yet) name browsers too; reading them
     # here is what keeps the sweep from removing their logins in the window before the stamp.
     # …and bots the v3 migration parked under `<bots_root>/.unmigrated/<id>/` (unreadable bot.json or a bad id):

@@ -24,6 +24,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 
 from fused_render import appfile, appfile_container
 from fused_render.bots import paths as bpaths
@@ -224,6 +225,17 @@ def _skills(path: str, idx: dict) -> list[dict]:
     return out
 
 
+def _validate(path: str, idx: dict, *, members: bool = True) -> tuple[dict, list[dict], list[dict] | None]:
+    """Every read-only check a package must pass before anything opens it -> (public bot.json, app rows, skills).
+    The probe and the upload route both call this, so a file the upload saves is one the install page can open:
+    the text budget, bot.json, the `apps` list, and (with `members`) every playbook member read in full through
+    _member_bytes' size + sha256 check. `members=False` is the light probe's peek (no member reads; skills None)."""
+    _check_text_budget(idx)
+    pub = _bot_json(path, idx)
+    rows = _app_rows(idx)
+    return pub, rows, (_skills(path, idx) if members else None)
+
+
 # ------------------------------------------------------------------ staging ---
 def _staging_dir(path: str) -> str:
     """One staging dir per package version (path + mtime): a probe stages, the install reuses it."""
@@ -377,9 +389,7 @@ def probe(path: str, light: bool = False) -> dict:
     words) under appfile.install_dir(). `light` is a card peek: index + bot.json only, no staging, no member
     reads, no state per app (D396's rule: a peek never pays for the open)."""
     idx = _index(path)
-    _check_text_budget(idx)
-    pub = _bot_json(path, idx)
-    rows = _app_rows(idx)
+    pub, rows, skills = _validate(path, idx, members=not light)
     out = {"ok": True, "name": _str(pub.get("name")) or _str(idx.get("name")) or "Bot", "public": pub,
            "exported_at": _str(idx.get("exported_at")) or None, "origin": _origin(idx),
            "memory": appfile_container.find(idx, ".fused/memory.md") is not None,
@@ -389,7 +399,7 @@ def probe(path: str, light: bool = False) -> dict:
         out["skills"] = [{"name": n} for n in _skill_names(idx)]
         out["apps"] = rows
         return out
-    out["skills"] = [{k: s[k] for k in ("name", "title", "trigger")} for s in _skills(path, idx)]
+    out["skills"] = [{k: s[k] for k in ("name", "title", "trigger")} for s in skills or []]
     staged = _stage(path, idx, [r["folder"] for r in rows if r["source"].get("kind") == "bundled"])
     out["apps"] = [{**r, **_row_state(r, staged.get(r["folder"]))} for r in rows]
     out["staging"] = _staging_dir(path) if staged else None
@@ -596,8 +606,9 @@ def _public_fields(meta: dict, pub: dict) -> dict:
     return out
 
 
-def _install_apps(path: str, idx: dict, rows: list[dict], apps) -> tuple[list[dict], list[dict]]:
-    """Install the chosen rows (in the given order, never forced) -> (per-row results, rows installed OK).
+def _install_apps(path: str, idx: dict, rows: list[dict], apps) -> tuple[list[dict], list[dict], dict[str, str]]:
+    """Install the chosen rows (in the given order, never forced) -> (per-row results, rows installed OK, installed
+    path by the INDEX folder key: a result row's `folder`, never the disk spelling a done row may carry).
     An installed row's `folder` is rewritten to where the app really sits (a bundled app found by id can live
     elsewhere): the bot's manifest row and its trust follow the disk, not the exporter's spelling.
     Idempotent: an app already there reports ok (same / installed) without a write, so a retry is safe."""
@@ -605,7 +616,7 @@ def _install_apps(path: str, idx: dict, rows: list[dict], apps) -> tuple[list[di
     by_folder = {r["folder"]: r for r in rows}
     chosen = list(dict.fromkeys(a for a in apps or [] if isinstance(a, str)))
     staged = _stage(path, idx, [f for f in chosen if f in by_folder and by_folder[f]["source"].get("kind") == "bundled"])
-    results, done = [], []
+    results, done, paths = [], [], {}
     for folder in chosen:
         row = by_folder.get(folder)
         if row is None:
@@ -626,6 +637,7 @@ def _install_apps(path: str, idx: dict, rows: list[dict], apps) -> tuple[list[di
             where = res.get("path")
             if isinstance(where, str) and where:
                 row["folder"] = os.path.basename(where.rstrip("/\\")) or folder
+                paths[folder] = where
             done.append(row)
         results.append({"folder": folder, **{k: v for k, v in res.items() if k != "path"}})
     if done:
@@ -634,7 +646,20 @@ def _install_apps(path: str, idx: dict, rows: list[dict], apps) -> tuple[list[di
             apptools.registry(force=True)
         except Exception:  # noqa: BLE001 - a stale APPS cache heals on its TTL
             logger.debug("bot package: apps cache refresh failed", exc_info=True)
-    return results, done
+    return results, done, paths
+
+
+def _unlinked(results: list[dict], paths: dict[str, str], err: Exception) -> None:
+    """The bot update after an install (manifest row + trust) failed: every row whose app DID install becomes
+    `ok: false, state: "settings"` with its installed path, so the page shows that row's Retry. The Retry is
+    re-install mode and idempotent: the app is already there (ok, nothing written), its manifest row is matched
+    by folder, and trust skips a folder already listed."""
+    why = f"installed, but the bot could not be updated: {err or err.__class__.__name__}"
+    for r in results:
+        if r.get("ok"):
+            r.update({"ok": False, "state": "settings", "error": why})
+            if paths.get(r["folder"]):
+                r["path"] = paths[r["folder"]]
 
 
 # Idempotent POSTs (PER OWNER PROCESS: a forwarder never dedups, and a Retry that lands on a freshly elected
@@ -729,7 +754,7 @@ def _install_into(path: str, idx: dict, bot_id: str, apps) -> dict:
         raise BotFileError("this package is not the one this bot was installed from")
     rows = _app_rows(idx)
     orig = {id(r): r["folder"] for r in rows}  # the index spelling, before _install_apps follows the disk
-    results, done = _install_apps(path, idx, rows, apps)
+    results, done, paths = _install_apps(path, idx, rows, apps)
     warnings: list[str] = []
     if done:
         try:
@@ -747,6 +772,7 @@ def _install_into(path: str, idx: dict, bot_id: str, apps) -> dict:
         except Exception as e:  # noqa: BLE001 - the apps are installed; say the bot was not updated
             logger.warning("bot package: re-install could not update %s", b.id, exc_info=True)
             warnings.append(f"settings: {e or e.__class__.__name__}")
+            _unlinked(results, paths, e)
     return {"ok": True, "bot_id": b.id, "apps": results, "warnings": warnings}
 
 
@@ -787,6 +813,18 @@ def _copy_folder_members(path: str, idx: dict, bid: str, warnings: list[str]) ->
             warnings.append(f"{rel}: {e or e.__class__.__name__}")
 
 
+def _mint_id() -> str:
+    """A fresh bot id (create()'s shape: 8 hex) that is neither a bot nor a placed folder yet."""
+    from fused_render.bots import store
+    while True:
+        bid = uuid.uuid4().hex[:8]
+        try:
+            bpaths.bot_folder(bid)
+        except LookupError:
+            if bid not in store.list_ids():
+                return bid
+
+
 def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     """The ticked apps first (in the given order), then a NEW bot carrying the file's settings, playbooks
     and (when asked) memory. An app that fails is reported on its row and the bot is still made: the page's
@@ -806,7 +844,7 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
         _total, text_cap = _caps()
         mem_text = _member_text(path, idx, ".fused/memory.md", text_cap)
 
-    results, done = _install_apps(path, idx, rows, apps)
+    results, done, paths = _install_apps(path, idx, rows, apps)
     # Trust ("use without asking") only what THIS call installed or found installed by its own install_target
     # probe: a row the user left unticked, or that only CLAIMS an app id / slug / key in the index, grants
     # nothing — the index is the file author's word, and trust is the importer's to give.
@@ -814,21 +852,21 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
 
     # From create() on the request always answers 200 with the bot id: the page retries a non-200 by
     # re-POSTing, which would mint a second bot. Later failures become `warnings`. create() itself can raise
-    # AFTER its bot.json exists (the registry build, the first emit), so a raise is checked against the ids on
-    # disk: a bot that appeared is this request's bot.
-    before = set(store.list_ids())
+    # AFTER its bot.json exists (the registry build, the first emit), so the id is minted HERE and handed in:
+    # after a raise, a bot.json under THAT id is this request's bot. (Diffing the ids on disk would adopt a bot
+    # some other request created in the same window, and overwrite its settings below.)
+    bid = _mint_id()
     warnings: list[str] = []
     try:
         b = bm.create(_str(pub.get("name")) or _str(idx.get("name")), _str(pub.get("model")), _str(pub.get("effort")),
-                      _str(pub.get("instructions")), greet=False)
+                      _str(pub.get("instructions")), greet=False, bot_id=bid)
     except Exception as e:  # noqa: BLE001 - see above
         from fused_render.bots import registry
-        new = sorted(set(store.list_ids()) - before)
-        if len(new) != 1:
-            raise
-        logger.warning("bot package: create() raised after writing bot %s; continuing", new[0], exc_info=True)
+        if bid not in store.list_ids():
+            raise BotFileError(f"could not create the bot: {e or e.__class__.__name__}") from e
+        logger.warning("bot package: create() raised after writing bot %s; continuing", bid, exc_info=True)
         warnings.append(f"create: {e or e.__class__.__name__}")
-        b = registry.get(new[0])
+        b = registry.get(bid)
 
     def step(what, fn) -> bool:
         try:
@@ -843,14 +881,26 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
         with b.lock:
             b.meta.update(settings)
             b.meta["routines"] = routines
-            b.meta["apps"] = rows
-            b.meta["trusted_apps"] = apptools.clean_trusted_apps(trusted)
             # package_sha (private, like all of origin): re-install mode accepts only this very package.
             b.meta["origin"] = {**_origin(idx), "package_sha": _package_sha(idx)}
             b.save()
 
+    def link_apps():
+        # Its own save, after origin is on disk: when THIS one fails, each installed row says so (state
+        # "settings") and its Retry, re-install mode, finds the origin it needs.
+        with b.lock:
+            b.meta["apps"] = rows
+            b.meta["trusted_apps"] = apptools.clean_trusted_apps(trusted)
+            b.save()
+
     if step("settings", apply_meta):
         _copy_folder_members(path, idx, b.id, warnings)
+    try:
+        link_apps()
+    except Exception as e:  # noqa: BLE001 - the bot exists: report, never fail the request (comment above)
+        logger.warning("bot package: settings failed for %s", b.id, exc_info=True)
+        warnings.append(f"settings: {e or e.__class__.__name__}")
+        _unlinked(results, paths, e)
     written: set[str] = set()
     for sk in skills:
         try:

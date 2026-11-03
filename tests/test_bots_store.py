@@ -84,14 +84,18 @@ def test_write_meta_splits_public_and_private_halves():
     with open(store.meta_path(B1), encoding="utf-8") as f:
         text = f.read()
     public = json.loads(text)
-    assert set(public) == {k for k in meta if k in store.PUBLIC_KEYS} and {"id", "name", "routines"} <= set(public)
+    gen = public[store.GEN_KEY]
+    assert set(public) == {k for k in meta if k in store.PUBLIC_KEYS} | {store.GEN_KEY}
+    assert {"id", "name", "routines"} <= set(public)
     assert set(public["routines"][0]) <= store.ROUTINE_PUBLIC_KEYS and "last" not in public["routines"][0]
-    assert text == store.public_json(public) and text.endswith("\n") and "\n  " in text  # indent=2, sorted
+    assert text == store._file_text(public, gen) and text.endswith("\n") and "\n  " in text  # indent=2, sorted
+    assert store.GEN_KEY not in store.public_json(public)  # the export text never carries the save stamp
     with open(store.state_path(B1), encoding="utf-8") as f:
         private = json.load(f)
     priv_row = {"id": "r1", **{k: v for k, v in routine.items() if k not in store.ROUTINE_PUBLIC_KEYS}}
     priv_keys = {k: v for k, v in meta.items() if k not in store.PUBLIC_KEYS}
-    assert private == {**priv_keys, "routines": [priv_row]} and "last" in priv_row and "status" in priv_keys
+    assert private == {**priv_keys, "routines": [priv_row], store.PUBLIC_GEN_KEY: gen}
+    assert "last" in priv_row and "status" in priv_keys
     assert store.read_meta(B1) == meta  # merged back into ONE dict, routine run state included
     # a runtime save that changes only private keys leaves bot.json untouched (git-clean folder)
     before = os.stat(store.meta_path(B1))
@@ -105,6 +109,66 @@ def test_write_meta_splits_public_and_private_halves():
     # the public file always carries the id it is saved under
     store.write_meta(B1, {"name": "No id"})
     assert json.load(open(store.meta_path(B1), encoding="utf-8"))["id"] == B1
+
+
+def _routine_meta(bid, minutes=30):
+    return {"id": bid, "name": "Gen", "browser_id": "feedf00d",
+            "routines": [{"id": "r1", "task": "t", "kind": "every", "minutes": minutes, "created": 1.0,
+                          "enabled": True, "next": 1234.0, "last": 99.0, "fails": 1}]}
+
+
+def test_write_meta_stamps_both_halves_with_one_gen():
+    bpaths.place(B1, "Gen")
+    store.write_meta(B1, _routine_meta(B1))
+    pub = json.load(open(store.meta_path(B1), encoding="utf-8"))
+    priv = json.load(open(store.state_path(B1), encoding="utf-8"))
+    assert isinstance(pub[store.GEN_KEY], str) and priv[store.PUBLIC_GEN_KEY] == pub[store.GEN_KEY]
+    m = store.read_meta(B1)
+    assert m == _routine_meta(B1)  # stamps never reach the merged meta; nothing dropped
+    # a private-only save keeps the gen (bot.json untouched); a public change mints a new one in both halves
+    store.write_meta(B1, {**m, "status": "working"})
+    assert json.load(open(store.meta_path(B1), encoding="utf-8"))[store.GEN_KEY] == pub[store.GEN_KEY]
+    store.write_meta(B1, {**m, "name": "Renamed"})
+    pub2 = json.load(open(store.meta_path(B1), encoding="utf-8"))
+    priv2 = json.load(open(store.state_path(B1), encoding="utf-8"))
+    assert pub2[store.GEN_KEY] != pub[store.GEN_KEY] == priv[store.PUBLIC_GEN_KEY] != priv2[store.PUBLIC_GEN_KEY]
+    assert priv2[store.PUBLIC_GEN_KEY] == pub2[store.GEN_KEY]
+    # split_meta never routes a stamp into either half, even when a meta dict carries one
+    pub_half, priv_half = store.split_meta({**m, store.GEN_KEY: "x", store.PUBLIC_GEN_KEY: "y"})
+    assert store.GEN_KEY not in pub_half and store.GEN_KEY not in priv_half and store.PUBLIC_GEN_KEY not in priv_half
+
+
+def test_torn_save_drops_next_and_keeps_the_rest(monkeypatch):
+    """A crash between bot.json (new schedule) and state.json (old `next`): the pair's gens differ, so the
+    load drops `next` (the scheduler recomputes it from the current schedule) and keeps enabled/last/fails."""
+    bpaths.place(B1, "Gen")
+    store.write_meta(B1, _routine_meta(B1, minutes=30))
+
+    def crash(path, obj):
+        raise OSError("power cut")
+    monkeypatch.setattr(store, "write_json_atomic", crash)
+    with pytest.raises(OSError):
+        store.write_meta(B1, _routine_meta(B1, minutes=5))
+    row = store.read_meta(B1)["routines"][0]
+    assert row["minutes"] == 5  # the new public half landed
+    assert "next" not in row and row["enabled"] is True and row["last"] == 99.0 and row["fails"] == 1
+    assert store.read_meta(B1)["browser_id"] == "feedf00d"  # non-routine private state kept
+
+
+def test_old_pair_without_gens_loads_unchanged():
+    bpaths.place(B1, "Gen")
+    folder = bpaths.bot_folder(B1)
+    meta = _routine_meta(B1)
+    public, private = store.split_meta(meta)
+    _touch(os.path.join(folder, "bot.json"), store.public_json(public))
+    _touch(os.path.join(folder, ".fused", "state.json"), json.dumps(private))
+    assert store.read_meta(B1) == meta
+    # the first private-only save keeps the old genless bot.json text (no one-time rewrite) and records that
+    before = open(store.meta_path(B1), encoding="utf-8").read()
+    store.write_meta(B1, {**meta, "status": "idle"})
+    assert open(store.meta_path(B1), encoding="utf-8").read() == before
+    assert json.load(open(store.state_path(B1), encoding="utf-8"))[store.PUBLIC_GEN_KEY] is None
+    assert store.read_meta(B1)["routines"][0]["next"] == 1234.0
 
 
 def test_write_meta_is_safe_under_concurrent_writers():
@@ -460,7 +524,7 @@ def test_migrate_v3_backs_up_then_moves_into_the_bot_folder(app_home, ws):
     folder = inbox  # the old Inbox folder of the bot's name is adopted
     with open(os.path.join(folder, "bot.json"), encoding="utf-8") as f:
         public = json.load(f)
-    assert set(public) <= store.PUBLIC_KEYS and public["id"] == bid and public["name"] == "Daily Digest"
+    assert set(public) - {store.GEN_KEY} <= store.PUBLIC_KEYS and public["id"] == bid and public["name"] == "Daily Digest"
     assert public["apps"] == []
     priv = os.path.join(folder, ".fused")
     with open(os.path.join(priv, "state.json"), encoding="utf-8") as f:
@@ -942,3 +1006,47 @@ def test_browser_sweep_skips_when_a_parked_bot_json_is_unreadable(app_home, ws):
     assert browsers.used_on_disk("cafef00d") is None
     assert browsers.sweep([]) == 0
     assert os.path.isdir(orphan)
+
+
+def test_browser_sweep_skips_when_a_bot_folder_bot_json_is_unreadable(app_home, ws):
+    """A bot folder whose bot.json is torn is invisible to list_ids (the folder index skips it), but its
+    browser_id may name a browser: the sweep must not call that browser an orphan."""
+    from fused_render.bots import browsers
+    bpaths.place(B1, "Good")
+    store.write_meta(B1, {"id": B1, "name": "Good", "browser_id": B1})
+    bad = os.path.join(ws, "bots", "torn")
+    _touch(os.path.join(bad, "bot.json"), "{not json")
+    orphan = os.path.join(browsers.data_dir(), "cafef00d")
+    _touch(os.path.join(orphan, "browser.json"), "{}")
+    assert store.list_ids() == [B1]
+    assert browsers._metas_on_disk() is None
+    assert browsers.sweep([]) == 0 and os.path.isdir(orphan)
+    for text in ("[1, 2]", None):  # valid JSON but not an object; then a symlinked bot.json
+        os.remove(os.path.join(bad, "bot.json"))
+        if text is None:
+            target = os.path.join(ws, "elsewhere.json")
+            _touch(target, json.dumps({"id": "d00dd00d"}))
+            os.symlink(target, os.path.join(bad, "bot.json"))
+        else:
+            _touch(os.path.join(bad, "bot.json"), text)
+        assert browsers._metas_on_disk() is None
+        assert browsers.sweep([]) == 0 and os.path.isdir(orphan)
+    os.remove(os.path.join(bad, "bot.json"))  # repaired (gone): the list is complete and the orphan goes
+    metas = browsers._metas_on_disk()
+    assert [m["id"] for m in metas] == [B1] and metas[0]["browser_id"] == B1
+    assert browsers.sweep([]) == 1 and not os.path.exists(orphan)
+
+
+def test_browser_sweep_keeps_a_browser_named_only_by_an_unindexed_folder(app_home, ws):
+    """Two folders claiming one id resolve to neither (paths._scan), yet each one's state.json names a browser."""
+    from fused_render.bots import browsers
+    bpaths.place(B1, "One")
+    store.write_meta(B1, {"id": B1, "name": "One", "browser_id": "cafef00d"})
+    import shutil
+    shutil.copytree(bpaths.bot_folder(B1), os.path.join(ws, "bots", "one-copy"))
+    bpaths._reset_folders()
+    assert store.list_ids() == []
+    orphan = os.path.join(browsers.data_dir(), "cafef00d")
+    _touch(os.path.join(orphan, "browser.json"), "{}")
+    assert browsers.used_on_disk("cafef00d") is True
+    assert browsers.sweep([]) == 0 and os.path.isdir(orphan)

@@ -146,10 +146,16 @@ async def _read_capped(request: Request, cap: int) -> bytes | JSONResponse | Non
     return bytes(buf)
 
 
+def _installed(row) -> bool:
+    """An install answer's row put an app on disk: ok, or `settings` (installed, the bot not updated)."""
+    return isinstance(row, dict) and (row.get("ok") is True or row.get("state") == "settings")
+
+
 @router.post("/api/botfile/install")
 async def botfile_install(request: Request, x_fused: str | None = Header(default=None)):
     """Install the package: body `{path, apps: [folder], memory: bool, bot_id?, request_id?}` -> `{ok, bot_id,
-    apps: [{folder, ok, state, error?}], warnings: [str]}` (botfile.install). `bot_id` is re-install mode (the
+    apps: [{folder, ok, state, error?, path?}], warnings: [str]}` (botfile.install; state "settings" = the app
+    installed but the bot was not updated, retried like a failed row). `bot_id` is re-install mode (the
     page's per-row Retry: no new bot); `request_id` makes the POST idempotent. Runs in the bots owner;
     forwarded there from any other process with the body unchanged, so the owner is the one that dedups."""
     guard = _require_fused(x_fused)
@@ -188,7 +194,7 @@ async def botfile_install(request: Request, x_fused: str | None = Header(default
             # The owner installed; THIS process's paged hub snapshot must not lag the folders it added.
             try:
                 import json as _json
-                if any(r.get("ok") for r in (_json.loads(fwd.body or b"{}").get("apps") or [])):
+                if any(_installed(r) for r in (_json.loads(fwd.body or b"{}").get("apps") or [])):
                     from fused_render.server.routers import apps as apps_router
                     apps_router._reset_snapshot()
             except Exception:  # noqa: BLE001 - the snapshot heals on its own TTL
@@ -207,7 +213,7 @@ async def botfile_install(request: Request, x_fused: str | None = Header(default
         return _error(str(e), 404)
     except (bf.BotFileError, ValueError, RuntimeError) as e:
         return _error(str(e))
-    if any(r.get("ok") for r in out.get("apps") or []):
+    if any(_installed(r) for r in out.get("apps") or []):
         # The paged hub's snapshot must not lag the folders just installed (routers/appfile.py does the same).
         # Never a non-200 from here: the bot exists, and the page retries a failure by re-POSTing.
         try:
@@ -269,13 +275,12 @@ async def botfile_upload(request: Request, name: str = Query(""), x_fused: str |
                                           max_entry_bytes=1 << 30, max_total_bytes=1 << 30, kind="bot")
         except appfile_container.ContainerError as e:
             return _error(str(e))
-        # The install page's probe also needs a readable bot.json (and skills + memory within the text cap):
-        # refuse here with the probe's own sentence rather than save a file the next page cannot open. The temp
-        # file is unlinked in `finally`; nothing has been placed yet.
+        # The install page's probe runs the same read-only checks (botfile._validate: text budget, bot.json, the
+        # app list, every playbook member's size + hash): refuse here with the probe's own sentence rather than
+        # save a file the next page cannot open. The temp file is unlinked in `finally`; nothing is placed yet.
         bf = _botfile()
         try:
-            await asyncio.to_thread(bf._check_text_budget, idx)
-            await asyncio.to_thread(bf._bot_json, tmp, idx)
+            await asyncio.to_thread(bf._validate, tmp, idx)
         except bf.BotFileError as e:
             return _error(str(e))
         # No-clobber placement: link() fails on an existing name, so a racing upload of the same name takes

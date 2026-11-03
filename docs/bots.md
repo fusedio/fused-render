@@ -226,7 +226,11 @@ row with no public twin is dropped). `Bot.meta` is still one dict and
 `Bot.save()` is unchanged; nothing outside `store.py` knows about the split.
 `state.json` (compact) is written on every save; `bot.json` (`indent=2,
 sort_keys=True`, trailing newline) is rewritten only when its text changes, so
-runtime saves leave a git checkout of the folder clean. `read_meta` raises
+runtime saves leave a git checkout of the folder clean. `bot.json` also carries
+`_gen`, re-minted only when its public content changes, and `state.json` carries
+`_public_gen` (the gen it was saved beside; bot.json is written first): a pair
+whose gens differ (a crash between the two writes) loads with each routine's
+`next` dropped so the scheduler recomputes it. `read_meta` raises
 `FileNotFoundError` when `bot.json` is missing. `apps` is the bot's app
 manifest, `[{folder, name, app_id, source: {kind: "bundled"|"marketplace"|
 "starter", …}}]`: seeded once (on load when absent, and by `migrate_v3`) from
@@ -1111,6 +1115,24 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
   agent). Interval routines are left out on purpose: a 5-minute routine would
   relaunch a quit app five minutes after every Quit (owner's call, 2026-10-13).
   macOS only; Linux keeps the old single-process behaviour.
+
+  **One workspace, one engine host** (PR #2057). Two homes can share one
+  workspace (the main app and a `FUSED_RENDER_BRANCH` install both default to
+  `~/Fused/bots`), so an owner also flocks `<bots_root>/.routines.lock` (the
+  workspace claim). Without it the owner serves its home (reads, forwarding,
+  the dock, settings) but starts no bot engine: send, app send, a phone
+  message, a channel text (the router texts back "another fused-render
+  instance owns the bots in this workspace"), a routine's Run, goto, creating or cloning a bot (its greeting may
+  start a preset's setup) all refuse through `registry.require_workspace()`
+  with `WorkspaceBusy` → 409 "another fused-render instance owns the bots in
+  this workspace (<bots_root>); use that window or quit it", and `open`
+  answers `setup: "pending"`. It also skips the routine ticks, the hand-off
+  sweep and the workspace steps (v3 migration, Super Bot seed, the takeover
+  walk, which would stop the claimant's running tasks as stale, the browser
+  sweep); the pass that later wins the claim runs those steps once, and the
+  doors open after that pass. The seed also waits while a legacy BOT remains
+  (a `bot.json` in the legacy data dir or under `.unmigrated/<id>/`; strays
+  never count): it could be a Super Bot the seed cannot see.
 - `server.py`: include `bots.routes.router` and `apps` routes; `/` →
   `bots.html`; add `/embed`; third `app_dir_for` rule; remove the showcase /
   dock / launcher / settings / open routes and their imports; `start_ai` adds
@@ -2227,7 +2249,7 @@ byte-identical; `bots/apps.py::_container_index` answers a bot package with
 
 | member | what |
 |---|---|
-| `bot.json` | the public half: `store.public_json` of the PUBLIC_KEYS of the merged meta — byte-identical to disk once split, filtered when a private key sits in an unsplit file |
+| `bot.json` | the public half: `store.public_json` of the PUBLIC_KEYS of the merged meta — the disk file minus its `_gen` stamp once split, filtered when a private key sits in an unsplit file |
 | `skills/<name>.md` | every skill whose name can travel (a symlink, a refused name or a non-UTF-8 name is skipped and listed under `skills_skipped`) |
 | `README.md` | when the folder has one |
 | `icon.svg` | when the folder has one (≤ `appfile.MAX_ICON_BYTES`); the install page falls back to the face |
@@ -2313,7 +2335,7 @@ bots router's middleware, §7):
 | `GET /install?path=<abs>[&light=1]` | `probe(path)`; `light` reads only the index + `bot.json` (the template's card peek) |
 | `POST /install` `{path, apps: [folder], memory, request_id?, bot_id?}` | `install(...)`, `X-Fused`; the body is read streamed and capped at 64 KiB (413 over). `request_id` (≤64 `[A-Za-z0-9_-]`) makes the POST idempotent in the owner: a resend answers the first result (a 200-entry, 1 h memo), so a page Retry after a lost reply never mints a second bot. `bot_id` is re-install mode (the per-row Retry): no bot is created; the file's `origin` must match that bot's, `package_sha` included, only the listed rows install, and they join its `apps` + `trusted_apps` |
 | `GET /icon?path=` | the `icon.svg` member, else 404 (the page falls back to the face) |
-| `POST /upload?name=<file name>` (body = the raw bytes) | writes `<downloads dir>/<safe name>.fusedbot` (appfetch's dir), `Content-Length` checked against the 1 GiB cap before a byte is read, streamed to a temp file, `X-Fused` → `{ok, path}`; refused with the probe's own error (nothing saved) unless the index, the text budget and `bot.json` read as the probe reads them |
+| `POST /upload?name=<file name>` (body = the raw bytes) | writes `<downloads dir>/<safe name>.fusedbot` (appfetch's dir), `Content-Length` checked against the 1 GiB cap before a byte is read, streamed to a temp file, `X-Fused` → `{ok, path}`; refused with the probe's own error (nothing saved) unless `botfile._validate` passes — the full probe's own read-only checks: index, text budget, `bot.json`, the `apps` list, every `skills/*.md` member's size + sha256 |
 
 `probe` answers `{ok, name, public, skills, memory: bool, exported_at, origin,
 apps: [{folder, name, app_id, source, state, ticked, tickable, reason?}],
@@ -2350,7 +2372,10 @@ display; a pinned install would silently diverge from every other
 GitHub-installed copy. A clone failure (offline, private or deleted repo) is
 that row's error — "could not clone <repo> from GitHub: <reason>" — the bot is
 still made and the row's Retry runs it again. Then the bot, in the owner
-process: `bot.create(name, model, effort, instructions, greet=False)`; face,
+process: `bot.create(name, model, effort, instructions, greet=False, bot_id=<minted>)` — the id is minted by
+the install (8 hex, neither a bot nor a placed folder; `create` refuses a taken one) so a `create` that raises
+after its `bot.json` exists is recognised by that id, never by diffing the ids on disk (which would adopt a bot
+a concurrent request made); face,
 approval, build_access, terminal, engine, max_steps / step_cap; `preset` as the
 key only (no `apply_preset`: the skills are in the file); routines from the
 file with run fields stripped and every row **`enabled: false`**; `apps` = the
@@ -2366,7 +2391,11 @@ exported_at}` plus `package_sha`, the sha256 of the index's member hashes and
 "this package is not the one this bot was installed from"); a `system` event
 "Imported from <file>"; then `greet()`. A fresh id every time: there is no
 update-in-place. The page's failed row re-POSTs with only that folder and the
-`bot_id` it was given (re-install mode above).
+`bot_id` it was given (re-install mode above). An app that installed but whose bot update (`apps` +
+`trusted_apps`, its own save after `origin`'s) failed comes back as `{folder: <index key>, ok: false, state:
+"settings", error: "installed, but the bot could not be updated: …", path}` plus the `settings:` warning, so its
+row offers that Retry, which is idempotent (app already there → ok, no write; manifest row matched by folder;
+trust skips a listed folder).
 
 **Opening one.** `templates/registry.json` maps `".fusedbot": ["fusedbot",
 "claude"]`; `templates/fusedbot/template.html` (modelled on `fusedapp`) peeks

@@ -25,7 +25,8 @@ texted-card mechanism (`channels.base.answers_card`), and the gate takes it as
 the verdict. "Approve, don't ask again" (`Forever`) never comes from here.
 
 Errors are `{"error": "<sentence>"}` through routes._handled: ValueError /
-RuntimeError -> 400, an unknown bot -> 404; an unknown or desktop-only op ->
+RuntimeError -> 400, an unknown bot -> 404, WorkspaceBusy (a send or a new bot
+while another home's owner runs this workspace's bots) -> 409; an unknown or desktop-only op ->
 404; a POST/DELETE without `X-Fused: 1` -> 403 (`_require_fused`).
 """
 from __future__ import annotations
@@ -265,6 +266,7 @@ def phone_create(body: dict = Body(...), x_fused: str | None = Header(default=No
     preset = body.get("preset") or ""
     if not isinstance(preset, str):
         raise ValueError("preset must be a preset key")
+    registry.require_workspace()  # its greeting thread may start a preset's setup task (bot.greet)
     b = registry.create(body.get("name") or "", body.get("model") or "", body.get("effort") or "",
                         body.get("instructions") or "", preset=preset, kind="bot", browser="")
     if body.get("approval") in ("ask", "auto"):
@@ -293,6 +295,7 @@ def _send(b, body, device):
     files = body.get("files") if isinstance(body.get("files"), list) else []
     if not text and not files:
         raise ValueError("empty message")
+    registry.require_workspace()  # receive starts the task: never in a home without the workspace claim
     via = chan.phone_via(device)
     if body.get("answer") is not None:
         # The approval card the phone shows, and only while the bot still waits on it: then the yes or no is the

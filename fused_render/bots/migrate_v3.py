@@ -538,21 +538,23 @@ def _move_file(src: str, dst: str) -> None:
     os.unlink(src)
 
 
-def _move_tree(src: str, dst: str, leftovers: str) -> int:
+def _move_tree(src: str, dst: str, leftovers: str, landed: list | None = None) -> int:
     """Move `src` (file, link or directory) onto `dst`, never over anything:
     a free destination takes a file whole; two directories merge child by
     child; a file whose destination exists is a clash and goes to
     `leftovers/<same relative path>` instead (the backup has it too). Returns
     the clash count. Raises on any failure (a half-moved bot must fail loud,
-    not count as moved); a merged source dir is removed only once empty."""
+    not count as moved); a merged source dir is removed only once empty.
+    `landed` (optional) collects `(src, where it actually went)` per file, so an
+    index row can follow a clashed file into legacy-leftovers."""
     if os.path.isdir(src) and not os.path.islink(src):
         if os.path.lexists(dst) and (not os.path.isdir(dst) or os.path.islink(dst)):
             # a file where a directory should go: the whole subtree is a clash
-            return _move_tree(src, os.path.join(leftovers, os.path.basename(src)), leftovers)
+            return _move_tree(src, os.path.join(leftovers, os.path.basename(src)), leftovers, landed)
         os.makedirs(dst, exist_ok=True)
         clashes = 0
         for n in sorted(os.listdir(src)):
-            clashes += _move_tree(os.path.join(src, n), os.path.join(dst, n), os.path.join(leftovers, n))
+            clashes += _move_tree(os.path.join(src, n), os.path.join(dst, n), os.path.join(leftovers, n), landed)
         os.rmdir(src)  # raises when anything is left: that is a failure, not a pass
         return clashes
     if os.path.lexists(dst):
@@ -560,12 +562,16 @@ def _move_tree(src: str, dst: str, leftovers: str) -> int:
             raise FileExistsError(errno.EEXIST, "leftover destination exists too", dst)
         log.warning("bots v3 migration: %s exists; %s goes to %s instead", dst, src, leftovers)
         _move_file(src, leftovers)
+        if landed is not None:
+            landed.append((src, leftovers))
         return 1
     _move_file(src, dst)
+    if landed is not None:
+        landed.append((src, dst))
     return 0
 
 
-def _lift_inbox(src: str, inbox: str, leftovers: str, *, own: bool) -> int:
+def _lift_inbox(src: str, inbox: str, leftovers: str, *, own: bool, landed: list | None = None) -> int:
     """Every child of an old Inbox folder except the new layout's own names goes under .fused/inbox/. `own`:
     the Inbox IS the bot's new folder, so its reserved names are the bot's files, not stranded tasks."""
     clashes = 0
@@ -578,9 +584,10 @@ def _lift_inbox(src: str, inbox: str, leftovers: str, *, own: bool) -> int:
             # reason to fail the bot.
             log.warning("bots v3 migration: %s/%s carries a reserved name; kept under %s", src, n, leftovers)
             clashes += _move_tree(os.path.join(src, n), os.path.join(leftovers, "inbox", n),
-                                  os.path.join(leftovers, "inbox-clash", n))
+                                  os.path.join(leftovers, "inbox-clash", n), landed)
             continue
-        clashes += _move_tree(os.path.join(src, n), os.path.join(inbox, n), os.path.join(leftovers, "inbox", n))
+        clashes += _move_tree(os.path.join(src, n), os.path.join(inbox, n), os.path.join(leftovers, "inbox", n),
+                              landed)
     return clashes
 
 
@@ -717,13 +724,26 @@ def _move_bot(bid: str, meta: dict, *_unused) -> str:
     # The bot's own folder too: it is usually the old Inbox's name, and a crash after the lift but before the rewrite
     # leaves rows at `<folder>/<task>/…` (rows already under `<folder>/.fused/inbox/` are skipped by _rewrite_index).
     olds.append(folder)
+    # Old Inbox prefix -> {relative path: where that file landed} for every file that did NOT land at
+    # `<inbox>/<relative path>` (a clash, or a reserved name, kept under legacy-leftovers). Keyed by the prefix
+    # the rows carry, so when two old Inboxes both hold `<task>/out.md` each row still names its own Inbox's file.
+    elsewhere: dict[str, dict[str, str]] = {}
+
+    def note(prefix: str, top: str, landed) -> None:
+        for s, d in landed:
+            rel = os.path.relpath(s, top)
+            if os.path.normcase(os.path.normpath(d)) != os.path.normcase(os.path.normpath(os.path.join(inbox, rel))):
+                elsewhere.setdefault(os.path.normcase(os.path.normpath(prefix)), {})[os.path.normcase(rel)] = d
+
     for stg in (staged, f"{staged}-clash"):
         if not os.path.isdir(stg):
             continue
         for n in sorted(os.listdir(stg)):
             src = os.path.join(stg, n)
             if os.path.isdir(src) and not os.path.islink(src):
-                _lift_inbox(src, inbox, leftovers, own=False)
+                landed: list = []
+                _lift_inbox(src, inbox, leftovers, own=False, landed=landed)
+                note(os.path.join(root, n), src, landed)
                 os.rmdir(src)  # emptied, or a reserved-named entry stayed: then this raises and the bot fails
             else:
                 _move_tree(src, os.path.join(inbox, n), os.path.join(leftovers, "inbox", n))
@@ -737,8 +757,10 @@ def _move_bot(bid: str, meta: dict, *_unused) -> str:
         if n == "skills":
             _move_tree(s, os.path.join(folder, "skills"), os.path.join(leftovers, "skills"))
         elif n == "inbox" and os.path.isdir(s) and not os.path.islink(s):
+            landed = []
             for c in sorted(os.listdir(s)):
-                _move_tree(os.path.join(s, c), os.path.join(inbox, c), os.path.join(leftovers, "inbox", c))
+                _move_tree(os.path.join(s, c), os.path.join(inbox, c), os.path.join(leftovers, "inbox", c), landed)
+            note(s, s, landed)
             os.rmdir(s)
         else:
             _move_tree(s, os.path.join(private, n), os.path.join(leftovers, n))
@@ -748,10 +770,14 @@ def _move_bot(bid: str, meta: dict, *_unused) -> str:
         for n in sorted(os.listdir(cache)):
             _move_tree(os.path.join(cache, n), os.path.join(private, "cache", n), os.path.join(leftovers, "cache", n))
 
-    # The moved index's rows still name the old Inbox: rewritten onto .fused/inbox/ so Bot.artifacts() (which drops
-    # a row whose path is gone) and resolve_path see them. A second staged index clashed into legacy-leftovers.
-    for idx in (os.path.join(inbox, "index.jsonl"), os.path.join(leftovers, "inbox", "index.jsonl")):
-        _rewrite_index(idx, olds, inbox)
+    # The moved index's rows still name the old Inbox: rewritten onto .fused/inbox/ (or wherever a clashed file
+    # landed) so Bot.artifacts() (which drops a row whose path is gone) and resolve_path see them. A second staged
+    # index clashed into legacy-leftovers: rewritten too, then its rows merged into the primary index (the only one
+    # artifacts() reads); the leftover file stays as the backup.
+    primary, extra = os.path.join(inbox, "index.jsonl"), os.path.join(leftovers, "inbox", "index.jsonl")
+    for idx in (primary, extra):
+        _rewrite_index(idx, olds, inbox, elsewhere)
+    _merge_index(primary, extra)
 
     left = _drain_check(data, keep=frozenset({store.BOT_FILE})) + _drain_check(cache)
     if left:
@@ -767,22 +793,26 @@ def _move_bot(bid: str, meta: dict, *_unused) -> str:
     return folder
 
 
-def _rewrite_index(idx: str, olds, inbox: str) -> bool:
+def _rewrite_index(idx: str, olds, inbox: str, elsewhere: dict | None = None) -> bool:
     """Point every Inbox row of `idx` (an index.jsonl) that still names an old Inbox at the same relative path
-    under `inbox`. Only `path` is absolute in a row (bot.py _record_artifact; `folder`/`name` are basenames); a
-    `build` row names the app folder and is never touched. Unparseable lines and rows under no old prefix stay
-    verbatim, so a rerun over an already-rewritten index changes nothing. Atomic (tmp + replace). True when
-    the file changed."""
+    under `inbox` -- or, when `elsewhere[<old prefix>][<relative path>]` says that file landed somewhere else
+    (a clash kept under legacy-leftovers), there. Only `path` is absolute in a row (bot.py _record_artifact;
+    `folder`/`name` are basenames); a `build` row names the app folder and is never touched. Unparseable lines
+    and rows under no old prefix stay verbatim, so a rerun over an already-rewritten index changes nothing.
+    Atomic (tmp + replace). True when the file changed."""
+    elsewhere = elsewhere or {}
     if not os.path.isfile(idx) or os.path.islink(idx):
         return False
-    prefixes = []
+    prefixes, moved = [], {}
     for o in dict.fromkeys(olds):
         for v in (os.path.normpath(o), os.path.realpath(o)):
             k = os.path.normcase(v)
             if k not in prefixes and not _same_dir(v, inbox):
                 prefixes.append(k)
+                moved[k] = elsewhere.get(os.path.normcase(os.path.normpath(o)), {})
     prefixes.sort(key=len, reverse=True)  # the longest old prefix wins
     here = os.path.normcase(os.path.normpath(inbox)) + os.sep
+    kept = os.path.normcase(os.path.join(os.path.dirname(os.path.normpath(inbox)), LEFTOVERS)) + os.sep
     with open(idx, encoding="utf-8", newline="") as f:
         lines = f.readlines()
     out, changed = [], False
@@ -800,27 +830,77 @@ def _rewrite_index(idx: str, olds, inbox: str) -> bool:
         key = os.path.normcase(norm)
         # Already under the new Inbox: left alone (the bot's new folder is often the old Inbox's own name, so
         # `<root>/foo/.fused/inbox/…` also starts with the old prefix `<root>/foo/`).
-        hit = None if key.startswith(here) else next((o for o in prefixes if key.startswith(o + os.sep)), None)
+        # A row already pointed into legacy-leftovers (a clashed file) is left alone the same way.
+        done = key.startswith(here) or key.startswith(kept)
+        hit = None if done else next((o for o in prefixes if key.startswith(o + os.sep)), None)
         if hit is None:
             out.append(line)
             continue
-        row["path"] = os.path.join(inbox, norm[len(hit) + 1:])
+        rel = norm[len(hit) + 1:]
+        row["path"] = moved[hit].get(os.path.normcase(rel)) or os.path.join(inbox, rel)
         end = line[len(line.rstrip("\r\n")):] or "\n"
         out.append(json.dumps(row) + end)
         changed = True
     if not changed:
         return False
-    tmp = idx + ".tmp"
+    _write_lines(idx, out)
+    return True
+
+
+def _write_lines(path: str, lines) -> None:
+    """Atomic (tmp + replace); the tmp is removed on failure."""
+    tmp = path + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8", newline="") as f:
-            f.writelines(out)
-        os.replace(tmp, idx)
+            f.writelines(lines)
+        os.replace(tmp, path)
     except OSError:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+def _index_key(line: str):
+    """A row's identity for the merge: its `path`, else the whole row (unparseable lines: the stripped text)."""
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return ("line", line.strip())
+    if isinstance(row, dict) and isinstance(row.get("path"), str) and row["path"]:
+        return ("path", os.path.normcase(os.path.normpath(row["path"])))
+    return ("row", json.dumps(row, sort_keys=True))
+
+
+def _merge_index(primary: str, extra: str) -> bool:
+    """Append the rows of `extra` (a second old Inbox's index, clashed into legacy-leftovers) that `primary` lacks:
+    primary first, then `extra` in file order, deduped by `path` (else the whole row), so a rerun adds nothing.
+    `extra` is left in place (it is the backup). Atomic. True when `primary` changed."""
+    if not os.path.isfile(extra) or os.path.islink(extra) or os.path.islink(primary):
+        return False
+    try:
+        with open(primary, encoding="utf-8", newline="") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        lines = []
+    with open(extra, encoding="utf-8", newline="") as f:
+        more = f.readlines()
+    seen = {_index_key(ln) for ln in lines if ln.strip()}
+    add = []
+    for ln in more:
+        if not ln.strip():
+            continue
+        k = _index_key(ln)
+        if k in seen:
+            continue
+        seen.add(k)
+        add.append(ln if ln.endswith(("\n", "\r")) else ln + "\n")
+    if not add:
+        return False
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        lines[-1] += "\n"
+    _write_lines(primary, lines + add)
     return True
 
 

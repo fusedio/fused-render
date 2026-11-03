@@ -228,3 +228,51 @@ def test_handoff_sweep_only_under_the_workspace_claim(app_home, monkeypatch):
         other.close()
     registry._pass()
     assert sweeps == [1]
+
+
+def test_two_old_inboxes_with_one_task_file_keep_both_rows(app_home):
+    # "Foo" renamed to "Bar": the pin still names the old slug folder foo/, and an orphaned bar/ Inbox exists too.
+    # Both hold `<task>/out.txt` with DIFFERENT bytes and an index.jsonl. bar/ lifts first (sorted), so foo's
+    # out.txt and index.jsonl clash into legacy-leftovers; every row must still name its own Inbox's file, and
+    # foo's rows must be merged into the primary index (the only one artifacts() reads).
+    bid = "c1c2c3c4"
+    root = bpaths.bots_root()
+    task = "20260101-0900-t1"
+    for name in ("foo", "bar"):
+        old = os.path.join(root, name)
+        _touch(os.path.join(old, task, "out.txt"), f"from {name}")
+        _touch(os.path.join(old, task, f"only-{name}.md"), name)
+        _touch(os.path.join(old, "index.jsonl"), "".join(
+            json.dumps({"ts": t, "name": fn, "path": os.path.join(old, task, fn), "kind": "save", "size": 1,
+                        "task": name, "folder": task}) + "\n"
+            for t, fn in ((1.0, "out.txt"), (2.0, f"only-{name}.md"))))
+    _legacy(app_home, bid, "Bar", artifacts_dir=os.path.join(root, "foo"))
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and r["moved"] == 1
+
+    inbox = bpaths.bot_inbox(bid)
+    leftovers = os.path.join(os.path.dirname(inbox), migrate_v3.LEFTOVERS)
+    primary, extra = os.path.join(inbox, "index.jsonl"), os.path.join(leftovers, "inbox", "index.jsonl")
+    assert os.path.isfile(extra)  # the clashed index stays as the backup
+    saves = [row for row in registry.get(bid).artifacts() if row["kind"] == "save"]
+    outs = {row["task"]: row["path"] for row in saves if row["name"] == "out.txt"}
+    assert set(outs) == {"foo", "bar"} and outs["foo"] != outs["bar"]
+    assert outs["bar"] == os.path.join(inbox, task, "out.txt")
+    assert outs["foo"] == os.path.join(leftovers, "inbox", task, "out.txt")
+    for row in saves:
+        with open(row["path"], encoding="utf-8") as f:
+            want = f"from {row['task']}" if row["name"] == "out.txt" else row["task"]
+            assert f.read() == want
+    assert sorted(row["name"] for row in saves) == ["only-bar.md", "only-foo.md", "out.txt", "out.txt"]
+
+    # Idempotent: a second run, a direct re-merge and a direct re-rewrite add or change nothing.
+    with open(primary, encoding="utf-8") as f:
+        before = f.read()
+    assert len(before.splitlines()) == 4
+    migrate_v3.migrate_once()
+    assert migrate_v3._merge_index(primary, extra) is False
+    olds = [os.path.join(root, "foo"), os.path.join(root, "bar"), os.path.dirname(os.path.dirname(inbox))]
+    assert migrate_v3._rewrite_index(primary, olds, inbox) is False
+    assert migrate_v3._rewrite_index(extra, olds, inbox) is False
+    with open(primary, encoding="utf-8") as f:
+        assert f.read() == before

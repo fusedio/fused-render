@@ -36,12 +36,18 @@ workspace: the main app and a `FUSED_RENDER_BRANCH` install both default to
 `~/Fused/bots`, each wins its own home's `routines.lock`, and both would tick
 the same bots, firing a due routine twice. So an owner also flocks
 `<bots_root>/.routines.lock` (the workspace claim, beside `.migrate.lock`) and
-keeps it for its lifetime. Without the claim it still serves its home (chats,
-forwarding, the dock) but SKIPS `tick_routines()`, the hand-off sweep (its
+keeps it for its lifetime. Without the claim it still serves its home (reads,
+forwarding, the dock, settings) but runs NO bot engine: every door that starts
+one (a send, an app send, a phone message, a channel text — the router texts
+back —, a routine run, a new bot's greeting, a hand-off start) refuses through `require_workspace()` with `WorkspaceBusy`
+(a 409 on the routes), since the claimant may be running that very bot's engine
+on the same bot folder. It also SKIPS `tick_routines()`, the hand-off sweep (its
 rows live in the Super Bot's bot.json in the workspace: two sweepers would
-start one queued hand-off twice) and the steps that write the shared
-workspace (the v3 folder migration, the Super Bot seed, the browser sweep), logs "another fused-render owns routines for <bots_root>" once, and
-re-tries the claim every pass, so a quitting main app hands routines over.
+start one queued hand-off twice) and the steps that read or write the shared
+workspace (the v3 folder migration, the Super Bot seed, the takeover walk — it
+would stop the claimant's running tasks, which have no thread here — and the
+browser sweep), logs "another fused-render owns routines for <bots_root>" once,
+and re-tries the claim every pass, so a quitting main app hands routines over.
 The claim drops with the owner lock (`_drop_routines_lock`).
 
 `shutdown()` (from `@on_shutdown_always _shutdown_bots`) stops every bot's
@@ -95,6 +101,16 @@ class NotOwner(RuntimeError):
         self.info = info
         who = _owner_words(info)
         super().__init__(f"the bots run in {who}" if info else "no Fused app is running the bots")
+
+
+class WorkspaceBusy(ValueError):
+    """This process owns its home but not the workspace claim (module docstring): another fused-render instance
+    runs the bots in this workspace, so nothing here may start a bot engine. A 409 on the routes."""
+
+    def __init__(self, root: str = ""):
+        self.root = root
+        super().__init__(f"another fused-render instance owns the bots in this workspace ({root}); "
+                         "use that window or quit it")
 
 
 def _owner_words(info: dict | None) -> str:
@@ -229,6 +245,28 @@ def retry_election() -> None:
     than on the scheduler's next pass, so the page's next poll lands here."""
     if not _OWNER["lean"]:
         _elect()
+
+
+def workspace_claimed() -> bool:
+    """May this process run bot engines? True when it holds the workspace claim (module docstring) and, in an
+    owner that ran `_become_owner`, the workspace steps (migration, seed, takeover walk) have run under it. A miss
+    re-tries the claim (one non-blocking flock), so a quitting main app frees the doors at once; a claim won here
+    between passes still answers False until the scheduler's next pass has run those steps (≤ SCHED_EVERY_S): they
+    must never run inline on a request thread racing the pass. Never elects: a non-owner is False."""
+    if not owns():
+        return False
+    if _OWNER["ws_fh"] is None and not _claim_workspace():
+        return False
+    return bool(_OWNER["ws_ready"] or not _OWNER["ready"])
+
+
+def require_workspace() -> None:
+    """The one refusal for every door that STARTS a bot engine or a routine run (module docstring). Elects lazily
+    first, like require_owner (NotOwner when another app owns this home), then raises WorkspaceBusy when another
+    home's owner holds the workspace claim."""
+    require_owner()
+    if not workspace_claimed():
+        raise WorkspaceBusy(bpaths.bots_root())
 
 
 def _elect() -> bool:
@@ -366,7 +404,7 @@ def _become_owner() -> None:
     """What every start() used to do, now once, in the winner, before its first
     tick: layout migration, the FusedBot import, the v3 folder migration, the Super Bot seed, the orphan
     browser sweep, the channels router, the takeover walk, the wake agent.
-    Idempotent per ownership; errors in one step never block the next. The three steps that write the shared
+    Idempotent per ownership; errors in one step never block the next. The steps that read or write the shared
     workspace (`_WS_STEPS`) run only under the workspace claim (module docstring): when another home holds it
     they wait for the pass that wins it (`_workspace_steps`)."""
     if _OWNER["ready"]:
@@ -389,7 +427,7 @@ def _become_owner() -> None:
     _run_steps([x for x in steps if claimed or x[0] not in _WS_STEPS])
 
 
-_WS_STEPS = ("v3 folder migration", "Super Bot seed", "browser sweep")
+_WS_STEPS = ("v3 folder migration", "Super Bot seed", "takeover walk", "browser sweep")
 
 
 def _run_steps(steps) -> None:
@@ -402,12 +440,13 @@ def _run_steps(steps) -> None:
 
 def _workspace_steps() -> None:
     """The shared-workspace steps, once, on the first pass that holds the workspace claim after an ownership
-    that started without it (a main app on the same workspace quit)."""
+    that started without it (a main app on the same workspace quit). The router is already up (`_become_owner`),
+    so the takeover walk's Bots can reach the phone as they would at first ownership."""
     if _OWNER["ws_ready"] or not _claim_workspace():
         return
     _OWNER["ws_ready"] = True
     _run_steps((("v3 folder migration", _migrate_v3), ("Super Bot seed", _seed_super),
-                ("browser sweep", _sweep_browsers)))
+                ("takeover walk", _reconcile), ("browser sweep", _sweep_browsers)))
 
 
 def _claim_workspace() -> bool:
@@ -474,7 +513,27 @@ def _seed_super() -> None:
         # super_id(): a seed now would make a second one, and super-seeded.json would keep it for good.
         logger.info("Super Bot seed skipped: the v3 folder migration has not completed")
         return
+    if _legacy_bots_remain():
+        # Legacy bots after the stamp (a later FusedBot import whose lift failed, or a parked unplaceable bot): one
+        # of them may be a Super Bot super_id() cannot see yet, and a seed now would make a second one for good.
+        logger.info("Super Bot seed skipped: legacy bots are still waiting to be migrated")
+        return
     seed_super()
+
+
+def _legacy_bots_remain() -> bool:
+    """A BOT still waiting: a legacy data dir holding a bot.json, or a parked `<bots_root>/.unmigrated/<id>/bot.json`.
+    Strays (`.unmigrated/stray-<ts>/`, parked from every real tree: `cache/bots/browsers` and the like) and empty
+    dirs never count, or the seed would wait forever on an install without a seed stamp."""
+    from fused_render.bots import migrate_v3, store
+    if migrate_v3._legacy_bots():
+        return True
+    parked = os.path.join(bpaths.bots_root(), migrate_v3.UNMIGRATED)
+    try:
+        names = os.listdir(parked)
+    except OSError:
+        return False
+    return any(not n.startswith("stray-") and os.path.isfile(os.path.join(parked, n, store.BOT_FILE)) for n in names)
 
 
 def _sweep_browsers() -> None:
@@ -513,8 +572,10 @@ def _reconcile() -> None:
     """The takeover walk: disk state an owner that quit left behind. A bot.json
     that still says running / waiting with no thread here goes idle with a
     system line; a routine stuck on "started" gets outcome "stopped" so its
-    card and the breaker tell the truth. Runs on every ownership, which also
-    covers a plain restart after a crash."""
+    card and the breaker tell the truth. Runs once per workspace claim (a
+    `_WS_STEPS` step), which also covers a plain restart after a crash; never
+    without the claim, where the claimant's running tasks have no thread here
+    and would be stopped as stale."""
     for b in all():
         try:
             meta = b.meta

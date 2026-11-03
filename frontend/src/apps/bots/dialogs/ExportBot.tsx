@@ -112,6 +112,7 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
     : memory && plan?.memory_text_problem ? `${plan.memory_text_problem}. Leave memory out or trim it before exporting.`
     : "";
 
+  const isSuper = bot.kind === "super" || !!plan?.super;
   const toggle = (folder: string, on: boolean) => setTicked((cur) => {
     const next = new Set(cur);
     if (on) next.add(folder); else next.delete(folder);
@@ -123,8 +124,9 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
     setAdding(false);
   };
 
+  // Every entry point (the button, Enter in the filename field) goes through these gates.
   const doExport = async () => {
-    if (!plan || busy) return;
+    if (!plan || busy || isSuper || textProblem) return;
     setBusy(true); setErr("");
     const apps = [...plan.apps.filter((a) => !a.problem).map((a) => a.folder), ...extras.map((x) => x.folder)].filter((f) => ticked.has(f));
     const name = normName(fileName, plan.file_name);
@@ -146,7 +148,6 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
     navigate(cut > 0 ? result.slice(0, cut) : result, { isDir: true, sel: cut > 0 ? result.slice(cut + 1) : null });
   };
 
-  const isSuper = bot.kind === "super" || !!plan?.super;
   const savedName = plan ? normName(fileName, plan.file_name) : fileName;
   const skillTitles = (plan?.skills || []).map((s) => s.title || s.name).join(", ");
 

@@ -56,9 +56,11 @@ export interface BotFileInstallBody {
 }
 
 export interface BotFileAppResult {
+  /** The index's spelling of the folder (the probe row's `folder`), never a rewritten disk path. */
   folder: string;
   ok: boolean;
-  state: string;
+  /** `settings` (with ok false): the app installed but the bot could not be updated; `error` names why. */
+  state: "installed" | "settings" | "missing" | "error" | (string & {});
   error?: string;
 }
 

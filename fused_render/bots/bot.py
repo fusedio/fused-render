@@ -4286,7 +4286,7 @@ def _write_new_meta(bid, meta):
     store.write_meta(bid, meta)
 
 
-def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True, browser=""):
+def create(name="", model="", effort="", instructions="", preset="", kind="", greet=True, browser="", *, bot_id=None):
     """A new bot: bot.json, a `created` line, the greeting (background). Returns the Bot.
     With `preset` (a key under bots/presets/) its playbooks, brand face, standing
     rules and starter apps are applied before the greeting, so it introduces them;
@@ -4294,7 +4294,19 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
     `kind="super"` makes Super Bot (KINDS): one per install, a Claude model, its own
     face and standing rules unless the user typed some; a preset does not apply.
     `greet=False` skips the model-written hello (the seeded Super Bot writes a fixed line).
-    `browser` is an existing browser id to share (another bot's logins); default a browser of its own."""
+    `browser` is an existing browser id to share (another bot's logins); default a browser of its own.
+    `bot_id` is an id the caller minted (botfile's install, which must know its bot's id even when this raises
+    after bot.json exists); one that is malformed or already a bot is refused before anything is written."""
+    if bot_id is not None:
+        if not isinstance(bot_id, str) or not bpaths._ID_RE.fullmatch(bot_id):
+            raise ValueError(f"bad bot id {bot_id!r}")
+        try:
+            bpaths.bot_folder(bot_id)
+            taken = True
+        except LookupError:
+            taken = bot_id in _list_ids()
+        if taken:  # place() reuses a folder holding this id: without this a duplicate would overwrite, not refuse
+            raise ValueError(f"there is already a bot {bot_id}")
     preset = (preset or "").strip()
     browser = os.path.basename(browser or "")
     if browser and not browsers.exists(browser):
@@ -4310,7 +4322,7 @@ def create(name="", model="", effort="", instructions="", preset="", kind="", gr
         from fused_render.bots import presets as presets_mod
         if presets_mod.get(preset) is None:  # refuse before bot.json exists: no orphan bot
             raise ValueError(f"unknown preset {preset!r}")
-    bid = uuid.uuid4().hex[:8]
+    bid = bot_id or uuid.uuid4().hex[:8]
     n = len(_list_ids())
     meta = {"id": bid, "name": name or f"Bot {n}", "model": model if model in MODELS else DEFAULT_MODEL,
             "effort": effort if effort in EFFORTS else DEFAULT_EFFORT, "status": "idle", "instructions": (instructions or "").strip(),

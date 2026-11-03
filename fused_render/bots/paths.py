@@ -4,11 +4,11 @@ Two roots. Everything that belongs to ONE bot lives in that bot's folder in
 the user's workspace; machine state shared across bots stays in the app home:
 
     <workspace>/bots/<folder>/            bot_folder(bid)   PUBLIC (shareable, git-friendly)
-        bot.json                          the public half of the bot's meta (store.PUBLIC_KEYS)
+        bot.json                          the public half of the bot's meta (store.PUBLIC_KEYS + its `_gen` stamp)
         skills/<name>.md  README.md       skills; README is the user's, never generated
         .gitignore                        ".fused/\n", seeded once by place()
         .fused/                           bot_dir(bid) == bot_private(bid)   PRIVATE
-            state.json  events.jsonl      every other meta key; the transcript
+            state.json  events.jsonl      every other meta key (+ `_public_gen`); the transcript
             memory.md  files/  downloads/
             inbox/<task>/                 bot_inbox(bid): the Inbox (index.jsonl lives here)
             cache/                        bot_cache_dir(bid): shot.png, window.json, steps/, … (deletable)

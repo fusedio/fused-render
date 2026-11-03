@@ -8,7 +8,9 @@ apps hub), and a `/api/bots/apps/*` spelling would be swallowed by the
 Each route is one branch of OpenBot's `agents._main` (the page used to call
 `main(action=…)`; here every action is a route). Reads are plain GETs; every
 POST/DELETE needs `X-Fused: 1`. Errors are `{"error": "<sentence>"}`:
-`ValueError` / `RuntimeError` from the bot layer -> 400, an unknown bot -> 404.
+`ValueError` / `RuntimeError` from the bot layer -> 400, an unknown bot -> 404,
+`registry.WorkspaceBusy` (another home's owner holds the workspace claim, so a
+door that would start a bot engine refuses) -> 409.
 
 The bot layer (`registry`, `bot`, `store`, `apps`) is imported lazily so the
 server imports this router without pulling in Chrome/CDP code.
@@ -175,12 +177,14 @@ def _starters():
 
 
 def _handled(fn):
-    """ValueError/RuntimeError -> 400 (404 for an unknown bot), plus the slow-call log."""
+    """WorkspaceBusy -> 409, ValueError/RuntimeError -> 400 (404 for an unknown bot), plus the slow-call log."""
     @functools.wraps(fn)
     def wrap(*args, **kwargs):
         t0 = time.time()
         try:
             return fn(*args, **kwargs)
+        except registry.WorkspaceBusy as e:  # a ValueError: before the 400 branch
+            return _error(str(e), 409)
         except (ValueError, RuntimeError) as e:
             msg = str(e) or e.__class__.__name__
             return _error(msg, 404 if msg.startswith("no such bot") else 400)
@@ -352,6 +356,7 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     if not isinstance(browser, str):
         raise ValueError("browser_id must be a browser id")
     terminal = _check_terminal(bm, body, kind == "super")  # before the bot exists: a 400 leaves nothing behind
+    registry.require_workspace()  # its greeting thread may start a preset's setup task (bot.greet)
     b = registry.create(body.get("name") or "", body.get("model") or "", body.get("effort") or "", body.get("instructions") or "",
                         preset=preset, kind=kind, browser=browser)
     if body.get("approval") in ("ask", "auto"):
@@ -587,6 +592,7 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
     if not text:
         raise ValueError("empty message")
     answers = body.get("answers")  # a relayed card's button (docs §11): the seq the click meant, else None
+    registry.require_workspace()
     try:
         _bot(bid).send(text, reply_to=body.get("reply_to"), forever=bool(body.get("forever")),
                        answers=int(answers) if answers is not None else None)
@@ -654,6 +660,12 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
     if guard is not None:
         return guard
     body = body if isinstance(body, dict) else {}
+    if op == "open":
+        _bot(bid)  # elects lazily (require_owner); an unknown bot is still a 404
+        if not registry.workspace_claimed():
+            # Super Bot's first task starts from here, but the page calls `open` on every landing and asks again
+            # while setup is "pending": without the workspace claim it waits quietly instead of a 409 per click.
+            return {"ok": True, "setup": "pending"}
     if op in _CONTROL:
         out = getattr(_bot(bid), _CONTROL[op])()
         return {"ok": True, **(out if isinstance(out, dict) else {})}
@@ -670,6 +682,7 @@ def _goto(bid, body):
     url = (body.get("url") or "").strip()
     if not url:
         raise ValueError("no url")
+    registry.require_workspace()
     from fused_render.bots.browser import NAV_SETTLE_S  # lazy, like the rest of the bot layer (module docstring)
     info = _bot(bid).browser.goto(url, settle=NAV_SETTLE_S) or {}
     return {"ok": True, "url": info.get("url")}
@@ -854,6 +867,7 @@ def _profile(bid, body):
 
 def _clone(bid, body):
     share = body.get("share")
+    registry.require_workspace()  # the copy's greeting runs on it (bot.clone -> greet)
     b = registry.clone(bid, body.get("name") or "", share=True if share is None else _truthy(share))
     return {"ok": True, "id": b.id}
 
@@ -878,6 +892,7 @@ def _routines(bid, body):
         r = next((x for x in b.routines() if x["id"] == rid), None)
         if not r:
             raise ValueError("no such routine")
+        registry.require_workspace()
         b.routine_fire(r, manual=True)
     else:
         raise ValueError("op must be add|edit|delete|enable|disable|run")
@@ -1072,6 +1087,7 @@ def _app_send(bid, body, x_fused_page=None):
     def before():
         return save_files(b, text, decoded, names)
 
+    registry.require_workspace()
     try:
         started = b.receive_app(text, via, follow_up=bool(addr), before=before)
     except Exception as e:  # noqa: BLE001
