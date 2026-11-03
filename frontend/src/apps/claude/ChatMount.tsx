@@ -8,7 +8,7 @@ import type { CanvasShot } from "./shots/canvas-shot";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ChatFramePlaceholder } from "./ChatPlaceholder";
 import type { ClaudeAsk } from "./ClaudeChat";
-import type { BreakoutRequest } from "./protocol/controller-api";
+import type { BreakoutRequest, Turn } from "./protocol/controller-api";
 import {
   createMemoryParamsStore,
   type ParamsSnapshot,
@@ -238,6 +238,8 @@ export interface ChatMountProps {
   breakoutAt?: string;
   /** Open a breakout from this chat (its message / composer Breakout seats). */
   onBreakout?: (req: BreakoutRequest) => void;
+  /** With `breakout`: the chat's own session id + transcript, for Send back. */
+  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[] }) => void;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -332,6 +334,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.breakout ? { breakout: true } : {})}
         {...(props.breakoutAt ? { breakoutAt: props.breakoutAt } : {})}
         {...(props.onBreakout ? { onBreakout: props.onBreakout } : {})}
+        {...(props.onBreakoutState ? { onBreakoutState: props.onBreakoutState } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}

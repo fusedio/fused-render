@@ -768,3 +768,45 @@ button.claude-rail-peek-scope.is-node:focus-visible {
     opacity: 0.6;
   }
 }
+
+/* THE BREAKOUT CARD (shell/breakout/BreakoutCards.tsx): a research-only side
+   chat floating bottom-right, one per open breakout, stacked by an inline
+   offset. The card chrome is `.claude-rail-peek-card`; this is only the fixed
+   box (no transform on it, for the same fixed-popover reason as the rail
+   peek) and the head's two buttons. */
+.breakout-card {
+  position: fixed;
+  z-index: 45;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+.breakout-card .claude-rail-peek-card {
+  transform: none;
+}
+.breakout-card .breakout-title {
+  font-weight: 600;
+}
+.breakout-card .breakout-note {
+  color: var(--c-faint, var(--fg));
+  opacity: 0.7;
+}
+.breakout-card .breakout-spacer {
+  flex: 1 1 auto;
+}
+.breakout-card .breakout-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.breakout-card .breakout-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.breakout-card .breakout-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

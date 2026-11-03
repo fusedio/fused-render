@@ -77,6 +77,7 @@ import SystemDock from "@shell/SystemDock";
 import UpdatesDock from "@shell/UpdatesDock";
 import { useMonitorFeature } from "@platform/lib/monitor-flag";
 import ActivityDock from "@shell/ActivityDock";
+import BreakoutCards from "@shell/breakout/BreakoutCards";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import NativeAppSyncNotices from "@shell/NativeAppSyncNotices";
 import TerminalDock from "@shell/TerminalDock";
@@ -1320,6 +1321,9 @@ export default function App({ config }: { config: Config }) {
             both ride this mount, so every Run affordance and
             `fused.terminal.open/run` go away with it instead of failing. */}
         {!IS_EMBED && terminalOn && <TerminalDrawer cwd={fsPath} />}
+        {/* Breakout cards: research-only side chats, shell-level so they
+            outlive the page they were opened from. */}
+        {!IS_EMBED && <BreakoutCards />}
         {!IS_EMBED && (
           <StatusBar
             terminalDock={terminalOn && <TerminalDock />}

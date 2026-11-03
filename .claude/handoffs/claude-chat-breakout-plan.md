@@ -115,3 +115,11 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 - Controller breakout posture: `deps.breakout`/`deps.breakoutAt`; first start sends `breakout:"1"`, no live_host probe, never adopts the parent's live run; once spent, every start/send carries `breakout:"resume"`. A failed first start leaves it unspent.
 - `ClaudeChat` skips queue admission and the fork notice in breakout posture; `onBreakout` is available while a run is active (unlike `onFork`).
 - Breakout button hangs one lane left of the fork button (net zero flex width).
+
+### Task 4 (shell cards, store, Send back)
+- The store lives in `frontend/src/platform/lib/breakouts.ts` (test beside it), not `shell/breakout/`: the import-boundary check (run by `bun run build`) forbids `apps/*` importing `@shell/*`, and ClaudeChat/explorer/canvases all need `openBreakout` and the draft event. `BreakoutRequest` moved there too; `controller-api` re-exports it. `buildHandoffDraft` takes a structural `HandoffTurn` for the same reason.
+- Cards use a fixed bottom-right box with a per-index offset, not `peekPlacement`/`dragResize` (those place against a rail anchor; a breakout has none). Reuses `.claude-rail-peek-card` chrome plus a `.breakout-card` modifier. No drag/resize.
+- Handoff dir is not known to the client (server derives `_workdir/.claude/handoffs`), so the draft builder matches any `.claude/handoffs/*.md` Write/Edit path when no dir is passed.
+- Send back goes through the existing `stranded`/`restore` composer seat (appends after a single newline, draft stays synced) rather than a separate `setText` path; plan said a blank line, single newline is what the seat does.
+- Card reads its session and transcript through a new `onBreakoutState` prop on ClaudeChat/ChatMount (fires on turns change, breakout posture only). "Used" for the Close confirm = the breakout has a user turn with a live-send key (`u:`).
+- `onBreakout` wired on: Preview (2 mounts), ListingPreviewPane, AppPage, CanvasWorkspace, TaskPeek. Not on TaskCards/RailPeek. A composer-side Breakout button sits in the chat's top strip (`.c-breakout`).

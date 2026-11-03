@@ -851,15 +851,5 @@ export interface ControllerDeps {
 
 export type { HistoryTurn };
 
-/**
- * A request to open a breakout (a research-only side chat forked from a chat),
- * handed from a chat's Breakout buttons to the shell's card store.
- * `forkAt` is the user message's uuid; absent means "from the latest message".
- */
-export interface BreakoutRequest {
-  sessionId: string;
-  file: string;
-  forkAt?: string;
-  /** Optional dedupe key for the card store (e.g. the turn key). */
-  forkKey?: string;
-}
+/** A request to open a breakout; the type lives in platform (see there). */
+export type { BreakoutRequest } from "@platform/lib/breakouts";

@@ -132,6 +132,7 @@ import { Button } from "@platform/shadcn/ui/button";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import Listing from "@apps/explorer/Listing";
 import { FileSearchField } from "@apps/explorer/FileSearchField";
+import { openBreakout } from "@platform/lib/breakouts";
 
 // The window global the injected runtime calls to hand this shell the commit the
 // git sidebar just selected (static/runtime.js `noteSnapshotSelected`, reached
@@ -2271,6 +2272,7 @@ function TemplatePreview({
               // thing that decides which of the mounted panes is on screen.
               if (m === CHAT_MODE) return (
                 <ChatMount
+                  onBreakout={openBreakout}
                   // The content pane's chat remounts for a fresh ask on the same
                   // rule the sidebar's does: `initialAsk` is read once, at boot
                   // (ClaudeChat's `booted`), so a second ask arriving while this
@@ -2481,6 +2483,7 @@ function TemplatePreview({
                  remount with it. A thumbnail must not take the keyboard (D348),
                  and the ask itself is PULLED here, in the host. */
               <ChatMount
+                onBreakout={openBreakout}
                 key={claudeMountKey(CHAT_MODE)}
                 file={fsPath}
                 chatOnly

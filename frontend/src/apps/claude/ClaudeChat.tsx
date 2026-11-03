@@ -32,6 +32,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { GitBranchPlus } from "lucide-react";
 
 import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
@@ -44,11 +45,12 @@ import {
 } from "@platform/lib/drafts";
 import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
+import { COMPOSER_DRAFT_EVENT, type ComposerDraftDetail } from "@platform/lib/breakouts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
-import type { BreakoutRequest, SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
+import type { BreakoutRequest, SendOptions, StrandedLine, Turn, UserTurn } from "./protocol/controller-api";
 import type { PermissionMode } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
@@ -318,6 +320,9 @@ export interface ClaudeChatProps {
   /** "Breakout from here" / the composer's Breakout button: hand the request
    *  to the shell, which opens the card. Absent: no Breakout seats. */
   onBreakout?: (req: BreakoutRequest) => void;
+  /** With `breakout`: the card's window onto this chat — its own session id
+   *  (minted by the first send) and transcript, for Send back. */
+  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[] }) => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -3479,6 +3484,32 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
+  /** SEND BACK lands here: a breakout card's summary arrives as a window event
+   *  addressed to this chat's session + folder, and goes through the same seat a
+   *  stranded line uses (appended to what the reader has typed, draft in step). */
+  useEffect(() => {
+    if (props.breakout) return;
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<ComposerDraftDetail>).detail;
+      if (!d || !d.text) return;
+      const sid = controller.getState().sessionId || params.get("session_id") || "";
+      if (!sid || d.sessionId !== sid || d.file !== file) return;
+      strandSeq.current += 1;
+      setStranded({ text: d.text, seq: strandSeq.current });
+    };
+    window.addEventListener(COMPOSER_DRAFT_EVENT, on);
+    return () => window.removeEventListener(COMPOSER_DRAFT_EVENT, on);
+  }, [props.breakout, controller, params, file]);
+
+  /** A breakout card reads this chat's session + transcript through
+   *  `onBreakoutState` (Send back builds its draft from it). */
+  const { onBreakoutState } = props;
+  useEffect(() => {
+    if (props.breakout && onBreakoutState) {
+      onBreakoutState({ sessionId: state.sessionId || "", turns: state.turns });
+    }
+  }, [props.breakout, onBreakoutState, state.sessionId, state.turns]);
+
   /** "Breakout from here" (Transcript `onBreakout`): hand the shell the chosen
    *  message's uuid, resolved off the controller's turns exactly as the fork
    *  does. Unlike the fork it is allowed while a run is active — the breakout
@@ -5285,6 +5316,19 @@ function ChatBody(props: ChatBodyProps) {
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
             {inChat && !mergedHeadRow ? backBtn : null}
+            {/* BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open
+                while a run is going too (the breakout is its own run). */}
+            {props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
+              <button
+                type="button"
+                className="bar-ctl bar-ctl-icon c-breakout"
+                title="Breakout: a research-only side chat from here"
+                aria-label="Breakout"
+                onClick={() => props.onBreakout?.({ sessionId: state.sessionId!, file })}
+              >
+                <GitBranchPlus size={14} aria-hidden="true" />
+              </button>
+            ) : null}
             {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
                 `margin-left: auto` (T:255-262, chat.css), which is not the same
                 thing: a spacer is a flex ITEM, so it kept its 12px gap even
