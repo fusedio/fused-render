@@ -3896,6 +3896,13 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # would let an edit past the approve tool, and the approve tool is where
         # the breakout's read-only policy lives.
         cli_mode = "default"
+        # The CLI evaluates the user's settings allow rules (e.g. `Bash(ls *)`)
+        # BEFORE it calls the permission prompt tool, so a breakout's Bash call
+        # ran with source "config" and never reached the bridge policy. Deny
+        # rules beat allow rules, so refuse these tools in the CLI itself. Write
+        # stays on the bridge (handoff .md exception).
+        cmd += ["--settings", json.dumps({"permissions": {"deny": [
+            "Bash", "Edit", "MultiEdit", "NotebookEdit"]}})]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id and resume_at and new_session_id:

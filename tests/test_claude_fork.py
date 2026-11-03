@@ -218,6 +218,19 @@ def test_argv_breakout_forces_default_mode_and_drops_fused_cli(
     assert argv[argv.index("--permission-mode") + 1] == "default"
 
 
+def test_argv_breakout_hard_denies_shell_and_edit_tools(agent, tmp_path):
+    argv = _argv(agent, tmp_path, breakout=True)
+    assert argv.count("--settings") == 1
+    deny = json.loads(argv[argv.index("--settings") + 1])["permissions"]["deny"]
+    assert sorted(deny) == ["Bash", "Edit", "MultiEdit", "NotebookEdit"]
+    assert "Write" not in deny
+
+
+def test_argv_plain_run_has_no_deny_settings(agent, tmp_path):
+    argv = _argv(agent, tmp_path)
+    assert "--settings" not in argv
+
+
 def test_argv_breakout_hands_the_bridge_the_handoff_dir(agent, tmp_path):
     argv = _argv(agent, tmp_path, session_id="OLD", new_session_id="NEW",
                  breakout=True)
