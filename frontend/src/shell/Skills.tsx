@@ -10,7 +10,7 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "@apps/claude_config/api";
-import { ListSkeleton, SKELETON_ROWS, guard, toastErr, toastOk, useModuleData } from "@apps/claude_config/bits";
+import { ListSkeleton, ShowMore, SKELETON_ROWS, guard, toastErr, toastOk, useModuleData } from "@apps/claude_config/bits";
 import { useEnabledClis } from "@apps/claude_config/readers";
 import { SkillDetail } from "@apps/claude_config/skill-detail";
 import { SkillRow } from "@apps/claude_config/skill-row";
@@ -20,6 +20,7 @@ import {
   REMOTE_MIN,
   formatInstalls,
   groupRemote,
+  rankRemote,
   matchSkills,
   readParams,
   skillKey,
@@ -258,7 +259,7 @@ export default function Skills() {
           )}
           {(!error || mine.length > 0) && (
             <div className="settings-card">
-              {mine.length > 0 ? mine.map(row) : <p className="cc-skill-empty">No skills of your own yet.</p>}
+              {mine.length > 0 ? <ShowMore items={mine} render={row} resetKey={q} /> : <p className="cc-skill-empty">No skills of your own yet.</p>}
             </div>
           )}
         </section>
@@ -280,7 +281,7 @@ export default function Skills() {
             </a>
             .
           </p>
-          <div className="settings-card">{bundled.map(row)}</div>
+          <div className="settings-card"><ShowMore items={bundled} render={row} resetKey={q} /></div>
         </section>
       )}
       {!searching && <div className="cc-findmore">Type {REMOTE_MIN}+ letters to search skills.sh too.</div>}
@@ -300,14 +301,19 @@ export default function Skills() {
           )}
           {remoteRows.length > 0 && (
             <div className="settings-card">
-              {groupRemote(remoteRows).map(({ top, rest }) => (
-                <div key={top.id}>
-                  {remoteRow(top, rest.length)}
-                  {rest.length > 0 && openGroups.has(top.skillId) && (
-                    <div className="cc-srow-others">{rest.map((r) => remoteRow(r, 0))}</div>
-                  )}
-                </div>
-              ))}
+              <ShowMore
+                items={rankRemote(groupRemote(remoteRows), q)}
+                limit={8}
+                resetKey={q}
+                render={({ top, rest }) => (
+                  <div key={top.id}>
+                    {remoteRow(top, rest.length)}
+                    {rest.length > 0 && openGroups.has(top.skillId) && (
+                      <div className="cc-srow-others">{rest.map((r) => remoteRow(r, 0))}</div>
+                    )}
+                  </div>
+                )}
+              />
             </div>
           )}
         </section>

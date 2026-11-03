@@ -121,15 +121,18 @@ def api_marketplace_install(body: dict = Body(...), x_fused: str | None = Header
     """Start installing `slug` — or updating its marketplace copy, or (with
     `switch: true`) switching the user's GitHub-link copy of the same repo to
     reviewed releases, or (with `overwrite: true`) installing over the
-    user's showcase copy — in the background. Answers the job immediately
+    user's showcase copy, or (with `replace: <path>`) over the copy a failed
+    job named as `replace_path` — in the background. Answers the job immediately
     (the running one, if any: idempotent), or a `confirm` question (module
     docstring). X-Fused-guarded."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     try:
+        replace = body.get("replace")
         got = marketplace.start_install(str(body.get("slug") or ""), switch=body.get("switch") is True,
-                                        overwrite=body.get("overwrite") is True)
+                                        overwrite=body.get("overwrite") is True,
+                                        replace=replace if isinstance(replace, str) and replace else None)
     except marketplace.InstallError as exc:
         return _error(str(exc))
     if got.get("status") == "confirm":

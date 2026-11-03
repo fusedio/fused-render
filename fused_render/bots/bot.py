@@ -696,7 +696,7 @@ class Bot:
         # Builds still in flight when the server last stopped: pick their watchers back up.
         for bd in list(self.meta.get("builds") or []):
             if not bd.get("done_at") and time.time() - float(bd.get("created_at") or 0) < BUILD_MAX_S:
-                self._watch_build(bd)
+                self._watch_build(bd, resumed=True)
 
     # -- persistence -------------------------------------------------------
     def save(self):
@@ -1894,6 +1894,15 @@ class Bot:
             self.save()
         self._write_still(still)
 
+    def set_doing(self, text):
+        """What the bot is doing right now ("thinking", "writing", a tool's label). Transient: kept in
+        memory only (no save(), no `updated`), read live by summary(). "" clears it."""
+        text = str(text or "")
+        with self.lock:
+            if self.meta.get("doing") != text:
+                self.meta["doing"] = text
+                self.meta["doing_since"] = time.time()
+
     @property
     def browser_id(self):
         return self.meta.get("browser_id") or self.id
@@ -1921,9 +1930,10 @@ class Bot:
         shot_ts = self.browser.shot_ts()
         with self.lock:  # hand-off watchers change rows in place (under this lock); copy them as they stand
             meta = dict(self.meta)
+            inbox_n = len(self.inbox)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
-        return {**meta, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(), "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
+        return {**meta, "inbox_n": inbox_n, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(), "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "terminal_id": self.terminal_id(), "terminal_available": _tools_mod().terminal_enabled(self),
@@ -3012,12 +3022,17 @@ class Bot:
                 f"started; Claude is {doing} now ({how}; a few minutes). Link for the user: {link} . "
                 f"Now `done`: tell the user you are {doing} \"{name}\", include that exact link, and that they will hear when it is ready.")
 
-    def _watch_build(self, bd):
+    def _watch_build(self, bd, resumed=False):
         """Background: poll the task until it settles, then tell the user (a `done`
-        event reaches the chat, and iMessage when that is on)."""
+        event reaches the chat, and iMessage when that is on).
+
+        `resumed`: picked back up after a server restart. The task ran before the
+        restart, so a `done` read now is the end of it, not a fresh row that has not
+        started: a build that finished while the server was down used to wait for an
+        `in_progress` it would never see again, and never told the user nor ticked the app."""
         def run():
             from urllib.parse import quote
-            seen_running, stable = False, ""
+            seen_running, stable = resumed, ""
             deadline = float(bd.get("created_at") or time.time()) + BUILD_MAX_S
             while time.time() < deadline:
                 time.sleep(BUILD_POLL_S)
@@ -3035,18 +3050,42 @@ class Bot:
                         stable = st
                         continue
                     reply = " ".join(((row or {}).get("last_reply") or "").split())[:400]
-                    # `app` lets the chat render an app card under this message (open inline / beside the chat).
-                    self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
-                              app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
+                    app = os.path.basename(str(bd.get("dir") or "").rstrip("/"))
+                    # Order matters across a restart: the asker's tick (idempotent) lands while done_at is still unset,
+                    # so a restart redoes it; done_at is on disk BEFORE the "ready" event, so a restart never resumes
+                    # this watcher (resumed ones accept `done` at once) to tell the user twice.
+                    self._trust_for_asker(bd.get("via"), app)
                     with self.lock:
                         bd["done_at"] = time.time()
                         # The app it just built is ticked under "Apps it may use without asking": its scripts run
                         # without a card from here on, and Settings shows that (tools.risk reads only the tick).
-                        apptools.trust_app(self.meta, os.path.basename(str(bd.get("dir") or "").rstrip("/")))
+                        apptools.trust_app(self.meta, app)
                         self.save()
+                    # `app` lets the chat render an app card under this message (open inline / beside the chat).
+                    self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
+                              app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
                     return
                 stable = ""
         threading.Thread(target=run, name=f"build-{(bd.get('entry_id') or '')[:8]}", daemon=True).start()
+
+    def _trust_for_asker(self, via, app):
+        """A build Super Bot handed off is ticked for Super Bot too (owner, 2026-11-02): it asked for the app and
+        told the user it is built, so its Settings must not show that app unticked. Outside this bot's lock: two
+        bots' locks are never held together."""
+        if (via or {}).get("kind") != chan.HANDOFF_KIND:
+            return
+        sid = str(via.get("addr") or "").partition(":")[0]
+        if not sid or sid == self.id or not Bot._exists(sid):
+            return
+        try:
+            sb = _registry().get(sid)
+        except Exception:  # noqa: BLE001
+            return
+        if sb.deleted:
+            return
+        with sb.lock:
+            if apptools.trust_app(sb.meta, app):
+                sb.save()
 
     def _surface_build_stall(self, bd, row, st):
         """A build that stopped moving is told in the chat of the bot that asked
@@ -3633,6 +3672,9 @@ def _run_task(run, bot, task, label):
     try:
         run(bot, task, label)
     finally:
+        _clear = getattr(bot, "set_doing", None)
+        if _clear:
+            _clear("")  # a stale "doing" never outlives its task
         with bot.lock:
             if bot.thread is threading.current_thread():
                 bot.task_via = dict(chan.WEB)

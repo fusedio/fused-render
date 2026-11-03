@@ -5,6 +5,8 @@ No real network: `urllib.request.urlopen` is faked (GitHub is a tarball).
 import io
 import json
 import tarfile
+import urllib.error
+import urllib.parse
 
 import pytest
 
@@ -121,13 +123,28 @@ def _tarball(files, prefix="repo-abc123", extra=()):
     return buf.getvalue()
 
 
-def _repo(monkeypatch, files, calls=None, extra=()):
-    """Fake GitHub: serves one tarball of `files` for any codeload URL."""
+def _repo(monkeypatch, files, calls=None, extra=(), tree=None):
+    """Fake GitHub. codeload serves one tarball of `files`; raw serves a file
+    of `files`; the tree API is rate limited (403, so the tarball fallback runs)
+    unless `tree` is "ok" (a full listing) or "truncated"."""
     blob = _tarball(files, extra=extra)
 
     def urlopen(req, timeout=None):
+        url = req.full_url
         if calls is not None:
-            calls.append(req.full_url)
+            calls.append(url)
+        if url.startswith("https://api.github.com/"):
+            if tree is None:
+                raise urllib.error.HTTPError(url, 403, "rate limited", {}, None)
+            return _Resp(json.dumps({"truncated": tree == "truncated", "tree": [
+                {"path": p, "type": "blob", "mode": "100644",
+                 "size": len(d.encode() if isinstance(d, str) else d)} for p, d in files.items()
+            ] + [{"path": "link", "type": "blob", "mode": "120000", "size": 3},
+                 {"path": "sub", "type": "commit", "mode": "160000"},
+                 {"path": "a/../b", "type": "blob", "mode": "100644", "size": 1}]}).encode())
+        if url.startswith("https://raw.githubusercontent.com/o/r/HEAD/"):
+            d = files[urllib.parse.unquote(url.split("/HEAD/", 1)[1])]
+            return _Resp(d.encode() if isinstance(d, str) else d)
         return _Resp(blob)
     monkeypatch.setattr(skills.urllib.request, "urlopen", urlopen)
 
@@ -166,7 +183,8 @@ def test_archive_is_cached_per_source_across_preview_and_add(home, monkeypatch):
     skills.main(action="remote_preview", source="o/r", skill_id="foo")
     skills.main(action="remote_preview", source="o/r", skill_id="foo")
     assert skills.main(action="remote_add", source="o/r", skill_id="foo")["ok"]
-    assert calls == ["https://codeload.github.com/o/r/tar.gz/HEAD"]
+    assert [c for c in calls if "codeload" in c] == ["https://codeload.github.com/o/r/tar.gz/HEAD"]
+    assert len(calls) == 2  # the 403 tree try, then one tarball
 
 
 def test_bad_source_or_id_is_rejected_without_a_request(home, monkeypatch):
@@ -181,7 +199,7 @@ def test_size_cap_refuses(home, monkeypatch):
     monkeypatch.setattr(skills, "_COPY_MAX_BYTES", 10)
     _repo(monkeypatch, FILES)
     res = skills.main(action="remote_add", source="o/r", skill_id="foo")
-    assert res["ok"] is False and "too large" in res["error"]
+    assert res["ok"] is False and res["tooLarge"] is True and "too large" in res["error"]
     assert not (home / "skills" / "foo").exists()
 
 
@@ -192,11 +210,18 @@ def test_file_count_cap_refuses(home, monkeypatch):
 
 
 def test_archive_over_the_byte_cap_is_refused(home, monkeypatch):
-    monkeypatch.setattr(skills, "_ARCHIVE_MAX_BYTES", 100)
+    monkeypatch.setattr(skills, "_ARCHIVE_STREAM_MAX_BYTES", 100)
     _repo(monkeypatch, {"SKILL.md": "---\nname: foo\n---\n", "big.bin": bytes(range(256)) * 40})
     res = skills.main(action="remote_add", source="o/r", skill_id="foo")
     assert res["ok"] is False and "larger than" in res["error"]
     assert "o/r" not in skills._trees
+
+
+def test_preview_of_an_oversized_repo_is_flagged_too_large(home, monkeypatch):
+    monkeypatch.setattr(skills, "_ARCHIVE_STREAM_MAX_BYTES", 100)
+    _repo(monkeypatch, {"SKILL.md": "---\nname: foo\n---\n", "big.bin": bytes(range(256)) * 40})
+    res = skills.main(action="remote_preview", source="o/r", skill_id="foo")
+    assert res["ok"] is False and res["tooLarge"] is True and "larger than" in res["error"]
 
 
 def test_symlink_and_odd_members_are_skipped(home, monkeypatch):
@@ -273,7 +298,7 @@ def test_no_readme_falls_back_to_skill_md(home, monkeypatch):
 def test_archive_cache_keeps_at_most_eight_sources(home, monkeypatch):
     _repo(monkeypatch, FILES)
     for i in range(10):
-        skills._repo_archive(f"o/r{i}")
+        skills._repo_view(f"o/r{i}")
     assert len(skills._trees) == 8 and "o/r0" not in skills._trees and "o/r9" in skills._trees
 
 
@@ -325,7 +350,7 @@ def test_root_skill_in_a_big_repo_is_not_too_large(home, monkeypatch):
 
 
 def test_archive_cache_drops_expired_sources_on_write(home, monkeypatch):
-    skills._trees["old/one"] = (0, {})
+    skills._trees["old/one"] = (0, skills._Repo("old/one", {}))
     _repo(monkeypatch, FILES)
     skills.main(action="remote_preview", source="o/r", skill_id="foo")
     assert "old/one" not in skills._trees and "o/r" in skills._trees
@@ -350,6 +375,8 @@ def test_remote_add_downloads_before_taking_the_config_lock(home, monkeypatch):
 
     def urlopen(req, timeout=None):
         seen.append(bool(held))
+        if "api.github.com" in req.full_url:
+            raise OSError("no api")
         return _Resp(blob)
     monkeypatch.setattr(skills.urllib.request, "urlopen", urlopen)
     assert skills.main(action="remote_add", source="o/r", skill_id="foo")["ok"]
@@ -363,3 +390,119 @@ def test_marketplace_preview_hides_symlinked_files(home):
     (sk / "linkdir").symlink_to(sk / "refs", target_is_directory=True)
     res = skills.main(action="preview", marketplace="acme", plugin="kit", slug="brew")
     assert res["files"] == ["SKILL.md", "refs/a.md"]
+
+
+# -- tree API: only the skill's folder is downloaded --------------------------------
+
+BIG = {**FILES, "big/huge.bin": b"x" * 5000, "src/app.py": "x"}
+
+
+def _raws(calls):
+    return [urllib.parse.unquote(c.split("/HEAD/", 1)[1]) for c in calls if "raw.githubusercontent" in c]
+
+
+def test_tree_api_fetches_only_the_skill_folder(home, monkeypatch):
+    calls = []
+    _repo(monkeypatch, BIG, calls, tree="ok")
+    root, files = skills._locate("o/r", "foo")
+    assert root == "skills/foo" and list(files) == ["SKILL.md", "refs/a.md"]
+    assert not any("codeload" in c for c in calls)
+    assert sorted(_raws(calls)) == ["skills/foo/SKILL.md", "skills/foo/refs/a.md"]
+    api = [c for c in calls if "api.github.com" in c]
+    assert api == ["https://api.github.com/repos/o/r/git/trees/HEAD?recursive=1"]
+
+
+def test_tree_api_request_headers(home, monkeypatch):
+    seen = []
+
+    def urlopen(req, timeout=None):
+        seen.append((req.get_header("Accept"), req.get_header("User-agent"), timeout))
+        return _Resp(json.dumps({"tree": []}).encode())
+    monkeypatch.setattr(skills.urllib.request, "urlopen", urlopen)
+    skills._tree_listing("o/r")
+    assert seen == [("application/vnd.github+json", "fused-render", 10)]
+
+
+def test_tree_api_skips_symlinks_submodules_and_odd_paths(home, monkeypatch):
+    _repo(monkeypatch, BIG, tree="ok")
+    assert sorted(skills._repo_view("o/r").paths()) == sorted(BIG)
+
+
+def test_tree_api_preview_warms_the_add(home, monkeypatch):
+    calls = []
+    _repo(monkeypatch, BIG, calls, tree="ok")
+    skills.main(action="remote_preview", source="o/r", skill_id="foo")
+    n = len(calls)
+    assert skills.main(action="remote_add", source="o/r", skill_id="foo")["ok"]
+    assert len(calls) == n
+    assert (home / "skills" / "foo" / "refs" / "a.md").read_text() == "ref"
+
+
+def test_size_limit_is_enforced_from_listed_sizes_before_any_fetch(home, monkeypatch):
+    monkeypatch.setattr(skills, "_COPY_MAX_BYTES", 10)
+    calls = []
+    _repo(monkeypatch, BIG, calls, tree="ok")
+    res = skills.main(action="remote_preview", source="o/r", skill_id="foo")
+    assert res["ok"] is False and res["tooLarge"] is True
+    assert _raws(calls) == [] and not any("codeload" in c for c in calls)
+
+
+def test_truncated_tree_falls_back_to_the_tarball(home, monkeypatch):
+    calls = []
+    _repo(monkeypatch, BIG, calls, tree="truncated")
+    root, files = skills._locate("o/r", "foo")
+    assert root == "skills/foo" and list(files) == ["SKILL.md", "refs/a.md"]
+    assert any("codeload" in c for c in calls)
+
+
+def test_rate_limited_tree_falls_back_to_the_tarball(home, monkeypatch):
+    calls = []
+    _repo(monkeypatch, BIG, calls)  # tree API answers 403
+    assert skills.main(action="remote_preview", source="o/r", skill_id="foo")["ok"]
+    assert any("codeload" in c for c in calls)
+
+
+def test_tarball_fallback_fetches_large_skill_files_raw(home, monkeypatch):
+    monkeypatch.setattr(skills, "_ARCHIVE_KEEP_FILE_BYTES", 0)
+    calls = []
+    _repo(monkeypatch, FILES, calls)
+    repo = skills._repo_view("o/r")
+    assert set(repo._bytes) == {"README.md", "skills/foo/SKILL.md", "skills/foobar/SKILL.md"}
+    _root, files = skills._locate("o/r", "foo")
+    assert files["refs/a.md"] == b"ref"
+    assert _raws(calls) == ["skills/foo/refs/a.md"]
+
+
+def test_tarball_fallback_keeps_bytes_within_budget(home, monkeypatch):
+    monkeypatch.setattr(skills, "_ARCHIVE_KEEP_BUDGET", 30)
+    _repo(monkeypatch, FILES)
+    repo = skills._repo_view("o/r")
+    assert sum(len(b) for b in repo._bytes.values()) <= 30
+    assert set(repo.paths()) >= set(FILES)  # the listing stays complete
+
+
+def test_tree_api_frontmatter_name_fallback_reads_candidates(home, monkeypatch):
+    calls = []
+    _repo(monkeypatch, {"pkg/a/SKILL.md": "---\nname: alpha\n---\n",
+                        "pkg/b/SKILL.md": "---\nname: beta\n---\nB", "pkg/b/x.md": "x"}, calls, tree="ok")
+    root, files = skills._locate("o/r", "beta")
+    assert root == "pkg/b" and list(files) == ["SKILL.md", "x.md"]
+
+
+def test_tree_api_root_skill_takes_only_resource_dirs(home, monkeypatch):
+    calls = []
+    _repo(monkeypatch, {"SKILL.md": "---\nname: rootskill\n---\nbody", "README.md": "r",
+                        "src/app.py": "x", "references/a.md": "x", "docs/g.md": "x"}, calls, tree="ok")
+    _root, files = skills._locate("o/r", "rootskill")
+    assert list(files) == ["SKILL.md", "references/a.md"]
+    assert sorted(_raws(calls)) == ["SKILL.md", "references/a.md"]
+
+
+def test_tree_api_preview_reads_the_root_readme(home, monkeypatch):
+    calls = []
+    _repo(monkeypatch, {"README.md": "see [g](docs/g.md)", "s/foo/SKILL.md": "---\nname: foo\n---\n"},
+          calls, tree="ok")
+    res = skills.main(action="remote_preview", source="o/r", skill_id="foo")
+    assert res["readmeIsSkill"] is False
+    assert res["readme"] == "see [g](https://github.com/o/r/blob/HEAD/docs/g.md)"
+    assert sorted(_raws(calls)) == ["README.md", "s/foo/SKILL.md"]

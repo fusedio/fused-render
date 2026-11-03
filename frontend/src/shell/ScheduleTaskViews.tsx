@@ -3254,6 +3254,7 @@ export function TaskRowItem({
   onPress,
   onQueued,
   onReload,
+  selected = false,
 }: {
   task: Task;
   /** For the marks that spell a path with `~` (the file mark's caption). */
@@ -3281,6 +3282,9 @@ export function TaskRowItem({
    */
   onQueued?: (override: QueueOverride) => void;
   onReload?: () => void;
+  /** The chat the reader last picked (platform/lib/last-chat): the Tasks
+   *  page's own "the one I just read" wash (`.is-selected`). */
+  selected?: boolean;
 }) {
   return (
     <TaskNode
@@ -3289,7 +3293,7 @@ export function TaskRowItem({
       showProject={false}
       folderMissing={false}
       open={false}
-      selected={false}
+      selected={selected}
       onSelect={NO_OP}
       onToggle={NO_OP}
       loading={false}

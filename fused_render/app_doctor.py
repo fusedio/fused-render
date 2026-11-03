@@ -31,10 +31,7 @@ because they need the runtime's own knowledge:
   parse failure — and `icon.svg` / `icon.png` parsing, when it is there at
   all (icon stays optional),
 * whether the folder's own git repo has everything committed,
-* whether the current branch has commits its upstream does not, and
-* — the one MODEL-BACKED row — whether the views render alike across
-  browsers (`cross-browser`, `app_doctor_ai.py`): on demand, cached on the
-  view files' checksum, read here from that cache only.
+* whether the current branch has commits its upstream does not.
 
 FACT VS CANDIDATE — MEASURED, NOT ASSUMED. A run of `ci/app_check.py` over
 the 8 apps in a real `~/Fused/local` produced 40 content findings, and every
@@ -82,15 +79,6 @@ _SCRIPT_REL = os.path.join("ci", "app_check.py")
 PASS = "pass"
 FAIL = "fail"
 SKIP = "skip"
-# A check whose answer needs a Claude call rather than a deterministic
-# read — "not run yet, press to run" — contributes nothing to `ok` and
-# nothing to the severity dot until it has actually been run: an unreviewed
-# question is not a failure, and it is not a pass either. One check reports
-# it: `cross-browser` (`app_doctor_ai.py`), whose verdict is cached on a
-# checksum of the app's view files and read back here — a GET never spawns
-# the model, so a row that has never been run, or whose app changed since it
-# was, is UNRUN until someone presses Check.
-UNRUN = "unrun"
 
 # ------------------------------------------------------- section/severity/kind
 
@@ -113,11 +101,6 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     "readme": ("essentials", "info", "fact"),
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
-    # The one MODEL-BACKED row (app_doctor_ai.py): on demand, cached on the
-    # app's content, never run by a GET. A candidate, not a fact — a model's
-    # reading of a rubric earns a second look before an edit, which is what
-    # the candidate prompt asks the fix session for.
-    "cross-browser": ("sharing", "warning", "candidate"),
     # Consolidated repo-health row (SPEC-doctor-git-ai-errors.md): committed +
     # pushed + not-behind-origin, in one. The first two are answered from
     # local refs only; "behind origin" needs a real fetch, which this never
@@ -158,13 +141,6 @@ def _meta(cid: str) -> tuple[str, str, str]:
     return _CHECK_META[cid]
 
 
-# The rows a person runs by pressing the row's own Check button rather than
-# the doctor answering on every GET (`POST /api/apps/doctor/run`). The modal
-# reads `ondemand` off the row to draw that button — and a Re-check on a
-# settled one — rather than keeping a second list of ids.
-ON_DEMAND = frozenset({"cross-browser"})
-
-
 def _check(cid: str, label: str, state: str, detail: str,
            findings: list | None = None, *, severity: str | None = None) -> dict:
     """`severity` overrides the table's default for ONE outcome — e.g. a
@@ -180,7 +156,6 @@ def _check(cid: str, label: str, state: str, detail: str,
         "state": state,
         "detail": detail,
         "findings": findings or [],
-        "ondemand": cid in ON_DEMAND,
     }
 
 
@@ -1078,19 +1053,6 @@ def _repo_health_advice(*, commit, push, behind, can_pull, on_default, clean,
     return joined + " so what you share matches what you tested"
 
 
-def _cross_browser_check(app_dir: str) -> dict:
-    """The model-backed row, FROM ITS CACHE ONLY — `app_doctor_ai.row_state`
-    never spawns anything. The run itself is the router's
-    `POST /api/apps/doctor/run`, which writes the cache this reads."""
-    from fused_render import app_doctor_ai
-
-    try:
-        state, detail, findings = app_doctor_ai.row_state(app_dir)
-    except Exception as exc:  # noqa: BLE001 — a doctor never crashes on its patient
-        state, detail, findings = UNRUN, f"could not read the last verdict: {exc}", []
-    return _check(app_doctor_ai.CHECK_ID, app_doctor_ai.LABEL, state, detail, findings)
-
-
 # One computation per check id, dispatched by `report` (which needs every row)
 # and `report_one` (which needs exactly one, without paying for the rest).
 _ENTRY_DEPENDENT = ("entry", "app-id", "api-version")
@@ -1132,7 +1094,6 @@ def report(app_dir: str) -> dict:
         "pyproject": _pyproject_check(app_dir),
         "icon": _icon_check(app_dir),
         "git": _repo_health_check(app_dir),
-        "cross-browser": _cross_browser_check(app_dir),
         **_gated_checks(app_dir),
     }
     checks = [by_id[cid] for cid in CHECK_ORDER if cid in by_id]
@@ -1180,8 +1141,6 @@ def report_one(app_dir: str, check_id: str) -> dict | None:
         return _icon_check(app_dir)
     if check_id == "git":
         return _repo_health_check(app_dir)
-    if check_id == "cross-browser":
-        return _cross_browser_check(app_dir)
     if check_id == "fused-dir-committed":
         return _fused_dir_committed_check(app_dir)
     raise AssertionError(f"unreachable: {check_id!r} is in _CHECK_META but not dispatched")
@@ -1203,22 +1162,9 @@ _CHECK_ID_RE = re.compile(r"check `([a-z0-9-]+)`")
 
 
 def is_doctor_prompt(message: str) -> bool:
-    """A FIX task's prompt OR a CHECK task's (`check_prompt`) — both are App
-    Doctor tasks for the one-live-task-per-app gate (a check must not read
-    files a fix is rewriting, and a fix must not start on a verdict that is
-    still being written). `is_doctor_check_prompt` tells them apart."""
+    """A fix task's prompt — one row's or "Fix all"'s — for the
+    one-live-task-per-app gate."""
     return str(message or "").startswith(DOCTOR_PROMPT_PREFIX)
-
-
-# The words right after the prefix that mark a CHECK task (`check_prompt`)
-# rather than a fix: the on-demand row's own model run, which the panel
-# draws as "checking" rather than "Fix in progress".
-_CHECK_TASK_MARK = " — run check `"
-
-
-def is_doctor_check_prompt(message: str) -> bool:
-    text = str(message or "")
-    return text.startswith(DOCTOR_PROMPT_PREFIX + _CHECK_TASK_MARK)
 
 
 def doctor_task_check_id(message: str) -> str | None:
@@ -1259,9 +1205,6 @@ def _findings_block(detail: str, findings: list[dict]) -> str:
         "- " + (f"{f.get('path', '.')}:{f['line']}" if f.get("line") else
                 str(f.get('path', '.')))
         + f": {f.get('rule', '')}: {f.get('excerpt', '')}"
-        # A model-backed row (`cross-browser`) also says what to change; a
-        # deterministic row's findings have no such line and add nothing.
-        + (f" — suggested fix: {f['fix']}" if f.get("fix") else "")
         for f in findings
     )
     return "\n".join(lines)
@@ -1437,66 +1380,4 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
         f"covering every failing row). Invoke the `{SKILL_QUALIFIED}` skill and follow "
         f"it end to end, one row at a time in the order given. {_CREDENTIAL_NOTE}\n\n"
         f"{body}\n\n{_COMMIT_STEP_ALL}"
-    )
-
-
-def check_prompt(entry_html: str, files: list[str]) -> str:
-    """The CHECK task's text for the on-demand `cross-browser` row
-    (`app_doctor_ai`): a session that READS the listed view files against the
-    cross-browser skill's trap table and answers in the chat — nothing else.
-
-    The task runs in the CLI's PLAN permission mode (`app_doctor_ai.
-    PERMISSION_MODE`), so it CANNOT edit, write or commit whatever the prompt
-    says; the read-only sentence below is a courtesy, the mode is the
-    guarantee. It also means the session cannot write the verdict file — so
-    the reply ends with the verdict as one fenced JSON block, and the server
-    lifts it off the transcript into the cache (`app_doctor_ai.
-    settle_from_task`) once the turn is filed ok.
-
-    Starts with `DOCTOR_PROMPT_PREFIX` so the one-live-task-per-app gate
-    counts it (`is_doctor_prompt`), then `_CHECK_TASK_MARK` + the id so
-    `is_doctor_check_prompt` and `doctor_task_check_id` both read it. The
-    shape (`app_doctor_ai.VERDICT_SHAPE`) is prose, read back leniently
-    (`_parse_verdict`) — a reply with no readable verdict is "no verdict",
-    never trusted. The checksum the row is cached on is never in the
-    prompt: the server computed it before the task existed."""
-    from fused_render import app_doctor_ai
-
-    entry_name = os.path.basename(entry_html)
-    listed = "\n".join(f"- {rel}" for rel in files) or "- (no .html/.css/.js/.svg files found)"
-    # The rubric rides IN the prompt: plan mode also gates the Skill tool, and
-    # the first live run spent its turn discovering that ("Plan mode block
-    # skill invoke too") instead of judging. Same trick `engine()` uses to
-    # load the floor script: read the sibling skill's SKILL.md by path.
-    rubric = app_doctor_ai.rubric() or (
-        f"(the `{app_doctor_ai.RUBRIC_SKILL}` skill is not installed on this server — "
-        f"judge by MDN Baseline: flag only features not Widely available, used without "
-        f"a fallback)")
-    return (
-        f"{DOCTOR_PROMPT_PREFIX}{_CHECK_TASK_MARK}{app_doctor_ai.CHECK_ID}` "
-        f"(`{entry_name}` is its entry page). This is a READ-ONLY check, not a fix.\n\n"
-        f"You are running in plan mode ON PURPOSE: it is what makes this check unable "
-        f"to edit anything. You are not being asked for a plan — do not write one, do "
-        f"not call ExitPlanMode, do not ask for permissions, do not invoke skills. "
-        f"Read the files below, judge them, answer in the chat.\n\n"
-        f"Judge ONLY by the rubric below, for DESKTOP browsers only — Chrome/Edge, "
-        f"Firefox, Safari and the macOS WKWebView. Ignore phones and tablets entirely: "
-        f"nothing about touch, viewport zoom or mobile layout is a finding. A finding is "
-        f"a concrete line in one of the files that will look or behave differently in "
-        f"one of those engines, with no fallback (`@supports`, or the `-webkit-` twin "
-        f"beside it). Nothing beyond the rubric; nothing about logic, style or "
-        f"performance. Few, certain findings; a problem repeated across lines is ONE "
-        f"finding at its first occurrence. Write for the app's author, who may not "
-        f"know CSS.\n\n"
-        f"# Rubric\n\n{rubric}\n\n"
-        f"Files to read (relative to the app folder; read nothing else):\n{listed}\n\n"
-        f"Reply in the chat with, in this order: the summary sentence; one short line "
-        f"per finding in plain words for the app's author — what a visitor would notice "
-        f"and in which browser, no code, no file paths, no CSS terms (nothing here when "
-        f"there were none); then, LAST, exactly one fenced ```json block holding the "
-        f"verdict in this shape:\n{app_doctor_ai.VERDICT_SHAPE}\n\n"
-        f"The JSON block is REQUIRED — a reply without it is discarded and the check "
-        f"reads as never answered — and it must be the last thing in your final "
-        f"message, even when there were no findings (`ok: true`, empty `findings`). "
-        f"Nothing after it."
     )

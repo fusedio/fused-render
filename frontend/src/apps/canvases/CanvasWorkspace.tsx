@@ -210,7 +210,7 @@ import {
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
-import { ClaudeRail } from "./ClaudeRail";
+import { ClaudeRail } from "@shell/claude-rail/ClaudeRail";
 import {
   mergeLogEvents,
   noWatcher,
@@ -316,7 +316,7 @@ const FOCUS_CHECK_MIN_MS = 3000;
 // sits in both columns, and under 380px its header and composer clip.
 const PANE_MIN_W = 380;
 const CANVAS_MIN_W = 320;
-/** The Claude rail's width (canvases.css `.canvas-rail`): what the pane leaves
+/** The Claude rail's width (claude-rail.css `.claude-rail`): what the pane leaves
  *  at the edge while shut, and where a pull to reopen it is measured from. */
 const RAIL_W = 48;
 
@@ -2622,6 +2622,14 @@ export default function CanvasWorkspace({
   // rail's + is not a door into the pane at all: it opens the New task card
   // over the canvas (ClaudeRail, 2026-10-28).
   const openFromRail = useCallback(() => setSideOpen(true), []);
+  // WHERE THE RAIL STANDS (claude-rail-lib `RailPlace`): this canvas, narrowed
+  // to the selected node's file while one is selected. Memoised: the rail's
+  // seats derive from it.
+  const nodeFileName = node?.file ?? null;
+  const railPlace = useMemo(
+    () => ({ kind: "canvas" as const, env, name, dir, file: nodeFileName }),
+    [env, name, dir, nodeFileName],
+  );
 
   // Hand a fresh fix run to the chat: `run` goes on this page's own URL (the
   // chat's "url" params store reads it — the chat adopts the session and then
@@ -3073,11 +3081,22 @@ export default function CanvasWorkspace({
           // back in, plus Claude's state on this canvas, which is what the
           // pane was showing.
           <ClaudeRail
-            env={env}
-            name={name}
-            dir={dir}
-            node={node}
-            nodeReady={!node || !dir || nodeFileOnDisk === nodeFile(dir, node)}
+            place={railPlace}
+            // The + makes a task on the clone — on the node's file under it
+            // while a node is selected — said as the canvas and the node
+            // (ClaudeRail `NewTaskSeed`); held until the clone exists and
+            // the node's file is on disk (the pane's own two waits).
+            newTask={{
+              target: dir && node ? nodeFile(dir, node) : dir,
+              waiting:
+                dir === null
+                  ? "Loading the canvas…"
+                  : node && nodeFileOnDisk !== nodeFile(dir, node)
+                    ? `Saving ${node.file}…`
+                    : null,
+              on: node?.udfName ?? null,
+              where: { canvas: name, node: node?.udfName ?? null },
+            }}
             // The chat the pane would open on: a node's is the one its frame
             // last sat on (`nodeSessions`, the node pane's boot source — the
             // page URL's `session_id` is cleared on every node switch); the

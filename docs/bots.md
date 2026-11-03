@@ -129,7 +129,7 @@ tests/test_bots_*.py        store, routes (fake claude), steps engine, agent eng
 docs/bots.md             this file
 ```
 
-State is split in two roots (v3, 2026-11-02, D1454). Everything per-bot lives
+State is split in two roots (v3, 2026-11-02, D1456). Everything per-bot lives
 in one folder under the workspace (`FUSED_RENDER_DIR` overrides `~/Fused`):
 public files at the folder root, private and transient ones under its
 gitignored `.fused/`. Cross-bot machine state stays home-side
@@ -254,7 +254,8 @@ and `py` calls skip the approval card for this bot whatever the write heuristic,
 the app's SKILL.md or the bot's own `risky: true` say (owner, 2026-10-22: one
 list, ticked = without asking, nothing else); browser actions, texts and builds
 are not apps. It is the ONE app-level permission: a build this bot finishes
-ticks its app (`bot.py`, where `builds[].done_at` is set), and "Always approve"
+ticks its app (`bot.py`, where `builds[].done_at` is set; a hand-off build ticks
+it for the asking Super Bot too, `_trust_for_asker`), and "Always approve"
 on a `tool` / `py` card ticks the app (the rule kind `trusted`, key = the
 folder; `tools.forever_rule` no longer makes per-tool rules, and old `tool` /
 `py` rows plus finished builds migrate into ticks once per bot on load,
@@ -2249,7 +2250,7 @@ and the apps it uses. Export writes it from the bot's menu or Settings footer
 ("Export bot…"; the old `export` action is now labelled "Export transcript");
 opening one shows an install page; installing always makes a NEW bot. Design
 page with the owner's answers: <https://claude.ai/artifact/MgZLky3CyjTzH3mNZsXDr6>
-(D1454 layout, D1455 package).
+(D1456 layout, D1457 package).
 
 **The file.** The `.fused` app file's container (`appfile_container.py`, D870:
 magic `FUSEDAPP`, deflated JSON index, per-member deflate streams), told apart

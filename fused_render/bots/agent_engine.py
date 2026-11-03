@@ -739,6 +739,26 @@ def _ctx_reading(sess: Turn, usage) -> None:
         sess.ctx_tokens = sum(nums)
 
 
+def _doing(bot, text: str) -> None:
+    """Live activity for the status line (Bot.set_doing); a test's fake bot may lack it."""
+    fn = getattr(bot, "set_doing", None)
+    if fn:
+        try:
+            fn(text)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _tool_doing(name: str, inp) -> str:
+    """A short label for a tool_use block: the built-ins' own, or "<tool> <first string arg>" for the bot's MCP tools."""
+    inp = inp if isinstance(inp, dict) else {}
+    if not name.startswith("mcp__"):
+        return builtin_label(name, inp)
+    tool = name.split("__", 2)[-1]
+    first = next((v for v in inp.values() if isinstance(v, str) and v.strip()), "")
+    return f"{tool} {_short(first, 60)}".strip()
+
+
 def _drive(bot, sess: Turn, proc) -> tuple:
     """Read events until the task's last `result`. Returns (outcome, final
     text): outcome is "done", "cap" or "stopped". Raises on process death or a
@@ -782,7 +802,10 @@ def _drive(bot, sess: Turn, proc) -> tuple:
                 if key in seen:
                     continue
                 seen.add(key)
-                if blk.get("type") == "text" and (blk.get("text") or "").strip():
+                if blk.get("type") in ("thinking", "redacted_thinking"):
+                    _doing(bot, "thinking")
+                elif blk.get("type") == "text" and (blk.get("text") or "").strip():
+                    _doing(bot, "writing")
                     if pending:
                         bot.emit("thought", pending)
                     pending = blk["text"].strip()
@@ -791,6 +814,8 @@ def _drive(bot, sess: Turn, proc) -> tuple:
                         bot.emit("thought", pending)
                         pending = None
                     uses += 1
+                    if str(blk.get("name") or "") != f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}":
+                        _doing(bot, _tool_doing(str(blk.get("name") or ""), blk.get("input")))
                     if sess.is_super and not str(blk.get("name") or "").startswith("mcp__"):
                         _builtin_use(bot, sess, blk)
                     elif str(blk.get("name") or "") != f"mcp__{MCP_SERVER}__{tools.PERMISSION_TOOL}":
@@ -800,15 +825,18 @@ def _drive(bot, sess: Turn, proc) -> tuple:
                 sess.saw_tool_use(uses, mid or f"ev{sess.tool_uses + uses}", mcp_uses)
         elif t == "user" and sess.pending_builtin:
             _builtin_results(bot, sess, ev)
+            _doing(bot, "thinking")
         elif t == "result":
             ok = ev.get("subtype") == "success" and not ev.get("is_error")
             _usage(bot, sess, ev, ok)
             if bot.stop_flag.is_set() or sess.stopping:
+                _doing(bot, "")
                 return "stopped", ""
             if ev.get("session_id"):
                 sess.session_id = str(ev["session_id"])
             if not ok:
                 if sess.cap_interrupted:
+                    _doing(bot, "")
                     return "cap", pending or ""
                 err = _result_error(ev)
                 if sess.resumed and strikes == 0 and sess.tool_uses == 0 and _RESUME_ERR.search(err):
@@ -834,9 +862,11 @@ def _drive(bot, sess: Turn, proc) -> tuple:
                     bot.emit("thought", final)
                 sess.ran_calls.clear()
                 sess.current_result = None
+                _doing(bot, "thinking")
                 sess.write_user("\n".join(f"USER INSTRUCTION (mid-task, overrides the task): {m}" for m in msgs),
                                 images=[im for m in msgs for im in channels.base.images_of(m)])
                 continue
+            _doing(bot, "")
             return ("cap" if sess.over_cap and not final else "done"), final
         # system/init, user echoes / tool_results, control_response, stream_event: nothing to show
 
@@ -958,6 +988,7 @@ def run(bot, task: str, label: str | None = None) -> None:
                 # switch. Sent before the first message so it covers the first turn.
                 sess.control({"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0})
             # An app-started task's images (docs §13) ride the first turn; a ResumeLost re-spawn sends them again.
+            _doing(bot, "thinking")
             if not sess.write_user(prompt, images=getattr(bot, "task_images", None)):
                 raise RuntimeError("could not hand the task to Claude Code")
             if isinstance(conv, dict):
@@ -1182,6 +1213,9 @@ def handle_tool(bot, token, name: str, args) -> dict:
             return _handle(bot, sess, name, args)
         except Exception as e:  # noqa: BLE001
             return _result(f"error: {type(e).__name__}: {e}", error=True)
+        finally:
+            if not bot.stop_flag.is_set():
+                _doing(bot, "thinking")  # the result goes back to the model
 
 
 def _instruction(sess: Turn, notes: list, msg: str) -> None:

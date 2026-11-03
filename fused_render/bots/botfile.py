@@ -1,4 +1,4 @@
-"""Opening a `.fusedbot` package: what installing it would do, and the install (docs/bots.md §17, D1455).
+"""Opening a `.fusedbot` package: what installing it would do, and the install (docs/bots.md §17, D1457).
 
 A package is the app container (`appfile_container`, kind "bot") holding the bot's public half: `bot.json`,
 `skills/<name>.md`, an optional `README.md`, `icon.svg` and `.fused/memory.md`, plus one nested

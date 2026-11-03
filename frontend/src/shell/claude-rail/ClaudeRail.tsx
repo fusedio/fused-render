@@ -1,7 +1,15 @@
-// THE CLAUDE RAIL: what stands at the canvas page's right edge while the Claude
-// pane is shut (owner, 2026-10-26: "a very min width column, like we have for
-// the fused render left sidebar, just a single width column with the button";
-// "rail stays on only when claude panel is collapsed").
+// THE CLAUDE RAIL: what stands at a page's right edge while its Claude pane
+// is shut (owner, 2026-10-26: "a very min width column, like we have for the
+// fused render left sidebar, just a single width column with the button";
+// "rail stays on only when claude panel is collapsed"). Born on the canvas
+// page; since 2026-11-01 the app page and the explorer's file and folder
+// views draw the same rail (owner: "replicate that same behaviour in explorer
+// and app view — exact same behaviour"). WHERE it stands is a `RailPlace`
+// (claude-rail-lib): a canvas, a folder, a file — which decides whose chats
+// ride it and what the + makes a task on; everything below is the same on
+// each. The canvas-specific parts (a node narrows the rail; the foot's canvas
+// seat and the card's node chip select in the workbench) are the `canvas`
+// place's alone and are said so.
 //
 // The same 48px column the global sidebar collapses to, in the same vocabulary
 // (sidebar.css: .sidebar-rail-btn, .sidebar-rail-items, .sidebar-rail-scroll),
@@ -68,11 +76,11 @@
 // (`focusComposerSoon`), ready to type. With no room for a card, the press
 // opens the pane as before (the first such press included).
 //
-// THE TRIGGER (`canvas_rail_peek_trigger`) only decides how a PINNED card
-// moves to another chat (PeekIntent `setSwap`): "click" (the default) —
-// another ring's press; a hover on it moves nothing — or "hover" — resting
-// on another ring swaps the chat, and the card stays pinned. A hover shows
-// the card under either.
+// A PINNED CARD MOVES ONLY ON A PRESS (owner, 2026-11-02: "click only" — the
+// click-or-hover trigger pref of 2026-10-31 is gone): resting on another
+// ring shows that ring's title and moves nothing; its press swaps the chat.
+// A pinned card can also be RESIZED from its left corners, and keeps that
+// size for the next pin (RailPeek; a hover card is always the default size).
 //
 // A press into the workbench frame is not seen by this document; it is heard
 // as the window's blur with the frame holding the focus — which is why the
@@ -101,13 +109,14 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Plus } from "lucide-react";
+import { GitBranch, GitCommitHorizontal, Plus, RefreshCw } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { getSchedule, markWholeTaskRead, type Task, type TaskPulseTask } from "@platform/lib/api";
 import {
@@ -120,6 +129,7 @@ import {
 import {
   cardTitleLine,
   draftRing,
+  isChatDraftTask,
   isDraftTask,
   liveJobRow,
   recapTitlesOn,
@@ -127,18 +137,38 @@ import {
   taskHref,
 } from "@shell/tasks-lib";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
-import NewJobModal from "@shell/NewJobModal";
+import NewJobModal, { chatHopSeed, reopenTime, type DraftSeed } from "@shell/NewJobModal";
+import { fetchDrafts } from "@platform/lib/drafts";
+import { lastChatId, setLastChat, useLastChat } from "@platform/lib/last-chat";
 import { draftHref, preloadChat } from "@apps/claude";
 import { hideHint } from "@platform/lib/hints";
-import { dotCleared, keepMarks, railRows, readMark, type ReadMark } from "./claude-rail-lib";
-import { CanvasGlyph } from "./glyph";
+import {
+  dotCleared,
+  keepMarks,
+  nodeName,
+  placeName,
+  railRows,
+  railScope,
+  readMark,
+  type RailPlace,
+  type RailRow,
+  type ReadMark,
+} from "./claude-rail-lib";
+import { CanvasGlyph } from "@apps/canvases/glyph";
 import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
-import { useCanvasRailPeek, useCanvasRailPeekTrigger } from "./rail-peek-flag";
+import { useCanvasRailPeek } from "./rail-peek-flag";
+import { useRailGit } from "./rail-git";
+import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
-import type { WorkbenchEnv } from "./api";
 
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
-const PEEK_ID = "canvas-rail-peek";
+const PEEK_ID = "claude-rail-peek";
+
+/** The rail's width (claude-rail.css `.claude-rail`): what a shut pane leaves
+ *  at the edge, and what a pull to reopen it is measured past (the `closedWidth`
+ *  of panel-drag `reopenWidth`). The global sidebar's rail is the same 48px
+ *  (platform/lib/sidebarstate SIDEBAR_RAIL_WIDTH). */
+export const RAIL_W = 48;
 
 /** How long a press's read may stay in flight before the rail gives the dot
  *  back (CodeRabbit on #2049): a write that hangs would otherwise hold the
@@ -161,19 +191,55 @@ interface Card {
   /** The locked target as it was at the press: a node switched while the
    *  schedule read is out must not move the task (Bugbot on #2015). */
   target: string | null;
-  /** The selected node's name at the same press, for the card's WHERE pill
-   *  (null = the canvas as a whole). */
-  node: string | null;
-  /** The canvas's name at the same press, beside it. */
-  canvas: string;
+  /** The card's WHERE pill at the same press (`NewTaskSeed.where`). */
+  where: NewTaskSeed["where"];
   modes: string[];
   recents: string[];
+  /** A DRAFT REOPENED IN PLACE (owner, 2026-11-02: "draft open took user to
+   *  tasks page instead of just opening the modal"): the stored record the
+   *  card mounts on — the Tasks page's own seed (`chatHopSeed` for a chat
+   *  draft, the row's `form` for a task draft). Absent on the +. */
+  draft?: DraftSeed | null;
+  /** The chat record a chat draft's card autosaves back onto (NewJobModal
+   *  `chatKey`); "" for a task draft. */
+  chatKey?: string;
+  /** The time the stored form chose, or null (Scheduled `reopenTime`). */
+  time?: Date | null;
+}
+
+/** What the +'s New task card is about, from the page: the page knows what
+ *  the pane's own composer would make a task on, and the rail restates it. */
+export interface NewTaskSeed {
+  /** The locked target (`NewJobModal lockTarget`): the clone or the node's
+   *  file on a canvas, the folder on the app page, the folder or the file in
+   *  the explorer. Null while the page cannot say yet. */
+  target: string | null;
+  /** Why the + is held, or null: the open pane has no chat to start one from
+   *  until the clone exists ("Loading the canvas…") or while the selected
+   *  node's file is still being written ("Saving <file>…"), so the + waits
+   *  for the same two waits. */
+  waiting: string | null;
+  /** The thing the task is ON, for the +'s words ("New task on hex"); null =
+   *  the place as a whole ("New task"). */
+  on: string | null;
+  /** SAID as the canvas and the node, not as the path (Akshil, 2026-10-30):
+   *  the card's read-only WHERE pill. Canvas pages only; elsewhere the card
+   *  shows the locked path as the Tasks page's own does. */
+  where?: { canvas: string; node: string | null };
 }
 
 /** How long the + waits on the schedule before opening the card without it
  *  (CodeRabbit on #1998): a read that hangs — not fails — would otherwise
  *  hold the button disabled until the browser gave up on the request. */
 const SCHEDULE_WAIT_MS = 8000;
+
+/** A seat's door: a draft's New task card (`draftHref`, as the List's row
+ *  press), every other row's chat (`taskHref`, on the pulse's live status).
+ *  Null while a pulse-only draft waits for the listing to name it. */
+function seatHref({ pulse: t, row }: RailRow): string | null {
+  const merged = row ? { ...row, status: t.status } : t;
+  return (row && isDraftTask(row) ? draftHref(row) : null) ?? taskHref(merged);
+}
 
 /** The schedule's answer for the card, or empty if the read fails or outlasts
  *  `SCHEDULE_WAIT_MS` — either way the card opens (see `openNewTask`). */
@@ -195,11 +261,9 @@ function cardSeed(): Promise<{ modes: string[]; recents: string[] }> {
 }
 
 export function ClaudeRail({
-  env,
-  name,
-  dir,
-  node,
-  nodeReady,
+  place,
+  newTask,
+  git,
   activeSessionId,
   onOpen,
   onOpenChat,
@@ -207,19 +271,21 @@ export function ClaudeRail({
   onPullStart,
   onCardPinned,
 }: {
-  env: WorkbenchEnv;
-  name: string;
-  /** The clone dir (task rows that predate `task.canvas` name it as their
-   *  project; the New task card's locked target). Null until the clone
-   *  exists. */
-  dir: string | null;
-  /** The selected node (null = the canvas as a whole): its name for the
-   *  rail's words, its file (basename in the clone) for which chats show and
-   *  where a new task points. */
-  node: { udfName: string; file: string } | null;
-  /** The selected node's file is on disk (the pane's own "Saving…" gate);
-   *  true with no node selected. */
-  nodeReady: boolean;
+  /** Where the rail stands (claude-rail-lib `RailPlace`): whose chats ride
+   *  it. On a canvas the selected node's file narrows it (header). The
+   *  caller memoises it: the seats derive from it. */
+  place: RailPlace;
+  /** What the + makes a task on (`NewTaskSeed`). */
+  newTask: NewTaskSeed;
+  /** THE GIT SECTION (owner, 2026-11-02: "we need to show git as well when
+   *  collapsed … like the collapsed left sidebar where we have sections"):
+   *  under the chats, past a separator, the way the left rail splits
+   *  Projects / Canvases / Favourites — the branch, a Check-for-updates seat,
+   *  and the last three commits that touched `path` (rail-git.ts). Drawn only
+   *  where `path` sits in a repository; absent on a canvas (a clone is not
+   *  one). `onOpenGit` is the branch's and the commits' door: the page's git
+   *  panel (the explorer's git companion, the app page's git peek). */
+  git?: { path: string; onOpenGit?: () => void };
   /** The session the page's URL names, drawn as the current row. */
   activeSessionId: string | null;
   /** Open the pane as it is. */
@@ -227,9 +293,11 @@ export function ClaudeRail({
   /** Open one of the canvas's chats: its Tasks-page door (`taskHref`). */
   onOpenChat: (href: string) => void;
   /** The card's node chip: select that node in the workbench (RailPeek);
-   *  null — the rail's last seat while a node is selected (header) — asks
+   *  canvas pages only — without it the chip is a label and the foot's
+   *  canvas seat is not drawn. Null — the rail's last seat while a node is
+   *  selected (header) — asks
    *  it to deselect, back to the whole canvas. */
-  onSelectNode: (udfName: string | null) => void;
+  onSelectNode?: (udfName: string | null) => void;
   /** A pointer down on the rail's inner edge: the start of a pull that opens
    *  the pane at the width the pointer drags it to (CanvasWorkspace
    *  `onRailPull`). */
@@ -239,22 +307,25 @@ export function ClaudeRail({
   onCardPinned?: (pinned: boolean) => void;
 }) {
   const rows = useTasksPulseRows();
-  const nodeFile = node?.file ?? null;
   const peekOn = useCanvasRailPeek();
-  // What moves a pinned card to another chat (header).
-  const trigger = useCanvasRailPeekTrigger();
+  // THE GIT SECTION'S FACTS (header; rail-git.ts). Read for no path on a
+  // rail with no git — the hook is inert then.
+  const railGit = useRailGit(git?.path ?? null);
+  // THE CANVAS PLACE'S OWN FACTS (header): the selected node, as the
+  // workbench names it, and the canvas's name — what the foot's canvas seat
+  // and the +'s words read. Null / the place's own name elsewhere.
+  const node = useMemo(
+    () => (place.kind === "canvas" && place.file ? { udfName: nodeName(place.file), file: place.file } : null),
+    [place],
+  );
+  const name = place.kind === "canvas" ? place.name : placeName(place);
   // Drafts and scheduled rows ride the rail whatever the card flag says
   // (owner, 2026-10-30: "the flag is only for the preview thing; the fixes
   // we made — order etc. — should be there without the flag"): the rail is
-  // the List's order in rings, drafts included (claude-rail-lib `sessionless`).
-  const place = useMemo(
-    () => ({ env, name, dir, file: nodeFile, sessionless: true }),
-    [env, name, dir, nodeFile],
-  );
-  // A new task's locked target: the node's file under the clone while a node
-  // is selected, else the clone. Null until the clone exists.
-  const target = dir && nodeFile ? `${dir.replace(/\/+$/, "")}/${nodeFile}` : dir;
-  const scope = node ? node.udfName : "this canvas";
+  // the List's order in rings, drafts included (claude-rail-lib
+  // `sessionless`) — every page's rail, so it is set here, not by the page.
+  const seatPlace = useMemo((): RailPlace => ({ ...place, sessionless: true }), [place]);
+  const scope = placeName(place);
   // THE CAPTION'S WORDS ARE THE LISTING'S, not the pulse's: the pulse carries
   // status and a title, but the list row's caption is built from the full row
   // (recap, last reply, last message, the draft) — and so is the List's ORDER
@@ -292,7 +363,34 @@ export function ClaudeRail({
   // once per derivation, as `sortForList` asks; the derivation re-runs when a
   // row moves (the pulse) or the listing re-reads, which is when a rank can
   // change.
-  const seats = useMemo(() => railRows(rows, full, place), [rows, full, place]);
+  const allSeats = useMemo(() => railRows(rows, full, seatPlace), [rows, full, seatPlace]);
+  // ONLY AS MANY RINGS AS FIT, from the top — no scroll (owner, 2026-11-02:
+  // "if we have more chats let's not add scroll, just clip them; basically we
+  // only show the top chats"). The list takes the room the column leaves it
+  // (claude-rail.css `.claude-rail-chats`); how many whole seats that is, is
+  // measured off the list itself — its height, its row gap, one seat's
+  // height — and re-measured on every resize, so a taller window shows more
+  // and a shorter one fewer, never half a ring. `Infinity` until the first
+  // measure: the list must exist to be measured, and a first paint with
+  // every ring is clipped by the box the same frame.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [fit, setFit] = useState<number>(Infinity);
+  const anyRing = allSeats.length > 0;
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const measure = () => {
+      const h = el.clientHeight;
+      const gap = parseFloat(getComputedStyle(el).rowGap) || 0;
+      const seat = el.firstElementChild?.getBoundingClientRect().height || 28;
+      setFit(Math.max(0, Math.floor((h + gap) / (seat + gap))));
+    };
+    measure();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    return () => ro?.disconnect();
+  }, [anyRing]);
+  const baseSeats = useMemo(() => (fit < allSeats.length ? allSeats.slice(0, fit) : allSeats), [allSeats, fit]);
 
   // THE DOTS A PRESS CLEARED (header; claude-rail-lib `ReadMark`): held
   // while the pulse still reports what the press saw, spent the moment it
@@ -344,13 +442,21 @@ export function ClaudeRail({
   const [peekKey, setPeekKey] = useState<string | null>(null);
   const refocusOn = useRef<string | null>(null);
   const [pinned, setPinned] = useState(false);
+  // HELD (owner, 2026-11-02): the card's own pin was pressed. Over and above
+  // `pinned` (which a ring press or a press inside the card also sets, and an
+  // outside press ends), a held card ignores the outside press, the press
+  // into the workbench frame, the all-chats seat and Escape — only its × (the
+  // same button) or its Open door let go. Dropped with the card.
+  const [held, setHeld] = useState(false);
+  const heldRef = useRef(false);
+  heldRef.current = held;
   const [kept, setKept] = useState<readonly string[]>([]);
   const intentRef = useRef<PeekIntent | null>(null);
   if (!intentRef.current) {
     intentRef.current = new PeekIntent({
       show: (key) => {
         // A swap while the reader is IN the card (typing in a pinned card's
-        // composer, then hovering another ring under the hover trigger): the
+        // composer, then pressing another ring): the
         // chat they were in is about to hide, focus and all — take the
         // keyboard to the new chat's composer (the effect below). Let go of
         // the old one NOW: a hidden chat is not inert, and keys typed before
@@ -368,6 +474,50 @@ export function ClaudeRail({
   }
   const intent = intentRef.current;
   useEffect(() => () => intent.dispose(), [intent]);
+  useEffect(() => {
+    if (!peekKey) setHeld(false);
+  }, [peekKey]);
+  // A HELD CHAT KEEPS ITS RING — OUTSIDE THE LIST (owner, 2026-11-02: "don't
+  // make it the top item; we have a separator and then a canvas button at
+  // the bottom — put it above the canvas button, after the separator, so we
+  // know it doesn't belong to the list"). The rail narrows to the node; the
+  // held chat, if it is not the node's, draws in the foot under the
+  // hairline, above the canvas glyph, so the card keeps its anchor and the
+  // reader sees what they pinned without mistaking it for one of the node's
+  // chats. Letting go (the ×, Open) drops it with the next derivation;
+  // archiving lets go first (RailPeek `onFiled`).
+  // …AND A HELD CHAT CLIPPED OUT of the list (above) draws in the foot the
+  // same way: still anchored, still seen.
+  //
+  // BUT NEVER ACROSS PLACES: the explorer keeps this rail mounted from one
+  // folder or file to the next, and a card pinned on the last place is not
+  // this place's to hold — by key alone it would ride into the foot here
+  // (Bugbot on #2069). A place change lets the card go.
+  const placeRef = useRef(place);
+  useEffect(() => {
+    if (placeRef.current === place) return;
+    placeRef.current = place;
+    setHeld(false);
+    intent.dismiss();
+  }, [place, intent]);
+  const heldKey = held ? peekKey : null;
+  const heldExtra = useMemo((): RailRow | null => {
+    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return null;
+    const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
+    return pulse ? { pulse, row: full.get(heldKey) ?? null } : null;
+  }, [baseSeats, heldKey, rows, full]);
+  // Every seat the rail draws — the list's, plus the held outsider — for the
+  // card's anchors, the kept mounts and the prune; the LIST itself is
+  // `baseSeats`, and the outsider draws in the foot (below).
+  const seats = useMemo(() => (heldExtra ? [...baseSeats, heldExtra] : baseSeats), [baseSeats, heldExtra]);
+  // THE LAST RING PRESSED (owner, 2026-11-02): "the active css to the last
+  // selected task… keep by task id so it is easier to spot; it doesn't
+  // change when we filter tasks based on the selected node, only when we
+  // click a task item". A press on a ring, either door; nothing else moves
+  // it, and it survives the rail narrowing to a node and widening again.
+  // Shared with the pane's Recent chats list (platform/lib/last-chat), so
+  // the mark holds across the pane opening and shutting.
+  const lastPressed = useLastChat();
   const railRef = useRef<HTMLElement | null>(null);
   const peekRef = useRef<RailPeekHandle | null>(null);
   const ringEls = useRef(new Map<string, HTMLElement>());
@@ -386,11 +536,6 @@ export function ClaudeRail({
   useEffect(() => {
     if (!peekOn && peekKey) intent.dismiss();
   }, [peekOn, peekKey, intent]);
-  // The trigger (Settings, published to this tab) only changes what a pinned
-  // card does with a hover on another ring; an open card keeps standing.
-  useEffect(() => {
-    intent.setSwap(trigger);
-  }, [trigger, intent]);
   // JSON, not a joined string: a key is free to contain any delimiter.
   const seatKeys = JSON.stringify(seats.map((s) => s.pulse.key));
   useEffect(() => {
@@ -443,9 +588,11 @@ export function ClaudeRail({
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node | null;
       const el = t instanceof Element ? t : null;
-      if (el?.closest(".canvas-rail-peek-bridge")) return;
+      if (el?.closest(".claude-rail-peek-bridge")) return;
+      // A held card is not closed by any press outside it (header).
+      if (heldRef.current) return;
       if (pinned) {
-        if (el && railRef.current?.querySelector(".canvas-rail-chats")?.contains(el)) return;
+        if (el && railRef.current?.querySelector(".claude-rail-chats")?.contains(el)) return;
       } else if (railRef.current?.contains(t)) return;
       insidePress.current = false;
       window.clearTimeout(tick);
@@ -467,7 +614,7 @@ export function ClaudeRail({
   // NO ROOM FOR A CARD (RailPeek `onNoRoom`: a window too short or narrow):
   // the rings keep their one-line caption until a resize gives the card room
   // again — a hover that shows nothing at all is the one outcome to avoid.
-  // A PRESS that found no room (the click trigger) is answered the way the
+  // A PRESS that found no room is answered the way the
   // press answers with no room from then on: it opens the chat in the pane
   // (`pressedHref`, set on the press, read during the commit it causes —
   // RailPeek places in a layout effect — and dropped on the next frame, so
@@ -479,8 +626,8 @@ export function ClaudeRail({
     setNoRoom(true);
     const href = pressedHref.current;
     pressedHref.current = null;
-    if (href) onOpenChat(href);
-  }, [intent, onOpenChat]);
+    if (href) openChatRef.current(href);
+  }, [intent]);
   useEffect(() => {
     if (!noRoom) return;
     const re = () => setNoRoom(false);
@@ -573,6 +720,7 @@ export function ClaudeRail({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       if (e.target !== document.body && e.target !== document.documentElement) return;
+      if (heldRef.current) return;
       e.preventDefault();
       dismissToRing();
     };
@@ -595,6 +743,7 @@ export function ClaudeRail({
       window.clearTimeout(tick);
       tick = window.setTimeout(() => {
         const a = document.activeElement;
+        if (heldRef.current) return;
         if (a instanceof HTMLIFrameElement && !document.getElementById(PEEK_ID)?.contains(a)) intent.dismiss();
       }, 0);
     };
@@ -611,7 +760,8 @@ export function ClaudeRail({
       // A deliberate way in, like a press: pinned.
       intent.showNow(key, true);
       focusCardSoon();
-    } else if (e.key === "Escape" && intent.current) {
+    } else if (e.key === "Escape" && intent.current && !heldRef.current) {
+      // A held card ignores Escape here as everywhere (header).
       e.preventDefault();
       intent.dismiss();
     }
@@ -656,67 +806,118 @@ export function ClaudeRail({
     refocusPlus.current = false;
     plusRef.current?.focus({ preventScroll: true });
   }, [node]);
-  const waiting = dir === null ? "Loading the canvas…" : !nodeReady && node ? `Saving ${node.file}…` : null;
+  const waiting = newTask.waiting;
   const openNewTask = () => {
     if (opening || card || waiting) return;
     setOpening(true);
-    const at = target;
-    const on = node?.udfName ?? null;
-    const canvasName = name;
+    // As they were at the press (header of `Card`).
+    const at = newTask.target;
+    const where = newTask.where;
     void cardSeed().then((got) => {
       if (!alive.current) return;
       setOpening(false);
-      setCard({ seq: Date.now(), target: at, node: on, canvas: canvasName, ...got });
+      setCard({ seq: Date.now(), target: at, where, ...got });
     });
   };
+  // A DRAFT'S DOOR, IN PLACE (header of `Card.draft`): the same New task card
+  // the + opens, on the draft's own record — what the Tasks page's row press
+  // does (Scheduled `openDraft`), without leaving the canvas. Read FRESH, both
+  // kinds: the listing row's `form` can trail an edit made a moment ago, and a
+  // card seeded on it would autosave the older words back over the newer.
+  // Nothing is minted, and the card's autosave goes on writing the same
+  // record. Needs no clone: the row names its own target and node.
+  //
+  // THREE ANSWERS from the read (capped at SCHEDULE_WAIT_MS, the +'s cap, so
+  // a hung read never holds the rail's doors shut):
+  //   * the record — the card opens on it (a chat draft with no record yet
+  //     opens on its key, as the Tasks page's hop does);
+  //   * the record is GONE (a task draft deleted elsewhere, the row not yet
+  //     re-read) — no card, which would mint it again; the listing is re-read
+  //     so the ring goes;
+  //   * NO ANSWER (failed or timed out) — no card on a guess, which could
+  //     autosave a blank form over the stored one: the press takes the
+  //     Tasks page's door instead (`href`), which reads the record itself.
+  const openDraftCard = (row: Task, href: string) => {
+    if (opening || card) return;
+    const chat = isChatDraftTask(row);
+    if (!chat && !row.draft_id) return;
+    setOpening(true);
+    // Where the row lives (claude-rail-lib `railScope`): on a canvas the
+    // card's WHERE pill says the canvas and the node; elsewhere the locked
+    // path says it (`NewTaskSeed.where`).
+    const scopeOf = railScope(row, place);
+    const base = {
+      target: row.target || newTask.target,
+      where:
+        place.kind === "canvas"
+          ? { canvas: name, node: scopeOf.kind === "node" ? scopeOf.name : null }
+          : undefined,
+    };
+    type Read = { kind: "seed"; seed: DraftSeed | null } | { kind: "gone" } | { kind: "unknown" };
+    const stored = new Promise<Read>((resolve) => {
+      const timer = window.setTimeout(() => resolve({ kind: "unknown" }), SCHEDULE_WAIT_MS);
+      fetchDrafts().then(
+        (all) => {
+          window.clearTimeout(timer);
+          if (!all) return resolve({ kind: "unknown" });
+          if (chat) {
+            const seed = chatHopSeed(row.key, all.chat[row.key] ?? null, row.project || row.file || "");
+            return resolve({ kind: "seed", seed });
+          }
+          const form = all.task[row.draft_id!];
+          resolve(form ? { kind: "seed", seed: { id: row.draft_id!, form: { ...form } } } : { kind: "gone" });
+        },
+        () => {
+          window.clearTimeout(timer);
+          resolve({ kind: "unknown" });
+        },
+      );
+    });
+    void Promise.all([cardSeed(), stored]).then(([got, read]) => {
+      if (!alive.current) return;
+      setOpening(false);
+      if (read.kind === "gone") {
+        refreshListing();
+        return;
+      }
+      if (read.kind === "unknown") {
+        onOpenChat(href);
+        return;
+      }
+      setCard({
+        seq: Date.now(),
+        ...base,
+        ...got,
+        draft: read.seed,
+        chatKey: chat ? row.key : "",
+        time: reopenTime(read.seed),
+      });
+    });
+  };
+  // THE RAIL'S ONE DOOR: a draft's href opens its card here; every other
+  // href is the page's (`onOpenChat`). By href, because that is what the
+  // ring, the hover card's Open and the no-room press all hand over — and
+  // every one of them moves the last-picked mark to that chat (header).
+  const seatByHref = useMemo(() => {
+    const map = new Map<string, RailRow>();
+    for (const seat of seats) {
+      const href = seatHref(seat);
+      if (href) map.set(href, seat);
+    }
+    return map;
+  }, [seats]);
+  const openChat = (href: string) => {
+    const seat = seatByHref.get(href);
+    if (seat) setLastChat(lastChatId(seat.pulse));
+    if (seat?.row && isDraftTask(seat.row)) openDraftCard(seat.row, href);
+    else onOpenChat(href);
+  };
+  const openChatRef = useRef(openChat);
+  openChatRef.current = openChat;
+  const plusLabel = waiting ?? (newTask.on ? `New task on ${newTask.on}` : "New task");
 
-  return (
-    <aside
-      ref={railRef}
-      className="canvas-rail"
-      aria-label="Claude"
-      onPointerMove={(e) => {
-        lastPointer.current = { x: e.clientX, y: e.clientY };
-      }}
-    >
-      {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the
-          width the pointer takes it to — the explorer sidebar's reopen edge
-          (SideReopenEdge) and the global sidebar's rail, the same gesture on
-          the same kind of edge. The Show button stays the click. */}
-      <div
-        className="canvas-rail-seam"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Drag to show the Claude panel"
-        onPointerDown={onPullStart}
-      />
-      <button
-        type="button"
-        className="sidebar-rail-btn"
-        title="Show the Claude panel"
-        aria-label="Show the Claude panel"
-        aria-expanded={false}
-        onClick={onOpen}
-      >
-        <PanelIcon side="right" />
-      </button>
-      <div className="sidebar-rail-items">
-        <button
-          ref={plusRef}
-          type="button"
-          className="sidebar-rail-btn canvas-rail-item"
-          title={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
-          aria-label={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
-          aria-haspopup="dialog"
-          aria-busy={opening || waiting !== null || undefined}
-          disabled={opening || waiting !== null}
-          onClick={openNewTask}
-        >
-          <Plus size={16} aria-hidden="true" />
-        </button>
-        {seats.length > 0 && (
-          <div className="sidebar-rail-scroll canvas-rail-chats" role="list" aria-label={`Chats on ${scope}`}>
-            {seats.map(({ pulse: t, row }) => {
+  // ONE RING, as the list draws it — and as the foot draws the held outsider.
+  const ringOf = ({ pulse: t, row }: RailRow) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
               // Hollow since the press, until the pulse agrees (header).
@@ -730,7 +931,7 @@ export function ClaudeRail({
               // moment: it still gets its ring, the press waits for the
               // listing.
               const draft = !!row && isDraftTask(row);
-              const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged);
+              const href = seatHref({ pulse: t, row });
               // No door, no ring (as before): a form-scheduled row with no
               // session, or a pulse-only draft the listing has not named yet.
               if (!href) return null;
@@ -739,16 +940,16 @@ export function ClaudeRail({
               // The rings' own captions step aside for the card: a hover
               // shows the card, and the card IS the caption. The exception
               // is a hover that shows nothing — another ring while a card is
-              // pinned under the click trigger (owner, 2026-10-31: "show me
-              // the tooltip title so I know what other chat it is at least"):
-              // that ring gets its title back, the title alone.
-              const titleOnly = peekOn && pinned && trigger === "click" && peekKey !== null && peekKey !== t.key;
+              // pinned (owner, 2026-10-31: "show me the tooltip title so I
+              // know what other chat it is at least"): that ring gets its
+              // title back, the title alone.
+              const titleOnly = peekOn && pinned && peekKey !== null && peekKey !== t.key;
               const captionless = peekOn && !titleOnly;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
               // that opens a dialog is the shape they describe.
               return (
-                <div key={t.key} role="listitem" className="canvas-rail-seat">
+                <div key={t.key} role="listitem" className="claude-rail-seat">
                 <a
                   ref={(el) => {
                     if (el) ringEls.current.set(t.key, el);
@@ -756,10 +957,12 @@ export function ClaudeRail({
                   }}
                   href={href}
                   className={
-                    "sidebar-rail-btn canvas-rail-chat" +
+                    "sidebar-rail-btn claude-rail-chat" +
                     (activeSessionId && t.session_id === activeSessionId ? " active" : "") +
                     (peeked ? " peeked" : "") +
-                    (peeked && pinned ? " is-pinned" : "")
+                    (peeked && pinned ? " is-pinned" : "") +
+                    (peeked && held ? " is-held" : "") +
+                    (lastPressed !== null && lastChatId(t) === lastPressed ? " is-last" : "")
                   }
                   aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the
@@ -792,8 +995,10 @@ export function ClaudeRail({
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
-                    // Opened, by either door below: read (header).
+                    // Opened, by either door below: read (header), and the
+                    // last ring pressed (header).
                     clearUnread(t);
+                    setLastChat(lastChatId(t));
                     if (peekOn && !noRoom) {
                       pressedHref.current = href;
                       requestAnimationFrame(() => {
@@ -811,7 +1016,7 @@ export function ClaudeRail({
                       else if (e.detail === 0) focusCardSoon();
                       return;
                     }
-                    onOpenChat(href);
+                    openChat(href);
                   }}
                 >
                   <StatusIcon
@@ -833,21 +1038,81 @@ export function ClaudeRail({
                 </a>
                 </div>
               );
-            })}
+  };
+
+  return (
+    <aside
+      ref={railRef}
+      className="claude-rail"
+      aria-label="Claude"
+      onPointerMove={(e) => {
+        lastPointer.current = { x: e.clientX, y: e.clientY };
+      }}
+    >
+      {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the
+          width the pointer takes it to — the explorer sidebar's reopen edge
+          (SideReopenEdge) and the global sidebar's rail, the same gesture on
+          the same kind of edge. The Show button stays the click. */}
+      <div
+        className="claude-rail-seam"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Drag to show the Claude panel"
+        onPointerDown={onPullStart}
+      />
+      <button
+        type="button"
+        className="sidebar-rail-btn"
+        title="Show the Claude panel"
+        aria-label="Show the Claude panel"
+        aria-expanded={false}
+        onClick={onOpen}
+      >
+        <PanelIcon side="right" />
+      </button>
+      <div className="sidebar-rail-items">
+        <button
+          ref={plusRef}
+          type="button"
+          className="sidebar-rail-btn claude-rail-item"
+          title={plusLabel}
+          aria-label={plusLabel}
+          aria-haspopup="dialog"
+          aria-busy={opening || waiting !== null || undefined}
+          disabled={opening || waiting !== null}
+          onClick={openNewTask}
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+        {anyRing && (
+          <div
+            ref={listRef}
+            className="claude-rail-chats"
+            role="list"
+            aria-label={`Chats on ${scope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
+          >
+            {baseSeats.map(ringOf)}
           </div>
         )}
-        {node && (
-          // The way back to the whole canvas (header): the canvas glyph,
-          // under the list's foot, deselects the node in the workbench.
-          // BELOW the scroller, not its last row: on a short window the
-          // list scrolls (no bar to say so), and a way out that has
-          // scrolled off is no way out.
-          <div className="canvas-rail-all-seat">
+        {(node || heldExtra) && (
+          // THE FOOT, under the list's hairline: the held outsider's ring
+          // (header), then the way back to the whole canvas — the canvas
+          // glyph, which deselects the node in the workbench. BELOW the
+          // list, not its last row: the list clips to the rings that fit,
+          // and a way out that was clipped off is no way out.
+          <div className="claude-rail-all-seat">
+            {heldExtra && (
+              <div className="claude-rail-held" role="list" aria-label={node ? "Pinned chat, not on this node" : "Pinned chat, past the list's room"}>
+                {ringOf(heldExtra)}
+              </div>
+            )}
+            {node && onSelectNode && (
             <button
               ref={allRef}
               type="button"
-              className="sidebar-rail-btn canvas-rail-item canvas-rail-all"
-              title={`All chats on ${name}`}
+              className="sidebar-rail-btn claude-rail-item claude-rail-all"
+              // No native `title` beside the app's hint (owner, 2026-11-02:
+              // "there are two tooltips here — only have our one").
               aria-label={`All chats on ${name} (deselect ${node.udfName})`}
               data-hint={`All chats on ${name}`}
               data-hint-side="left"
@@ -860,7 +1125,7 @@ export function ClaudeRail({
                 // A pinned card closes on this press like any other outside
                 // press — from the keyboard too, which the document's
                 // pointerdown rule never hears (Bugbot on #2049).
-                if (intent.current) intent.dismiss();
+                if (intent.current && !heldRef.current) intent.dismiss();
                 // Where the pointer rests now (the press's own spot, or the
                 // last move for a keyboard press): a ring sliding under it
                 // is not a hover (`stillAt`).
@@ -870,7 +1135,107 @@ export function ClaudeRail({
             >
               <CanvasGlyph size={16} />
             </button>
+            )}
           </div>
+        )}
+        {git && railGit.repo && (
+          // THE GIT SECTION (header): past the left rail's own separator
+          // (sidebar.css `.sidebar-rail-sep`), the repository the page sits
+          // in. Each seat wears the app's hint (platform/lib/hints), beside
+          // the rail like the rings' — a 48px column has no room for words.
+          <>
+            <span className="sidebar-rail-sep" aria-hidden="true" />
+            <div className="claude-rail-git" role="group" aria-label="Git">
+              {(() => {
+                const r = railGit.repo;
+                const behind = r.behind ?? 0;
+                const ahead = r.ahead ?? 0;
+                const counts = !r.has_remote
+                  ? "No remote"
+                  : r.default_branch === null
+                    ? "Default branch not known yet — check to find out"
+                    : `${ahead} ahead · ${behind} behind ${r.default_branch}`;
+                const checkWords = railGit.checking
+                  ? "Checking for updates…"
+                  : railGit.checked === false
+                    ? "Check for updates — no fresh answer from the remote yet"
+                    : "Check for updates";
+                const branch = r.branch ?? "detached HEAD";
+                // A seat with no door (no git panel on this page, no remote
+                // to check) is a LABEL, not a disabled button: `disabled`
+                // would swallow the pointer, and the hint is the only place
+                // its words are. `aria-disabled` says so; the press does
+                // nothing.
+                const label = (on: boolean) => (on ? {} : { "aria-disabled": true as const, className: " is-label" });
+                const door = label(!!git.onOpenGit);
+                return (
+                  <>
+                    <button
+                      type="button"
+                      className={"sidebar-rail-btn claude-rail-item claude-rail-git-branch" + (door.className ?? "")}
+                      aria-label={`On ${branch} · ${counts}${git.onOpenGit ? " — open the Git panel" : ""}`}
+                      {...(door["aria-disabled"] ? { "aria-disabled": true } : {})}
+                      data-hint={`On ${branch}`}
+                      data-hint-title={`On ${branch}`}
+                      data-hint-reply={counts}
+                      data-hint-side="left"
+                      onClick={() => {
+                        hideHint();
+                        git.onOpenGit?.();
+                      }}
+                    >
+                      <GitBranch size={16} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className={
+                        "sidebar-rail-btn claude-rail-item claude-rail-git-check" +
+                        (railGit.checking ? " is-checking" : "") +
+                        (label(r.has_remote).className ?? "")
+                      }
+                      aria-label={`${checkWords} · ${counts}`}
+                      aria-busy={railGit.checking || undefined}
+                      {...(r.has_remote ? {} : { "aria-disabled": true })}
+                      data-hint={checkWords}
+                      data-hint-title={checkWords}
+                      data-hint-reply={counts}
+                      data-hint-side="left"
+                      onClick={() => {
+                        hideHint();
+                        if (r.has_remote && !railGit.checking) railGit.check();
+                      }}
+                    >
+                      <RefreshCw size={16} aria-hidden="true" />
+                      {behind > 0 && <span className="sidebar-rail-dot is-unread" aria-hidden="true" />}
+                    </button>
+                    {r.commits.map((c) => {
+                      const when = timeAgo(c.when) ?? "";
+                      const who = [c.author, when].filter(Boolean).join(" · ");
+                      return (
+                        <button
+                          key={c.sha}
+                          type="button"
+                          className={"sidebar-rail-btn claude-rail-item claude-rail-git-commit" + (door.className ?? "")}
+                          aria-label={`${c.subject} — ${who} (${c.short})`}
+                          {...(door["aria-disabled"] ? { "aria-disabled": true } : {})}
+                          data-hint={c.subject}
+                          data-hint-title={c.subject}
+                          data-hint-reply={`${who} · ${c.short}`}
+                          data-hint-side="left"
+                          onClick={() => {
+                            hideHint();
+                            git.onOpenGit?.();
+                          }}
+                        >
+                          <GitCommitHorizontal size={16} aria-hidden="true" />
+                        </button>
+                      );
+                    })}
+                  </>
+                );
+              })()}
+            </div>
+          </>
         )}
       </div>
       {peekOn && keptSeats.length > 0 && (
@@ -881,7 +1246,7 @@ export function ClaudeRail({
           kept={keptSeats}
           anchorOf={anchorOf}
           railEl={railRef.current}
-          dir={dir}
+          place={place}
           onReload={refreshListing}
           onPointerEnter={() => intent.enterCard()}
           onPointerLeave={() => intent.leaveCard()}
@@ -890,9 +1255,11 @@ export function ClaudeRail({
           onHold={(on) => intent.hold(on)}
           onDismiss={dismissToRing}
           onNoRoom={onNoRoom}
-          onOpenChat={onOpenChat}
-          onSelectNode={onSelectNode}
-          selectedFile={nodeFile}
+          onOpenChat={openChat}
+          {...(onSelectNode ? { onSelectNode } : {})}
+          held={held}
+          onHeld={setHeld}
+          pinned={pinned}
           onPin={() => {
             const key = intent.current;
             if (!key) return;
@@ -907,21 +1274,26 @@ export function ClaudeRail({
           // initialisers, so every opening must be a fresh mount
           // (Scheduled.tsx `openSeq`).
           key={card.seq}
-          initialTime={null}
-          // SCOPED TO THE CLONE — or to the selected node's file in it — the
-          // project page's Tasks tab's way
-          // (CanvasPage.tsx `scope.project`, Scheduled.tsx `lockTarget`): a
-          // task made from the canvas is a task about the canvas, so the path
-          // is stated, not asked (the + is held until the clone exists).
+          initialTime={card.time ?? null}
+          // The draft's own record, when a draft row opened it (`Card.draft`).
+          initialDraft={card.draft ?? null}
+          chatKey={card.chatKey ?? ""}
+          // SCOPED TO THE PLACE — the clone or the selected node's file in
+          // it, the app folder, the explorer's folder or file — the project
+          // page's Tasks tab's way (CanvasPage.tsx `scope.project`,
+          // Scheduled.tsx `lockTarget`): a task made from a page is a task
+          // about that page, so the path is stated, not asked (the + is held
+          // until the page can say it).
           initialTarget={card.target}
           lockTarget={card.target !== null}
-          // …and SAID as the canvas and the node, not as that path (Akshil,
-          // 2026-10-30): the card's read-only WHERE pill. The canvas and node
-          // as they were at the press, the same snapshot as the target.
-          lockedWhere={{ canvas: card.canvas, node: card.node }}
+          // …and on a canvas SAID as the canvas and the node, not as that
+          // path (Akshil, 2026-10-30): the card's read-only WHERE pill. The
+          // canvas and node as they were at the press, the same snapshot as
+          // the target.
+          {...(card.where ? { lockedWhere: card.where } : {})}
           // From the List, not the calendar: a task typed here is one to run
           // now, and the when-row folds into More options.
-          planning={false}
+          planning={!!card.time}
           permissionModes={card.modes}
           recentTargets={card.recents}
           // Closed without creating: the card may have left a DRAFT behind,

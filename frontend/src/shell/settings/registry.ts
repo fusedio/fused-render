@@ -501,30 +501,19 @@ const ENTRIES = [
     // Only means something while Canvases is offered at all.
     available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
+  // THE CLAUDE RAIL'S PREVIEW (shell/claude-rail): one rail on every page
+  // with a Claude panel — the canvas page, the app page, the explorer's file
+  // and folder views (2026-11-01) — so the switch is its own row, not a
+  // child of Canvases, and needs no Fused sign-in. The pref keeps its
+  // `canvas_rail_peek` name on the wire.
   {
     id: "canvases-rail-peek",
-    needs: "fused",
     group: "features",
     section: "Sidebar",
     label: "Preview chats from the collapsed Claude rail",
-    description: "On a canvas with the Claude panel hidden, a chat on the rail opens as a floating card beside it — scroll it, read it, type into it — without opening the panel. Escape dismisses it.",
-    keywords: "canvas rail hover click preview peek card chat collapsed claude panel popover",
+    description: "With the Claude panel hidden — on an app page, in the explorer, on a canvas — hovering a chat on the rail at the right edge previews it as a floating card beside it; clicking keeps the card open, ready to type, and lets you resize it from its left corners. Click elsewhere, press Escape, or use its × or Open to close it.",
+    keywords: "rail hover click preview peek card chat collapsed claude panel popover canvas app explorer",
     renderOnly: true,
-    child: true,
-    available: ({ prefs }) => prefs.canvases?.enabled === true,
-  },
-  {
-    id: "canvases-rail-peek-trigger",
-    needs: "fused",
-    group: "features",
-    section: "Sidebar",
-    label: "Switch a kept-open preview on",
-    description: "Hovering a chat previews it; clicking it keeps the card open, ready to type, until you click elsewhere, press Escape, or use its × or Open. This picks what moves a kept-open card to another chat. Click: click the other chat. Hover: hover it.",
-    keywords: "canvas rail hover click trigger switch pin keep open preview peek card chat collapsed claude panel popover",
-    renderOnly: true,
-    child: true,
-    // Only means something while the preview itself is on.
-    available: ({ prefs }) => prefs.canvases?.enabled === true && prefs.canvas_rail_peek?.enabled === true,
   },
   {
     id: "monitor",

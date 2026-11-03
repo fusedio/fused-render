@@ -161,6 +161,12 @@ export interface Bot {
   step_cap?: number;
   /** While `status === "waiting"`: the seq of the approval / question card the bot is blocked on (null: unknown, fall back to the last ask). */
   waiting_on?: number | null;
+  /** What the bot is doing right now ("thinking", "writing", or a tool's label); transient, in memory on the server. Absent on other engines. */
+  doing?: string;
+  /** Epoch seconds when `doing` last changed. */
+  doing_since?: number;
+  /** User messages sent mid-task that the bot has not read yet. */
+  inbox_n?: number;
   url?: string;
   title?: string;
   note?: string;

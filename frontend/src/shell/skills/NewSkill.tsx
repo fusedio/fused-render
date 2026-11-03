@@ -120,6 +120,7 @@ export function NewSkill({
       mountedRef.current = false;
       const dir = stagingRef.current;
       if (dir && !settledRef.current) void stopAndDiscard(dir, handle.current, rowRef.current).catch(() => {});
+      handle.current?.release();
     };
   }, []);
 
@@ -202,6 +203,7 @@ export function NewSkill({
       if (!mountedRef.current) {
         // Left the page while the task was being created.
         void stopAndDiscard(dir, h, null).catch(() => {});
+        h.release();
         return;
       }
       void h.done.then(() => setFinished(true));
@@ -509,7 +511,7 @@ export function NewSkill({
         )}
       </div>
 
-      <aside className="cc-skill-aside" aria-label="SKILL.md" data-testid="draft-aside">
+      <aside className="cc-skill-aside cc-aside-scroll" aria-label="SKILL.md" data-testid="draft-aside">
         {status?.text ? (
           <>
             <h2 className="cc-aside-title m-0">

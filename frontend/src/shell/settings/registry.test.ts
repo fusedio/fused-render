@@ -131,18 +131,10 @@ describe("visibility", () => {
     expect(ids(true, { bot: true })).not.toContain("canvases-embed-proxy");
   });
 
-  test("the rail preview's trigger picker appears only while the preview itself is on", () => {
-    const ids = (canvases: boolean, peek: boolean | undefined) =>
-      visibleSettings(
-        ctx({}, {
-          canvases: { enabled: canvases },
-          ...(peek === undefined ? {} : { canvas_rail_peek: { enabled: peek } }),
-        } as Partial<Prefs>),
-      ).map((s) => s.id);
-    expect(ids(true, true)).toContain("canvases-rail-peek-trigger");
-    expect(ids(true, false)).not.toContain("canvases-rail-peek-trigger");
-    expect(ids(true, undefined)).not.toContain("canvases-rail-peek-trigger");
-    expect(ids(false, true)).not.toContain("canvases-rail-peek-trigger");
+  test("the rail preview switch stands on its own: Canvases off, no Fused sign-in, still there", () => {
+    // The rail stands on the app page and in the explorer too (2026-11-01).
+    const ids = visibleSettings(ctx({}, { canvases: { enabled: false } } as Partial<Prefs>)).map((s) => s.id);
+    expect(ids).toContain("canvases-rail-peek");
   });
 
   test("the default-agent picker appears only with two or more agents on", () => {
