@@ -447,9 +447,11 @@ export default function AppPage({
   // …or a role nobody knows yet with a reason to say (Sign in / Retry):
   // the tab carries that sentence and its door.
   const role = roleOf(ladder.data);
+  const switchedOn = !!ladder.data?.flags && (ladder.data.flags.sources || ladder.data.flags.marketplace);
   const unknownSaid =
-    (role.role === "unknown" && !!role.reason) ||
-    (contrib.pendingRole?.role === "unknown" && !!contrib.pendingRole.reason);
+    switchedOn &&
+    ((role.role === "unknown" && !!role.reason) ||
+      (contrib.pendingRole?.role === "unknown" && !!contrib.pendingRole.reason));
   const communityOffered = (!!ladder.data?.ok && ownsApp(role.role)) || !!contrib.data || unknownSaid;
   const offered = (id: AppPageTab) =>
     id !== "community" ||

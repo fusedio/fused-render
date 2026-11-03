@@ -331,13 +331,17 @@ def api_contrib_app(path: str = ""):
     refresh.note_app_opened(app_dir)
     copy = _safely("status", _mod("engine").status, app_dir)
     record = _mod("store").get(app_dir)
-    pending = record is None or bool((copy or {}).get("pending"))
     fields, role = _role_fields(app_dir)
+    # No record: nothing below is worked out (not even the share link). The
+    # page's `pending` follows the ROLE's — a `no-record` folder (nothing
+    # will classify it, §21) is settled, or the page would poll it forever.
+    unsettled = record is None and bool(role.get("pending", True))
+    pending = unsettled or bool((copy or {}).get("pending"))
     out = {"ok": True, "flags": flags, "pending": pending, **fields, "copy": copy,
            "proposal": None, "inbox": None, "contributors": None,
            "github": refresh.github_identity(), "share_url": None,
            "panel": None, "actions": [], "activity": []}
-    if pending:
+    if pending or record is None:
         out.update(_panel(app_dir, copy=copy, proposal=None, github=out["github"],
                           pending=True))
         return out

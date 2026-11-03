@@ -308,7 +308,18 @@ def _with_push_rights(rec: dict, ident) -> dict:
     publish. An own copy has no such button; the field stays None."""
     if is_github_like(rec.get("kind")) and rec.get("owner_checked") and ident:
         rec["can_push"] = _can_push(rec.get("repo"), ident)
+        rec["can_push_login"] = _push_login(ident)
     return rec
+
+
+def _push_login(ident) -> str | None:
+    """The login a `can_push` answer was asked for — stored beside it
+    (`can_push_login`) so a record read after a sign-out/sign-in as another
+    account never hands that account the collaborator's buttons
+    (`ladder.role_of` compares). Never cleared on sign-out: `after_sign_in`
+    skips checked records, so a returning collaborator keeps their answer."""
+    login = (ident or {}).get("login") if isinstance(ident, dict) else None
+    return str(login).lower() if login else None
 
 
 def _commit_identity(ident: dict | None) -> tuple[str, str] | None:
@@ -659,6 +670,7 @@ def _recheck(app_dir, rec, identity, *, block=False) -> dict | None:
                 r["hold"] = {"why": "upgrade", "at": time.time(), "count": unpublished}
         elif r.get("kind") == "github" and can_push is not None:
             r["can_push"] = can_push
+            r["can_push_login"] = _push_login(ident)
 
     out = store.update(app_dir, fn)
     _forget_kind(app_dir)
@@ -1371,7 +1383,8 @@ def rebind(app_dir, *, identity=None) -> dict | None:
         if (r.get("kind"), r.get("repo")) != before:
             return  # rewritten meanwhile (an install, another rebind): theirs stands
         r.update(kind=kind, repo=repo, branch=branch, owner_checked=checked,
-                 classified_by="rebind", classified_at=time.time(), can_push=can_push)
+                 classified_by="rebind", classified_at=time.time(), can_push=can_push,
+                 can_push_login=_push_login(ident) if can_push is not None else None)
         r.pop("try_of", None)
         changed.append(True)
 

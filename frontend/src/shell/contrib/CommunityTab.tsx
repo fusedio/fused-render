@@ -115,14 +115,19 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
   // side; a copy's own read says which copy role, once it is in.
   const who = roleOf(l);
   const mine = !!l?.ok && ownsApp(who.role);
+  // While the copy's read is still pending, ITS answer outranks the
+  // ladder's: the ladder stops re-reading after a few tries, so its stale
+  // `checking` must not hide a newer `identity` / `no-record`.
   const side: RoleAnswer = mine
     ? who
     : contrib.data
       ? roleOf(contrib.data)
-      : who.role === "unknown" && who.reason
-        ? who
-        : (contrib.pendingRole ?? who);
-  const unknown: UnknownReason | null = !mine && side.role === "unknown" ? side.reason : null;
+      : (contrib.pendingRole ?? who);
+  // With every Community switch off nothing will settle an unknown owner
+  // (the org-role lookup is not queued, §19.2): no card, no door.
+  const switchedOn = !!l?.flags && (l.flags.sources || l.flags.marketplace);
+  const unknown: UnknownReason | null =
+    !mine && switchedOn && side.role === "unknown" ? side.reason : null;
   const refreshLadder = () => void ladder.refresh();
   // A Source-panel action (Publish now, Check now, Bring in) moves what the
   // listing compares against: re-read the listing too, not only the ladder,
@@ -947,7 +952,8 @@ function SimpleCopyView({
 
 /** Role "unknown": one sentence per reason and its door — Sign in (no GitHub
  *  login known), Retry (still classifying), or install it again from the
- *  Community (no record can be made for this copy) with a Retry. */
+ *  Community (no record can be made for this copy — a re-read answers the
+ *  same, so no Retry). */
 function UnknownRoleView({ reason, retry }: { reason: UnknownReason; retry: () => Promise<void> }) {
   const [signIn, setSignIn] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -975,11 +981,11 @@ function UnknownRoleView({ reason, retry }: { reason: UnknownReason; retry: () =
           <Button size="sm" onClick={() => setSignIn(true)}>
             Sign in
           </Button>
-        ) : (
+        ) : reason === "checking" ? (
           <Button size="sm" onClick={() => void onRetry()} disabled={retrying}>
             Retry
           </Button>
-        )}
+        ) : null}
       </div>
       {signIn && (
         <SignInSheet

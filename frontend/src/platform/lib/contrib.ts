@@ -1040,8 +1040,8 @@ export type Role = "owner" | "remixer" | "collaborator" | "contributor" | "reade
 
 /** Why the role is not known: `identity` no GitHub login is known (door:
  *  Sign in); `checking` the classification is still running (door: Retry);
- *  `no-record` fused cannot make a record for this copy (door: install it
- *  again from the Community). */
+ *  `no-record` fused cannot make a record for this copy (no door: install it
+ *  again from the Community — a re-read answers the same). */
 export type UnknownReason = "identity" | "checking" | "no-record";
 
 export interface RoleAnswer {
@@ -1087,10 +1087,16 @@ export function roleOf(src: LadderAnswer | AppContribAnswer | null | undefined):
   const copy = answer.copy;
   if (answer.pending || !copy) return { role: "unknown", reason: "checking" };
   if (copy.kind === "own") return { role: copy.remix_of ? "remixer" : "owner", reason: null };
-  if (copy.kind === "scratch") return { role: "trier", reason: null };
+  // An older server's copy has no `try_of`: a scratch record is the legacy
+  // own kind far more often than a Try copy, and the ladder (which such a
+  // server answers `mine` for) is what the page branches on first.
+  if (copy.kind === "scratch") return { role: "owner", reason: null };
   if (copy.kind === "github") {
-    // Classified signed out: whether it is the user's own is not known yet.
-    if (copy.owner_checked === false) return { role: "unknown", reason: "identity" };
+    // Classified without a GitHub identity: whether it is the user's own is
+    // not known yet — the recheck is queued once a login is known.
+    if (copy.owner_checked === false) {
+      return { role: "unknown", reason: answer.github?.login ? "checking" : "identity" };
+    }
     if (copy.can_push) return { role: "collaborator", reason: null };
     if (answer.proposal) return { role: "contributor", reason: null };
     return { role: "reader", reason: null };

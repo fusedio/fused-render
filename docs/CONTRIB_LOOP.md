@@ -2236,7 +2236,7 @@ views, not moves.
 | none | cache empty | unknown · `checking` (`identity` with no login) — `_ask_owner` queued |
 | own | `remix_of` set / not | remixer / owner |
 | github | `owner_checked` false | unknown · `checking` (`identity` with no login) |
-| github | checked, `can_push` true (`classify._with_push_rights`) / else | collaborator / contributor |
+| github | checked, `can_push` true (`classify._with_push_rights`, asked for `can_push_login` = the current login; a record without the login is trusted) / else | collaborator / contributor |
 | marketplace | — | reader |
 | scratch | `try_of` set / not (legacy) | trier / owner |
 | own/scratch-owner | `classify._needs_rebind` (→ `rebind_in_background`) | the record's role (owner / remixer), `pending` true |

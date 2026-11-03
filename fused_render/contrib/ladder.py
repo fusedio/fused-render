@@ -349,8 +349,13 @@ def role_of(app_dir: str, root: str | None, origin: str | None, login: str | Non
         if not rec.get("owner_checked"):
             return _role("unknown", "checking" if login else "identity", kind=kind,
                          repo=recorded, remix_of=remix_of, recorded=recorded)
-        # `can_push` is noted by `classify._with_push_rights` for a checked copy.
-        role = "collaborator" if rec.get("can_push") is True else "contributor"
+        # `can_push` is noted by `classify._with_push_rights` for a checked
+        # copy, beside the login it was asked for: another account signed in
+        # since is a contributor until its own answer lands (a record from
+        # before the login was stored — no `can_push_login` — is trusted).
+        asked_for = rec.get("can_push_login")
+        same = not asked_for or (login or "").lower() == str(asked_for).lower()
+        role = "collaborator" if rec.get("can_push") is True and same else "contributor"
     elif kind == "marketplace":
         role = "reader"
     else:
@@ -372,13 +377,22 @@ def role_of(app_dir: str, root: str | None, origin: str | None, login: str | Non
 
 
 def _login(ident: dict | None = None) -> str | None:
-    """The GitHub login from cached reads only (`refresh.github_identity`,
-    else `gh.cached_identity`) — never a network call."""
+    """The GitHub login from cached reads only — never a network call.
+    `refresh.github_identity`'s snapshot when this machine has one (a
+    signed-out snapshot answers None: `gh.cached_identity` may still name
+    the account that just signed out, and an unrecorded folder under that
+    name must not read as the user's); `gh.cached_identity` only while the
+    snapshot is still `checking`."""
     from fused_render.contrib import gh, refresh
 
     if ident is None:
         ident = refresh.github_identity()
-    return (ident or {}).get("login") or (gh.cached_identity() or {}).get("login")
+    ident = ident or {}
+    if ident.get("login"):
+        return ident["login"]
+    if ident.get("checking"):
+        return (gh.cached_identity() or {}).get("login")
+    return None
 
 
 def role_for(app_dir: str, *, ask: bool = True) -> dict:
