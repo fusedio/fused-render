@@ -267,7 +267,22 @@ const { text, usage, response, provider } = await fused.ai.text({
   shape — only an explicit `provider` reaches them. They are also the AI gateway
   the canvas host runs for the embedded workbench (CanvasWorkspace.tsx module
   doc, host-ai.ts): the host posts the enabled agents' models to the frame and
-  relays its inline AI requests to this route. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
+  relays its inline AI requests to this route. **Native tools (D1460):** `tools:
+  [{name, description, parameters}]` (AI SDK definitions, names `[A-Za-z0-9_-]{1,64}`,
+  at most 64) on the four agent tiers, `stream: true` required and no `history`
+  (send the conversation as the prompt). The model calls them natively through
+  a per-turn stdio MCP bridge (`claude_agent/ai_tools_server.py`) and the
+  **caller runs them**: the stream opens with `{type:"turn", id}`, each call is a
+  `{type:"tool_call", id, name, input}` frame, one at a time, and the caller answers
+  `POST /api/ai/turns/<turn>/results {id, content, isError?}` (404 after the turn
+  ends, 409 for a call it is not waiting on); the bridge reads `GET
+  /api/ai/turns/<turn>/tools` and parks on `POST /api/ai/turns/<turn>/call`. An
+  unanswered call fails after the relay's timeout; closing the stream fails every
+  parked call and kills the CLI. The Claude tier runs a tools turn on an instance
+  of its own (the bridge is fixed at spawn), discarded after; every Claude spawn
+  now carries `--strict-mcp-config` so the user's claude.ai connectors never
+  attach. `local`/`apple` refuse `tools` with a 400. The canvas host relays the
+  frames as `fused-embed-ai-tool-call` / `fused-embed-ai-tool-result`. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
   `.embed` and `.decide`** (their D413 envelopes grow that one key), and every reply of the six
   carries `provider`; those five have only a local tier today, so omitted means
   `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request

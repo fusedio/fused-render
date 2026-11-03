@@ -572,10 +572,33 @@ function aiStreamError(status: number | undefined, error: unknown, fallback: str
  *  carrying the result frame — same reader as the AI Models playground's
  *  (apps/ai_models/playground/client.ts). `signal` aborting mid-stream
  *  closes the response, which cancels the turn on the server. */
+/** A tool the model may call natively (D1460): the AI SDK's definition
+ *  shape, as the embedded workbench's hooks hold it. */
+export interface AiToolDefinition {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+/** A frame of the stream that is not text: `turn` (the id tool results are
+ *  posted under, first frame of a tools run) or `tool_call` (one call the
+ *  model made; the caller answers it with `postAiToolResult`). */
+export type AiStreamFrame =
+  | { type: "turn"; id: string }
+  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown> };
+
 export async function streamAiText(
-  body: { provider: string; model: string; systemPrompt: string; prompt: string; effort?: string },
+  body: {
+    provider: string;
+    model: string;
+    systemPrompt: string;
+    prompt: string;
+    effort?: string;
+    tools?: AiToolDefinition[];
+  },
   signal: AbortSignal,
   onChunk: (text: string) => void,
+  onFrame?: (frame: AiStreamFrame) => void,
 ): Promise<AiTextResult> {
   const res = await fetch("/api/ai", {
     method: "POST",
@@ -616,6 +639,7 @@ export async function streamAiText(
         error?: unknown;
       };
       if (frame.type === "chunk") onChunk(frame.text || "");
+      else if (frame.type === "turn" || frame.type === "tool_call") onFrame?.(frame as unknown as AiStreamFrame);
       else if (frame.type === "done") {
         // Errors after the first byte are demoted to an ok:false done frame
         // on a 200 (AI-1b) — this is the one place they surface.
@@ -626,4 +650,21 @@ export async function streamAiText(
   }
   if (!result) throw aiStreamError(undefined, null, "the stream ended without a result frame");
   return result;
+}
+
+/** Answer one `tool_call` frame of a tools run: the caller ran the tool,
+ *  this unblocks the bridge the CLI is waiting on. 404 once the turn ended. */
+export async function postAiToolResult(
+  turnId: string,
+  result: { id: string; content: string; isError?: boolean },
+): Promise<void> {
+  const res = await fetch(`/api/ai/turns/${encodeURIComponent(turnId)}/results`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify(result),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => null)) as { error?: unknown } | null;
+    throw aiStreamError(res.status, data?.error, `tool result refused (HTTP ${res.status})`);
+  }
 }

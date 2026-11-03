@@ -1667,3 +1667,147 @@ def test_prewarm_default_delay_defers_work(monkeypatch):
     early = asyncio.run(go())
     assert early == []
     assert len(spawned) == 1
+
+
+# -- native tools (D1460) ------------------------------------------------------
+
+
+_TOOLS = [{"name": "list_udfs", "description": "List UDFs",
+           "parameters": {"type": "object", "properties": {}}}]
+
+
+def test_relay_tools_validation(monkeypatch):
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    for body, said in (
+            ({"prompt": "x", "tools": _TOOLS}, "needs 'stream'"),
+            ({"prompt": "x", "stream": True, "tools": []}, "non-empty list"),
+            ({"prompt": "x", "stream": True, "tools": [{"name": "bad name"}]}, "letters"),
+            ({"prompt": "x", "stream": True, "tools": _TOOLS + _TOOLS}, "twice"),
+            ({"prompt": "x", "stream": True, "tools": _TOOLS,
+              "history": [{"role": "user", "content": "hi"}]}, "'history'"),
+            ({"prompt": "x", "stream": True, "tools": _TOOLS, "provider": "apple"},
+             "local and apple"),
+            ({"prompt": "x", "stream": True, "tools": _TOOLS,
+              "model": "mlx-community/Qwen3-8B-4bit"}, "local and apple")):
+        resp = _relay(body)
+        assert resp.status_code == 400, body
+        assert said in _data(resp)["error"]["message"], body
+    assert fake.calls == []
+    assert _server_ai._AI_TURNS == {}
+
+
+def test_relay_tools_turn_streams_calls_and_answers_the_bridge(monkeypatch):
+    """One Claude tools turn end to end, with the bridge's hop played by
+    hand: the instance is the turn's own (bridge in --mcp-config, pre-
+    allowed, MCP_TOOL_TIMEOUT), the stream opens with the turn id, a
+    `tools/call` from the bridge becomes a `tool_call` frame and parks
+    until the caller posts the result, the shared instance is untouched,
+    and the turn is gone — process, config dir and registry — at the end."""
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    # A SLOW turn, so the bridge's call lands while the stream is open.
+    fake = _cli_ok(monkeypatch, lines=_result_lines(deltas=["thinking… ", "done"]),
+                   turn_delay=0.3)
+    shared = _server_ai._AI_SESSION
+    seen = {}
+
+    async def go():
+        resp = await _server_ai._ai_relay(
+            {"prompt": "make a chart", "stream": True, "tools": _TOOLS,
+             "model": "sonnet"})
+        frames = []
+        it = resp.body_iterator
+
+        async def bridge_call():
+            # The bridge (claude_agent/ai_tools_server.py) POSTs /call and
+            # blocks; here the route function is called directly.
+            turn_id = frames[0]["id"]
+            seen["tools_route"] = _server_ai.api_ai_turn_tools(turn_id, x_fused="1")
+            return await _server_ai.api_ai_turn_call(
+                turn_id, {"name": "list_udfs", "input": {"q": 1}}, x_fused="1")
+
+        first = await it.__anext__()
+        frames.extend(json.loads(l) for l in first.splitlines() if l)
+        call = asyncio.ensure_future(bridge_call())
+        # The next frame off the stream is the parked call …
+        while not any(f.get("type") == "tool_call" for f in frames):
+            chunk = await it.__anext__()
+            frames.extend(json.loads(l) for l in chunk.splitlines() if l)
+        tc = next(f for f in frames if f["type"] == "tool_call")
+        assert not call.done()
+        # … which the caller answers through the results route.
+        turn_id = frames[0]["id"]
+        wrong = _server_ai.api_ai_turn_result(
+            turn_id, {"id": "call_nope", "content": "x"}, x_fused="1")
+        assert wrong.status_code == 409
+        ok = _server_ai.api_ai_turn_result(
+            turn_id, {"id": tc["id"], "content": "[\"udf_1\"]"}, x_fused="1")
+        assert ok == {"ok": True}
+        seen["call"] = await call
+        async for chunk in it:
+            frames.extend(json.loads(l) for l in chunk.splitlines() if l)
+        return frames
+
+    frames = asyncio.run(go())
+    assert frames[0]["type"] == "turn" and frames[0]["id"].startswith("turn_")
+    tc = next(f for f in frames if f["type"] == "tool_call")
+    assert tc["name"] == "list_udfs" and tc["input"] == {"q": 1}
+    assert seen["call"] == {"content": "[\"udf_1\"]", "isError": False}
+    assert seen["tools_route"] == {"tools": _TOOLS}
+    assert [f["text"] for f in frames if f["type"] == "chunk"] == ["thinking… ", "done"]
+    assert frames[-1]["type"] == "done" and frames[-1]["ok"] is True
+    # The turn's own instance: bridge config, pre-allowed, raised timeout —
+    # and discarded with the turn; the shared instance never spawned.
+    (argv, env), = fake.calls
+    assert "--strict-mcp-config" in argv
+    mcp_path = _flag(argv, "--mcp-config")
+    assert mcp_path.endswith("mcp.json")
+    assert not os.path.exists(mcp_path)  # the turn dir is gone with the turn
+    assert _flag(argv, "--allowed-tools") == "mcp__fused_tools__*"
+    assert env["MCP_TOOL_TIMEOUT"] == str(int(_server_ai._AI_TIMEOUT_S * 1000))
+    proc, = fake.procs
+    assert proc.killed
+    assert shared._proc is None
+    assert _server_ai._AI_TURNS == {}
+    # Gone turn: the bridge and the caller both hear 404.
+    assert _server_ai.api_ai_turn_tools(frames[0]["id"], x_fused="1").status_code == 404
+    assert _server_ai.api_ai_turn_result(
+        frames[0]["id"], {"id": tc["id"], "content": ""}, x_fused="1").status_code == 404
+
+
+def test_relay_tools_turn_closing_fails_a_parked_call(monkeypatch):
+    """A client that goes away mid-turn: the parked bridge call is answered
+    with an error (the model reads a failed tool, never a hang) and the
+    turn's process is discarded."""
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    fake = _cli_ok(monkeypatch, lines=_result_lines(deltas=["a"]), turn_delay=5.0)
+
+    async def go():
+        resp = await _server_ai._ai_relay(
+            {"prompt": "x", "stream": True, "tools": _TOOLS})
+        it = resp.body_iterator
+        first = json.loads((await it.__anext__()).strip())
+        turn = _server_ai._AI_TURNS[first["id"]]
+        call = asyncio.ensure_future(turn.call("list_udfs", {}))
+        await asyncio.sleep(0.05)
+        await it.aclose()  # the client disconnected
+        return await call
+
+    answer = asyncio.run(go())
+    assert answer["isError"] is True
+    assert _server_ai._AI_TURNS == {}
+    proc, = fake.procs
+    assert proc.killed
+
+
+def test_relay_mcp_config_is_empty_and_strict_for_a_plain_completion(monkeypatch):
+    # The user's claude.ai connectors attach to a bare `claude -p` after init
+    # (`--tools=` strips built-ins only): strict mode with an explicit empty
+    # config is what keeps a completion a completion.
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    assert _relay({"prompt": "hello"}).status_code == 200
+    (argv, env), = fake.calls
+    assert "--strict-mcp-config" in argv
+    assert _flag(argv, "--mcp-config") == _server_ai._NO_MCP_CONFIG
+    assert "--allowed-tools" not in argv
+    assert "MCP_TOOL_TIMEOUT" not in env
