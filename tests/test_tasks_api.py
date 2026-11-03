@@ -511,6 +511,8 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # Held background work (2026-10-21): the sidebar paints such a row as
         # running, like the Tasks page, and needs the list to know.
         "background_jobs",
+        # The rail's favourites (2026-11-03): the card star and its open card.
+        "starred", "starred_open",
     )
     # What the finished/needs-input notice titles a task by (the newest user
     # message unless renamed): riding only when the row has them.
@@ -6408,3 +6410,146 @@ def test_add_worktree_backslash_path_survives_ntpath_normpath(monkeypatch):
     rec: dict = {}
     tasks_mod._add_worktree(rec, "C:\\repo\\.claude\\worktrees\\feat")
     assert rec["worktrees"] == ["C:/repo/.claude/worktrees/feat"]
+
+
+# ---------------------------------------------------------------- favouriting
+# `POST /api/tasks/favourite` — the rail card's star. Global, keyed by task key,
+# at most one favourite open at a time.
+
+
+def _favourite(client, key, on=True, open=None, headers=_FUSED):
+    body = {"key": key, "on": on}
+    if open is not None:
+        body["open"] = open
+    return client.post("/api/tasks/favourite", headers=headers, json=body)
+
+
+def test_starring_a_task_puts_the_star_on_the_row_and_the_pulse(client,
+                                                                projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    assert _by_key(client)["sess-a"]["starred"] is False
+    r = _favourite(client, "sess-a")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": True, "open": True}
+    row = _by_key(client)["sess-a"]
+    assert (row["starred"], row["starred_open"]) == (True, True)
+    pulse = {t["key"]: t for t in _pulse(client)}["sess-a"]
+    assert (pulse["starred"], pulse["starred_open"]) == (True, True)
+
+
+def test_opening_a_second_favourite_closes_the_first(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("yo", T10)])
+    _favourite(client, "sess-a")
+    _favourite(client, "sess-b")
+    rows = _by_key(client)
+    assert (rows["sess-a"]["starred"], rows["sess-a"]["starred_open"]) == (True, False)
+    assert (rows["sess-b"]["starred"], rows["sess-b"]["starred_open"]) == (True, True)
+    assert _favourite(client, "sess-a", open=False).json()["open"] is False
+    assert _by_key(client)["sess-b"]["starred_open"] is True
+
+
+def test_unstarring_clears_the_star(client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    r = _favourite(client, "sess-a", on=False)
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": False, "open": False}
+    row = _by_key(client)["sess-a"]
+    assert (row["starred"], row["starred_open"]) == (False, False)
+    assert "sess-a" not in json.loads((state_dir / "favourites.json").read_text())
+
+
+def test_favouriting_a_task_that_is_not_there_is_a_404(client):
+    assert _favourite(client, "nope").status_code == 404
+
+
+def test_favouriting_without_a_key_is_a_400(client):
+    assert _favourite(client, "  ").status_code == 400
+
+
+def test_favouriting_without_the_fused_header_is_refused(client, projects_dir,
+                                                         state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    assert _favourite(client, "sess-a", headers={}).status_code == 403
+    assert not (state_dir / "favourites.json").exists()
+
+
+def test_favouriting_with_on_omitted_only_moves_open_on_a_starred_task(
+        client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "sess-a", "open": True})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": False, "open": False}
+    assert not (state_dir / "favourites.json").exists(), "never re-stars"
+
+    _favourite(client, "sess-a")
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "sess-a", "open": False})
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": True, "open": False}
+    row = _by_key(client)["sess-a"]
+    assert (row["starred"], row["starred_open"]) == (True, False)
+
+
+def test_update_only_on_a_task_that_is_not_there_is_a_404(client):
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "nope", "open": False})
+    assert r.status_code == 404
+
+
+def test_a_task_with_no_session_cannot_be_starred(client, tmp_path, state_dir):
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    assert key.startswith("pending:")
+    r = _favourite(client, key)
+    assert r.status_code == 400
+    assert "started chat" in r.json()["detail"]
+    assert not (state_dir / "favourites.json").exists()
+
+
+def test_unstarring_an_unknown_key_is_ok(client):
+    r = _favourite(client, "erased-long-ago", on=False)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "erased-long-ago", "starred": False,
+                        "open": False}
+
+
+def test_unstarring_drops_an_orphan_record_whose_row_is_gone(client, state_dir):
+    (state_dir / "favourites.json").write_text(
+        json.dumps({"ghost": {"at": 1.0, "open": True}}))
+    assert _favourite(client, "ghost", on=False).status_code == 200
+    assert json.loads((state_dir / "favourites.json").read_text()) == {}
+
+
+def test_archiving_a_favourite_keeps_the_star_and_closes_its_card(
+        client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    r = client.post("/api/tasks/archive", headers=_FUSED, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    row = _by_key(client)["sess-a"]
+    assert row["status"] == "archived"
+    assert (row["starred"], row["starred_open"]) == (True, False)
+
+
+def test_archiving_does_not_star_an_unstarred_task(client, projects_dir,
+                                                   state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/archive", headers=_FUSED, json={"key": "sess-a"})
+    assert not (state_dir / "favourites.json").exists()
+
+
+def test_deleting_a_favourite_drops_its_record(client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    r = client.post("/api/tasks/delete", headers=_FUSED, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert "sess-a" not in json.loads((state_dir / "favourites.json").read_text())
+
+
+def test_erasing_a_favourite_drops_its_record(client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    r = client.post("/api/tasks/erase", headers=_FUSED, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert "sess-a" not in json.loads((state_dir / "favourites.json").read_text())

@@ -1031,6 +1031,88 @@ def clear_archived(key: str) -> bool:
     return bool(_update(ARCHIVED_FILE, mutate))
 
 
+# ---------------------------------------------------------- favourites.json
+#
+#     {"<task key>": {"at": 1755300000.0, "open": false}}
+#
+# THE STAR ON THE RAIL'S PREVIEW CARD. Global (one list for the whole machine,
+# not per canvas) and server-side, keyed by task key exactly as `archived.json`
+# is, and for the same reason: it is a fact about a task that no transcript can
+# carry. `open` is whether the favourite sits expanded in the rail, and AT MOST
+# ONE does — `set_favourite` closes every other record when one opens, under the
+# same lock, so two windows cannot leave two expanded cards behind.
+#
+# ONLY A STARTED CHAT can be starred (the route refuses a key with no
+# session): a `pending:` key rekeys on dispatch (`_apply_rekey`) and a record
+# under it would be orphaned, like a key-keyed archive filing. Erase and
+# delete drop the record with the row.
+
+FAVOURITES_FILE = "favourites.json"
+
+
+def favourites_state() -> dict:
+    """The favourites, as saved. Missing/corrupt reads as {} — nothing starred —
+    so a bad file costs a star, never a row."""
+    return load_state(FAVOURITES_FILE)
+
+
+def favourite_of(state: dict, key: str) -> tuple[bool, bool]:
+    """`(starred, open)` for this key. A record that is not a dict reads as not
+    starred; a starred record with an unreadable `open` reads as closed — a
+    bad record can neither hide a task nor hold a card open."""
+    rec = state.get(str(key))
+    if not isinstance(rec, dict):
+        return False, False
+    return True, rec.get("open") is True
+
+
+def set_favourite(key: str, on: bool | None, open: bool | None = None,
+                  now: float | None = None) -> dict:
+    """Star or unstar one task key. `on=True` creates the record (an existing
+    one keeps its original `at`) and sets `open` — to `open` when given, else
+    True: a star you just pressed is a card you want to see. Opening one closes
+    every other. `on=False` deletes the record. `on=None` touches ONLY `open`,
+    and only on a key that is starred — the card's × and its swaps say
+    "closed" without ever re-starring a task another window just unstarred.
+
+    Answers `{"starred", "open", "changed"}`; `changed` lists every key whose
+    record flipped, so the caller can wake the watcher for each."""
+    key = str(key)
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        changed: list[str] = []
+        if on is False:
+            if key in state:
+                del state[key]
+                changed.append(key)
+            return ({"starred": False, "open": False, "changed": changed},
+                    bool(changed))
+        before = state.get(key)
+        if on is None and not isinstance(before, dict):
+            return ({"starred": False, "open": False, "changed": changed}, False)
+        want_open = True if open is None else bool(open)
+        at = stamp
+        if isinstance(before, dict):
+            try:
+                at = float(before.get("at"))
+            except (TypeError, ValueError):
+                at = stamp
+        record = {"at": at, "open": want_open}
+        if before != record:
+            state[key] = record
+            changed.append(key)
+        if want_open:
+            for other, rec in state.items():
+                if other != key and isinstance(rec, dict) and rec.get("open") is True:
+                    state[other] = {**rec, "open": False}
+                    changed.append(other)
+        return ({"starred": True, "open": want_open, "changed": changed},
+                bool(changed))
+
+    return _update(FAVOURITES_FILE, mutate)
+
+
 # -------------------------------------------------- session_settings.json
 #
 #     {"<session-id>": {"model": "haiku", "effort": "low", "at": 1755300000.0}}

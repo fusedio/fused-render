@@ -266,3 +266,15 @@ export function keepMarks(
   }
   return out ?? marks;
 }
+
+/** THE FAVOURITES (owner, 2026-11-03): every starred, un-archived task, from
+ *  ANYWHERE — a favourite is not tied to the place the rail stands on, so
+ *  `onRail` is deliberately not asked. Newest movement first (`happened_at`),
+ *  ties by key so the foot never reshuffles between reads. The rows are the
+ *  GLOBAL pulse's; `full` hands each its listing row when it is held. */
+export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<string, Task>): RailRow[] {
+  return rows
+    .filter((t) => t.starred && t.status !== "archived")
+    .sort((a, b) => (b.happened_at ?? 0) - (a.happened_at ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .map((pulse) => ({ pulse, row: full.get(pulse.key) ?? null }));
+}

@@ -37,6 +37,9 @@ this file is written around:
 * ``POST /api/tasks/archive`` — file one task away. ONE gesture with two halves
   (cancel the work, archive the session), which is why it is a verb here rather
   than a triage write the client composes. See the archiving section at the end.
+* ``POST /api/tasks/favourite`` — star or unstar one task (the rail card's star),
+  and say whether its card is open; at most one favourite is open at a time.
+  See `api_task_favourite`.
 * ``POST /api/tasks/unarchive`` — take that filing back, and nothing else: the
   work archiving cancelled stays cancelled, no run starts, and the task lands in
   whatever lane it DERIVES into rather than one a caller names. Same section.
@@ -2913,7 +2916,8 @@ def _new_task(key: str, session_id: str, path: str | None,
     # for a task with no session to file on; `_collect` fills it, `_row` reads
     # it. 0.0 everywhere else, which reads as "not filed".
     return {"key": key, "session_id": session_id, "path": path, "entries": [],
-            "backend": backend, "key_filed_at": 0.0}
+            "backend": backend, "key_filed_at": 0.0,
+            "starred": False, "starred_open": False}
 
 
 def _entry_session(entry: dict, by_id: dict | None = None) -> str:
@@ -3175,9 +3179,14 @@ def _collect() -> dict[str, dict]:
     # record, if one exists under a pending key the row has since left, is
     # an orphan nothing consults.
     archived = tasks_store.archived_state()
+    # THE FAVOURITES (`tasks_store.FAVOURITES_FILE`): global and keyed by task
+    # key, so unlike the filing above EVERY task reads it, session or not.
+    favourites = tasks_store.favourites_state()
     for key, task in tasks.items():
         if not task["session_id"]:
             task["key_filed_at"] = tasks_store.archived_at(archived, key)
+        task["starred"], task["starred_open"] = tasks_store.favourite_of(
+            favourites, key)
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
             and not _bot_session(task) and not _merge_session(task)}
@@ -4539,6 +4548,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     row = {
         "key": task["key"],
         "task_id": number,
+        # THE RAIL CARD'S STAR, and whether that favourite is the one expanded
+        # card (`tasks_store.favourite_of`). Global, so every row answers.
+        "starred": bool(task.get("starred")),
+        "starred_open": bool(task.get("starred_open")),
         # THE LEADER ENTRY BEHIND A TASK THAT HAS NO CONVERSATION YET, and ""
         # for every task that has a session. A `pending:<entry>` row is a chat
         # whose first message is still waiting: there is no transcript to open
@@ -6924,6 +6937,9 @@ _PULSE_FIELDS = (
     # In Progress (tasks-lib `liveJobRow`). The sidebar must apply the same rule
     # or it paints running work as "finished, not read".
     "background_jobs",
+    # The rail's favourites (`_row`): the Claude rail paints its star list off
+    # the pulse, so the two booleans ride it.
+    "starred", "starred_open",
 )
 
 
@@ -7906,6 +7922,9 @@ def api_task_archive(patch: ArchivePatch,
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
     cancelled, filed, stopped = archive_task(task, _parked_runs())
+    # A filed favourite keeps its star but not its open card: the rail draws
+    # no ring for an archived chat, so a card open on it would stand on nothing.
+    tasks_store.set_favourite(key, None, False)
     # THE UNSENT TEXT IS NOT TOUCHED (Akshil, 2026-09-15; design.md, PR C:
     # "Archive/unarchive touch NO drafts").
     #
@@ -7924,6 +7943,49 @@ def api_task_archive(patch: ArchivePatch,
     # filing kept underneath, and the card is how the reader finds out.
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed,
             "stopped": stopped, "teardown": task.get("teardown") or {}}
+
+
+class FavouritePatch(BaseModel):
+    key: str
+    # True = star, False = unstar, omitted = leave the star alone and set only
+    # `open` (a no-op on a task that is not starred).
+    on: bool | None = None
+    open: bool | None = None
+
+
+@router.post("/api/tasks/favourite")
+def api_task_favourite(patch: FavouritePatch,
+        x_fused: str | None = Header(default=None)):
+    """Star or unstar one task — the rail preview card's star.
+
+    `on` is the state asked for, not a toggle, so a double click or a second
+    window cannot invert it. `open` says whether the favourite's card is the
+    expanded one (default True on a star); opening one closes every other, which
+    is why the watcher is told about EVERY key whose record flipped and not only
+    the one named. With `on` omitted only `open` moves, and only on a starred
+    key — the card's close paths use this, so a stale window can never re-star.
+    Only a STARTED chat can be starred (a session-less row rekeys on dispatch,
+    see `tasks_store.FAVOURITES_FILE`); unstarring never 404s, so an orphan
+    record (its row erased) can still be dropped. Answers the record as it
+    now stands.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    if patch.on is not False:
+        task = _collect().get(key)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+        if patch.on and not task.get("session_id"):
+            raise HTTPException(status_code=400,
+                                detail="only a started chat can be a favourite")
+    result = tasks_store.set_favourite(key, patch.on, patch.open)
+    tasks_watch.notify(set(result["changed"]) | {key})
+    return {"ok": True, "key": key, "starred": result["starred"],
+            "open": result["open"]}
 
 
 class WorktreeRemovePatch(BaseModel):
@@ -8502,6 +8564,8 @@ def api_task_delete(patch: DeletePatch,
     # or a held answer for a row that is on its way out.
     _queue_drop_task(key)
     tasks_store.mark_deleted(key)
+    # The star goes with the row (tasks_store.FAVOURITES_FILE).
+    tasks_store.set_favourite(key, False)
     # BOTH HALVES OF THIS SESSION'S UNSENT TEXT GO WITH THE ROW (design.md,
     # PR C). The row is the only place either could ever have been drawn — the
     # composer's own draft as the `✎ Draft` chip, a bound New task form as the
@@ -8696,6 +8760,8 @@ def erase_task(key: str, task: dict) -> dict:
         dropped = drafts.delete_bound(session_id)
 
     tasks_store.mark_deleted(key)
+    # The star goes with the row (tasks_store.FAVOURITES_FILE).
+    tasks_store.set_favourite(key, False)
     tasks_watch.notify({key} | set(dropped))
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": erased, "removed": removed}
