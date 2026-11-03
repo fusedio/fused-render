@@ -2248,7 +2248,8 @@ the user turns the bot's Terminal on.
 A bot travels as one file: its public folder (§1) plus, optionally, its memory
 and the apps it uses. Export writes it from the bot's menu or Settings footer
 ("Export bot…"; the old `export` action is now labelled "Export transcript");
-opening one shows an install page; installing always makes a NEW bot. Design
+opening one shows an install page; installing makes a new bot or, when that bot
+is already here (keyed by its id, below), updates it in place. Design
 page with the owner's answers: <https://claude.ai/artifact/MgZLky3CyjTzH3mNZsXDr6>
 (D1458 layout, D1459 package).
 
@@ -2349,13 +2350,16 @@ bots router's middleware, §7):
 | route | answer |
 |---|---|
 | `GET /install?path=<abs>[&light=1]` | `probe(path)`; `light` reads only the index + `bot.json` (the template's card peek) |
-| `POST /install` `{path, apps: [folder], memory, request_id?, bot_id?}` | `install(...)`, `X-Fused`; the body is read streamed and capped at 64 KiB (413 over). `request_id` (≤64 `[A-Za-z0-9_-]`) makes the POST idempotent in the owner: a resend answers the first result (a 200-entry, 1 h memo), so a page Retry after a lost reply never mints a second bot. `bot_id` is re-install mode (the per-row Retry): no bot is created; the file's `origin` must match that bot's, `package_sha` included, only the listed rows install, and they join its `apps` + `trusted_apps` |
+| `POST /install` `{path, apps: [folder], memory, mode?: "new"\|"update", target?, request_id?, bot_id?}` | `install(...)`, `X-Fused`; `mode` absent = `new`; `update` needs `target` (the probe's `bot.existing.id`), else 400; the body is read streamed and capped at 64 KiB (413 over). `request_id` (≤64 `[A-Za-z0-9_-]`) makes the POST idempotent in the owner: a resend answers the first result (a 200-entry, 1 h memo), so a page Retry after a lost reply never mints a second bot. `bot_id` is re-install mode (the per-row Retry): no bot is created; the file's `origin` must match that bot's, `package_sha` included, only the listed rows install, and they join its `apps` + `trusted_apps` |
 | `GET /icon?path=` | the `icon.svg` member, else 404 (the page falls back to the face) |
 | `POST /upload?name=<file name>` (body = the raw bytes) | writes `<downloads dir>/<safe name>.fusedbot` (appfetch's dir), `Content-Length` checked against the 1 GiB cap before a byte is read, streamed to a temp file, `X-Fused` → `{ok, path}`; refused with the probe's own error (nothing saved) unless `botfile._validate` passes — the full probe's own read-only checks: index, text budget, `bot.json`, the `apps` list, every `skills/*.md` member's size + sha256 |
 
 `probe` answers `{ok, name, public, skills, memory: bool, exported_at, origin,
+bot: {state, existing: {id, name, face|null}|null, edited_here},
 apps: [{folder, name, app_id, source, state, ticked, tickable, reason?}],
-staging}`. Bundled members are extracted to
+staging}` (`bot` in the light probe too, as the id match alone: `update` when a
+bot here holds the package id, else `new`, `edited_here: false`, no origin scan
+and no digest, since a card peek never pays for the open; see Identity below). Bundled members are extracted to
 `appfile.install_dir()/.install-bot-<sha10 of path+mtime>/<folder>.fused`, the
 `.install-` prefix letting `appfile._sweep_install_staging` clean it after its
 TTL. Per-row state:
@@ -2388,30 +2392,83 @@ display; a pinned install would silently diverge from every other
 GitHub-installed copy. A clone failure (offline, private or deleted repo) is
 that row's error — "could not clone <repo> from GitHub: <reason>" — the bot is
 still made and the row's Retry runs it again. Then the bot, in the owner
-process: `bot.create(name, model, effort, instructions, greet=False, bot_id=<minted>)` — the id is minted by
-the install (8 hex, neither a bot nor a placed folder; `create` refuses a taken one) so a `create` that raises
+process: `bot.create(name, model, effort, instructions, greet=False, bot_id=<id>)` — the package's id when it
+is free here, else one minted by the install (8 hex, neither a bot nor a placed folder; `create` refuses a taken
+one), so a `create` that raises
 after its `bot.json` exists is recognised by that id, never by diffing the ids on disk (which would adopt a bot
 a concurrent request made); face,
 approval, build_access, terminal, engine, max_steps / step_cap; `preset` as the
 key only (no `apply_preset`: the skills are in the file); routines from the
 file with run fields stripped and every row **`enabled: false`**; `apps` = the
 file rows; `trusted_apps` = the folders that installed OK and are in the
-index's `apps` rows (`trusted_apps` is private, never in the file); skills via
-`skill_save`; memory via `set_memory` only when asked and present; the
+index's `apps` rows (`trusted_apps` is private, never in the file); skills written
+verbatim under their member names (`_write_skills`; one with no trigger is
+written and warned about; of names equal but for case only the first in sorted
+order installs, warned about, and the digest counts the same one; a package with
+more than `Bot.SKILL_MAX` playbooks or one past `Bot.SKILL_BODY_CAP` characters
+of steps is refused, by the probe, the upload and the install alike, never
+truncated); memory via `set_memory` only when asked and present; the
 package's `README.md` and `icon.svg` (≤ `appfile.MAX_ICON_BYTES`) copied into
 the new bot's folder so a re-export keeps them (never over an existing file; a
 miss is a warning); private state gets `origin` (the exporter's `{bot_id,
-exported_at}` plus `package_sha`, the sha256 of the index's member hashes and
+exported_at}` plus `public_sha` (below) and `package_sha`, the sha256 of the index's member hashes and
 `apps` rows: two exports of one bot in the same second share `bot_id` +
 `exported_at`, so re-install mode refuses any package whose digest differs —
 "this package is not the one this bot was installed from"); a `system` event
-"Imported from <file>"; then `greet()`. A fresh id every time: there is no
-update-in-place. The page's failed row re-POSTs with only that folder and the
+"Imported from <file>"; then `greet()`. The page's failed row re-POSTs with only that folder and the
 `bot_id` it was given (re-install mode above). An app that installed but whose bot update (`apps` +
 `trusted_apps`, its own save after `origin`'s) failed comes back as `{folder: <index key>, ok: false, state:
 "settings", error: "installed, but the bot could not be updated: …", path}` plus the `settings:` warning, so its
 row offers that Retry, which is idempotent (app already there → ok, no write; manifest row matched by folder;
 trust skips a listed folder).
+
+**Identity and update (owner 2026-11-03, reversing "always a new bot").** A bot
+is keyed by its id like an app by its `app_id`: `bot.json`'s `id` (else the
+index's `origin.bot_id`) travels with the file, survives re-export, and a new
+install keeps it when free. "Already here" (`_find_match`, read off disk, any
+process, side-effect free: a corrupt `state.json` reads as empty, never moved
+aside) = the bot whose id IS the package id, else one whose private
+`origin.bot_id` is (bots installed by earlier builds minted a fresh id); the id
+match wins; the Super Bot never matches. The oracle is the **public digest**
+`botfile.public_digest`, one function fed by `_package_public_sha(path, idx)`
+(bot.json parsed, every other part from the index's member hashes) and
+`package.public_sha(bid)` (disk): sha256 over `store.public_json` of the public
+half PROJECTED onto what an install carries (name, model, effort, instructions
+as `create` stores them, `face` / `preset` / `engine` / `max_steps` /
+`step_cap` past `_public_fields`, routines cut to `id, task, kind, minutes,
+time, weekdays, at`; never the bot's `id`, `created`, `anchor`, `apps` or
+permissions, none of which an install copies verbatim), then each playbook's
+`name \0 sha256`, README.md's and icon.svg's sha256 (absent, or over the cap the
+install copies at, = ''). A package exported from a bot digests like it, and so
+does a bot right after its install or update. `origin.public_sha` = the
+package's digest at install / update time. Probe `bot.state`: `new` (no match);
+`same` (the bot's digest == the package's); `update` (differs, and the bot is
+unedited since its install, `origin.public_sha` == its digest, or has no
+`origin`: it is the exporter's own bot); `diverged` (differs and
+`origin.public_sha` != its digest: edited here; `edited_here: true`). The page
+defaults to Update for `same` / `update`, New for `diverged`. `install(mode=
+"new")` keeps the package id when free and mints one when a bot holds it (the
+user chose a second copy). `install(mode="update", target=)` re-derives the
+match (`target` must be it, never Super Bot; else "that bot did not come from
+this package"), refuses a bot whose `status` is running / waiting or whose task
+thread lives ("stop <name> before updating it"; the route's workspace-claim
+409 applies like every install), installs the ticked apps first (outside the
+bot lock), then under `b.lock`: skills/ REPLACED (built in a scratch dir and
+renamed in; a `*.md` the package lacks is gone, non-playbook files carried
+over); the public half applied as a new install applies it (`_APPLIED_KEYS`
+the package lacks are removed; permissions never imported; `created` kept);
+routines from the package keyed by id (`_merge_routines`: an existing id keeps
+its run state, `created` and, schedule unchanged, `anchor`; a changed schedule
+recomputes `next`; a new one arrives paused; one the package lacks is
+removed); manifest rows merged by folder and `trusted_apps` += what installed;
+`origin` restamped `{bot_id, exported_at, package_sha, public_sha}` (so the
+per-row Retry works on an updated bot); one save (a failed save restores the
+in-memory meta and answers an error; the re-POST is idempotent). Then README.md
+/ icon.svg replaced or removed to match the package (removed when it lacks
+them or one is not copied: over the cap or a failed write, with a warning),
+memory overwritten only when ticked and present. Events, files, inbox,
+downloads, browser and other trust are untouched; no transcript line. Answer
+`{ok, bot_id: target, updated: true, apps, warnings}` (`updated: false` on a new install and on re-install mode).
 
 **Opening one.** `templates/registry.json` maps `".fusedbot": ["fusedbot",
 "claude"]`; `templates/fusedbot/template.html` (modelled on `fusedapp`) peeks

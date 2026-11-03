@@ -286,6 +286,25 @@ def _public(bid: str) -> tuple[str, bytes, dict, dict]:
     return path, store.public_json(public).encode("utf-8"), public, meta
 
 
+def public_sha(bid: str) -> str:
+    """The public digest of the bot on disk (botfile.public_digest, docs/bots.md §17): what write() would ship as
+    bot.json, skills/, README.md and icon.svg, under the same picks (a README over the text cap or an icon over
+    MAX_ICON_BYTES counts as absent, as the install would not copy it). Equal to the digest of a package exported
+    from it, and to its package's right after an install or update from one."""
+    from fused_render.bots import botfile
+    _path, _raw, public, _meta = _public(bid)
+    skills = [(n, _sha256(p)) for n, p in _skill_files(bid)]
+    folder = bpaths.bot_folder(bid)
+
+    def part(rel: str, cap: int) -> str:
+        p = os.path.join(folder, rel)
+        return _sha256(p) if _regular(p) and _size(p) <= cap else ""
+
+    name = public.get("name") if isinstance(public.get("name"), str) and public.get("name") else "Bot"
+    return botfile.public_digest(public, name, skills, part("README.md", TEXT_MAX_BYTES),
+                                 part("icon.svg", appfile.MAX_ICON_BYTES))
+
+
 def _skill_files(bid: str, skipped: list | None = None) -> list[tuple[str, str]]:
     """[(name, abs path)] of `skills/*.md`, sorted. A file that cannot travel (a symlink, a name the container
     refuses, a name that is not valid UTF-8) is skipped and, when `skipped` is given, reported as

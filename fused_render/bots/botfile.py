@@ -11,7 +11,10 @@ Every byte here is as untrusted as a mailed `.fused`: the container reader valid
 are read bounded, every field taken from `bot.json` passes the same check the Settings dialog applies, and
 an app install is never forced (a state that would lose the user's work is reported as skipped).
 
-Import always makes a NEW bot (fresh id) stamped with the package's `origin`; routines arrive paused.
+A package is keyed by its bot's id (bot.json `id`, its lineage, like an app's `app_id`): the probe's `bot` block says
+whether that bot is already here (`new` / `same` / `update` / `diverged`, by the public digest `public_digest`) and
+the install either makes a NEW bot (keeping the package id when it is free) or updates the matching one in place.
+Either way the bot is stamped with the package's private `origin`; a new bot's routines arrive paused.
 """
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ import re
 import shutil
 import tempfile
 import threading
+import copy
 import time
 import uuid
 import zlib
@@ -210,8 +214,24 @@ def _check_text_budget(idx: dict) -> None:
         raise BotFileError(f"skills and memory in this package are {declared} bytes; the cap is {text_cap}")
 
 
+def _check_skill_limits(idx: dict, bodies: list[tuple[str, str]] | None = None) -> None:
+    """The bot's own playbook limits (Bot.SKILL_MAX playbooks, Bot.SKILL_BODY_CAP characters of steps), which
+    skill_save enforces: playbooks install verbatim (_write_skills), so a package past either is REFUSED, never
+    truncated (a cut playbook would neither run as written nor digest like its package). The count is index-only;
+    `bodies` ([(name, parsed body)]) is checked when the members were read."""
+    from fused_render.bots.bot import Bot
+    n = len(_skill_names(idx))
+    if n > Bot.SKILL_MAX:
+        raise BotFileError(f"this package has {n} playbooks; a bot holds at most {Bot.SKILL_MAX}")
+    for name, body in bodies or []:
+        if len(body) > Bot.SKILL_BODY_CAP:
+            raise BotFileError(f"playbook {name} has more than {Bot.SKILL_BODY_CAP} characters of steps")
+
+
 def _skill_names(idx: dict) -> list[str]:
-    return sorted(m.group(1) for f in idx.get("files") or [] if (m := _SKILL_RE.match(f.get("path") or "")))
+    """The playbook members' names, sorted; a dot-name is skipped (export never ships one, package._skill_files)."""
+    return sorted(m.group(1) for f in idx.get("files") or []
+                  if (m := _SKILL_RE.match(f.get("path") or "")) and not m.group(1).startswith("."))
 
 
 def _skills(path: str, idx: dict) -> list[dict]:
@@ -270,11 +290,13 @@ def _validate(path: str, idx: dict, *, members: bool = True,
     reads; skills None). `bundled` (the upload only: a probe must not pay for it on every open) also
     stream-verifies every `apps/*.fused` member's size + sha256."""
     _check_text_budget(idx)
+    _check_skill_limits(idx)
     pub = _bot_json(path, idx)
     rows = _app_rows(idx)
     skills = None
     if members:
         skills = _skills(path, idx)
+        _check_skill_limits(idx, [(s["name"], s["body"]) for s in skills])
         _total, text_cap = _caps()
         _member_bytes(path, idx, ".fused/memory.md", text_cap)  # the read install(memory=True) makes
     if bundled:
@@ -430,19 +452,164 @@ def _row_state(row: dict, staged: str | None) -> dict:
     return {"state": "missing", "ticked": True, "tickable": True}
 
 
+# ------------------------------------------------------------------ identity ---
+# The public settings an install applies beyond name/model/effort/instructions, and the ones an update replaces
+# (a key the package lacks is removed from the bot). `kind` is left out: a non-Super bot is "bot" or unset, and
+# the Super Bot never matches. Permissions (approval/build_access/terminal) never travel (_public_fields).
+_APPLIED_KEYS = ("face", "preset", "engine", "max_steps", "step_cap")
+_ROUTINE_DIGEST_KEYS = ("id", "task", "kind", "minutes", "time", "weekdays", "at")
+_PERMISSION_KEYS = frozenset({"approval", "build_access", "terminal", "super_access"})
+
+
+def _package_id(pub: dict, idx: dict) -> str | None:
+    """The package's lineage id: bot.json's `id` (the exported bot's id), else the index's `origin.bot_id`; None
+    when neither is a bot id (a hand-made package matches nothing and installs under a minted id)."""
+    for v in (pub.get("id"), _origin(idx)["bot_id"]):
+        if isinstance(v, str) and bpaths._ID_RE.fullmatch(v):
+            return v
+    return None
+
+
+def _applied(pub: dict, name: str) -> dict:
+    """What an install writes into the bot's public half from bot.json: name/model/effort/instructions the way
+    create() stores them, plus the settings that pass _public_fields' checks."""
+    from fused_render.bots import bot as bm
+    model, effort = _str(pub.get("model")), _str(pub.get("effort"))
+    return {"name": name, "model": model if model in bm.MODELS else bm.DEFAULT_MODEL,
+            "effort": effort if effort in bm.EFFORTS else bm.DEFAULT_EFFORT,
+            "instructions": _str(pub.get("instructions")).strip(),
+            **_public_fields({}, {k: v for k, v in pub.items() if k not in _PERMISSION_KEYS})}
+
+
+def public_digest(pub: dict, name: str, skills: list[tuple[str, str]], readme_sha: str, icon_sha: str) -> str:
+    """The "same / update / diverged" oracle (docs/bots.md §17): sha256 over (a) store.public_json of the public
+    half PROJECTED onto what an install carries (`_applied` keys, routines cut to their definition: no `id` of the
+    bot, `created`, `anchor`, `apps` or permissions, none of which an install copies verbatim), (b) each playbook
+    `name \\0 sha256(bytes)` sorted by name, (c) README.md's and (d) icon.svg's sha256 ('' when absent). One
+    function for both sides: `_package_public_sha` (a package, from its index) and `package.public_sha` (a bot on
+    disk) feed it, so a bot right after its install or update digests exactly like its package."""
+    from fused_render.bots import store
+    a = _applied(pub, name)
+    view = {k: a[k] for k in ("name", "model", "effort", "instructions")}
+    view.update({k: a[k] for k in _APPLIED_KEYS if k in a})
+    view["routines"] = [{k: r[k] for k in _ROUTINE_DIGEST_KEYS if k in r} for r in _routines(pub.get("routines"))]
+    h = hashlib.sha256(store.public_json(view).encode("utf-8"))
+    keep, _drop = _case_unique(n for n, _sha in skills)
+    for n, sha in sorted(s for s in skills if s[0] in keep):
+        h.update(b"\0skill\0" + n.encode("utf-8", errors="replace") + b"\0" + sha.encode())
+    h.update(b"\0readme\0" + (readme_sha or "").encode() + b"\0icon\0" + (icon_sha or "").encode())
+    return h.hexdigest()
+
+
+def _entry_sha(path: str, idx: dict, rel: str, cap: int) -> str:
+    """A member's sha256 from the index ('' when absent or over `cap`: the install would not copy it); the member
+    is read only when the index carries no usable hash."""
+    entry = appfile_container.find(idx, rel)
+    if entry is None or not isinstance(entry.get("size"), int) or entry["size"] > cap:
+        return ""
+    sha = entry.get("sha256")
+    if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha):
+        return sha
+    raw = _member_bytes(path, idx, rel, cap)
+    return "" if raw is None else hashlib.sha256(raw).hexdigest()
+
+
+def _package_public_sha(path: str, idx: dict, pub: dict | None = None) -> str:
+    """public_digest of the package at `path`: bot.json parsed, every other part from the index's member hashes."""
+    pub = _bot_json(path, idx) if pub is None else pub
+    _total, text_cap = _caps()
+    skills = [(n, _entry_sha(path, idx, f"skills/{n}.md", text_cap)) for n in _skill_names(idx)]
+    return public_digest(pub, _install_name(pub, idx), skills, _entry_sha(path, idx, "README.md", text_cap),
+                         _entry_sha(path, idx, "icon.svg", appfile.MAX_ICON_BYTES))
+
+
+def _install_name(pub: dict, idx: dict) -> str:
+    return _str(pub.get("name")) or _str(idx.get("name")) or "Bot"  # never empty: create() would invent one
+
+
+def _find_match(pkg_id: str | None, id_only: bool = False) -> dict | None:
+    """The bot already here for a package id, read off disk (the probe is served by any process, never through a
+    live Bot): the bot whose id IS the package id, else (bots installed by earlier builds, which minted a fresh
+    id) the first bot whose private `origin.bot_id` is. The Super Bot never matches. `id_only`: no scan."""
+    from fused_render.bots import store
+    if not pkg_id:
+        return None
+    ids = store.list_ids()
+    if pkg_id in ids and (m := _disk_meta(pkg_id)) is not None:
+        return m
+    if id_only:
+        return None
+    for bid in ids:
+        if bid == pkg_id:
+            continue
+        m = _disk_meta(bid)
+        o = (m or {}).get("origin")
+        if isinstance(o, dict) and o.get("bot_id") == pkg_id:
+            return m
+    return None
+
+
+def _disk_meta(bid: str) -> dict | None:
+    """A bot's merged meta read WITHOUT side effects (None for the Super Bot or an unreadable bot.json): unlike
+    store.read_meta, a corrupt state.json is not moved aside (the probe is a read) but read as empty private
+    state. Not store.read_all_metas: one bad folder there answers None for every bot."""
+    from fused_render.bots import store
+    from fused_render.bots.bot import is_super
+    try:
+        folder = bpaths.bot_folder(bid)
+    except LookupError:
+        return None
+    public = store._read_object(os.path.join(folder, store.BOT_FILE))
+    if public is None:
+        return None
+    spath = os.path.join(folder, bpaths._PRIVATE, store.STATE_FILE)
+    private = (store._read_object(spath) if os.path.lexists(spath) else None) or {}
+    m = store._merge(public, private, spath, warn=False)
+    return None if is_super(m) else {**m, "id": bid}
+
+
+def _bot_block(path: str, idx: dict, pub: dict, light: bool = False) -> dict:
+    """The probe's `bot` block: {state, existing, edited_here} (docs/bots.md §17). `light` (the card peek, which
+    never pays for the open): the id match only, through the folder index (no origin scan across bots, no
+    digest), so a match answers `update` and `edited_here` is False; the full probe has the exact states."""
+    from fused_render.bots import package
+    m = _find_match(_package_id(pub, idx), id_only=light)
+    if m is None:
+        return {"state": "new", "existing": None, "edited_here": False}
+    existing = {"id": m["id"], "name": _str(m.get("name")) or m["id"],
+                "face": m["face"] if isinstance(m.get("face"), dict) else None}
+    if light:
+        return {"state": "update", "existing": existing, "edited_here": False}
+    try:
+        have = package.public_sha(m["id"])
+    except (OSError, ValueError, LookupError):  # unreadable now: never "same", and the page still offers both
+        logger.warning("bot package: could not digest bot %s", m["id"], exc_info=True)
+        have = ""
+    origin = m.get("origin") if isinstance(m.get("origin"), dict) else {}
+    stamped = origin.get("public_sha") if isinstance(origin.get("public_sha"), str) else None
+    edited = stamped is not None and stamped != have
+    if have == _package_public_sha(path, idx, pub):
+        state = "same"
+    else:
+        state = "diverged" if edited else "update"
+    return {"state": state, "edited_here": edited, "existing": existing}
+
+
 # ------------------------------------------------------------------ probe ---
 def probe(path: str, light: bool = False) -> dict:
     """What installing the package at `path` would do: the install page's data. Read-only towards the
     workspace; the full probe stages the bundled app files (so each can be asked `install_target` in its own
     words) under appfile.install_dir(). `light` is a card peek: index + bot.json only, no staging, no member
-    reads, no state per app (D396's rule: a peek never pays for the open)."""
+    reads, no state per app (D396's rule: a peek never pays for the open); its `bot` block is the id match alone
+    (`update` when a bot here holds the package id, else `new`; no origin scan, no digest)."""
     idx = _index(path)
     pub, rows, skills = _validate(path, idx, members=not light)
-    out = {"ok": True, "name": _str(pub.get("name")) or _str(idx.get("name")) or "Bot", "public": pub,
+    out = {"ok": True, "name": _install_name(pub, idx), "public": pub,
            "exported_at": _str(idx.get("exported_at")) or None, "origin": _origin(idx),
            "memory": appfile_container.find(idx, ".fused/memory.md") is not None,
            "icon": appfile_container.find(idx, "icon.svg") is not None,
-           "readme": appfile_container.find(idx, "README.md") is not None}
+           "readme": appfile_container.find(idx, "README.md") is not None,
+           "bot": _bot_block(path, idx, pub, light=light)}
     if light:
         out["skills"] = [{"name": n} for n in _skill_names(idx)]
         out["apps"] = rows
@@ -735,13 +902,21 @@ class NoSuchBot(BotFileError):
     """Re-install mode named a bot that does not exist (the route answers 404)."""
 
 
-def install(path: str, *, apps: list[str], memory: bool, bot_id: str | None = None,
-            request_id: str | None = None, wait_s: float = REQUEST_TTL_S) -> dict:
-    """Install the package at `path` (see _install_new / _install_into). With `request_id` the call is
-    idempotent: a repeat answers the first call's result; a repeat while the first still runs waits for it
-    (up to `wait_s`)."""
+INSTALL_MODES = ("new", "update")
+
+
+def install(path: str, *, apps: list[str], memory: bool, mode: str = "new", target: str | None = None,
+            bot_id: str | None = None, request_id: str | None = None, wait_s: float = REQUEST_TTL_S) -> dict:
+    """Install the package at `path`: `mode="new"` makes a bot (_install_new), `mode="update"` updates `target`,
+    the bot the probe's `bot.existing` named (_install_update); `bot_id` is re-install mode, the per-row Retry
+    (_install_into), whatever the mode. With `request_id` the call is idempotent: a repeat answers the first
+    call's result (whatever mode it carries: the page pins its selection on first submit); a repeat while the
+    first still runs waits for it (up to `wait_s`)."""
+    if mode not in INSTALL_MODES:
+        raise BotFileError("mode must be 'new' or 'update'")
+    kw = {"apps": apps, "memory": memory, "mode": mode, "target": target, "bot_id": bot_id}
     if not request_id:
-        return _install(path, apps=apps, memory=memory, bot_id=bot_id)
+        return _install(path, **kw)
     if not REQUEST_ID_RE.match(request_id):
         raise BotFileError("request_id must be 1-64 letters, digits, '-' or '_'")
     with _req_lock:
@@ -760,7 +935,7 @@ def install(path: str, *, apps: list[str], memory: bool, bot_id: str | None = No
             raise BotFileError("that install did not finish; try again")
         return hit[1]
     try:
-        out = _install(path, apps=apps, memory=memory, bot_id=bot_id)
+        out = _install(path, **kw)
         with _req_lock:
             _req_done[request_id] = (time.time(), out)
             _req_prune_locked(time.time())
@@ -771,7 +946,8 @@ def install(path: str, *, apps: list[str], memory: bool, bot_id: str | None = No
         ev.set()
 
 
-def _install(path: str, *, apps: list[str], memory: bool, bot_id: str | None) -> dict:
+def _install(path: str, *, apps: list[str], memory: bool, mode: str, target: str | None,
+             bot_id: str | None) -> dict:
     from fused_render.bots import registry
     idx = _index(path)
     pub = _bot_json(path, idx)
@@ -780,7 +956,23 @@ def _install(path: str, *, apps: list[str], memory: bool, bot_id: str | None) ->
     registry.require_owner()
     if bot_id:
         return _install_into(path, idx, bot_id, apps)
+    if mode == "update":
+        return _install_update(path, idx, pub, target, apps, memory)
     return _install_new(path, idx, pub, apps, memory)
+
+
+def _merge_manifest(manifest, rows: list[dict], orig: dict[int, str]) -> list[dict]:
+    """The bot's `apps` manifest with `rows` merged in by folder: a row already listed (under its disk folder or
+    the index spelling `orig[id(row)]`, which a first install recorded) is replaced by the package's row, which
+    carries the folder the app really sits in; any other row is appended."""
+    out = [dict(r) for r in manifest or [] if isinstance(r, dict)]
+    for row in rows:
+        hit = next((m for m in out if m.get("folder") in (row["folder"], orig.get(id(row)))), None)
+        if hit is not None:
+            hit.update(row)
+        else:
+            out.append(dict(row))
+    return out
 
 
 def _install_into(path: str, idx: dict, bot_id: str, apps) -> dict:
@@ -807,58 +999,97 @@ def _install_into(path: str, idx: dict, bot_id: str, apps) -> dict:
     if done:
         try:
             with b.lock:
-                manifest = [dict(r) for r in b.meta.get("apps") or [] if isinstance(r, dict)]
-                for row in done:
-                    hit = next((m for m in manifest if m.get("folder") in (row["folder"], orig[id(row)])), None)
-                    if hit is not None:
-                        hit["folder"] = row["folder"]  # the first install recorded the index spelling
-                    else:
-                        manifest.append(dict(row))
-                b.meta["apps"] = manifest
+                b.meta["apps"] = _merge_manifest(b.meta.get("apps"), done, orig)
                 apptools.set_trusted_apps(b.meta, add=[r["folder"] for r in done])
                 b.save()
         except Exception as e:  # noqa: BLE001 - the apps are installed; say the bot was not updated
             logger.warning("bot package: re-install could not update %s", b.id, exc_info=True)
             warnings.append(f"settings: {e or e.__class__.__name__}")
             _unlinked(results, paths, e)
-    return {"ok": True, "bot_id": b.id, "apps": results, "warnings": warnings}
+    return {"ok": True, "bot_id": b.id, "updated": False, "apps": results, "warnings": warnings}
 
 
-def _copy_folder_members(path: str, idx: dict, bid: str, warnings: list[str]) -> None:
-    """The package's README.md and icon.svg into the new bot's public folder, where export picked them up: without
+def _copy_folder_members(path: str, idx: dict, bid: str, warnings: list[str], replace: bool = False) -> None:
+    """The package's README.md and icon.svg into the bot's public folder, where export picked them up: without
     this a re-export of an imported bot silently drops both. Each is bounded (icon at the cap export and the
-    install page apply, README at the text cap) and never replaces a file already there; any failure is a
-    warning, never a failed install (the bot exists by now)."""
+    install page apply, README at the text cap). A new bot's copy never replaces a file already there; an update
+    (`replace`) makes the bot's match the package (override semantics, so the bot digests like its package,
+    public_digest): swapped in when the package carries it, REMOVED when it does not or when it is not copied
+    (over the cap, a failed write; said in a warning). Any failure is a warning, never a failed install (the bot
+    exists by now)."""
     _total, text_cap = _caps()
     for rel, cap in (("README.md", text_cap), ("icon.svg", appfile.MAX_ICON_BYTES)):
         entry = appfile_container.find(idx, rel)
-        if entry is None:
-            continue
-        if not isinstance(entry.get("size"), int) or entry["size"] > cap:
-            warnings.append(f"{rel}: larger than {cap} bytes; not copied")
-            continue
+        copied = False
         try:
-            raw = _member_bytes(path, idx, rel, cap)
-            if raw is None:
-                continue
-            dst = os.path.join(bpaths.bot_folder(bid), rel)
-            try:
-                f = open(dst, "xb")  # exclusive: never over a file the bot already has
-            except FileExistsError:
-                warnings.append(f"{rel}: the bot already has one; kept it")
-                continue
-            try:
-                with f:
-                    f.write(raw)
-            except OSError:
+            if entry is None:
+                pass
+            elif not isinstance(entry.get("size"), int) or entry["size"] > cap:
+                warnings.append(f"{rel}: larger than {cap} bytes; not copied")
+            elif (raw := _member_bytes(path, idx, rel, cap)) is None:
+                pass
+            elif replace:
+                dst = os.path.join(bpaths.bot_folder(bid), rel)
+                tmp = f"{dst}.{uuid.uuid4().hex[:8]}.tmp"
                 try:
-                    os.unlink(dst)  # ours, half-written: it would export as something the author never wrote
+                    with open(tmp, "xb") as f:
+                        f.write(raw)
+                    os.replace(tmp, dst)
+                    copied = True
                 except OSError:
-                    pass
-                raise
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+            else:
+                _copy_exclusive(os.path.join(bpaths.bot_folder(bid), rel), rel, raw, warnings)
         except (BotFileError, OSError, LookupError) as e:
             logger.warning("bot package: %s not copied to %s", rel, bid, exc_info=True)
             warnings.append(f"{rel}: {e or e.__class__.__name__}")
+        if replace and not copied:
+            _remove_folder_member(bid, rel, entry is not None, warnings)
+
+
+def _remove_folder_member(bid: str, rel: str, had: bool, warnings: list[str]) -> None:
+    """An update whose package does not (or could not) bring `rel`: the bot's own goes, so it matches the package."""
+    try:
+        dst = os.path.join(bpaths.bot_folder(bid), rel)
+        if not os.path.lexists(dst):
+            return
+        os.unlink(dst)
+        if had:
+            warnings.append(f"{rel}: the bot's own was removed to match the package")
+    except (OSError, LookupError) as e:
+        logger.warning("bot package: %s not removed from %s", rel, bid, exc_info=True)
+        warnings.append(f"{rel}: could not remove the bot's own: {e or e.__class__.__name__}")
+
+
+def _copy_exclusive(dst: str, rel: str, raw: bytes, warnings: list[str]) -> None:
+    """A new bot's copy of a folder member: never over a file the bot already has."""
+    try:
+        f = open(dst, "xb")  # exclusive: never over a file the bot already has
+    except FileExistsError:
+        warnings.append(f"{rel}: the bot already has one; kept it")
+        return
+    try:
+        with f:
+            f.write(raw)
+    except OSError:
+        try:
+            os.unlink(dst)  # ours, half-written: it would export as something the author never wrote
+        except OSError:
+            pass
+        raise
+
+
+def _has_folder(bid: str) -> bool:
+    """A folder place() registered for `bid` (its bot.json may not be written yet)."""
+    try:
+        bpaths.bot_folder(bid)
+        return True
+    except LookupError:
+        return False
 
 
 def _mint_id() -> str:
@@ -876,10 +1107,187 @@ def _mint_id() -> str:
             return bid
 
 
+def _skill_members(path: str, idx: dict) -> list[tuple[str, bytes]]:
+    """[(name, bytes)] of every playbook member, read (and size + hash checked) in full."""
+    from fused_render.bots.bot import Bot
+    _total, text_cap = _caps()
+    _check_skill_limits(idx)
+    out = [(n, _member_bytes(path, idx, f"skills/{n}.md", text_cap) or b"") for n in _skill_names(idx)]
+    _check_skill_limits(idx, [(n, Bot._parse_skill(raw.decode("utf-8", errors="replace"))[2]) for n, raw in out])
+    return out
+
+
+def _case_unique(names) -> tuple[set[str], list[str]]:
+    """(names kept, names dropped): of names equal but for case (one file on a case-insensitive disk) only the
+    first in sorted order is kept, by the install and by both sides of the digest alike."""
+    seen, keep, drop = set(), set(), []
+    for n in sorted(names):
+        if n.lower() in seen:
+            drop.append(n)
+        else:
+            seen.add(n.lower())
+            keep.add(n)
+    return keep, drop
+
+
+def _write_skills(b, members: list[tuple[str, bytes]], warnings: list[str]) -> None:
+    """REPLACE the bot's `skills/` with the package's playbooks, each written VERBATIM under its member name (so
+    the bot digests like its package, public_digest): built in a scratch dir beside it and swapped in by rename,
+    so a failure while writing leaves the old folder whole. A `*.md` file the package lacks is gone afterwards;
+    anything else in the folder (not a playbook: export never ships it) is carried over. A playbook with no
+    trigger or no steps is still written (it never runs until edited) and said in a warning."""
+    from fused_render.bots.bot import Bot
+    d = b.skills_dir
+    parent = os.path.dirname(d)
+    if not members and not os.path.lexists(d):
+        return
+    os.makedirs(parent, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix=".skills-new-", dir=parent)  # beside skills/: one filesystem, so rename swaps
+    try:
+        keep, drop = _case_unique(n for n, _raw in members)
+        for n in drop:
+            warnings.append(f"playbook {n}: its name differs from another only by case; not installed")
+        for n, raw in members:
+            if n not in keep:
+                continue
+            _title, trigger, body = Bot._parse_skill(raw.decode("utf-8", errors="replace"))
+            if not trigger or not body:
+                warnings.append(f"playbook {n}: it has no {'trigger' if not trigger else 'steps'}; it never runs until you add one")
+            with open(os.path.join(tmp, n + ".md"), "xb") as f:
+                f.write(raw)
+        old = None
+        if os.path.lexists(d):
+            old = os.path.join(parent, f".skills-old-{uuid.uuid4().hex[:8]}")
+            os.rename(d, old)
+        try:
+            os.rename(tmp, d)
+        except OSError:
+            if old is not None:
+                os.rename(old, d)
+            raise
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    if old is None:
+        return
+    if os.path.islink(old):
+        os.unlink(old)
+        return
+    try:
+        for n in os.listdir(old):
+            if not (n.endswith(".md") and not n.startswith(".")) and not os.path.lexists(os.path.join(d, n)):
+                os.rename(os.path.join(old, n), os.path.join(d, n))
+    except OSError:
+        logger.warning("bot package: could not carry %s's non-playbook files over", b.id, exc_info=True)
+    shutil.rmtree(old, ignore_errors=True)
+
+
+def _merge_routines(existing, new: list[dict]) -> list[dict]:
+    """An update's routines: the package's (`_routines`, in its order) keyed by id. A routine already on the bot
+    keeps its private run state (enabled, last, next, fails, runs; every key outside ROUTINE_PUBLIC_KEYS) and its
+    `created`; when its schedule is unchanged its `anchor` too, else `next` is recomputed (a once-routine moved to
+    a new time is live again, as routine_update does). A new one arrives paused; one the package lacks is gone."""
+    from fused_render.bots import store
+    from fused_render.bots.bot import Bot
+    old = {r["id"]: r for r in existing or [] if isinstance(r, dict) and isinstance(r.get("id"), str)}
+    now, out = time.time(), []
+    for r in new:
+        prev = old.get(r["id"])
+        if prev is None:
+            out.append(r)
+            continue
+        row = {k: v for k, v in prev.items() if k not in store.ROUTINE_PUBLIC_KEYS}
+        same = prev.get("kind") == r["kind"] and all(prev.get(k) == r.get(k) for k in ("minutes", "time", "weekdays", "at"))
+        pub = {k: v for k, v in r.items() if k in store.ROUTINE_PUBLIC_KEYS}
+        pub["created"] = prev.get("created") or pub["created"]
+        if same and "anchor" in prev and "anchor" in pub:
+            pub["anchor"] = prev["anchor"]
+        row.update(pub)
+        if not same:
+            if r["kind"] == "once":
+                row["last"] = None
+            row["next"] = Bot._next_run(row, now) if row.get("enabled") else None
+        out.append(row)
+    return out
+
+
+def _refuse_busy(b) -> None:
+    if b.meta.get("status") in ("running", "waiting") or b.running():
+        raise BotFileError(f"stop {_str(b.meta.get('name')) or b.id} before updating it")
+
+
+def _install_update(path: str, idx: dict, pub: dict, target, apps, memory: bool) -> dict:
+    """Update `target` in place from the package (docs/bots.md §17): the bot the probe matched (`_find_match`,
+    re-derived here; never the Super Bot), refused while it runs or waits. The public half is REPLACED (name,
+    model, effort, instructions, the `_APPLIED_KEYS` settings, skills/, routines merged by id), README.md and
+    icon.svg swapped when the package has them; the ticked apps install and merge into its manifest and trust;
+    memory only when asked. Everything else private (events, files, inbox, browser, other trust) is untouched.
+    `origin` is restamped, so re-install mode (the per-row Retry) and the next probe know this package."""
+    from fused_render.bots import apptools, registry
+    from fused_render.bots import bot as bm
+    m = _find_match(_package_id(pub, idx))
+    if not isinstance(target, str) or m is None or m["id"] != target:
+        raise BotFileError("that bot did not come from this package; install it as a new bot")
+    try:
+        b = registry.get(target)
+    except (ValueError, LookupError):
+        raise NoSuchBot(f"no such bot {os.path.basename(target)}") from None
+    if bm.is_super(b.meta):
+        raise BotFileError("Super Bot is never updated from a package")
+    _refuse_busy(b)
+    rows = _app_rows(idx)
+    # Every read from the file happens before any app installs or the bot is touched (as _install_new).
+    _check_text_budget(idx)
+    name = _install_name(pub, idx)
+    applied = _applied(pub, name)
+    routines = _routines(pub.get("routines"))
+    skills = _skill_members(path, idx)
+    mem_text = None
+    if memory:
+        _total, text_cap = _caps()
+        mem_text = _member_text(path, idx, ".fused/memory.md", text_cap)
+    origin = {**_origin(idx), "package_sha": _package_sha(idx), "public_sha": _package_public_sha(path, idx, pub)}
+
+    orig = {id(r): r["folder"] for r in rows}  # the index spelling, before _install_apps follows the disk
+    results, done, _paths = _install_apps(path, idx, rows, apps)
+    warnings: list[str] = []
+    with b.lock:
+        _refuse_busy(b)  # again: a task may have started while the apps installed
+        snapshot = copy.deepcopy(b.meta)
+        try:
+            _write_skills(b, skills, warnings)  # first: a failure here leaves the bot as it was
+            for k in _APPLIED_KEYS:
+                b.meta.pop(k, None)
+            b.meta.update(applied)
+            b.meta["routines"] = _merge_routines(b.meta.get("routines"), routines)
+            b.meta["apps"] = _merge_manifest(b.meta.get("apps"), rows, orig)
+            apptools.set_trusted_apps(b.meta, add=[r["folder"] for r in done])
+            b.meta["origin"] = origin
+            b.save()
+        except Exception as e:  # noqa: BLE001 - no half-applied meta in memory; the page re-POSTs (idempotent)
+            logger.warning("bot package: update of %s failed", b.id, exc_info=True)
+            b.meta.clear()
+            b.meta.update(snapshot)
+            raise BotFileError(f"could not update {_str(b.meta.get('name')) or b.id}: {e or e.__class__.__name__}") from e
+        _copy_folder_members(path, idx, b.id, warnings, replace=True)
+        if mem_text is not None:
+            try:
+                b.set_memory(mem_text)
+            except OSError as e:
+                logger.warning("bot package: memory not replaced for %s", b.id, exc_info=True)
+                warnings.append(f"memory: {e or e.__class__.__name__}")
+    try:
+        b._sync_wake()
+    except Exception:  # noqa: BLE001 - the scheduler's next pass picks the routines up anyway
+        logger.debug("bot package: wake sync failed for %s", b.id, exc_info=True)
+    return {"ok": True, "bot_id": b.id, "updated": True, "apps": results, "warnings": warnings}
+
+
 def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     """The ticked apps first (in the given order), then a NEW bot carrying the file's settings, playbooks
-    and (when asked) memory. An app that fails is reported on its row and the bot is still made: the page's
-    Retry for that row is re-install mode (`bot_id`)."""
+    and (when asked) memory, under the package's id when that is free here (else a minted one: the user chose
+    "install as a new bot" over the bot already holding it). An app that fails is reported on its row and the
+    bot is still made: the page's Retry for that row is re-install mode (`bot_id`)."""
     from fused_render.bots import apptools
     from fused_render.bots import bot as bm
     from fused_render.bots import store
@@ -889,7 +1297,8 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     _check_text_budget(idx)
     settings = _public_fields({}, pub)
     routines = _routines(pub.get("routines"))
-    skills = _skills(path, idx)
+    skills = _skill_members(path, idx)
+    public_sha = _package_public_sha(path, idx, pub)
     mem_text = None
     if memory:
         _total, text_cap = _caps()
@@ -909,8 +1318,12 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     # passed is this request's bot. (Diffing the ids on disk would adopt a bot some other request created in the
     # same window, and overwrite its settings below.) The mint is not a reservation: an id another creator took
     # in between is BotIdTaken, refused before create writes anything, and answered as a retry, never adopted.
-    name = _str(pub.get("name")) or _str(idx.get("name")) or "Bot"  # never empty: create() would invent one
-    bid = _mint_id()
+    # The package id travels (docs/bots.md §17: an id is a bot's lineage, like an app's app_id) unless a bot here
+    # holds it, i.e. the user chose "install as a new bot" over it: then a minted one. A free id taken in between
+    # is BotIdTaken below, a retry (which then mints), never an adoption.
+    name = _install_name(pub, idx)
+    pkg_id = _package_id(pub, idx)
+    bid = pkg_id if pkg_id and pkg_id not in bpaths.raw_ids() and not _has_folder(pkg_id) else _mint_id()
     warnings: list[str] = []
     try:
         b = bm.create(name, _str(pub.get("model")), _str(pub.get("effort")), _str(pub.get("instructions")),
@@ -935,7 +1348,8 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     try:
         with b.lock:
             # package_sha (private, like all of origin): re-install mode accepts only this very package.
-            b.meta["origin"] = {**_origin(idx), "package_sha": _package_sha(idx)}
+            # public_sha: the package's public digest, the probe's "edited here since" mark (docs/bots.md §17).
+            b.meta["origin"] = {**_origin(idx), "package_sha": _package_sha(idx), "public_sha": public_sha}
             b.save()
     except Exception as e:  # noqa: BLE001 - any failure: undo the bot, then refuse
         logger.warning("bot package: could not record the origin of %s; removing it", b.id, exc_info=True)
@@ -977,20 +1391,9 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
         logger.warning("bot package: settings failed for %s", b.id, exc_info=True)
         warnings.append(f"settings: {e or e.__class__.__name__}")
         _unlinked(results, paths, e)
-    written: set[str] = set()
-    for sk in skills:
-        try:
-            saved = b.skill_save(sk["title"], sk["trigger"], sk["body"], name=sk["name"])
-            final = saved.get("name") if isinstance(saved, dict) else None
-            if final in written:
-                warnings.append(f"playbook {sk['name']}: its name collapsed onto {final!r} and replaced another")
-            if final:
-                written.add(final)
-        except Exception as e:  # noqa: BLE001 - a refused playbook (no trigger, cap) skips that one only
-            logger.info("bot package: playbook %s not imported: %s", sk["name"], e)
-            warnings.append(f"playbook {sk['name']}: {e}")
+    step("playbooks", lambda: _write_skills(b, skills, warnings))
     if mem_text:
         step("memory", lambda: b.set_memory(mem_text))
     step("transcript", lambda: b.emit("system", f"Imported from {os.path.basename(path)}"))
     step("greeting", b.greet)
-    return {"ok": True, "bot_id": b.id, "apps": results, "warnings": warnings}
+    return {"ok": True, "bot_id": b.id, "updated": False, "apps": results, "warnings": warnings}

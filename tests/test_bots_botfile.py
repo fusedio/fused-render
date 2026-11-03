@@ -557,3 +557,339 @@ def test_corrupt_bundled_member_refuses_the_upload_but_not_the_probe(client, tmp
     with open(good, "rb") as f:
         status, _h, raw = client.post("/api/botfile/upload?name=good.fusedbot", f.read(), raw=True)
     assert status == 200
+
+
+# ------------------------------------------------------------------ identity + update (docs/bots.md §17) ---
+SKILL_KEEP = b"# Keep\ntrigger: keep it\n\nDo the kept thing.\n"
+
+
+def _rich_bot(name="Rich"):
+    """A bot with a playbook, a face, two routines and memory: everything an update replaces or keeps."""
+    from fused_render.bots import bot as bm
+
+    b = bm.create(name, "", "", "the exported instructions", greet=False)
+    os.makedirs(b.skills_dir, exist_ok=True)
+    with open(os.path.join(b.skills_dir, "keep.md"), "wb") as f:
+        f.write(SKILL_KEEP)
+    r1 = b.routine_add("check the inbox", "interval", minutes=90)
+    r2 = b.routine_add("send the digest", "daily", time_s="08:30")
+    with b.lock:
+        b.meta["face"] = {"shape": "drop", "color": "", "icon": ""}
+        b.save()
+    b.set_memory("exported memory")
+    return b, r1["id"], r2["id"]
+
+
+def _export(bid, tmp_path, sub="out", memory=False):
+    from fused_render.bots import package
+
+    return package.write(bid, memory=memory, apps=[], file_name=None, dest_dir=str(tmp_path / sub))
+
+
+def test_probe_on_the_exporting_machine_is_same_then_update(tmp_path):
+    from fused_render.bots import botfile, registry
+
+    b, _r1, _r2 = _rich_bot()
+    path = _export(b.id, tmp_path)
+    blk = botfile.probe(path)["bot"]
+    assert blk["state"] == "same" and blk["existing"]["id"] == b.id and blk["edited_here"] is False
+    assert blk["existing"]["name"] == "Rich" and blk["existing"]["face"]["shape"] == "drop"
+    assert botfile.probe(path, light=True)["bot"] == {**blk, "state": "update"}  # the peek: id match, no digest
+    rb = registry.get(b.id)
+    with rb.lock:
+        rb.meta["instructions"] = "changed after the export"
+        rb.save()
+    for light in (True, False):
+        blk = botfile.probe(path, light=light)["bot"]
+        assert blk["state"] == "update" and blk["existing"]["id"] == b.id and blk["edited_here"] is False
+
+
+def test_light_probe_is_the_id_match_alone(monkeypatch, tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, package, store
+
+    b, _r1, _r2 = _rich_bot()
+    path = _export(b.id, tmp_path)
+    other = bm.create("Other", "", "", "x", greet=False)
+    with open(store.state_path(other.id), "w", encoding="utf-8") as f:
+        f.write("{not json")  # another bot's state file: the peek must never read it
+    real_read = botfile._disk_meta
+    read = []
+
+    def spy(bid):
+        read.append(bid)
+        return real_read(bid)
+
+    monkeypatch.setattr(botfile, "_disk_meta", spy)
+    monkeypatch.setattr(package, "public_sha", lambda bid: pytest.fail("the light probe digested a bot"))
+    blk = botfile.probe(path, light=True)["bot"]
+    assert blk == {"state": "update", "edited_here": False,
+                   "existing": {"id": b.id, "name": "Rich", "face": {"shape": "drop", "color": "", "icon": ""}}}
+    assert read == [b.id]
+    # A bot matched only by its origin is not looked for by the peek.
+    old = _container(tmp_path / "o.fusedbot", {"origin": {"bot_id": "0badf00d", "exported_at": "x"}},
+                     [("bot.json", b'{"name": "O"}')])
+    assert botfile.probe(old, light=True)["bot"]["state"] == "new" and read == [b.id]
+    assert os.path.exists(store.state_path(other.id))  # never moved aside
+
+
+def test_full_probe_origin_scan_leaves_a_corrupt_state_file_in_place(tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, store
+
+    b, _r1, _r2 = _rich_bot()
+    path = _container(tmp_path / "o.fusedbot", {"origin": {"bot_id": "0badf00d", "exported_at": "x"}},
+                      [("bot.json", b'{"name": "O"}')])
+    other = bm.create("Other", "", "", "x", greet=False)
+    spath = store.state_path(other.id)
+    with open(spath, "w", encoding="utf-8") as f:
+        f.write("{not json")
+    assert botfile.probe(path)["bot"]["state"] == "new"  # scanned every bot's origin
+    with open(spath, encoding="utf-8") as f:
+        assert f.read() == "{not json"
+    assert not [n for n in os.listdir(os.path.dirname(spath)) if ".corrupt-" in n]
+
+
+def test_update_removes_a_readme_and_icon_the_package_lacks(tmp_path):
+    from fused_render import appfile
+    from fused_render.bots import botfile, registry
+
+    b, _r1, _r2 = _rich_bot()
+    path = _export(b.id, tmp_path)  # no README.md, no icon.svg
+    folder = bpaths.bot_folder(b.id)
+    with open(os.path.join(folder, "README.md"), "wb") as f:
+        f.write(b"# Added here\n")
+    with open(os.path.join(folder, "icon.svg"), "wb") as f:
+        f.write(ICON)
+    assert botfile.probe(path)["bot"]["state"] == "update"
+    out = botfile.install(path, apps=[], memory=False, mode="update", target=b.id)
+    assert out["ok"] and out["warnings"] == []
+    assert not os.path.exists(os.path.join(folder, "README.md")) and not os.path.exists(os.path.join(folder, "icon.svg"))
+    assert botfile.probe(path)["bot"] == {"state": "same", "edited_here": False,
+                                          "existing": {"id": b.id, "name": "Rich",
+                                                       "face": {"shape": "drop", "color": "", "icon": ""}}}
+    # An icon over the cap is not copied: the bot's own goes too (with a warning), so the digests still agree.
+    big = b"<svg>" + b" " * appfile.MAX_ICON_BYTES + b"</svg>"
+    raw = json.dumps({"id": b.id, "name": "Rich"}).encode()
+    fat = _container(tmp_path / "fat.fusedbot", {"origin": {"bot_id": b.id, "exported_at": "x"}},
+                     [("bot.json", raw), ("icon.svg", big)])
+    with open(os.path.join(folder, "icon.svg"), "wb") as f:
+        f.write(ICON)
+    out = botfile.install(fat, apps=[], memory=False, mode="update", target=b.id)
+    assert any(w.startswith("icon.svg: larger than") for w in out["warnings"])
+    assert any("removed to match the package" in w for w in out["warnings"])
+    assert not os.path.exists(os.path.join(folder, "icon.svg"))
+    assert botfile.probe(fat)["bot"]["state"] == "same"
+    registry.get(b.id)  # still loads
+
+
+def test_playbook_limits_refuse_the_package_everywhere(monkeypatch, tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, store
+
+    monkeypatch.setattr(bm.Bot, "greet", lambda self: None)
+    ok = b"# P\ntrigger: p\n\nsteps\n"
+    many = _container(tmp_path / "many.fusedbot", {},
+                      [("bot.json", b'{"name": "Many"}')]
+                      + [(f"skills/p{i}.md", ok) for i in range(bm.Bot.SKILL_MAX + 1)])
+    long = _container(tmp_path / "long.fusedbot", {},
+                      [("bot.json", b'{"name": "Long"}'),
+                       ("skills/p.md", b"# P\ntrigger: p\n\n" + b"x" * (bm.Bot.SKILL_BODY_CAP + 1) + b"\n")])
+    for path, why in ((many, "a bot holds at most"), (long, "characters of steps")):
+        with pytest.raises(botfile.BotFileError, match=why):
+            botfile.probe(path)
+        with pytest.raises(botfile.BotFileError, match=why):
+            botfile.install(path, apps=[], memory=False)
+    with pytest.raises(botfile.BotFileError, match="a bot holds at most"):
+        botfile.probe(many, light=True)  # the count is index-only
+    assert store.list_ids() == []  # refused before anything was written
+    b, _r1, _r2 = _rich_bot()
+    long_up = _container(tmp_path / "long2.fusedbot", {"origin": {"bot_id": b.id, "exported_at": "x"}},
+                         [("bot.json", json.dumps({"id": b.id, "name": "Rich"}).encode()),
+                          ("skills/p.md", b"# P\ntrigger: p\n\n" + b"x" * (bm.Bot.SKILL_BODY_CAP + 1) + b"\n")])
+    with pytest.raises(botfile.BotFileError, match="characters of steps"):
+        botfile.install(long_up, apps=[], memory=False, mode="update", target=b.id)
+    assert os.listdir(os.path.join(bpaths.bot_folder(b.id), "skills")) == ["keep.md"]  # untouched
+
+
+def test_playbook_names_equal_but_for_case_install_once(monkeypatch, tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, package
+
+    monkeypatch.setattr(bm.Bot, "greet", lambda self: None)
+    path = _container(tmp_path / "case.fusedbot", {},
+                      [("bot.json", b'{"id": "c0ffee00", "name": "Case"}'), ("skills/Greet.md", b"# A\ntrigger: a\n\nfirst\n"),
+                       ("skills/greet.md", b"# B\ntrigger: b\n\nsecond\n")])
+    out = botfile.install(path, apps=[], memory=False)
+    assert any("differs from another only by case" in w and "greet" in w for w in out["warnings"])
+    skills = os.listdir(os.path.join(bpaths.bot_folder(out["bot_id"]), "skills"))
+    assert skills == ["Greet.md"]  # the first in sorted order
+    assert botfile._package_public_sha(path, botfile._index(path)) == package.public_sha(out["bot_id"])
+    out = botfile.install(path, apps=[], memory=False, mode="update", target=out["bot_id"])
+    assert out["ok"] and os.listdir(os.path.join(bpaths.bot_folder(out["bot_id"]), "skills")) == ["Greet.md"]
+
+
+def test_update_replaces_the_public_half_and_keeps_the_private(tmp_path):
+    from fused_render.bots import botfile, package, registry, store
+
+    b, r1, r2 = _rich_bot()
+    path = _export(b.id, tmp_path, memory=True)
+    rb = registry.get(b.id)
+    # Local edits after the export: every one of them a public change the update must undo, plus private state
+    # it must keep.
+    with open(os.path.join(rb.skills_dir, "extra.md"), "wb") as f:
+        f.write(b"# Extra\ntrigger: extra\n\nNot in the package.\n")
+    with open(os.path.join(rb.skills_dir, "keep.md"), "wb") as f:
+        f.write(b"# Keep\ntrigger: keep it\n\nEdited here.\n")
+    rb.routine_update(r2, delete=True)
+    r3 = rb.routine_add("a local one", "interval", minutes=120)["id"]
+    with rb.lock:
+        rb.meta["instructions"] = "edited here"
+        rb.meta["face"] = {"shape": "hex", "color": "", "icon": ""}
+        row = next(r for r in rb.meta["routines"] if r["id"] == r1)
+        row.update(enabled=True, last=1234.0, fails=2)
+        rb.meta["trusted_apps"] = ["mine"]
+        rb.save()
+    rb.set_memory("local memory")
+    browser = rb.meta["browser_id"]
+    with open(store.events_path(b.id), "rb") as f:
+        events = f.read()
+
+    out = botfile.install(path, apps=[], memory=False, mode="update", target=b.id)
+    assert out["ok"] and out["updated"] is True and out["bot_id"] == b.id
+    assert store.list_ids() == [b.id]  # no second bot
+    rb = registry.get(b.id)
+    assert rb.meta["instructions"] == "the exported instructions"
+    assert rb.meta["face"]["shape"] == "drop"
+    assert sorted(os.listdir(rb.skills_dir)) == ["keep.md"]  # extra.md deleted: the folder is replaced
+    with open(os.path.join(rb.skills_dir, "keep.md"), "rb") as f:
+        assert f.read() == SKILL_KEEP
+    assert rb.memory().strip() == "local memory"  # memory unticked: kept
+    with open(store.events_path(b.id), "rb") as f:
+        assert f.read() == events
+    assert rb.meta["trusted_apps"] == ["mine"] and rb.meta["browser_id"] == browser
+    by_id = {r["id"]: r for r in rb.meta["routines"]}
+    assert set(by_id) == {r1, r2} and r3 not in by_id  # the local routine is gone
+    assert by_id[r1]["enabled"] is True and by_id[r1]["last"] == 1234.0 and by_id[r1]["fails"] == 2
+    assert by_id[r2]["enabled"] is False and by_id[r2]["time"] == "08:30"  # back from the package, paused
+    assert rb.meta["origin"]["public_sha"] == package.public_sha(b.id)
+    assert botfile.probe(path)["bot"]["state"] == "same"
+
+    out = botfile.install(path, apps=[], memory=True, mode="update", target=b.id)
+    assert out["ok"] and registry.get(b.id).memory().strip() == "exported memory"  # ticked: replaced
+    # The per-row Retry (re-install mode) accepts an updated bot: origin was restamped with this package.
+    assert botfile.install(path, apps=[], memory=False, bot_id=b.id)["ok"]
+
+
+def test_install_keeps_the_package_id_when_it_is_free(monkeypatch, tmp_path):
+    from fused_render.bots import botfile, package, registry
+
+    b, _r1, _r2 = _rich_bot()
+    path = _export(b.id, tmp_path)
+    _second_machine(tmp_path, monkeypatch)
+    assert botfile.probe(path)["bot"] == {"state": "new", "existing": None, "edited_here": False}
+    out = botfile.install(path, apps=[], memory=False)
+    assert out["bot_id"] == b.id and out["updated"] is False
+    nb = registry.get(b.id)
+    assert nb.meta["origin"]["bot_id"] == b.id
+    assert nb.meta["origin"]["public_sha"] == package.public_sha(b.id)  # a fresh install is not "edited here"
+    assert botfile.probe(path)["bot"]["state"] == "same"
+
+
+def test_new_on_a_taken_id_mints_and_leaves_the_original_alone(monkeypatch, tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, registry, store
+
+    monkeypatch.setattr(bm.Bot, "greet", lambda self: None)  # no greeting thread outliving the test
+    b, _r1, _r2 = _rich_bot()
+    path = _export(b.id, tmp_path)
+    rb = registry.get(b.id)
+    with rb.lock:
+        rb.meta["instructions"] = "mine"
+        rb.save()
+    out = botfile.install(path, apps=[], memory=False, mode="new")
+    assert out["bot_id"] != b.id and sorted(store.list_ids()) == sorted([b.id, out["bot_id"]])
+    assert registry.get(b.id).meta["instructions"] == "mine"
+    assert registry.get(out["bot_id"]).meta["instructions"] == "the exported instructions"
+
+
+def test_edited_install_is_diverged_and_still_updates(monkeypatch, tmp_path):
+    from fused_render.bots import botfile, registry
+
+    b, _r1, _r2 = _rich_bot()
+    path = _export(b.id, tmp_path)
+    _second_machine(tmp_path, monkeypatch)
+    nb = registry.get(botfile.install(path, apps=[], memory=False)["bot_id"])
+    with nb.lock:
+        nb.meta["instructions"] = "edited on the second machine"
+        nb.save()
+    blk = botfile.probe(path)["bot"]
+    assert blk["state"] == "diverged" and blk["edited_here"] is True and blk["existing"]["id"] == nb.id
+    out = botfile.install(path, apps=[], memory=False, mode="update", target=nb.id)
+    assert out["updated"] and registry.get(nb.id).meta["instructions"] == "the exported instructions"
+    assert botfile.probe(path)["bot"] == {**blk, "state": "same", "edited_here": False}
+
+
+def test_a_minted_id_bot_matches_by_origin(monkeypatch, tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, registry
+
+    b, _r1, _r2 = _rich_bot()
+    path = _export(b.id, tmp_path)
+    _second_machine(tmp_path, monkeypatch)
+    old = bm.create("Older build", "", "", "minted", greet=False)  # an earlier build minted a fresh id
+    with old.lock:
+        old.meta["origin"] = {"bot_id": b.id, "exported_at": "2026-11-01T00:00:00Z", "package_sha": "x"}
+        old.save()
+    blk = botfile.probe(path)["bot"]
+    assert blk["state"] == "update" and blk["existing"]["id"] == old.id and blk["edited_here"] is False
+    out = botfile.install(path, apps=[], memory=False, mode="update", target=old.id)
+    assert out["bot_id"] == old.id and registry.get(old.id).meta["instructions"] == "the exported instructions"
+    assert botfile.probe(path)["bot"]["state"] == "same"
+
+
+def test_a_running_bot_is_not_updated_and_super_bot_never_matches(tmp_path):
+    from fused_render.bots import bot as bm
+    from fused_render.bots import botfile, registry
+
+    b, _r1, _r2 = _rich_bot()
+    path = _export(b.id, tmp_path)
+    rb = registry.get(b.id)
+    rb.meta["status"] = "running"
+    try:
+        with pytest.raises(botfile.BotFileError, match="stop Rich before updating it"):
+            botfile.install(path, apps=[], memory=False, mode="update", target=b.id)
+    finally:
+        rb.meta["status"] = "idle"
+    with pytest.raises(botfile.BotFileError, match="did not come from this package"):
+        botfile.install(path, apps=[], memory=False, mode="update", target="0000beef")
+
+    sb = bm.create(kind="super", greet=False)
+    forged = _container(tmp_path / "forged.fusedbot", {"origin": {"bot_id": sb.id, "exported_at": "x"}},
+                        [("bot.json", json.dumps({"id": sb.id, "name": "Not super"}).encode())])
+    assert botfile.probe(forged, light=True)["bot"]["state"] == "new"
+    with pytest.raises(botfile.BotFileError, match="did not come from this package"):
+        botfile.install(forged, apps=[], memory=False, mode="update", target=sb.id)
+
+
+def test_public_digest_of_a_package_equals_its_bot(tmp_path):
+    from fused_render.bots import botfile, package
+
+    b, _r1, _r2 = _rich_bot()
+    folder = bpaths.bot_folder(b.id)
+    with open(os.path.join(folder, "README.md"), "wb") as f:
+        f.write(b"# Rich\nIt does things.\n")
+    with open(os.path.join(folder, "icon.svg"), "wb") as f:
+        f.write(ICON)
+    path = _export(b.id, tmp_path, memory=True)
+    assert botfile._package_public_sha(path, botfile._index(path)) == package.public_sha(b.id)
+    with open(os.path.join(folder, "README.md"), "ab") as f:
+        f.write(b"more\n")
+    assert botfile._package_public_sha(path, botfile._index(path)) != package.public_sha(b.id)
+
+
+def test_install_route_checks_mode_and_target(client):
+    status, _h, raw = client.post("/api/botfile/install", {"path": "/x.fusedbot", "apps": [], "mode": "merge"})
+    assert status == 400 and b"mode must be" in raw
+    status, _h, raw = client.post("/api/botfile/install", {"path": "/x.fusedbot", "apps": [], "mode": "update"})
+    assert status == 400 and b"target must be" in raw

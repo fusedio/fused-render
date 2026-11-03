@@ -9,19 +9,23 @@
 // then navigates here) all land on one page.
 //
 // Nothing in the file runs here. The page reads the read-only probe (GET /api/botfile/install), and its one action
-// POSTs the install, which installs the ticked apps first and then creates a NEW bot (import never updates an
-// existing one), its routines paused. On a clean success the page opens the bot; with a failed app or a server
-// warning it stays open, so they are read, and the pill opens the bot.
+// POSTs the install, which installs the ticked apps first and then creates a new bot, its routines paused — or, when
+// the probe found this package's bot already on this Mac (keyed by its id, UPDATE_SPEC §1) and the reader kept
+// "Update it", updates that bot in place (mode `update`, `target` its id). On a clean success the page opens the bot
+// (the existing one after an update); with a failed app or a server warning it stays open, so they are read, and
+// the pill opens the bot.
 //
 // Retries never make a second bot. Every install POST carries the page mount's `request_id` (the server dedups on
 // it and answers a repeat with the FIRST result, without comparing the body), so the first submit pins its
-// selection (apps + memory) in state, the checkboxes lock from then on, and the error-phase Retry pill re-sends
+// selection (apps + memory + mode/target) in state, the checkboxes and the Update/New radio lock from then on, and
+// the error-phase Retry pill re-sends
 // exactly that body. A row that failed after the bot exists has its own Retry: it POSTs only that folder with the
 // bot's `bot_id` (the server adds the app to that bot) and a fresh `request_id`, then merges the returned row and
 // its warnings.
 //
-// Permissions never travel (botfile._public_fields): whatever the file says, the new bot gets the creation defaults
-// (approval ask, build_access scoped, terminal off), so the page shows those, never the packaged values.
+// Permissions never travel (botfile._public_fields): whatever the file says, a new bot gets the creation defaults
+// (approval ask, build_access scoped, terminal off), so the page shows those, never the packaged values; an updated
+// bot keeps its own.
 //
 // Styling: the blocks come from @platform/ui/appstore; the "Comes with" list borrows three of their classes from
 // styles/marketplace.css (loaded by shell.css) — `as-info` (the aside section), `as-side-title` (its heading),
@@ -49,20 +53,26 @@ import {
   type TrustItem,
 } from "@platform/ui/appstore";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
 import { basename, dirname } from "@platform/lib/format";
 import { useDocumentTitle } from "@platform/lib/hooks";
 import { navReach } from "@platform/lib/nav-history";
 import { notify } from "@platform/lib/notifications";
 import { IS_EMBED, IS_TOP_EMBED, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { botHref } from "../routes";
+import { Face } from "../components/Face";
 import {
+  botMatch,
+  defaultMode,
   iconUrl,
   install,
+  modeFields,
   newRequestId,
   probe as getProbe,
   type BotFileApp,
   type BotFileAppResult,
   type BotFileInstallResult,
+  type BotFileMode,
   type BotFileProbe,
   visibleWarnings,
 } from "./botfile";
@@ -150,14 +160,17 @@ type Phase =
   | { kind: "done"; result: BotFileInstallResult; firstHadSettings: boolean; rowWarnings?: Record<string, string[]> }
   | { kind: "error"; message: string };
 
-/** The selection the first submit sent: every Retry with the same `request_id` re-sends exactly this. */
-type Sent = { apps: string[]; memory: boolean };
+/** The selection the first submit sent: every Retry with the same `request_id` re-sends exactly this (the server
+ *  answers a repeat with the first result, so its `mode` must not drift either). */
+type Sent = { apps: string[]; memory: boolean; mode: BotFileMode; target?: string };
 
 export function BotFilePage({ path }: { path: string }) {
   const [probe, setProbe] = useState<BotFileProbe | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [memory, setMemory] = useState(false);
+  /** Update the bot already on this Mac, or install as a new one (only offered when the probe found a match). */
+  const [chosenMode, setChosenMode] = useState<BotFileMode>("new");
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   /** Rows whose per-row Retry is in flight. */
   const [retrying, setRetrying] = useState<Set<string>>(new Set());
@@ -185,9 +198,11 @@ export function BotFilePage({ path }: { path: string }) {
         setProbe(p);
         setError(null);
         // The probe's ticks are the defaults; memory is on when the file carries it — the person installing chose
-        // to open a file that has it.
+        // to open a file that has it — for a new bot; an update keeps the bot's own memory unless asked.
+        const m = defaultMode(botMatch(p));
         setTicked(new Set(p.apps.filter((a) => a.ticked && a.tickable).map((a) => a.folder)));
-        setMemory(p.memory);
+        setChosenMode(m);
+        setMemory(p.memory && m === "new");
       })
       .catch((e: Error) => {
         if (live) setError(e.message || "Couldn't read this bot package");
@@ -224,8 +239,18 @@ export function BotFilePage({ path }: { path: string }) {
   const effort = str(pub.effort);
   const routines = Array.isArray(pub.routines) ? pub.routines.length : 0;
   const instructions = str(pub.instructions).trim();
+  const match = botMatch(p);
   // From the first submit on the selection is the pinned one, in the error phase too (a Retry resends it).
   const busy = sent !== null || phase.kind === "installing" || phase.kind === "done";
+  const mode: BotFileMode = sent?.mode ?? modeFields(chosenMode, match).mode;
+  const updating = mode === "update";
+  const verb = updating ? "Updated" : "Installed";
+
+  // Switching the radio resets memory to that mode's default (on for a new bot, off for an update).
+  const chooseMode = (v: BotFileMode) => {
+    setChosenMode(v);
+    setMemory(p.memory && v === "new");
+  };
   const results = phase.kind === "done" ? new Map(phase.result.apps.map((r) => [r.folder, r])) : null;
   const warnings =
     phase.kind === "done"
@@ -247,16 +272,24 @@ export function BotFilePage({ path }: { path: string }) {
     const body: Sent = sent ?? {
       apps: p.apps.filter((a) => a.tickable && ticked.has(a.folder)).map((a) => a.folder),
       memory: p.memory && memory,
+      ...modeFields(chosenMode, match),
     };
     if (!sent) setSent(body);
     setPhase({ kind: "installing" });
     try {
-      const r = await install(path, { apps: body.apps, memory: body.memory, request_id: requestId.current });
+      const r = await install(path, {
+        apps: body.apps,
+        memory: body.memory,
+        mode: body.mode,
+        ...(body.target ? { target: body.target } : {}),
+        request_id: requestId.current,
+      });
       setPhase({ kind: "done", result: r, firstHadSettings: r.apps.some((a) => a.state === "settings") });
       const failed = r.apps.filter((a) => !a.ok).length;
       const notInstalled = r.apps.filter((a) => !a.ok && a.state !== "settings").length;
+      const did = body.mode === "update" ? "updated" : "installed";
       notify({
-        title: notInstalled ? `${name} installed · ${notInstalled} app${notInstalled === 1 ? "" : "s"} did not install` : `${name} installed`,
+        title: notInstalled ? `${name} ${did} · ${notInstalled} app${notInstalled === 1 ? "" : "s"} did not install` : `${name} ${did}`,
         tone: "info",
       });
       // Every app landed and nothing to say: a beat for the pill's check, then the bot. Otherwise stay, so the
@@ -267,7 +300,7 @@ export function BotFilePage({ path }: { path: string }) {
     }
   };
 
-  // One failed row again, into the bot the first install made: only that folder (one of the pinned selection's: a
+  // One failed row again, into the bot the first install made (or updated): only that folder (one of the pinned selection's: a
   // failed row comes from the pinned install's results), never the memory (the bot has it already, or was installed
   // without it), a fresh request id (this is a new request, not a resend). Its warnings replace that row's previous
   // Retry's, so one a later Retry fixed goes away. The answer row is matched by the index folder we sent; a lone row
@@ -302,8 +335,12 @@ export function BotFilePage({ path }: { path: string }) {
   let pill: ActionPillProps;
   let note: ReactNode;
   if (phase.kind === "installing") {
-    pill = { state: "progress", progress: null, label: "Installing" };
-    note = sent?.apps.length ? "Installing its apps, then the bot…" : "Creating the bot…";
+    pill = { state: "progress", progress: null, label: updating ? "Updating" : "Installing" };
+    note = sent?.apps.length
+      ? `Installing its apps, then ${updating ? "updating" : "creating"} the bot…`
+      : updating
+        ? "Updating the bot…"
+        : "Creating the bot…";
   } else if (phase.kind === "done") {
     const id = phase.result.bot_id;
     const failed = phase.result.apps.filter((a) => !a.ok && a.state !== "settings").length;
@@ -313,7 +350,7 @@ export function BotFilePage({ path }: { path: string }) {
       failed || unlinked || warnings.length ? (
         <span className="is-warn">
           {[
-            "Installed",
+            verb,
             failed ? `${failed} app${failed === 1 ? "" : "s"} did not install` : "",
             unlinked ? `${unlinked} app${unlinked === 1 ? "" : "s"} not added to the bot` : "",
             ...warnings,
@@ -322,14 +359,14 @@ export function BotFilePage({ path }: { path: string }) {
             .join(" · ")}
         </span>
       ) : (
-        <b>Installed · opening…</b>
+        <b>{verb} · opening…</b>
       );
   } else if (phase.kind === "error") {
     pill = { state: "retry", title: phase.message, onClick: () => void run() };
     note = <span className="is-error">{phase.message}</span>;
   } else {
-    pill = { state: "get", emphasis: "filled", wide: true, label: "Install bot", onClick: () => void run() };
-    note = "Installs as a new bot";
+    pill = { state: "get", emphasis: "filled", wide: true, label: updating ? "Update bot" : "Install bot", onClick: () => void run() };
+    note = updating ? `Updates ${match.existing?.name || "the bot"} in place` : "Installs as a new bot";
   }
 
   // ---- information strip ----
@@ -350,11 +387,11 @@ export function BotFilePage({ path }: { path: string }) {
   const rows: InfoListRow[] = [
     { label: "Model", value: model || "Default" },
     { label: "Effort", value: effort || "Default" },
-    // Not the file's values: permissions are never imported (see the header).
-    { label: "Approval", value: DEFAULT_APPROVAL },
-    { label: "Build access", value: DEFAULT_BUILD_ACCESS },
-    { label: "Terminal", value: DEFAULT_TERMINAL },
-    { label: "Routines", value: routines ? `${routines}, installed paused` : "None" },
+    // Not the file's values: permissions are never imported (see the header); an updated bot keeps its own.
+    { label: "Approval", value: updating ? "Unchanged" : DEFAULT_APPROVAL },
+    { label: "Build access", value: updating ? "Unchanged" : DEFAULT_BUILD_ACCESS },
+    { label: "Terminal", value: updating ? "Unchanged" : DEFAULT_TERMINAL },
+    { label: "Routines", value: routines ? (updating ? `${routines}, new ones paused` : `${routines}, installed paused`) : "None" },
   ];
 
   // The apps the bot will use without asking: the backend trusts exactly the file's apps that install OK, so before
@@ -365,7 +402,7 @@ export function BotFilePage({ path }: { path: string }) {
       key: "approval",
       icon: <ShieldCheck size={16} strokeWidth={2} />,
       title: "Asks before acting",
-      detail: "Permissions are not imported; the new bot starts with the defaults.",
+      detail: updating ? "Permissions are not imported; the bot keeps its own." : "Permissions are not imported; the new bot starts with the defaults.",
       tone: "ok",
     },
     {
@@ -377,13 +414,21 @@ export function BotFilePage({ path }: { path: string }) {
     {
       key: "browser",
       icon: <Globe size={16} strokeWidth={2} />,
-      title: "Gets a fresh browser with no logins",
-      detail: "Sign in to the sites it needs from its own window.",
+      title: updating ? "Keeps its browser and logins" : "Gets a fresh browser with no logins",
+      detail: updating ? undefined : "Sign in to the sites it needs from its own window.",
     },
     {
       key: "memory",
       icon: <Brain size={16} strokeWidth={2} />,
-      title: p.memory ? (memory ? "Memory: included" : "Memory: left out") : "Memory: not in this file",
+      title: updating
+        ? p.memory && memory
+          ? "Memory: replaced with the package's"
+          : "Memory: keeps its own"
+        : p.memory
+          ? memory
+            ? "Memory: included"
+            : "Memory: left out"
+          : "Memory: not in this file",
       detail: p.memory ? "What its author's bot remembered." : undefined,
     },
   ];
@@ -391,17 +436,60 @@ export function BotFilePage({ path }: { path: string }) {
     trust.push({
       key: "routines",
       icon: <CalendarClock size={16} strokeWidth={2} />,
-      title: `${routines} routine${routines === 1 ? "" : "s"}, paused`,
-      detail: "None run until you turn them on.",
+      title: updating ? `${routines} routine${routines === 1 ? "" : "s"}, new ones paused` : `${routines} routine${routines === 1 ? "" : "s"}, paused`,
+      detail: updating ? "Ones it already has stay on or off as they are." : "None run until you turn them on.",
     });
   }
 
   const memoryToggle = p.memory ? (
     <label className="flex cursor-pointer items-center gap-2 text-[13px]">
       <Checkbox checked={memory} disabled={busy} onCheckedChange={(c) => setMemory(!!c)} />
-      Include memory
+      {updating ? "Replace its memory with the package's" : "Include memory"}
     </label>
   ) : undefined;
+
+  // The bot is already here: say so, and let the reader update it or install a second one. The same card chrome as
+  // the trust card below (a TrustCard with one row: the existing bot's face where the glyph goes).
+  const ex = match.existing;
+  const alreadyHere = ex ? (
+    <TrustCard
+      title={null}
+      items={[
+        {
+          key: "existing",
+          icon: (
+            <span className="block size-7 [&>svg]:block [&>svg]:size-full">
+              <Face b={{ id: ex.id, name: ex.name, face: ex.face }} />
+            </span>
+          ),
+          title: (
+            <>
+              <span className="font-normal">Already on this Mac as </span>
+              {ex.name}
+            </>
+          ),
+          detail:
+            match.state === "same"
+              ? "Already up to date."
+              : match.state === "diverged"
+                ? "Edited here since it was installed; updating replaces those edits."
+                : undefined,
+        },
+      ]}
+      footer={
+        <RadioGroup value={mode} disabled={busy} onValueChange={(v) => chooseMode(v as BotFileMode)} className="gap-2">
+          <label className="flex cursor-pointer items-center gap-2 text-[13px] text-foreground">
+            <RadioGroupItem value="update" />
+            Update it
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-[13px] text-foreground">
+            <RadioGroupItem value="new" />
+            Install as a new bot
+          </label>
+        </RadioGroup>
+      }
+    />
+  ) : null;
 
   const comesWith =
     p.apps.length > 0 ? (
@@ -508,6 +596,7 @@ export function BotFilePage({ path }: { path: string }) {
           <>
             <InfoList rows={rows} />
             {comesWith}
+            {alreadyHere}
             <TrustCard items={trust} footer={memoryToggle} />
           </>
         }

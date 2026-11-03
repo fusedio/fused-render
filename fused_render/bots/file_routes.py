@@ -26,7 +26,7 @@ from fused_render.server.common import _error, _require_fused
 router = APIRouter()
 
 UPLOAD_MAX_BYTES = 1 << 30  # package.PACKAGE_MAX_BYTES: an upload is a whole package
-# The install POST's JSON body ({path, apps: [folder], memory, request_id, bot_id}): a few hundred bytes in
+# The install POST's JSON body ({path, apps: [folder], memory, mode, target, request_id, bot_id}): a few hundred bytes in
 # practice, so a fixed cap keeps an unbounded body off the event loop (read and json.loads both run there).
 INSTALL_BODY_MAX_BYTES = 64 << 10
 EXT = ".fusedbot"
@@ -153,10 +153,12 @@ def _installed(row) -> bool:
 
 @router.post("/api/botfile/install")
 async def botfile_install(request: Request, x_fused: str | None = Header(default=None)):
-    """Install the package: body `{path, apps: [folder], memory: bool, bot_id?, request_id?}` -> `{ok, bot_id,
-    apps: [{folder, ok, state, error?, path?}], warnings: [str]}` (botfile.install; state "settings" = the app
-    installed but the bot was not updated, retried like a failed row). `bot_id` is re-install mode (the
-    page's per-row Retry: no new bot); `request_id` makes the POST idempotent. Runs in the bots owner;
+    """Install the package: body `{path, apps: [folder], memory: bool, mode?: "new"|"update", target?, bot_id?,
+    request_id?}` -> `{ok, bot_id, updated, apps: [{folder, ok, state, error?, path?}], warnings: [str]}`
+    (botfile.install; state "settings" = the app installed but the bot was not updated, retried like a failed
+    row). `mode` "update" updates `target` (the probe's `bot.existing.id`) in place, `updated: true`; absent =
+    "new". `bot_id` is re-install mode (the page's per-row Retry: no new bot, whatever the mode); `request_id`
+    makes the POST idempotent. Runs in the bots owner;
     forwarded there from any other process with the body unchanged, so the owner is the one that dedups."""
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -181,6 +183,14 @@ async def botfile_install(request: Request, x_fused: str | None = Header(default
     request_id = body.get("request_id") or None
     if bot_id is not None and not (isinstance(bot_id, str) and re.fullmatch(r"[0-9a-f]{1,32}", bot_id)):
         return _error("bot_id must be a bot id")
+    mode = body.get("mode") or "new"
+    if mode not in ("new", "update"):
+        return _error("mode must be 'new' or 'update'")
+    target = body.get("target") or None
+    if mode == "update" and not (isinstance(target, str) and re.fullmatch(r"[0-9a-f]{1,32}", target)):
+        return _error("target must be the id of the bot to update")
+    if mode == "new":
+        target = None
     from fused_render.bots import tools
     from fused_render.bots.routes import FORWARD_TIMEOUT_S
     apps = [a for a in apps if isinstance(a, str)]
@@ -213,7 +223,8 @@ async def botfile_install(request: Request, x_fused: str | None = Header(default
         return _error("request_id must be 1-64 letters, digits, '-' or '_'")
     try:
         out = await asyncio.to_thread(bf.install, path, apps=apps,
-                                      memory=body.get("memory") is True, bot_id=bot_id, request_id=request_id,
+                                      memory=body.get("memory") is True, mode=mode, target=target,
+                                      bot_id=bot_id, request_id=request_id,
                                       wait_s=budget)
     except registry.NotOwner as e:  # lost the flock between the check and the build
         return _error(str(e), 503)
