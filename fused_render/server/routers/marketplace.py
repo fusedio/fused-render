@@ -34,6 +34,9 @@ Answers the frontend reads (shapes in marketplace.py):
 - POST /check `{slug?}` → `{status: "ok", catalog: {ok, stale, fetched_at,
   message}, blocklist: {ok, checked_at, count}, enforced: [..], sync:
   <the sync's answer>|null, app: AppEntry|null}`.
+- GET /pulse → `{apps: AppEntry[]}` — the installed entries for the
+  sidebar's Community dot, over a catalog allowed to age out and rebuild in
+  the background (`installed_list` never rebuilds).
 - GET /blocklist → `{blocked: [{slug, commit, level, reason, what_to_do,
   at}], checked_at, fetched_at, generated_at, stale, status, message}`.
 """
@@ -174,6 +177,14 @@ def api_marketplace_installed():
     """Every Marketplace install in the workspace (catalog-backed where the
     catalog still lists it)."""
     return marketplace.installed_list()
+
+
+@router.get("/api/marketplace/pulse")
+def api_marketplace_pulse():
+    """The sidebar's Community dot: the installed entries over a catalog
+    that rebuilds when stale (in the background), so a new release is
+    noticed without the store being open."""
+    return marketplace.pulse()
 
 
 @router.post("/api/marketplace/adopt")

@@ -25,6 +25,7 @@ import { getJson, postJson } from "@platform/lib/api";
 import { BACKEND_CANVAS_BASE, listingPageUrl } from "@platform/lib/backend-canvas";
 import { notify } from "@platform/lib/notifications";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { publishMarketplace } from "@platform/lib/marketplacePulse";
 import { encodeFsPathSegments, navigateUrl, urlForFsPath, viewUrlForFsPath } from "@platform/lib/router";
 
 // -- Wire types (the API contract) -------------------------------------------
@@ -521,6 +522,9 @@ export function refreshCatalog(opts: { force?: boolean; again?: boolean } = {}):
           reconciled.add(slug);
         }
         setSnapshot({ catalog: c, error: null, loading: false });
+        // The sidebar's Community dot reads the same rows (marketplacePulse):
+        // an Update that just landed clears it on this very read.
+        publishMarketplace(c.apps);
         emitJobs();
       }
     })
