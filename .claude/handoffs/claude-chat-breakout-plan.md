@@ -109,3 +109,9 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 ### Task 2
 - Policy is `permission_server._breakout_policy(tool_name, tool_input, handoff_dir=None)`, run first in `_handle_approve` (before `_chat_allows`, so an "always approve" grant cannot widen a breakout). The allow result is built inline in the same shape as `_permission_result`'s plain allow rather than through it (it needs a decision dict with no scope, and the deny has a fixed message).
 - Suite-wide: the file runs ~30 s in whole; the 9 new red tests took 93 s before the fix because each waited the 10 s response timeout.
+
+### Task 3 (frontend controller + triggers)
+- Per-message breakout hides turn X and everything after it (same as the existing fork's `--resume-session-at` semantics); implemented by reusing `state.fork` so `fork_at` is read from the parked uuid.
+- Controller breakout posture: `deps.breakout`/`deps.breakoutAt`; first start sends `breakout:"1"`, no live_host probe, never adopts the parent's live run; once spent, every start/send carries `breakout:"resume"`. A failed first start leaves it unspent.
+- `ClaudeChat` skips queue admission and the fork notice in breakout posture; `onBreakout` is available while a run is active (unlike `onFork`).
+- Breakout button hangs one lane left of the fork button (net zero flex width).

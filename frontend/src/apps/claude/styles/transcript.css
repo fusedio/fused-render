@@ -194,6 +194,42 @@
     transition: none;
   }
 }
+/* BREAKOUT FROM HERE: the fork button's twin, hung one lane further left. Its
+   net flex size is zero too (-48 + 20 + 28), so nothing moves. */
+.chat-root .turn.user .turn-breakout {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0 28px 0 -48px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--c-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 90ms ease-out, color 90ms ease-out;
+}
+.chat-root .turn.user:hover .turn-breakout,
+.chat-root .turn.user .turn-breakout:focus-visible {
+  opacity: 1;
+}
+.chat-root .turn.user .turn-breakout:hover,
+.chat-root .turn.user .turn-breakout:focus-visible {
+  color: var(--c-fg);
+}
+.chat-root .turn.user .turn-breakout:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.user .turn-breakout {
+    transition: none;
+  }
+}
 .chat-root .turn.user .bubble {
   background: var(--c-bubble-user);
   border-radius: 18px 18px 4px 18px;

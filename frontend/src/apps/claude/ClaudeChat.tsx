@@ -48,7 +48,7 @@ import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
-import type { SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
+import type { BreakoutRequest, SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
 import type { PermissionMode } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
@@ -309,6 +309,15 @@ export interface ClaudeChatProps {
    *  sidebar's SideCloseButton, same glyph, same place (the header's left
    *  end, on the seam the pane collapses toward). Absent: no button. */
   onHidePane?: () => void;
+  /** BREAKOUT POSTURE: this chat is a research-only side chat forked from the
+   *  session in `params` (see `ControllerDeps.breakout`). It never joins the
+   *  folder queue and never shows the fork notice. */
+  breakout?: boolean;
+  /** With `breakout`: the parent user message's uuid to fork at (absent = tip). */
+  breakoutAt?: string;
+  /** "Breakout from here" / the composer's Breakout button: hand the request
+   *  to the shell, which opens the card. Absent: no Breakout seats. */
+  onBreakout?: (req: BreakoutRequest) => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -1219,6 +1228,8 @@ function ChatBody(props: ChatBodyProps) {
       createChatController({
         file,
         params,
+        ...(props.breakout ? { breakout: true } : {}),
+        ...(props.breakout && props.breakoutAt ? { breakoutAt: props.breakoutAt } : {}),
         // The transcript restore takes its own road (owner E2E R1, F5):
         // `/api/claude-sessions/history`. See `fetchHistory`.
         history: (f, s) => fetchHistory(f, s),
@@ -2101,7 +2112,7 @@ function ChatBody(props: ChatBodyProps) {
         // screen by now: either way this is the moment the host may uncover us.
         markReady();
         if (runId) await controller.resumeRun(runId);
-        else if (sessionId) {
+        else if (sessionId && !props.breakout) {
           // NO `run` ON THE URL and a session that may well be busy: ask the
           // session itself. `openSession` above already started this watch, so
           // this covers the one path that skips it — a boot handed a
@@ -2953,7 +2964,7 @@ function ChatBody(props: ChatBodyProps) {
           // EVERY SEND THAT REACHES HERE IS A NEW TURN: a line typed while this
           // chat's own turn runs waits in the outbox and comes through here only
           // once the run is idle, so the admission asks for each one.
-          if (queueEnabled()) {
+          if (queueEnabled() && !props.breakout) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
             // `follow_of` were asked a round trip apart could carry both — a
@@ -3466,6 +3477,21 @@ function ChatBody(props: ChatBodyProps) {
       setStranded({ text, seq: strandSeq.current });
     },
     [controller],
+  );
+
+  /** "Breakout from here" (Transcript `onBreakout`): hand the shell the chosen
+   *  message's uuid, resolved off the controller's turns exactly as the fork
+   *  does. Unlike the fork it is allowed while a run is active — the breakout
+   *  is its own run. */
+  const onBreakoutTurn = useCallback(
+    (turnKey: string) => {
+      const st = controller.getState();
+      const turn = st.turns.find((t) => t.key === turnKey);
+      const sid = st.sessionId || params.get("session_id") || "";
+      if (!props.onBreakout || !sid || !file || !turn || turn.role !== "user" || !turn.uuid) return;
+      props.onBreakout({ sessionId: sid, file, forkAt: turn.uuid, forkKey: turn.key });
+    },
+    [controller, params, file, props.onBreakout],
   );
 
   /**
@@ -5418,6 +5444,7 @@ function ChatBody(props: ChatBodyProps) {
               onAnchorSpent={onAnchorSpent}
               {...(debugSent ? { onShowSent: setSent } : {})}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
+              {...(chatBackend === "claude" && props.onBreakout ? { onBreakout: onBreakoutTurn } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
@@ -5559,7 +5586,7 @@ function ChatBody(props: ChatBodyProps) {
             />
             {/* FORK NOTICE: the next send starts a NEW session from the message
                 above; Cancel puts the hidden turns back. */}
-            {state.fork ? (
+            {state.fork && !props.breakout ? (
               <div className="fork-notice" role="status">
                 <span>Forking from an earlier message</span>
                 <button type="button" className="fork-notice-cancel" onClick={() => controller.cancelFork()}>

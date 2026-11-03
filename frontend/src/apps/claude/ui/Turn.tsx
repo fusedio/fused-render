@@ -4,7 +4,7 @@
 // avatar", the shape claude.ai / v0 / ChatGPT all settled on).
 import { memo, useId, useMemo } from "react";
 
-import { SquareTerminal, Undo2 } from "lucide-react";
+import { GitBranchPlus, SquareTerminal, Undo2 } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { parseTerminalAsk } from "@platform/lib/terminalFocus";
 
@@ -97,6 +97,8 @@ export interface TurnProps {
    *  re-ask it in the composer. Passed only for a Claude chat that is idle;
    *  absent, no button is drawn. One callback for the log, keyed by the turn. */
   onFork?: (key: string) => void;
+  /** "Breakout from here": open a research-only side chat at this message. */
+  onBreakout?: (key: string) => void;
   /** The chat's working directory, threaded down to `SegmentView`/`ToolChip`/
    *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first. */
@@ -128,6 +130,7 @@ export const Turn = memo(function Turn({
   onToggleCollapse,
   pendingCard,
   onFork,
+  onBreakout,
   cwd,
   workedFor,
   workedHint,
@@ -209,6 +212,17 @@ export const Turn = memo(function Turn({
               onClick={() => onFork(turn.key)}
             >
               <Undo2 size={13} aria-hidden="true" />
+            </button>
+          ) : null}
+          {turn.uuid && onBreakout ? (
+            <button
+              type="button"
+              className="turn-breakout"
+              aria-label="Breakout from here"
+              data-hint="Breakout from here"
+              onClick={() => onBreakout(turn.key)}
+            >
+              <GitBranchPlus size={13} aria-hidden="true" />
             </button>
           ) : null}
         {/* WHAT THE BUBBLE SAYS. An annotated send reads as the comments the

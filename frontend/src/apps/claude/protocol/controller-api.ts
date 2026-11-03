@@ -657,6 +657,17 @@ export interface ChatController {
 export interface ControllerDeps {
   file: string | null;
   params: import("../params/store").ParamsStore;
+  /**
+   * BREAKOUT POSTURE: this controller drives a research-only side chat forked
+   * from the session in `params`. Its first send starts a forked run
+   * (`breakout: "1"`, at `breakoutAt` or at the tip), it never probes or
+   * attaches to the parent's live run, and every later start is
+   * `breakout: "resume"`. See server `agent._start`.
+   */
+  breakout?: boolean;
+  /** With `breakout`: the parent user message's uuid to fork at. Absent = the
+   *  tip of the conversation. */
+  breakoutAt?: string;
   /** For the working-line clock and tests. MONOTONIC as far as this file is
    *  concerned: every reader of it measures a DURATION (elapsed run time, a
    *  retry budget, a poll deadline), a test is free to hand it `() => 1_000`,
@@ -839,3 +850,16 @@ export interface ControllerDeps {
 }
 
 export type { HistoryTurn };
+
+/**
+ * A request to open a breakout (a research-only side chat forked from a chat),
+ * handed from a chat's Breakout buttons to the shell's card store.
+ * `forkAt` is the user message's uuid; absent means "from the latest message".
+ */
+export interface BreakoutRequest {
+  sessionId: string;
+  file: string;
+  forkAt?: string;
+  /** Optional dedupe key for the card store (e.g. the turn key). */
+  forkKey?: string;
+}
