@@ -432,8 +432,12 @@ export function ClaudeRail({
     const el = listRef.current;
     if (!el) return;
     const measure = () => {
-      const h = el.clientHeight + (roomRef.current?.clientHeight ?? 0);
-      const gap = parseFloat(getComputedStyle(el).rowGap) || 0;
+      const cs = getComputedStyle(el);
+      // Less the list's own padding (claude-rail.css: 2px of room for the
+      // first and last ring's wash), which is no room for a ring.
+      const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      const h = el.clientHeight - pad + (roomRef.current?.clientHeight ?? 0);
+      const gap = parseFloat(cs.rowGap) || 0;
       const seat = el.firstElementChild?.getBoundingClientRect().height || 28;
       setFit(Math.max(0, Math.floor((h + gap) / (seat + gap))));
     };

@@ -77,6 +77,15 @@
   align-items: center;
   gap: 4px;
   overflow: hidden;
+  /* ROOM FOR THE FIRST AND LAST RING'S WASH: a ring's hover / active / pinned
+     wash is painted 2px past its seat (`.claude-rail-chat::after`,
+     `inset: -2px -9px`), and this box clips — so the first ring's wash lost
+     its top edge (owner, 2026-11-03: "the top border clipped for the first
+     task item when it is active"). 2px of padding inside the clip, taken
+     back by the margin so the column's spacing is unchanged; ClaudeRail
+     `fit` subtracts it from the measure. */
+  padding: 2px 0;
+  margin: -2px 0;
 }
 /* The column's leftover, under the foot and above the Git section: nothing
    is drawn in it; it is what the list could grow into, and ClaudeRail `fit`
