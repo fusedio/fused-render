@@ -499,6 +499,7 @@ export const runAction = (
 export const LISTING_ACTION_IDS: ReadonlySet<string> = new Set([
   "publish-market",
   "publish-update",
+  "edit-listing",
   "confirm-powers",
   "fix-with-claude",
   "check-listing",

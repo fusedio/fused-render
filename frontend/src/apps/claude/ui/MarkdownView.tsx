@@ -7,7 +7,7 @@
 // marked alone). This component is the render site and the code-block pass.
 import { memo, useEffect, useMemo, useRef } from "react";
 
-import { useHome } from "@apps/explorer/listing/home-path";
+import { useHome } from "@platform/lib/home-path";
 
 import { enhanceCodeBlocks, renderMd, renderMdInert } from "../protocol/markdown";
 import { useFilePreview } from "./filePreview";

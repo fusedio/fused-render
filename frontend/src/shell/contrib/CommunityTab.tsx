@@ -558,7 +558,11 @@ function OwnView({
           <Card
             title="Listing"
             action={
-              listing ? (
+              // Only while the server offers a details form (`edit-listing`
+              // when listed or in review, `publish-market` before): a
+              // button that opens a form the server then refuses as "not
+              // available" is a dead end (the Listing card, 2026-11-03).
+              listing && listing.actions.some((a) => a.dialog === "listing") ? (
                 <Button size="sm" variant="outline" onClick={listing.openPublish} disabled={busy}>
                   Edit details
                 </Button>

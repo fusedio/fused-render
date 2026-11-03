@@ -164,6 +164,12 @@ def _publish_update(t: _Target, _args) -> dict:
             or _job("listing-update", t.app_dir, _listing().publish_update, t.app_dir))
 
 
+def _edit(t: _Target, args) -> dict:
+    """Edit details: the row's text at its own commit (`listing.edit_listing`)."""
+    return _no_app_id(t) or _job("listing-edit", t.app_dir, _listing().edit_listing,
+                                 t.app_dir, _details(args))
+
+
 def _check(t: _Target, _args) -> dict:
     return {"ok": True, "job": _listing().start_refresh(t.app_dir)}
 
@@ -184,6 +190,7 @@ def _publish_now(t: _Target, _args) -> dict:
 _DISPATCH = {
     "publish-market": _publish,
     "publish-update": _publish_update,
+    "edit-listing": _edit,
     "remove-market": lambda t, a: _job("listing-remove", t.app_dir,
                                        _listing().remove, t.app_dir),
     "confirm-powers": _confirm,
