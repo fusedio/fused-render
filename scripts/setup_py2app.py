@@ -363,6 +363,16 @@ DOCUMENT_TYPES = [
         "LSItemContentTypes": ["io.fused.render.app"],
     },
     {
+        # `.fusedbot` is the bot package (docs/bots.md §17): same shape as the
+        # `.fused` claim above, so a Finder double-click opens Render on the
+        # bot's install page (apps/bots/file BotFilePage).
+        "CFBundleTypeName": "FusedRender bot",
+        "CFBundleTypeRole": "Viewer",
+        "LSHandlerRank": "Owner",
+        "CFBundleTypeExtensions": ["fusedbot"],
+        "LSItemContentTypes": ["io.fused.render.bot"],
+    },
+    {
         "CFBundleTypeName": "Apache Parquet data",
         "CFBundleTypeRole": "Viewer",
         "LSHandlerRank": "Default",  # no other app owns .parquet
@@ -600,6 +610,13 @@ OPTIONS = {
                 "UTTypeDescription": "FusedRender app",
                 "UTTypeConformsTo": ["public.data"],
                 "UTTypeTagSpecification": {"public.filename-extension": ["fused"]},
+            },
+            # `.fusedbot` (docs/bots.md §17): the bot package, same rationale.
+            {
+                "UTTypeIdentifier": "io.fused.render.bot",
+                "UTTypeDescription": "FusedRender bot",
+                "UTTypeConformsTo": ["public.data"],
+                "UTTypeTagSpecification": {"public.filename-extension": ["fusedbot"]},
             },
         ],
         # macOS shows these strings in the TCC permission prompt when the app
