@@ -6,6 +6,7 @@ import {
   closeBreakout,
   getBreakouts,
   openBreakout,
+  ownTurns,
   resetBreakouts,
   sendBackBreakout,
 } from "./breakouts";
@@ -110,5 +111,25 @@ describe("buildHandoffDraft", () => {
   test("without a dir, any .claude/handoffs markdown counts; empty transcript is empty", () => {
     expect(buildHandoffDraft(turns)).toContain("Handoff file: /w/proj/.claude/handoffs/x.md");
     expect(buildHandoffDraft([])).toBe("");
+  });
+});
+
+describe("ownTurns", () => {
+  const parent = [
+    { role: "user", key: "h-1", text: "parent q" },
+    { role: "assistant", key: "h-2", text: "parent answer" },
+  ];
+  test("parent-only history has no own turns, so no draft", () => {
+    expect(ownTurns(parent)).toEqual([]);
+    expect(buildHandoffDraft(ownTurns(parent))).toBe("");
+  });
+  test("keeps only turns from the first live user send", () => {
+    const all = [
+      ...parent,
+      { role: "user", key: "u:1", text: "side q" },
+      { role: "assistant", key: "h-3", text: "side answer" },
+    ];
+    expect(ownTurns(all).map((t) => t.key)).toEqual(["u:1", "h-3"]);
+    expect(buildHandoffDraft(ownTurns(all))).toBe("side answer");
   });
 });

@@ -12,6 +12,7 @@ import { PEEK_MAX_HEIGHT, PEEK_WIDTH } from "@shell/claude-rail/rail-peek-lib";
 import {
   buildHandoffDraft,
   closeBreakout,
+  ownTurns,
   sendBackBreakout,
   useBreakouts,
   type BreakoutCard,
@@ -24,7 +25,9 @@ export function Card({ card, index }: { card: BreakoutCard; index: number }) {
   const [canSend, setCanSend] = useState(false);
   const onState = useCallback((s: { sessionId: string; turns: readonly Turn[] }) => {
     state.current = s;
-    setCanSend(s.turns.some((t) => t.role === "assistant" && !!t.text.trim()));
+    // Only the breakout's own turns: the parent's restored history is not
+    // something to send back to the parent.
+    setCanSend(ownTurns(s.turns).some((t) => t.role === "assistant" && !!t.text.trim()));
   }, []);
 
   // Drag by the head row. `pos` null = the default bottom-right slot; once
@@ -95,7 +98,7 @@ export function Card({ card, index }: { card: BreakoutCard; index: number }) {
     closeBreakout(card.id);
   };
   const sendBack = () => {
-    const text = buildHandoffDraft(state.current.turns);
+    const text = buildHandoffDraft(ownTurns(state.current.turns));
     if (!text) return;
     sendBackBreakout(card.id, text);
   };
