@@ -1280,7 +1280,12 @@ def edit_listing(root: str, details: dict) -> dict:
     rec, me, lo = _require(root)
     pr = lo.get("pr") or {}
     removing = pr.get("kind") == "remove" and pr.get("state") == "open"
-    base = lo.get("row") or (pr.get("row") if not removing else None)
+    # A request in flight (an update's new version, a first listing) is
+    # what the edit continues — `_send` rewrites its branch, so building on
+    # the live row here would put the approved commit back under review.
+    # Else the live row, or the turned-down request's row.
+    in_flight = pr.get("row") if pr.get("state") == "open" and not removing else None
+    base = in_flight or lo.get("row") or (pr.get("row") if not removing else None)
     if removing:
         raise PlainError(f"{lo['name']} is being removed from the Community. Wait for that "
                          "to finish.", reason="removing")
