@@ -28,17 +28,31 @@ nothing about what an install does, and nothing in the UI mentions Homebrew.
   quit:`) — a redundant reinstall, never a broken one. The next check() tick
   reads the bundle on disk either way and flips to "installed" once a newer
   bundle has landed, ours or brew's.
-- "dmg": download the signed DMG, verify, and swap the .app bundle in place.
-  Replacing the bundle under a running process is the SUPPORTED existing flow
-  (a manual DMG drag does exactly this): installed.installed_version() then
-  drifts from __version__, ServerStatusBanner raises the restart dialog, and
-  <scheme>://relaunch (app.begin_relaunch; fused-render:// or fused-bot://
-  per flavor) respawns from disk. That
-  relaunch guard REQUIRES the drift, which is why the swap happens on install
-  rather than being deferred to quit. The bundle swapped away stays on disk
-  as a hidden `.<Bundle>-old-<pid>-<ns>.app` sibling until a LATER boot's
-  `sweep_old_bundles` finds its pid dead: the running process must keep its
-  on-disk code or macOS TCC drops its Full Disk Access on the spot.
+- "dmg": download the signed DMG, verify, and STAGE the .app bundle as a
+  hidden sibling of the installed one (`installed.staged_bundle_path`:
+  `/Applications/.FusedRender-update.app`). The staged copy is renamed into
+  place by `apply_staged` from the quit teardown (app.quit_teardown's
+  "update" rung — every quit surface, the update dialog's Restart included),
+  never while the app is serving. It used to be swapped at install time, on
+  the theory that a running process keeps its open files; it does, but it
+  does not keep the files it has NOT opened yet: every window open across
+  the swap asked for a lazily loaded route chunk by a hash that was no
+  longer on disk ("This page didn't load", on every release — four a day,
+  2026-11-03), and a lazy Python import read the NEW module into the OLD
+  process. Staging keeps the running process, its windows and its children
+  on one consistent bundle until the user restarts.
+
+  The restart signal is unchanged: installed.installed_version() reports the
+  staged version (it is what launches next), so it drifts from __version__
+  exactly as a manual DMG drag makes it drift, ServerStatusBanner raises the
+  restart card, and <scheme>://relaunch (app.begin_relaunch; fused-render://
+  or fused-bot:// per flavor) quits through the teardown — which applies
+  the staged bundle — and respawns from disk. The bundle renamed away at
+  apply time stays on disk as a hidden `.<Bundle>-old-<pid>-<ns>.app`
+  sibling until a LATER boot's `sweep_old_bundles` finds its pid dead: the
+  applying process is milliseconds from `os._exit`, but macOS TCC drops its
+  Full Disk Access the instant its on-disk code vanishes, and the rollback
+  on a failed second rename needs it too.
 
 An install also mirrors itself into the Activity dock as a server-owned job
 (`sys:update:<version>`, the same bridge shape `server/routers/index.py`'s
@@ -69,7 +83,7 @@ import tempfile
 import threading
 import time
 
-from fused_render import __version__, _flavor, bundle_exec, jobs
+from fused_render import __version__, _flavor, bundle_exec, installed, jobs
 from fused_render._branch import branch_suffix
 from fused_render.update import common
 # The shared state machine lives in its own module, `_manager.py`, named
@@ -101,8 +115,9 @@ MANIFEST_URL = os.environ.get(
 # never asks brew and every install goes the DMG way.
 CASK_NAME = _flavor.cask()
 # The installed bundle's name, branch suffix included: `FusedRender.app`,
-# `FusedBot-feature.app`. Names the /Applications target and the swap's
-# hidden siblings below.
+# `FusedBot-feature.app`. Names the /Applications target and the parked
+# `-old-` siblings below (the staged `-update` sibling is named from the
+# bundle's own basename instead — `installed.staged_bundle_path`).
 _BUNDLE_NAME = _flavor.app_name() + branch_suffix()
 # GUI apps launch with a bare PATH, so brew is probed at its two fixed homes
 # (Apple Silicon, then Intel) rather than through the environment.
@@ -187,12 +202,12 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
     return "dmg"
 
 
-# The swap renames the running bundle to this sibling — pid of the process
-# that did the swap, then a nanosecond clock so two swaps in ONE process
-# never share a name (the second would otherwise have to clear the first,
-# which is the bundle this process is running from) — and LEAVES IT THERE.
-# It is removed by `sweep_old_bundles` on a later boot, once that pid is
-# gone — never by the process still running from it.
+# `apply_staged` renames the running bundle to this sibling — pid of the
+# process that applied, then a nanosecond clock so two applies by ONE pid
+# never share a name (a recycled pid, or a boot that applies and then quits
+# again) — and LEAVES IT THERE. It is removed by `sweep_old_bundles` on a
+# later boot, once that pid is gone — never by the process still running
+# from it.
 def _old_bundle_re() -> re.Pattern[str]:
     """The hidden-sibling shape the swap writes, group 1 the swapping pid.
     Built per call, not at import: `_BUNDLE_NAME` carries the branch suffix
@@ -203,8 +218,97 @@ def _old_bundle_re() -> re.Pattern[str]:
 
 
 def _old_bundle_path(parent: str, pid: int) -> str:
-    """Where this swap parks the bundle it replaces: unique per call."""
+    """Where an apply parks the bundle it replaces: unique per call."""
     return os.path.join(parent, f".{_BUNDLE_NAME}-old-{pid}-{time.time_ns()}.app")
+
+
+def staged_version(bundle: str) -> str | None:
+    """The version staged beside `bundle` and newer than it, else None —
+    `installed.staged_version` against the RESOLVED bundle, which is where
+    `_install_dmg` stages (a Caskroom symlink's target, not the link)."""
+    return installed.staged_version(os.path.realpath(bundle))
+
+
+def _partial_path(staged: str) -> str:
+    """Where `_install_dmg` dittos BEFORE the copy becomes the staged bundle.
+    Not a `.app` name: Launch Services never sees it, and no reader of
+    `installed.staged_bundle_path` can mistake it for a finished copy."""
+    return staged + ".partial"
+
+
+def discard_stale_staged(bundle: str) -> bool:
+    """Remove what no quit should ever apply: a staged sibling that is NOT
+    newer than `bundle` — the apply already happened (a crash between the
+    rename and the exit, say), or the user dragged a newer DMG over the app
+    while an older download sat staged — and a `.partial` copy a process
+    died in the middle of writing. Run from `start()` on boot, off the
+    critical path. True when something was removed."""
+    real = os.path.realpath(bundle)
+    staged = installed.staged_bundle_path(real)
+    removed = False
+    partial = _partial_path(staged)
+    if os.path.isdir(partial):
+        try:
+            shutil.rmtree(partial)
+            logger.info("update: removed half-written staged copy %s", partial)
+            removed = True
+        except OSError:
+            logger.warning("update: could not remove %s", partial, exc_info=True)
+    if not os.path.isdir(staged) or installed.staged_version(real) is not None:
+        return removed
+    try:
+        shutil.rmtree(staged)
+    except OSError:
+        logger.warning("update: could not remove stale staged bundle %s", staged,
+                       exc_info=True)
+        return removed
+    logger.info("update: removed stale staged bundle %s (not newer than %s)",
+                staged, installed.bundle_version(real))
+    return True
+
+
+def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
+    """Rename the staged sibling into place of `bundle`: the one moment the
+    bundle on disk changes. Returns the version now installed, or None when
+    there was nothing (newer) to apply or the apply failed — the running
+    bundle is left exactly as it was in every failure case.
+
+    Called from the quit teardown (app.quit_teardown's "update" rung), so
+    the server has drained and the children are reaped: nothing is about to
+    read from the bundle but this process, and it is about to `os._exit`.
+    That is what makes the rename safe where it was not at install time (see
+    the module docstring). Two same-volume renames, each atomic: the bundle
+    is parked under `_old_bundle_path` (and stays there for a later boot's
+    `sweep_old_bundles` — see that docstring for the TCC reason), then the
+    staged copy takes its name; a failed second rename puts the bundle back
+    so there is never no app at all."""
+    real = os.path.realpath(bundle)
+    version = installed.staged_version(real)
+    if version is None:
+        return None
+    staged = installed.staged_bundle_path(real)
+    parent = os.path.dirname(real)
+    old = _old_bundle_path(parent, os.getpid() if pid is None else pid)
+    try:
+        os.rename(real, old)
+    except OSError:
+        logger.warning("update: could not park %s for the apply; staged v%s stays "
+                       "for the next quit", real, version, exc_info=True)
+        return None
+    try:
+        os.rename(staged, real)
+    except OSError:
+        logger.warning("update: could not move staged v%s into place; rolling back",
+                       version, exc_info=True)
+        try:
+            os.rename(old, real)
+        except OSError:
+            logger.error("update: ROLLBACK FAILED — %s is parked at %s", real, old,
+                         exc_info=True)
+        return None
+    logger.info("update: applied staged v%s to %s (previous bundle parked at %s)",
+                version, real, old)
+    return version
 
 
 def _running_executables(run=subprocess.run) -> list[str]:
@@ -339,10 +443,11 @@ class UpdateManager(_base.UpdateManager):
 
     states: idle -> checking -> (idle | available) -> installing(progress)
             -> installed | error(message)
-    "installed" means the bundle on disk is the new version; the existing
-    installed_version drift banner drives the restart from there.
-    Every method takes the same route through those states: the DMG swap is
-    the one install path, and brew is never invoked — the cask's
+    "installed" means the new version is what launches next — staged beside
+    the bundle (ours, applied on quit) or already in place (a manual drag,
+    brew); the existing installed_version drift banner drives the restart
+    from there. Every method takes the same route through those states: the
+    DMG stage is the one install path, and brew is never invoked — the cask's
     `uninstall quit:` would quit the app mid-upgrade, so an app that ran brew
     on itself would be killing itself to finish an install (see the module
     docstring). There is therefore no terminal command to offer on any state,
@@ -376,16 +481,19 @@ class UpdateManager(_base.UpdateManager):
         return self._method
 
     def _disk_version(self) -> str | None:
-        """CFBundleShortVersionString of the bundle on disk — what would launch
-        next time (same read as installed.installed_version, but against this
-        manager's bundle path so tests can point it at a fixture)."""
+        """What would launch next time: the version staged beside the bundle
+        when it is newer, else the bundle's own CFBundleShortVersionString
+        (same read as installed.installed_version, but against this manager's
+        bundle path so tests can point it at a fixture). The staged read is
+        what flips status() to "installed" once `_install_dmg` has staged —
+        and back to "available" when a later manifest outruns the staged
+        copy, which `_install_dmg` then replaces."""
         if self._bundle is None:
             return None
-        try:
-            with open(os.path.join(self._bundle, "Contents", "Info.plist"), "rb") as f:
-                return plistlib.load(f).get("CFBundleShortVersionString")
-        except (OSError, plistlib.InvalidFileException):
-            return None
+        staged = staged_version(self._bundle)
+        if staged is not None:
+            return staged
+        return installed.bundle_version(self._bundle)
 
     # -- installing -----------------------------------------------------------
 
@@ -459,11 +567,11 @@ class UpdateManager(_base.UpdateManager):
         if self._cancel_requested():
             common.discard(dmg)
             raise common.UpdateCancelled("cancelled after download")
-        # Downloading is over: from here on the bundle is being replaced, and
-        # there is no point between the ditto and the two renames where
+        # Downloading is over: from here on the staged copy is being written,
+        # and there is no point between the ditto and the spawn probe where
         # stopping would leave anything better than finishing does — so the
         # row drops its Cancel and its numbers (no honest total exists for a
-        # copy-and-swap) and says what it is doing instead.
+        # copy) and says what it is doing instead.
         with self._lock:
             self._phase = "installing"
         self._job_report(detail=PHASE_INSTALLING, message="", done=None,
@@ -480,19 +588,31 @@ class UpdateManager(_base.UpdateManager):
                                 name="fused-render-update-heartbeat")
         beat.start()
         mount = None
-        old = None
-        swap_in = os.path.join(parent, f".{_BUNDLE_NAME}-update.app")
+        # The staged sibling: `installed.staged_bundle_path` of the RESOLVED
+        # bundle, so installed_version() (which resolves too) and the quit
+        # teardown's `apply_staged` find it where this put it.
+        staged = installed.staged_bundle_path(bundle)
+        # The copy is written under a name NO reader of `staged` looks at,
+        # and takes the staged name in one atomic rename at the very end.
+        # `Info.plist` lands early in a 15-40 s ditto, and three readers
+        # trust a readable staged plist — installed_version() (the restart
+        # card), `_disk_version()` and the quit's `apply_staged` — so a ⌘Q
+        # or a Restart click mid-copy would otherwise rename a half-written
+        # app into /Applications. The staged path is either absent or
+        # complete, never in between.
+        swap_in = _partial_path(staged)
         try:
             mount = self._attach(dmg)
             source = self._find_app(mount)
             self._verify_app_version(source, manifest["version"])
             if os.path.exists(swap_in):
-                shutil.rmtree(swap_in)
+                shutil.rmtree(swap_in)  # a copy an earlier process died in
             # ditto straight from the mounted image into the bundle's own
             # parent dir: it preserves the code signature, resource forks and
             # xattrs a plain copy can drop (a stripped signature would leave a
             # bundle Gatekeeper refuses to launch), and landing on the target
-            # volume makes the swap below two same-volume renames.
+            # volume makes the rename below and `apply_staged`'s two
+            # same-volume renames.
             subprocess.run(["/usr/bin/ditto", source, swap_in],
                            check=True, capture_output=True, timeout=600)
             # Prove the staged copy's python SPAWNS before it becomes the
@@ -502,12 +622,12 @@ class UpdateManager(_base.UpdateManager):
             # Claude, the index, the engine, all dead behind a live window.
             # The same image on another Mac spawned fine, so whatever that
             # machine does to the copy is only visible by trying it, here,
-            # while the old bundle is still intact. `ensure_spawnable` logs the
-            # file's mode/owner/xattrs, sets 0755 where it can, and tries
-            # again; when it still refuses, the update is NOT installed — the
-            # `finally` below removes the staged copy and `_install` shows the
-            # error — rather than swapped in to produce a working-looking app
-            # that cannot run anything.
+            # while the installed bundle is still intact. `ensure_spawnable`
+            # logs the file's mode/owner/xattrs, sets 0755 where it can, and
+            # tries again; when it still refuses, the update is NOT staged —
+            # the `finally` below removes the copy and `_install` shows the
+            # error — rather than left for the quit to swap in and produce a
+            # working-looking app that cannot run anything.
             reason = bundle_exec.ensure_spawnable(
                 os.path.join(swap_in, "Contents"), what="update")
             if reason is not None:
@@ -515,21 +635,29 @@ class UpdateManager(_base.UpdateManager):
                     "the downloaded app's Python cannot be run on this Mac "
                     f"({reason}); the installed app was left as it was — "
                     "download the DMG from fused.io and drag it to Applications")
-            # The swap: both renames happen inside `parent` so each is atomic
-            # on the volume; the running process keeps its open files on the
-            # old inode (same situation as a manual DMG drag / brew upgrade).
-            old = _old_bundle_path(parent, os.getpid())
-            os.rename(bundle, old)
-            try:
-                os.rename(swap_in, bundle)
-            except OSError:
-                os.rename(old, bundle)  # roll back — never leave no app at all
-                raise
+            # A copy already staged (an earlier download the user has not
+            # restarted for) is superseded by this one: the manifest moved
+            # on, so the next quit should apply the newest, not the first.
+            # Removed only now, with the replacement complete and probed —
+            # a quit landing between here and the rename applies nothing,
+            # which beats applying the older one.
+            if os.path.exists(staged):
+                shutil.rmtree(staged)
+            os.rename(swap_in, staged)
+            # That is the install: the copy waits here, next to the bundle,
+            # until `apply_staged` renames it into place on quit. Nothing on
+            # disk that this process, its windows or its children read has
+            # moved. `_disk_version()` reads the staged plist from now on,
+            # which is what turns the state "installed" and raises the
+            # restart card.
+            logger.info("update: staged v%s at %s; applied on the next quit",
+                        manifest["version"], staged)
         finally:
             if mount is not None:
                 subprocess.run(["/usr/bin/hdiutil", "detach", mount, "-quiet"],
                                check=False, capture_output=True, timeout=60)
             common.discard(dmg)
+            # Gone on every failure path; already renamed away on success.
             if os.path.exists(swap_in):
                 shutil.rmtree(swap_in, ignore_errors=True)
             # Last, so the row is still being kept alive through the detach
@@ -540,11 +668,6 @@ class UpdateManager(_base.UpdateManager):
             # failed one with "Installing".
             beat_stop.set()
             beat.join(timeout=INSTALL_HEARTBEAT_S + 5)
-        # The old bundle is NOT removed here. This process is still running
-        # from it, and macOS TCC re-validates the responsible process's code
-        # path on every protected file access: delete it and Full Disk
-        # Access silently stops working until relaunch (see
-        # `sweep_old_bundles`, which clears it on a later boot instead).
 
     def _attach(self, dmg: str) -> str:
         result = subprocess.run(
@@ -634,9 +757,16 @@ def start() -> UpdateManager | None:
                 # bundle is not the link's) — a dev run has no swaps to clean
                 # up after and no /Applications to look in.
                 own = os.path.realpath(_manager._bundle)
-                threading.Thread(target=sweep_old_bundles,
-                                 args=(os.path.dirname(own),),
-                                 kwargs={"keep": own}, daemon=True,
+
+                def _sweep(own=own):
+                    sweep_old_bundles(os.path.dirname(own), keep=own)
+                    # A staged copy that is no longer newer than the bundle
+                    # it sits beside is spent (applied, then the process
+                    # died before `os._exit`; or superseded by a manual
+                    # drag) — a stale one must never be applied on quit.
+                    discard_stale_staged(own)
+
+                threading.Thread(target=_sweep, daemon=True,
                                  name="fused-render-update-sweep-old").start()
             _manager.start_auto_checks()
         return _manager

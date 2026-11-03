@@ -191,8 +191,38 @@ def test_teardown_order_children_capture_duckdb_then_exit_record(quit_ctx):
     assert "tile-daemons" not in quit_ctx      # shared daemons are never quit
     # "exit-record" (SPEC section 50) is last: a teardown cut off by the hard
     # deadline must leave its crash file behind, because that quit was not clean.
-    assert steps == ["server", "children", "capture", "duckdb",
+    assert steps == ["server", "children", "capture", "duckdb", "update",
                      "exit-record"]
+
+
+def test_the_update_rung_applies_what_the_updater_staged(quit_ctx, monkeypatch):
+    """A staged in-app update is renamed into place HERE — after the server
+    has drained and the children are gone, before the exit record — never
+    at install time (update/mac.py's docstring: the swap under a serving
+    process broke every open window's next chunk load). Every quit surface,
+    the update dialog's Restart included, runs this ladder, so quitting with
+    an update pending and restarting for it are the same rename."""
+    from fused_render.update import mac as mac_update
+
+    applied = []
+    monkeypatch.setattr(app_mod, "bundle_path", lambda: "/Applications/FusedRender.app")
+    monkeypatch.setattr(mac_update, "apply_staged",
+                        lambda bundle: applied.append(bundle) or "9.9.9")
+
+    steps = app_mod.quit_teardown(_FakeServer())
+
+    assert applied == ["/Applications/FusedRender.app"]
+    assert steps.index("update") > steps.index("children")
+    assert steps.index("update") < steps.index("exit-record")
+
+
+def test_the_update_rung_is_a_noop_unpackaged(quit_ctx, monkeypatch):
+    from fused_render.update import mac as mac_update
+
+    monkeypatch.setattr(app_mod, "bundle_path", lambda: None)
+    monkeypatch.setattr(mac_update, "apply_staged",
+                        lambda bundle: pytest.fail("nothing to apply without a bundle"))
+    assert "update" in app_mod.quit_teardown(_FakeServer())
 
 
 def test_teardown_drains_the_server_thread_within_a_bounded_wait(quit_ctx):

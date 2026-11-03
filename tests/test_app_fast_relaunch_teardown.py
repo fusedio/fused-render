@@ -134,5 +134,5 @@ def test_a_fast_teardown_does_not_wait_the_normal_drain(monkeypatch):
 def test_a_fast_teardown_runs_the_same_steps_in_the_same_order():
     fast, _, _ = _teardown(True, drain_s=0.01)
     slow, _, _ = _teardown(False, drain_s=0.01)
-    assert fast == slow == ["server", "children", "capture", "duckdb",
+    assert fast == slow == ["server", "children", "capture", "duckdb", "update",
                             "exit-record"]
