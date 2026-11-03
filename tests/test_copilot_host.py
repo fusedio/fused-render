@@ -172,9 +172,17 @@ class Session:
         return os.path.join(self.bucket, self.sid + ".jsonl") if self.sid else ""
 
     def minted(self):
-        """The id the fake's `session/new` reply named."""
-        return next(e["sent"]["result"]["sessionId"] for e in self.fake()
-                    if "sessionId" in ((e.get("sent") or {}).get("result") or {}))
+        """The id the fake's `session/new` reply named (waited for: the fake
+        logs a reply only AFTER writing it to the host, so the init row it
+        produced can land before the log line — a bare `next` raised
+        StopIteration on a loaded runner)."""
+        def logged():
+            return next((e["sent"]["result"]["sessionId"] for e in self.fake()
+                         if "sessionId" in ((e.get("sent") or {}).get("result") or {})),
+                        None)
+        assert _wait_for(lambda: logged() is not None), \
+            "the fake never logged its session/new reply"
+        return logged()
 
     def out(self):
         return _rows(os.path.join(self.run_dir, "out.jsonl"))
