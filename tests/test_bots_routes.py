@@ -292,12 +292,45 @@ def test_botsend_queues_a_task_the_scheduler_tick_runs(client, ws, monkeypatch, 
     assert botsend.main(["--list"]) == 0 and "Scout" in capsys.readouterr().out
     assert botsend.main(["nobody", "x"]) == 1
     assert botsend.main(["scout", "check", "the", "news"]) == 0
-    inbox = os.path.join(bpaths.bot_dir(bid), "inbox")
-    assert [n.endswith(".txt") for n in os.listdir(inbox)] == [True]
+    drop = bpaths.bot_drop(bid)
+    assert drop == os.path.join(bpaths.bot_dir(bid), "drop") != bpaths.bot_inbox(bid)
+    assert [n.endswith(".txt") for n in os.listdir(drop)] == [True]
+    assert botsend.DROP_NAME_RE.match(os.listdir(drop)[0])  # the shape migrate_v3's drop fixup recognises
     registry.get(bid).tick_routines()  # what the 20 s scheduler does
-    assert started == ["check the news"] and os.listdir(inbox) == []
+    assert started == ["check the news"] and os.listdir(drop) == []
     texts = [e["text"] for e in one(status(client), bid)["events"]]
     assert any(t.startswith("Task received from botsend") for t in texts) and "check the news" in texts
+
+
+def test_botsend_drop_dir_is_the_drop_folder_not_the_inbox(client, ws):
+    from fused_render.bots import botsend
+    bid = make(client)
+    assert botsend.drop_dir(bid) == os.path.join(bpaths.bot_folder(bid), ".fused", "drop")
+    assert botsend.drop_dir(bid) != registry.get(bid).artifacts_dir
+
+
+def test_drain_reads_only_the_drop_folder_never_the_inbox(client, ws, monkeypatch):
+    """Bugbot (PR #2057): the Inbox holds the user's files and is Super Bot's cwd; a `notes.txt` there must survive
+    the scheduler and start nothing. A `.txt` in .fused/drop/ is a botsend task."""
+    calls = []
+    monkeypatch.setattr(botmod.Bot, "receive", lambda self, text, via=None, reply_to=None: calls.append((text, via)))
+    bid = make(client)
+    b = registry.get(bid)
+    notes = os.path.join(b.artifacts_dir, "notes.txt")
+    with open(notes, "w", encoding="utf-8") as f:
+        f.write("my own notes")
+    b.drain_file_inbox()
+    assert calls == [] and os.path.isfile(notes)
+    with open(os.path.join(b.drop_dir, "job-1.txt"), "w", encoding="utf-8") as f:
+        f.write("look up the weather")
+    b.drain_file_inbox()
+    assert calls == [("look up the weather", botmod.chan.via("botsend", "job-1"))]
+    assert os.listdir(b.drop_dir) == [] and os.path.isfile(notes)
+    # defensive: a drop folder that resolves to the Inbox is never drained
+    monkeypatch.setattr(bpaths, "bot_drop", bpaths.bot_inbox)
+    assert b.drop_dir == b.artifacts_dir
+    b.drain_file_inbox()
+    assert calls == [("look up the weather", botmod.chan.via("botsend", "job-1"))] and os.path.isfile(notes)
 
 
 # ------------------------------------------------------------------- apps ---

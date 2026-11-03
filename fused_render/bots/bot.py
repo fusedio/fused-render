@@ -1845,18 +1845,24 @@ class Bot:
         return ([{**f, "kind": "saved"} for f in self.browser.list_files(self.files_dir, 12)]
                 + [{**f, "kind": "download"} for f in self.browser.list_files(self.browser.downloads, 12)])
 
-    # -- file inbox: any local process drops a .txt task here (see botsend.py) --
+    # -- drop folder: any local process drops a .txt task in <folder>/.fused/drop/ (see botsend.py) --
     @property
-    def inbox_dir(self):
-        return os.path.join(self.dir, "inbox")
+    def drop_dir(self):
+        """botsend.py's drop folder, `<folder>/.fused/drop`. Never the Inbox (artifacts_dir): that holds the
+        user's files and is Super Bot's cwd, so draining it would eat a `notes.txt` or start a task from it."""
+        return bpaths.bot_drop(self.id)
 
     def drain_file_inbox(self):
         try:
-            names = sorted(n for n in os.listdir(self.inbox_dir) if n.endswith(".txt"))
-        except OSError:
+            drop = self.drop_dir
+            if os.path.normcase(os.path.realpath(drop)) == os.path.normcase(os.path.realpath(self.artifacts_dir)):
+                logger.error("bot %s: drop folder %s is the Inbox; not draining it", self.id, drop)
+                return
+            names = sorted(n for n in os.listdir(drop) if n.endswith(".txt"))
+        except (OSError, LookupError):  # LookupError: the bot's folder is gone
             return
         for n in names:
-            p = os.path.join(self.inbox_dir, n)
+            p = os.path.join(drop, n)
             try:
                 with open(p, encoding="utf-8") as f:
                     task = f.read().strip()

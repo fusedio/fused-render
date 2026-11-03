@@ -10,7 +10,8 @@ the user's workspace; machine state shared across bots stays in the app home:
         .fused/                           bot_dir(bid) == bot_private(bid)   PRIVATE
             state.json  events.jsonl      every other meta key (+ `_public_gen`); the transcript
             memory.md  files/  downloads/
-            inbox/<task>/                 bot_inbox(bid): the Inbox (index.jsonl lives here)
+            inbox/<task>/                 bot_inbox(bid): the Inbox (index.jsonl lives here); never drained
+            drop/*.txt                    bot_drop(bid): botsend.py's drop folder, drained into tasks by the scheduler
             cache/                        bot_cache_dir(bid): shot.png, window.json, steps/, … (deletable)
 
     <home>/bots/data/browsers/<bid>/      profile, browser.json (browsers.py; may be shared by bots)
@@ -478,6 +479,15 @@ def bot_cache_dir(bid: str) -> str:
 def bot_inbox(bid: str) -> str:
     """`<folder>/.fused/inbox`: the bot's Inbox, one subfolder per task (+ index.jsonl)."""
     p = os.path.join(bot_private(bid), "inbox")
+    _mkdir_real(p)
+    return p
+
+
+def bot_drop(bid: str) -> str:
+    """`<folder>/.fused/drop`: botsend.py's drop folder. Any local process drops a `<name>.txt` task here and the
+    scheduler consumes it (Bot.drain_file_inbox). Never the Inbox: that one holds the user's files and Super Bot's
+    working directory, and nothing in it is ever drained."""
+    p = os.path.join(bot_private(bid), "drop")
     _mkdir_real(p)
     return p
 

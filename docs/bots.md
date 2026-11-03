@@ -97,7 +97,7 @@ names.
 fused_render/bots/            the backend package (in-process; no daemon, no fused.daemon)
   __init__.py
   paths.py        state roots: root() (<home>/bots, machine-level), bots_root() (~/Fused/bots), bot_folder(bid)
-                  (public), bot_private(bid) == bot_dir(bid) (<folder>/.fused), bot_cache_dir, bot_inbox; place/forget/
+                  (public), bot_private(bid) == bot_dir(bid) (<folder>/.fused), bot_cache_dir, bot_inbox, bot_drop; place/forget/
                   folders (the id -> folder index); is_bot_workdir; legacy_data_dir/legacy_cache_dir (read-only probes)
   store.py        bot.json (public half, PUBLIC_KEYS) + .fused/state.json (the rest), split at read_meta/write_meta so
                   Bot.meta stays one dict; events.jsonl, usage.jsonl ledger + summary
@@ -118,7 +118,7 @@ fused_render/bots/            the backend package (in-process; no daemon, no fus
                   Bot, engine, Chrome, the scheduler and the channels; every other process forwards), scheduler
                   thread (routines, file inbox), takeover walk, routines wake agent, slow-call log
   routes.py       the HTTP API (section 3), an `_web.APIRouter` included from server.py
-  botsend.py      CLI: `python -m fused_render.bots.botsend <bot> "<task>"` (drops into the bot's inbox dir)
+  botsend.py      CLI: `python -m fused_render.bots.botsend <bot> "<task>"` (drops into the bot's `.fused/drop/`)
   package.py      .fusedbot export: resolve_source, plan(bid), write(bid, ...) (section 17)
   botfile.py      .fusedbot import: probe(path), install(path, ...) (section 17)
   file_routes.py  /api/botfile/* (install probe + install, icon, upload), its own router (section 17)
@@ -141,7 +141,7 @@ gitignored `.fused/`. Cross-bot machine state stays home-side
                                           several bots may name the same one (shared logins, §6)
   data/usage.jsonl  data/builds.json  data/imessage*.json  data/routines.lock
   cache/browsers/<bid>/session.json   cache/slow.jsonl   dock.json
-  .layout-v2  .layout-v3  imported-from-fusedbot.json  super-seeded.json
+  .layout-v2  .layout-v3  .layout-v3-drop  imported-from-fusedbot.json  super-seeded.json
   backup/ is NOT here: backups go to <base_home>/backup/bot-migration-v3/<ts>/  (base_home = ~/.fused-render, never branch-nested)
 
 ~/Fused/bots/                             paths.bots_root()   per-bot folders
@@ -154,6 +154,7 @@ gitignored `.fused/`. Cross-bot machine state stays home-side
       state.json                          store.state_path(bid)      every other meta key
       events.jsonl                        store.events_path(bid)
       memory.md  files/  downloads/  inbox/<task>/  (inbox = the Inbox; index.jsonl lives in inbox/)
+      drop/*.txt                          paths.bot_drop(bid) == Bot.drop_dir: botsend's drop folder, drained into tasks by the scheduler; the Inbox is never drained
       cache/                              paths.bot_cache_dir(bid): shot.png, window.json, steps/, badjson/, mcp.json, viewport.json, tabs.json
 ```
 
@@ -591,7 +592,7 @@ disk, a fire writes "Routine fired" then the prompt as a `user` line via `routin
 lands the result on it; ROUTINE_RUNS kept, newest first), skills (`learn`, `skills_for`), memory
 (`remember`, caps), artifacts/Inbox (`save_file`, `collect_task_artifacts`,
 README.md per task, `index.jsonl`), attachments (`save_bytes`,
-`resolve_path`, `list_dir`, `find_files`, `folders_section`), file inbox (`drain_file_inbox`, botsend / iMessage), offers
+`resolve_path`, `list_dir`, `find_files`, `folders_section`), drop folder (`drop_dir`, `drain_file_inbox`: botsend; refuses a drop that resolves to the Inbox), offers
 (`_offer`, `_answer_pending_offer`, declined for 7 days, 10 min wait),
 builds (`build`, `_watch_build`, `_build_prompt` update/new), `show_app`,
 `_resolve_app`, `_app_at`, the risk rule (`_risk`, `_RISKY_BTN`, `_YES`,
@@ -626,7 +627,7 @@ every other (botsend, …) with a system line; `start_task` accepts a web via
 with origin `manual`, a `routine` via (the user's own schedule, amended
 2026-10-12: Super Bot has Routines like any bot) or an `imessage` via (judged
 on the via, never on the origin label) and ignores everything else;
-`drain_file_inbox` reads every inbox file, on every bot, as botsend and so
+`drain_file_inbox` reads every `.fused/drop/*.txt` file, on every bot, as botsend and so
 Super Bot drops it (its thread shows only the refusal, no "Task received" line). Posture by origin
 (`channels.base.is_local`: web or routine = set up at the Mac, keeps the bot's
 settings): a phone-started task always runs in
@@ -1418,7 +1419,7 @@ imessage.py           pure helpers only (chat.db queries, osascript send, handle
 ```
 
 **Via kinds.** `web` (the page; never stamped), `imessage` (addr = the
-sender's normalised handle), `routine`, `botsend` (addr = the inbox file
+sender's normalised handle), `routine`, `botsend` (addr = the drop file
 stem), and `handoff` (addr = `<Super Bot id>:<hand-off id>`, unique per
 hand-off, `channels.base.handoff_via`; stamped on a task Super Bot
 handed to a bot and so on its events, label "Super Bot", §11), and `app`
@@ -1453,7 +1454,7 @@ approval card that was texted to the sender (**Approve by text**, below);
 never as the answer to an app offer; a
 running chat-started task does not get it at all (§5); an idle Super Bot starts a task
 with `task_via` set, `origin` = `imessage`. No inbox files, no scheduler hop:
-~3 s from text to task. The botsend file inbox stays for ordinary bots
+~3 s from text to task. The botsend drop folder (`.fused/drop/`) stays for ordinary bots
 (`drain_file_inbox` -> `receive(via botsend)`).
 
 **Outbound.** `bot.emit()` stamps the task's `via` on events written by the
@@ -2523,7 +2524,8 @@ stamped}`. Each rung is the precondition of the next:
    unreadable `bot.json` or a non-8-hex id → parked as-is under
    `<bots_root>/.unmigrated/<id>/` (recorded; the stamp proceeds).
 4. **Move.** The staged Inbox children → `.fused/inbox/`, legacy `skills/` →
-   `<folder>/skills/`, the rest of the data dir → `.fused/` (profiles too;
+   `<folder>/skills/`, the legacy `inbox/` (botsend's drop folder, never an
+   Inbox) → `.fused/drop/`, the rest of the data dir → `.fused/` (profiles too;
    `browsers.adopt` lifts them as before), the cache dir → `.fused/cache/`;
    finally `store.write_meta` without `artifacts_dir` and with `apps` seeded.
    File by file (`_move_tree`): `os.rename`, or across volumes `copy2` +
@@ -2537,11 +2539,19 @@ stamped}`. Each rung is the precondition of the next:
    a bot go to `.unmigrated/stray-<ts>/`; the legacy trees are verified drained
    (bot.json files and empty dirs only, else no stamp); then they are RENAMED
    aside atomically (`data/.bots-removed-<ts>`, `cache/.bots-removed-<ts>`),
-   `.layout-v3` is written (`{at, backup, moved, skipped, strays}`), and the
-   renamed dirs are removed. Any failure stamps and removes nothing; the next
+   `.layout-v3` is written (`{at, backup, moved, skipped, strays}`) with
+   `.layout-v3-drop` beside it, and the renamed dirs are removed. Any failure stamps and removes nothing; the next
    start retries. `registry._sweep_browsers` runs only once the stamp exists,
    and `browsers._metas_on_disk` also reads legacy `bot.json`s for
    `browser_id`, so a legacy bot's logins are never swept in the window before.
+
+**Drop fixup.** Earlier builds of v3 lifted the legacy `inbox/` into
+`.fused/inbox/` and drained the Inbox as the drop folder. A home stamped
+`.layout-v3` without `.layout-v3-drop` runs `_drop_fixup_once` once, under
+the migrate lock: per bot folder, botsend-named files
+(`botsend.DROP_NAME_RE`, `YYYYmmdd-HHMMSS-<pid>.txt`) directly in
+`.fused/inbox/` move to `.fused/drop/` (clash → legacy-leftovers); task
+folders, `index.jsonl` and any other file stay. Then `.layout-v3-drop`.
 
 The backup is **never auto-pruned**: deleting `~/.fused-render/backup/bot-migration-v3/`
 is the user's call.

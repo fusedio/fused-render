@@ -3,19 +3,30 @@
     python -m fused_render.bots.botsend <bot name or id> "<task text>"
     python -m fused_render.bots.botsend --list
 
-Writes the task into the bot's inbox folder (`~/Fused/bots/<folder>/.fused/inbox/`);
-the server's scheduler picks it up within ~20 s and runs it exactly as if you
-had typed it in the chat. Nothing listens on the network: only processes on
+Writes the task into the bot's drop folder (`~/Fused/bots/<folder>/.fused/drop/`,
+never the Inbox at `.fused/inbox/`); the server's scheduler picks it up within
+~20 s and runs it exactly as if you had typed it in the chat. Nothing listens on the network: only processes on
 this machine can do this.
 """
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 
 from fused_render.bots import paths as bpaths
 from fused_render.bots import store
+
+
+# The name main() gives a dropped file: `<YYYYmmdd>-<HHMMSS>-<pid>.txt`. migrate_v3's one-time drop fixup moves only
+# files of this shape out of the Inbox, so a user's own `notes.txt` there is never turned into a task.
+DROP_NAME_RE = re.compile(r"^\d{8}-\d{6}-\d+\.txt$")
+
+
+def drop_dir(bid: str) -> str:
+    """Where a task for bot `bid` is dropped: the same `paths.bot_drop` the server's scheduler drains."""
+    return bpaths.bot_drop(bid)
 
 
 def bots():
@@ -48,12 +59,11 @@ def main(argv):
     if not task:
         print("empty task", file=sys.stderr)
         return 1
-    inbox = os.path.join(bpaths.bot_dir(match[0]["id"]), "inbox")
-    os.makedirs(inbox, exist_ok=True)
+    drop = drop_dir(match[0]["id"])
     name = time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-    with open(os.path.join(inbox, name + ".tmp"), "w", encoding="utf-8") as f:
+    with open(os.path.join(drop, name + ".tmp"), "w", encoding="utf-8") as f:
         f.write(task + "\n")
-    os.replace(os.path.join(inbox, name + ".tmp"), os.path.join(inbox, name + ".txt"))
+    os.replace(os.path.join(drop, name + ".tmp"), os.path.join(drop, name + ".txt"))
     print(f"queued for {match[0].get('name')} ({match[0]['id']}); it starts within ~20 s")
     return 0
 

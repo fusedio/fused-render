@@ -3,14 +3,16 @@ per bot under the workspace (docs/bots.md §1, BUILD_SPEC §4).
 
 Legacy (what this moves FROM):
 
-    <home>/bots/data/bots/<id>/    bot.json, events.jsonl, memory.md, skills/, files/, downloads/, inbox/, profile/…
+    <home>/bots/data/bots/<id>/    bot.json, events.jsonl, memory.md, skills/, files/, downloads/, profile/…,
+                                   inbox/*.txt (botsend.py's drop folder, NOT the Inbox)
     <home>/bots/cache/bots/<id>/   shot.png, window.json, steps/, badjson/, …
     ~/Fused/bots/<slug>/<task>/    the old Inbox (+ index.jsonl), pinned per bot as meta["artifacts_dir"]
 
 Target (what it moves TO): `~/Fused/bots/<folder>/` with the public half of
 the meta in `bot.json`, `skills/` beside it, and everything private or
 transient under `<folder>/.fused/` (state.json, events, memory, files,
-downloads, `inbox/<task>/`, `cache/`). The machine-level state under
+downloads, `inbox/<task>/`, `drop/`, `cache/`). The legacy `data/<id>/inbox/`
+was botsend's drop folder, so it lands in `.fused/drop/`, never the Inbox. The machine-level state under
 `<home>/bots/` (browsers, ledgers, dock) is not touched.
 
 Rungs, each a precondition of the next:
@@ -54,6 +56,15 @@ Reserved names at a bot folder's root (`_FOLDER_OWN`): `.fused`, `bot.json`,
 `skills`, `README.md`, `.gitignore`. An old Inbox task folder with one of those
 names is not lifted (logged); it stays in the backup.
 
+Drop fixup (once per home, `.layout-v3-drop` beside `.layout-v3`): earlier
+builds of v3 lifted `data/<id>/inbox/` into `.fused/inbox/` and drained the
+Inbox as the drop folder. On a home stamped by such a build, every bot
+folder's root-level botsend-named files (`botsend.DROP_NAME_RE`) sitting
+directly in `.fused/inbox/` move to `.fused/drop/` (clash -> legacy-leftovers),
+under the migrate lock; task folders, `index.jsonl` and any other file (a
+user's `notes.txt`) are never touched. One listdir per bot; a home stamped by
+this build writes both stamps at once and never runs it.
+
 Runs from `registry._become_owner()` after the FusedBot import (which still
 writes the legacy layout) and before any Bot is built. Never raises.
 """
@@ -82,6 +93,7 @@ from fused_render.shell import storage
 log = logging.getLogger(__name__)
 
 STAMP = ".layout-v3"
+DROP_STAMP = ".layout-v3-drop"  # the one-time drop fixup ran (or was never needed): see the module docstring
 MANIFEST = "manifest.json"
 MANIFEST_VERSION = 3
 # Mirrors fusedbot_import._IGNORE (keep the two in step): Chrome's runtime files under profile/ are not data --
@@ -104,6 +116,16 @@ _ID_RE = re.compile(r"[0-9a-f]{8}")  # paths.place()'s id rule
 
 def stamp_path() -> str:
     return os.path.join(paths.root(), STAMP)
+
+
+def drop_stamp_path() -> str:
+    return os.path.join(paths.root(), DROP_STAMP)
+
+
+def _write_stamps(body: dict) -> None:
+    """`.layout-v3`, then `.layout-v3-drop`: a home migrated by this build never lifted a drop file into the Inbox."""
+    store.write_json_atomic(stamp_path(), body)
+    store.write_json_atomic(drop_stamp_path(), {"at": time.time()})
 
 
 def _result(moved: int = 0, skipped: list | None = None, backup: str | None = None, stamped: bool = False) -> dict:
@@ -714,7 +736,8 @@ def _move_bot(bid: str, meta: dict, *_unused) -> str:
     # `<stage>/<name>/` was `<bots_root>/<name>/` (a pin outside the root is never staged), and that, or the pin as
     # written, is the prefix the index rows carry: collected BEFORE the loop empties the stage.
     names = {n for stg in (staged, f"{staged}-clash") if os.path.isdir(stg) for n in os.listdir(stg)}
-    olds = [os.path.join(paths.legacy_data_dir(), bid, "inbox")] + [os.path.join(root, n) for n in sorted(names)]
+    # (The legacy `data/<id>/inbox/` is not one: it was botsend's drop folder and never held an Inbox row.)
+    olds = [os.path.join(root, n) for n in sorted(names)]
     # A rerun after a crash that moved the index but not yet rewrote it finds the stage gone: the pin, or the slug
     # folder, is still the prefix then, as long as it is no longer a folder (a pin left in place keeps its rows).
     for o in (meta.get("artifacts_dir"), os.path.join(root, _folder_name(bid, meta.get("name")))):
@@ -757,10 +780,9 @@ def _move_bot(bid: str, meta: dict, *_unused) -> str:
         if n == "skills":
             _move_tree(s, os.path.join(folder, "skills"), os.path.join(leftovers, "skills"))
         elif n == "inbox" and os.path.isdir(s) and not os.path.islink(s):
-            landed = []
+            # botsend.py's drop folder (loose `.txt` tasks), not the Inbox: into .fused/drop/, drained as before.
             for c in sorted(os.listdir(s)):
-                _move_tree(os.path.join(s, c), os.path.join(inbox, c), os.path.join(leftovers, "inbox", c), landed)
-            note(s, s, landed)
+                _move_tree(os.path.join(s, c), os.path.join(private, "drop", c), os.path.join(leftovers, "drop", c))
             os.rmdir(s)
         else:
             _move_tree(s, os.path.join(private, n), os.path.join(leftovers, n))
@@ -987,14 +1009,62 @@ def _lock(root: str):
     return fh
 
 
+def _drop_fixup_once() -> None:
+    """The one-time drop fixup (module docstring): on a home stamped by an earlier v3 build, move botsend-named
+    files sitting directly in each bot's `.fused/inbox/` to `.fused/drop/`. Under the migrate lock (held by another
+    process: skipped, the next start retries); the stamp is written only when no bot failed."""
+    from fused_render.bots.botsend import DROP_NAME_RE
+
+    root = paths.bots_root()
+    if not os.path.isdir(root):
+        store.write_json_atomic(drop_stamp_path(), {"at": time.time(), "moved": 0})
+        return
+    held = _lock(root)
+    if held is False:
+        log.warning("bots v3 drop fixup: another process holds %s; retrying next start", os.path.join(root, LOCK))
+        return
+    try:
+        moved, failed = 0, []
+        for n in sorted(os.listdir(root)):
+            folder = os.path.join(root, n)
+            if n.startswith(".") or os.path.islink(folder) or not os.path.isdir(folder):
+                continue
+            private = os.path.join(folder, ".fused")
+            inbox = os.path.join(private, "inbox")
+            if os.path.islink(private) or os.path.islink(inbox) or not os.path.isdir(inbox):
+                continue
+            try:
+                for c in sorted(os.listdir(inbox)):
+                    src = os.path.join(inbox, c)
+                    if not DROP_NAME_RE.match(c) or os.path.islink(src) or not os.path.isfile(src):
+                        continue
+                    _move_tree(src, os.path.join(private, "drop", c), os.path.join(_leftover_dir(folder), "drop", c))
+                    moved += 1
+            except Exception:  # noqa: BLE001
+                log.exception("bots v3 drop fixup: %s failed; the next start retries", folder)
+                failed.append(folder)
+        if not failed:
+            store.write_json_atomic(drop_stamp_path(), {"at": time.time(), "moved": moved})
+        if moved:
+            log.info("bots v3 drop fixup: %d botsend files moved from .fused/inbox to .fused/drop", moved)
+    finally:
+        if held is not True:
+            held.close()
+
+
 def _migrate() -> dict:
     ids = _legacy_bots()
     stamped_before = os.path.exists(stamp_path())
+    if stamped_before and not os.path.exists(drop_stamp_path()):
+        try:
+            _drop_fixup_once()
+        except Exception:  # noqa: BLE001
+            log.exception("bots v3 drop fixup: failed (the next start retries)")
     if not ids:
         if stamped_before:
             return _result(stamped=True)
         # Nothing is removed here: whatever sits in the legacy trees without a bot.json was never backed up.
-        store.write_json_atomic(stamp_path(), {"at": time.time(), "backup": None, "moved": 0, "skipped": []})
+        _write_stamps({"at": time.time(), "backup": None, "moved": 0, "skipped": []})
         return _result(stamped=True)
     if stamped_before:
         # Legacy bots after the stamp: a FusedBot import (which writes the legacy layout) ran on a later start.
@@ -1132,8 +1202,7 @@ def _migrate_locked(ids: list[str], root: str) -> dict:
     aside = _rename_legacy_aside()
     if aside is None:
         return _result(moved=moved, skipped=skipped, backup=dest)
-    store.write_json_atomic(stamp_path(), {"at": time.time(), "backup": dest, "moved": moved, "skipped": skipped,
-                                           "strays": strays})
+    _write_stamps({"at": time.time(), "backup": dest, "moved": moved, "skipped": skipped, "strays": strays})
     for d in aside:
         try:
             shutil.rmtree(d)

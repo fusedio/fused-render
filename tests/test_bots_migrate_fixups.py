@@ -276,3 +276,45 @@ def test_two_old_inboxes_with_one_task_file_keep_both_rows(app_home):
     assert migrate_v3._rewrite_index(extra, olds, inbox) is False
     with open(primary, encoding="utf-8") as f:
         assert f.read() == before
+
+
+def test_legacy_drop_folder_lands_in_dot_fused_drop_not_the_inbox(app_home):
+    """The legacy `data/<id>/inbox/` was botsend's drop folder (loose .txt tasks), never the Inbox: it lands in
+    .fused/drop/, where the scheduler drains it, and no Inbox row or folder names it."""
+    bid = "d1d2d3d4"
+    d = _legacy(app_home, bid, "Dropper")
+    _touch(os.path.join(d, "inbox", "task.txt"), "check the news")
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and r["moved"] == 1
+    assert os.path.isfile(migrate_v3.drop_stamp_path())  # a home migrated by this build never needs the fixup
+    drop = bpaths.bot_drop(bid)
+    with open(os.path.join(drop, "task.txt"), encoding="utf-8") as f:
+        assert f.read() == "check the news"
+    inbox = bpaths.bot_inbox(bid)
+    assert "task.txt" not in os.listdir(inbox)
+    idx = os.path.join(inbox, "index.jsonl")
+    assert not os.path.exists(idx) or "task.txt" not in open(idx, encoding="utf-8").read()
+
+
+def test_drop_fixup_moves_botsend_files_out_of_the_inbox_once(app_home):
+    """A home stamped by an earlier v3 build (no `.layout-v3-drop`): botsend-named files sitting directly in
+    .fused/inbox/ move to .fused/drop/ once; task folders, index.jsonl and a user's notes.txt stay."""
+    bid = "e1e2e3e4"
+    _legacy(app_home, bid, "Fixme")
+    assert migrate_v3.migrate_once()["stamped"] is True
+    os.remove(migrate_v3.drop_stamp_path())  # as an earlier build left it
+    inbox, drop = bpaths.bot_inbox(bid), bpaths.bot_drop(bid)
+    _touch(os.path.join(inbox, "20261101-120000-4242.txt"), "a queued task")
+    _touch(os.path.join(inbox, "notes.txt"), "mine")
+    _touch(os.path.join(inbox, "20261101-1200-t1", "20261101-120000-9.txt"), "task output")
+    _touch(os.path.join(inbox, "index.jsonl"), "")
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and os.path.isfile(migrate_v3.drop_stamp_path())
+    assert os.listdir(drop) == ["20261101-120000-4242.txt"]
+    assert sorted(os.listdir(inbox)) == ["20261101-1200-t1", "index.jsonl", "notes.txt"]
+    assert os.listdir(os.path.join(inbox, "20261101-1200-t1")) == ["20261101-120000-9.txt"]
+    # stamped: a rerun is a no-op
+    _touch(os.path.join(inbox, "20261102-080000-7.txt"), "a later file")
+    migrate_v3.migrate_once()
+    assert os.listdir(drop) == ["20261101-120000-4242.txt"]
+    assert "20261102-080000-7.txt" in os.listdir(inbox)
