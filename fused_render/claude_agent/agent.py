@@ -10268,16 +10268,12 @@ def _global_defaults() -> tuple:
     names something this build's pickers do not offer. "" is the honest answer
     and it is what leaves the caller's own constant speaking — the same one the
     CLI would have resolved for itself."""
-    try:
-        with open(os.path.join(CLAUDE_DIR, "settings.json"), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return "", ""
-    if not isinstance(data, dict):
-        return "", ""
-    model = _short_model(str(data.get("model") or ""))
-    effort = str(data.get("effortLevel") or "").lower()
-    return model, (effort if effort in _EFFORT_LEVELS else "")
+    # The parse itself is `claude_config.lib.global_defaults` — the agent
+    # catalog's Claude `default_model` follows the same file (the row the
+    # embedded workbench's AI pickers open on), so one reader serves both,
+    # pointed here at THIS module's CLAUDE_DIR.
+    from fused_render.claude_config import lib
+    return lib.global_defaults(os.path.join(CLAUDE_DIR, "settings.json"))
 
 
 def _defaults(file: str, session_id: str = "", backend: str = "") -> dict:

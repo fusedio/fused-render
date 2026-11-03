@@ -180,6 +180,52 @@ def read_settings() -> dict:
     return read_json(SETTINGS_PATH, {})
 
 
+#: The Claude model SHORT NAMES the pickers hold, in detection order. A full
+#: id ("claude-fable-5-1-20260401"), an alias ("opusplan") or the short name
+#: itself all collapse to one of these (`short_model`).
+MODEL_SHORT_NAMES = ("fable", "opus", "sonnet", "haiku")
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def short_model(raw: str) -> str:
+    """Any spelling of a Claude model -> its short family name, or "" when it
+    is none of the four the pickers offer."""
+    raw = (raw or "").lower()
+    for name in MODEL_SHORT_NAMES:
+        if name in raw:
+            return name
+    return ""
+
+
+def global_defaults(path: Optional[str] = None) -> tuple[str, str]:
+    """(model, effort) from Claude Code's global `settings.json` — THE global
+    preference the app's Claude settings page writes (`model` /
+    `effortLevel`) and the CLI reads for itself.
+
+    ONE reader for everyone who needs the pair: a brand-new chat
+    (`claude_agent/agent._global_defaults`), the New task card
+    (`GET /api/claude-sessions/defaults`) and the agent catalog's Claude
+    `default_model` (the row the embedded workbench's AI pickers open on).
+    Two readers of one file drift, and a picker that opens on "sonnet" when
+    the chat it books runs on "fable" is the bug that costs.
+
+    A field is "" when the file does not set it, cannot be read or parsed,
+    or names something the pickers do not offer — the honest answer, which
+    leaves the caller's own constant speaking. Tolerant of a malformed file
+    on purpose (unlike `read_settings`): a default is a hint, not config
+    the user is editing."""
+    try:
+        with open(path or SETTINGS_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    model = short_model(str(data.get("model") or ""))
+    effort = str(data.get("effortLevel") or "").lower()
+    return model, (effort if effort in EFFORT_LEVELS else "")
+
+
 def _tmp_path(path: str) -> str:
     """A sibling temp path for the atomic write below, unique to this CALL —
     not just this process. Two threadpool workers in the same server process
