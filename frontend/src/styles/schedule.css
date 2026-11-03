@@ -2085,7 +2085,7 @@ input.schedule-when-field {
      window's right edge less 8px. The panel gives up width first (down to
      240px) so card and panel both fit on a window of ~850px; narrower than
      that it sits over the card's edge rather than off-screen. */
-  left: min(max(calc(50% + 65px), calc(22px + min(580px, 100vw - 32px))), calc(100vw - clamp(240px, 100vw - min(580px, 100vw - 32px) - 30px, 380px) - 8px));
+  left: max(8px, min(max(calc(50% + 65px), calc(22px + min(580px, 100vw - 32px))), calc(100vw - clamp(240px, 100vw - min(580px, 100vw - 32px) - 30px, 380px) - 8px)));
   width: clamp(240px, calc(100vw - min(580px, 100vw - 32px) - 30px), 380px);
   z-index: 50;
   display: flex;
@@ -2282,7 +2282,9 @@ input.schedule-when-field {
   position: fixed;
   top: 10vh;
   /* Same geometry as .schedule-recur above, with this panel's own width. */
-  left: min(max(calc(50% + 65px), calc(22px + min(580px, 100vw - 32px))), calc(100vw - clamp(240px, 100vw - min(580px, 100vw - 32px) - 30px, 460px) - 8px));
+  /* …and never left of the window's own margin either (a window narrower
+     than the panel). */
+  left: max(8px, min(max(calc(50% + 65px), calc(22px + min(580px, 100vw - 32px))), calc(100vw - clamp(240px, 100vw - min(580px, 100vw - 32px) - 30px, 460px) - 8px)));
   width: clamp(240px, calc(100vw - min(580px, 100vw - 32px) - 30px), 460px);
   height: min(600px, 82vh);
   z-index: 50;
