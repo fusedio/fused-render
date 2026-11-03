@@ -6,6 +6,14 @@
 // author's name; the review takes about half an hour and the ListingStrip
 // says where it stands.
 //
+// The same form edits a listing that exists (the Listing card's Edit
+// details, the strip's quiet button): then `action` is `edit-listing` —
+// the row's text at its own commit, `listing.edit_listing` — and the copy
+// says so: "Edit the listing" / Save, not "Publish". The server offers one
+// or the other, never both (`actions_listing.decide`); the strip passes
+// the one it offered, so a listed app's edit is never refused as
+// "not available" for posting the first-listing id.
+//
 // THE LISTING ID IS NOT EDITABLE: the index row is named after the app's
 // own fused-app-id, which the server derives from the app. The draft's
 // `app_id` is shown as a read-only "Listing id" line and never sent back —
@@ -49,7 +57,11 @@ const FALLBACK_CATEGORIES: ListingCategory[] = [
   { id: "geospatial", label: "Geospatial" },
 ];
 
+export const PUBLISH_ID = "publish-market";
+export const EDIT_ID = "edit-listing";
+
 const STEPS = [{ key: "run", label: "Sending your app for review…" }];
+const EDIT_STEPS = [{ key: "run", label: "Sending the change for review…" }];
 
 function categoriesOf(raw: (ListingCategory | string)[] | undefined): ListingCategory[] {
   const out = (raw ?? [])
@@ -72,11 +84,15 @@ type Phase = "loading" | "form" | "sending";
 
 export function PublishDialog({
   dir,
+  action = PUBLISH_ID,
   onClose,
   onPublished,
   onOpenDoctor,
 }: {
   dir: string;
+  /** The listing action the details go out as: `publish-market` (a first
+   *  listing) or `edit-listing` (a listed app's details, same commit). */
+  action?: string;
   onClose: () => void;
   /** The request is open: re-read the listing (it now says In review). */
   onPublished: (message: string | null) => void;
@@ -135,7 +151,7 @@ export function PublishDialog({
       icon: icon.trim() || null,
       preview: preview.trim() || null,
     };
-    const started = await runListingAction(dir, "publish-market", { args: { ...details } });
+    const started = await runListingAction(dir, action, { args: { ...details } });
     if (!started.ok) {
       setError(plainMessage(started));
       setDoctorFix(opensDoctor(started.reason));
@@ -161,6 +177,7 @@ export function PublishDialog({
   };
 
   const sending = phase === "sending";
+  const editing = action === EDIT_ID;
   let body;
   if (phase === "loading") {
     body = (
@@ -171,7 +188,7 @@ export function PublishDialog({
       </div>
     );
   } else if (sending) {
-    body = <JobProgress steps={STEPS} current="run" />;
+    body = <JobProgress steps={editing ? EDIT_STEPS : STEPS} current="run" />;
   } else {
     body = (
       <>
@@ -247,8 +264,12 @@ export function PublishDialog({
       open
       onClose={onClose}
       locked={sending}
-      title="Publish to the Community"
-      description="Fused reviews your app before it is listed, usually in about 30 minutes. Anyone can then find and install it."
+      title={editing ? "Edit the listing" : "Publish to the Community"}
+      description={
+        editing
+          ? "The app stays on its reviewed version; only how it reads in the Community changes. Fused reviews the change, usually in about 30 minutes."
+          : "Fused reviews your app before it is listed, usually in about 30 minutes. Anyone can then find and install it."
+      }
       footer={
         <>
           <Button variant="outline" onClick={onClose} disabled={sending}>
@@ -256,7 +277,7 @@ export function PublishDialog({
           </Button>
           <Button onClick={() => void send()} disabled={!canSend}>
             {sending && <Loader2 data-icon="inline-start" className="animate-spin" />}
-            {sending ? "Sending…" : "Publish"}
+            {sending ? "Sending…" : editing ? "Save" : "Publish"}
           </Button>
         </>
       }

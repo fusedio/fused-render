@@ -1098,8 +1098,20 @@ def _gate_publish(root: str, rec: dict) -> tuple[str, str, str]:
     return repo, branch, tip
 
 
-def _body(kind: str, row: dict | None, name: str, *, repo: str, subjects=()) -> str:
-    if kind == "remove":
+#: The row's listing fields — what Edit details may change (the commit,
+#: repo and branch stay; `remix_of` and the slug are not the author's).
+DETAIL_KEYS = ("name", "description", "category", "tags", "icon", "preview")
+
+
+def _body(kind: str, row: dict | None, name: str, *, repo: str, subjects=(),
+          edited: tuple[str, ...] = ()) -> str:
+    if edited:
+        # Edit details: the same version of the app, read differently.
+        fields = ", ".join(("screenshot" if k == "preview" else k) for k in edited)
+        text = (f"Changes how **{name}** (`{repo}`) reads in the Fused Community; the app "
+                f"stays at `{row['commit'][:7]}`.")
+        text += f"\n\n## What changed\nListing details: {fields}."
+    elif kind == "remove":
         text = (f"Removes **{name}** from the Fused Community. People who installed it keep "
                 "their copy on its last reviewed version.")
     elif kind == "update":
@@ -1256,6 +1268,43 @@ def publish_update(root: str) -> dict:
     subjects = _subjects(root, approved, tip)
     return _send(root, me, row["slug"], row, kind=kind, title=title,
                  body=_body(kind, row, row["name"], repo=repo, subjects=subjects), lo=lo)
+
+
+def edit_listing(root: str, details: dict) -> dict:
+    """Edit details (the Listing card's button, the Publish dialog opened on
+    a listed app): the live row — or the row of the request in review /
+    turned down — with `details` over it, at the SAME commit. Nothing here
+    needs the tip pushed or App Doctor clear: the version of the app does
+    not move, only how it reads. The index reviews the change like any
+    other request (about 30 minutes)."""
+    rec, me, lo = _require(root)
+    pr = lo.get("pr") or {}
+    removing = pr.get("kind") == "remove" and pr.get("state") == "open"
+    base = lo.get("row") or (pr.get("row") if not removing else None)
+    if removing:
+        raise PlainError(f"{lo['name']} is being removed from the Community. Wait for that "
+                         "to finish.", reason="removing")
+    if not isinstance(base, dict):
+        raise PlainError(f"{lo['name']} isn't in the Community yet. Publish it first.",
+                         reason="not-listed")
+    aid = _require_app_id(root)
+    old = old_slug_message(lo.get("name") or _app_name(root), base.get("slug"), aid,
+                           listed=bool(lo.get("row")))
+    if old:
+        raise PlainError(old, reason="old-slug")
+    repo = _str(base.get("repo")) or rec["repo"]
+    row = build_row(root, rec, details, repo=repo, branch=_str(base.get("branch")) or "main",
+                    commit=_str(base.get("commit")), base=base)
+    # The version is the app's at that commit (build_row reads the working
+    # copy's metadata first, which may be ahead): keep the row's own.
+    row["version"] = _str(base.get("version")) or row["version"]
+    edited = tuple(k for k in DETAIL_KEYS if row.get(k) != base.get(k))
+    if not edited:
+        raise PlainError("Nothing changed.", reason="unchanged")
+    kind = "update" if lo.get("row") else "list"
+    title = f"{'Update' if kind == 'update' else 'List'} {row['name']}"
+    return _send(root, me, row["slug"], row, kind=kind, title=title,
+                 body=_body(kind, row, row["name"], repo=repo, edited=edited), lo=lo)
 
 
 def remove(root: str) -> dict:
