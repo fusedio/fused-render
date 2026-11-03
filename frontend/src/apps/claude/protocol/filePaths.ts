@@ -1,7 +1,7 @@
 // Pure helpers behind the in-chat file preview overlay: which files this
 // session wrote, whether a piece of inline code looks like a path, and how a
 // relative path resolves against the chat's working folder.
-import { isDriveAbs } from "@platform/lib/path-url";
+import { canonFsPath, isDriveAbs } from "@platform/lib/path-url";
 import type { Segment } from "./types";
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -38,9 +38,17 @@ export function isAbsolutePath(path: string): boolean {
   return path.startsWith("/") || isDriveAbs(path) || path.startsWith("\\\\");
 }
 
-/** Absolute paths pass through; a relative one joins `cwd`, with `.`/`..`
- *  folded. No cwd leaves a relative path as it is. */
-export function resolveAgainst(path: string, cwd: string | null | undefined): string {
+/** Absolute paths pass through; `~/x` expands against `home` (left as it is
+ *  when home is unknown); a relative one joins `cwd`, with `.`/`..` folded. No
+ *  cwd leaves a relative path as it is. */
+export function resolveAgainst(
+  path: string,
+  cwd: string | null | undefined,
+  home?: string | null,
+): string {
+  if (path.startsWith("~/")) {
+    return home ? canonFsPath(home).replace(/\/+$/, "") + path.slice(1) : path;
+  }
   if (isAbsolutePath(path) || !cwd) return path;
   const parts: string[] = [];
   for (const seg of (cwd.replace(/\/+$/, "") + "/" + path).split("/")) {
@@ -57,12 +65,12 @@ export interface PathCandidate {
 }
 
 /** Does inline code look like a file path? A trailing `:line[:col]` is peeled
- *  off. Only a guess: the caller stats it before marking anything. */
+ *  off; a leading `~/` is allowed, any other `~` is not. Only a guess: the caller stats it before marking anything. */
 export function pathCandidate(text: string): PathCandidate | null {
   const t = text.trim();
   if (!t || t.length > 300 || /\s/.test(t)) return null;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return null;
-  if (/[<>{}()*?|"'`$\\~]/.test(t)) return null;
+  if (/[<>{}()*?|"'`$\\~]/.test(t.startsWith("~/") ? t.slice(2) : t)) return null;
   const m = /^(.*?)(?::(\d+)(?::\d+)?)?$/.exec(t);
   const path = m?.[1] ?? "";
   if (!path || path.endsWith("/")) return null;

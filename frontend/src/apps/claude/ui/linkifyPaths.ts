@@ -56,6 +56,8 @@ export async function linkifyPaths(
   root: LinkRoot,
   opts: {
     cwd?: string | null;
+    /** The user's home folder, for `~/x`. Unknown: such a path is not linked. */
+    home?: string | null;
     stat?: (path: string) => Promise<boolean>;
     /** False once the node tree this ran against has been replaced. */
     live?: () => boolean;
@@ -67,7 +69,8 @@ export async function linkifyPaths(
     if (el.closest("pre")) continue;
     const cand = pathCandidate(el.textContent ?? "");
     if (!cand) continue;
-    const abs = resolveAgainst(cand.path, opts.cwd);
+    if (cand.path.startsWith("~/") && !opts.home) continue;
+    const abs = resolveAgainst(cand.path, opts.cwd, opts.home);
     const list = byPath.get(abs);
     if (list) list.push(el);
     else if (byPath.size < PATH_LINK_MAX) byPath.set(abs, [el]);
