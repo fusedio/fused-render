@@ -308,6 +308,12 @@ def _admits(kind: str, data, *, model_id: str, model_type: str | None,
         # Rule 1, mflux's own `exact_match`: the row's own id names a
         # registry entry directly (a straight browse of a canonical repo,
         # e.g. `black-forest-labs/FLUX.2-klein-4B` itself).
+        # Both rules are gated on `formats.mflux_native_mode(model_id)`, the
+        # very check `mflux_image/worker.py:load` applies: a registry id with
+        # no recipe (e.g. FLUX.1-dev) would be admitted, downloaded, and then
+        # refused at load.
+        if formats.mflux_native_mode(model_id) is None:
+            return False, None
         if model_id in data:
             return True, None
         # Rule 2, mflux's own `explicit_base`: the row's `base_model:` tag

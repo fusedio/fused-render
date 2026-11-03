@@ -54,6 +54,13 @@ def _force_mflux_registry(monkeypatch):
     different registry, overrides this with its own `monkeypatch.setattr`
     call."""
     monkeypatch.setattr(hub_loadable, "mflux_loadable_repos", lambda: _DEFAULT_MFLUX_REPOS)
+    # Admission is also gated on `formats.mflux_native_mode` (the check the
+    # worker's `load()` applies), which reads this registry reader.
+    formats.set_mflux_registry_reader(lambda: {
+        "black-forest-labs/FLUX.2-klein-4B": "flux2-klein-4b",
+        "black-forest-labs/FLUX.2-klein-9B": "flux2-klein-9b",
+        "black-forest-labs/FLUX.1-dev": "dev",
+    })
 
 
 def test_mflux_image_is_a_mflux_kind_backed_by_the_derived_registry(monkeypatch):
@@ -206,14 +213,20 @@ AVAILABLE_MODELS = {
         "black-forest-labs/FLUX.2-klein-4B",
     })
 
-    # And feeding that derived set through admission() for either of the two
-    # entries sharing "black-forest-labs/FLUX.1-dev" never raises and always
-    # admits — membership, not identity, is all admission ever asks.
+    # And feeding that derived set through admission() never raises for the
+    # entries sharing "black-forest-labs/FLUX.1-dev". Klein has a recipe and
+    # is admitted; FLUX.1-dev is in the registry but has NO recipe
+    # (`formats.mflux_native_mode` is None, so `load()` would refuse it after
+    # the download) and is therefore not admitted for mflux-image.
     monkeypatch.setattr(hub_loadable, "mflux_loadable_repos", lambda: result)
-    for model_id in ("black-forest-labs/FLUX.1-dev", "black-forest-labs/FLUX.2-klein-4B"):
-        loadable, reason, runs_on = hub_loadable.admission(
-            runner_codes=("mflux-image",), model_id=model_id, model_type=None)
-        assert (loadable, reason, runs_on) == (True, None, None)
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image",), model_id="black-forest-labs/FLUX.2-klein-4B",
+        model_type=None)
+    assert (loadable, reason, runs_on) == (True, None, None)
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image",), model_id="black-forest-labs/FLUX.1-dev",
+        model_type=None)
+    assert loadable is False and runs_on is None
 
 
 def test_admission_names_the_architecture_that_would_load_it():
@@ -749,3 +762,14 @@ def test_registry_stamp_memo_stats_once_per_window(tmp_path, monkeypatch):
         hub_loadable.mflux_registry_stamp()
         hub_loadable.mflux_available_models()
     assert len(calls) == 1
+
+
+def test_a_registry_id_without_a_recipe_is_not_admitted_for_mflux_and_names_diffusers():
+    """FLUX.1-dev is in mflux's registry but `formats.mflux_native_mode` is
+    None, so the worker's `load()` would raise after the download. Admission
+    uses the same check; Diffusers is named as the runner that can serve it."""
+    loadable, reason, runs_on = hub_loadable.admission(
+        runner_codes=("mflux-image", "diffusers-image"),
+        model_id="black-forest-labs/FLUX.1-dev", model_type=None,
+        names=frozenset({"model_index.json"}), active_runner_code="mflux-image")
+    assert (loadable, runs_on) == (True, "Diffusers")
