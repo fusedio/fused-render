@@ -2897,11 +2897,13 @@ async def api_ai_turn_call(turn_id: str, body: dict = Body(...),
 
 
 @router.post("/api/ai/turns/{turn_id}/results")
-def api_ai_turn_result(turn_id: str, body: dict = Body(...),
-                       x_fused: str | None = Header(default=None)):
+async def api_ai_turn_result(turn_id: str, body: dict = Body(...),
+                             x_fused: str | None = Header(default=None)):
     """The caller's answer to one `tool_call` frame (D1460): `{id, content,
     isError?}`. 404 for a turn that ended, 409 for a call the turn is not
-    waiting on (answered twice, or an id from another turn)."""
+    waiting on (answered twice, or an id from another turn). `async` on
+    purpose, though it awaits nothing: a sync route runs on a worker
+    thread, and `Future.set_result` is not thread-safe."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard

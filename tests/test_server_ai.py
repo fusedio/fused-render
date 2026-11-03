@@ -1737,10 +1737,10 @@ def test_relay_tools_turn_streams_calls_and_answers_the_bridge(monkeypatch):
         assert not call.done()
         # … which the caller answers through the results route.
         turn_id = frames[0]["id"]
-        wrong = _server_ai.api_ai_turn_result(
+        wrong = await _server_ai.api_ai_turn_result(
             turn_id, {"id": "call_nope", "content": "x"}, x_fused="1")
         assert wrong.status_code == 409
-        ok = _server_ai.api_ai_turn_result(
+        ok = await _server_ai.api_ai_turn_result(
             turn_id, {"id": tc["id"], "content": "[\"udf_1\"]"}, x_fused="1")
         assert ok == {"ok": True}
         seen["call"] = await call
@@ -1771,8 +1771,8 @@ def test_relay_tools_turn_streams_calls_and_answers_the_bridge(monkeypatch):
     assert _server_ai._AI_TURNS == {}
     # Gone turn: the bridge and the caller both hear 404.
     assert _server_ai.api_ai_turn_tools(frames[0]["id"], x_fused="1").status_code == 404
-    assert _server_ai.api_ai_turn_result(
-        frames[0]["id"], {"id": tc["id"], "content": ""}, x_fused="1").status_code == 404
+    assert asyncio.run(_server_ai.api_ai_turn_result(
+        frames[0]["id"], {"id": tc["id"], "content": ""}, x_fused="1")).status_code == 404
 
 
 def test_relay_tools_turn_closing_fails_a_parked_call(monkeypatch):
