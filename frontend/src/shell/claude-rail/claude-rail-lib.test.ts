@@ -12,6 +12,7 @@ import {
   keepMarks,
   onRail,
   placeName,
+  placeRoot,
   railRows,
   railScope,
   readMark,
@@ -258,6 +259,21 @@ describe("readMark / dotCleared / keepMarks", () => {
     expect(keepMarks(kept, [row(2)])).toBe(kept);
     const empty = new Map();
     expect(keepMarks(empty, [row(2)])).toBe(empty);
+  });
+});
+
+describe("placeRoot", () => {
+  const FOLDER: RailPlace = { kind: "folder", dir: "/home/me/apps/demo" };
+  const FILE: RailPlace = { kind: "file", file: "/home/me/notes/plan.md" };
+  it("is the same canvas with or without a node selected", () => {
+    expect(placeRoot({ ...PLACE, file: "hex.py" })).toBe(placeRoot(PLACE));
+    expect(placeRoot({ ...PLACE, file: null })).toBe(placeRoot(PLACE));
+  });
+  it("tells canvases, folders and files apart", () => {
+    expect(placeRoot(PLACE)).not.toBe(placeRoot({ ...PLACE, name: "other" }));
+    expect(placeRoot(FOLDER)).toBe(placeRoot({ ...FOLDER, dir: FOLDER.dir + "/" }));
+    expect(placeRoot(FOLDER)).not.toBe(placeRoot({ kind: "folder", dir: "/elsewhere" }));
+    expect(placeRoot(FILE)).not.toBe(placeRoot(FOLDER));
   });
 });
 

@@ -64,8 +64,14 @@ export const PEEK_WIDTH = 420;
 /** The card's height cap; shorter rows shrink it. */
 export const PEEK_MAX_HEIGHT = 640;
 /** A pinned card can be dragged no smaller than this (RailPeek's corner
- *  grips): room for the head's seats and a usable composer. */
-export const PEEK_MIN_WIDTH = 280;
+ *  grips), and `peekPlacement` draws no card in a row with less room: the
+ *  chat column's own floor is 340px (apps/claude/styles/chat.css `.c-chat`
+ *  `min-width`, measured off legacy), under which the transcript and the
+ *  composer stop shrinking and the card CLIPS them at its edge — the head's
+ *  Open and ⋮ and the words of every turn cut off (owner, 2026-11-03,
+ *  "content getting clipped"; it was 280). 340 + the card's two 1px borders
+ *  + a hand's width for the head's seats. */
+export const PEEK_MIN_WIDTH = 360;
 export const PEEK_MIN_HEIGHT = 240;
 /** …and no wider than the chat's own reading column (owner, 2026-11-02:
  *  "max width in resize should be the max width I can have for Claude chat
@@ -113,7 +119,9 @@ export function peekPlacement(anchor: Box, rail: Box, bounds: Box, wish: number 
   const room = rail.left - bounds.left - PEEK_GAP - PEEK_INSET;
   const width = Math.min(w.width ?? PEEK_WIDTH, PEEK_MAX_WIDTH, room);
   const height = Math.min(w.maxHeight ?? PEEK_MAX_HEIGHT, bounds.height - 2 * PEEK_INSET);
-  if (width < 120 || height < 120) return null;
+  // Under the chat's floor the card would clip its chat (PEEK_MIN_WIDTH):
+  // no card, and the ring's press opens the pane instead (ClaudeRail).
+  if (width < PEEK_MIN_WIDTH || height < 120) return null;
   const left = rail.left - PEEK_GAP - width;
   const minTop = bounds.top + PEEK_INSET;
   const maxTop = bounds.top + bounds.height - PEEK_INSET - height;
