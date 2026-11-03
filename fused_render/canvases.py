@@ -3812,8 +3812,13 @@ class _SyncManager:
                         # network call — so outside _op_lock; only adopting
                         # the answer takes it.
                         probe = self._probe_remote()
+                        # Not while a Claude session is live: the merge may
+                        # rewrite canvas.toml, which the session writes
+                        # without a lock. Its own push adopts the same move
+                        # through the push route instead.
                         if (probe is not None and self._remote is not None
                                 and self._remote_moved(self._remote, probe)
+                                and not self.agent_run_id()
                                 and self._adopt_converged_deletes(probe)):
                             continue  # the server only caught up with this clone
                         if probe is not None:
