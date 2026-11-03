@@ -44,6 +44,7 @@ import {
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
 import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
+import { PERMISSION_LABELS as SHARED_PERMISSION_LABELS } from "@platform/lib/permission-modes";
 import { narrowPermission, useDefaultPermission } from "../feature-flag";
 import {
   capsOf,
@@ -90,25 +91,29 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
   "acceptEdits",
   "auto",
 ];
+/** How each mode is SAID — the card's words (platform/lib/permission-modes),
+ *  shared with the New task card so the two pickers read the same (Akshil,
+ *  2026-11-02). Typed down to the four keys here. */
 export const PERMISSION_LABELS: Record<PermissionMode, string> = {
-  plan: "plan first",
-  prompt: "ask every time",
-  acceptEdits: "auto-accept edits",
-  auto: "Claude decides",
+  plan: SHARED_PERMISSION_LABELS.plan,
+  prompt: SHARED_PERMISSION_LABELS.prompt,
+  acceptEdits: SHARED_PERMISSION_LABELS.acceptEdits,
+  auto: SHARED_PERMISSION_LABELS.auto,
 };
-/** The same labels with the AGENT named in the one that names it ("Copilot
- *  decides", D18). The Claude row is `PERMISSION_LABELS` byte for byte. */
-export function permissionLabelsFor(agent: string): Record<PermissionMode, string> {
-  return agent === "Claude" ? PERMISSION_LABELS : { ...PERMISSION_LABELS, auto: `${agent} decides` };
+/** One vocabulary for every agent now that no label names one ("Copilot
+ *  decides" went with "Claude decides"). Kept so the readers that asked by
+ *  agent still get an answer. */
+export function permissionLabelsFor(_agent: string): Record<PermissionMode, string> {
+  return PERMISSION_LABELS;
 }
 /** The DISTINGUISHING word of each label, never a truncation — for the pill
  *  only, and only when the row has run out of width (T:11858-11870). The menu
  *  always spells the sentences out. */
 export const PERMISSION_SHORT: Record<PermissionMode, string> = {
-  plan: "plan",
-  prompt: "ask",
-  acceptEdits: "edits",
-  auto: "decides",
+  plan: "Plan",
+  prompt: "Ask",
+  acceptEdits: "Edits",
+  auto: "Auto",
 };
 
 export const DEFAULT_MODEL = "sonnet";
@@ -124,7 +129,7 @@ export const DEFAULT_PERMISSION: PermissionMode = "prompt";
 export const GROUP_LABELS = {
   model: "Model",
   effort: "Effort",
-  permission: "Approvals",
+  permission: "Mode",
 } as const;
 /** Pill accessible names (03 §F). */
 export const PILL_ARIA = {

@@ -357,7 +357,7 @@ const ENTRIES = [
     group: "tasks",
     section: "Running",
     label: "Default approvals for new chats",
-    description: "What a new Claude chat starts on: plan first, ask every time, auto-accept edits, or Claude decides. Each chat's own pick still wins and is remembered.",
+    description: "What a new Claude chat starts on: Plan only, Ask every time, Accept edits, or Auto. Each chat's own pick still wins and is remembered.",
     keywords: "approvals permission mode default auto plan ask accept edits",
   },
   {

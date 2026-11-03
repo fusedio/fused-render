@@ -165,9 +165,10 @@ async function openCard(
   return box!;
 }
 
-/** The property pill a control lives in — Model and Thinking share one. */
+/** The property pill a control lives in — Model, Thinking and Permissions are
+ *  one pill each (Akshil, 2026-11-02, the composer's own row). */
 function pillOf(b: ReactTestRenderer, aria: string) {
-  const name = aria === "Thinking" ? "Model" : aria;
+  const name = aria;
   return b.root.findAll(
     (n) => n.type === "button" && n.props["aria-label"] === name
       && n.props["aria-haspopup"] === "dialog",
@@ -177,6 +178,8 @@ function pillOf(b: ReactTestRenderer, aria: string) {
 /** Everything a node prints, flattened — menu rows are text plus an icon. */
 function textOf(n: unknown): string {
   if (typeof n === "string") return n;
+  // A row's screen-reader-only description is not what it SAYS on screen.
+  if ((n as { props?: { className?: string } }).props?.className === "sr-only") return "";
   const kids = (n as { children?: unknown[] }).children;
   return Array.isArray(kids) ? kids.map(textOf).join("") : "";
 }
@@ -187,18 +190,8 @@ function label(b: ReactTestRenderer, aria: string): string {
   const trigger = pillOf(b, aria);
   const said = trigger.findAll((n) => String(n.props?.className ?? "").startsWith("pp-v"))[0];
   const text = textOf(said);
-  // The pill says "Fable (low)": the model is the part before the brackets.
-  if (aria === "Model") return text.replace(/\s*\(.*\)$/, "");
-  if (aria === "Thinking") {
-    // Thinking is not in the pill (the row must stay on one line): read the
-    // checked row of the popover's Thinking group.
-    const find = () => b.root.findAll((n) => n.props?.role === "group" && n.props["aria-label"] === "Thinking")[0];
-    // The popover only mounts its rows while open: open it for the read.
-    if (!find()) act(() => { pillOf(b, "Model").props.onClick(); });
-    const group = find();
-    const on = group?.findAll((n) => n.type === "button" && n.props["aria-checked"] === true)[0];
-    return on ? textOf(on) : "";
-  }
+  // Each pill says its one word: "Fable", "Low", "Auto" — never "Fable (low)".
+  expect(text).not.toMatch(/\(/);
   return text;
 }
 
@@ -208,7 +201,7 @@ async function pick(b: ReactTestRenderer, aria: string, choice: string) {
   const find = () => aria === "Permissions"
     ? b.root.findAll((n) => n.props?.role === "menu" && n.props["aria-label"] === "Permissions")[0]
     : b.root.findAll((n) => n.props?.role === "group" && n.props["aria-label"] === aria)[0];
-  // Model and Thinking share one popover that stays up between picks.
+  // Every pill's popover is its own and closes on a pick: open it for this one.
   if (!find()) await act(async () => { pillOf(b, aria).props.onClick(); });
   const scope = find();
   expect(scope, `no ${aria} menu`).toBeTruthy();
@@ -216,6 +209,8 @@ async function pick(b: ReactTestRenderer, aria: string, choice: string) {
     .find((o) => textOf(o) === choice);
   expect(option, `no "${choice}" option under ${aria}`).toBeTruthy();
   await act(async () => { option!.props.onClick(); });
+  // One decision per popover: a pick closes it.
+  expect(find(), `${aria} popover stayed open after a pick`).toBeFalsy();
 }
 
 /** Type into one of the card's text boxes, addressed the way a reader finds it

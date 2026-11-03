@@ -276,7 +276,7 @@ function WorkspaceCard({
   const bg = bgJobBadge(task);
   // The worktree counts collapse to one word badge (dirtyBadge); the exact counts
   // ride in its tooltip. "unknown", "checking" and the rest stay as text.
-  const reasonList = visibleReasons(reasons);
+  const reasonList = visibleReasons(reasons, group);
   const dirty = dirtyBadge(reasonList);
   // "checking" renders as a shimmer pill in the badge slot, never as text.
   const checking = reasonList.includes("checking");

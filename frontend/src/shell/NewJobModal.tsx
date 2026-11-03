@@ -12,7 +12,7 @@
 // its own — only "Custom (cron)…" reveals one extra input.
 import { canonFsPath } from "@platform/lib/path-url";
 import {
-  useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
+  Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject,
 } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
@@ -114,7 +114,8 @@ import {
   taskRunOptions,
 } from "./schedule-lib";
 import { whereParts } from "./where-label";
-import { ICON_CLOCK, ICON_CPU, ICON_FOLDER, ICON_PLUS, ICON_SHIELD } from "./ScheduleCalendar";
+import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
+import { PERMISSION_HINTS, permissionLabel } from "@platform/lib/permission-modes";
 import { CanvasGlyph } from "@apps/canvases/glyph";
 // `~/…` for a path under home — the one way this app shortens a folder, shared
 // with the Tasks page rather than written a second time here.
@@ -550,12 +551,12 @@ function CheckField({
 //
 // `display: contents` on the wrapper (new-task.css): the pills stay direct
 // flex items of `.nt-pills`.
-type PillName = "where" | "when" | "access" | "model" | "agent";
-const PILL_NAMES: readonly PillName[] = ["where", "when", "access", "model", "agent"];
+type PillName = "where" | "when" | "access" | "model" | "effort" | "agent";
+const PILL_NAMES: readonly PillName[] = ["where", "when", "access", "model", "effort", "agent"];
 
 function PropPill({
   k, icon, value, open, onToggle, onDismiss, onKeyDown, pillRef, children,
-  className, ariaLabel, invalid, empty, popWidth, popHeight, popClassName,
+  className, ariaLabel, invalid, empty, popWidth, popHeight, popClassName, align,
 }: {
   k: string;
   icon?: ReactNode;
@@ -578,6 +579,10 @@ function PropPill({
   popWidth: number;
   popHeight: number;
   popClassName?: string;
+  /** Which edge of the pill the popover hangs from. `end` for the pills on
+   *  the right of the row (Folder, When): a panel opening leftward from a
+   *  pill at the card's right edge would otherwise run off the card. */
+  align?: "start" | "end";
 }) {
   const popRef = useRef<HTMLDivElement>(null);
   // Closed BY FOCUS LEAVING, as opposed to by a pick or Escape: focus is
@@ -643,7 +648,7 @@ function PropPill({
           role="dialog"
           aria-label={ariaLabel}
           className={"schedule-pop nt-pop" + (popClassName ? " " + popClassName : "")}
-          style={{ ...popStyle(pillRef.current, popHeight), width: popWidth }}
+          style={{ ...popStyle(pillRef.current, popHeight, false, false, align === "end", popWidth), width: popWidth }}
         >
           {children}
         </div>
@@ -1425,17 +1430,9 @@ const NTH_LABELS = ["first", "second", "third", "fourth", "fifth"];
 const RECUR_UNITS: readonly RecurrenceRule["freq"][] = ["hour", "day", "week", "month"];
 const LEGACY_RECUR_UNITS: readonly RecurrenceRule["freq"][] = [...RECUR_UNITS, "year"];
 
-// How a permission mode is SAID. The keys are the server's contract and stay
-// exactly as they are on the wire; only the reading changes. A mode this map
-// has never heard of shows its key, which is still better than hiding it.
-const PERMISSION_LABELS: Record<string, string> = {
-  auto: "Auto",
-  acceptEdits: "Accept edits",
-  plan: "Plan only",
-  prompt: "Ask every time",
-};
-
-const permissionLabel = (key: string) => PERMISSION_LABELS[key] ?? key;
+// How a permission mode is SAID: platform/lib/permission-modes, the one copy
+// the chat composer's Approvals pill reads too. The keys are the server's
+// contract and stay exactly as they are on the wire; only the reading changes.
 
 /** Claude Code's own picker order: ask → accept edits → plan → auto. */
 const PERMISSION_ORDER = ["prompt", "acceptEdits", "plan", "auto"];
@@ -4404,11 +4401,16 @@ export default function NewJobModal({
   const [whenPane, setWhenPane] = useState<"presets" | "custom">("presets");
   const [accessOpen, setAccessOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [effortOpen, setEffortOpen] = useState(false);
+  // The Thinking pill is not drawn for a model that takes no levels; an open
+  // flag left behind would reopen the popover the moment the pill came back.
+  useEffect(() => { if (!runEfforts.length) setEffortOpen(false); }, [runEfforts.length]);
   const [agentOpen, setAgentOpen] = useState(false);
   const wherePillRef = useRef<HTMLButtonElement>(null);
   const whenPillRef = useRef<HTMLButtonElement>(null);
   const accessPillRef = useRef<HTMLButtonElement>(null);
   const modelPillRef = useRef<HTMLButtonElement>(null);
+  const effortPillRef = useRef<HTMLButtonElement>(null);
   const agentPillRef = useRef<HTMLButtonElement>(null);
   const dismissPill = (which: PillName) => {
     if (which === "where") {
@@ -4422,12 +4424,16 @@ export default function NewJobModal({
       setAccessOpen(false);
     } else if (which === "agent") {
       setAgentOpen(false);
+    } else if (which === "effort") {
+      setEffortOpen(false);
     } else {
       setModelOpen(false);
     }
   };
   const togglePill = (which: PillName) => {
-    const wasOpen = { where: recentsOpen, when: whenOpen, access: accessOpen, model: modelOpen, agent: agentOpen }[which];
+    const wasOpen = {
+      where: recentsOpen, when: whenOpen, access: accessOpen, model: modelOpen, effort: effortOpen, agent: agentOpen,
+    }[which];
     for (const other of PILL_NAMES) if (other !== which) dismissPill(other);
     if (wasOpen) {
       dismissPill(which);
@@ -4447,6 +4453,8 @@ export default function NewJobModal({
       setAccessOpen(true);
     } else if (which === "agent") {
       setAgentOpen(true);
+    } else if (which === "effort") {
+      setEffortOpen(true);
     } else {
       setModelOpen(true);
     }
@@ -4907,17 +4915,18 @@ export default function NewJobModal({
     setTimeOpen(false);
     setWhenPane("presets");
   };
+  // The mode hints' ids: the hover panel is aria-hidden, so each row also
+  // describes itself by a clipped span a screen reader can read.
+  const permHintBase = useId();
   const permissionOptions = [...(permissionModes.length ? permissionModes : ["auto"])]
     // No plan mode for an agent without one (§7 `plan_mode`).
     .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
     .sort((a, b) => permissionRank(a) - permissionRank(b));
-  // MODEL's value: the model, then how hard it thinks in brackets — "Fable
-  // (med)" (owner, 2026-10-23: the effort was invisible outside the popover).
-  // Short and lowercase so the four pills keep to one line; nothing for a
-  // model that takes no effort.
+  // Two pills, two words — the way the chat composer says them ("Fable",
+  // "low"), one decision each (Akshil, 2026-11-02). The model pill used to fold
+  // the level in as "Sonnet (high)"; the level has its own pill now.
   const effortText = runEfforts.length ? taskRunLabel(runEfforts, effort) : "";
-  const modelText = (taskRunLabel(runModels, model) || "Default")
-    + (effortText ? ` (${effortText.toLowerCase().replace(/^medium$/, "med")})` : "");
+  const modelText = taskRunLabel(runModels, model) || "Default";
 
   // THE WHERE POPOVER'S KEYS (arrows, Tab, Enter). On the pill's wrapper, not the
   // input: a row reached by Tab is focusable too. Escape is PropPill's — it
@@ -5431,23 +5440,25 @@ export default function NewJobModal({
         </div>
 
         <div className="nt-pills">
-          {/* WHICH Claude, and HOW HARD — one pill, because they are one decision
-              read together ("Fable, thinking high"). Picking does not close the
-              popover: there are two things to set. A model is the rarest thing
-              anyone changes about a task; nothing about either appears on the
-              task row or the calendar chip (design: the card asks, the list
-              stays quiet). */}
+          {/* THE RUN'S THREE WORDS, said the way the chat composer says them:
+              model, thinking, approvals — three bare pills (text and a chevron,
+              no icon, no key) on the LEFT, with where and when as the bordered
+              chips on the RIGHT (Akshil, 2026-11-02, from the composer's own
+              row). Each pill is one decision and one popover; a model is the
+              rarest thing anyone changes about a task, and nothing about any of
+              the three appears on the task row or the calendar chip (design:
+              the card asks, the list stays quiet). */}
           <PropPill
             k=""
-            icon={ICON_CPU}
+            className="pp--bare"
             ariaLabel="Model"
             value={modelText}
             open={modelOpen}
             onToggle={() => togglePill("model")}
             onDismiss={() => dismissPill("model")}
             pillRef={modelPillRef}
-            popWidth={260}
-            popHeight={300}
+            popWidth={220}
+            popHeight={taskRunOptions(runModels, model).length * 28 + 40}
           >
             <div className="nt-pop-h">Model</div>
             {/* Same contract as Permissions: the KEY is submitted, the label is
@@ -5462,75 +5473,106 @@ export default function NewJobModal({
                   role="menuitemradio"
                   aria-checked={model === o.key}
                   disabled={(o as { disabled?: boolean }).disabled}
-                  onClick={() => pickModel(o.key)}
+                  onClick={() => { pickModel(o.key); setModelOpen(false); }}
                 >
                   {o.label}
                   {model === o.key && ICON_CHECK}
                 </button>
               ))}
             </div>
-            {/* "Thinking", not "Effort" (the CLI's word for the flag): what the
-                user is choosing is how long Claude gets to think before it
-                acts, and the chat's own pill says the same thing. The wire is
-                untouched — this is the label. NOT DRAWN for a model that
-                takes no effort (a Copilot model whose catalog row lists
-                none): a section of levels the spawn would drop is a choice
-                that does nothing. */}
-            {runEfforts.length ? (
-              <>
-                <div className="nt-pop-h">Thinking</div>
-                <div className="nt-menu" role="group" aria-label="Thinking">
-                  {taskRunOptions(runEfforts, effort).map((o) => (
-                    <button
-                      key={o.key}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={effort === o.key}
-                      disabled={(o as { disabled?: boolean }).disabled}
-                      onClick={() => pickEffort(o.key)}
-                    >
-                      {o.label}
-                      {effort === o.key && ICON_CHECK}
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : null}
           </PropPill>
+          {/* "Thinking", not "Effort" (the CLI's word for the flag): what the
+              user is choosing is how long Claude gets to think before it
+              acts, and the chat's own pill says the same thing. The wire is
+              untouched — this is the label. NOT DRAWN for a model that
+              takes no effort (a Copilot model whose catalog row lists
+              none): a pill of levels the spawn would drop is a choice
+              that does nothing. */}
+          {runEfforts.length ? (
+            <PropPill
+              k=""
+              className="pp--bare"
+              ariaLabel="Thinking"
+              value={effortText}
+              open={effortOpen}
+              onToggle={() => togglePill("effort")}
+              onDismiss={() => dismissPill("effort")}
+              pillRef={effortPillRef}
+              popWidth={200}
+              popHeight={taskRunOptions(runEfforts, effort).length * 28 + 40}
+            >
+              <div className="nt-pop-h">Thinking</div>
+              <div className="nt-menu" role="group" aria-label="Thinking">
+                {taskRunOptions(runEfforts, effort).map((o) => (
+                  <button
+                    key={o.key}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={effort === o.key}
+                    disabled={(o as { disabled?: boolean }).disabled}
+                    onClick={() => { pickEffort(o.key); setEffortOpen(false); }}
+                  >
+                    {o.label}
+                    {effort === o.key && ICON_CHECK}
+                  </button>
+                ))}
+              </div>
+            </PropPill>
+          ) : null}
           <PropPill
             k=""
-            icon={ICON_SHIELD}
+            className="pp--bare"
             ariaLabel="Permissions"
             value={permissionLabel(permission)}
             open={accessOpen}
             onToggle={() => togglePill("access")}
             onDismiss={() => dismissPill("access")}
             pillRef={accessPillRef}
-            popWidth={260}
-            popHeight={210}
+            popWidth={220}
+            popHeight={permissionOptions.length * 28 + 40}
           >
-            {/* The KEY is what gets submitted; the label is only how the mode is
-                said. The raw keys ("acceptEdits") were the server's vocabulary
-                printed at the user (audit 2026-08-16), and an unknown key still
-                shows itself rather than being hidden. */}
+            {/* "Mode" — the composer's word for the same list (Akshil,
+                2026-11-02) and the heading the Model and Thinking menus have.
+                The KEY is what gets submitted; the label is only how the mode
+                is said. The raw keys ("acceptEdits") were the server's
+                vocabulary printed at the user (audit 2026-08-16), and an unknown
+                key still shows itself rather than being hidden.
+
+                What a mode MEANS is on the row's hover (`data-hint`, the app's
+                instant tooltip), one line per mode, not printed under the menu:
+                the note that used to sit there described Auto alone, for every
+                pick. A screen reader gets the same sentence from a clipped span
+                the row points at — a SIBLING of the button, not a child, so the
+                row's accessible name stays the mode's word alone. */}
+            <div className="nt-pop-h">Mode</div>
             <div className="nt-menu" role="menu" aria-label="Permissions">
               {permissionOptions.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={permission === m}
-                  onClick={() => { setPermission(m); setAccessOpen(false); }}
-                >
-                  {permissionLabel(m)}
-                  {permission === m && ICON_CHECK}
-                </button>
+                <Fragment key={m}>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={permission === m}
+                    data-hint={PERMISSION_HINTS[m]}
+                    aria-describedby={PERMISSION_HINTS[m] ? `${permHintBase}-${m}` : undefined}
+                    onClick={() => { setPermission(m); setAccessOpen(false); }}
+                  >
+                    {permissionLabel(m)}
+                    {permission === m && ICON_CHECK}
+                  </button>
+                  {PERMISSION_HINTS[m] && (
+                    <span id={`${permHintBase}-${m}`} className="sr-only">{PERMISSION_HINTS[m]}</span>
+                  )}
+                </Fragment>
               ))}
             </div>
-            <div className="nt-menu-note">
-              The task runs unattended. Auto approves safe actions and holds the rest.
-            </div>
           </PropPill>
+          {/* WHERE and WHEN, on the right edge as a group of their own: the
+              group takes the row's slack (`margin-left: auto`) and, on a row
+              too narrow for all five, drops to a second line still flush
+              right. A wrapper rather than a gap item, because the pills sit in
+              `display: contents` wrappers and the where pill is one of two
+              elements (`WherePill` on a locked card). */}
+          <div className="nt-pills-right">
           {/* NOT THERE AT ALL inside an app's Tasks tab (Akshil, 2026-09-19: "in
               dedicated tasks when we open the new task modal, hide the path
               field"): a control whose one answer is already known is a control
@@ -5564,7 +5606,10 @@ export default function NewJobModal({
               popWidth={300}
               popHeight={320}
               popClassName="nt-pop--where"
+              align="end"
             >
+              {/* The heading the other four popovers have (Akshil, 2026-11-03). */}
+              <div className="nt-pop-h">Folder</div>
               <input
                 ref={pathRef}
                 type="text"
@@ -5883,7 +5928,8 @@ export default function NewJobModal({
             pillRef={whenPillRef}
             popWidth={250}
             popHeight={whenPane === "presets" ? 250 : 200}
-          >
+          
+            align="end">
             {whenPane === "presets" ? (
               <>
                 <div className="nt-pop-h">Run</div>
@@ -6077,6 +6123,7 @@ export default function NewJobModal({
               </>
             )}
           </PropPill>
+          </div>
         </div>
         {/* EVERY LINE THE ROWS USED TO PRINT UNDER THEMSELVES, in one place: the
             path's refusal, who runs the task, what leaving the session costs,

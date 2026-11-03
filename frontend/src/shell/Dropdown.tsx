@@ -50,7 +50,7 @@ const POP_EDGE = 8;
  * ancestor — every other host of this card — answers the viewport, which is what
  * the arithmetic below has always assumed.
  */
-function fixedBox(el: HTMLElement | null): { x: number; y: number; h: number } {
+function fixedBox(el: HTMLElement | null): { x: number; y: number; w: number; h: number } {
   for (let node = el?.parentElement ?? null; node; node = node.parentElement) {
     const cs = getComputedStyle(node);
     // `""` is what a stand-in stylesheet answers, and it is not a transform —
@@ -60,10 +60,14 @@ function fixedBox(el: HTMLElement | null): { x: number; y: number; h: number } {
       || (cs.perspective && cs.perspective !== "none");
     if (transformed) {
       const r = node.getBoundingClientRect();
-      return { x: r.left, y: r.top, h: r.height };
+      return { x: r.left, y: r.top, w: r.width, h: r.height };
     }
   }
-  return { x: 0, y: 0, h: window.innerHeight };
+  // `clientWidth`, not `innerWidth`: a classic (non-overlay) scrollbar is
+  // inside innerWidth but outside the box `right` resolves against. (A test
+  // DOM has no documentElement; innerWidth stands in there.)
+  const w = document.documentElement?.clientWidth || window.innerWidth;
+  return { x: 0, y: 0, w, h: window.innerHeight };
 }
 
 export function popStyle(
@@ -87,6 +91,19 @@ export function popStyle(
    * run off the card or the viewport.
    */
   scrolls = false,
+  /**
+   * HANG FROM THE TRIGGER'S RIGHT EDGE instead of its left. For a trigger at
+   * the right edge of its card (the New task card's Folder and When pills,
+   * 2026-11-02): a panel wider than the trigger that opens rightward from its
+   * left edge runs off the card and the window; one that opens leftward from
+   * its right edge stays over the card. Stated as `right`, resolved against
+   * the same box as `left` would be.
+   */
+  alignEnd = false,
+  /** The panel's own width, for the alignEnd clamp: a panel hanging from a
+   *  trigger near the window's LEFT edge would otherwise run off it, so it
+   *  switches to a `left` of POP_EDGE instead. Unused without alignEnd. */
+  width?: number,
 ): React.CSSProperties {
   const r = el?.getBoundingClientRect();
   if (!r) return {};
@@ -105,9 +122,14 @@ export function popStyle(
   // reckoned in viewport terms, because what the reader cares about is whether
   // the panel is on their screen; only the offsets are converted.
   const o = fixedBox(el);
-  const s: React.CSSProperties = {
-    position: "fixed", left: r.left - o.x, right: "auto", top: "auto", bottom: "auto",
-  };
+  // alignEnd hangs the panel from the trigger's RIGHT edge — unless that
+  // would push its left edge off the window, in which case it sits at the
+  // window's left margin instead (a Folder pill beside an open Browse panel
+  // on a narrow window).
+  const offLeft = alignEnd && width !== undefined && r.right - width < POP_EDGE;
+  const s: React.CSSProperties = alignEnd && !offLeft
+    ? { position: "fixed", left: "auto", right: o.x + o.w - r.right, top: "auto", bottom: "auto" }
+    : { position: "fixed", left: offLeft ? POP_EDGE - o.x : r.left - o.x, right: "auto", top: "auto", bottom: "auto" };
   if (scrolls) {
     const below = window.innerHeight - r.bottom - 4 - POP_EDGE;
     const above = r.top - 4 - POP_EDGE;
