@@ -95,6 +95,18 @@ describe("buildHandoffDraft", () => {
     (t[1] as any).segments[0].input.file_path = "/w/proj/src/x.md";
     expect(buildHandoffDraft(t, "/w/proj/.claude/handoffs")).toBe("Findings: X is Y.");
   });
+  test("a trailing-slash dir keeps the whole filename; nested .md counts", () => {
+    const w = (path: string) => [
+      turns[0]!,
+      {
+        role: "assistant" as const,
+        segments: [{ kind: "tool" as const, name: "Write", input: { file_path: path } }],
+      } as unknown as (typeof turns)[number],
+    ];
+    expect(buildHandoffDraft(w("/d/handoffs/a.md"), "/d/handoffs/")).toContain("Handoff file: /d/handoffs/a.md");
+    expect(buildHandoffDraft(w("/d/handoffs/a/b.md"), "/d/handoffs/")).toContain("Handoff file: /d/handoffs/a/b.md");
+    expect(buildHandoffDraft(w("/d/other/a.md"), "/d/handoffs/")).not.toContain("Handoff file");
+  });
   test("without a dir, any .claude/handoffs markdown counts; empty transcript is empty", () => {
     expect(buildHandoffDraft(turns)).toContain("Handoff file: /w/proj/.claude/handoffs/x.md");
     expect(buildHandoffDraft([])).toBe("");

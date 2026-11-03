@@ -4928,8 +4928,7 @@ def _start(file: str, message: str, session_id: str, model: str,
             return {"error": "breakout is only available for Claude chats",
                     "reason": "unsupported", "backend": backend}
         if _bad_id(session_id):
-            return {"error": "message not found in this conversation",
-                    "reason": "fork_target_missing"}
+            return {"error": "malformed session id"}
         if not fork_at:
             tip_fork, forked_from = True, session_id
     if fork_at:

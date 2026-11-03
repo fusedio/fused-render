@@ -123,3 +123,8 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 - Send back goes through the existing `stranded`/`restore` composer seat (appends after a single newline, draft stays synced) rather than a separate `setText` path; plan said a blank line, single newline is what the seat does.
 - Card reads its session and transcript through a new `onBreakoutState` prop on ClaudeChat/ChatMount (fires on turns change, breakout posture only). "Used" for the Close confirm = the breakout has a user turn with a live-send key (`u:`).
 - `onBreakout` wired on: Preview (2 mounts), ListingPreviewPane, AppPage, CanvasWorkspace, TaskPeek. Not on TaskCards/RailPeek. A composer-side Breakout button sits in the chat's top strip (`.c-breakout`).
+
+### Review fix round
+- session_host `own_sid`: a breakout only takes `new_session_id` when one was minted (`resume_at` or breakout with a minted id); a `breakout: resume` start keeps `req["session_id"]`. Test reads host.json.
+- agent `_start`: a bad session id on a breakout now returns `malformed session id` (the existing bad-session error), not `fork_target_missing`.
+- breakouts.ts `lastHandoffPath`: with a dir, any `.md` under the trailing-slash-stripped dir counts (nested allowed), matching the server policy; the broken slice is gone.

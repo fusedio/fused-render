@@ -137,9 +137,7 @@ function lastHandoffPath(turns: readonly HandoffTurn[], handoffDir?: string): st
       if (seg.kind !== "tool" || !seg.name || !WRITE_TOOLS.has(seg.name)) continue;
       const p = seg.input?.["file_path"];
       if (typeof p !== "string" || !p.endsWith(".md")) continue;
-      const ok = handoffDir
-        ? p.startsWith(handoffDir.replace(/\/+$/, "") + "/") && !p.slice(handoffDir.length + 1).includes("/")
-        : HANDOFF_ANY.test(p);
+      const ok = handoffDir ? p.startsWith(handoffDir.replace(/\/+$/, "") + "/") : HANDOFF_ANY.test(p);
       if (ok) found = p;
     }
   }

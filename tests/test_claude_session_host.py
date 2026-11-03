@@ -445,3 +445,21 @@ def test_turn_ended_marker_name_matches_claude_cmd_log():
     assert claude_cmd_log.TURN_ENDED == ".turn_ended"
     import inspect
     assert '".turn_ended"' in inspect.getsource(_load_host()._mark_cmd_log_turn_ended)
+
+
+def test_breakout_resume_host_runs_in_the_breakouts_own_session(
+        agent, monkeypatch, stub_cli, target):
+    """A `breakout: resume` start mints no new id; the host's session is the
+    breakout's own `session_id`, not the empty `new_session_id`."""
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", stub_cli)
+    monkeypatch.setattr(agent, "_backend_for_session",
+                        lambda sid, wd, hint="": "claude")
+    res = agent._start(target, "m1", "BRK", "", "", has_pane=False,
+                       breakout=True, breakout_resume=True)
+    assert "run_id" in res, res
+    run_dir = os.path.join(agent.RUNS, res["run_id"])
+    host_json = os.path.join(run_dir, "host.json")
+    assert _wait_for(lambda: os.path.isfile(host_json)
+                     and "session_id" in open(host_json).read())
+    with open(host_json, encoding="utf-8") as f:
+        assert json.load(f)["session_id"] == "BRK"

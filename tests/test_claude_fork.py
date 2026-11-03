@@ -264,6 +264,12 @@ def test_start_without_breakout_leaves_no_flag(agent, start):
     assert "breakout" not in _meta(run_dir) and "breakout" not in req
 
 
+def test_start_breakout_bad_session_id_is_a_session_error(agent, start):
+    out, _, _ = start("u2", session_id="../x", breakout=True)
+    assert out["error"] == "malformed session id"
+    assert out.get("reason") != "fork_target_missing"
+
+
 def test_start_breakout_needs_a_session(agent, start):
     out, _, _ = start("", session_id="", breakout=True)
     assert out["reason"] == "unsupported"
