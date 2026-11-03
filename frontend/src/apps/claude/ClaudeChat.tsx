@@ -5167,6 +5167,21 @@ function ChatBody(props: ChatBodyProps) {
       )}
     </div>
   ) : null;
+  // BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open while a run
+  // is going too (the breakout is its own run). Placed by the strip, or as the
+  // merged head row's tail (that layout has no strip).
+  const breakoutBtn =
+    props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
+      <button
+        type="button"
+        className="bar-ctl bar-ctl-icon c-breakout"
+        title="Breakout: a research-only side chat from here"
+        aria-label="Breakout"
+        onClick={() => props.onBreakout?.({ sessionId: state.sessionId!, file })}
+      >
+        <GitBranchPlus size={14} aria-hidden="true" />
+      </button>
+    ) : null;
   const kebabEl = (
     <>
       {canvasShotSeat}
@@ -5318,17 +5333,7 @@ function ChatBody(props: ChatBodyProps) {
             {inChat && !mergedHeadRow ? backBtn : null}
             {/* BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open
                 while a run is going too (the breakout is its own run). */}
-            {props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
-              <button
-                type="button"
-                className="bar-ctl bar-ctl-icon c-breakout"
-                title="Breakout: a research-only side chat from here"
-                aria-label="Breakout"
-                onClick={() => props.onBreakout?.({ sessionId: state.sessionId!, file })}
-              >
-                <GitBranchPlus size={14} aria-hidden="true" />
-              </button>
-            ) : null}
+            {breakoutBtn}
             {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
                 `margin-left: auto` (T:255-262, chat.css), which is not the same
                 thing: a spacer is a flex ITEM, so it kept its 12px gap even
@@ -5428,7 +5433,7 @@ function ChatBody(props: ChatBodyProps) {
             {showHead ? (
               <Topbar
                 slim={peek}
-                {...(mergedHeadRow ? { lead: backBtn, tail: kebabEl, noProject: true } : {})}
+                {...(mergedHeadRow ? { lead: backBtn, tail: <>{breakoutBtn}{kebabEl}</>, noProject: true } : {})}
                 {...(headerExtra ? { extra: headerExtra } : {})}
                 worktree={worktreeMenu}
                 worktreeHint={

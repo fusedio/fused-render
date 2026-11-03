@@ -743,6 +743,10 @@
   padding: 2px 8px;
   line-height: 1.5;
 }
+.chat-root .c-topbar-merged .c-breakout {
+  flex: 0 0 auto;
+  align-self: center;
+}
 .chat-root .c-topbar-merged .task-side-peek-who {
   flex: 1 1 0;
   min-width: 6em;

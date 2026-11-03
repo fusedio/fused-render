@@ -660,3 +660,19 @@ test("a peek with headerInPeek draws the slim top bar; a bare peek and a compact
   await settle(20);
   expect(byClass(compact.r, "c-topbar").length).toBe(0);
 });
+
+// BREAKOUT, COMPOSER SIDE: the one button must render exactly once in either
+// layout. In the merged-head side pane there is no `.c-anntools` strip, so it
+// rides the identity row's tail beside the kebab.
+test("the composer Breakout button renders once in the merged head and once in the strip", async () => {
+  const onBreakout = () => {};
+  const merged = await mountChat({ mergedHead: true, onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(merged.r, "c-anntools").length).toBe(0);
+  expect(byClass(merged.r, "c-breakout").length).toBe(1);
+
+  const strip = await mountChat({ onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(strip.r, "c-anntools").length).toBe(1);
+  expect(byClass(strip.r, "c-breakout").length).toBe(1);
+});
