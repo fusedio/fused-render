@@ -4,7 +4,7 @@
 // something, click something"). Behind `canvas_rail_peek_enabled`
 // (rail-peek-flag.ts); the rings' side of the wiring is ClaudeRail.tsx, the
 // timings and the geometry are rail-peek-lib.ts. A hover on a ring opens it;
-// a press pins it (ClaudeRail header) — the card itself draws the same
+// a press holds it open (ClaudeRail header) — the card itself draws the same
 // either way.
 //
 // WHAT IT IS: the chat itself. Not a caption, not a picture — the same
@@ -13,7 +13,7 @@
 // scrolls the transcript, answers a question, types a message, follows a
 // link, as in the pane; "Open" in the card's head is the door the ring's own
 // press opens (`taskHref`), for when a preview turns into a session. The
-// head is two rows: facts and seats (pin, number, where, unread + when,
+// head is two rows: facts and seats (×, star, number, where, unread + when,
 // archive, Open, ⋮), then the title alone.
 //
 // WHY IT NEVER FLASHES:
@@ -48,7 +48,7 @@
 // give the panel ability to resize … top left and bottom left corner … and
 // we remember that size; only for click though, hover size remain same"):
 // two grips on the card's left corners, shown only while the card is PINNED
-// (`pinned`: a ring press, a press inside, the pin) and the seat has a chat.
+// (`pinned`: a ring press, a press inside) and the seat has a chat.
 // The right edge stands against the rail, so a drag moves the left edge for
 // the width; the top-left grip moves the top edge (the bottom stays), the
 // bottom-left the bottom (the top stays) — rail-peek-lib `dragResize`, with
@@ -64,6 +64,19 @@
 // it too — but the remembered size waits for that press to END (`grown`):
 // a card that grew under a pressed pin would move the pin out from under
 // the pointer before the click landed.
+//
+// × AND STAR (owner, 2026-11-03: "remove the pin; a click keeps the card open
+// anyway — keep a close, and a star beside it to favourite the chat"): the
+// head's first two seats are the × — always there, it is the one way to shut a
+// card a click has held, bar the Open door — and the STAR, which makes the
+// chat a favourite (`setTaskFavourite`; the server keeps the stars, so every
+// rail and pane lists the same ones). Starred, the star is filled in the
+// accent. A favourite's card is the one that may stay open between visits:
+// the server records which favourite is open (`starred_open`), so the ×
+// on a starred card writes "closed" too, and unstarring while the card is
+// up shuts it (the ring moves out of the foot, the card would have nothing to
+// stand beside). The rail reopens the recorded one on its own (ClaudeRail
+// header).
 //
 // ACCESSIBILITY: the card is a non-modal `dialog` named for its chat; the ring
 // that opened it says `aria-expanded` and `aria-controls` (ClaudeRail). The
@@ -86,9 +99,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, MessageSquare, Pencil, X } from "lucide-react";
+import { Archive, ArchiveRestore, MessageSquare, Pencil, Star, X } from "lucide-react";
 import { notify } from "@platform/lib/notifications";
-import { archiveTask, renameTask, unarchiveTask, type Task } from "@platform/lib/api";
+import { archiveTask, renameTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { pokeTasks } from "@shell/tasksPulse";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { shortTaskId } from "@platform/lib/task-id";
@@ -113,6 +127,7 @@ import {
 import { nodeName, railScope, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
+  PEEK_INSET,
   PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
@@ -141,7 +156,8 @@ type Corner = "tl" | "bl";
 
 /** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this") —
  *  Bootstrap Icons' `pin-angle-fill` (MIT), inlined: react-icons is not a
- *  dependency and one path does not earn one. Filled, angled, 16-unit box. */
+ *  dependency and one path does not earn one. Filled, angled, 16-unit box.
+ *  The head's first seat while favourites are OFF (favourites-flag). */
 function PinAngleFill({ size = 14 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -271,8 +287,10 @@ export interface RailPeekProps {
   onPressInside: () => void;
   /** The card took (`true`) or lost (`false`) the keyboard focus. */
   onHold: (on: boolean) => void;
-  /** Escape inside the card, or its close button. */
-  onDismiss: () => void;
+  /** Escape inside the card, or its close button — or the Open door
+   *  (`door: true`): a host that records "closed" on the × keeps the record
+   *  through the door (FavouritePeek). */
+  onDismiss: (door?: boolean) => void;
   /** The row left no room for a card (rail-peek-lib `peekPlacement` null —
    *  a window under ~140px tall or ~170px wide): the host drops the show so
    *  the ring is not left saying `aria-expanded` for a card that never drew. */
@@ -287,17 +305,27 @@ export interface RailPeekProps {
    *  pointer-down to do it, `onPressInside`), and see the keyboard into its
    *  composer once that has mounted (ClaudeRail `focusComposerSoon`). */
   onPin: () => void;
-  /** The reader PINNED the card from its head (owner, 2026-11-02: "pin is
-   *  basically keep it open until I click on the pin again"): the pin reads
-   *  as a ×, and nothing but that × — or the Open door — closes it: not an
-   *  outside press, not a press into the workbench, not Escape. Distinct
-   *  from the intent's own pinned (a ring press, a press inside the card),
-   *  which an outside press still ends. */
+  /** The card is HELD (owner, 2026-11-03: a press on a ring or inside the
+   *  card keeps it open): nothing but its × — or the Open door — closes it:
+   *  not an outside press, not a press into the workbench, not Escape. */
   held: boolean;
-  /** The pin was pressed (`true`), or the × / Open let go (`false`). */
+  /** The × / Open / an unstar let go (`false`). */
   onHeld: (held: boolean) => void;
-  /** The card is PINNED (PeekIntent: a ring press, a press inside, the pin's
-   *  press) — not a passing hover. Only a pinned card wears the corner grips
+  /** The star was pressed and the server answered: `on` is the star as it
+   *  now stands. Ahead of the pulse, for the rail's own bookkeeping. */
+  onStarred?: (key: string, on: boolean) => void;
+  /** A FIXED SIZE AND EDGE (the favourite's card, shell/claude-rail
+   *  FavouritePeek): the card takes this wish for every seat instead of the
+   *  default / stored sizes, and never grows on a pin. */
+  size?: PeekWish;
+  /** The card keeps above this viewport y (the favourite's card stands
+   *  below the list's card; the two must not cover each other). */
+  bottomLimit?: number | null;
+  /** Where the card stands now, or null while it is closed — for a host
+   *  that places another card around it. */
+  onBox?: (box: Box | null) => void;
+  /** The card is PINNED (PeekIntent: a ring press, a press inside) — not a
+   *  passing hover. Only a pinned card wears the corner grips
    *  and takes the remembered size (header). */
   pinned: boolean;
 }
@@ -365,6 +393,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onPin,
     held,
     onHeld,
+    onStarred,
+    size,
+    bottomLimit = null,
+    onBox,
     pinned,
   },
   ref,
@@ -402,7 +434,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // (`dragTop`); a hover card is the default. Refs, not state: `place` runs
   // from listeners and effects whose closures would otherwise go stale.
   // GROWN (header): the pinned card takes the remembered size — at once for
-  // a ring press or the pin's, after the pointer comes up for a press inside
+  // a ring press, after the pointer comes up for a press inside
   // the card (`onPressInside` runs in the capture phase, before the pin
   // flips; the window's pointerup ends it).
   const [grown, setGrown] = useState(false);
@@ -437,10 +469,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     else setGrown(true);
   }, [pinned]);
   const wishFor = (key: string): PeekWish => {
+    if (size) return size;
     if (!kept.find((s) => s.pulse.key === key)?.pulse.session_id) return { maxHeight: PEEK_PLAIN_HEIGHT };
-    const size = grownRef.current ? storedPeekSize() : null;
-    if (!size) return { maxHeight: PEEK_MAX_HEIGHT };
-    return { width: size.width, maxHeight: size.height };
+    const stored = grownRef.current ? storedPeekSize() : null;
+    if (!stored) return { maxHeight: PEEK_MAX_HEIGHT };
+    return { width: stored.width, maxHeight: stored.height };
   };
   // The rail's left edge as of the last placement: where the bridge below
   // ends. A ref, not state — `place` runs before every `setBox`, so the
@@ -457,7 +490,16 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (!anchor || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
-    return peekPlacement(anchor.getBoundingClientRect(), rail, row.getBoundingClientRect(), wishFor(key));
+    const r = row.getBoundingClientRect();
+    // Above the other card (`bottomLimit`): the row ends where it begins —
+    // unless that leaves less than a usable card (a short window): then the
+    // two overlap, the favourite's card on top, rather than this one
+    // reading "no room" and every ring press opening the pane.
+    const bounds: Box =
+      bottomLimit !== null && bottomLimit < r.top + r.height && bottomLimit - r.top >= PEEK_MIN_HEIGHT + 2 * PEEK_INSET
+        ? { left: r.left, top: r.top, width: r.width, height: bottomLimit - r.top }
+        : r;
+    return peekPlacement(anchor.getBoundingClientRect(), rail, bounds, wishFor(key));
   };
   // THE CORNER DRAG (header). `resizing` names the held grip while a drag is
   // on: the card drops its glide transitions and the placement effects stand
@@ -531,7 +573,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the follow-the-ring paths would stand back for good (reviewer), and a
   // release would save a size that was about the old chat (CodeRabbit).
   const visible = on && box !== null && shownKey !== null;
-  const gripsOn = pinned && visible && !!view?.pulse.session_id;
+  // The host that places another card around this one hears where it is.
+  const onBoxRef = useRef(onBox);
+  onBoxRef.current = onBox;
+  useEffect(() => {
+    onBoxRef.current?.(visible ? box : null);
+  }, [visible, box]);
+  useEffect(() => () => onBoxRef.current?.(null), []);
+  const gripsOn = pinned && !size && visible && !!view?.pulse.session_id;
   const dragKey = useRef<string | null>(null);
   useEffect(() => {
     if (dragStart.current && (!gripsOn || dragKey.current !== shownKey)) endDrag(false);
@@ -761,12 +810,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // listing; the pulse then takes the ring, and the card with it (prune).
   const onFiled = () => {
     // A filed or erased chat leaves the rail: a held card lets go with it
-    // (the pin must not keep a ring for a chat the reader just put away).
+    // (a hold must not keep a ring for a chat the reader just put away).
     onHeld(false);
     onReload();
   };
   // The Archive seat's call can finish after a ring press swapped the card
-  // to another (held) chat: only the chat that was filed lets go of the pin,
+  // to another (held) chat: only the chat that was filed lets go of the hold,
   // read off the ref when the call returns, not when it started.
   const shownKeyRef = useRef(shownKey);
   shownKeyRef.current = shownKey;
@@ -813,6 +862,44 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         { status: facts.t.status, kind: facts.row?.kind ?? "task", background_jobs: facts.t.background_jobs },
         () => void go(),
       );
+  };
+
+  // THE STAR (header): the server stores it, the pulse brings it back to
+  // every rail. Starring opens the card on the server (`setTaskFavourite`
+  // with `open` omitted); UNSTARRING shuts it — the ring leaves the foot, and
+  // a card with no ring to stand beside lets go — but only if the card is
+  // still on that chat when the call returns.
+  // THE STAR SHOWS THE ANSWER AT ONCE (`starMark`): the pulse that carries
+  // `starred` back is a poll away — seconds on a busy Mac — and a star that
+  // stays hollow after its press reads as a dead button. The server's answer
+  // is kept per key until the pulse agrees; the rail is told too
+  // (`onStarred`), so its own rules (the close write) know before the pulse.
+  const favsOn = useTaskFavourites();
+  const [starMark, setStarMark] = useState<{ key: string; on: boolean } | null>(null);
+  const starOf = (t: RailRow["pulse"]): boolean =>
+    starMark && starMark.key === t.key ? starMark.on : !!t.starred;
+  useEffect(() => {
+    if (!starMark) return;
+    const t = kept.find((s) => s.pulse.key === starMark.key)?.pulse;
+    if (!t || !!t.starred === starMark.on) setStarMark(null);
+  }, [kept, starMark]);
+  const toggleStar = async (t: RailRow["pulse"]) => {
+    const on = !starOf(t);
+    let res: Awaited<ReturnType<typeof setTaskFavourite>>;
+    try {
+      res = await setTaskFavourite(t.key, on);
+    } catch (e) {
+      notify({ title: (e as Error).message, tone: "error" });
+      return;
+    }
+    setStarMark({ key: t.key, on: res.starred });
+    onStarred?.(t.key, res.starred);
+    if (!res.starred && shownKeyRef.current === t.key) {
+      onHeld(false);
+      onDismiss();
+    }
+    onReload();
+    pokeTasks();
   };
 
   // A HELD card ignores Escape (header): the head's and the chat's Escape
@@ -937,7 +1024,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       className={
         "claude-rail-peek" +
         (visible ? " is-on" : "") +
-        (held ? " is-held" : "") +
+        (held && !favsOn ? " is-held" : "") +
         (resizing ? " is-resizing" : "") +
         (view && !view.pulse.session_id ? " is-plain" : "")
       }
@@ -976,8 +1063,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       <div className="claude-rail-peek-card">
         {head && (
           // THE HEAD, TWO ROWS (owner, 2026-11-02, after the one-row head of
-          // 2026-10-30): the first row is the task's FACTS and SEATS — the pin
-          // (where the × was: pressed, it IS the ×), its number where the
+          // 2026-10-30): the first row is the task's FACTS and SEATS — the ×
+          // and the star (2026-11-03), its number where the
           // Tasks page prints it, WHERE it lives (the canvas, or one node —
           // the pane's chats do not say), then at the right its unread
           // count and when it last moved (the archive shows over that on
@@ -987,26 +1074,60 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           // between chips on one row lost its end.
           <div className="claude-rail-peek-head" onKeyDown={onHeadKeyDown}>
             <div className="claude-rail-peek-row">
+              {!favsOn ? (
+                // FAVOURITES OFF (favourites-flag): the head of 2026-11-02,
+                // unchanged — the pin, which pressed IS the ×.
+                <button
+                  type="button"
+                  className={"claude-rail-peek-btn claude-rail-peek-pin" + (held ? " is-held" : "")}
+                  aria-pressed={held}
+                  title={held ? "Unpin and close the preview" : "Pin the preview: it stays until you unpin it"}
+                  aria-label="Pin the preview"
+                  onClick={() => {
+                    if (held) {
+                      onHeld(false);
+                      onDismiss();
+                    } else {
+                      onHeld(true);
+                      onPin();
+                    }
+                  }}
+                >
+                  {held ? <X size={14} aria-hidden="true" /> : <PinAngleFill size={14} />}
+                </button>
+              ) : (
               <button
                 type="button"
-                className={"claude-rail-peek-btn claude-rail-peek-pin" + (held ? " is-held" : "")}
-                aria-pressed={held}
-                title={held ? "Unpin and close the preview" : "Pin the preview: it stays until you unpin it"}
-                // One label, the state in `aria-pressed` (a flipping label
-                // would announce the state twice, inverted).
-                aria-label="Pin the preview"
+                className="claude-rail-peek-btn claude-rail-peek-close"
+                aria-label="Close the preview"
+                title="Close the preview"
                 onClick={() => {
-                  if (held) {
-                    onHeld(false);
-                    onDismiss();
-                  } else {
-                    onHeld(true);
-                    onPin();
-                  }
+                  // A favourite's open card: the × is the reader closing it,
+                  // and ClaudeRail writes "closed" as the card leaves (its
+                  // shown-key rule) — the same way for every door out.
+                  onHeld(false);
+                  onDismiss();
                 }}
               >
-                {held ? <X size={14} aria-hidden="true" /> : <PinAngleFill size={14} />}
+                <X size={14} aria-hidden="true" />
               </button>
+              )}
+              {favsOn && head.t.session_id && (
+              // Behind the favourites switch (favourites-flag). Only a
+              // STARTED chat can be starred (a draft or a queued row has no
+              // key that lasts; the server refuses them too).
+              <button
+                type="button"
+                className={"claude-rail-peek-btn claude-rail-peek-star" + (starOf(head.t) ? " is-on" : "")}
+                aria-pressed={starOf(head.t)}
+                // One label, the state in `aria-pressed`.
+                aria-label="Favourite"
+                title={starOf(head.t) ? "Remove from favourites" : "Add to favourites"}
+                onClick={() => void toggleStar(head.t)}
+              >
+                <Star size={14} fill={starOf(head.t) ? "currentColor" : "none"} aria-hidden="true" />
+              </button>
+              )}
               {head.id && (
                 <span className="claude-rail-peek-id" title={head.words}>
                   {head.id}
@@ -1146,7 +1267,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // hop that keeps the rail mounted (a node switch) must
                     // not leave it up.
                     onHeld(false);
-                    onDismiss();
+                    onDismiss(true);
                   }}
                 >
                   Open

@@ -104,6 +104,10 @@ export interface PeekWish {
   maxHeight?: number;
   /** The width to aim for (the reader's dragged width for a pinned card). */
   width?: number;
+  /** Which edge of the card lines up with the ring: its top (the default —
+   *  a list ring's card hangs down from it) or its bottom (the favourite's
+   *  card, whose ring stands at the rail's foot, grows up from it). */
+  align?: "top" | "bottom";
 }
 
 /** Where the card stands for a ring at `anchor`, beside a rail at `rail`,
@@ -121,7 +125,8 @@ export function peekPlacement(anchor: Box, rail: Box, bounds: Box, wish: number 
   const left = rail.left - PEEK_GAP - width;
   const minTop = bounds.top + PEEK_INSET;
   const maxTop = bounds.top + bounds.height - PEEK_INSET - height;
-  const top = Math.max(minTop, Math.min(maxTop, anchor.top));
+  const want = w.align === "bottom" ? anchor.top + anchor.height - height : anchor.top;
+  const top = Math.max(minTop, Math.min(maxTop, want));
   return { left: Math.round(left), top: Math.round(top), width: Math.round(width), height: Math.round(height) };
 }
 

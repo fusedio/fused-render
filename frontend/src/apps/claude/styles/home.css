@@ -197,6 +197,13 @@
 .c-lists:not(.is-tabbed) .c-list-panel:last-child {
   padding-bottom: 32px;
 }
+/* THE FAVOURITES BLOCK (Lists `favourites`; owner, 2026-11-03) is a second
+   `.c-lists` under the first, the same heading and the same rows. The 32px of
+   air under an untabbed block above it is the favourites' to give: the block's
+   own 28px top gutter is the gap between them. */
+.c-lists:not(.is-tabbed):has(+ .c-favs) .c-list-panel:last-child {
+  padding-bottom: 0;
+}
 /* Behind a tab the panel starts where the other two do: the gutter belongs to
    the block, not to each list inside it (T:3353). One panel is on screen at a
    time here, so the sibling rule above can never fire — spelled anyway, so the

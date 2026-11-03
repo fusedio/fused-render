@@ -101,6 +101,13 @@ export interface ListsProps {
   onFillDraft?(task: Task): void;
   onNavigate?(url: string): void;
   disabled?: boolean;
+  /**
+   * THE FAVOURITES (owner, 2026-11-03): every starred task, from ANYWHERE —
+   * not narrowed to this pane like `recent` (`useFavouriteTasks`) — drawn as a
+   * block of their own under the tabs, in the same rows with the same presses.
+   * Absent or empty draws nothing: no heading, no empty state.
+   */
+  favourites?: Task[];
 }
 
 export function Lists({
@@ -112,6 +119,7 @@ export function Lists({
   onFillDraft,
   onNavigate,
   disabled,
+  favourites,
 }: ListsProps) {
   /**
    * Which list is showing is the BLOCK's state rather than the page's: leaving
@@ -202,6 +210,7 @@ export function Lists({
    */
   const queueOn = useProjectQueueEnabled();
   const rowKeys = useMemo(() => taskListKeys(recent ?? [], queueOn), [recent, queueOn]);
+  const favKeys = useMemo(() => taskListKeys(favourites ?? [], queueOn), [favourites, queueOn]);
 
   /** Up/Down walk the rows and Enter opens — a keyboard's copy of the pointer's
    *  own reach down the list. */
@@ -213,10 +222,11 @@ export function Lists({
     // (ScheduleTaskViews' own note on `.tasks-rowlink`). Exactly one of the two
     // per row, so a document-order query over both is still the list's order —
     // and it is the element `document.activeElement` can actually be.
+    // The block the key went up in — the Recent panel's, or the Favourites'.
     const rows = Array.from(
-      listRef.current?.querySelectorAll<HTMLElement>(
+      ev.currentTarget.querySelectorAll<HTMLElement>(
         ".tasks-rowlink, .tasks-row[tabindex]",
-      ) ?? [],
+      ),
     );
     const at = rows.indexOf(document.activeElement as HTMLElement);
     if (at < 0 || rows.length < 2) return;
@@ -411,6 +421,40 @@ export function Lists({
     </div>
   );
 
+  // THE FAVOURITES BLOCK, under the lists (header of `favourites`): the
+  // heading is the section heading the untabbed lists wear (`.c-head`), the
+  // rows are Recent's own — same frame, same `pick`, same reload.
+  const favPanel =
+    favourites && favourites.length > 0 ? (
+      <div className="c-lists c-favs">
+        <div className="c-list-panel">
+          <div className="c-head">
+            <span>Favourites</span>
+          </div>
+          <div onKeyDown={onRowKeys}>
+            <div className="tasks-list-frame">
+              {favourites.map((task, ix) => (
+                <TaskRowItem
+                  key={favKeys[ix]}
+                  task={task}
+                  {...pick(task)}
+                  selected={last !== null && lastChatId(task) === last}
+                  onQueued={noteQueueClaim}
+                  onReload={reloadRecentTasks}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    ) : null;
+  const withFavs = (lists: React.ReactElement) => (
+    <>
+      {lists}
+      {favPanel}
+    </>
+  );
+
   const panels: Record<ListName, React.ReactNode> = {
     recent: recentPanel,
     artifacts: (
@@ -523,7 +567,7 @@ export function Lists({
   if (!view.tabbed) {
     // One list is just that list under its own heading, exactly as before: a
     // tab bar with one tab is a label pretending to be a control (T:3311).
-    return (
+    return withFavs(
       <div className="c-lists">
         {order
           .filter((name) => view.shown[name])
@@ -540,7 +584,7 @@ export function Lists({
     );
   }
 
-  return (
+  return withFavs(
     <Tabs
       value={view.selected}
       onValueChange={(next) => setTab(next as ListName)}
