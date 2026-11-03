@@ -127,6 +127,7 @@ import {
 import { nodeName, railScope, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
+  PEEK_INSET,
   PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
@@ -152,6 +153,18 @@ function storedPeekSize(): { width: number; height: number } | null {
 }
 
 type Corner = "tl" | "bl";
+
+/** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this") —
+ *  Bootstrap Icons' `pin-angle-fill` (MIT), inlined: react-icons is not a
+ *  dependency and one path does not earn one. Filled, angled, 16-unit box.
+ *  The head's first seat while favourites are OFF (favourites-flag). */
+function PinAngleFill({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 0-.335-.018-.46-.039l-3.134 3.134a6 6 0 0 1 .16 1.013c.046.702-.032 1.687-.72 2.375a.5.5 0 0 1-.707 0l-2.829-2.828-3.182 3.182c-.195.195-1.219.902-1.414.707s.512-1.22.707-1.414l3.182-3.182-2.828-2.829a.5.5 0 0 1 0-.707c.688-.688 1.673-.767 2.375-.72a6 6 0 0 1 1.013.16l3.134-3.133a3 3 0 0 1-.04-.461c0-.43.108-1.022.589-1.503a.5.5 0 0 1 .353-.146" />
+    </svg>
+  );
+}
 
 /** The server's cap on a task's name (TaskPeekWho's). */
 const TITLE_MAX_LENGTH = 200;
@@ -274,8 +287,10 @@ export interface RailPeekProps {
   onPressInside: () => void;
   /** The card took (`true`) or lost (`false`) the keyboard focus. */
   onHold: (on: boolean) => void;
-  /** Escape inside the card, or its close button. */
-  onDismiss: () => void;
+  /** Escape inside the card, or its close button — or the Open door
+   *  (`door: true`): a host that records "closed" on the × keeps the record
+   *  through the door (FavouritePeek). */
+  onDismiss: (door?: boolean) => void;
   /** The row left no room for a card (rail-peek-lib `peekPlacement` null —
    *  a window under ~140px tall or ~170px wide): the host drops the show so
    *  the ring is not left saying `aria-expanded` for a card that never drew. */
@@ -476,10 +491,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
     const r = row.getBoundingClientRect();
-    // Above the other card (`bottomLimit`): the row ends where it begins.
+    // Above the other card (`bottomLimit`): the row ends where it begins —
+    // unless that leaves less than a usable card (a short window): then the
+    // two overlap, the favourite's card on top, rather than this one
+    // reading "no room" and every ring press opening the pane.
     const bounds: Box =
-      bottomLimit !== null && bottomLimit < r.top + r.height
-        ? { left: r.left, top: r.top, width: r.width, height: Math.max(0, bottomLimit - r.top) }
+      bottomLimit !== null && bottomLimit < r.top + r.height && bottomLimit - r.top >= PEEK_MIN_HEIGHT + 2 * PEEK_INSET
+        ? { left: r.left, top: r.top, width: r.width, height: bottomLimit - r.top }
         : r;
     return peekPlacement(anchor.getBoundingClientRect(), rail, bounds, wishFor(key));
   };
@@ -1006,6 +1024,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       className={
         "claude-rail-peek" +
         (visible ? " is-on" : "") +
+        (held && !favsOn ? " is-held" : "") +
         (resizing ? " is-resizing" : "") +
         (view && !view.pulse.session_id ? " is-plain" : "")
       }
@@ -1055,6 +1074,28 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           // between chips on one row lost its end.
           <div className="claude-rail-peek-head" onKeyDown={onHeadKeyDown}>
             <div className="claude-rail-peek-row">
+              {!favsOn ? (
+                // FAVOURITES OFF (favourites-flag): the head of 2026-11-02,
+                // unchanged — the pin, which pressed IS the ×.
+                <button
+                  type="button"
+                  className={"claude-rail-peek-btn claude-rail-peek-pin" + (held ? " is-held" : "")}
+                  aria-pressed={held}
+                  title={held ? "Unpin and close the preview" : "Pin the preview: it stays until you unpin it"}
+                  aria-label="Pin the preview"
+                  onClick={() => {
+                    if (held) {
+                      onHeld(false);
+                      onDismiss();
+                    } else {
+                      onHeld(true);
+                      onPin();
+                    }
+                  }}
+                >
+                  {held ? <X size={14} aria-hidden="true" /> : <PinAngleFill size={14} />}
+                </button>
+              ) : (
               <button
                 type="button"
                 className="claude-rail-peek-btn claude-rail-peek-close"
@@ -1070,6 +1111,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               >
                 <X size={14} aria-hidden="true" />
               </button>
+              )}
               {favsOn && head.t.session_id && (
               // Behind the favourites switch (favourites-flag). Only a
               // STARTED chat can be starred (a draft or a queued row has no
@@ -1225,7 +1267,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // hop that keeps the rail mounted (a node switch) must
                     // not leave it up.
                     onHeld(false);
-                    onDismiss();
+                    onDismiss(true);
                   }}
                 >
                   Open

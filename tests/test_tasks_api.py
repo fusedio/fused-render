@@ -6474,6 +6474,16 @@ def test_favouriting_without_the_fused_header_is_refused(client, projects_dir,
     assert not (state_dir / "favourites.json").exists()
 
 
+def test_favouriting_with_neither_on_nor_open_is_refused(client, projects_dir, state_dir):
+    """A bare `{key}` says nothing to set: 400, nothing written — the
+    update-only shape (`on` omitted) needs `open`."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    r = client.post("/api/tasks/favourite", headers=_FUSED, json={"key": "sess-a"})
+    assert r.status_code == 400
+    assert "open" in r.json()["detail"]
+    assert not (state_dir / "favourites.json").exists()
+
+
 def test_favouriting_with_on_omitted_only_moves_open_on_a_starred_task(
         client, projects_dir, state_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])

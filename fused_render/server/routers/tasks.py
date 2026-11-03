@@ -7975,6 +7975,8 @@ def api_task_favourite(patch: FavouritePatch,
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
+    if patch.on is None and patch.open is None:
+        raise HTTPException(status_code=400, detail="nothing to set: give 'on' or 'open'")
     if patch.on is not False:
         task = _collect().get(key)
         if task is None:

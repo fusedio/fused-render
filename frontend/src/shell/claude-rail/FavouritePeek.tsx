@@ -23,7 +23,9 @@
 // here writes it closed, a favourite ring's press on any rail writes it open
 // (ClaudeRail `openFavourite`). Nothing else closes it — not an outside
 // press, not Escape, not a place change. The Open door opens the pane; the
-// card stays the recorded open favourite and is back when the rail is.
+// card stays the recorded open favourite (RailPeek `onDismiss(door)`) and is
+// back when the rail is. A rail with no room for it (a window shrunk to
+// nothing) hides it until the next resize or the next rail.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { setTaskFavourite, type Task, type TaskPulseTask } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
@@ -60,20 +62,31 @@ export function FavouritePeek() {
   const on = peekOn && favsOn;
   const rows = useTasksPulseRows(on);
   const [listing, setListing] = useState<Task[] | null>(() => readListing());
-  useEffect(
-    () =>
-      subscribeListing((ev) => {
-        if (!ev.failed) setListing(ev.rows);
-      }),
-    [],
-  );
+  useEffect(() => {
+    // Off, no feed: this stands in every shell, and the listing's long-poll
+    // is not a cost a reader who never starred anything should pay.
+    if (!on) return;
+    setListing(readListing());
+    return subscribeListing((ev) => {
+      if (!ev.failed) setListing(ev.rows);
+    });
+  }, [on]);
   const { rail } = useFavPeekState();
+  // No room beside this rail (RailPeek `onNoRoom`): hidden until the window
+  // changes shape or another rail stands.
+  const [noRoom, setNoRoom] = useState(false);
+  useEffect(() => {
+    setNoRoom(false);
+    const re = () => setNoRoom(false);
+    window.addEventListener("resize", re);
+    return () => window.removeEventListener("resize", re);
+  }, [rail]);
   const open = useMemo(() => rows.find((t) => t.starred_open && t.status !== "archived") ?? null, [rows]);
   const seat = useMemo((): RailRow | null => {
     if (!open) return null;
     return { pulse: open, row: listing?.find((t) => t.key === open.key) ?? null };
   }, [open, listing]);
-  const shown = on && seat && rail ? seat : null;
+  const shown = on && seat && rail && !noRoom ? seat : null;
   const kept = useMemo(() => (seat ? [seat] : []), [seat]);
   // The rail itself is the anchor: with `align: "bottom"` the card's bottom
   // lands on the rail's, clamped inside the row — the bottom right, always.
@@ -81,12 +94,16 @@ export function FavouritePeek() {
   const place = useMemo(() => (seat ? placeOf(seat.pulse, seat.row) : null), [seat]);
   // The × (RailPeek `onDismiss`): the record says closed; the pulse then
   // takes `open` away and the card goes with it.
-  const close = useCallback(() => {
-    if (!open) return;
-    setTaskFavourite(open.key, null, false).then(pokeTasks, (err: Error) =>
-      notify({ title: err.message, tone: "error" }),
-    );
-  }, [open]);
+  const close = useCallback(
+    (door?: boolean) => {
+      // The Open door is not a close: the pane takes over, the record stands.
+      if (door || !open) return;
+      setTaskFavourite(open.key, null, false).then(pokeTasks, (err: Error) =>
+        notify({ title: err.message, tone: "error" }),
+      );
+    },
+    [open],
+  );
   useEffect(() => () => publishFavBox(null), []);
   if (!on || !seat || !place) return null;
   return (
@@ -106,7 +123,7 @@ export function FavouritePeek() {
       onPressInside={noop}
       onHold={noop}
       onDismiss={close}
-      onNoRoom={noop}
+      onNoRoom={() => setNoRoom(true)}
       onOpenChat={(href) => navigateUrl(href)}
       onPin={noop}
       held

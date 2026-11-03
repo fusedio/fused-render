@@ -516,7 +516,8 @@ const ENTRIES = [
     renderOnly: true,
   },
   // FAVOURITE CHATS (owner, 2026-11-03): the star on that preview card, so
-  // a child of it — nothing to star without the card.
+  // a child of it — nothing to star without the card. Always shown, though:
+  // a stored "on" under a preview switched off must stay reachable.
   {
     id: "tasks-favourites",
     group: "features",
@@ -526,7 +527,6 @@ const ENTRIES = [
     keywords: "favourite favorite star pin keep chat rail card bottom",
     renderOnly: true,
     child: true,
-    available: ({ prefs }) => prefs.canvas_rail_peek?.enabled === true,
   },
   {
     id: "monitor",

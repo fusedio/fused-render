@@ -83,17 +83,22 @@
 // favourite — server-side, global, so every rail and every pane lists the same
 // ones (api `setTaskFavourite`; `starred` / `starred_open` on the pulse). Three
 // consequences here:
-//   - THE FOOT HOLDS THEM: under the list's hairline, a ring for every starred
-//     chat from ANY place (claude-rail-lib `favSeats` — not `onRail`), newest
-//     first. A starred chat that would also be in the list draws ONLY in the
-//     foot. Starring a chat whose card is up moves the card down to the foot
-//     ring (the card aligns to its ring).
+//   - THE RAIL'S LAST SECTION HOLDS THEM: under the Git seats, a ring for
+//     every starred chat from ANY place (claude-rail-lib `favSeats` — not
+//     `onRail`), newest first. A starred chat on this place keeps its list
+//     ring TOO (owner, 2026-11-03: "they shouldn't be removed from other
+//     place") — the list ring previews it on hover like any other while its
+//     card is closed, and either ring's press opens that card.
 //   - ONE FAVOURITE'S CARD MAY BE OPEN AT A TIME, and the server records which
-//     (`starred_open`): a press on a favourite's ring writes "open", the card's
-//     × writes "closed" (RailPeek), and a rail that draws — a page load, a
-//     navigation, another window — reopens the recorded one held (the open-card
-//     effect below). The place changing does not close such a card: it is the
-//     reader's, not this place's.
+//     (`starred_open`). That card is the SHELL'S (FavouritePeek), not this
+//     rail's: it stands at the bottom right beside whichever rail is on the
+//     page, so a page hop never remounts it. A press on a favourite's ring
+//     writes "open" (`openFavourite`), the card's × writes "closed"; this rail
+//     only registers itself for it (fav-peek-store) and keeps its own card
+//     above it (`bottomLimit`).
+//   - ALL OF IT BEHIND `task_favourites_enabled` (favourites-flag), the ×
+//     and the sticky click included: off, the rail is the rail of 2026-11-02
+//     — the pin, and an outside press closing a clicked card.
 //   - NO ACCENT on a favourite's ring or card — the held accent of 2026-11-02
 //     is gone for every card, held ones included.
 //
@@ -184,6 +189,7 @@ import { CanvasGlyph } from "@apps/canvases/glyph";
 import { PEEK_GAP, PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { registerRail, useFavPeekState } from "./fav-peek-store";
+import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useRailGit } from "./rail-git";
 import { timeAgo } from "@platform/lib/format";
@@ -391,11 +397,14 @@ export function ClaudeRail({
   // once per derivation, as `sortForList` asks; the derivation re-runs when a
   // row moves (the pulse) or the listing re-reads, which is when a rank can
   // change.
-  // THE FAVOURITES (header) draw in the foot, so a starred chat leaves the
-  // list: it is one ring, in one place.
-  // Behind the favourites switch (favourites-flag): off, no section, no
-  // favourite's card, and a starred ring is a ring like any other.
-  const favsOn = useTaskFavourites();
+  // THE FAVOURITES (header) draw in their own section; a starred chat keeps
+  // its list ring too. Behind the favourites switch (favourites-flag) AND
+  // the card's (the star lives on the card; without it there is nothing to
+  // star with): off, no section, no favourite's card, and a starred ring is
+  // a ring like any other.
+  const favsOn = useTaskFavourites() && peekOn;
+  const favsOnRef = useRef(favsOn);
+  favsOnRef.current = favsOn;
   const favs = useMemo(() => (favsOn ? favSeats(rows, full) : []), [favsOn, rows, full]);
   const allSeats = useMemo(() => railRows(rows, full, seatPlace), [rows, full, seatPlace]);
   // ONLY AS MANY RINGS AS FIT, from the top — no scroll (owner, 2026-11-02:
@@ -511,7 +520,9 @@ export function ClaudeRail({
       // `held` drops with it (the effect below).
       pin: (on) => {
         setPinned(on);
-        if (on) setHeld(true);
+        // THE STICKY CLICK is the favourites switch's (header): off, a
+        // clicked card is pinned, not held — an outside press closes it.
+        if (on && favsOnRef.current) setHeld(true);
       },
       warm: (key) => setKept((s) => keepAlive(s, key)),
     });
@@ -558,6 +569,8 @@ export function ClaudeRail({
   // itself is `baseSeats`, and the favourites and the outsider draw in the
   // foot (below).
   const seats = useMemo(() => (heldExtra ? [...baseSeats, heldExtra] : baseSeats), [baseSeats, heldExtra]);
+  const seatsRef = useRef(seats);
+  seatsRef.current = seats;
   // THE LAST RING PRESSED (owner, 2026-11-02): "the active css to the last
   // selected task… keep by task id so it is easier to spot; it doesn't
   // change when we filter tasks based on the selected node, only when we
@@ -614,6 +627,13 @@ export function ClaudeRail({
   // draft.
   const letGo = useCallback(
     (key: string) => {
+      // The unsent words first: the favourite's card mounts its own composer
+      // on the pulse, and the rail's mount flushes on unmount — a commit
+      // later, over what the new composer already read (RailPeek's own
+      // leave-flush, for this hand-over).
+      const seat = seatsRef.current.find((s) => s.pulse.key === key);
+      const sid = seat?.pulse.session_id;
+      if (sid) peekDraftSyncer(chatDraftKey(sid, seat.row?.target || seat.pulse.target || seat.pulse.project))?.flushNow();
       if (intent.current === key) {
         setHeld(false);
         intent.dismiss();
@@ -622,6 +642,21 @@ export function ClaudeRail({
     },
     [intent],
   );
+  // A KEYBOARD PRESS ON A FAVOURITE'S RING reaches its card (header): the
+  // card is the shell's, portaled past this rail, so the press hands the
+  // keyboard to its × once it stands — a pointer press takes nothing.
+  const focusFavCardSoon = useCallback(() => {
+    let tries = 0;
+    const attempt = () => {
+      const btn = document.querySelector<HTMLElement>("#claude-rail-fav-peek.is-on .claude-rail-peek-close");
+      if (btn) {
+        btn.focus({ preventScroll: true });
+        return;
+      }
+      if (++tries < 90) requestAnimationFrame(attempt);
+    };
+    requestAnimationFrame(attempt);
+  }, []);
   useEffect(() => {
     if (openFavKey) letGo(openFavKey);
   }, [openFavKey, letGo]);
@@ -732,6 +767,11 @@ export function ClaudeRail({
     window.addEventListener("resize", re);
     return () => window.removeEventListener("resize", re);
   }, [noRoom]);
+  // …and when the favourite's card moves or goes (its `bottomLimit` is part
+  // of the room): a window that was short with it up is not without it.
+  useEffect(() => {
+    setNoRoom(false);
+  }, [favBox]);
   const dismissToRing = useCallback(() => {
     const key = intent.current;
     intent.dismiss(true);
@@ -1065,6 +1105,7 @@ export function ClaudeRail({
                     (activeSessionId && t.session_id === activeSessionId ? " active" : "") +
                     (peeked ? " peeked" : "") +
                     (peeked && pinned ? " is-pinned" : "") +
+                    (peeked && held && !favsOn ? " is-held" : "") +
                     (foot ? " is-fav" : "") +
                     (foot && openFavKey === t.key ? " is-open" : "") +
                     (lastPressed !== null && lastChatId(t) === lastPressed ? " is-last" : "")
@@ -1112,6 +1153,7 @@ export function ClaudeRail({
                     if (peekOn && favsOn && t.starred) {
                       hideHint();
                       openFavourite(t);
+                      if (e.detail === 0) focusFavCardSoon();
                       return;
                     }
                     if (peekOn && !noRoom) {
