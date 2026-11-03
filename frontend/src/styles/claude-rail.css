@@ -784,6 +784,18 @@ button.claude-rail-peek-scope.is-node:focus-visible {
 .breakout-card .claude-rail-peek-card {
   transform: none;
 }
+/* Drag handle: the head row moves the card (its buttons keep their own cursor). */
+.breakout-card .breakout-head {
+  cursor: grab;
+  touch-action: none;
+}
+.breakout-card .breakout-head.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+.breakout-card .breakout-head button {
+  cursor: pointer;
+}
 .breakout-card .breakout-title {
   font-weight: 600;
 }

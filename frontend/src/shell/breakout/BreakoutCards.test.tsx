@@ -1,0 +1,83 @@
+import { installDomShim } from "@platform/lib/testDomShim";
+installDomShim();
+import { afterEach, expect, mock, test } from "bun:test";
+import { act, create } from "react-test-renderer";
+
+// Only the chat is stubbed; the card chrome and drag logic are the real ones.
+mock.module("@apps/claude", () => ({ ChatMount: () => null }));
+
+const { Card } = await import("./BreakoutCards");
+
+const bus = new EventTarget();
+Object.assign(window, {
+  addEventListener: bus.addEventListener.bind(bus),
+  removeEventListener: bus.removeEventListener.bind(bus),
+  innerWidth: 2000,
+  innerHeight: 1500,
+});
+Object.assign(globalThis, {
+  requestAnimationFrame: (fn: () => void) => (fn(), 1),
+  cancelAnimationFrame: () => {},
+});
+
+const card = { id: "b1", parentSessionId: "s1", file: "/w/proj" } as never;
+const rect = { left: 500, top: 300, width: 400, height: 500 };
+const el = { getBoundingClientRect: () => rect };
+
+function mount() {
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<Card card={card} index={0} />, { createNodeMock: () => el });
+  });
+  const root = r.root;
+  return {
+    r,
+    cardDiv: () => root.findByProps({ role: "dialog" }),
+    head: () => root.findByProps({ className: "claude-rail-peek-head breakout-head" }),
+    headDragging: () => root.findByProps({ className: "claude-rail-peek-head breakout-head is-dragging" }),
+  };
+}
+const ev = (x: number, y: number, target: unknown = {}) => ({
+  clientX: x,
+  clientY: y,
+  pointerId: 1,
+  target,
+  currentTarget: { setPointerCapture() {}, releasePointerCapture() {} },
+});
+
+afterEach(() => {});
+
+test("dragging the head switches the card from right/bottom to left/top", () => {
+  const m = mount();
+  expect(m.cardDiv().props.style.right).toBe(16);
+  expect(m.cardDiv().props.style.left).toBeUndefined();
+  const h = m.head().props;
+  act(() => h.onPointerDown(ev(100, 100)));
+  act(() => m.headDragging().props.onPointerMove(ev(160, 140)));
+  act(() => m.headDragging().props.onPointerUp(ev(160, 140)));
+  const s = m.cardDiv().props.style;
+  expect(s.left).toBe(560);
+  expect(s.top).toBe(340);
+  expect(s.right).toBeUndefined();
+  expect(s.bottom).toBeUndefined();
+});
+
+test("the card is clamped to the screen", () => {
+  const m = mount();
+  act(() => m.head().props.onPointerDown(ev(100, 100)));
+  act(() => m.headDragging().props.onPointerMove(ev(-5000, 9000)));
+  act(() => m.headDragging().props.onPointerUp(ev(-5000, 9000)));
+  const s = m.cardDiv().props.style;
+  expect(s.left).toBe(0);
+  expect(s.top).toBe(1000);
+});
+
+test("a pointerdown on a button does not start a drag", () => {
+  const m = mount();
+  const button = { closest: (sel: string) => (sel === "button" ? {} : null) };
+  act(() => m.head().props.onPointerDown(ev(100, 100, button)));
+  act(() => m.head().props.onPointerMove(ev(160, 140)));
+  const s = m.cardDiv().props.style;
+  expect(s.right).toBe(16);
+  expect(s.left).toBeUndefined();
+});
