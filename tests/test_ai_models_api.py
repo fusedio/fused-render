@@ -1570,6 +1570,24 @@ def test_a_PINNED_engine_that_does_not_read_the_repo_IS_offered_a_load(
     assert "pinned" in engine["reason"] and "Engines tab" in engine["reason"]
 
 
+def test_a_PINNED_engine_is_offered_a_load_even_when_no_loader_reads_the_repo(
+        client, hub, monkeypatch):
+    """The escape hatch for a classifier gap: `formats.loaders` lists nothing,
+    but the honoured pin is what the load path serves, so the card must offer
+    it instead of sitting `unservable`."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--org--odd-image", blobs={"w": 10},
+                 snapshots={"c1": {"weights.dat": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: text-to-image\n---\n")
+    monkeypatch.setattr(_ai_registry, "model_pin", lambda model_id: "auto")
+    assert _engine(client, "org/odd-image") is None
+    monkeypatch.setattr(_ai_registry, "model_pin", lambda model_id: "diffusers-image")
+    engine = _engine(client, "org/odd-image")
+    assert engine is not None and engine["code"] == "diffusers-image"
+    assert "pinned" in engine["reason"] and not engine.get("unservable")
+
+
 def test_an_UNPINNED_repo_the_serving_engine_does_not_read_is_not_offered_a_load(
         client, hub, monkeypatch):
     """Without a pin the old promise stands: not loadable, remedy named."""
@@ -1969,7 +1987,7 @@ def test_a_two_megabyte_helper_reads_the_same_way(client, hub):
 
 def test_an_ordinary_model_is_not_a_component(client, hub):
     repo = _repo(hub, "models--org--m", blobs={"w": 10},
-                 snapshots={"c1": {"model.bin": "w"}}, refs={"main": "c1"})
+                 snapshots={"c1": {"weights.dat": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: text-to-image\n---\n")
     assert _repo_row(client, "org/m")["component"] is None
 

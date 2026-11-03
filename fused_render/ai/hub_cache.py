@@ -1258,7 +1258,17 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     the modality (`formats.DECISIVE`).
     """
     capability = reading.capability
-    if not meta.loaders:
+    # A HONOURED pin is the escape hatch for a classifier gap, so it is read
+    # BEFORE the empty-loaders early return: the load path, the Engines tab and
+    # `resolve_for_model` all serve it whatever `formats.loaders` lists.
+    pin_honoured = False
+    if not meta.loaders and capability and repo_id:
+        early_pin = _ai_registry.model_pin(repo_id)
+        if early_pin != _ai_registry.AUTO:
+            early = _ai_registry.resolve_for_loaders(capability, repo_id, (), early_pin)
+            pin_honoured = (early.runner is not None and early.honoured
+                            and early.runner.code == early_pin)
+    if not meta.loaders and not pin_honoured:
         # **No FORMAT evidence — which is not the same as no evidence.** Two very
         # different repos land here: one that is fully downloaded and whose files
         # no engine reads (the honest `None`, and the answer this field has
