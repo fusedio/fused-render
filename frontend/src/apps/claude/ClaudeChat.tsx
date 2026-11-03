@@ -3364,26 +3364,29 @@ function ChatBody(props: ChatBodyProps) {
     if (state.status === "idle") drainRef.current();
   }, [state.status]);
   /**
+   * HELD LINES OUTLIVE A RELOAD, per session (sessionStorage). `heldFor` names
+   * the session the outbox is saved under. The first time a session id is seen
+   * its saved lines come back as "not sent" rows, never sent on their own, in
+   * front of anything already parked, and the whole outbox is saved; from then
+   * on every change to the outbox is saved under that id. Only pictures already
+   * on disk are kept, drawn from their path.
+   */
+  const heldFor = useRef("");
+  /**
    * PARKED PICTURES GO BACK TO THE TRAY when the outbox is emptied by a
-   * navigation (Bugbot 4121249270): Back and Open session used to drop the
-   * entries with the pictures still on them — never returned, never revoked.
-   * The words follow Back's own rule for the box (stranded, gone); the pictures
-   * are the reader's files and come back as chips, exactly as a refused send's
-   * do.
+   * navigation (Back, Open session). The words follow Back's own rule for the
+   * box (stranded, gone); the pictures are the reader's files and come back as
+   * chips, exactly as a refused send's do. The saved lines of the session being
+   * left go too, and `heldFor` lets go of it, so the next visit to that session
+   * finds nothing to restore.
    */
   const emptyOutbox = useCallback(() => {
     const items = outboxStore.get().flatMap((e) => e.payload.taken.items);
     if (items.length) attachBack.current?.(items);
     setOutbox([]);
-    saveHeld(controller.getState().sessionId || "", []);
+    saveHeld(heldFor.current || controller.getState().sessionId || "", []);
+    heldFor.current = "";
   }, [controller, setOutbox]);
-  /**
-   * HELD LINES OUTLIVE A RELOAD, per session (sessionStorage). The first time
-   * a session id is seen its saved lines come back as "not sent" rows, never
-   * sent on their own; from then on every change to the outbox is saved under
-   * that id. Only pictures already on disk are kept, drawn from their path.
-   */
-  const heldFor = useRef("");
   /** The held rows on screen: a line with words, or with pictures alone. */
   const heldRows = useMemo(
     () =>
@@ -3395,17 +3398,20 @@ function ChatBody(props: ChatBodyProps) {
   useEffect(() => {
     const sid = state.sessionId || "";
     if (!sid) return;
+    let lines = outbox;
     if (heldFor.current !== sid) {
       heldFor.current = sid;
       const restored = loadHeld<Attachment>(sid).map((line) =>
         postNotSent(line.text, { opts: {}, taken: { opts: {}, items: line.items.map(drawnFromDisk) } }),
       );
-      if (restored.length) setOutbox(pushFrontAll(outboxStore.get(), restored));
-      return;
+      if (restored.length) {
+        lines = pushFrontAll(outboxStore.get(), restored);
+        setOutbox(lines);
+      }
     }
     saveHeld(
       sid,
-      outbox
+      lines
         .map((e) => ({
           text: e.text,
           items: e.payload.taken.items

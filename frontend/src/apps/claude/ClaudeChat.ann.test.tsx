@@ -205,6 +205,15 @@ const keydowns: Array<(e: KeyboardEvent) => void> = [];
 let realAdd: unknown;
 let realRemove: unknown;
 let realCreate: unknown;
+/**
+ * This suite's own sessionStorage, fresh for every test. Held lines are saved
+ * per session id and every chat here runs as `s1`, so a store shared across
+ * tests (or left on `globalThis` by another file in the same `bun test`
+ * process) would bring one test's parked lines back as another's "not sent"
+ * rows.
+ */
+const heldCells = new Map<string, string>();
+let realSession: { had: boolean; was: unknown } = { had: false, was: undefined };
 
 function pressEscape(): { defaultPrevented: boolean } {
   const ev = {
@@ -243,6 +252,14 @@ function pressDoneChord(over: Record<string, unknown> = {}): {
 }
 
 beforeEach(() => {
+  heldCells.clear();
+  const g = globalThis as { sessionStorage?: unknown };
+  realSession = { had: Object.prototype.hasOwnProperty.call(g, "sessionStorage"), was: g.sessionStorage };
+  g.sessionStorage = {
+    getItem: (k: string) => heldCells.get(k) ?? null,
+    setItem: (k: string, v: string) => void heldCells.set(k, String(v)),
+    removeItem: (k: string) => void heldCells.delete(k),
+  };
   // A shared prefs GET pinned by an earlier file's never-settling fetch stub
   // would starve the flag read this chat's send waits on.
   dropSharedPrefsRead();
@@ -467,6 +484,9 @@ afterEach(() => {
   if (realCreate === undefined) delete doc.createElement;
   else doc.createElement = realCreate;
   restoreApi();
+  const g = globalThis as { sessionStorage?: unknown };
+  if (realSession.had) g.sessionStorage = realSession.was;
+  else delete g.sessionStorage;
   expect(Object.keys(API).sort()).toEqual(Object.keys(asFound).sort());
   for (const k of Object.keys(asFound)) expect(API[k]).toBe(asFound[k]);
 });
@@ -1561,45 +1581,32 @@ test("a picture-only line held mid-turn gets its own row with the picture, and d
 });
 
 test("a reload brings held lines back as not-sent rows and never sends them", async () => {
-  const store = new Map<string, string>();
-  const g = globalThis as { sessionStorage?: unknown };
-  const had = Object.prototype.hasOwnProperty.call(g, "sessionStorage");
-  const was = g.sessionStorage;
-  g.sessionStorage = {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => void store.set(k, v),
-    removeItem: (k: string) => void store.delete(k),
-  };
-  try {
-    const first = await midTurnChat();
-    await typeInBox(first.r, "held over");
-    await pressEnterInBox(first.r);
-    await settle(60);
-    expect(JSON.parse(store.get("claude.outbox:s1") ?? "[]")).toEqual([{ text: "held over", items: [] }]);
-    // Another session's lines are its own.
-    store.set("claude.outbox:s2", JSON.stringify([{ text: "other chat", items: [] }]));
-    await act(async () => first.r.unmount());
-    mounted.splice(mounted.indexOf(first.r), 1);
-    // A picture-only line whose picture is a saved view comes back too.
-    const saved = JSON.parse(store.get("claude.outbox:s1")!) as unknown[];
-    saved.push({ text: "", items: [{ id: "a1", kind: "image", view: "/shots/a.png", name: "a.png" }] });
-    store.set("claude.outbox:s1", JSON.stringify(saved));
-    runs.length = 0;
-    pollLive = false;
+  const store = heldCells;
+  const first = await midTurnChat();
+  await typeInBox(first.r, "held over");
+  await pressEnterInBox(first.r);
+  await settle(60);
+  expect(JSON.parse(store.get("claude.outbox:s1") ?? "[]")).toEqual([{ text: "held over", items: [] }]);
+  // Another session's lines are its own.
+  store.set("claude.outbox:s2", JSON.stringify([{ text: "other chat", items: [] }]));
+  await act(async () => first.r.unmount());
+  mounted.splice(mounted.indexOf(first.r), 1);
+  // A picture-only line whose picture is a saved view comes back too.
+  const saved = JSON.parse(store.get("claude.outbox:s1")!) as unknown[];
+  saved.push({ text: "", items: [{ id: "a1", kind: "image", view: "/shots/a.png", name: "a.png" }] });
+  store.set("claude.outbox:s1", JSON.stringify(saved));
+  runs.length = 0;
+  pollLive = false;
 
-    const { r } = await mountChat({ session_id: "s1" });
-    await settle(200);
-    expect(tags(r)).toEqual(["not sent · click to edit", "not sent · click to edit"]);
-    const rows = byClass(r, "is-pending");
-    expect(String(rows[0]!.findAllByProps({ className: "bubble" })[0]!.props.children)).toBe("held over");
-    expect(rows[1]!.findAllByProps({ className: "bubble" })).toHaveLength(0);
-    expect(rowText(rows[1]!)).toContain("a.png");
-    await settle(400);
-    expect(sentOut()).toEqual([]);
-  } finally {
-    if (had) g.sessionStorage = was;
-    else delete g.sessionStorage;
-  }
+  const { r } = await mountChat({ session_id: "s1" });
+  await settle(200);
+  expect(tags(r)).toEqual(["not sent · click to edit", "not sent · click to edit"]);
+  const rows = byClass(r, "is-pending");
+  expect(String(rows[0]!.findAllByProps({ className: "bubble" })[0]!.props.children)).toBe("held over");
+  expect(rows[1]!.findAllByProps({ className: "bubble" })).toHaveLength(0);
+  expect(rowText(rows[1]!)).toContain("a.png");
+  await settle(400);
+  expect(sentOut()).toEqual([]);
 });
 
 test("Back with a line still PARKED empties the outbox: no bubble, no hint carried into the landing", async () => {
@@ -1625,6 +1632,43 @@ test("Back with a line still PARKED empties the outbox: no bubble, no hint carri
   await settle(60);
   // Nothing of the parked line reached the run behind the reader's back.
   expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
+});
+
+test("a line parked during the first start is saved once the session id arrives", async () => {
+  pollLive = true;
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  await typeInBox(r, "parked");
+  await pressEnterInBox(r);
+  await settle();
+  expect(tags(r)).toEqual(["queued"]);
+  expect(heldCells.size).toBe(0);
+  await act(async () => open());
+  await settle(60);
+  expect(tags(r)).toEqual(["queued"]);
+  expect(JSON.parse(heldCells.get("claude.outbox:s1") ?? "[]")).toEqual([{ text: "parked", items: [] }]);
+});
+
+test("Back discards the session's saved lines too: reopening it restores nothing", async () => {
+  heldCells.set("claude.outbox:s1", JSON.stringify([{ text: "held over", items: [] }]));
+  const first = await mountChat({ session_id: "s1" });
+  await settle(200);
+  expect(tags(first.r)).toEqual(["not sent · click to edit"]);
+  await act(async () => byClass(first.r, "c-back")[0]!.props.onClick({ preventDefault() {} }));
+  await settle(60);
+  expect(byClass(first.r, "is-pending")).toHaveLength(0);
+  expect(heldCells.has("claude.outbox:s1")).toBe(false);
+  // A reload, then the same session again: nothing comes back.
+  await act(async () => first.r.unmount());
+  mounted.splice(mounted.indexOf(first.r), 1);
+  const { r } = await mountChat({ session_id: "s1" });
+  await settle(200);
+  expect(byClass(r, "is-pending")).toHaveLength(0);
 });
 
 /** The messages that went out, in order, whichever road each took. */
