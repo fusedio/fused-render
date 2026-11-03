@@ -4,9 +4,22 @@ Not a package: each backend loads this by path (the templates tree is always
 staged as one unit, so ../shared/ resolves from any template folder).
 """
 import contextlib
-import fcntl
+import importlib.util
 import os
 import time
+
+
+def _load_platutil():
+    # By path, not `import platutil`: a user module's own same-named file can
+    # sit earlier on sys.path.
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "platutil.py")
+    spec = importlib.util.spec_from_file_location("_procutil_platutil", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_platutil = _load_platutil()
 
 
 def clean_env():
@@ -23,7 +36,8 @@ def _take(fh):
     handle holds it. Kernel-owned, so it is released the instant the holder's
     process exits — there is no stale lock to detect or steal."""
     fh.seek(0)
-    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if not _platutil.flock(fh, blocking=False):
+        raise BlockingIOError("lock is held")
 
 
 @contextlib.contextmanager
@@ -51,13 +65,18 @@ def file_lock(path, timeout=600):
 
 
 def pid_alive(pid):
-    # os.kill(pid, 0) is the no-op liveness check.
+    # platutil.probe_pid, never a bare os.kill(pid, 0): on Windows signal 0
+    # is CTRL_C_EVENT and Ctrl+C's the whole console, server included.
     try:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
+    if pid <= 0:
+        return False
     try:
-        os.kill(pid, 0)
+        _platutil.probe_pid(pid)
+        return True
+    except PermissionError:
         return True
     except OSError:
         return False

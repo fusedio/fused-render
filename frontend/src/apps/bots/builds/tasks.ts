@@ -40,12 +40,13 @@ export interface TaskRow {
 
 export interface TaskChange { full: boolean; rows: TaskRow[]; gone: string[] }
 export interface ScopeOpts { scope?: "all" | "app" }
-export interface TaskSpec { prompt: string; target?: string; title?: string; model?: string; effort?: string; permissionMode?: string }
+export interface TaskSpec { prompt: string; target?: string; title?: string; model?: string; effort?: string; permissionMode?: string; /** `false`: runs beside whatever owns the folder, never in the project queue. */ queue?: boolean }
 export interface TaskHandle {
   readonly key: string;
   entryId: string;
   /** Resolves with the task's last row once it settles (done/archived twice in a row after it ran). Never rejects. */
   done: Promise<TaskRow>;
+  release(): void;
 }
 
 const CHANGES_WAIT_S = 25, BACKOFF_MS = 3000, FLOOR_MS = 20000, CATCH_UP_MS = 1000;
@@ -251,6 +252,16 @@ export async function tasksMarkRead(key: string): Promise<void> {
   await taskFetch("POST", "/api/tasks/read", { key, all: true });
 }
 
+/** fused.tasks.send(key, text): a follow-up message to the same task. */
+export async function tasksSend(key: string, text: string): Promise<void> {
+  await taskFetch("POST", "/api/tasks/" + encodeURIComponent(key) + "/send", { text });
+}
+
+/** fused.tasks.cancel(key). */
+export async function tasksCancel(key: string): Promise<void> {
+  await taskFetch("POST", "/api/tasks/" + encodeURIComponent(key) + "/cancel", {});
+}
+
 /** fused.tasks.ui({view, task, scope}) → the Tasks UI iframe src (relative). */
 export async function tasksUi(args: { view?: string; task?: string; scope?: "all" | "app" } = {}): Promise<string> {
   const q: string[] = [];
@@ -263,7 +274,8 @@ export async function tasksUi(args: { view?: string; task?: string; scope?: "all
 
 /** fused.tasks.create(spec) → a handle. Does not wait for the spawn: the handle follows the row. */
 export async function tasksCreate(spec: TaskSpec): Promise<TaskHandle> {
-  const body: Record<string, string> = { prompt: spec.prompt };
+  const body: Record<string, string | boolean> = { prompt: spec.prompt };
+  if (spec.queue !== undefined) body.queue = spec.queue;
   if (spec.target) body.target = spec.target;
   if (spec.title) body.title = spec.title;
   if (spec.model) body.model = spec.model;
@@ -304,13 +316,16 @@ function taskHandle(firstKey: string, entryId: string, under: string): TaskHandl
   const mine = (r: TaskRow) => r.key === key || (!!entryId && r.entry_id === entryId);
   let stop = () => {};
 
-  const finish = (row: TaskRow) => {
-    if (finished) return;
+  const release = () => {
     finished = true;
     if (confirm) clearTimeout(confirm);
     confirm = null;
-    settle(row);
     stop();
+  };
+  const finish = (row: TaskRow) => {
+    if (finished) return;
+    release();
+    settle(row);
   };
   const consider = (row: TaskRow) => {
     key = row.key; last = row;
@@ -344,5 +359,5 @@ function taskHandle(firstKey: string, entryId: string, under: string): TaskHandl
     if (last && (c.full || c.gone.includes(key))) finish(last);
   });
 
-  return { get key() { return key; }, entryId, done };
+  return { get key() { return key; }, entryId, done, release };
 }

@@ -13,7 +13,7 @@ const UNKNOWN_MS = 60_000;
 const BATCH = 100;
 
 // key -> state (null = asked, GitHub did not say) and when it was asked.
-const cache = new Map<string, { state: PrState | null; at: number }>();
+const cache = new Map<string, { state: PrState | null; head?: string; at: number }>();
 const inflight = new Set<string>();
 const listeners = new Set<() => void>();
 
@@ -27,6 +27,11 @@ export function resetPrStatusForTests(): void {
  *  not say, undefined when never asked. */
 export function peekPrStatus(key: string): PrState | null | undefined {
   return cache.get(key)?.state;
+}
+
+/** The head branch GitHub named for one `owner/repo#n` key, if it has said. */
+export function peekPrHead(key: string): string | undefined {
+  return cache.get(key)?.head;
 }
 
 function stale(key: string): boolean {
@@ -48,10 +53,13 @@ export async function requestPrStatuses(keys: string[]): Promise<void> {
   for (let i = 0; i < want.length; i += BATCH) {
     const refs = want.slice(i, i + BATCH);
     asks.push(
-      postJson<Record<string, PrState | null>>("/api/tasks/pr-status", { refs })
+      postJson<Record<string, PrState | null | Record<string, string>>>("/api/tasks/pr-status", { refs })
         .then((got) => {
           const at = Date.now();
-          for (const k of refs) cache.set(k, { state: got?.[k] ?? null, at });
+          const heads = (got?._heads ?? {}) as Record<string, string>;
+          for (const k of refs) {
+            cache.set(k, { state: (got?.[k] as PrState | null | undefined) ?? null, head: heads[k], at });
+          }
         })
         .catch(() => {
           const at = Date.now();

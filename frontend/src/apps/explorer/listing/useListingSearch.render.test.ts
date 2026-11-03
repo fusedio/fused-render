@@ -63,7 +63,9 @@ mock.module("@platform/lib/api", () => ({
 // that seeding path, so a plain `false` (every mount behaves like a fresh
 // load) is enough.
 mock.module("@platform/lib/router", () => ({
-  replaceSearch: () => {},
+  // The real one's behaviour, not a no-op: this mock outlives the file, and
+  // snapshot-clear.test.ts, run later, asserts on the URL it writes.
+  replaceSearch: (url: string) => globalThis.history?.replaceState(history.state, "", url),
   navHintQCommitted: () => false,
 }));
 

@@ -17,7 +17,9 @@ import { paneOfferable, paneSrcFor } from "../pane/paneUrl";
 import {
   attachFiles,
   attachOverview,
+  attachCrops,
   attachPane,
+  attachPaneFromBlob,
   attachPaths,
   dragHasAttachment,
   filesFromPaste,
@@ -56,11 +58,16 @@ export {
 export interface AttachApi {
   flash: typeof flash;
   attachPane: typeof attachPane;
+  /** The pane seat from bytes a host supplied (the canvas page's shot of its
+   *  workbench, `shots/canvas-shot`). */
+  attachPaneFromBlob: typeof attachPaneFromBlob;
   /** PR3's send-time badged overview (`shots/attach.attachOverview`, T:10127).
    *  In the seam and not imported at the call site for the same reason the other
    *  eleven are: a send that has to take a picture must be testable without a
    *  capture engine. */
   attachOverview: typeof attachOverview;
+  /** The same capture's per-note crops, uploaded. */
+  attachCrops: typeof attachCrops;
   attachFiles: typeof attachFiles;
   attachPaths: typeof attachPaths;
   readDirs: typeof readDirs;
@@ -81,7 +88,9 @@ export interface AttachApi {
 export const ATTACH_API: AttachApi = {
   flash,
   attachPane,
+  attachPaneFromBlob,
   attachOverview,
+  attachCrops,
   attachFiles,
   attachPaths,
   readDirs,

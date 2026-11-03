@@ -9,6 +9,7 @@
 import type {
   Activity,
   AppStateRow,
+  CanvasShotRow,
   ContextUsage,
   Decision,
   DecisionScope,
@@ -66,15 +67,6 @@ export interface UserTurn {
    * when the session is reopened.
    */
   attachments?: Receipt[];
-  /**
-   * THIS PAGE HAS NOT HANDED THE LINE TO THE RUN YET (the page outbox,
-   * `ui/outbox.ts`). `"queued"` — typed while a send was in flight, waiting
-   * its turn; `"notSent"` — handed back (a failed send, an interrupt) and
-   * waiting for the reader to decide. Drawn as a small grey tag on the bubble,
-   * the way Claude Code's terminal greys a queued line. Comes off when the real
-   * send adopts the row (`addUser` rebuilds the turn without it).
-   */
-  pending?: "queued" | "notSent";
 }
 
 export interface AssistantTurn {
@@ -96,6 +88,12 @@ export interface AssistantTurn {
   streaming?: boolean;
   /** Which followup slice this bubble belongs to (D687, T: followupSeq). */
   followup?: number;
+  /** CLIENT-ONLY (never on the wire, never from history): epoch SECONDS this
+   *  page saw the reply end, stamped when a live run settles. Live delta rows
+   *  carry no clock (types.ts `SegmentClock`), so this is what the "Worked for"
+   *  line (ui/run-when `turnWorkedWords`) is measured to when the segments
+   *  have none; a restored turn reads its segments' clocks instead. */
+  endedAt?: number;
 }
 
 /**
@@ -144,7 +142,19 @@ export interface ErrorTurn {
   quota?: import("./types").Quota;
 }
 
-export type Turn = UserTurn | AssistantTurn | NoteTurn | ErrorTurn;
+/** A context compaction: drawn as a divider with the summary folded away. Not
+ *  a user message, so recaps and anchors ignore it. */
+export interface CompactTurn {
+  role: "compact";
+  key: string;
+  /** The summary, markdown. */
+  text: string;
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+}
+
+export type Turn = UserTurn | AssistantTurn | NoteTurn | ErrorTurn | CompactTurn;
 
 /** Kinds the trouble card knows (T:13531-13602 TROUBLE_*). Reuse platform/lib/trouble.ts ids where identical. */
 export type TroubleKind =
@@ -218,7 +228,7 @@ export interface ChatState {
   file: string | null;
   sessionId: string | null;
   /**
-   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" — as the
+   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" | "codex" | "gemini" — as the
    * server reported it (poll, history, defaults), or "" while nothing has
    * (docs/COPILOT_BACKEND.md D2). Immutable once a session has a turn: the
    * Agent pill fixes on it, and a send names it. "" for a brand-new chat,
@@ -254,6 +264,8 @@ export interface ChatState {
   permissions: PermissionRow[];
   /** Unanswered app-state requests the pane must answer (T:15758-15869). */
   appState: AppStateRow[];
+  /** Unanswered `canvas_screenshot` requests a canvas page must answer. */
+  canvasShot: CanvasShotRow[];
   skills: SkillRow[];
   working: Working | null;
   trouble: Trouble | null;
@@ -423,16 +435,6 @@ export interface SendOptions {
    * mint one.
    */
   queueClaim?: string;
-  /**
-   * A FOLLOW-UP THAT MAY OPEN A FRESH TURN INSTEAD. `sendFollowUp` waits a
-   * bounded moment for a live run and, finding none, hands the words back with
-   * "no run to attach this message to". A line the page PARKED behind a send
-   * (`ui/outbox.ts`) is different: it was typed to be said whatever the run
-   * does, and the run it was parked behind may well have ended in the seconds
-   * before the drain reached it. With this set, that road falls through to
-   * `sendMessage` — same words, same bubble — rather than giving up.
-   */
-  orStart?: boolean;
 }
 
 /** One follow-up a stop handed back (`ChatControllerDeps.onStranded`). */
@@ -510,12 +512,9 @@ export interface ChatController {
    * bubble adopt this row instead of adding a second. Empty text posts nothing
    * and answers "".
    */
-  postOptimisticUser(text: string, pending?: UserTurn["pending"]): string;
+  postOptimisticUser(text: string): string;
   /** Drop an optimistic bubble whose send never reached `sendMessage` at all. */
   dropOptimisticUser(key: string): void;
-  /** Re-tag an optimistic bubble (queued → not sent, or clear the tag) without
-   *  moving it. No-op for a key that is not a user row. */
-  setOptimisticPending(key: string, pending: UserTurn["pending"] | undefined): void;
   /** Queue/send a follow-up into the live run (T:16024). `opts` ADDED: notes
    *  and pictures fold into a follow-up exactly as into a fresh turn. */
   sendFollowUp(text: string, opts?: SendOptions): Promise<void>;
@@ -548,6 +547,9 @@ export interface ChatController {
 
   /** Answer an app-state request with a snapshot block (T:15804 answerAppState). */
   answerAppState(id: string, block: string): Promise<void>;
+  /** Answer a `canvas_screenshot` request: the uploaded picture's path (in the
+   *  shots dir) and mime, or a sentence saying why there is none. */
+  answerCanvasShot(id: string, answer: { image: string; mime: string; udf?: string } | { error: string }, askedBy?: string): Promise<boolean>;
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
   /** `backend`: the arriving conversation's agent, when the opener knows it

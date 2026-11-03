@@ -34,6 +34,7 @@ export {
 export {
   SHOT_MIME_EXT,
   SHOT_SUFFIX_OVERVIEW,
+  SHOT_SUFFIX_CROP,
   SHOT_SUFFIX_VIEW,
   shotBase,
   shotDirOf,
@@ -125,7 +126,9 @@ export {
   attachFile,
   attachFiles,
   attachOverview,
+  attachCrops,
   attachPane,
+  attachPaneFromBlob,
   attachPaths,
   captureAndAttachOverview,
   dragHasAttachment,

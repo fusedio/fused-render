@@ -1,5 +1,7 @@
 // THE PAGE'S OUTBOX — the lines the reader typed while this page could not
-// hand them to the run yet.
+// hand them to the run yet: inside a send's own start window, and for the
+// whole of a running turn. A line typed mid-turn is never written into the
+// running CLI; it waits here and goes out as its own turn once the run is idle.
 //
 // Claude Code's own terminal never refuses Enter: a line typed while it works
 // goes into a visible queue above the input, the box clears, and the queue
@@ -21,7 +23,8 @@
 //   * `pushFront` — a line handed BACK (a send that failed, an interrupt's
 //                   `still_queued`) goes ahead of everything typed since: it was
 //                   said first.
-//   * `shiftOldest` — the drain takes from the front, one at a time.
+//   * `shiftOldest` — the drain takes from the front, one at a time, one per
+//                   turn.
 //   * `popNewest`   — ↑ in an empty box pulls back the LAST thing typed, the
 //                   way Claude Code's ↑ does (up again for an older one).
 
@@ -114,4 +117,61 @@ export function outboxHint(sendable: number, notSent = 0): string {
       : `${notSent} messages not sent · click one to edit`;
   }
   return "";
+}
+
+/** What survives a reload of one held line: its words and whatever of its
+ *  attachments can be named without the page that took them. */
+export interface HeldLine<A> {
+  text: string;
+  items: A[];
+}
+
+/** The sessionStorage key a session's held lines live under. */
+export function heldKey(sessionId: string): string {
+  return "claude.outbox:" + sessionId;
+}
+
+type HeldStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function defaultStore(): HeldStore | null {
+  try {
+    return typeof sessionStorage === "undefined" ? null : sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Writes a session's held lines; an empty list removes the key. */
+export function saveHeld<A>(
+  sessionId: string,
+  lines: readonly HeldLine<A>[],
+  store: HeldStore | null = defaultStore(),
+): void {
+  if (!sessionId || !store) return;
+  try {
+    if (lines.length) store.setItem(heldKey(sessionId), JSON.stringify(lines));
+    else store.removeItem(heldKey(sessionId));
+  } catch {
+    /* storage full or refused: the lines still live in this page */
+  }
+}
+
+/** Reads a session's held lines back. Anything unreadable is an empty list. */
+export function loadHeld<A>(sessionId: string, store: HeldStore | null = defaultStore()): HeldLine<A>[] {
+  if (!sessionId || !store) return [];
+  try {
+    const raw = store.getItem(heldKey(sessionId));
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((l: unknown) => {
+      const line = l as { text?: unknown; items?: unknown };
+      if (typeof line?.text !== "string") return [];
+      const items = Array.isArray(line.items) ? (line.items as A[]) : [];
+      // A line with neither words nor pictures has nothing to show or resend.
+      if (!line.text && !items.length) return [];
+      return [{ text: line.text, items }];
+    });
+  } catch {
+    return [];
+  }
 }

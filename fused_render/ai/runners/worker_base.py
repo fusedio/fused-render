@@ -1155,7 +1155,25 @@ PART_SUFFIX = ".fusedpart"
 #: to redirect writes elsewhere — while a real, previously-created `.part`
 #: file (never a symlink; nothing in this module ever creates one there)
 #: keeps opening normally.
-_NOFOLLOW = os.O_NOFOLLOW
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)  # Windows has no O_NOFOLLOW
+#: Windows opens an fd in text mode (translating "\n" bytes) unless told
+#: otherwise; every blob we write must be byte-exact.
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
+
+def _pwrite(fd, data, offset, lock):
+    """`os.pwrite`, or its Windows stand-in.
+
+    Segments run on several threads over ONE fd, so without `os.pwrite` the
+    seek+write pair has to be atomic: `lock` serialises it.
+    """
+    if hasattr(os, "pwrite"):
+        return os.pwrite(fd, data, offset)
+    with lock:
+        os.lseek(fd, offset, os.SEEK_SET)
+        return os.write(fd, data)
+
+
 READ_BYTES = 1024 * 1024
 #: Big enough that a filesystem which really allocates cannot hide it in a
 #: block, small enough that paying for it on one is nothing.
@@ -1580,7 +1598,8 @@ def _sparse_ok(folder):
     blocks = None
     try:
         os.makedirs(folder, exist_ok=True)
-        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+        fd = os.open(
+            probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC | _O_BINARY, 0o644)
         try:
             os.ftruncate(fd, SPARSE_PROBE_BYTES)
             blocks = getattr(os.fstat(fd), "st_blocks", None)
@@ -2011,6 +2030,7 @@ class _FileFetch:
         self.sidecar = self.part + ".json"
         self.snapshot = os.path.join(folder, "snapshots", meta["commit"])
         self.lock = threading.Lock()      # guards the segment cursors
+        self.write_lock = threading.Lock()  # seek+write pair when no os.pwrite
         self.flush_lock = threading.Lock()  # one writer of the sidecar at a time
         self.fd = None
         self.segments = []
@@ -2080,7 +2100,8 @@ class _FileFetch:
                 self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
             _remove(self.part)
             _remove(self.sidecar)
-        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o644)
+        self.fd = os.open(
+            self.part, os.O_RDWR | os.O_CREAT | _NOFOLLOW | _O_BINARY, 0o644)
         os.ftruncate(self.fd, self.size)
         self.flush(force=True)
         pending = [seg for seg in self.segments if not _seg_complete(seg)]
@@ -2211,7 +2232,10 @@ class _FileFetch:
             # source through a pre-planted symlink first would still hand an
             # attacker the CONTENT, and a subsequent `os.replace` would then
             # make `self.sidecar` itself become that symlink).
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW, 0o644)
+            fd = os.open(
+                tmp,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW | _O_BINARY,
+                0o644)
             with os.fdopen(fd, "w") as handle:
                 json.dump(state, handle)
             os.replace(tmp, self.sidecar)
@@ -2420,8 +2444,8 @@ class _FileFetch:
             chunk = chunk[:room]
             written = 0
             while written < len(chunk):
-                written += os.pwrite(self.fd, chunk[written:],
-                                     offset + written)
+                written += _pwrite(self.fd, chunk[written:],
+                                   offset + written, self.write_lock)
             offset += len(chunk)
             with self.lock:
                 seg["done"] += len(chunk)

@@ -14,6 +14,7 @@ to mutate the source) PACKAGE_TEMPLATES_DIR at a tiny fake tree, so the real
 ~/.fused-render and the real package are never touched.
 """
 import os
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -271,5 +272,6 @@ def test_render_serves_a_theme_aware_tier_one_template(tmp_path, upgraded_instal
 
     client = TestClient(create_app(start_dir=str(tmp_path)))
     body = client.get("/render", params={"path": path}).text
-    assert '<script src="/static/runtime.js"></script>' in body
+    assert re.search(
+        r'<script src="/static/runtime\.js\?v=[0-9a-f]+-[0-9a-f]+"></script>', body)
     assert "data-fused-theme" in body

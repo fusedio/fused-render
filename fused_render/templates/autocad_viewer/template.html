@@ -787,12 +787,14 @@ function addRecent(path) {
 }
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function dirOf(path) {
-  return String(path || "").replace(/[\\/][^\\/]*$/, "");
+  const d = String(path || "").replace(/[\\/][^\\/]*$/, "");
+  return /^[A-Za-z]:$/.test(d) ? d + "/" : d;   // a bare drive ("C:") is cwd-relative on Windows
 }
 function openHref(path) {
-  // mirror the shell codec (router.ts urlForFsPath) — a backslash is a legal
-  // filename char and must round-trip.
-  const segs = String(path).replace(/^\/+/, "").split("/").filter(Boolean).map(encodeURIComponent);
+  // mirror the shell codec (router.ts urlForFsPath): normalize ONLY drive-letter
+  // paths — a backslash is a legal POSIX filename char and must round-trip.
+  const norm = /^[A-Za-z]:[\\/]/.test(path) ? String(path).replace(/\\/g, "/") : String(path);
+  const segs = norm.replace(/^\/+/, "").split("/").filter(Boolean).map(encodeURIComponent);
   return "/explorer/view/" + segs.join("/");
 }
 function fmtSize(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " KB" : n + " B"; }

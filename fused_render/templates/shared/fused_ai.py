@@ -549,8 +549,11 @@ def text(prompt: str, model: str | None = None, effort: str | None = None,
     """`POST /api/ai` and return the completion text. Mirrors `fused.ai.text()`
     without `onChunk` — see `stream()` for the streaming form.
 
-    `provider` is `"local"`, `"apple"` or `"claude"` — which tier serves the
-    call. Left `None`, the server picks from the model: the apple tier's
+    `provider` is `"local"`, `"apple"`, `"claude"`, `"copilot"`, `"codex"` or
+    `"gemini"` — which tier serves the call (the last three are the agent
+    CLIs as tool-less one-shots, D1433: text only, whole reply at once, 409
+    `ai_unavailable` while that agent is off in Preferences). Left `None`,
+    the server picks from the model: the apple tier's
     pinned ids (`"afm-text"`) name it outright, then the shape rule (a repo
     id or `.gguf` filename is local, anything else Claude), exactly as the
     JS side does. `provider="apple"` alone runs Apple's on-device model

@@ -93,11 +93,29 @@ if "__file__" not in globals():
     __file__ = os.path.join(sys.path[0], "ops.py")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-# `../shared/appenv.py` is how a template asks the app about its environment
-# (SPEC PY-15): env vars only, stdlib only, no `fused_render` import. The import
-# stays LAZY at its use site so an unreachable appenv is still the "cannot tell"
-# case that must read as a refusal.
+# `../shared/` is how a template reaches the one copy of a helper it shares
+# with the app (SPEC PY-15): stdlib only, no `fused_render` import. `app_entry`
+# is imported LAZILY through this hop at its use site; `contrib_guard` (below)
+# is loaded by path.
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "shared"))
+
+
+def _load_shared(name):
+    """`../shared/<name>.py` BY PATH (the adding-a-shared-template-utility
+    rule): a same-named module elsewhere on `sys.path` can never stand in."""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(_HERE), "shared", name + ".py")
+    spec = importlib.util.spec_from_file_location("_git_ops_" + name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# The contribution loop's push/pull/reset guard (docs/CONTRIB_LOOP.md §17.8):
+# one copy, shared with log.py and the server's classify.py. Loaded EAGERLY —
+# a guard that failed to load must not read as "not guarded".
+contrib_guard = _load_shared("contrib_guard")
 
 
 # ------------------------------------------------------------------- the bounds
@@ -1382,6 +1400,9 @@ def _reset(root, sha):
     words, via `_git_ok`) or git itself not running at all (`_run`'s usual
     no-git/timeout refusals) — in neither case has anything moved.
     """
+    blocked = _reset_blocked(root)
+    if blocked:
+        raise _Refused("follows-author", blocked)
     _require_clean(root)
     _git_ok(root, "reset", "--hard", sha)
     out = _git_ok(root, "log", "-1", "--no-color", f"--format={_COMMIT_FORMAT}")
@@ -1559,6 +1580,9 @@ def _upstream_target(root, remote, branch):
 
 
 def _pull(root):
+    blocked = _pull_blocked(root)
+    if blocked:
+        raise _Refused("follows-author", blocked)
     branch = _current_branch(root)
     if not branch:
         raise _Refused("detached",
@@ -1575,6 +1599,12 @@ def _pull(root):
     if code == 0:
         return _ok("pull", f"Pulled {remote}/{target} — the branch fast-forwarded.")
     if _NOT_FF in _said(out, err) or "diverge" in _said(out, err):
+        guarded = contrib_guard.guarded_who(root, _guard_run)
+        if guarded is not None:
+            # `ahead` counts no merges (§17.2), so a copy whose only commit
+            # the author lacks is a bring-in merge reaches here: it is the
+            # loop's Bring in, not a terminal, that combines them.
+            raise _Refused("follows-author", contrib_guard.pull_sentence(guarded[0]))
         # A divergence is a decision, not an error. Both automatic answers are
         # wrong to take on someone's behalf: a merge writes a commit they did not
         # ask for, a rebase rewrites commits they already have. So this stops.
@@ -1587,7 +1617,43 @@ def _pull(root):
                    with_output=True)
 
 
+def _guard_run(root, *args):
+    """`contrib_guard`'s injected runner: this module's bounded `_run`, as
+    `(returncode, stdout_bytes)`. A guard read is never "the last command" a
+    refusal quotes (`_LAST_RUN`): the git call the op itself made is."""
+    last = getattr(_LAST_RUN, "value", None)
+    try:
+        code, out, _err = _run(root, *args)
+    finally:
+        _LAST_RUN.value = last
+    return code, out
+
+
+def _push_blocked(root):
+    """The plain sentence Push refuses with on a guarded copy, or None —
+    `contrib_guard` (log.py's `repo.push_blocked` is the same call)."""
+    return contrib_guard.push_blocked(root, _guard_run)
+
+
+def _pull_blocked(root):
+    """A guarded copy with commits of its own the author's version lacks
+    (`ahead > 0`) cannot fast-forward onto it; the view's Get latest then
+    posts `/api/git-upstream` get-latest (the loop's Bring in) instead, and
+    this is the sentence for anything that still reaches the plain pull.
+    With nothing of its own (`ahead == 0`) the plain pull runs (§17.8)."""
+    return contrib_guard.pull_blocked(root, _guard_run)
+
+
+def _reset_blocked(root):
+    """Reset-to-commit on a guarded copy is the user's own on `fused/mine`
+    and refused anywhere else (§17.8)."""
+    return contrib_guard.reset_blocked(root, _guard_run)
+
+
 def _push(root):
+    blocked = _push_blocked(root)
+    if blocked:
+        raise _Refused("follows-author", blocked)
     branch = _current_branch(root)
     if not branch:
         raise _Refused("detached",

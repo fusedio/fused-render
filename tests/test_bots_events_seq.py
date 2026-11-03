@@ -53,6 +53,13 @@ def test_pulse_is_the_small_row_for_the_sidebar(client, tmp_path, monkeypatch):
     # The same seq the page's own row carries (create() emits a greeting line of its own).
     assert me["status"] == "idle" and me["seq"] == full["seq"] >= 2 and me["hidden"] is False
     assert "seen_seq" not in me and "events" not in me and "usage" not in out
+    # `news_seq` is the newest MESSAGE row: a system note appended after it moves `seq`, not `news_seq`, so a bot
+    # read up to its last message stays read on the rail (the page's unreadOf skips system rows the same way).
+    assert me["news_seq"] == full["news_seq"] == me["seq"]
+    a.emit("system", "Browser closed after 20 minutes idle")
+    st, _, body = client.get("/api/bots/pulse")
+    me = next(b for b in json.loads(body)["bots"] if b["id"] == a.id)
+    assert me["seq"] == full["seq"] + 1 and me["news_seq"] == full["seq"]
     # Opening the bot stamps the mark; hiding it flips the flag; a status change shows as is.
     st, _, _ = client.post(f"/api/bots/{a.id}/seen", {"seq": 1})
     assert st == 200

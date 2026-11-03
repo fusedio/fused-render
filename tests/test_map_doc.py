@@ -119,6 +119,7 @@ def test_an_auto_layer_accepts_any_kinds_keys_and_a_kind_change_drops_foreign_on
     {"op": "set_view", "center": [200, 0]},
     {"op": "set_view", "bounds": [10, 10, 0, 0]},
     {"op": "move_layer", "id": "nope", "to": "top"},
+    {"op": "split_layer", "id": "nope", "source_layers": ["a"]},
     {"op": "explode"},
     "not a command",
 ])
@@ -139,6 +140,64 @@ def test_move_layer_by_direction_and_index():
     assert order(doc) == ["b", "c", "a", "d"]
     doc, _ = md.apply(doc, {"op": "move_layer", "id": "d", "index": 0})
     assert order(doc) == ["d", "b", "c", "a"]
+
+
+def test_split_layer_puts_one_layer_per_source_layer_where_the_file_was():
+    doc, _ = run([
+        {"op": "add_layer", "source": "/data/dem.tif"},
+        {"op": "add_layer", "source": "/data/polygon_9_classes.gpkg", "opacity": 0.6, "visible": False,
+         "style": {"fill_color": "#112233"}},
+        {"op": "add_layer", "source": "/data/roads.geojson"},
+    ])
+    doc, result = md.apply(doc, {"op": "split_layer", "id": "polygon-9-classes",
+                                 "source_layers": ["classes", "review_polygon"]})
+    assert result == {"ids": ["classes", "review-polygon"]}
+    assert [layer["id"] for layer in doc["layers"]] == ["dem", "classes", "review-polygon", "roads"]
+    for layer, layer_id, name in zip(doc["layers"][1:3], result["ids"], ["classes", "review_polygon"]):
+        assert layer == {"id": layer_id, "name": name, "source": "/data/polygon_9_classes.gpkg",
+                         "kind": "auto", "visible": False, "opacity": 0.6,
+                         "style": {"fill_color": "#112233"}, "options": {"source_layer": name}}
+
+
+def test_split_layers_are_restyled_and_removed_independently():
+    doc, _ = run([{"op": "add_layer", "source": "/data/two.gpkg"},
+                  {"op": "split_layer", "id": "two", "source_layers": ["parcels", "roads"]}])
+    restyled, _ = run([{"op": "update_layer", "id": "parcels", "visible": False, "opacity": 0.2,
+                        "style": {"fill_color": "#ff0000", "color_by": "class"}}], doc)
+    assert restyled["layers"][1] == doc["layers"][1]
+    assert restyled["layers"][0]["style"] == {"fill_color": "#ff0000", "color_by": "class"}
+    removed, _ = run([{"op": "remove_layer", "id": "roads"}], restyled)
+    assert removed["layers"] == restyled["layers"][:1]
+
+
+def test_split_layer_keeps_a_chosen_name_and_never_reuses_a_taken_id():
+    doc, _ = run([{"op": "add_layer", "source": "/a/roads.geojson"},
+                  {"op": "add_layer", "source": "https://host/x.gpkg?sig=SECRET", "name": "Sabkha",
+                   "options": {"crs": "EPSG:32639"}},
+                  {"op": "add_layer", "source": "/b/y.gpkg"}])
+    doc, result = md.apply(doc, {"op": "split_layer", "id": "sabkha", "source_layers": ["classes", "roads"]})
+    assert result == {"ids": ["sabkha-classes", "sabkha-roads"]}
+    assert [layer["name"] for layer in doc["layers"][1:3]] == ["Sabkha · classes", "Sabkha · roads"]
+    assert doc["layers"][2]["options"] == {"crs": "EPSG:32639", "source_layer": "roads"}
+    doc, result = md.apply(doc, {"op": "split_layer", "id": "y", "source_layers": ["roads"]})
+    assert result == {"ids": ["roads-2"]} and doc["layers"][-1]["options"] == {"source_layer": "roads"}
+
+
+@pytest.mark.parametrize("names", [[], ["a", "a"], [""], "a", [1], None])
+def test_split_layer_refuses_anything_but_distinct_layer_names(names):
+    doc, _ = run([{"op": "add_layer", "source": "/data/two.gpkg"}])
+    command = {"op": "split_layer", "id": "two"}
+    if names is not None:
+        command["source_layers"] = names
+    with pytest.raises(md.MapDocError, match="source_layers"):
+        md.apply(doc, command)
+
+
+@pytest.mark.parametrize("kind", ["raster", "zarr", "pmtiles", "pointcloud"])
+def test_split_layer_only_splits_vector_layers(kind):
+    doc, _ = run([{"op": "add_layer", "source": "/data/a.tif", "kind": kind}])
+    with pytest.raises(md.MapDocError, match="vector layers only"):
+        md.apply(doc, {"op": "split_layer", "id": "a", "source_layers": ["x", "y"]})
 
 
 def test_view_bounds_and_center_replace_each_other():
@@ -210,6 +269,20 @@ PARITY_CASES = [
     [{"op": "nope"}],
     [{"op": "add_layer", "source": "/a", "kind": "vector", "style": {"point_mode": "hexbin"}}],
     [{"op": "add_layer", "source": "/a", "kind": "vector"}, {"op": "update_layer", "id": "a", "kind": "raster", "style": {"gamma": 1.5}}],
+    [{"op": "add_layer", "source": "/data/dem.tif"},
+     {"op": "add_layer", "source": "/data/Two Layers.gpkg", "opacity": 0.5, "style": {"fill_color": "#112233"}},
+     {"op": "add_layer", "source": "https://host/x.gpkg?sig=SECRET", "name": "Sabkha", "kind": "vector"},
+     {"op": "split_layer", "id": "two-layers", "source_layers": ["classes", "review_polygon", "Roads.v2"]},
+     {"op": "split_layer", "id": "sabkha", "source_layers": ["classes"]},
+     {"op": "update_layer", "id": "classes", "style": {"fill_color": "#ff0000"}},
+     {"op": "remove_layer", "id": "review-polygon"},
+     {"op": "split_layer", "id": "dem", "source_layers": ["a", "a"]},
+     {"op": "split_layer", "id": "dem", "source_layers": []},
+     {"op": "split_layer", "id": "dem"}],
+    [{"op": "add_layer", "source": "/a.tif", "kind": "raster"},
+     {"op": "split_layer", "id": "a", "source_layers": ["x"]},
+     {"op": "add_layer", "source": "/b.gpkg", "kind": "vector"},
+     {"op": "split_layer", "id": "b", "source_layers": ["x"]}],
 ]
 NORMALIZE_CASES = [
     {"type": "fused-map", "basemap": "dark", "view": {"center": [1, 2], "zoom": 3},

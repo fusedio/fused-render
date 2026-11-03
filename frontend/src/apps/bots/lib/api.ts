@@ -15,7 +15,7 @@ export interface AppRef { name: string; dir: string; params?: Record<string, str
 export interface ReplyRef { seq: number; role: Role; text: string }
 /** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it.
  *  `source` is set when a preset pre-approved it rather than a card. */
-export interface AllowRule { kind: "browser" | "tool" | "py" | "builtin" | "text" | "upload" | "build" | (string & {}); key: string; label: string; source?: string }
+export interface AllowRule { kind: "browser" | "builtin" | "text" | "upload" | "build" | "terminal" | "trusted" | (string & {}); key: string; label: string; source?: string }
 
 /** A channel address (docs §10): "imessage" + the sender's handle, "routine", "botsend", "handoff" + the Super Bot's id
  *  (a task Super Bot delegated, docs §11); the web is never stamped. */
@@ -161,6 +161,12 @@ export interface Bot {
   step_cap?: number;
   /** While `status === "waiting"`: the seq of the approval / question card the bot is blocked on (null: unknown, fall back to the last ask). */
   waiting_on?: number | null;
+  /** What the bot is doing right now ("thinking", "writing", or a tool's label); transient, in memory on the server. Absent on other engines. */
+  doing?: string;
+  /** Epoch seconds when `doing` last changed. */
+  doing_since?: number;
+  /** User messages sent mid-task that the bot has not read yet. */
+  inbox_n?: number;
   url?: string;
   title?: string;
   note?: string;
@@ -179,7 +185,8 @@ export interface Bot {
   terminal_id?: string | null;
   /** Terminal is off for this bot only because its engine is not a Claude model. */
   terminal_needs_claude?: boolean;
-  /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. */
+  /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. The one app-level
+   *  permission: a build this bot finished and an "Always approve" on a tool/script card both tick it. */
   trusted_apps?: string[];
   /** Calls the user approved forever from a card; revoked under Settings › Permissions. */
   allow_rules?: AllowRule[];
@@ -231,6 +238,9 @@ export interface Bot {
   dl_pct?: number | null;
   engine?: "auto" | "steps" | "agent";
   seq: number;
+  /** The newest MESSAGE row's seq (bot.py news_seq): system notes and delivery rows past it do not count as unread.
+   *  What the sidebar's dot reads `seen_seq` against (platform/lib/botsPulse botHasUnread). */
+  news_seq?: number;
   /** The last event seq as of you opening this bot (markBotSeen; the server never lowers it). Absent = never opened,
    *  which unreadOf reads as nothing to catch up on. On the bot row so a relaunch on another port keeps it (D1386). */
   seen_seq?: number | null;
@@ -305,6 +315,45 @@ export interface Starter {
 export interface StarterInstallReply { ok: true; key: string; dir: string; installed: boolean; existed: boolean; name: string }
 
 export interface Ok { ok: true }
+
+/** GET /api/bots/<id>/package (bots/package.py plan()): what an "Export bot…" would put in the `.fusedbot`. `public` is
+ *  bot.json as on disk; an app row's `problem` says why it cannot travel (folder gone, not a fused app, over the caps). */
+export type PackageSourceKind = "bundled" | "marketplace" | "starter" | "github";
+export interface PackageAppRow {
+  folder: string; name: string; app_id: string | null;
+  /** github: `url` is the repo's https://github.com/<owner>/<name> link, `repo` its owner/name, `commit` the exporter's HEAD (display only). */
+  source: { kind: PackageSourceKind; slug?: string; key?: string; url?: string; repo?: string; commit?: string; [k: string]: unknown };
+  /** Bundled rows: the size of what ships; 0 for references (starter / marketplace / github). */
+  bytes: number;
+  problem?: string;
+  /** A bundled row whose reference (GitHub / Marketplace / starter) would not carry it: `kind` is the reference it
+   *  would have been, `code` why (dirty = local changes; github also unpushed / no_default, share_app.github_link_state);
+   *  `repo` (github), `slug` (marketplace) or `key` (starter) names it. */
+  fallback?: { kind: PackageSourceKind; code: string; repo?: string | null; slug?: string | null; key?: string | null };
+  /** Bundled app with no id yet and no git remote: exporting stamps an app id into its entry page (as sharing the app does). */
+  mints_app_id?: boolean;
+}
+export interface PackagePlan {
+  ok: true; name: string; file_name: string; public: Record<string, unknown>;
+  skills: { name: string; title: string; trigger: string }[];
+  memory_bytes: number;
+  /** UTF-8 bytes of every skill file (absent from an older backend: count 0). */
+  skills_bytes?: number;
+  apps: PackageAppRow[];
+  /** Skill files that cannot travel (a refused name, a symlink): listed so they do not vanish silently. */
+  skills_skipped?: { name: string; problem: string }[];
+  /** Secret-looking strings found in the text that travels: a caution, never a block. */
+  secrets: { where: string; snippet: string }[];
+  /** What the secret scan covered (bundled app sources are not scanned here). */
+  secrets_scope?: string[];
+  /** Skills over the text cap: the export would be refused, so Export is disabled with this sentence. */
+  text_problem?: string | null;
+  /** Skills + memory over the text cap: blocks Export only while memory is ticked (absent from an older backend: null). */
+  memory_text_problem?: string | null;
+  super: boolean;
+}
+/** POST /api/bots/<id>/package: `apps` = the folders to ship (bundled) or reference; `file_name` absent = plan's default. */
+export interface PackageWriteBody { memory: boolean; apps: string[]; file_name?: string }
 /** GET /api/bots/setup. `chrome.found` null = could not tell; `claude` is fused-render's cached Claude Code health
  *  snapshot (never a spawn), read loosely: only `found` and `signed_in` are looked at. */
 export interface SetupReply {
@@ -385,6 +434,8 @@ export interface SettingsBody {
   build_access?: string; terminal?: boolean; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
   imessage_approvals?: boolean;
   super_access?: string; trusted_apps?: string[];
+  /** Ticks added / removed since the dialog opened; applied to the live list, since builds and cards also write it. */
+  trusted_apps_add?: string[]; trusted_apps_remove?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */
   allow_rules_remove?: AllowRule[];
   /** The whole list of folders the bot may read (the dialog is its only writer). */
@@ -459,6 +510,8 @@ export const api = {
   routines: (id: string, body: RoutineBody) => post<{ ok: true; routine?: Routine }>(`${bid(id)}/routines`, body, "routine"),
   skills: (id: string, body: SkillBody) => post<{ ok: true; skills: Skill[] }>(`${bid(id)}/skills`, body, "skill"),
   exportTranscript: (id: string) => get<{ ok: true; name: string; text: string }>(`${bid(id)}/export`, "export"),
+  packagePlan: (id: string) => get<PackagePlan>(`${bid(id)}/package`, "package plan"),
+  packageWrite: (id: string, body: PackageWriteBody) => post<{ ok: true; path: string }>(`${bid(id)}/package`, body, "export bot"),
   reveal: (id: string, path?: string) => post<{ ok: true; path: string }>(`${bid(id)}/reveal`, path ? { path } : {}, "reveal"),
   builds: () => get<{ builds: BuildRow[] }>(`${B}/builds`, "builds"),
   saveBuilds: (builds: BuildRow[]) => post<Ok>(`${B}/builds`, { builds }, "builds"),

@@ -21,6 +21,8 @@ main(action=...):
            params: name
   add    -> {ok, name, stdout, stderr} | {ok:false, error}    (mcp.md §4)
            params: name, json (JSON-stringified server definition)
+  edit   -> {ok, name, stdout, stderr}   params: name, json  (remove, then add-json)
+  spec   -> {ok, name, spec}             params: name  (user-scope definition, read-only)
 """
 import json
 import os
@@ -175,6 +177,40 @@ def main(action: str = "list", name: str = "", **kwargs) -> dict:
         res = lib.claude_cli("mcp", "remove", name, "--scope", "user")
         if res["ok"]:
             _invalidate()
+        return {"ok": res["ok"], "name": name,
+                "stdout": res.get("stdout", ""), "stderr": res.get("stderr", "")}
+
+    if action == "spec":
+        # Read-only peek at the user-scope definition, to prefill an edit. The
+        # CLI stays the only writer of the file.
+        if _bad_name(name):
+            return {"ok": False, "error": "invalid server name"}
+        try:
+            with open(os.path.join(os.path.expanduser("~"), ".claude.json"), encoding="utf-8") as f:
+                spec = (json.load(f).get("mcpServers") or {}).get(name)
+        except (OSError, ValueError):
+            spec = None
+        if spec is None:
+            return {"ok": False, "error": "no user-scope definition for this server"}
+        return {"ok": True, "name": name, "spec": spec}
+
+    if action == "edit":
+        # The CLI has no in-place update: replace the server with the new
+        # definition. The definition is validated first so a typo cannot cost
+        # the existing server.
+        if _bad_name(name):
+            return {"ok": False, "error": "invalid server name"}
+        spec = kwargs.get("json") or ""
+        try:
+            json.loads(spec)
+        except ValueError:
+            return {"ok": False, "error": "server definition is not valid JSON"}
+        gone = lib.claude_cli("mcp", "remove", name, "--scope", "user")
+        if not gone["ok"]:
+            return {"ok": False, "name": name, "stdout": gone.get("stdout", ""),
+                    "stderr": gone.get("stderr", "")}
+        res = lib.claude_cli("mcp", "add-json", name, spec, "--scope", "user")
+        _invalidate()
         return {"ok": res["ok"], "name": name,
                 "stdout": res.get("stdout", ""), "stderr": res.get("stderr", "")}
 

@@ -31,6 +31,10 @@ def root(tmp_path, monkeypatch):
     canvases = tmp_path / "canvases"
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
+    # A fall-through binds FUSED_ENV in os.environ (`_fall_through`); set then
+    # unset so monkeypatch records it and teardown leaves no value behind.
+    monkeypatch.setenv("FUSED_ENV", "placeholder")
+    monkeypatch.delenv("FUSED_ENV")
     root = canvases / ENV
     (root / "alpha").mkdir(parents=True)
     return root
@@ -44,12 +48,12 @@ def test_the_canonical_push_is_recognised():
     prompt tells a session to type."""
     assert _canvas_push.parse_push(
         ["workbench", "canvas", "push", "/x/alpha", "--canvas", "alpha"]
-    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": []}
+    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": [], "env": None}
     assert _canvas_push.parse_push(["workbench", "canvas", "push", "."]) == {
-        "source_dir": ".", "canvas": None, "unsupported": []}
+        "source_dir": ".", "canvas": None, "unsupported": [], "env": None}
     assert _canvas_push.parse_push(
         ["workbench", "canvas", "push", "--canvas=alpha", "."]
-    ) == {"source_dir": ".", "canvas": "alpha", "unsupported": []}
+    ) == {"source_dir": ".", "canvas": "alpha", "unsupported": [], "env": None}
 
 
 @pytest.mark.parametrize("global_prefix", [
@@ -67,10 +71,24 @@ def test_a_global_option_before_the_subcommand_is_still_recognised(global_prefix
     is a real shape a session can type, and matching `args[:3]` verbatim
     missed it entirely, falling through to the raw, unguarded push."""
     assert _canvas_push.parse_push([*global_prefix, "workbench", "canvas", "push", "."]) == {
-        "source_dir": ".", "canvas": None, "unsupported": []}
+        "source_dir": ".", "canvas": None, "unsupported": [], "env": None}
     assert _canvas_push.parse_push(
         [*global_prefix, "workbench", "canvas", "push", "/x/alpha", "--canvas", "alpha"]
-    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": []}
+    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": [], "env": None}
+
+
+def test_the_workbench_groups_own_env_is_recognised_and_reported():
+    """`fused workbench --env prod canvas push .` is FUSED_ENV in flag form
+    (the workbench group's `--env`), unlike the top-level `--env` (agent_core's
+    OPENFUSED_ENV, reported as no target). Unmatched it fell through to the
+    raw push unchecked; now it is matched and its value carried."""
+    assert _canvas_push.parse_push(
+        ["workbench", "--env", "prod", "--format=json", "canvas", "push", "."]
+    ) == {"source_dir": ".", "canvas": None, "unsupported": [], "env": "prod"}
+    assert _canvas_push.parse_push(
+        ["--env", "x", "workbench", "--env=custom", "canvas", "push", "."]
+    )["env"] == "custom"
+    assert _canvas_push.parse_push(["workbench", "--env"]) is None
 
 
 def test_an_unrecognised_option_before_the_subcommand_falls_through():
@@ -331,6 +349,63 @@ def test_a_clone_of_the_other_environment_is_refused_on_every_fall_through(root,
         assert f"FUSED_ENV={other}" in err and "Preferences" not in err
 
 
+def test_a_custom_clone_refuses_a_set_fused_env_and_falls_through_unset(root, monkeypatch):
+    """The custom env is the one an UNSET FUSED_ENV targets (the CLI keeps
+    `~/.fused/settings.toml`'s endpoint): on a fall-through a custom clone
+    refuses any named env, and with FUSED_ENV unset runs the real CLI."""
+    clone = root.parent / "custom" / "alpha"
+    clone.mkdir(parents=True)
+    args = ["workbench", "canvas", "push", str(clone)]
+    monkeypatch.setenv("FUSED_ENV", "prod")
+    code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    assert code == 1
+    assert "custom environment" in err and "FUSED_ENV unset" in err
+    monkeypatch.delenv("FUSED_ENV")
+    server = _Server(200, {"ok": True})
+    code, _, _ = _intercept(args, monkeypatch, server, origin=None)
+    assert code is None
+    # With a server, the push routes to the custom manager like any env's.
+    code, _, _ = _intercept(args, monkeypatch, server)
+    assert code == 0
+    assert [c[1:] for c in server.calls] == [("alpha", "custom")]
+
+
+def test_a_workbench_env_flag_naming_another_env_is_refused_on_fall_through(root, monkeypatch):
+    """`workbench --env` beats FUSED_ENV in the CLI, so it does here: a flag
+    naming another env refuses even with FUSED_ENV unset (or matching), for a
+    custom clone and a named one alike."""
+    custom = root.parent / "custom" / "alpha"
+    custom.mkdir(parents=True)
+    monkeypatch.delenv("FUSED_ENV", raising=False)
+    for clone, flag in ((custom, "prod"), (root / "alpha", OTHER_ENV)):
+        args = ["workbench", "--env", flag, "canvas", "push", str(clone)]
+        code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+        assert code == 1, clone
+        assert "(--env)" in err
+    monkeypatch.setenv("FUSED_ENV", ENV)
+    args = ["workbench", "--env", ENV, "canvas", "push", str(root / "alpha")]
+    code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    assert code is None
+
+
+def test_an_unset_fused_env_is_bound_to_a_named_clones_env_on_fall_through(root, monkeypatch):
+    """Unset FUSED_ENV means `~/.fused/settings.toml` (the custom env) to the
+    CLI — a custom default outside the clone leaves it so. A prod/unstable
+    clone's raw push must still reach its own env, so the fall-through binds
+    it; a custom clone keeps it unset."""
+    args = ["workbench", "canvas", "push", str(root / "alpha")]
+    code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    assert code is None
+    assert os.environ["FUSED_ENV"] == ENV
+    custom = root.parent / "custom" / "alpha"
+    custom.mkdir(parents=True)
+    monkeypatch.delenv("FUSED_ENV")
+    code, _, _ = _intercept(["workbench", "canvas", "push", str(custom)], monkeypatch,
+                            _Server(200, {"ok": True}), origin=None)
+    assert code is None
+    assert "FUSED_ENV" not in os.environ
+
+
 def test_a_mismatched_fused_env_still_posts_when_the_server_takes_it(root, monkeypatch):
     """With a server to take it, FUSED_ENV is irrelevant: the push is routed
     by the clone's own env to that environment's manager. Refusing first
@@ -395,53 +470,6 @@ def test_an_unreachable_server_falls_through(root, monkeypatch):
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code is None
     assert err == ""
-
-
-def test_a_slow_but_alive_server_does_not_fall_through(root, monkeypatch):
-    """A `socket.timeout` (bare `except OSError` swallows this — timeout is an
-    OSError subclass) must NOT be treated the same as "could not connect".
-
-    _post_push's genuine 200s timeout can be exceeded by a slow-but-successful
-    push (lock-wait + probe + pull + push), and the naive fix of catching
-    OSError broadly turns that into `status=None`, which `maybe_intercept`
-    reads as "no server around" and runs the raw, unguarded CLI push
-    CONCURRENTLY with the server's own still-in-flight guarded one. Connect
-    failures are a different, non-timeout OSError (e.g. ConnectionRefusedError)
-    and must still fall through — this only pins the timeout case."""
-    server = _Server(_canvas_push._TIMED_OUT, {})
-    code, _, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
-    assert code == 1, "a timeout must not exit as if nothing happened"
-    assert "timed out" in err
-
-
-def test_post_push_reports_a_real_socket_timeout_distinctly(monkeypatch):
-    """No mocking of _post_push here: a real slow HTTP server that accepts the
-    connection but never answers, exercising the actual except clauses."""
-    import http.server
-    import threading
-    import time as _time
-
-    class _SlowHandler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            _time.sleep(5)  # longer than the shortened timeout below
-
-        def log_message(self, *a):
-            pass
-
-    httpd = http.server.HTTPServer(("127.0.0.1", 0), _SlowHandler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    monkeypatch.setattr(_canvas_push, "_HTTP_TIMEOUT_S", 0.3)
-    try:
-        status, body = _canvas_push._post_push(
-            "http://127.0.0.1:%d" % httpd.server_port, "alpha", ENV)
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-    assert status == _canvas_push._TIMED_OUT, (
-        "a real socket timeout must be distinguishable from a failed connect",
-        status, body)
 
 
 def test_post_push_falls_through_on_a_genuine_connect_failure():

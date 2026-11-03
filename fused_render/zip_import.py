@@ -35,6 +35,8 @@ import stat as stat_mod
 import time
 import zipfile
 
+from fused_render._platform import is_within
+
 #: Bounded read size during extraction. Chunked so the size caps are checked *while*
 #: decompressing rather than after a whole entry is already in memory.
 COPY_CHUNK = 64 * 1024
@@ -77,7 +79,7 @@ def reject_reason(info: zipfile.ZipInfo, staging_dir: str) -> str | None:
         return f"path escape ('..') not allowed: {name!r}"
     target = os.path.normpath(os.path.join(staging_dir, normalized))
     root = os.path.normpath(staging_dir)
-    if target != root and not target.startswith(root + os.sep):
+    if not is_within(target, root, fs_root_ok=False):
         return f"path escapes the staging directory: {name!r}"
     return None
 

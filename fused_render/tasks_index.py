@@ -46,12 +46,19 @@ from fused_render import __version__, tasks_store
 
 logger = logging.getLogger(__name__)
 
+# The legacy single-file name: one file shared by every derivation stamp, so two
+# checkouts alternating wiped each other's cache. Now only cleanup uses it.
 FILE_NAME = "tasks-index.sqlite"
+_PREFIX = "tasks-index-"
+_SUFFIX = ".sqlite"
+_KEEP_OTHERS = 4
+_MAX_AGE_S = 14 * 86400
 
 _LOCK = threading.Lock()
 # path -> size last written, so a build's save touches only what moved.
 _saved: dict[str, int] = {}
 _enabled = False
+_pruned = False
 _stamp: str | None = None
 
 
@@ -79,7 +86,8 @@ def _fingerprint() -> str:
             parts.append(getattr(mod, "__name__", repr(mod)))
     for fn in (router._new_scan, router._absorb, router._condense_reply,
                router._reply_fate, router._mark_fate, router._prompt,
-               router._command, router._interrupt_at):
+               router._command, router._interrupt_at, router._note_worktrees,
+               router._add_worktree):
         try:
             parts.append(inspect.getsource(fn))
         except (OSError, TypeError):
@@ -89,7 +97,47 @@ def _fingerprint() -> str:
 
 
 def path() -> str:
-    return os.path.join(tasks_store.STATE_DIR, FILE_NAME)
+    """This process's index file, ONE PER STAMP: differing derivations (another
+    checkout, another release) each get their own file and never evict each
+    other. `_fingerprint()` is memoized at first use, so the path is stable for
+    the life of the process."""
+    return os.path.join(tasks_store.STATE_DIR,
+                        f"{_PREFIX}{_fingerprint()[:16]}{_SUFFIX}")
+
+
+def _prune() -> None:
+    """Once per process: drop stale per-stamp files. Keeps the current file and
+    the `_KEEP_OTHERS` most recently modified others newer than 14 days; also
+    removes the legacy single file once the current one exists. Never raises."""
+    global _pruned
+    if _pruned:
+        return
+    _pruned = True
+    try:
+        state = tasks_store.STATE_DIR
+        current = os.path.basename(path())
+        others = []
+        for name in os.listdir(state):
+            if (name.startswith(_PREFIX) and name.endswith(_SUFFIX)
+                    and name != current):
+                try:
+                    others.append((os.stat(os.path.join(state, name)).st_mtime, name))
+                except OSError:
+                    continue
+        others.sort(reverse=True)
+        cutoff = time.time() - _MAX_AGE_S
+        doomed = [n for i, (m, n) in enumerate(others)
+                  if i >= _KEEP_OTHERS or m < cutoff]
+        if os.path.exists(os.path.join(state, current)):
+            doomed.append(FILE_NAME)
+        for name in doomed:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.unlink(os.path.join(state, name + suffix))
+                except OSError:
+                    pass
+    except Exception:  # noqa: BLE001 - housekeeping must never matter
+        logger.debug("tasks index: prune failed", exc_info=True)
 
 
 def _connect() -> sqlite3.Connection:
@@ -106,18 +154,16 @@ def _connect() -> sqlite3.Connection:
     stamp = _fingerprint()
     row = con.execute("SELECT value FROM meta WHERE key='version'").fetchone()
     if row is None or row[0] != stamp:
-        # Somebody else's facts — a previous release, or another checkout
-        # sharing this state dir with a different derivation. Dropped, and
-        # with them this process's memory of what it has written (Bugbot,
-        # #1525): the next `save` then backfills every transcript it holds
-        # rather than the two that moved, so the launch after this one is
-        # warm again. Two checkouts alternating stamps would thrash; that is
-        # logged, and it costs a cold build, never a wrong row.
+        # Files are per stamp (`path()`), so this is a fresh file, a 16-hex
+        # collision or a corrupt one. Dropped, and with them this process's
+        # memory of what it has written (Bugbot, #1525): the next `save` then
+        # backfills every transcript it holds rather than the two that moved.
         if row is not None:
             logger.info("tasks index: stamp %s → %s, rebuilding", row[0], stamp)
         con.execute("DELETE FROM transcripts")
         con.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (stamp,))
         _saved.clear()
+    _prune()
     return con
 
 

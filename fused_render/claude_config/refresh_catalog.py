@@ -1,33 +1,25 @@
 """Catalog refresh (preferences.md §5).
 
 Fetches Anthropic's settings reference markdown, parses each settings-key
-section, and rewrites the doc/default/minVersion half of settings_catalog.json
-— keyed by each entry's `docKey` (falling back to `key`). The curated overlay
-fields (label/group/control/options/docKey/unsetLabel) are preserved untouched.
+section, and rewrites settings_catalog.json. The catalog is the curated list in
+`CURATED` (key -> group, in display order): only those keys are emitted, in that
+order, under those groups. Each one's doc/default/minVersion comes from the
+docs, keyed by its `docKey` (falling back to `key`); its label/control/options/
+docKey/unsetLabel overlay is read from the checked-in file and kept untouched.
+A CURATED key with no entry in the checked-in file has no overlay to carry, so
+it is reported as an error rather than invented.
 
-READ from lib.load_catalog() — the merge, not a single file: PACKAGED curated
-fields (current as of this install) with whatever doc/default/minVersion a
-PRIOR refresh already wrote to the override, per key. Starting from the merge
-rather than from whichever raw file catalog_read_path() names matters here
-specifically: an entry the packaged copy added or changed since the last
-refresh (a new `select` option, say) would otherwise get baked into the new
-override snapshot with its STALE curated half, the same staleness this module
-exists to avoid on the doc half. WRITE only to lib.catalog_override_path(). It
-used to rewrite the file in place; it cannot any more, because the shipped
-copy now lives in site-packages / inside a signed .app — see lib.py's catalog
-section for why the split exists rather than a single mutable path.
+A development script: reads lib.load_catalog() and rewrites the checked-in
+settings_catalog.json (lib.packaged_catalog_path()) in place. The app never
+calls it.
 
 `default` comes ONLY from the `**Default**: X` bullet — never invented, never
 read off the worked example (§1 honesty rule). Undocumented surfaced keys keep
 their existing doc/default and are reported as warnings.
 
-Two triggers, one code path (preferences.md §5):
-  - callable action:  main() -> {ok, updated, total, undocumented[], error?}
-    (never sys.exit/print for control flow — the caller is an HTTP handler that
-    must render the outcome). Explicit, user-triggered (the Preferences "Refresh
-    catalog" button), never on load.
-  - CLI:  python3 -m fused_render.claude_config.refresh_catalog
-    (the __main__ wrapper prints the same result).
+Run: python3 -m fused_render.claude_config.refresh_catalog
+main() returns {ok, updated, total, undocumented[], error?}; the __main__
+wrapper prints it.
 """
 import json
 import re
@@ -36,13 +28,32 @@ from typing import Any, Optional
 
 from . import lib
 
+# The curated settings list: key -> group, in the order the Settings tab shows.
+CURATED: dict[str, str] = {
+    "model": "Model & reasoning",
+    "effortLevel": "Model & reasoning",
+    "alwaysThinkingEnabled": "Model & reasoning",
+    "fastMode": "Model & reasoning",
+    "language": "Model & reasoning",
+    "autoCompactEnabled": "Sessions",
+    "autoMemoryEnabled": "Sessions",
+    "fileCheckpointingEnabled": "Sessions",
+    "cleanupPeriodDays": "Sessions",
+    "disableBundledSkills": "Sessions",
+    "includeGitInstructions": "Sessions",
+    "attribution.sessionUrl": "Sessions",
+    "permissions.defaultMode": "Permissions",
+    "sandbox.enabled": "Permissions",
+    "enableAllProjectMcpServers": "Permissions",
+    "permissions.blockReadsOutsideWorkingDirectories": "Permissions",
+}
+
 # Anthropic restructured the docs (2026-08): the old SETTINGS_URL page
 # (settings.md) is now prose about settings files, precedence and
 # troubleshooting — it has no settings table any more, 0 rows. The key
 # reference moved here.
 SETTINGS_URL = "https://code.claude.com/docs/en/settings-reference.md"
-# Bounded so a slow/hung docs host returns {ok:false, error} the button can
-# render, instead of pinning a threadpool worker until the client gives up.
+# Bounded so a slow/hung docs host returns {ok:false, error} instead of hanging.
 FETCH_TIMEOUT = 20
 
 # The new page is not a table — it is one `### \`key\`` heading per setting
@@ -172,15 +183,9 @@ def _fetch() -> str:
 
 
 def main() -> dict:
-    """The dispatch entry point (preferences.md §5); returns a JSON result.
-    On any failure the existing catalog is left untouched (§5 no-silent-truncation)
-    and {ok:false, error} is returned — never raised — so the button surfaces it.
-
-    Both the fetch AND the parse/read/write are wrapped: a parser that raises
-    on a reshaped page (parse_settings_reference's ValueError) or a catalog
-    read that hits a corrupt override file used to escape this function
-    entirely and reach the HTTP router as a raw 500 — the button rendered
-    Python's exception text instead of an in-band error."""
+    """Fetch, parse and rewrite the catalog; returns a JSON result. On any
+    failure the existing catalog is left untouched and {ok:false, error} is
+    returned — never raised."""
     try:
         md = _fetch()
     except Exception as e:  # noqa: BLE001
@@ -193,7 +198,12 @@ def main() -> dict:
                      "error": f"parsed only {len(entries)} keys (expected ~215); "
                               "docs shape changed"}
 
-        catalog = lib.load_catalog()
+        existing = {d["key"]: d for d in lib.load_catalog()}
+        missing = [k for k in CURATED if k not in existing]
+        if missing:
+            return {"ok": False,
+                    "error": f"no catalog overlay for curated key(s): {', '.join(missing)}"}
+        catalog = [{**existing[k], "group": g} for k, g in CURATED.items()]
 
         updated, undocumented = 0, []
         for d in catalog:
@@ -205,14 +215,12 @@ def main() -> dict:
             d["doc"], d["default"], d["minVersion"] = e["doc"], e["default"], e["minVersion"]
             updated += 1
 
-        # The override, never the packaged copy. Atomic (write-then-replace) via
-        # lib.write_json, which also mkdir -p's the claude-config/ dir on first use.
-        lib.write_json(lib.catalog_override_path(), catalog)
+        lib.write_json(lib.packaged_catalog_path(), catalog)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"parse failed ({e}); kept existing catalog"}
 
     return {"ok": True, "updated": updated, "total": len(catalog),
-            "undocumented": undocumented, "path": lib.catalog_override_path()}
+            "undocumented": undocumented, "path": lib.packaged_catalog_path()}
 
 
 if __name__ == "__main__":

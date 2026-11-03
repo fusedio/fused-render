@@ -116,6 +116,12 @@ const SHARED_APPS = new Set(["apps/claude"]);
  * browser's six-socket budget, and the page's boot reads queueing behind them.
  */
 /*
+ * `shell/archive-confirm` is the fifth: the "this task is running, stop it and
+ * archive?" predicate and confirm hook the Tasks page's Archive doors share,
+ * and the chat's Kebab is one more door. One predicate, so the chat's Archive
+ * asks exactly when the cards, peek and calendar do; a copy would drift.
+ */
+/*
  * `terminalDockStore` (the one-boolean + one-slot-pending-request store the
  * status-bar terminal drawer and chip share) lives in `platform/lib`, not
  * shell, even though `TerminalDrawer.tsx` and the explorer's "Open in
@@ -126,10 +132,29 @@ const SHARED_APPS = new Set(["apps/claude"]);
  * as "anything" it's allowed to import — no hole needed for it here.
  */
 const SHELL_OPEN_TO_APPS = new Set([
+  // The contribution loop's one dialog, opened from the explorer's menu.
+  "shell/contrib/ContribModal",
   "shell/ScheduleTaskViews",
   "shell/tasks-lib",
   "shell/tasksPulse",
   "shell/TaskPeekWho",
+  "shell/archive-confirm",
+  // The New task card itself, for the canvas editor's Claude rail
+  // (shell/claude-rail/ClaudeRail): its + opens a task on the page's place over
+  // the canvas, and the card it opens must BE the Tasks page's — the same
+  // fields, pills, autosave and folder lock the project page's Tasks tab
+  // shows for the same clone — not a second composer kept looking alike. The
+  // card's own imports are shell's business (shell may import anything);
+  // nothing it reaches imports apps/canvases, so no cycle.
+  "shell/NewJobModal",
+  // THE CLAUDE RAIL (shell/claude-rail/ClaudeRail): the right-edge column a
+  // page shows while its Claude pane is shut, and the card off it. One rail
+  // for the canvas page, the app page and the explorer's file and folder
+  // views (2026-11-01) — it lives in shell because it hosts `@apps/claude`'s
+  // chat and reads the Tasks page's row, and the two apps that draw it
+  // (canvases, explorer) import this one module rather than keeping a copy
+  // each. Its libs and flag stay shell-only.
+  "shell/claude-rail/ClaudeRail",
 ]);
 
 const violations = [];

@@ -122,6 +122,53 @@ def test_an_agent_task_tracks_usage_and_status(agent, run_dir):
     assert rec["ended_at"] is not None
 
 
+def test_a_foreground_agent_sent_to_the_background(agent, run_dir):
+    """The row sequence CLI 2.1.304 writes when a `background_tasks` request
+    backgrounds a foreground Agent call: the patch flips `backgrounded`, the
+    Agent call's async-launch result closes the tool (the working line moves
+    off it), and the subagent's `task_notification` ends the record."""
+    _append(run_dir, [{"type": "stream_event", "session_id": "s", "event": {
+                          "type": "content_block_start", "index": 1, "content_block": {
+                              "type": "tool_use", "id": "toolu_a", "name": "Agent", "input": {}}}},
+                      _tool("toolu_a", "Agent", {"description": "Sleep", "subagent_type": "general-purpose",
+                                                 "run_in_background": False}),
+                      _sys("task_started", task_id="a1", tool_use_id="toolu_a",
+                           description="Sleep", subagent_type="general-purpose",
+                           is_backgrounded=False, task_type="local_agent")])
+    data = agent._poll("run")
+    rec = _rec(data, "a1")
+    assert rec["kind"] == "agent" and rec["backgrounded"] is False
+    assert rec["status"] == "running" and rec["tool_use_id"] == "toolu_a"
+    assert data["activity"]["tool"]["id"] == "toolu_a"
+
+    _append(run_dir, [
+        _sys("background_tasks_changed", tasks=[{"task_id": "a1", "task_type": "local_agent",
+                                                 "subagent_type": "general-purpose",
+                                                 "description": "Sleep"}]),
+        _sys("task_updated", task_id="a1", patch={"is_backgrounded": True}),
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_a", "content": [
+                {"type": "text", "text": "Async agent launched successfully.\nagentId: a1"}]}]}}])
+    data = agent._poll("run")
+    rec = _rec(data, "a1")
+    assert rec["backgrounded"] is True and rec["status"] == "running"
+    assert rec["ended_at"] is None
+    assert data["activity"]["tool"] is None
+    assert data["activity"]["tasks"] == [{"id": "a1", "description": "Sleep"}]
+
+    _append(run_dir, [_sys("task_updated", task_id="a1", patch={"status": "completed"}),
+                      _sys("task_notification", task_id="a1", tool_use_id="toolu_a",
+                           status="completed", summary="done"),
+                      _sys("background_tasks_changed", tasks=[])])
+    data = agent._poll("run")
+    rec = _rec(data, "a1")
+    assert rec["status"] == "completed" and rec["ended_at"] is not None
+    assert rec["summary"] == "done" and rec["backgrounded"] is True
+    assert data["activity"]["tasks"] == []
+    seg = data["segments"][0]
+    assert seg["name"] == "Agent" and seg["task_id"] == "a1"
+
+
 def test_a_subagent_type_alone_makes_an_agent(agent, run_dir):
     _append(run_dir, [_sys("task_started", task_id="x", description="d",
                            subagent_type="Plan")])
@@ -304,8 +351,12 @@ def test_history_finds_the_job_an_older_host_still_holds(
     hist = agent._history(str(target / "index.html"), "s")
     assert [t["id"] for t in hist["tasks"]] == ["b1"] and hist["tasks_run"] == "run"
 
-    # The job ends and wakes that host's model: its open turn still answers.
-    _append(run_dir, [_sys("task_notification", task_id="b1", status="killed")])
+    # The job finishes and wakes that host's model: its open turn still
+    # answers. A COMPLETED job, note plus the synthetic user row the CLI wakes
+    # on — a stopped/killed note alone is bookkeeping and reopens no turn
+    # (`_STOPPED_TASK_STATUSES`), so it is not the wake this step is about.
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="completed"),
+                      _user("<task-notification>b1 completed</task-notification>")])
     reg, host_run, _last = agent._session_task_registry(str(target), "s")
     assert host_run == "run" and list(reg) == ["b1"]
     # Once that turn is over the older host holds nothing, so the newest run
@@ -313,7 +364,7 @@ def test_history_finds_the_job_an_older_host_still_holds(
     _append(run_dir, [_result()])
     reg, host_run, _last = agent._session_task_registry(str(target), "s")
     assert reg == {} and host_run == ("run2" if newer_host else "")
-    assert agent._read_bg_tasks(str(run_dir))["b1"]["status"] == "killed"
+    assert agent._read_bg_tasks(str(run_dir))["b1"]["status"] == "completed"
 
 
 def test_a_held_job_past_the_scan_window_still_answers(agent, run_dir, tmp_path):
@@ -608,6 +659,45 @@ def test_task_stop_has_its_own_lane():
     assert pool.pool_for("task_stop") is pool.TASK_STOP_POOL
     assert pool.pool_for("task_stop") is not pool.pool_for("task_output")
     assert pool.budget("task_stop") == 15.0
+
+
+# ---------------------------------------------------------- task_background
+
+def test_task_background_rejects_bad_ids_and_a_dead_host(agent, run_dir):
+    assert "error" in agent._task_background("run", "toolu_1")  # no live host
+    assert "error" in agent._task_background("../x", "toolu_1")
+    for bad in ("a b", "", "x" * 201):
+        assert agent._task_background("run", bad) == {"error": "missing tool_use_id"}
+
+
+def test_task_background_writes_a_background_tasks_request(agent, run_dir, monkeypatch):
+    seen = _fake_host(agent, monkeypatch, run_dir, {"backgrounded": True})
+    res = agent.main("task_background", run_id="run", tool_use_id="toolu_1")
+    assert res == {"ok": True, "backgrounded": True}
+    assert seen == {"subtype": "background_tasks", "tool_use_id": "toolu_1",
+                    "timeout": 10.0}
+
+
+def test_task_background_sends_an_agent_calls_tool_use_id_the_same_way(agent, run_dir, monkeypatch):
+    """The action is tool-agnostic: a foreground Agent call is backgrounded by
+    its own `tool_use_id`, the id its `task_started` row carries."""
+    seen = _fake_host(agent, monkeypatch, run_dir, {"backgrounded": True})
+    res = agent.main("task_background", run_id="run", tool_use_id="toolu_01CUcGj2w5tDoXcu8N4fYASg")
+    assert res == {"ok": True, "backgrounded": True}
+    assert seen == {"subtype": "background_tasks",
+                    "tool_use_id": "toolu_01CUcGj2w5tDoXcu8N4fYASg", "timeout": 10.0}
+
+
+def test_task_background_passes_the_clis_refusal_through(agent, run_dir, monkeypatch):
+    _fake_host(agent, monkeypatch, run_dir, RuntimeError("No tool call: toolu_9"))
+    assert agent._task_background("run", "toolu_9") == {"error": "No tool call: toolu_9"}
+
+
+def test_task_background_shares_the_stop_lane():
+    import importlib
+    pool = importlib.import_module("fused_render.claude_agent.pool")
+    assert pool.pool_for("task_background") is pool.TASK_STOP_POOL
+    assert pool.budget("task_background") == 15.0
 
 
 def test_await_control_response_reports_an_error_answer(agent, run_dir):

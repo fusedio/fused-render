@@ -30,7 +30,7 @@
 #                   everywhere) and av (the ffmpeg libraries, see above).
 #   huggingface_hub downloads
 #   psutil          answers "how much memory is this costing"
-#   sherpa-onnx     speaker diarization (`../diarize.py`), so `diarize: true`
+#   sherpa-onnx     Parakeet transcription (D1423) and speaker diarization (`../diarize.py`), so `diarize: true`
 #                   means the same thing here as it does on the MLX runner —
 #                   the same two models, the same labels, the same output
 #                   shape. Chosen over pyannote.audio because that needs
@@ -66,6 +66,10 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "faster-whisper>=1.2,<2",
+    # faster-whisper 1.2.1 passes `metadata_errors` to `av.open`, which PyAV 19
+    # removed: `decode_audio` raises TypeError on every file, so an unbounded av
+    # breaks the runner (measured in the D1423 gate). Lift when faster-whisper does.
+    "av<19",
     "huggingface_hub",
     "psutil",
     "sherpa-onnx>=1.13,<2",

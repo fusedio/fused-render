@@ -67,7 +67,8 @@ def bench(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     clock = Clock()
     monkeypatch.setattr(benchmark, "_now", clock)
-    monkeypatch.setattr(benchmark.registry, "for_capability", lambda cap: FakeRunner)
+    monkeypatch.setattr(benchmark.registry, "resolve_for_model",
+                        lambda cap, model: benchmark.registry.Resolution(FakeRunner))
     # Warm by default: the cold path is one test's subject, not every test's
     # preamble.
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
@@ -337,6 +338,34 @@ def test_image_reports_seconds_per_step_at_the_catalog_default_steps(bench,
     assert seen[1]["seed"] == workload.params["seed"]
     import os
     assert not os.path.exists(seen[1]["out"])
+
+
+def _image_guidance(bench, monkeypatch, model):
+    seen = []
+
+    def generate_image(model, request, job):
+        seen.append(request)
+        bench.advance(10.0)
+        return {"path": request["out"], "steps": request["steps"]}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
+    record = benchmark.run(model, ai_registry.IMAGE_GENERATION)
+    return seen, record
+
+
+def test_a_guidance_pinned_model_is_measured_at_its_pin(bench, monkeypatch):
+    """Qwen-Image 2.1 Turbo's worker refuses any guidance but 1.0, so the
+    workload's fixed 4.0 made its benchmark always fail."""
+    seen, record = _image_guidance(
+        bench, monkeypatch, "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit")
+    assert {r["guidance"] for r in seen} == {1.0}
+    assert record["metrics"]["guidance"] == 1.0
+
+
+def test_an_unpinned_image_model_keeps_the_workloads_guidance(bench, monkeypatch):
+    seen, record = _image_guidance(bench, monkeypatch, "some/image-model")
+    assert {r["guidance"] for r in seen} == {4.0}
+    assert record["metrics"]["guidance"] == 4.0
 
 
 # -- speech to text -------------------------------------------------------------
@@ -777,7 +806,8 @@ def test_a_capability_with_no_runner_here_fails_without_loading(bench, monkeypat
     """Forced, not inherited: on a Linux CI box `text-to-image` may genuinely
     have no runner and on this Mac it does, so the resolution is stubbed to
     `None` and the assertion is about what `run()` does with that."""
-    monkeypatch.setattr(benchmark.registry, "for_capability", lambda cap: None)
+    monkeypatch.setattr(benchmark.registry, "resolve_for_model",
+                        lambda cap, model: benchmark.registry.Resolution(None))
     monkeypatch.setattr(
         benchmark.registry, "unavailable_reason",
         lambda cap: "needs Apple Silicon (this is linux/x86_64)")

@@ -26,6 +26,7 @@ def ws(tmp_path, monkeypatch):
     """A tmp fused workspace (apps root = <ws>/app), no greeting model call."""
     w = tmp_path / "ws"
     monkeypatch.setenv("FUSED_RENDER_DIR", str(w))
+    reset_bots_caches()  # a Bot / folder cached by id under the previous test's workspace must not answer here
     os.makedirs(bpaths.apps_root())
     monkeypatch.setattr(apptools, "ROOTS", [bpaths.apps_root()])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])
@@ -81,7 +82,7 @@ def test_create_list_and_cursor(client, ws):
     # the selected bot reports detail
     d = one(status(client, shot_for=bid), bid)
     assert d["memory"] == "" and d["skills"] == [] and d["browser"]["files"] == [] and d["browser"]["artifacts"] == []
-    assert d["browser"]["artifacts_dir"].endswith(os.path.join("bots", "scout"))
+    assert d["browser"]["artifacts_dir"].endswith(os.path.join("bots", "scout", ".fused", "inbox"))  # the Inbox
 
 
 def test_create_rejects_unknown_model_quietly_and_settings_loudly(client, ws):
@@ -245,10 +246,13 @@ def test_delete_removes_the_folders(client, ws):
     bid = make(client)
     b = registry.get(bid)
     os.makedirs(b.cache_dir, exist_ok=True)
-    assert os.path.isdir(bpaths.bot_dir(bid))
+    folder, private, cache = bpaths.bot_folder(bid), bpaths.bot_dir(bid), bpaths.bot_cache_dir(bid)
+    assert os.path.isdir(private) and private == os.path.join(folder, ".fused")
     st, out = j(delete(client, f"/api/bots/{bid}"))
     assert st == 200 and out == {"ok": True}
-    assert not os.path.exists(bpaths.bot_dir(bid)) and not os.path.exists(bpaths.bot_cache_dir(bid))
+    assert not os.path.exists(folder) and not os.path.exists(private) and not os.path.exists(cache)
+    with pytest.raises(LookupError):
+        bpaths.bot_folder(bid)  # forgotten: no folder answers for the id any more
     assert all(x["id"] != bid for x in status(client)["bots"])
     assert j(delete(client, f"/api/bots/{bid}"))[0] == 404
 
@@ -288,12 +292,45 @@ def test_botsend_queues_a_task_the_scheduler_tick_runs(client, ws, monkeypatch, 
     assert botsend.main(["--list"]) == 0 and "Scout" in capsys.readouterr().out
     assert botsend.main(["nobody", "x"]) == 1
     assert botsend.main(["scout", "check", "the", "news"]) == 0
-    inbox = os.path.join(bpaths.bot_dir(bid), "inbox")
-    assert [n.endswith(".txt") for n in os.listdir(inbox)] == [True]
+    drop = bpaths.bot_drop(bid)
+    assert drop == os.path.join(bpaths.bot_dir(bid), "drop") != bpaths.bot_inbox(bid)
+    assert [n.endswith(".txt") for n in os.listdir(drop)] == [True]
+    assert botsend.DROP_NAME_RE.match(os.listdir(drop)[0])  # the shape migrate_v3's drop fixup recognises
     registry.get(bid).tick_routines()  # what the 20 s scheduler does
-    assert started == ["check the news"] and os.listdir(inbox) == []
+    assert started == ["check the news"] and os.listdir(drop) == []
     texts = [e["text"] for e in one(status(client), bid)["events"]]
     assert any(t.startswith("Task received from botsend") for t in texts) and "check the news" in texts
+
+
+def test_botsend_drop_dir_is_the_drop_folder_not_the_inbox(client, ws):
+    from fused_render.bots import botsend
+    bid = make(client)
+    assert botsend.drop_dir(bid) == os.path.join(bpaths.bot_folder(bid), ".fused", "drop")
+    assert botsend.drop_dir(bid) != registry.get(bid).artifacts_dir
+
+
+def test_drain_reads_only_the_drop_folder_never_the_inbox(client, ws, monkeypatch):
+    """Bugbot (PR #2057): the Inbox holds the user's files and is Super Bot's cwd; a `notes.txt` there must survive
+    the scheduler and start nothing. A `.txt` in .fused/drop/ is a botsend task."""
+    calls = []
+    monkeypatch.setattr(botmod.Bot, "receive", lambda self, text, via=None, reply_to=None: calls.append((text, via)))
+    bid = make(client)
+    b = registry.get(bid)
+    notes = os.path.join(b.artifacts_dir, "notes.txt")
+    with open(notes, "w", encoding="utf-8") as f:
+        f.write("my own notes")
+    b.drain_file_inbox()
+    assert calls == [] and os.path.isfile(notes)
+    with open(os.path.join(b.drop_dir, "job-1.txt"), "w", encoding="utf-8") as f:
+        f.write("look up the weather")
+    b.drain_file_inbox()
+    assert calls == [("look up the weather", botmod.chan.via("botsend", "job-1"))]
+    assert os.listdir(b.drop_dir) == [] and os.path.isfile(notes)
+    # defensive: a drop folder that resolves to the Inbox is never drained
+    monkeypatch.setattr(bpaths, "bot_drop", bpaths.bot_inbox)
+    assert b.drop_dir == b.artifacts_dir
+    b.drain_file_inbox()
+    assert calls == [("look up the weather", botmod.chan.via("botsend", "job-1"))] and os.path.isfile(notes)
 
 
 # ------------------------------------------------------------------- apps ---
@@ -360,6 +397,35 @@ def test_last_user_ts_tracks_only_user_messages(client, ws):
     cold = botmod.Bot(bid)  # a fresh instance: the value comes from events.jsonl
     assert cold.last_user_ts() == ev["ts"]
     assert cold.summary(light=True)["last_user_ts"] == ev["ts"]
+
+
+def test_set_doing_is_transient_and_summary_reports_inbox(client, ws):
+    bid = make(client)
+    b = registry.get(bid)
+    updated = b.meta.get("updated")
+    b.set_doing("thinking")
+    since = b.meta["doing_since"]
+    b.set_doing("thinking")  # unchanged text: the clock keeps running
+    assert b.meta["doing_since"] == since
+    b.set_doing("search the web for x")
+    row = one(status(client), bid)
+    assert row["doing"] == "search the web for x" and row["inbox_n"] == 0 and b.meta.get("updated") == updated
+    assert "doing" not in botmod._read_meta(bid)  # never written to disk
+    b.inbox.append("hello?")
+    assert one(status(client), bid)["inbox_n"] == 1
+    b.set_doing("")
+    assert one(status(client), bid)["doing"] == ""
+
+
+def test_run_task_clears_doing(client, ws):
+    bid = make(client)
+    b = registry.get(bid)
+
+    def run(bot, task, label):
+        bot.set_doing("thinking")
+
+    botmod._run_task(run, b, "t", "t")
+    assert b.meta["doing"] == ""
 
 
 # ---- per-bot Terminal opt-in and the owned session lifecycle (docs §16) --------

@@ -1,17 +1,21 @@
 """Memory feature (memory.md).
 
-Read-only viewer of Claude Code's persistent memory under
-projects/*/memory/*.md, grouped by project, with per-folder git lifecycle
-controls (change status, commit, clear). Memory *contents* are authored by
-Claude Code, never edited here.
+Viewer and editor of Claude Code's persistent memory under
+projects/*/memory/*.md, grouped by project, with per-folder clear and per-file
+read/write/delete.
 
 main(action=...):
-  list   -> {projects: [{project, path, pathConfirmed, files, changes}]}
+  list   -> {projects: [{project, path, pathConfirmed, pathGuess, files}]}
+            path: confirmed folder or None; pathGuess: a best-effort display
+            path (only when path is None, else None — see _best_effort_path).
             files: [{name, description}], description from the file's own
             YAML frontmatter (None when missing or malformed — never guessed).
-  commit -> {ok, committed}   params: project  (path-limited commit)
-  clear  -> {ok, committed}   params: project  (delete *.md + commit deletion)
+  clear  -> {ok}              params: project  (delete the folder's *.md)
   open   -> {ok}              params: project  (reveal folder in OS explorer)
+  files  -> {ok, files: [{name, size, mtime}]}  params: project
+  read   -> {ok, text}        params: project, file
+  write  -> {ok}              params: project, file, text
+  delete_file -> {ok}         params: project, file
 
 `project` is always the SLUG (the projects/ directory name). It stays the
 identifier on the wire because it is what lib.safe_subdir guards and what the
@@ -48,7 +52,9 @@ _MAX_SEGMENTS = 24
 #      server/routers/claude_sessions.py does — see the note on _transcript_cwd);
 #   2. failing that, reconstruct against the filesystem, keeping only a
 #      candidate whose every component actually exists;
-#   3. failing that, return None, and the UI shows the slug.
+#   3. failing that, path is None; the separate pathGuess (see
+#      _best_effort_path) is a labelled display-only guess, never a confirmed
+#      folder, and the UI shows the slug only when that is None too.
 
 
 def _transcript_cwd(slug_dir: str) -> Optional[str]:
@@ -88,7 +94,7 @@ def _munge(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", name)
 
 
-def _rejoin(parts: list, base: str) -> Optional[str]:
+def _rejoin(parts: list, base: str, fold: bool = False) -> Optional[str]:
     """Rebuild a path from munged segments, guided by what exists on disk.
 
     Matches MUNGED-TO-MUNGED against the real directory entries rather than
@@ -102,6 +108,10 @@ def _rejoin(parts: list, base: str) -> Optional[str]:
     Fewest segments first, extending only when that doesn't resolve (which is
     how "fused", "render" becomes "fused-render"), and backtracking, because a
     shorter prefix that happens to match can still be a dead end further down.
+
+    `fold` compares case-insensitively: a drive-rooted slug lives on a
+    case-insensitive filesystem, where the slug's spelling of a folder need not
+    be the one on disk. POSIX never folds.
     """
     if not parts:
         return base
@@ -112,15 +122,39 @@ def _rejoin(parts: list, base: str) -> Optional[str]:
     for take in range(1, len(parts) + 1):
         want = "-".join(parts[:take])
         for entry in entries:
-            if _munge(entry) != want:
+            got = _munge(entry)
+            if (got.lower() != want.lower()) if fold else (got != want):
                 continue
             candidate = os.path.join(base, entry)
             if not os.path.isdir(candidate):
                 continue
-            found = _rejoin(parts[take:], candidate)
+            found = _rejoin(parts[take:], candidate, fold)
             if found:
                 return found
     return None
+
+
+def _anchor(slug: str):
+    """(base, parts, fold) a slug's walk starts from, or None without an anchor."""
+    # A munged absolute path carries its root as a recognizable prefix: POSIX's
+    # leading "/" munges to a leading "-", while Windows' "C:\" munges to a
+    # leading "C--" (the drive letter survives — it's alnum — then ":" and the
+    # first "\" each become their own "-"). Without one of these there is no
+    # anchor to walk from. The drive form is Windows-only: on POSIX a slug like
+    # "C--x" has no anchor.
+    drive_match = re.match(r"^([A-Za-z])--", slug) if os.sep == "\\" else None
+    if drive_match:
+        base = drive_match.group(1) + ":" + os.sep
+        rest = slug[drive_match.end():]
+    elif slug.startswith("-"):
+        base = os.sep
+        rest = slug[1:]
+    else:
+        return None
+    parts = rest.split("-") if rest else []
+    if not parts or len(parts) > _MAX_SEGMENTS:
+        return None
+    return base, parts, bool(drive_match)
 
 
 def _project_path(slug: str) -> Optional[str]:
@@ -131,17 +165,75 @@ def _project_path(slug: str) -> Optional[str]:
     # it is where those sessions ran, not a guess we are making now.
     if cwd:
         return cwd
-    # A munged absolute path carries its root as a recognizable prefix: the
-    # leading "/" munges to a leading "-". Without it there is no anchor to
-    # walk from.
-    if not slug.startswith("-"):
+    anchor = _anchor(slug)
+    if anchor is None:
         return None
-    base = os.sep
-    rest = slug[1:]
-    parts = rest.split("-") if rest else []
-    if not parts or len(parts) > _MAX_SEGMENTS:
+    base, parts, fold = anchor
+    return _rejoin(parts, base, fold=fold)
+
+
+def _deepest(parts: list, base: str, fold: bool) -> tuple:
+    """(segments consumed, path) for the deepest prefix of `parts` that maps to
+    real directories under `base`. Same munged-to-munged matching as _rejoin,
+    but keeps the best partial result instead of requiring a full match."""
+    best = (0, base)
+    if not parts:
+        return best
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        return best
+    for take in range(1, len(parts) + 1):
+        want = "-".join(parts[:take])
+        for entry in entries:
+            got = _munge(entry)
+            if (got.lower() != want.lower()) if fold else (got != want):
+                continue
+            candidate = os.path.join(base, entry)
+            if not os.path.isdir(candidate):
+                continue
+            n, path = _deepest(parts[take:], candidate, fold)
+            if take + n > best[0]:
+                best = (take + n, path)
+            if take + n == len(parts):
+                return best
+    return best
+
+
+def _best_effort_path(slug: str) -> Optional[str]:
+    """A display-only GUESS at the folder for a slug whose folder is gone.
+
+    Resolves the longest prefix of segments that maps to real directories, then
+    rebuilds the unresolved remainder heuristically: a "/" goes before a segment
+    that starts with an uppercase letter, that follows a capitalised segment
+    (a capitalised segment is a whole folder name), or that follows an empty
+    segment (a dot-file: "" + "x" -> "/.x"); any other boundary stays "-".
+    So "Documents-Fused-local-disk-cleaner" -> "Documents/Fused/local-disk-cleaner".
+    That is a convention (folders are often Capitalised, repos lower-kebab),
+    not knowledge — callers must label the result as unconfirmed.
+    """
+    anchor = _anchor(slug)
+    if anchor is None:
         return None
-    return _rejoin(parts, base)
+    base, parts, fold = anchor
+    n, resolved = _deepest(parts, base, fold)
+    out = []
+    dot = False
+    prev_upper = False
+    for seg in parts[n:]:
+        if seg == "":
+            dot = True
+            continue
+        prefix = "." if dot else ""
+        if not out:
+            out.append(os.sep + prefix + seg)
+        elif dot or seg[0].isupper() or prev_upper:
+            out.append(os.sep + prefix + seg)
+        else:
+            out.append("-" + seg)
+        dot = False
+        prev_upper = seg[0].isupper()
+    return resolved.rstrip(os.sep) + "".join(out) if out else resolved
 
 
 def _memory_dir(project: str) -> str:
@@ -207,7 +299,6 @@ def _file_description(path: str) -> Optional[str]:
 def _list() -> dict:
     projects = []
     if os.path.isdir(PROJECTS_DIR):
-        changes = _memory_changes()
         for slug in sorted(os.listdir(PROJECTS_DIR)):
             mem_dir = os.path.join(PROJECTS_DIR, slug, "memory")
             if not os.path.isdir(mem_dir):
@@ -230,32 +321,23 @@ def _list() -> dict:
                 # confirm"), so a client branches on a named flag instead of
                 # inferring policy from a null.
                 "pathConfirmed": path is not None,
+                # Display-only guess when the folder can't be confirmed; the
+                # UI labels it. None whenever `path` is set.
+                "pathGuess": None if path is not None else _best_effort_path(slug),
                 "files": files,
-                "changes": changes.get(slug, []),
             })
     return {"projects": projects}
 
 
-def _memory_changes() -> dict:
-    """Per-folder uncommitted change status, grouped by project slug
-    (memory.md §7). Same porcelain source as the status badge."""
-    try:
-        out = lib.git("status", "--porcelain", "-uall")
-    except RuntimeError:
-        return {}
-    by_project = {}
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        code, path = line[:2], line[3:]
-        st = "A" if code.strip() == "??" else code.strip()[0]
-        parts = path.split("/")
-        if len(parts) >= 3 and parts[0] == "projects" and parts[2] == "memory":
-            by_project.setdefault(parts[1], []).append({"path": path, "status": st})
-    return by_project
+def _memory_file(project: str, file: str) -> str:
+    """One .md file inside the project's memory dir (no subpaths, no traversal)."""
+    mem_dir = _memory_dir(project)
+    if not file.endswith(".md") or "/" in file or "\\" in file or file.startswith("."):
+        raise ValueError(f"invalid memory file: {file!r}")
+    return os.path.join(mem_dir, file)
 
 
-def main(action: str = "list", project: str = "") -> dict:
+def main(action: str = "list", project: str = "", file: str = "", text: str = "") -> dict:
     if action == "list":
         return _list()
 
@@ -266,21 +348,40 @@ def main(action: str = "list", project: str = "") -> dict:
         except ValueError as e:
             return {"ok": False, "error": str(e)}
 
-    if action == "commit":
-        _memory_dir(project)  # validate slug + ensure dir exists
-        rel = os.path.join("projects", project, "memory")
-        with lib.config_lock():
-            committed = lib.commit(f"Update memory for {project}", pathspec=rel)
-        return {"ok": True, "committed": committed}
-
     if action == "clear":
         mem_dir = _memory_dir(project)
-        rel = os.path.join("projects", project, "memory")
         with lib.config_lock():
             for n in os.listdir(mem_dir):
                 if n.endswith(".md"):
                     os.remove(os.path.join(mem_dir, n))
-            committed = lib.commit(f"Clear memory for {project}", pathspec=rel)
-        return {"ok": True, "committed": committed}
+        return {"ok": True}
+
+    try:
+        if action == "files":
+            mem_dir = _memory_dir(project)
+            files = []
+            for n in sorted(os.listdir(mem_dir), key=lambda n: (n != "MEMORY.md", n.lower())):
+                if n.endswith(".md"):
+                    st = os.stat(os.path.join(mem_dir, n))
+                    files.append({"name": n, "size": st.st_size, "mtime": st.st_mtime})
+            return {"ok": True, "files": files}
+
+        if action == "read":
+            with open(_memory_file(project, file), encoding="utf-8") as f:
+                return {"ok": True, "text": f.read()}
+
+        if action == "write":
+            target = _memory_file(project, file)
+            with lib.config_lock():
+                lib.write_text(target, text)
+            return {"ok": True}
+
+        if action == "delete_file":
+            target = _memory_file(project, file)
+            with lib.config_lock():
+                os.remove(target)
+            return {"ok": True}
+    except (ValueError, OSError) as e:
+        return {"ok": False, "error": str(e)}
 
     return {"ok": False, "error": f"unknown action: {action}"}

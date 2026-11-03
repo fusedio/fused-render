@@ -305,7 +305,7 @@ test("a resolved PermCard is a receipt: past tense, no controls, the landed verd
     [{ decision: "allow" }, "✓ Allowed"],
     [{ decision: "allow", scope: "session" }, "✓ Allowed — not asking again for Edit in this chat"],
     [{ decision: "allow", scope: "exact" }, "✓ Allowed — this exact command, for the rest of this chat"],
-    [{ decision: "allow", mode: "auto" }, "✓ Allowed — approvals set to “Claude decides”"],
+    [{ decision: "allow", mode: "auto" }, "✓ Allowed — approvals set to “Auto”"],
     [{ decision: "expired" }, "◦ Unanswered — the reply ended before you decided"],
     [{ decision: "deny" }, "✗ Denied"],
   ];

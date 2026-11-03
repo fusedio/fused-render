@@ -36,7 +36,9 @@ import re
 # `fused_render` — SPEC PY-15 / D166); parity is held by the tests both modules
 # share. Head bytes only, same budget as the listing's title read.
 _FUSED_META_RE = re.compile(
-    rb"<meta\s[^>]*name\s*=\s*[\"']?fused-app[\"']?", re.IGNORECASE)
+    # The value must END there (closing quote, or unquoted then a space,
+    # `/` or `>`): `name="fused-app-id"` is the app id tag, not the marker.
+    rb"<meta\s[^>]*name\s*=\s*(?:\"fused-app\"|'fused-app'|fused-app(?=[\s/>]))", re.IGNORECASE)
 
 
 def has_fused_meta(html_path: str) -> bool:

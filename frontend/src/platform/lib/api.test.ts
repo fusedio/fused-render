@@ -20,7 +20,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 // in the file). `await import(...)` defers the import past `installDomShim()`.
 installDomShim();
 
-const { getJson, postJson, saveAppFileToDisk, actionErrorMessage } = await import("@platform/lib/api");
+const { getConfig, getJson, postJson, saveAppFileToDisk, actionErrorMessage } = await import("@platform/lib/api");
 import type { HttpError } from "@platform/lib/api";
 
 function recordFetch(): {
@@ -172,4 +172,18 @@ describe("actionErrorMessage", () => {
     expect(actionErrorMessage(null, "check your connection")).toBe("check your connection");
     expect(actionErrorMessage(undefined, "check your connection")).toBe("check your connection");
   });
+});
+
+test("getConfig hands out home in forward-slash form once, at the source", async () => {
+  const serve = (home: string) => {
+    globalThis.fetch = mock(async () => new Response(JSON.stringify({ home, fused_dir: home + "\\Fused" }), {
+      status: 200,
+    })) as unknown as typeof fetch;
+  };
+  serve("C:\\Users\\me");
+  const win = await getConfig();
+  expect(win.home).toBe("C:/Users/me");
+  expect(win.fused_dir).toBe("C:/Users/me/Fused");
+  serve("/Users/me");
+  expect((await getConfig()).home).toBe("/Users/me");
 });

@@ -54,9 +54,17 @@ folder-sized scan merges into the store rather than replacing it.
 """
 import logging
 import os
+import re
 import threading
 
 from fused_render.index.ignore import norm
+
+# A bare Windows drive ("C:", or "C:/" before the rstrip below removes it) is
+# that platform's filesystem root, the same structural case "/" is on POSIX —
+# see the module docstring's "never a mount, never /". query.py's `_DRIVE`
+# anchoring regex recognizes the drive-letter form on the query side; this is
+# the same recognition for the root-guard side below.
+_DRIVE_ROOT = re.compile(r"^[A-Za-z]:/?$")
 
 logger = logging.getLogger(__name__)
 
@@ -160,10 +168,10 @@ def _folder_of(path: str) -> str:
     if not raw:
         return ""  # abspath("") is the server's cwd, which is nobody's folder
     p = norm(os.path.abspath(raw)).rstrip("/")
-    if not p or p == "/":
+    if not p or p == "/" or _DRIVE_ROOT.match(p):
         return ""
     parent = os.path.dirname(p)
-    return "" if parent in ("", "/") else parent
+    return "" if parent in ("", "/") or _DRIVE_ROOT.match(parent) else parent
 
 
 def _members_of(folder: str, pending: dict) -> list:
@@ -204,13 +212,13 @@ def _canon_folder(path: str) -> str:
     touched path inside it, so plain `norm(...).rstrip("/") or "/"` would
     PRODUCE `/` for a root-ish input instead of refusing it — and unlike
     `note()`, `note_folders()`'s caller (the live watcher) can legitimately
-    be told to rescan a `root` that, on a misconfiguration, canonicalizes
-    to the bare root."""
+    be told to rescan a `root` that, on a misconfiguration or a Windows
+    drive letter, canonicalizes to the bare root."""
     raw = str(path or "").strip()
     if not raw:
         return ""
     p = norm(os.path.abspath(raw)).rstrip("/")
-    if not p or p == "/":
+    if not p or p == "/" or _DRIVE_ROOT.match(p):
         return ""
     return p
 

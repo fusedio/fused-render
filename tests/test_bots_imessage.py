@@ -11,7 +11,9 @@ def test_paths_resolve_lazily_under_app_home(app_home, tmp_path, monkeypatch):
     assert imessage.CURSOR == os.path.join(data, "imessage.json")
     assert imessage.LOCK == os.path.join(data, "imessage.lock")
     assert imessage.STATE == os.path.join(data, "imessage-state.json")
-    assert imessage.DATA == data and imessage.BOTS == os.path.join(data, "bots")
+    assert imessage.DATA == data
+    # the per-bot folders moved out of the home (~/Fused/bots/<folder>/): no BOTS constant is left to resolve
+    assert not hasattr(imessage, "BOTS")
     other = tmp_path / "elsewhere"
     monkeypatch.setenv("FUSED_RENDER_HOME", str(other))
     assert imessage.cursor_path() == os.path.join(str(other), "bots", "data", "imessage.json")

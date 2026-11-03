@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Build the downloadable Chromium engine artifact for one architecture:
+# Build the Chromium engine for one architecture:
 #
 #   fused_render/chromium/native/build.sh [arm64|x86_64] [OUT_DIR]
 #
-# 1. reads `cef_version` / `engine_version` from ../manifest.json,
+# 1. reads `cef_version` / `cef_sha1` from ../manifest.json,
 # 2. fetches that CEF binary distribution (minimal) from cef-builds.spotifycdn.com,
 # 3. builds FusedChromium.framework and the helper with CMake,
 # 4. assembles OUT_DIR/FusedChromium/ — the framework, the CEF framework,
-#    the five helper app bundles CEF expects, engine.json —
-# 5. signs it (FUSED_RENDER_CODESIGN_IDENTITY, else ad hoc) and zips it as
-#    FusedChromium-<engine_version>-<arch>.zip next to a .json with its
-#    sha256 and size (what scripts/publish_chromium_engine.py pins).
+#    the five helper app bundles CEF expects, engine.json — and ad-hoc signs
+#    it so it runs locally. scripts/build_dmg.sh (step 4e-bis) runs this, seats
+#    the output in the app bundle and signs it with the Developer ID (D1415);
+#    a dev checkout points FUSED_RENDER_CHROMIUM_ENGINE_DIR at the output.
 #
 # Needs: macOS, Xcode command line tools, cmake ≥ 3.21, python3, curl.
 # The CEF download is ~200 MB; FUSED_RENDER_CEF_CACHE keeps it between runs.
@@ -28,16 +28,18 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-read -r CEF_VERSION ENGINE_VERSION CEF_SHA1 < <(python3 - "$HERE/../manifest.json" "$ARCH" <<'EOF'
+read -r CEF_VERSION CEF_SHA1 < <(python3 - "$HERE/../manifest.json" "$ARCH" <<'PYEOF'
 import json, sys
 m = json.load(open(sys.argv[1]))
-print(m["cef_version"], m["engine_version"], (m.get("cef_sha1") or {}).get(sys.argv[2]) or "-")
-EOF
+print(m["cef_version"], (m.get("cef_sha1") or {}).get(sys.argv[2]) or "-")
+PYEOF
 )
 if [[ "$CEF_SHA1" == "-" ]]; then
   echo "FATAL: manifest.json has no cef_sha1 for $ARCH (the CDN publishes it beside the tarball)" >&2
   exit 1
 fi
+# The engine's version is the app's: one build, one version.
+ENGINE_VERSION="$(sed -nE 's/^__version__ = "([^"]+)"/\1/p' "$HERE/../../__init__.py")"
 case "$ARCH" in
   arm64) CEF_PLATFORM="macosarm64" ;;
   x86_64) CEF_PLATFORM="macosx64" ;;
@@ -49,8 +51,8 @@ CACHE="${FUSED_RENDER_CEF_CACHE:-$HERE/.cef-cache}"
 BUILD="$HERE/build-$ARCH"
 mkdir -p "$CACHE" "$BUILD" "$OUT_DIR"
 
-echo "==> engine $ENGINE_VERSION / CEF $CEF_VERSION / $ARCH"
-# The tarball is verified against the manifest's sha1 on EVERY run (the CI
+echo "==> engine ${ENGINE_VERSION:-dev} / CEF $CEF_VERSION / $ARCH"
+# The tarball is verified against the manifest's sha1 on EVERY run (a CI
 # cache is keyed by manifest, but a bad entry would otherwise be reused), and
 # the extracted tree counts only with a marker naming the verified digest:
 # an extraction that died halfway is redone, into a temp dir renamed into
@@ -87,7 +89,7 @@ cmake -S "$HERE" -B "$BUILD" \
   -DCEF_ROOT="$CEF_ROOT" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
-  -DFR_ENGINE_VERSION="$ENGINE_VERSION" \
+  -DFR_ENGINE_VERSION="${ENGINE_VERSION:-0}" \
   -DPROJECT_ARCH="$ARCH"
 cmake --build "$BUILD" --config Release -j "$(sysctl -n hw.ncpu)"
 
@@ -131,57 +133,21 @@ for variant in GPU Renderer Plugin Alerts; do
     -c "Set :CFBundleIdentifier io.fused.render.chromium.helper.$suffix" \
     "$app/Contents/Info.plist"
 done
-cat > "$STAGE/engine.json" <<EOF
-{"engine_version": "$ENGINE_VERSION", "cef_version": "$CEF_VERSION", "arch": "$ARCH"}
-EOF
+cat > "$STAGE/engine.json" <<EOF2
+{"cef_version": "$CEF_VERSION", "arch": "$ARCH", "app_version": "${ENGINE_VERSION:-}"}
+EOF2
 
-# ---- sign ------------------------------------------------------------------------------
-# The engine is downloaded by the app, never quarantined, and the app's
-# hardened runtime disables library validation (build_dmg.sh entitlements),
-# so an ad-hoc signature is enough for a local build; a release signs with
-# the Developer ID (hardened runtime + timestamp) so Gatekeeper has no say
-# either way. The helpers run V8 (JIT) and load the CEF framework from
-# outside their own bundle: Chromium's helper entitlements, verbatim.
-IDENTITY="${FUSED_RENDER_CODESIGN_IDENTITY:--}"
-ENTITLEMENTS="$BUILD/helper-entitlements.plist"
-cat > "$ENTITLEMENTS" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>com.apple.security.cs.allow-jit</key><true/>
-  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
-  <key>com.apple.security.cs.disable-library-validation</key><true/>
-  <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
-</dict>
-</plist>
-PLIST
-if [[ "$IDENTITY" == "-" ]]; then
-  sign() { codesign --force -s - "$@"; }
-  sign_exe() { codesign --force -s - "$@"; }
-else
-  sign() { codesign --force --options runtime --timestamp -s "$IDENTITY" "$@"; }
-  sign_exe() { codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" -s "$IDENTITY" "$@"; }
-fi
-echo "==> signing ($IDENTITY)"
-# Inside out: the CEF framework's nested binaries, then the frameworks, then the helpers.
-while IFS= read -r -d '' lib; do sign "$lib"; done < <(
+# ---- sign (ad hoc) --------------------------------------------------------------------
+# Enough to run from a dev checkout (the app's hardened runtime disables
+# library validation, and on Apple silicon an ad-hoc signature runs). The
+# release signature — Developer ID, hardened runtime, timestamp, Chromium's
+# helper entitlements — is build_dmg.sh step 5's, applied inside out over
+# the whole engine once it sits in the bundle.
+echo "==> signing (ad hoc)"
+while IFS= read -r -d '' lib; do codesign --force -s - "$lib"; done < <(
   find "$CEF_FW/Versions/A/Libraries" -type f -name '*.dylib' -print0 2>/dev/null)
-sign "$CEF_FW"
-sign "$STAGE/FusedChromium.framework"
-for app in "$STAGE"/*.app; do sign_exe "$app"; done
+codesign --force -s - "$CEF_FW"
+codesign --force -s - "$STAGE/FusedChromium.framework"
+for app in "$STAGE"/*.app; do codesign --force -s - "$app"; done
 codesign --verify --strict "$STAGE/FusedChromium.framework"
-
-# ---- zip ----------------------------------------------------------------------------------
-ZIP="$OUT_DIR/FusedChromium-${ENGINE_VERSION}-${ARCH}.zip"
-rm -f "$ZIP"
-# -y keeps symlinks as symlinks (the Python unpacker recreates them).
-(cd "$OUT_DIR" && zip -qry "$ZIP" FusedChromium)
-SHA="$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
-SIZE="$(stat -f%z "$ZIP")"
-cat > "${ZIP%.zip}.json" <<EOF
-{"engine_version": "$ENGINE_VERSION", "cef_version": "$CEF_VERSION", "arch": "$ARCH", "file": "$(basename "$ZIP")", "sha256": "$SHA", "size": $SIZE}
-EOF
-echo "==> $ZIP"
-echo "    sha256 $SHA"
-echo "    size   $SIZE"
+echo "==> $STAGE"

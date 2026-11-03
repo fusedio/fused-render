@@ -77,11 +77,10 @@ export interface HeadsUpApi {
 
 /**
  * User rows the run actually received: the CLI's interrupt marker is a user row
- * nobody typed, and a row with `pending` is still queued / unsent (the run
- * controller drops `pending` when the real send adopts the row).
+ * nobody typed.
  */
-export function countUserTurns(turns: ReadonlyArray<{ role: string; text?: string; pending?: unknown }>): number {
-  return turns.reduce((n, t) => (t.role === "user" && !t.pending && !isInterruptMark(t.text) ? n + 1 : n), 0);
+export function countUserTurns(turns: ReadonlyArray<{ role: string; text?: string }>): number {
+  return turns.reduce((n, t) => (t.role === "user" && !isInterruptMark(t.text) ? n + 1 : n), 0);
 }
 
 export function useHeadsUp({ runId, running, enabled, userTurns, controller, timing }: UseHeadsUpArgs): HeadsUpApi {
@@ -120,6 +119,12 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
           const note = r.note;
           const id = r.id;
           setShown((cur) => (cur?.id === id && cur.runId === runId ? cur : { runId, id, note, baseTurns: turnsRef.current }));
+        }
+        if (!dead && !(r.state === "note" && r.id && !dismissed.current.has(r.id))) {
+          // The server no longer holds the note we show (its turn ended, so it
+          // withdrew it): drop the card. The dismissed set is left alone.
+          const held = r.state === "note" ? r.id : undefined;
+          setShown((cur) => (cur?.runId === runId && cur.id !== held ? null : cur));
         }
       } catch {
         // A failed poll is "nothing new"; the next tick asks again.

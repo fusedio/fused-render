@@ -62,6 +62,11 @@ def _me():
     return os.path.join(os.path.abspath(sys.path[0]), "kernel.py")
 
 
+# platutil is stdlib-only and the kernel daemon never imports fused_render.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_me())), "shared"))
+from platutil import venv_python  # noqa: E402
+
+
 def _body():
     return os.path.join(os.path.dirname(_me()), "kernel_body.py")
 
@@ -140,16 +145,17 @@ def _listdir(path):
     dirs.sort(key=str.lower)
     files.sort(key=str.lower)
     parent = os.path.dirname(base) or base
-    return {"path": base,
-            "parent": parent,
+    return {"path": base.replace(os.sep, "/"),
+            "parent": parent.replace(os.sep, "/"),
             "dirs": dirs, "files": files}
 
 
 def _resolve_dest(directory, name):
     """Destination for the new-notebook / save-a-copy modal. `name` may be a
     plain name, a relative subpath, or an absolute path that overrides the
-    browsed `directory`; a backslash stays an ordinary filename character.
-    Appends .ipynb unless already present."""
+    browsed `directory`; os.path keeps the semantics platform-correct (both
+    separators on Windows; a backslash stays an ordinary filename character
+    on POSIX). Appends .ipynb unless already present."""
     name = (name or "").strip()
     if not name:
         return {"error": "Enter a name."}
@@ -162,11 +168,11 @@ def _resolve_dest(directory, name):
     if not full.lower().endswith(".ipynb"):
         full += ".ipynb"
     parent = os.path.dirname(full)
-    missing = {"error": "Folder does not exist: " + parent}
+    missing = {"error": "Folder does not exist: " + parent.replace(os.sep, "/")}
     if not os.path.isdir(parent):
         return missing
-    return {"path": full,
-            "dir": parent,
+    return {"path": full.replace(os.sep, "/"),
+            "dir": parent.replace(os.sep, "/"),
             "name": os.path.basename(full)}
 
 
@@ -478,7 +484,7 @@ def _serve():
         for _ in range(4):
             if not d:
                 break
-            cand = os.path.join(d, ".venv", "bin", "python")
+            cand = venv_python(os.path.join(d, ".venv"))
             if os.path.isfile(cand) and os.path.normcase(cand) not in seen:
                 envs.append({"label": f".venv — {os.path.basename(d)}", "path": cand})
                 seen.add(os.path.normcase(cand))

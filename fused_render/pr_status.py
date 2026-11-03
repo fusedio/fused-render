@@ -33,12 +33,16 @@ _LOCK = threading.Lock()
 # ref -> (expires_at, status | None); merged and closed never expire.
 _CACHE: dict[str, tuple[float, str | None]] = {}
 _TOKEN: tuple[float, str | None] | None = None
+# ref -> head branch name, filled beside _CACHE (same lifetime in practice: a
+# head ref can change while a PR is open, so it is refreshed with each ask).
+_HEADS: dict[str, str | None] = {}
 
 
 def reset_for_tests() -> None:
     global _TOKEN
     with _LOCK:
         _CACHE.clear()
+        _HEADS.clear()
         _TOKEN = None
 
 
@@ -76,12 +80,13 @@ def _status_of(pr) -> str | None:
 
 def _query(batch: list[tuple[str, str, int]]) -> str:
     parts = [f"r{i}: repository(owner:{json.dumps(o)},name:{json.dumps(n)})"
-             f"{{ pullRequest(number:{num}){{state isDraft}} }}"
+             f"{{ pullRequest(number:{num}){{state isDraft headRefName}} }}"
              for i, (o, n, num) in enumerate(batch)]
     return "query{ " + " ".join(parts) + " }"
 
 
-def _fetch_batch(batch: list[tuple[str, str, int]], token: str) -> list[str | None]:
+def _fetch_batch(batch: list[tuple[str, str, int]], token: str,
+                 heads: list[str | None] | None = None) -> list[str | None]:
     req = urllib.request.Request(
         _GRAPHQL_URL, method="POST",
         data=json.dumps({"query": _query(batch)}).encode(),
@@ -92,14 +97,26 @@ def _fetch_batch(batch: list[tuple[str, str, int]], token: str) -> list[str | No
         with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
             data = (json.loads(resp.read()) or {}).get("data")
     except (OSError, ValueError):
+        if heads is not None:
+            heads.extend([None] * len(batch))
         return [None] * len(batch)
     data = data if isinstance(data, dict) else {}
     out = []
     for i in range(len(batch)):
         repo = data.get(f"r{i}")
-        out.append(_status_of(repo.get("pullRequest")) if isinstance(repo, dict)
-                   else None)
+        pr = repo.get("pullRequest") if isinstance(repo, dict) else None
+        out.append(_status_of(pr))
+        if heads is not None:
+            name = pr.get("headRefName") if isinstance(pr, dict) else None
+            heads.append(name if isinstance(name, str) and name else None)
     return out
+
+
+def head_refs(refs: list[str]) -> dict[str, str]:
+    """`{ref: head branch}` for the refs `fetch_statuses` has answered with a
+    branch name; refs whose branch is unknown are left out."""
+    with _LOCK:
+        return {r: _HEADS[r] for r in refs if _HEADS.get(r)}
 
 
 def fetch_statuses(refs: list[str]) -> dict[str, str | None]:
@@ -125,12 +142,15 @@ def fetch_statuses(refs: list[str]) -> dict[str, str | None]:
         token = _token()
         for i in range(0, len(misses), _BATCH):
             chunk = misses[i:i + _BATCH]
+            got_heads: list[str | None] = []
             statuses = ([None] * len(chunk) if not token else
-                        _fetch_batch([parse_ref(r) for r in chunk], token))
+                        _fetch_batch([parse_ref(r) for r in chunk], token, got_heads))
+            got_heads += [None] * (len(chunk) - len(got_heads))
             stamp = time.time()
             with _LOCK:
-                for ref, status in zip(chunk, statuses):
+                for ref, status, head in zip(chunk, statuses, got_heads):
                     out[ref] = status
+                    _HEADS[ref] = head
                     if status in ("merged", "closed"):
                         ttl = float("inf")
                     else:

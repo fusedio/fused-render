@@ -8,12 +8,13 @@
 // rule came over verbatim from the strip, because the rules did.
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { refreshAgentBackends } from "./agent-backends";
 import {
   cancelAgentLogin,
   getAgentHealth,
   getAgentInstall,
   getAgentLogin,
-  linkClaudePath,
+  linkAgentPath,
   refreshAgentHealth,
   runClaudeDoctor,
   startAgentInstall,
@@ -93,10 +94,11 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
 }
 
 /**
- * The same machine for EITHER agent — `/api/claude/*` or `/api/copilot/*`,
- * which answer the same bodies (D10). `doctor` and `link-path` are Claude-only
- * repairs; `agentIssues` never offers them for Copilot, so they are not
- * generalised here.
+ * The same machine for EVERY agent — `/api/claude/*`, `/api/copilot/*`,
+ * `/api/codex/*` (docs/CODEX_BACKEND.md D10) or `/api/gemini/*`
+ * (docs/GEMINI_BACKEND.md D10), which answer the same bodies.
+ * `doctor` is a Claude-only repair; `agentIssues` never offers it for another
+ * agent, so it is not generalised here. `link-path` is, for Codex and Gemini.
  */
 export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
   const [health, setHealth] = useState<ClaudeHealth | null>(cached.get(backend) ?? null);
@@ -131,6 +133,11 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
         setHealth(h);
         setLoaded(true);
         setBusy(false);
+        // The snapshot this measured is what the catalog's rows read their
+        // discovered model list off (Copilot's plan list, D11a): re-read it,
+        // so the pickers follow a sign-in or a "Check again" at once. Not
+        // for Claude, whose row carries nothing the snapshot would change.
+        if (backend !== "claude") void refreshAgentBackends();
       },
       () => {
         // A FAILED PROBE IS NOT A FINDING. If /api/claude/health itself cannot
@@ -249,12 +256,14 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
       return;
     }
     if (issue.action.kind === "link-path") {
-      linkClaudePath().then(
+      linkAgentPath(backend).then(
         (res) => {
           done();
+          // The route segment is the CLI's name for every agent.
+          const cli = backend === "copilot" || backend === "codex" || backend === "gemini" ? backend : "claude";
           setLinkedNote(
             `Added to ${res.rc_file ?? "your shell profile"}. Terminals ` +
-              "opened from now on will find `claude` — one that is already " +
+              `opened from now on will find \`${cli}\` — one that is already ` +
               "open needs a new tab or window.",
           );
         },

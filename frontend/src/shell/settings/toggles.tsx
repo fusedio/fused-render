@@ -1,4 +1,4 @@
-// The one-switch settings: Tasks, Apps & sharing, Optional features.
+// The one-switch settings: Chats & tasks, Sharing & sync, Experimental flags.
 //
 // Most of them publish after the PUT as well as saving: the surface the switch
 // governs is usually already on screen (the sidebar beside this page, a grid
@@ -7,11 +7,11 @@
 // navigation. Each flag module's header says why its reader caches.
 import {
   putAppSharingEnabled,
+  putCanvasesEmbedProxy,
   putCanvasesEnabled,
+  putCanvasRailPeekEnabled,
   putGitAutoSyncEnabled,
-  putGithubLinkEnabled,
   putLivePreviewsEnabled,
-  putMarketplaceEnabled,
   putMonitorEnabled,
   putProjectQueueEnabled,
   putReaderEnabled,
@@ -20,13 +20,14 @@ import {
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
+  putContribRemixEnabled,
 } from "@platform/lib/api";
+import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
+import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
-import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
-import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
@@ -87,12 +88,12 @@ export function TaskSummaryTitlesControl({ prefs, onChange }: PrefControlProps) 
 }
 
 // Lean Claude sessions: no user MCP servers / connectors in chat and tasks.
-// ON unless stored false, so `!== false` (an older server has no field).
+// OFF unless stored true, so `=== true` (an older server has no field).
 export function ClaudeStrictMcpControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
       id="claude-strict-mcp"
-      checked={prefs.claude_strict_mcp?.enabled !== false}
+      checked={prefs.claude_strict_mcp?.enabled === true}
       put={putClaudeStrictMcpEnabled}
       onChange={onChange}
     />
@@ -145,7 +146,7 @@ export function NotifyTerminalControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// ── Apps & sharing ─────────────────────────────────────────────────────────
+// ── Sharing & sync ─────────────────────────────────────────────────────────
 
 // Git auto-sync: default ON (`!== false` — an older server's silence is the
 // default), an opt-OUT. Off is the Update card and the manual git flows only.
@@ -155,8 +156,10 @@ export function GitSyncControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// The Share sheet (public link + .fused file) in place of the plain Export on
-// every app surface — and on the file preview's share action too.
+// Public link (owner 2026-10-27): the Share sheet's Fused-account link card.
+// The Share button is always there (share-app-flag.ts `useAppShareOffered`:
+// the contribution loop is always on), the .fused file always. The GitHub
+// install link rides on the loop — its own row is gone.
 export function ShareSheetControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
@@ -164,26 +167,6 @@ export function ShareSheetControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.app_sharing.enabled}
       put={putAppSharingEnabled}
       after={(next) => publishAppSharingEnabled(next.app_sharing.enabled)}
-      onChange={onChange}
-    />
-  );
-}
-
-// The Share sheet's GitHub install-link card. Only the sheet ever shows it, so
-// it is a child of the row above and cannot be turned ON while that is off —
-// but a link already on can always be turned off.
-export function GithubLinkControl({ prefs, onChange }: PrefControlProps) {
-  const sheet = prefs.app_sharing.enabled;
-  const on = prefs.github_link?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="github-link"
-      checked={on}
-      put={putGithubLinkEnabled}
-      after={(next) => publishGithubLinkEnabled(next.github_link?.enabled === true)}
-      disabled={!sheet && !on}
-      off={!sheet}
-      status={sheet ? undefined : "Needs the Share sheet."}
       onChange={onChange}
     />
   );
@@ -204,7 +187,25 @@ export function LivePreviewsControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// ── Optional features ──────────────────────────────────────────────────────
+// ── Community (preview) ────────────────────────────────────────────────────
+// Remix's switch. The contribution loop it rides on is always on since
+// 2026-10-29 (its own switch — four phase switches until 2026-10-22 — is
+// gone). Same publish-after-PUT as the rows above (contrib-flags.ts), so the
+// cards and the share sheet already mounted follow.
+
+export function ContribRemixControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="contrib-remix"
+      checked={prefs.contrib?.remix === true}
+      put={(next) => putContribRemixEnabled(next)}
+      after={(next) => publishContribFlags(next.contrib)}
+      onChange={onChange}
+    />
+  );
+}
+
+// ── Experimental flags ───────────────────────────────────────────────────────────────
 // Each is off by default and this is the only place it turns on (Canvases:
 // D427). Each one gates its ENTRY POINTS — a sidebar row, a status-bar chip, a
 // file view — never the routes behind them.
@@ -223,13 +224,48 @@ export function CanvasesControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-export function MarketplaceControl({ prefs, onChange }: PrefControlProps) {
+// No publish: the proxy follows the pref on the next canvas status read, which
+// every page that frames a canvas makes before it frames it. Off stops it at
+// once (shell/prefs.py). The settings file can pin it, like the env var that
+// pins the default environment.
+export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps) {
+  const locked = prefs.canvases.embed_proxy_locked === true;
+  const on = prefs.canvases.embed_proxy === true;
   return (
     <PrefToggleRow
-      id="marketplace"
-      checked={prefs.marketplace?.enabled === true}
-      put={putMarketplaceEnabled}
-      after={(next) => publishMarketplaceEnabled(next.marketplace?.enabled === true)}
+      id="canvases-embed-proxy"
+      checked={on}
+      put={putCanvasesEmbedProxy}
+      disabled={locked}
+      status={
+        locked ? (
+          <>
+            Pinned {on ? "on" : "off"} by <code>[render] canvases_embed_proxy_enabled</code> in{" "}
+            <code>~/.fused/settings.toml</code>.
+          </>
+        ) : undefined
+      }
+      onChange={onChange}
+    />
+  );
+}
+
+// Published (rail-peek-flag.ts), so a page with a rail in THIS tab follows the
+// switch at once. Another tab's shell holds its first answer until it reloads
+// — the same deal every published flag here offers.
+export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.canvas_rail_peek?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="canvases-rail-peek"
+      checked={on}
+      put={putCanvasRailPeekEnabled}
+      after={(next) => publishCanvasRailPeek(next.canvas_rail_peek)}
+      status={
+        on
+          ? "On — hovering a chat on the rail opens it as a card you can use; a click keeps it open."
+          : "Off — hovering shows the chat's one-line caption; clicking opens it in the panel."
+      }
       onChange={onChange}
     />
   );

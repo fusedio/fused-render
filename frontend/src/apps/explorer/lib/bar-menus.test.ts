@@ -1,14 +1,21 @@
 // The crumb bar's right-click menus (lib/bar-menus). No DOM and no React
 // renderer in this suite — the builders return plain data, which is the reason
 // they are builders (see the module header).
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 
 // bar-menus now reaches the router (via fs-actions, for dirname/normDir),
 // which reads `location` at module scope, so the stub has to precede the
 // (therefore dynamic) import — same trade as fs-actions.test.ts.
+const realLocation = (globalThis as { location?: unknown }).location;
 (globalThis as { location?: unknown }).location = new URL("http://x/");
+// Put back when the file is done: bun runs every file in one process, and a
+// `location.host` left behind sends every later suite's agent calls down a
+// real WebSocket (agentSocket.ts's `socketUsable`) instead of their fetch stub.
+afterAll(() => {
+  (globalThis as { location?: unknown }).location = realLocation;
+});
 const {
   crumbMenu,
   fileMenu,

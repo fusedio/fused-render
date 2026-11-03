@@ -60,6 +60,17 @@ async def run_request(body: dict, call: dict | None) -> tuple[int, str]:
     if resolve_error is not None:
         return resolve_error.status_code, resolve_error.body.decode("utf-8")
 
+    # The open gate (docs/CONTRIB_LOOP.md §18.4 B4) on the run door too: a
+    # window already open on a Community copy Fused blocked (hard, or soft
+    # and not confirmed yet) must not keep running its `.py` — `render` and
+    # `/api/apps/entry` only stop the NEXT open. Same 423 payload; one store
+    # read, and nothing for a file outside any repository.
+    from fused_render import marketplace
+
+    gated = await asyncio.to_thread(marketplace.open_gate, resolved)
+    if gated:
+        return 423, json.dumps(gated)
+
     # Engine dispatch (D69/§20): both paths return the same wire shape
     # ({ok, result, error:{type,message,traceback}, stdout} — the fused
     # engine adds stderr/duration_ms), so pages never see which ran.
@@ -102,7 +113,13 @@ async def run_request(body: dict, call: dict | None) -> tuple[int, str]:
     # for auto-reload (LR-2). Set on failed runs too, so a broken py that
     # gets fixed still triggers a reload.
     result["resolved_py"] = resolved
-    return 200, dumps_result(result)
+    if getattr(result, "payload_json", None) is None:
+        # Encoding a big result blocks; keep it off the event loop. A
+        # pre-encoded run is only a join of short pieces, cheap inline.
+        content = await asyncio.to_thread(dumps_result, result)
+    else:
+        content = dumps_result(result)
+    return 200, content
 
 
 # ---- /api/run over a WebSocket ----------------------------------------------

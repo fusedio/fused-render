@@ -4,8 +4,9 @@
 // the footer shortcut recorder (PUT /api/prefs + POST /api/launcher/suspend), the keyboard, the size report and the
 // bridge to the native panel (fused_render/launcher_panel.py).
 //
-// What the rows ARE is the server's call, by flavor: under Fused Render apps (app/appfile) and, by typing, bots,
-// then files and folders, then the bottom rows (the shell home and the Bots page, `home: true`, kinds "home" and
+// What the rows ARE is the server's call, by flavor: under Fused Render apps (app/appfile) and, by typing, bots
+// and — with Canvases on (launcher.py `_canvases_offered`; this page never reads the flag) — cloned canvases
+// (`kind: "canvas"`, opening the canvas's project page), then files and folders, then the bottom rows (the shell home and the Bots page, `home: true`, kinds "home" and
 // "bots"); under Fused Bot bots (`kind: "bot"`, `files` always empty), then its one home row. The bottom rows sit
 // under the list while the query is empty; a typed query ranks them with everything else (launcher.py `results`),
 // so the page keeps the server's `apps` order as it came. The page's copy keys off `settings.kind`
@@ -15,8 +16,11 @@ import botHomeImg from "@assets/fusedbot-icon-1024.png";
 import renderHomeImg from "@assets/fusedrender-icon-1024.png";
 
 interface LauncherRow {
-  kind?: "app" | "appfile" | "file" | "folder" | "bot" | "home" | "bots";
+  kind?: "app" | "appfile" | "file" | "folder" | "bot" | "home" | "bots" | "canvas";
   home?: boolean;
+  /** A canvas row's Fused environment (launcher.py `_canvas_row`): the subtitle, since a prod and an unstable
+   *  clone can share a name. */
+  env?: string;
   id?: string;
   path: string;
   url?: string;
@@ -139,8 +143,12 @@ function monogram(name: string) {
   return d;
 }
 function tilde(p: string) { return (p || "").replace(/^\/Users\/[^/]+/, "~"); }
+// @apps/canvases/api ENV_NAMES labels, copied: this entry must not pull the canvases app into its bundle for two strings.
+const ENV_LABELS: Record<string, string> = { unstable: "Unstable", prod: "Production" };
 function subtitle(app: LauncherRow) {
   if (app.home) return app.kind === "bots" ? "Open your bots" : "Open the shell";
+  // A canvas says which Fused it was cloned from, not its clone folder: the name is the title already.
+  if (app.kind === "canvas") return (ENV_LABELS[app.env || ""] || app.env || "") + " canvas";
   // A bot has no path to show: its status when it is not idle (the Dock bubble's rule, dock/lib bubbleText).
   if (app.kind === "bot") return app.status && app.status !== "idle" ? app.status : "";
   // A file row names its folder: the name is already the title.
@@ -160,6 +168,10 @@ const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
   + '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
   + '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+// The canvas glyph (@apps/canvases/glyph CanvasGlyph, same path): connected nodes, a canvas is a graph of UDFs.
+const CANVAS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+  + '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="10" r="3"/><circle cx="9" cy="18" r="3"/>'
+  + '<path d="M8.8 7.1 15.2 9M7.9 15.4 6.8 8.9M11.6 16.6l4.2-4.4"/></svg>';
 // A bottom row wears its app's icon, as the Dock's Home tile does (src/dock/dock.ts setHome): Fused Bot's 1024 px
 // artwork (scale 1024/824) for the Bots row and the bot flavor's home, Fused Render's sparkle card (scale 1/0.88)
 // for Render's home, scaled so the card fills the box and the box's radius clips the transparent margin.
@@ -230,10 +242,10 @@ function render() {
       homeIcon(icon, app);
     } else if (app.kind === "bot") {
       icon.innerHTML = faceSvg({ id: app.id || app.path, name: app.name, face: app.face });
-    } else if (kind === "files") {
+    } else if (kind === "files" || app.kind === "canvas") {
       const g = document.createElement("div");
       g.className = "glyph";
-      g.innerHTML = app.kind === "folder" ? FOLDER_SVG : FILE_SVG;
+      g.innerHTML = app.kind === "folder" ? FOLDER_SVG : app.kind === "canvas" ? CANVAS_SVG : FILE_SVG;
       icon.appendChild(g);
     } else if (app.icon) {
       const img = document.createElement("img");

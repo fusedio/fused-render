@@ -253,7 +253,21 @@ const { text, usage, response, provider } = await fused.ai.text({
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
   `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
-  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
+  take it. **Three more tiers are the agent CLIs** (D1433): `provider: "copilot" |
+  "codex" | "gemini"` runs the same tool-less, session-free one-shot the session
+  recaps use (`agent_oneshot.py`: prompt on stdin, no tools, nothing from the
+  server's cwd, no session left behind) — text only, `history`/`raw`/`images`
+  refused like the Claude tier, sampling knobs and `thinking` dropped into
+  `warnings[]`, `effort` passed where the CLI takes it (Copilot per model, Codex
+  as `model_reasoning_effort`, never Gemini), `model` passed through as Tasks pass
+  it (omitted = the agent's catalog default), **no streaming** (the whole text
+  arrives as one chunk then `done`), `usage` null. Gated on the agent's
+  Preferences switch: off → 409 `ai_unavailable` with `reason: "backend_disabled"`;
+  `"claude"` stays ungated (D17). These tiers are never inferred from a model's
+  shape — only an explicit `provider` reaches them. They are also the AI gateway
+  the canvas host runs for the embedded workbench (CanvasWorkspace.tsx module
+  doc, host-ai.ts): the host posts the enabled agents' models to the frame and
+  relays its inline AI requests to this route. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
   `.embed` and `.decide`** (their D413 envelopes grow that one key), and every reply of the six
   carries `provider`; those five have only a local tier today, so omitted means
   `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request
@@ -472,6 +486,7 @@ Deferred to later milestones (needed for data templates):
 - **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` — **in the project directory, or in a manifest-only mirror at `<venvs_root>/<key>.src` when that directory cannot be written to** (D376) — and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`: `uv sync` writes `uv.lock` where it runs, which is the point for a user's folder and impossible for the bundled runner folders, whose tree is read-only on the AppImage's squashfs mount. The mirror persists and keeps the lock uv resolved there, so a rebuild reconciles instead of re-resolving; a lock the folder itself ships overwrites it, and `projectenv.gc()` reclaims a mirror with its venv, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. **`uv sync` is streamed, not captured** (`_UvProgress` in `_env_install_worker.py`): uv writes plain-text download progress to stderr as it runs (`Downloading numpy (15.9MiB)` / ` Downloaded numpy`), line-buffered even off a tty, so `progress.json` additionally carries `activity` (a compact phrase that never restates the byte pair the row itself already renders — `"downloading torch (2m14s)"`), `bytes_done` and `bytes_total` — the last two `null` until uv has announced its first download, and `bytes_total` a **lower bound that can only rise** as uv announces more concurrent downloads (its own default concurrency is 50). **Package-level alone was not enough**: a venv dominated by one huge wheel (the ROCm/CUDA torch install this shipped for) has no SECOND download to move the aggregate, so it sat flat for the entire multi-minute fetch even with the above. Measuring uv's own cache-directory growth for that was tried and rejected — it tracks UNPACKED size, several times the compressed transfer, with no single file to stat as "bytes so far". What works instead: uv prints per-package IN-FLIGHT bytes when it believes stdout is a terminal (never Downloading/Downloaded lines there — the live redraw replaces them) and suppresses that entirely for a pipe — confirmed empirically with `pty.openpty()` against a real `uv sync`. So `_build` now runs uv under a pty first (`_run_uv_via_pty`) and parses that live multi-package bar for the SAME `bytes_done`/`bytes_total`, falling back to the ordinary pipe path (`_run_uv_piped`, unchanged) whenever a pty cannot be set up — a sandbox with no `/dev/ptmx` — with the fallback only ever taken BEFORE uv is spawned, so a setup failure can never double-run the sync. **The pty is given a tall winsize** (`_set_pty_winsize`, `TIOCSWINSZ`): `pty.openpty()` alone leaves uv falling back to an 80x24 terminal, which clamps its bar to ~23 rows while up to 50 wheels download concurrently — a package still downloading simply scrolls out of view, and a naive "name vanished from the frame" confirmation reads that as done. Measured on a real 149-package capture: 44 names wrongly vanished under 90% complete, 4 of them still downloading when they reappeared. A tall winsize is the fix at the cause; a package is still only confirmed by elimination when its last reading was AT OR NEAR its own announced total (`_PTY_NEAR_TOTAL_FRACTION`), as a second, independent layer that holds even if the winsize assumption ever breaks. The ring buffer that keeps PY-18's verbatim-error guarantee holds only lines classified as genuine, not chrome — a live redraw is split from a permanent line by a bare CR, not by a newline (a real capture measured 4,586 CRs against 35 LFs), decoded and ANSI-stripped only once a CR/LF-delimited fragment is complete (stripping per read, before the halves are rejoined, leaks a torn escape straight into the ring), and recognised as chrome by any of: a progress row, a spinner glyph, the "Preparing packages…"/"Resolving dependencies…"/"Installing wheels…" headers, or the install-phase bar's own `[n/m]` counter — so merging stdout+stderr through the pty does not degrade a resolver failure's text. The generic `runtime.js` loader still renders the `install` stage as a plain indeterminate bar (stage/pct/detail are unchanged in meaning and format) — the fused.ai model loader (`supervisor._ensure_venv`) is what reads `activity`/`bytes_done`/`bytes_total` onto its own job row so `ModelProgress` can draw a measured bar during a runner's first environment build. `error` still reaches `progress.json` **verbatim**: uv's stderr is teed into a bounded ring buffer (last ~400 lines) while streaming, so a resolver failure's own text is unchanged and a pathological or chatty uv run cannot make the reporter itself expensive. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so its **location is the backend's business, not the caller's**: an in-tree `.venv`, a home-dir store, or a manifest mirror's venv directory all work identically from here (D630).
 
 - **PY-19** **A Python client for `fused.ai`, mirroring `runtime.js`'s surface, for a process that is not a rendered page (D470-D472).** `fused_render/templates/shared/fused_ai.py` — stdlib only (`json`/`os`/`socket`/`time`/`urllib`), no `fused_render` import (same rule as PY-15), imports its sibling `appenv.py` for the shell-home-dir contract rather than re-deriving it. Surface: `ai.text`/`ai.stream`/`ai.transcribe`/`ai.image`/`ai.embed`/`ai.models.{list,catalog,load,download,unload}`/`ai.cancel` — same names and option names as `fused.ai`, pinned against the server's own `_IMAGE_OPTIONS`/`_TRANSCRIBE_OPTIONS`/`_EMBED_OPTIONS` (`routers/ai_runtime.py`) by a test, the same drift guard `runtime.js` already has. `ai.embed` carries `kind=` (`"query"`/`"document"`) beside `texts=`/`paths=`/`model=`, and it is in that pinned set for a sharper reason than the others: `kind` is refused per MODEL rather than per endpoint (a dual encoder has no retrieval convention), so a client that could not send it would leave every retrieval model embedding queries as documents — unit-length vectors of the right dimension, and worse, with nothing a caller could measure to say so. **The reply carries the `model` it actually used beside `vectors`/`dim`, and a caller that persists the vectors is expected to persist that too, refusing a query embedded under a different one**: two models on a SINGLE engine's curated list can share a dimension — `nomic-ai/nomic-embed-text-v1.5` and `onnx-community/siglip2-base-patch16-384-ONNX` are both 768 — so an index built under one and searched under the other has the right shape, raises nothing, and ranks plausible neighbours out of two unrelated spaces; a `dim` check cannot see it, and neither can the endpoint, which holds one call's context and no knowledge of what the index was built with (this is why the field is RETURNED rather than enforced). The module does not re-validate the request envelope itself (D413 stands — an unknown option is the server's 400 to raise). `ServerNotRunning` is a distinct exception from `AiError` (carries `type`/`message`/`status` off the `{ok, error:{type, message}}` wire shape, or the plainer `{"error": "..."}` a job-backed endpoint's own validation returns) — the two want different caller responses ("start the app" vs. "the call failed"). **Blocking by default**: `transcribe`/`image`/`models.load`/`models.download` POST to a job-backed endpoint and by default poll `GET /api/jobs` for that id until terminal before returning — `wait=False` returns the immediate `{jobId, ...}` reply, `on_progress=` observes each polled row, `timeout=` bounds the wait; a `stalled` row (`jobs.py`'s reporter-died flag) raises immediately rather than being polled out to the registry's ten-minute eviction. Relative paths are resolved with `os.path.abspath()` locally rather than sent with a `base` — the server's `base` names a calling *page*, and `_child.py` already chdirs a running `.py` to its own directory (RH-1), so a relative path already means "beside this file". Every POST carries `X-Fused: 1`, set by the module so no caller has to know why.
+- **PY-20** **`/api/run` starts its child ahead of time (D1415).** On POSIX, `fused_render/warm_run.py` keeps a small pool of **spares**: interpreters already booted and parked, so a run pays only for the user's code. Two kinds, keyed `(kind, interpreter)`: `builtin` (`_child.py` parked on stdin, claimed by `executor._run_python`) and `fused` (a pre-imported launcher plus a pre-booted runner, claimed by `engine._execute` for the fused backend). A spare is exactly the cold child born early: same argv, same env, same request, so a result is byte-identical to the cold path and a run never shares state with an earlier one (a spare is used once, then replaced). **A claim never waits and never queues**: a ready spare, else a booting one born within 250 ms, else the run goes cold. The pool is depth 2, at most 4 keys, spares die after 120 s idle, and a key that fails 3 times in a row is parked for 60 s. **A spare is valid only for the environment it was booted in**: its fingerprint (env digest plus the mtime of the interpreter and its site-packages) is checked at claim time, and every cache reset (`engine.invalidate`, the app-interpreter and app-packages resets, `envinstall.reset_venv_validation_cache`) discards the pool. Spawns obey the PROJ atfork rule (PY-18, D292): `close_fds=False`, an absolute executable, no `cwd=`, no `start_new_session`; a spare therefore closes every inherited descriptor first thing, because a pipe created by another thread at spawn time would otherwise be held open for the spare's whole parked life and hang that other child's reader. Quit refuses new spares and kills the pool before the engines stop (`app.py` latch order `engines` then `warm-run`), and sysmon labels a parked spare `Warm Python (idle)`. **Switch:** `warm_run_enabled` pref (default on; `FUSED_RENDER_WARM_RUN=0|1` overrides it and is reported as `forced`); always off on Windows. The fused path pins the private signatures it reimplements and declines (runs cold) when the installed backend does not match. Out of scope: preloading heavy libraries, a Windows pool, a frontend toggle.
   - **Discovery for a process the server did not spawn.** A server child inherits `FUSED_RENDER_ORIGIN` (PY-15 above); a user-launched process does not and cannot compute the port (the desktop launcher auto-picks a free one). The server writes `<home_dir()>/server.json` (`{origin, pid, shared, version, started}`) at the same lifecycle point as `set_server_origin_env`/`export_app_env` — before it starts serving — and removes it on ordinary shutdown; the write is best-effort and non-fatal, since this runs before the socket bind and a failed write must not read as a failed start. A stale file (a crashed server) is expected and is the CLIENT's problem: `resolve_origin()` connect-probes the file's origin before trusting it, rather than the server maintaining a heartbeat. Resolution order: `FUSED_RENDER_ORIGIN` -> `server.json` (probed) -> `ServerNotRunning`. No `branch_port()` fallback — this module cannot re-derive branch-ref resolution without importing `fused_render`, and a guessed-but-wrong port is worse than a clear failure.
   - **Reachable three ways, never a `pip install`-able package** (rejected: it would drag fastapi/duckdb/pyarrow into a caller wanting a 300-line HTTP shim, and an exported page has no server to call regardless — `export.py` does not copy `templates/shared/`): (a) a user `.py` under a running server gets `import fused_ai` for free; (b) an external process reads `server.json`, `sys.path.insert`s its `shared` value, then imports; (c) an app wanting zero coupling vendors `fused_ai.py` plus `appenv.py` together — neither is useful alone.
   - **Path seeding under both engines, in lockstep.** `_child.py`'s worker and `engine.py`'s generated wrapper each APPEND (never insert at `[0]`) `fused_render/templates/shared` onto the user module's `sys.path`, so a user's own same-named module still wins. Each engine derives the path from its own file's location, never an env var — `_child.py` runs as a standalone script and `engine.py` bakes a path into generated source, so neither can assume the server's environment reached the child. Changing only one engine is the PY-6a trap restated: a template that leans on it works under one engine and silently takes a fallback under the other.
@@ -620,7 +635,7 @@ Distribute as a DMG containing a menu-bar app. On macOS the UI lives in the app'
 - **DM-6** **DECIDED (v2, D35):** DMG built by **dmgbuild** (app + Applications symlink, UDZO) orchestrated by `scripts/build_dmg.sh`; ~270 MB compressed.
 - **DM-7** `fused_render/app.py`: menu-bar entry point (uvicorn on a daemon thread); py2app entry = `scripts/app_entry.py`; build spec = `scripts/setup_py2app.py`. CLI (`fused-render`) remains for dev.
 - **DM-9** **Quit is an ordered teardown that ends in `os._exit`, never in AppKit's termination (D357).** Every surface — the popover/tray Quit, the `fused-render://relaunch` deep link, and AppKit's own Dock-menu Quit / ⌘Q / logout-restart (via an `applicationShouldTerminate:` added to rumps' delegate class) — funnels through `app.begin_quit`, which claims exactly ONE teardown under `_quit_lock`, removes the pidfile on the calling thread, and runs `quit_teardown` off the AppKit main thread in a fixed order: drain the server → close duckdb (the reader's stashed HTTP connection AND duckdb's default connection). Each step is independently guarded, and the whole thing is bounded by `QUIT_HARD_DEADLINE_S`, DERIVED from the imported budgets of the steps it waits on — an app that cannot be quit is worse than one that quits with a step skipped. When the teardown finishes (or that deadline fires) the shared `quit_ready` event is set and the process dies via `app.hard_exit` → a bounded log flush (`logging.shutdown()` on a daemon thread, joined for `QUIT_LOG_FLUSH_S`) + `os._exit`. Work that must complete before the process can die cannot be sequenced after `begin_quit` returns — a teardown with nothing to unmount can finish first — so it hangs off `begin_quit`'s `on_claim` hook, which runs inside the claim; the `fused-render://relaunch` spawn is the one caller. It must NOT die via `-[NSApplication terminate:]`/`exit()`: that runs `__cxa_finalize` over every dylib's static destructors with the GIL released (pyobjc drops it for the ObjC call), and a native extension's C++ global touching the Python C-API on the way out aborts the process after a teardown that fully succeeded (INCIDENT 2026-07-29 and 2026-08-19; D357 has the measurements). Skipping atexit and Python finalization is sound precisely because the teardown above is the shutdown. The AppKit hook still answers `NSTerminateLater` so the teardown stays off the main thread; `replyToApplicationShouldTerminate:` survives only as the last resort for a hard exit that somehow returned.
-- **DM-10** **The macOS windows' engine is a per-window choice (D1408).** With `chromium_windows_enabled` on and the on-demand CEF engine ready on disk and loaded into the process, a NEW window's content view is an `FRChromiumView` (`fused_render/chromium`) instead of a `WKWebView`; the NSWindow, main menu, Dock, titlebar buttons, focus-or-open and saved frames are the same code, and `window_policy` answers the same questions for both engines. Anything short of "on, ready, loaded" is WebKit. The menu-bar dock, launcher, pinned popover and recording pill are never behind this switch. The engine is fetched from the pinned artifact in `fused_render/chromium/manifest.json`, verified by size and SHA-256, and kept under `<base home>/chromium/`; it starts once per process and stops at quit.
+- **DM-10** **The macOS windows' engine is a per-window choice (D1408, default Chromium since D1415).** With `chromium_windows_enabled` on (the default; `false` opts out) and the CEF engine ready on disk and loaded into the process, a NEW window's content view is an `FRChromiumView` (`fused_render/chromium`) instead of a `WKWebView`; the NSWindow, main menu, Dock, titlebar buttons, focus-or-open and saved frames are the same code, and `window_policy` answers the same questions for both engines. Anything short of "on, ready, loaded" is WebKit. The menu-bar dock, launcher, pinned popover and recording pill are never behind this switch. The arm64 DMG ships the engine at `Contents/Frameworks/FusedChromium/`, built from `fused_render/chromium/native` by `build_dmg.sh` against the CEF `manifest.json` names; nothing is downloaded or pinned separately, and a host without one (Intel, a dev checkout without `FUSED_RENDER_CHROMIUM_ENGINE_DIR`) is WebKit. It starts once per process and stops at quit.
 - **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens in a window of its own at `/explorer/view/<path>` (a `.fused` at its embed URL, D390). Startup ordering: AppKit run loop starts first, server boots in the background after — the home-vs-file decision happens at server-ready, long after any launch document event has arrived, so a file double-click cold launch opens exactly the file window (no stray Home window). Each app and file remembers its own window frame (`window_policy.frame_autosave_name`); a second window of the same thing cascades from the first.
 
 ## 12b. Milestones
@@ -1234,11 +1249,10 @@ never imports server).
   see that section's tombstone.)* `PUT /api/prefs`
   (X-Fused) applies a **partial** update — any of `engine`,
   `reader_enabled`, `canvases_enabled`, `chromium_windows_enabled` (D1408:
-  the macOS windows' Chromium engine, opt-in; turning it on starts the
-  on-demand engine download, reported under `chromium_windows: {enabled,
-  available, engine: {state, progress, error, …}}` and by `GET
-  /api/prefs/chromium`; `POST /api/prefs/chromium/install|remove` retry or
-  delete it; open windows keep the engine they were born with, so
+  the macOS windows' Chromium engine, default on since D1415, reported
+  under `chromium_windows: {enabled, available, engine: {state,
+  cef_version, path}}` and by `GET /api/prefs/chromium`; open windows keep
+  the engine they were born with, so
   `chromium_windows.stale_windows` counts the ones on the other engine and
   `POST /api/prefs/chromium/reopen-windows` closes every window and opens
   one Home window on the current engine — 409 when this process has no
@@ -2071,20 +2085,22 @@ one gate before anything runs. Three payloads on the one `open` action:
   Finder double-click lands — where the user installs or updates the app.
   Nothing is written on the GET (D3); the page says whether a copy is
   installed, newer, older or diverged, and the install is its X-Fused POST.
-  A malformed payload (relative, not `.fused`) goes to Home carrying it under
-  `?_edit_appfile=`, which the shell's `FetchAppFileBoot` reads once, strips,
-  and reports as a toast — one error surface. *(Supersedes D889's clone-unasked +
+  A malformed payload (relative, not `.fused`) goes to the shell's `/install`
+  page carrying it under `?_edit_appfile=`, which reports it on the page —
+  one error surface. *(Supersedes D889's clone-unasked +
   overwrite-modal shape, 2026-10-13.)*
 - **DL-8** Hosted app file payload: `fused-render://open?url=<http(s) link to
   a .fused>`, the link percent-encoded once by the sender and decoded once
   here, verbatim to end-of-string like `git=`/`file=`. Render App's
   `render-app://open?url=` ported (fused-render-lite PRs #27/#30): a web
   page's "Open in fused-render" link. Same no-page shape as DL-7: `GET
-  /clone` answers a 303 to Home with the link as `?_fetch_appfile=` (nothing
-  is on disk yet, and nothing is written on the GET, D3; a non-http(s)
-  payload rides along verbatim so the shell reports it). The shell's
-  `FetchAppFileBoot` (top document, `!IS_EMBED`) reads the param once, strips
-  it before any async work, then **downloads without a confirm step** (the
+  /clone` answers a 303 to the shell's `/install` page with the link as
+  `?_fetch_appfile=` (nothing is on disk yet, and nothing is written on the
+  GET, D3; a non-http(s) payload rides along verbatim so the page reports
+  it). The page (`shell/InstallLinkPage.tsx`: the source, the running clock
+  and the one state are the whole window — not a toast over Home, which
+  read as "nothing is happening" while a clone ran; a failure shows on the
+  page with Try again) **downloads without a confirm step** (the
   link click is the gesture) through the X-Fused `POST /api/appfile/fetch
   {url} → {file}` (`appfetch.py`: http(s) only, every redirect hop
   re-checked, 1 GB cap by `Content-Length` and while streaming, temp file
@@ -2094,13 +2110,15 @@ one gate before anything runs. Three payloads on the one `open` action:
   `<name>-<url sha 8>.fused` for files that predate the id — and opens the
   saved file's **install page** (AF-14): the top document hard-loads the
   file's embed URL (a full load, since the embed/view prefix is read once at
-  module init), where the `fusedapp` template shows what installing would do
-  and installs on one click; nothing in the file runs before that. A re-click
+  module init), where the install page (`apps/marketplace FusedFilePage`,
+  rendered in place of the `fusedapp` template for every `.fused` open,
+  whatever `marketplace_enabled` says; the template draws card peeks only)
+  shows what installing would do and installs on one click; nothing in the file runs before that. A re-click
   on a link to a NEW version of an installed app lands on the same page
   reading "Update": one click replaces the copy's files and keeps everything
   in `.fused` — the page warns first when the copy was edited since install.
   Inside a native window the same load: a deep link always arrives in a
-  fresh native window parked on Home by the 303, and loading the page there
+  fresh native window parked on `/install` by the 303, and loading the page there
   makes that window the file's own, and the install's navigation the app's
   (the URL observer re-keys it, the title-bar Edit button is the way into the
   explorer) instead of leaving it orphaned beside a second one. In a browser
@@ -2113,8 +2131,8 @@ one gate before anything runs. Three payloads on the one `open` action:
   {owner}/{repo}` — that shape only (`.git` / trailing slash tolerated, the
   embedded URL may be percent-encoded), a repo holding ONE app at its ROOT
   (anything else → error). The app installs as a real GIT CLONE so the user
-  can push and open PRs (`appfile_git.py`). `GET /clone` 303s to Home with
-  the link as `?_fetch_appgit=`; `FetchAppFileBoot` posts it as `{git}` to
+  can push and open PRs (`appfile_git.py`). `GET /clone` 303s to `/install`
+  with the link as `?_fetch_appgit=`; the page posts it as `{git}` to
   the same `POST /api/appfile/fetch`, where `appfetch.download_github_app`
   runs `git clone --filter=blob:none` (the user's own git and credentials,
   PATH widened for a Finder-launched app's credential helpers, ssh in
@@ -2435,6 +2453,19 @@ not by choice.
   Views that never opted in receive none of it. A standalone view (no shell
   above it) gets no tokens, so authors write `var(--fused-x, fallback)` and only
   the fallbacks apply there — accepted.
+- **AP-17** **Every view wears the shell's scrollbar.** `runtime.js` puts a
+  sheet first in every view's `<head>`, opted in or not: the 10px hover-only
+  bar of `styles/scrollbars.css`, thumb inked from `currentColor`, so it reads
+  on any palette. Left to the engine, a dark view's bars can come out light
+  whatever `color-scheme` says, and apps were each pasting their own
+  `::-webkit-scrollbar` block. The view keeps control: every rule is
+  `*`-level, so an author's own `::-webkit-scrollbar*` rule wins by order and a
+  more specific one wins outright; a non-`auto` `scrollbar-width`/
+  `scrollbar-color` makes Chromium skip the pseudo rules; and
+  `data-fused-scrollbars="native"` on `<html>` skips the sheet. The viewport
+  bar's track is painted in the document's canvas colour (`<html>`'s
+  background, else `<body>`'s), because a transparent one shows the parent
+  document through the frame.
 
 ---
 
@@ -6725,7 +6756,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   code lives at the runners ROOT and each folder's `worker.py` is a shell over
   it** (D381). Diffusers is three folders — `diffusers_image`,
   `diffusers_image_cuda`, `diffusers_image_rocm` — llama.cpp is two
-  (`llamacpp_text`, `llamacpp_text_vulkan`), and the transformers embeddings
+  (`llamacpp_text`, `llamacpp_text_vulkan`), the vision runner is two
+  (`vision_torch`, `vision_torch_cuda`, shared body `runners/torch_vision.py`), and the transformers embeddings
   runner is three (`onnx_embed`, `onnx_embed_cuda`, `onnx_embed_rocm`), whose
   manifests are identical except for the
   index the accelerated distribution is resolved from, and whose `worker.py`
@@ -8178,6 +8210,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   as a direction flag on one "audio" capability: AI-4 keeps one resident model
   per capability, so sharing one would have a synthesis model and a Whisper
   model evict each other on every alternation.
+- **AI-10g** **The faster-whisper runner reads two formats, and Parakeet is the
+  second** (D1423). A snapshot with `model.bin` is a CTranslate2 Whisper
+  conversion (`WhisperModel`); one with the sherpa-onnx transducer files
+  (`formats.SHERPA_TRANSDUCER_FILES`) is NVIDIA Parakeet TDT 0.6B v3 int8, run
+  through the sherpa-onnx the runner already carries for diarization, so there is
+  no new venv. `load()` records the kind and `generate()` dispatches on it; the
+  reply, the files and the `words` shape are identical to the other engines
+  (AI-10c). Parakeet has no VAD of its own and decodes one utterance at a time,
+  so it uses the shared VAD policy (`stt_common`, AI-10f) and decodes packed
+  regions in turn; with `vad: false` it cuts the recording into 29-second time
+  slices. `words` is honoured on both formats; `language: "auto"` means "detect"
+  on both. Parakeet has no `translate`, no pinned `language` (only unset or
+  `"auto"`) and no `initialPrompt`, and refuses each rather than ignoring it:
+  `POST /api/ai/transcribe` answers 400 before any job exists (from the cached
+  snapshot's layout, or the curated row's `transcribeOnly` for a model not
+  downloaded yet), and the worker refuses again as the last line of defence; its
+  reply carries `language: null`. CPU only.
 - **AI-10a** **A transcription is job-backed like an image, and its result is a
   FILE.** `POST /api/ai/transcribe` answers immediately with a `jobId` and with
   the output paths already settled, exactly as AI-9 does — a 90-minute recording
@@ -9648,8 +9697,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   `catalog.py` row with both `params` and `quantization` was checked.
   Before the fix above, `params x bytes_per_param` landed within a
   generous 60% band of the curated `size_gb` for all but two:
-  `prism-ml/Ternary-Bonsai-27B-mlx-2bit` ("Ternary 2-bit", estimate
-  15.66GB vs. a catalog-confirmed-accurate 6.1GB, ~2.57x over) —
+  `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` ("Ternary 2-bit", estimate
+  15.66GB vs. the catalog's 8.6GB — a Hub byte sum, not measured on disk —
+  ~1.82x over) —
   ternary/BitNet quantization (~1.58 bits/weight nominal) has no row in
   SPEC item 4's own table, so it fell to the ~4-bit-sized default; and
   `tonera/FLUX.2-klein-4B-int8-diffusers` ("int8 (torchao)", estimate
@@ -10097,6 +10147,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   default is `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (2.50 GB); each row has
   `voiceMode`, and a downloaded row adds `voices`/`languages`. Onboarding and
   the benchmark leave it out.
+  **A second runner, `sherpa-tts`, registered below it**: Kokoro-82M v1.1
+  (`csukuangfj/kokoro-multi-lang-v1_1`, ONNX, 0.39 GB) on sherpa-onnx's CPU
+  provider, on every platform, so the capability exists off Apple Silicon.
+  Preset voices only (103: three English, then Chinese `zf_*`/`zm_*`; the
+  default is the first), no clone and no design, and no `instruct`: a model whose
+  traits carry `instructable: False` is refused one (`has no style line`).
+  A snapshot is claimed by its layout (`model.onnx`, `voices.bin`, `tokens.txt`,
+  `espeak-ng-data/`), not by a `config.json`. The language follows the voice;
+  `language` is accepted and echoed. A Mac keeps Qwen3-TTS unless its speech
+  engine preference is Kokoro, since one runner serves a capability at a time.
+  The chunking and WAV writer both workers use are `runners/speech_common.py`.
 - **AI-33** **`image-to-text` ("Vision") and `fused.ai.vision({image, task,
   prompt, ...})` (D1354).** Tasks: `caption` (`length`), `query` (`prompt`,
   `reasoning`), `detect` and `point` (`prompt`, `maxObjects`). A model answers
@@ -10107,7 +10168,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   `points: [{x, y, label}]`, in 0–1 coordinates of the upright image.
   `POST /api/ai/vision` has decide's shape (closed options, local only,
   synchronous, `model_loading` + job id). Runner `vision-torch` (Apple
-  Silicon, torch MPS) runs only `formats.VISION_TORCH_RECIPES`: Grounding DINO
+  Silicon, torch MPS) and its hardware sibling `vision-torch-cuda` (NVIDIA,
+  gated on `_cuda`, PyPI's CUDA torch; shipped unmeasured) run only `formats.VISION_TORCH_RECIPES`: Grounding DINO
   Tiny/Base (detect) and Moondream 2 (caption, query, detect, point;
   recommended), both via transformers; Moondream at a pinned commit. A new
   model is a recipe (plus a family class for a new kind). Not in onboarding or
@@ -11318,7 +11380,13 @@ platforms, one API, no field naming which one served you.
 - **CP-9** Packaging: `NSMicrophoneUsageDescription` in the bundle plist (an app
   that touches the mic without it is killed, not prompted) and
   `com.apple.security.device.audio-input` in the hardened-runtime entitlements
-  (without it the mic is refused whatever TCC says). Screen recording needs
+  (without it the mic is refused whatever TCC says). The camera is the same
+  pair — `NSCameraUsageDescription` plus `com.apple.security.device.camera` —
+  because a page's `getUserMedia({video})` in one of OUR windows — WKWebView or
+  Chromium (D1408) — is captured under this app's hardened runtime (tccd judges
+  the responsible app even when a helper opens the device); only the shell in
+  the user's own browser needed nothing from us. Without it tccd refuses with no
+  prompt and the page gets a track that never carries a frame. Screen recording needs
   neither — only the System Settings grant, which macOS 15+ re-confirms after
   ~30 idle days. Linux needs no packaging step at all: the still is
   ordinary D-Bus, and the recording permission is the browser's to ask for.
@@ -11878,11 +11946,10 @@ per-row fix.
   row is critical or warning, so a candidate still counts at its own severity
   for this one flag, though never in the modal's own presentation of it
   (AD-4).
-- **AD-3** Twelve checks, essentials then sharing, exactly:
+- **AD-3** Eleven checks, essentials then sharing, exactly:
   `secrets` (critical, candidate), `entry` (critical, fact), `api-version`
   (critical, fact), `pyproject` (warning, fact), `readme` (warning, fact),
-  `icon` (warning, fact) — then `device-paths` (warning, candidate),
-  `cross-browser` (warning, candidate, ON DEMAND — AD-8), `git`
+  `icon` (warning, fact) — then `device-paths` (warning, candidate), `git`
   (warning, fact), `pushed` (warning, fact), `generated` (warning, fact),
   `preview` (warning, fact). `pushed` (new, D767) reads ahead-of-upstream
   commits via `git rev-list --count @{upstream}..HEAD` — no network call,
@@ -11948,41 +12015,6 @@ per-row fix.
   0, the exact inverted urgency AD-2's severity table exists to prevent.
   Every finding still prints regardless of whether it blocks — only the exit
   code changes.
-- **AD-8** One row is MODEL-BACKED and ON DEMAND: `cross-browser`
-  (`fused_render/app_doctor_ai.py`), a one-shot `claude -p` at **Sonnet, low
-  effort** — fixed, not the user's pickers — over the app's `.html`/`.css`/
-  `.js`/`.svg` files (the `.fused` exporter's own gitignore-aware walk,
-  bounded to 40 files / 256 KB, numbered lines) with
-  `skills/fused-render-cross-browser/SKILL.md` read from disk as the rubric,
-  `--json-schema` for a structured verdict, prompt over stdin,
-  `--no-session-persistence`, `--tools=`. It NEVER
-  runs on a GET: `report()`/`report_one()` only read the cache at
-  `.fused/cache/app-doctor/cross-browser.json`, whose `checksum` is a sha256
-  of exactly the bytes the model was shown. Cache matches → the stored
-  verdict (pass, or fail with `{rule, path, line, excerpt}` findings); no
-  cache, or the view files changed since → `state: "unrun"` ("Not run yet"),
-  which counts toward neither `ok` nor the header dot. `POST
-  /api/apps/doctor/run` `{path, check, force?}` (`X-Fused` required, 400 for
-  a row not in `app_doctor.ON_DEMAND`, 502 with one sentence when the model
-  could not answer, previous verdict kept, single-flighted per folder) runs
-  it and returns the refreshed row; the panel draws **Check** on an unrun
-  row, swaps the returned row in place, and keeps an icon-only **Re-check**
-  (`force: true` — ask again although the cache still matches) on a settled
-  one for what the checksum cannot see (a rubric that moved on). THE VERDICT
-  IS WRITTEN FOR THE AUTHOR: the schema's own `description`s cap `summary`
-  at one plain sentence and give every finding a `what` (what a visitor sees
-  go wrong, in which browser, no code) and a `fix` (one sentence) — the
-  panel draws those as wrapping prose, never the source line, and the fix
-  prompt carries `fix` as "suggested fix". No free text rides in argv
-  (system prompt via `--system-prompt-file`).
-  Every row carries `ondemand: bool` so the panel never keeps its own list.
-  The row is a `candidate` (a model's reading earns a second look), so its
-  fix task is the ordinary per-row task with the triage-first prompt, routed
-  by the app-doctor skill's `cross-browser` section to
-  `fused-render-cross-browser`; `POST /api/apps/doctor` 409s a fix on an
-  unrun on-demand row, since its findings would describe a folder that no
-  longer exists. Verified live 2026-09-18: ~4 s on a two-line fixture, both
-  findings real.
 
 ## 49. App Python, Called Directly — Bots Run a Folder's `.py` Without the Page
 
@@ -12353,8 +12385,9 @@ and not a sync nicety.
   exists. `tests/test_browser_storage_allowlist.py` lists the files allowed to
   touch storage in code, each with its category; a new storage use anywhere
   else fails the suite.
-- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`
-  (`POST /api/current-apps/order`). Notifications seen/dismissed =
+- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`,
+  listed by recency (newest task activity, else added; no drag since
+  2026-10-23). Notifications seen/dismissed =
   `notifications.json` (`GET`/merge-`POST /api/notifications/state`). Tasks
   done-and-seen = `__seen_done__` in tasks `read.json`, carried by
   `/api/tasks/pulse`, replaced by `POST /api/tasks/seen`. Bot unread baseline =

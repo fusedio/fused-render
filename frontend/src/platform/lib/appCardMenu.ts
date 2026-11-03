@@ -17,7 +17,7 @@
 import { revealPath, type AppInfo } from "./api";
 import { openApp } from "./appEntry";
 import { exportAppFileOnly, openShareApp } from "./share-app";
-import { appSharingEnabled } from "./share-app-flag";
+import { appShareOffered } from "./share-app-flag";
 import { copyToClipboard } from "./clipboard";
 import { openUninstallApp } from "./uninstall-app";
 import { navigate } from "./router";
@@ -73,7 +73,7 @@ export function appCardMenu(app: AppInfo): MenuEntry[] {
     // file (the export route would 400 on a non-folder).
     ...(isAppFile
       ? []
-      : appSharingEnabled()
+      : appShareOffered()
         ? ([
             {
               label: "Share…",

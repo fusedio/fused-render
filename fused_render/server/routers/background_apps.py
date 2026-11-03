@@ -90,6 +90,17 @@ def _resolve(html) -> (
     return folder, manifest, interpreter, unbuilt_reason, None
 
 
+def _gated(folder: str) -> JSONResponse | None:
+    """423 with the block notice when `folder` is a Community copy Fused
+    blocked (hard, or soft and not confirmed yet — docs/CONTRIB_LOOP.md
+    §18.4 B4): the daemon is the app's own code, so `start`/`restart` are
+    run doors like `/api/run`. `stop` and `autostart` stay open."""
+    from fused_render import marketplace
+
+    blocked = marketplace.open_gate(folder)
+    return JSONResponse(blocked, status_code=423) if blocked else None
+
+
 def _protocol_for(manifest: background_apps.Manifest | None) -> str | None:
     """The folder's declared bring-up shape: `"main"` for a `main =` folder,
     `"daemon"` for a `daemon =` folder, `None` for a folder with no valid
@@ -135,6 +146,8 @@ async def api_background_start(body: dict = Body(...),
     folder, manifest, interpreter, unbuilt_reason, error = _resolve(body.get("html"))
     if error is not None:
         return error
+    if (gated := _gated(folder)) is not None:
+        return gated
     engine_id = background_apps.engine_id_for(folder)
     try:
         version = background_apps.version_for(folder, interpreter)
@@ -210,6 +223,8 @@ async def api_background_restart(body: dict = Body(...),
     folder, manifest, interpreter, unbuilt_reason, error = _resolve(body.get("html"))
     if error is not None:
         return error
+    if (gated := _gated(folder)) is not None:
+        return gated
     engine_id = background_apps.engine_id_for(folder)
     try:
         # Always recompute the version fresh (D510): a restart must tag the

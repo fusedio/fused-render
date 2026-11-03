@@ -18,8 +18,13 @@ Layout (all integers little-endian)::
     20  ...      index          zlib(JSON), ``index_csize`` bytes
     20+index_csize  ...         data section: one zlib stream per file
 
-The index carries what v1's ``manifest.json`` did (``fused_app_file: 2``,
-``name``, ``entry``), the UTC ``exported_at`` stamp the writer adds so a
+The same codec carries two KINDS of file, told apart by one index key
+(``KINDS``): an app file's index carries ``fused_app_file: 2`` (what v1's
+``manifest.json`` did, plus ``name`` and ``entry``), a bot package's
+(``.fusedbot``, bots/package.py) carries ``fused_bot_file: 1``. An index
+never carries both, and each reader asks for its kind, so a bot package
+dropped where an app file belongs is refused with a sentence that says so
+rather than half-opened. Either index carries the UTC ``exported_at`` stamp the writer adds so a
 consumer can see when the app was exported, plus ``files``: a list of ``{path, offset, size, csize,
 sha256}`` where ``offset`` is relative to the START OF THE DATA SECTION, so
 the writer can stream every file into a temp before it knows the index's own
@@ -56,8 +61,22 @@ import struct
 import tempfile
 import zlib
 
+from fused_render._platform import is_within
+
 MAGIC = b"FUSEDAPP"
 VERSION = 2
+
+# kind -> (the index key that names it, that key's version). The header's
+# VERSION is the CODEC's version and is shared; the kind key versions what
+# the index means, so a bot package can evolve without touching app files.
+KINDS = {"app": ("fused_app_file", 2), "bot": ("fused_bot_file", 1)}
+# What a refusal calls a file of each kind (the app wording predates kinds
+# and stays byte-identical for every existing caller).
+_NOUN = {"app": "fused app file", "bot": "fused bot package"}
+# The refusal when a reader of `kind` is handed the OTHER kind: it says what
+# the file is, which is what tells the user where to open it.
+_WRONG_KIND = {"app": "this is a fused bot package, not an app file",
+               "bot": "this is a fused app file, not a bot package"}
 _HEADER = struct.Struct("<8sHHII")
 HEADER_SIZE = _HEADER.size  # 20
 
@@ -133,15 +152,30 @@ def _put_member(data, rel: str, src: str | bytes, offset: int) -> dict:
             "sha256": h.hexdigest()}
 
 
-def write(out_path: str, index: dict, members: list[tuple[str, str | bytes]]) -> dict:
+def _kind_key(kind: str) -> tuple[str, int]:
+    try:
+        return KINDS[kind]
+    except KeyError:
+        raise ContainerError(f"unknown container kind {kind!r}")
+
+
+def write(out_path: str, index: dict, members: list[tuple[str, str | bytes]],
+          *, kind: str = "app") -> dict:
     """Write a container at ``out_path`` (created; the caller owns the
     non-overwrite decision and any tempfile-then-rename).
 
     ``index`` is the caller's metadata (``name``, ``entry``, ...); this adds
-    ``fused_app_file`` and ``files``. ``members`` is ``[(payload-relative
-    path, filesystem source path | literal bytes)]``. Returns the index as
-    written.
+    the ``kind``'s key (``KINDS``: ``fused_app_file`` by default) and
+    ``files``. An ``index`` that already carries ANOTHER kind's key is
+    refused: a file claiming to be both would open as whichever reader saw
+    it first. ``members`` is ``[(payload-relative path, filesystem source
+    path | literal bytes)]``. Returns the index as written.
     """
+    key, key_version = _kind_key(kind)
+    for other, (other_key, _v) in KINDS.items():
+        if other != kind and other_key in index:
+            raise ContainerError(
+                f"refusing to write a {_NOUN[kind]} whose index carries {other_key}")
     for rel, _src in members:
         problem = path_problem(rel)
         if problem:
@@ -156,7 +190,7 @@ def write(out_path: str, index: dict, members: list[tuple[str, str | bytes]]) ->
                 entry = _put_member(data, rel, src, offset)
                 files.append(entry)
                 offset += entry["csize"]
-        full_index = {**index, "fused_app_file": VERSION, "files": files}
+        full_index = {**index, key: key_version, "files": files}
         raw = json.dumps(full_index, sort_keys=True, separators=(",", ":")).encode("utf-8")
         if len(raw) > MAX_INDEX_BYTES:
             raise ContainerError(
@@ -188,48 +222,100 @@ def _inflate_bounded(raw: bytes, cap: int) -> bytes:
     return out
 
 
-def read_index(path: str, *, max_entries: int, max_entry_bytes: int,
-               max_total_bytes: int) -> dict:
-    """Parse and validate the header + index of the container at ``path``.
-    Nothing from the data section is read. The returned dict is the index
-    as written, with ``_data_start`` (absolute offset of the data section)
-    added for the member readers."""
+def _read_raw_index(path: str, noun: str) -> tuple[dict, int, int]:
+    """The parsed index of the container at ``path`` plus the data section's
+    start and the file's size — header and index only, every declared number
+    bounded before it is trusted. ``noun`` names the file in refusals."""
     try:
         with open(path, "rb") as f:
             head = f.read(HEADER_SIZE)
             if len(head) < HEADER_SIZE:
-                raise ContainerError("not a fused app file (truncated header)")
+                raise ContainerError(f"not a {noun} (truncated header)")
             magic, version, _flags, isize, icsize = _HEADER.unpack(head)
             if magic != MAGIC:
-                raise ContainerError("not a fused app file (bad magic)")
+                raise ContainerError(f"not a {noun} (bad magic)")
             if version != VERSION:
                 raise ContainerError(
                     f"unsupported .fused format version {version} — "
                     "update fused-render to open this file")
             if isize > MAX_INDEX_BYTES or icsize > MAX_INDEX_BYTES:
                 raise ContainerError(
-                    f"file index is too large (> {MAX_INDEX_BYTES} bytes) — not a fused app file")
+                    f"file index is too large (> {MAX_INDEX_BYTES} bytes) — not a {noun}")
             cindex = f.read(icsize)
             if len(cindex) != icsize:
-                raise ContainerError("not a fused app file (truncated index)")
+                raise ContainerError(f"not a {noun} (truncated index)")
             size = os.fstat(f.fileno()).st_size
     except OSError as exc:
         raise ContainerError(f"not a readable .fused file: {exc}")
     raw = _inflate_bounded(cindex, MAX_INDEX_BYTES)
     if len(raw) > MAX_INDEX_BYTES or len(raw) != isize:
-        raise ContainerError("file index does not match its declared size — not a fused app file")
+        raise ContainerError(f"file index does not match its declared size — not a {noun}")
     try:
         index = json.loads(raw)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:  # a few KB of nested `[` inflates to a RecursionError
         raise ContainerError(f"invalid index in .fused file: {exc}")
-    if not isinstance(index, dict) or index.get("fused_app_file") != VERSION:
-        raise ContainerError("not a fused app file (index carries no fused_app_file: 2)")
+    # A non-object index claims no kind: the kind check names the refusal.
+    return (index if isinstance(index, dict) else {}), HEADER_SIZE + icsize, size
+
+
+def _claims(index: dict) -> list[str]:
+    """Every kind whose KEY IS PRESENT in ``index`` (a null or odd value still
+    counts as a claim): the one predicate every reader and the writer share,
+    so a file can never be "an app" to one door and "a bot" to another."""
+    return [k for k, (key, _ver) in KINDS.items() if key in index]
+
+
+def _at_version(v: object, want: int) -> bool:
+    """Whether an index's kind-key value `v` is the integer `want`: a JSON
+    `true` is not version 1 (`True == 1` in Python), nor is `1.0`."""
+    return isinstance(v, int) and not isinstance(v, bool) and v == want
+
+
+def _kind_in(index: dict) -> str | None:
+    """Which ``KINDS`` entry ``index`` claims: None when it claims none, or
+    more than one, or the one it claims is not at the version this build
+    speaks (that file is refused by its reader with the version sentence)."""
+    found = _claims(index)
+    if len(found) != 1:
+        return None
+    key, ver = KINDS[found[0]]
+    return found[0] if _at_version(index.get(key), ver) else None
+
+
+def kind_of(path: str) -> str | None:
+    """``"app"`` | ``"bot"`` | None for the file at ``path``: a bounded read
+    of the header and index ONLY, so a dropped file can be routed to the page
+    that opens it without validating (or trusting) a single member."""
+    try:
+        index, _start, _size = _read_raw_index(path, "fused file")
+    except ContainerError:
+        return None
+    return _kind_in(index)
+
+
+def read_index(path: str, *, max_entries: int, max_entry_bytes: int,
+               max_total_bytes: int, kind: str = "app") -> dict:
+    """Parse and validate the header + index of the container at ``path``.
+    Nothing from the data section is read. The returned dict is the index
+    as written, with ``_data_start`` (absolute offset of the data section)
+    added for the member readers. ``kind`` (``KINDS``) is the kind the
+    caller can open; a file of another kind is refused with a sentence that
+    names what it is, so the user learns where it does open."""
+    key, key_version = _kind_key(kind)
+    noun = _NOUN[kind]
+    index, data_start, size = _read_raw_index(path, noun)
+    claims = _claims(index)
+    if len(claims) > 1:
+        raise ContainerError(f"not a {noun} (its index claims more than one kind)")
+    if claims and claims[0] != kind:
+        raise ContainerError(_WRONG_KIND[kind])
+    if not _at_version(index.get(key), key_version):
+        raise ContainerError(f"not a {noun} (index carries no {key}: {key_version})")
     files = index.get("files")
     if not isinstance(files, list):
         raise ContainerError("invalid index: files is not a list")
     if len(files) > max_entries:
         raise ContainerError(f"file has too many entries ({len(files)} > {max_entries})")
-    data_start = HEADER_SIZE + icsize
     data_len = size - data_start
     seen: set[str] = set()
     dirs: set[str] = set()
@@ -313,7 +399,7 @@ def extract(path: str, index: dict, dest: str) -> int:
                 # Redundant with path_problem on purpose (zip_import keeps the
                 # same belt-and-braces): normalization catches shapes a
                 # per-segment scan does not on some platform.
-                if not target.startswith(root + os.sep):
+                if not is_within(target, root, strict=True, fs_root_ok=False):
                     raise ContainerError(
                         f"rejected .fused: entry {entry['path']!r} escapes the extract dir")
                 os.makedirs(os.path.dirname(target), exist_ok=True)

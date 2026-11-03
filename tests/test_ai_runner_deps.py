@@ -616,8 +616,22 @@ _DIFFUSERS_IMAGE_FOLDERS = ("diffusers_image", "diffusers_image_cuda",
 _DIFFUSERS_IMAGE_HARDWARE_SPECIFIC = {"torch", "triton-rocm"}
 
 
-def test_the_three_diffusers_image_manifests_agree_beyond_torch_and_triton():
-    """The guard the bitsandbytes bug needed and did not have.
+# The vision pair has the same shape, for the same reason: the CUDA folder is
+# declared to be the CPU folder's dependency list with only where `torch` comes
+# from changed.
+_VISION_TORCH_FOLDERS = ("vision_torch", "vision_torch_cuda")
+_VISION_TORCH_HARDWARE_SPECIFIC = {"torch"}
+
+
+@pytest.mark.parametrize(
+    "folders, hardware_specific",
+    [pytest.param(_DIFFUSERS_IMAGE_FOLDERS, _DIFFUSERS_IMAGE_HARDWARE_SPECIFIC,
+                  id="diffusers-image-beyond-torch-and-triton"),
+     pytest.param(_VISION_TORCH_FOLDERS, _VISION_TORCH_HARDWARE_SPECIFIC,
+                  id="vision-torch-beyond-torch")])
+def test_sibling_manifests_agree_beyond_their_hardware_specific_lines(
+        folders, hardware_specific):
+    """The diffusers-image case: the guard the bitsandbytes bug needed and did not have.
 
     `tonera/FLUX.2-klein-4B-int8-diffusers` — the sole `diffusers-image`
     suggestion at the time, and then the recommended one — ships a torchao
@@ -635,13 +649,28 @@ def test_the_three_diffusers_image_manifests_agree_beyond_torch_and_triton():
     hardware-specific failure report.
     """
     shared = None
-    for name in _DIFFUSERS_IMAGE_FOLDERS:
+    for name in folders:
         declared = _declared(os.path.join(RUNNERS_DIR, name))
-        rest = sorted(d for d in declared
-                       if d not in _DIFFUSERS_IMAGE_HARDWARE_SPECIFIC)
+        rest = sorted(d for d in declared if d not in hardware_specific)
         if shared is None:
             shared = rest
         assert rest == shared, name
+
+
+def test_the_vision_folders_pin_torch_to_the_same_specifier():
+    cpu, cuda = (_declared_specifier(os.path.join(RUNNERS_DIR, n), "torch")
+                 for n in _VISION_TORCH_FOLDERS)
+    assert cpu == cuda
+
+
+def test_only_the_cpu_vision_folder_names_an_index_for_torch():
+    """PyPI's Linux wheel IS the CUDA build, so the CUDA folder names no index
+    and no source; the CPU folder names exactly the `pytorch-cpu` one."""
+    cpu = os.path.join(RUNNERS_DIR, "vision_torch")
+    cuda = os.path.join(RUNNERS_DIR, "vision_torch_cuda")
+    assert [i["name"] for i in _declared_indexes(cpu)] == ["pytorch-cpu"]
+    assert _declared_indexes(cuda) == []
+    assert not _declared_uv_sources(cuda)
 
 
 def test_the_diffusers_image_manifests_ceiling_torchao_below_the_broken_release():
@@ -784,24 +813,25 @@ _ONNX_EMBED_LOCAL_MODULES = {"embed_common", "formats", "worker_base"}
 _PREFIX_MATCHED_IMPORT = "onnxruntime"
 
 
-def _onnx_embed_third_party_imports():
+def _third_party_imports(*paths):
     """Every top-level module `runners/onnx_embed.py` imports, module-level or
     lazily inside a function, that is neither stdlib nor one of this runner's
     own sibling files — parsed with `ast`, not copied by eye, because a
     hand-copied list is exactly what let `numpy` go undeclared in the first
     place."""
-    with open(_ONNX_EMBED_WORKER_PATH) as handle:
-        tree = ast.parse(handle.read())
     names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                names.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and node.module:
-                names.add(node.module.split(".")[0])
+    for path in paths:
+        with open(path) as handle:
+            tree = ast.parse(handle.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    names.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    names.add(node.module.split(".")[0])
     names -= sys.stdlib_module_names
-    names -= _ONNX_EMBED_LOCAL_MODULES
+    names -= _ONNX_EMBED_LOCAL_MODULES | {"torch_vision"}
     return {_IMPORT_TO_DISTRIBUTION.get(name, name) for name in names}
 
 
@@ -819,7 +849,14 @@ def test_the_three_onnx_embed_manifests_agree_beyond_their_onnxruntime_line():
         assert rest == shared, name
 
 
-def test_every_third_party_import_of_onnx_embed_is_declared_in_all_three():
+@pytest.mark.parametrize(
+    "folders, bodies",
+    [pytest.param(_ONNX_EMBED_FOLDERS, (_ONNX_EMBED_WORKER_PATH,), id="onnx-embed"),
+     pytest.param(_VISION_TORCH_FOLDERS,
+                  tuple(os.path.join(RUNNERS_DIR, f)
+                        for f in ("torch_vision.py", "embed_common.py")),
+                  id="vision-torch")])
+def test_every_third_party_import_of_a_shared_body_is_declared_in_all_siblings(folders, bodies):
     """The regression itself: `onnx_embed.py` is free to `import` anything, but
     only `onnxruntime`'s own transitive dependencies rode along for free — and
     `onnxruntime-rocm` declares NONE (see `SPLIT_DISTRIBUTIONS` above), so a
@@ -828,9 +865,9 @@ def test_every_third_party_import_of_onnx_embed_is_declared_in_all_three():
     Every third-party import this runner makes, lazy ones included, must be a
     distribution named in all three manifests — matched EXACTLY, except for
     `onnxruntime` itself (see `_PREFIX_MATCHED_IMPORT`)."""
-    imported = _onnx_embed_third_party_imports()
+    imported = _third_party_imports(*bodies)
     assert imported, "the parser found nothing — it is broken, not the runner"
-    for name in _ONNX_EMBED_FOLDERS:
+    for name in folders:
         declared = _declared(os.path.join(RUNNERS_DIR, name))
         missing = set()
         for imp in imported:

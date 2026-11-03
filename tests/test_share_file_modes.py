@@ -313,7 +313,8 @@ def shim(monkeypatch):
 
     options_mod = types.ModuleType("fused._options")
     options_mod.options = types.SimpleNamespace(
-        shared_udf_base_url="https://udf.fused.ai", base_web_url="https://fused.io")
+        shared_udf_base_url="https://udf.fused.ai", base_web_url="https://fused.io",
+        model_fields_set=set())
 
     monkeypatch.setitem(sys.modules, "fused", fused_mod)
     monkeypatch.setitem(sys.modules, "fused._global_api", global_api_mod)

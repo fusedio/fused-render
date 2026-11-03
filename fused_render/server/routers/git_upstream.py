@@ -33,7 +33,8 @@ from fused_render.server.common import _require_fused
 router = APIRouter()
 
 # trigger -> the action sentence the Fix with Claude prompt names.
-_SYNC_ACTIONS = {"claude-turn": "Auto-push after Claude commit"}
+_SYNC_ACTIONS = {"claude-turn": "Auto-push after Claude commit",
+                 "retry": "Retry after a failed send"}
 
 
 @router.get("/api/git-upstream")
@@ -69,6 +70,30 @@ def api_git_upstream_action(body: dict = Body(...), x_fused: str | None = Header
                                   "Auto-push after app change")
         queued = git_upstream.schedule_sync(path, label, push=True)
         return {"ok": True, "queued": queued}
+    if action == "get-latest":
+        # The Git panel's Get latest on a copy of someone else's GitHub app
+        # (docs/CONTRIB_LOOP.md §16.8): the engine's Bring in — the same
+        # table auto-sync runs, as a button — never a plain `pull --ff-only`.
+        # Such a copy merges the author's updates in (P4), so once it has
+        # brought one in it can never fast-forward again, and the panel's
+        # pull would end in "do it in a terminal" (P6). Kind decides,
+        # whatever the flags (P1); the answer is the engine's plain words.
+        from fused_render import app_git
+        from fused_render.contrib import classify, engine
+
+        path = str(body.get("path") or "")
+        app_dir = app_git.app_dir_for(path) if path else None
+        if app_dir is None:
+            return {"ok": False, "reason": "not-an-app",
+                    "message": "that path is not inside an app folder"}
+        root = git_upstream.repo_root(app_dir) or app_dir
+        if not classify.is_github_like(classify.kind_of(root)):
+            # A GitHub-link copy, or a marketplace copy (§18.4): its Get
+            # latest is ALWAYS this route — the engine brings in the
+            # approved release, never the author's tip (M1).
+            return {"ok": False, "reason": "not-a-copy",
+                    "message": "This only works for a copy of someone else's app."}
+        return engine.bring_in(root)
     root = str(body.get("root") or "")
     if not root:
         return {"ok": False, "reason": "missing", "message": "no repo root given"}

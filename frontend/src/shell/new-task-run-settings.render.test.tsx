@@ -165,29 +165,52 @@ async function openCard(
   return box!;
 }
 
-/** What one of the card's dropdown triggers is currently SAYING. */
-function label(b: ReactTestRenderer, aria: string): string {
-  const trigger = b.root.findAll(
-    (n) => n.type === "button" && n.props["aria-label"] === aria
-      && n.props["aria-haspopup"] === "listbox",
+/** The property pill a control lives in — Model, Thinking and Permissions are
+ *  one pill each (Akshil, 2026-11-02, the composer's own row). */
+function pillOf(b: ReactTestRenderer, aria: string) {
+  const name = aria;
+  return b.root.findAll(
+    (n) => n.type === "button" && n.props["aria-label"] === name
+      && n.props["aria-haspopup"] === "dialog",
   )[0];
-  const said = trigger.findAll((n) => n.props?.className === "schedule-select-label")[0];
-  return String(said.children[0]);
 }
 
-/** Open one dropdown and press the option that says `choice` — the reader's own
+/** Everything a node prints, flattened — menu rows are text plus an icon. */
+function textOf(n: unknown): string {
+  if (typeof n === "string") return n;
+  // A row's screen-reader-only description is not what it SAYS on screen.
+  if ((n as { props?: { className?: string } }).props?.className === "sr-only") return "";
+  const kids = (n as { children?: unknown[] }).children;
+  return Array.isArray(kids) ? kids.map(textOf).join("") : "";
+}
+
+/** What one of the card's controls is currently SAYING. The MODEL pill reads
+ *  the model; ACCESS reads the permission. */
+function label(b: ReactTestRenderer, aria: string): string {
+  const trigger = pillOf(b, aria);
+  const said = trigger.findAll((n) => String(n.props?.className ?? "").startsWith("pp-v"))[0];
+  const text = textOf(said);
+  // Each pill says its one word: "Fable", "Low", "Auto" — never "Fable (low)".
+  expect(text).not.toMatch(/\(/);
+  return text;
+}
+
+/** Open one pill and press the menu row that says `choice` — the reader's own
  *  gesture, not a `setState`. */
 async function pick(b: ReactTestRenderer, aria: string, choice: string) {
-  const trigger = b.root.findAll(
-    (n) => n.type === "button" && n.props["aria-label"] === aria
-      && n.props["aria-haspopup"] === "listbox",
-  )[0];
-  await act(async () => { trigger.props.onClick(); });
-  const option = b.root
-    .findAll((n) => n.type === "button" && n.props.role === "option")
-    .find((o) => String(o.children[0]) === choice);
+  const find = () => aria === "Permissions"
+    ? b.root.findAll((n) => n.props?.role === "menu" && n.props["aria-label"] === "Permissions")[0]
+    : b.root.findAll((n) => n.props?.role === "group" && n.props["aria-label"] === aria)[0];
+  // Every pill's popover is its own and closes on a pick: open it for this one.
+  if (!find()) await act(async () => { pillOf(b, aria).props.onClick(); });
+  const scope = find();
+  expect(scope, `no ${aria} menu`).toBeTruthy();
+  const option = scope.findAll((n) => n.type === "button" && n.props.role === "menuitemradio")
+    .find((o) => textOf(o) === choice);
   expect(option, `no "${choice}" option under ${aria}`).toBeTruthy();
   await act(async () => { option!.props.onClick(); });
+  // One decision per popover: a pick closes it.
+  expect(find(), `${aria} popover stayed open after a pick`).toBeFalsy();
 }
 
 /** Type into one of the card's text boxes, addressed the way a reader finds it
@@ -230,8 +253,7 @@ test("picking a model and a thinking level is what the card then says", async ()
 test("what was picked is what Create sends", async () => {
   const sent: Sent[] = [];
   const b = await openCard({}, sent);
-  await type(b, /What should Claude do/i, "My task");
-  await type(b, /Additional instructions/i, "do the thing");
+  await type(b, /What should Claude do/i, "My task\n\ndo the thing");
   await pick(b, "Model", "Opus");
   await pick(b, "Thinking", "Max");
 

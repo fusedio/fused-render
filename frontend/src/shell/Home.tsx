@@ -28,6 +28,7 @@ function firstBookmarkFolderId(): string | undefined {
 }
 
 export default function Home({ config }: { config: Config }) {
+  // getConfig already folded `home` to forward slashes.
   const home = config.home;
   useRecentsVersion();
 

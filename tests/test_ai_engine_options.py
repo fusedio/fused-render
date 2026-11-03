@@ -133,3 +133,18 @@ def test_the_module_reads_the_same_BY_PATH_as_it_does_through_the_package(monkey
 
     assert module.UNSUPPORTED == engine_options.UNSUPPORTED
     assert module.unsupported_or_raise("mlx-whisper", task="translate") is None
+
+
+def test_a_transcribe_only_model_refuses_translate_language_and_prompt_by_name():
+    import pytest as _pytest
+
+    for kwargs, needle in (({"task": "translate"}, "'translate'"),
+                           ({"language": "de"}, "'language'"),
+                           ({"initial_prompt": "Acme"}, "'initialPrompt'")):
+        with _pytest.raises(ValueError) as raised:
+            engine_options.transcribe_only_or_raise(**kwargs)
+        assert "Parakeet" in str(raised.value) and needle in str(raised.value)
+    # "auto", an unset option and the ordinary task are not refusals.
+    assert engine_options.transcribe_only_or_raise(
+        task="transcribe", language="auto", initial_prompt=None) is None
+    assert engine_options.transcribe_only_or_raise() is None

@@ -3,7 +3,7 @@
 // section's rows and the canvas page's header mark. A module of its own, not
 // the sub-app barrel: the sidebar imports it, and the barrel would pull the
 // whole sub-app into the shell's main bundle for one glyph (the reason
-// logged-in.ts is split out too).
+// feature-flag.ts is split out too).
 export function CanvasGlyph({ size = 16 }: { size?: number }) {
   return (
     <svg

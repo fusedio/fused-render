@@ -14,19 +14,9 @@
 // `__pycache__` swept along and an uncommitted working tree are all invisible
 // from the outside and all worth knowing before you send someone a folder.
 //
-// EVERY ROW BUT ONE IS DETERMINISTIC (fused_render/app_doctor.py, which is
-// the authority on what each check means): a row passed, failed, or could not
-// run, answered afresh on every GET. The exception is an ON-DEMAND row
-// (`check.ondemand`, today `cross-browser`, fused_render/app_doctor_ai.py): a
-// Sonnet read of the view files that spends tokens, so it runs only when its
-// own Check button is pressed (`useAppDoctorReport`'s `runCheck`) — and it
-// runs as a TASK on the app's entry page (`check.check_task` while live: the
-// Tasks tab lists it, the shell's finished-task notice fires for it), never
-// as a call this component waits on, so a tab switch cannot lose it. Its
-// verdict is cached server-side on a checksum of those files — a GET draws
-// the cached verdict for free, and reads `unrun` ("Not run yet") once the app
-// has changed under it. A settled on-demand row keeps a Re-check for the
-// case the cache cannot see: the rubric itself moved on.
+// EVERY ROW IS DETERMINISTIC (fused_render/app_doctor.py, which is the
+// authority on what each check means): a row passed, failed, or could not
+// run, answered afresh on every GET.
 // A FAILING row is not all the same kind of finding, though — `kind: "fact"`
 // (a file exists or it does not) is a settled failure with a Fix button;
 // `kind: "candidate"` (`secrets`, `device-paths`: a pattern match that only
@@ -63,7 +53,7 @@
 // disclosure, no count), because a count above rows the reader can see is one
 // fact told twice.
 //
-// A SETTLED row — passed, skipped, or never asked — is one dim line at body
+// A SETTLED row — passed or skipped — is one dim line at body
 // weight with 4px less vertical pad, so a run of them reads as a block to
 // skip rather than as items to read. The rows that want something keep the
 // full box, the label's weight, the detail line, the findings and the action.
@@ -90,10 +80,8 @@ import {
   Check,
   CircleAlert,
   CircleMinus,
-  CirclePlay,
   GitPullRequest,
   Info,
-  LoaderCircle,
   RotateCw,
   TriangleAlert,
   X,
@@ -103,7 +91,6 @@ import {
   postJson,
   runAppDoctorAll,
   runAppDoctorCheck,
-  runAppDoctorOnDemand,
   type AppCheck,
   type AppCheckState,
   type AppDoctorReport,
@@ -111,8 +98,10 @@ import {
 } from "@platform/lib/api";
 import {
   findingWhere,
+  appOverviewUrl,
   gitRowFetchPending,
   groupBySection,
+  isContribRow,
   rowActionLabel,
   fixButtonLabel,
   readinessCount,
@@ -142,9 +131,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { navigate, navigateUrl } from "@platform/lib/router";
-import { announceAppDoctorChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
-import { chatUrl } from "@platform/lib/queue";
-import { ClaudeMark } from "@platform/ui/ClaudeMark";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 // The Pull button's own mutation result — same minimal shape
 // shell/RepoUpdatesDock.tsx's own `MutationResult` keeps local rather than
@@ -172,7 +159,6 @@ function StateMark({ state, severity }: { state: AppCheckState; severity?: Sever
     ) : (
       <CircleAlert {...common} />
     );
-  if (state === "unrun") return <CirclePlay {...common} />;
   return <CircleMinus {...common} />;
 }
 
@@ -187,39 +173,24 @@ function CheckRow({
   check,
   busy,
   otherTaskLive,
-  creating,
-  anyChecking,
   pulling,
   onFix,
-  onCheck,
-  onFollowCheck,
-  onOpenVerdictTask,
   onPull,
   onDone,
   onOpenGit,
+  appDir,
 }: {
   check: AppCheck;
+  /** The report's app folder — where a contrib row's "Open app page" goes. */
+  appDir: string;
   busy: boolean;
-  /** Open the running check task (its Claude pane, or the Tasks tab). */
-  onFollowCheck: (check: AppCheck) => void;
-  /** Open the conversation that wrote a settled row's cached verdict. */
-  onOpenVerdictTask: (check: AppCheck) => void;
-  /** Some OTHER row (or "Fix all") already has a live task — a fix or a
-   *  check — the server allows exactly one at a time, so pressing this row's
-   *  own button would just 409. Disabled rather than hidden, with a title
-   *  saying why. */
+  /** Some OTHER row (or "Fix all") already has a live fix task — the server
+   *  allows exactly one at a time, so pressing this row's own button would
+   *  just 409. Disabled rather than hidden, with a title saying why. */
   otherTaskLive: boolean;
-  /** THIS on-demand row's check task is being created (the press is in
-   *  flight; the row does not carry `check_task` yet). */
-  creating: boolean;
-  /** Some on-demand row's check task is being created or is live — one at a
-   *  time, so a second press never queues behind the first. */
-  anyChecking: boolean;
   /** THIS row's Pull is in flight — `git`-only, never true for another row. */
   pulling: boolean;
   onFix: (check: AppCheck) => void;
-  /** `force` is Re-check: run again although the cached verdict still matches. */
-  onCheck: (check: AppCheck, force?: boolean) => void;
   onPull: (check: AppCheck) => void;
   /** Fires after a navigating action — "Open in git" included (B4,
    *  FIXES-round-1.md) — the same idiom `fixRow`/`followLive`/`runFix`
@@ -242,17 +213,13 @@ function CheckRow({
 }) {
   const { shown, hidden } = splitFindings(check.findings);
   const failing = check.state === "fail";
-  // "Checking…" from the press until the verdict lands: the create call in
-  // flight, then the server's own word that a check task is live on it.
-  const checking = creating || !!check.check_task;
   const openInGit = showsOpenInGitAction(check);
-  // An on-demand row always has something to press — Check when it has not
-  // been run on this content, Re-check once it has — so it takes the fuller
-  // box a row with an action wears, even when it passed. So does the `git`
-  // row once it has resolved a real repo root: "Open in git" is worth
-  // offering even on a PASSING row (there is nothing to fix, but there is
-  // still somewhere to look).
-  const hasAction = failing || check.ondemand || openInGit;
+  const contribRow = isContribRow(check);
+  // A failing row takes the fuller box a row with an action wears. So does
+  // the `git` row once it has resolved a real repo root: "Open in git" is
+  // worth offering even on a PASSING row (there is nothing to fix, but there
+  // is still somewhere to look).
+  const hasAction = failing || openInGit;
   return (
     <li
       className={cn(
@@ -260,10 +227,6 @@ function CheckRow({
         hasAction ? "py-[9px]" : "py-[5px]",
         "appdoc-row appdoc-" + check.state,
         failing && "appdoc-row-sev-" + check.severity,
-        // A check task is on this row: the whole row wears the "an agent is
-        // working here" tint (app-doctor.css `.appdoc-checking`) — amber
-        // mark, spinner, amber detail — so it reads as live, not as idle.
-        checking && "appdoc-checking",
       )}
     >
       <span
@@ -272,32 +235,16 @@ function CheckRow({
         aria-label={rowStateAccessibleLabel(check)}
         title={rowStateAccessibleLabel(check)}
       >
-        {checking ? (
-          <LoaderCircle size={16} aria-hidden className="animate-spin" />
-        ) : (
-          <StateMark state={check.state} severity={failing ? check.severity : undefined} />
-        )}
+        <StateMark state={check.state} severity={failing ? check.severity : undefined} />
       </span>
       <div className="appdoc-text">
         <span className="appdoc-label">{check.label}</span>
-        {checking ? (
-          <span className="appdoc-detail">
-            {creating
-              ? "Creating the check task…"
-              : "An agent is reading the app's view files against the cross-browser rubric — you'll be notified when it finishes"}
-          </span>
-        ) : (
-          rowVisibleDetailText(check) !== "" && (
-            <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
-          )
+        {rowVisibleDetailText(check) !== "" && (
+          <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
         )}
         {shown.length > 0 && (
-          // A deterministic row's findings are source lines: one nowrap
-          // monospace line each. A model-backed row's are SENTENCES written
-          // for the author — what a visitor would see go wrong, then what to
-          // change — so they wrap, in the body face, with the fix as a
-          // quieter second line (`.appdoc-findings-prose`, app-doctor.css).
-          <ul className={cn("appdoc-findings", check.ondemand && "appdoc-findings-prose")}>
+          // Findings are source lines: one nowrap monospace line each.
+          <ul className="appdoc-findings">
             {shown.map((f, i) => (
               <li key={f.rule + f.path + f.line + i}>
                 {/* Some rules excerpt the path itself (`git`'s porcelain
@@ -308,7 +255,6 @@ function CheckRow({
                     are safe to draw. */}
                 {!f.excerpt.includes(f.path) && <code>{findingWhere(f)}</code>}
                 <span className="appdoc-excerpt">{f.excerpt}</span>
-                {f.fix && <span className="appdoc-fix">Fix: {f.fix}</span>}
               </li>
             ))}
             {hidden > 0 && (
@@ -333,170 +279,105 @@ function CheckRow({
           none of this width: `.appdoc-text` simply grows to fill it. */}
       {hasAction && (
         <div className="appdoc-row-actions">
-          {/* An on-demand row that has no verdict for the app as it is now:
-              the only thing to do is run it. Nothing to fix yet, so no
-              Fix/Review beside it. */}
-          {check.ondemand && check.state === "unrun" ? (
-            check.check_task ? (
-              // The running check: the button IS the way there — the Claude
-              // pane on its run, or the Tasks tab — same as a row's "Fix in
-              // progress" opens the fix session.
+          {/* Prominent and FIRST — a repo behind origin is the one
+              finding here a person is likely to act on immediately, and
+              unlike Fix/Review it never needs a Claude session: it is a
+              fast-forward `git pull`, nothing to judge. Shown alongside
+              Fix, not instead of it — being behind origin and having
+              uncommitted work are independent facts about the same
+              folder (see appdoctor-lib.ts's `showsPullAction`). */}
+          {showsPullAction(check) && (
+            <Button
+              variant="default"
+              size="sm"
+              disabled={pulling || busy || otherTaskLive}
+              title="Fast-forward this repo to match origin"
+              onClick={() => onPull(check)}
+            >
+              <GitPullRequest aria-hidden />
+              {pulling ? "Pulling…" : "Pull"}
+            </Button>
+          )}
+          {/* D1 (FIXES-round-1.md): a secondary text button matching
+              Fix's own size/variant, sitting BEFORE Fix — "Repo in sync
+              [Open in git] [Fix]". Styling unchanged since D1 (G1,
+              FIXES-round-3.md — the user approved this look). Never a fix
+              action: it opens the IN-APP git mode (never an external
+              client — out of scope per the spec), so it draws quietly
+              even on a passing row — there is nothing to fix, only
+              somewhere to look. Previously a bare ghost icon-only
+              button, which read as a stray mark next to Fix's solid
+              pill.
+
+              G1: what "opens" changed. It used to `navigate()` to this
+              row's repo root in `_mode=git` — a whole separate page,
+              leaving `index.html` (or wherever the user was) behind. Per
+              the user's own words ("open in git should just ensure the
+              sidebar is not turned off and the git tab is selected. no
+              need to open separate page"), it now stays put and opens the
+              CALLER's own sidebar on its Git tab (`onOpenGit`) — the
+              row's `gitRoot` already decided WHICH repo this row is
+              about; the sidebar it opens is scoped to the folder/file the
+              user is already on, which is that same repo (Doctor never
+              renders for a path outside it). Where no such sidebar exists
+              (`onOpenGit` undefined — a snapshot or panel pane with
+              no address bar of its own), falls back to the old cross-page navigation so the
+              action still does something instead of silently no-op'ing. */}
+          {openInGit && check.gitRoot && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                if (onOpenGit) onOpenGit();
+                else navigate(check.gitRoot as string, { isDir: true, mode: "git" });
+                onDone?.();
+              }}
+            >
+              Open in git
+            </Button>
+          )}
+          {/* A contrib `git` row (appdoctor-lib `isContribRow`): its
+              failure is a decision the app page offers — Merge with
+              Claude, or signing in — so the row's one action goes there,
+              in place of Fix. */}
+          {failing && contribRow && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                navigateUrl(appOverviewUrl(appDir));
+                onDone?.();
+              }}
+            >
+              Open app page
+            </Button>
+          )}
+          {failing &&
+            !contribRow &&
+            (check.task ? (
               <Button
-                variant="outline"
+                variant="secondary"
                 size="sm"
-                title="Claude is reading this app's view files now — open the running task"
-                onClick={() => onFollowCheck(check)}
+                title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
+                onClick={() => onFix(check)}
               >
-                Open task
+                Fix in progress
               </Button>
             ) : (
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={anyChecking || busy || otherTaskLive}
+                disabled={busy || otherTaskLive}
                 title={
                   otherTaskLive
-                    ? "An App Doctor task is editing this app — check once it has finished"
-                    : "Creates a task that asks Claude (Sonnet, low effort) to read this app's .html/.css/.js against the cross-browser rubric — cached until the files change"
+                    ? "An App Doctor task for this app is already running on another row — listed under the app's Tasks tab"
+                    : undefined
                 }
-                onClick={() => onCheck(check)}
+                onClick={() => onFix(check)}
               >
-                {checking ? "Checking…" : "Check"}
+                {rowActionLabel(check)}
               </Button>
-            )
-          ) : (
-            <>
-              {/* Prominent and FIRST — a repo behind origin is the one
-                  finding here a person is likely to act on immediately, and
-                  unlike Fix/Review it never needs a Claude session: it is a
-                  fast-forward `git pull`, nothing to judge. Shown alongside
-                  Fix, not instead of it — being behind origin and having
-                  uncommitted work are independent facts about the same
-                  folder (see appdoctor-lib.ts's `showsPullAction`). */}
-              {showsPullAction(check) && (
-                <Button
-                  variant="default"
-                  size="sm"
-                  disabled={pulling || busy || otherTaskLive}
-                  title="Fast-forward this repo to match origin"
-                  onClick={() => onPull(check)}
-                >
-                  <GitPullRequest aria-hidden />
-                  {pulling ? "Pulling…" : "Pull"}
-                </Button>
-              )}
-              {/* D1 (FIXES-round-1.md): a secondary text button matching
-                  Fix's own size/variant, sitting BEFORE Fix — "Repo in sync
-                  [Open in git] [Fix]". Styling unchanged since D1 (G1,
-                  FIXES-round-3.md — the user approved this look). Never a fix
-                  action: it opens the IN-APP git mode (never an external
-                  client — out of scope per the spec), so it draws quietly
-                  even on a passing row — there is nothing to fix, only
-                  somewhere to look. Previously a bare ghost icon-only
-                  button, which read as a stray mark next to Fix's solid
-                  pill.
-
-                  G1: what "opens" changed. It used to `navigate()` to this
-                  row's repo root in `_mode=git` — a whole separate page,
-                  leaving `index.html` (or wherever the user was) behind. Per
-                  the user's own words ("open in git should just ensure the
-                  sidebar is not turned off and the git tab is selected. no
-                  need to open separate page"), it now stays put and opens the
-                  CALLER's own sidebar on its Git tab (`onOpenGit`) — the
-                  row's `gitRoot` already decided WHICH repo this row is
-                  about; the sidebar it opens is scoped to the folder/file the
-                  user is already on, which is that same repo (Doctor never
-                  renders for a path outside it). Where no such sidebar exists
-                  (`onOpenGit` undefined — a snapshot or panel pane with
-                  no address bar of its own), falls back to the old cross-page navigation so the
-                  action still does something instead of silently no-op'ing. */}
-              {openInGit && check.gitRoot && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    if (onOpenGit) onOpenGit();
-                    else navigate(check.gitRoot as string, { isDir: true, mode: "git" });
-                    onDone?.();
-                  }}
-                >
-                  Open in git
-                </Button>
-              )}
-              {failing &&
-                (check.task ? (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
-                    onClick={() => onFix(check)}
-                  >
-                    Fix in progress
-                  </Button>
-                ) : (
-                  <Button
-                    // On the on-demand row Fix is the PRIMARY call to action
-                    // and the two icon buttons beside it (conversation,
-                    // Re-check) are secondary, so it takes the filled
-                    // variant there (owner, 2026-09-22). Every other row's
-                    // Fix stays secondary: it is the only action on its row.
-                    variant={check.ondemand ? "default" : "secondary"}
-                    size="sm"
-                    disabled={busy || otherTaskLive || checking}
-                    title={
-                      otherTaskLive
-                        ? "An App Doctor task for this app is already running on another row — listed under the app's Tasks tab"
-                        : undefined
-                    }
-                    onClick={() => onFix(check)}
-                  >
-                    {rowActionLabel(check)}
-                  </Button>
-                ))}
-              {/* A settled on-demand row whose verdict came from a task still
-                  in the store: the way back to that conversation, where the
-                  session left its plain one-line reading of each finding.
-                  Icon-only, beside Re-check, so neither competes with Fix. */}
-              {check.ondemand && check.verdict_task && (
-                <Button
-                  variant="outline"
-                  size="icon-xs"
-                  className="text-muted-foreground"
-                  title="Open the check's conversation — Claude's own plain-words notes on what it found"
-                  aria-label="Open the check's conversation"
-                  onClick={() => onOpenVerdictTask(check)}
-                >
-                  <ClaudeMark size={0.8} />
-                </Button>
-              )}
-              {/* A settled on-demand row: the cache invalidates itself when
-                  the files change, so this exists for what it cannot see —
-                  a rubric that moved on, or a verdict worth a second
-                  opinion. Icon-only, so it never competes with Fix. */}
-              {check.ondemand && (
-                <Button
-                  variant="outline"
-                  size="icon-xs"
-                  className="text-muted-foreground"
-                  // Not while a fix session is live on this app: it is about
-                  // to change the very files a re-check would read, so the
-                  // verdict would be stale the moment it landed.
-                  disabled={anyChecking || busy || !!check.task || otherTaskLive}
-                  title={
-                    checking
-                      ? "Checking…"
-                      : check.task || otherTaskLive
-                        ? "An App Doctor task is editing this app — re-check once it has finished"
-                        : "Re-check with Claude (Sonnet)"
-                  }
-                  aria-label="Re-check"
-                  onClick={() => onCheck(check, true)}
-                >
-                  <RotateCw aria-hidden className={checking ? "animate-spin" : undefined} />
-                </Button>
-              )}
-            </>
-          )}
+            ))}
         </div>
       )}
     </li>
@@ -561,12 +442,12 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     if (!report || gitRetried.current || !gitRowFetchPending(report.checks)) return;
     const timer = setTimeout(() => {
       // Set the ref only once the timer actually FIRES (B3, FIXES-round-1.md)
-      // — not when the effect merely schedules it. `runCheck` on any OTHER
-      // row calls `setReport` with a new object, which cancels this timer via
-      // the cleanup below and re-runs the effect; setting the ref up front
-      // would have already marked the retry "used" on the cancelled attempt,
-      // stranding the git row on SKIP forever. Deferring the flag lets the
-      // re-armed effect schedule a fresh timer instead.
+      // — not when the effect merely schedules it. Any `setReport` before it
+      // fires (a Re-run's `load`) cancels this timer via the cleanup below
+      // and re-runs the effect; setting the ref up front would have already
+      // marked the retry "used" on the cancelled attempt, stranding the git
+      // row on SKIP forever. Deferring the flag lets the re-armed effect
+      // schedule a fresh timer instead.
       gitRetried.current = true;
       void (async () => {
         try {
@@ -669,134 +550,20 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     onDone?.();
   };
 
-  // The on-demand row's CHECK TASK. In flight is a fact the SERVER holds —
-  // `check.check_task` is read off the task store on every GET — not a
-  // component flag, so a tab switch, a reload or a second window all draw
-  // the same "Checking…" and none of them can lose it. `creating` is only
-  // the seconds between the press and the server's answer (the create call
-  // waits for the task's run id); the moment the row comes back it carries
-  // `check_task` and this clears.
-  const [creating, setCreating] = useState<string | null>(null);
-  const runCheck = async (check: AppCheck, force = false) => {
-    if (creating) return;
-    setCreating(check.id);
-    setError(null);
-    try {
-      const res = await runAppDoctorOnDemand(dir, check.id, force);
-      // A new row on the Tasks tab — the pulse that feeds the shell's task
-      // notices and the sidebar's unread dot should notice it now, not on
-      // its next idle tick.
-      if (res.task) announceTasksChanged();
-      // ...and the header dot's own hook (useAppDoctorChecks) refetches on
-      // this: its answer now carries `check_task`, which is what starts ITS
-      // poll — the one that outlives this panel, so a check that finishes
-      // after a tab switch still moves the dot.
-      announceAppDoctorChanged(dir);
-      if (alive.current) {
-        setReport((r) =>
-          r
-            ? {
-                ...r,
-                checks: r.checks.map((c) => (c.id === res.check.id ? res.check : c)),
-              }
-            : r,
-        );
-      }
-      if (res.task_error) throw new Error(res.task_error);
-    } catch (e) {
-      if (alive.current) setError((e as Error).message);
-    } finally {
-      if (alive.current) setCreating(null);
-    }
-  };
-
-  // While a check task is live, ask the server again every few seconds so
-  // the verdict lands on the row the moment the task writes it — without
-  // this, the row would say "Checking…" until the doctor was reopened. A
-  // plain GET: a bounded folder walk, no tokens. The old report stays on
-  // screen until the new one arrives (never through `load`, which blanks
-  // the checklist to a skeleton). When the task is gone from the answer,
-  // the header dot's own fetch (useAppDoctorChecks) is rung so it moves off
-  // "clean" over a row that just went red. Keyed on the live task's id, so
-  // the interval restarts only when the task changes, not on every render.
-  const liveCheckId = report?.checks.find((c) => c.check_task)?.check_task?.id ?? null;
-  useEffect(() => {
-    if (!liveCheckId) return;
-    let cancelled = false;
-    let timer = 0;
-    // A chained timeout, not setInterval: the next ask is armed only after
-    // the previous answer lands, so a slow folder walk never overlaps the
-    // next tick. `fetch: false` — a poll must not re-trigger the git
-    // force-fetch the modal-open GET performs.
-    const tick = async () => {
-      try {
-        const r = await getAppDoctor(dir, { fetch: false });
-        if (cancelled || !alive.current) return;
-        setReport(r);
-        if (!r.checks.some((c) => c.check_task?.id === liveCheckId)) {
-          announceAppDoctorChanged(dir);
-          return;
-        }
-      } catch {
-        /* ask again next tick; the row keeps saying "Checking…" meanwhile */
-      }
-      if (!cancelled) timer = window.setTimeout(() => void tick(), CHECK_POLL_MS);
-    };
-    timer = window.setTimeout(() => void tick(), CHECK_POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [dir, liveCheckId]);
-
-  // Take the user to the running check: the Claude pane on its run when the
-  // task has a run id (same landing the fix flow uses), else the Tasks tab
-  // where the stored entry is listed.
-  const followCheck = (check: AppCheck) => {
-    const run = check.check_task?.run_id;
-    navigateUrl(run && report?.entry ? appLandingUrl(report.entry, run) : tasksTabUrl(dir));
-    onDone?.();
-  };
-
-  // Open the conversation that wrote a settled row's verdict — the session's
-  // own plain reading of what it found. `chatUrl` is the app's one spelling
-  // of "this session, in the Claude pane"; without a session id (the run
-  // never answered) the Tasks tab still lists the entry.
-  const openVerdictTask = (check: AppCheck) => {
-    const t = check.verdict_task;
-    navigateUrl(t?.session_id && t.target ? chatUrl(t.target, t.session_id) : tasksTabUrl(dir));
-    onDone?.();
-  };
-
-  // A check task on any row (or one being created) holds the same
-  // one-live-task-per-app gate a fix does, so the footer's "Fix all" must
-  // read it as in-flight too — pressing it would just 409.
-  const checkLive = creating !== null || !!liveCheckId;
-
   return {
     report,
     error,
     busy,
     liveTask,
-    checkLive,
     load,
     fixRow,
     fixAll,
     followLive,
-    creating,
-    runCheck,
-    followCheck,
-    openVerdictTask,
     pulling,
     pullRow,
     onDone,
   };
 }
-
-// How often the checklist re-asks the server while a check task is live. A
-// check is a Sonnet read of a few files — tens of seconds — so a few seconds
-// between asks lands the verdict promptly without hammering a folder walk.
-const CHECK_POLL_MS = 4_000;
 
 type Report = ReturnType<typeof useAppDoctorReport>;
 
@@ -819,10 +586,6 @@ function AppDoctorChecklist({
   busy,
   liveTask,
   fixRow,
-  creating,
-  runCheck,
-  followCheck,
-  openVerdictTask,
   pulling,
   pullRow,
   onDone,
@@ -833,8 +596,6 @@ function AppDoctorChecklist({
    *  each caller of `AppDoctorChecklist`. */
   onOpenGit?: () => void;
 }) {
-  // Any row's live check task — one per app, like the fix task.
-  const anyCheckLive = !!report?.checks.some((c) => c.check_task);
   return (
     <>
       <ErrorBanner>{error}</ErrorBanner>
@@ -855,15 +616,11 @@ function AppDoctorChecklist({
                 <CheckRow
                   key={c.id}
                   check={c}
+                  appDir={report.path}
                   busy={busy}
-                  otherTaskLive={(!!liveTask && !c.task) || (anyCheckLive && !c.check_task)}
-                  creating={creating === c.id}
-                  anyChecking={creating !== null || anyCheckLive}
+                  otherTaskLive={!!liveTask && !c.task}
                   pulling={pulling === c.id}
                   onFix={fixRow}
-                  onCheck={(check, force) => void runCheck(check, force)}
-                  onFollowCheck={followCheck}
-                  onOpenVerdictTask={openVerdictTask}
                   onPull={(check) => void pullRow(check)}
                   onDone={onDone}
                   onOpenGit={onOpenGit}
@@ -878,19 +635,7 @@ function AppDoctorChecklist({
 }
 
 // The primary action: "Fix N issues" / "Fix in progress" / "Nothing to fix".
-function AppDoctorFixAllButton({ report, busy, liveTask, checkLive, fixAll, followLive }: Report) {
-  if (checkLive) {
-    return (
-      <Button
-        variant="default"
-        size="sm"
-        disabled
-        title="A check task is running on this app — fixes wait until its verdict lands"
-      >
-        Check in progress
-      </Button>
-    );
-  }
+function AppDoctorFixAllButton({ report, busy, liveTask, fixAll, followLive }: Report) {
   if (liveTask) {
     return (
       <Button
@@ -912,7 +657,8 @@ function AppDoctorFixAllButton({ report, busy, liveTask, checkLive, fixAll, foll
         busy ||
         report === null ||
         !report.entry ||
-        !report.checks.some((c) => c.state === "fail")
+        // A contrib row's failure is the app page's to settle, never Fix all's.
+        !report.checks.some((c) => c.state === "fail" && !isContribRow(c))
       }
       title={
         report && !report.entry

@@ -30,6 +30,7 @@ from urllib.parse import unquote, urlsplit
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
+from fused_render._view_url_codec import rooted_fs_path
 from fused_render.shell import storage
 
 router = APIRouter()
@@ -100,8 +101,8 @@ def _decoded_fs_path(url: str) -> str | None:
     # shell-owned, so reject the prefix rather than enumerating names.
     if not segments or (len(segments) == 1 and segments[0].startswith("_")):
         return None
-    # Mirror the frontend's rootedFsPath (lib/router.ts): prepend "/".
-    return "/" + "/".join(segments)
+    joined = "/".join(segments)
+    return rooted_fs_path(joined)
 
 
 def _file_path_from_url(url: str) -> str | None:

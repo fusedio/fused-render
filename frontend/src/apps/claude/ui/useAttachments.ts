@@ -33,6 +33,10 @@ export interface UseAttachmentsOptions {
   flashHost(): HTMLElement | null;
   /** "preview" / "app": the word the wire block uses for the pane. */
   paneNoun: string;
+  /** The pane's picture comes from HERE instead of a capture of `frame()`:
+   *  the canvas page's shot of its cross-origin workbench (`shots/canvas-shot`).
+   *  Read at gesture time. */
+  paneShot?: (what?: string) => Promise<{ blob: Blob | null; why?: string; note?: string }>;
   /** The shots dir, when a caller knows it. Left out, the pipeline's own
    *  resolved answer is used — either way it is FILTERED OUT of
    *  the Read rules, because the spawn line pre-approves it unconditionally and
@@ -57,8 +61,17 @@ export interface Attachments {
   items: Attachment[];
   /** A capture is in flight: the camera goes inert (T:11203 `shotBusy`). */
   capturing: boolean;
+  /** Why the LAST capture changed nothing, while the seat kept the picture it
+   *  already held (`capture`, the "refusal never evicts" branch) — or null.
+   *  Cleared on its own after `REFUSAL_SHOWN_MS`, and at the next capture. */
+  refusal: string | null;
+  /** The picture is taken and on its way to the shots dir (a host shot's
+   *  second half): the seat reads "Saving…" so the phase the scrim no longer
+   *  covers is still seen to be under way. */
+  saving: boolean;
   /** The camera (T:11258 `shotAttachPane`). */
-  capture(): Promise<void>;
+  /** `what` goes to a host-supplied `paneShot` (the canvas page's targets). */
+  capture(what?: string): Promise<void>;
   /** ⌘V and a drop of bytes (T:11557 `shotAttachFiles`). */
   addFiles(files: readonly File[]): Promise<void>;
   /**
@@ -108,10 +121,20 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** The pane seat's placeholder while a HOST shot is out (`paneShot`): one id,
+ *  so the answer can tell it from a picture the seat already held. */
+const PENDING_PANE_ID = "pending:pane";
+
+/** How long a refused retake's sentence stays under the chips. */
+export const REFUSAL_SHOWN_MS = 8000;
+
 export function useAttachments(opts: UseAttachmentsOptions): Attachments {
-  const { api = ATTACH_API, frame, flashHost, paneNoun, shotsDir } = opts;
+  const { api = ATTACH_API, frame, flashHost, paneNoun, shotsDir, paneShot } = opts;
+  const paneShotRef = useRef(paneShot);
+  paneShotRef.current = paneShot;
   const [items, setItems] = useState<Attachment[]>([]);
   const [capturing, setCapturing] = useState(false);
+  const [saving, setSaving] = useState(false);
   /**
    * THE TRAY, AS OF NOW. Read by `take()`, which must see what the tray holds at
    * THAT moment rather than what the render it was created in closed over — and
@@ -177,10 +200,38 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
   // the epoch has moved (Bugbot, PR #1140, twice).
   const epoch = useRef(0);
 
-  const capture = useCallback(async () => {
+  // A REFUSED RETAKE SAYS WHY. The seat keeps the picture it holds when a
+  // second capture fails (below, Bugbot #1064) — right, and until now silent:
+  // the user pressed Screenshot, the seat pulsed, and the tray came back
+  // exactly as it was. A refusal the user cannot see is a dead button. The
+  // sentence lives here, not on the chip's `viewNote` (that caveat rides the
+  // wire under the receipt and must stay the GOOD picture's), and goes on its
+  // own after a few seconds or when the next capture starts.
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const refusalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showRefusal = useCallback((why: string | null) => {
+    if (refusalTimer.current) clearTimeout(refusalTimer.current);
+    refusalTimer.current = null;
+    setRefusal(why);
+    if (why) {
+      refusalTimer.current = setTimeout(() => {
+        refusalTimer.current = null;
+        if (alive.current) setRefusal(null);
+      }, REFUSAL_SHOWN_MS);
+    }
+  }, []);
+  useEffect(
+    () => () => {
+      if (refusalTimer.current) clearTimeout(refusalTimer.current);
+    },
+    [],
+  );
+
+  const capture = useCallback(async (what?: string) => {
     if (busy.current) return;
     busy.current = true;
     setCapturing(true);
+    showRefusal(null);
     // BEFORE the capture, not after: the whole point is that the click is
     // answered immediately, and the capture can take a second on a large page.
     // It is also honest about the moment — the flash marks when the shutter
@@ -194,9 +245,43 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
       // a document this page cannot open (Bugbot, PR #1064).
       const target = frame();
       const began = epoch.current;
-      const shot = await api.attachPane(target, {
-        xo: frameIsCrossOrigin(target),
-      });
+      const hostShot = paneShotRef.current;
+      // A HOST SHOT TAKES SECONDS (a workbench graph through html-to-image,
+      // relayed through two windows), and nothing flashes for it — the pane
+      // being photographed is not on this page. So the tray says so at once:
+      // an empty seat gets a pending chip ("attaching…"), a held picture is
+      // marked pending in place (its door shuts, its thumb stays). The answer
+      // below swaps the placeholder out, or clears the mark.
+      if (hostShot) {
+        commit((prev) => {
+          const seat = prev.findIndex((s) => s.kind === "pane");
+          if (seat === -1) {
+            return [...prev, { id: PENDING_PANE_ID, kind: "pane", seat: "pane", view: null, pending: true }];
+          }
+          const next = prev.slice();
+          next[seat] = { ...prev[seat]!, pending: true };
+          return next;
+        });
+      }
+      let shot: Attachment;
+      if (hostShot) {
+        // A rejection here would strand the placeholder above as a chip that
+        // never settles; a host that threw is a refusal like any other.
+        try {
+          const taken = await hostShot(what);
+          if (alive.current) setSaving(true);
+          shot = await api.attachPaneFromBlob(taken);
+        } catch (err) {
+          shot = await api.attachPaneFromBlob({
+            blob: null,
+            why: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        shot = await api.attachPane(target, {
+          xo: frameIsCrossOrigin(target),
+        });
+      }
       if (!alive.current || epoch.current !== began) {
         // No chip will ever show it — the tray is gone, or was emptied for a
         // message already sent — so this is the last handle to its Blob.
@@ -207,6 +292,13 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         const seat = prev.findIndex((s) => s.kind === "pane");
         if (seat === -1) return [...prev, shot];
         const held = prev[seat]!;
+        // The placeholder above is "nothing held": whatever came back — a
+        // picture or a refusal — is the seat's news, so it takes the seat.
+        if (held.id === PENDING_PANE_ID) {
+          const next = prev.slice();
+          next[seat] = shot;
+          return next;
+        }
         // A REFUSAL NEVER EVICTS A PICTURE (Bugbot, PR #1064). The pane seat is
         // unique, so a second click REPLACES what is in it — and a capture that
         // timed out or failed to encode still comes back as an attachment, with
@@ -226,7 +318,21 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         // is the thing that had to stay true.
         if (!shot.view && held.view) {
           api.revoke(shot); // nothing of its own to hold, but symmetrical
-          return prev.slice();
+          // …and the pending mark a host shot put on it comes off: the seat
+          // is the held picture again, door open.
+          const next = prev.slice();
+          if (held.pending) next[seat] = { ...held, pending: false };
+          // …and the refusal is SAID, beside the chips rather than on one.
+          // `why` is the capture's own sentence (`attachPaneFromBlob` /
+          // `attachPane`); without one, the fact alone.
+          const why = shot.why || shot.viewNote || "";
+          showRefusal(
+            why
+              ? "Couldn't retake the screenshot: " + why
+              : "Couldn't retake the screenshot — the one attached is kept.",
+          );
+          console.warn("screenshot retake refused: " + (why || "no reason given"));
+          return next;
         }
         // The replaced picture's blob URL is the only handle to it.
         api.revoke(held);
@@ -236,9 +342,12 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
       });
     } finally {
       busy.current = false;
-      if (alive.current) setCapturing(false);
+      if (alive.current) {
+        setCapturing(false);
+        setSaving(false);
+      }
     }
-  }, [api, flashHost, frame, commit]);
+  }, [api, flashHost, frame, commit, showRefusal]);
 
   /**
    * A PLACEHOLDER PER FILE, replaced as its bytes land. The pipeline yields
@@ -406,5 +515,5 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     [commit],
   );
 
-  return { items, capturing, capture, addFiles, addPaths, remove, take, giveBack, discard };
+  return { items, capturing, saving, refusal, capture, addFiles, addPaths, remove, take, giveBack, discard };
 }

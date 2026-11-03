@@ -4,8 +4,8 @@
 // a place, the app page's shape (shell/AppPage.tsx, D488). A SEPARATE ROUTE
 // from the editor, `/canvases/<env>/<name>` (CanvasWorkspace.tsx on its own:
 // two panes, canvas + Claude chat, sync, the edit workflow) — the editor is
-// the owner's and is not folded into tabs; the header's "Open in canvas
-// editor" is the door from here to there. Three tabs, named by the `_tab`
+// the owner's and is not folded into tabs; the header's "Open" button
+// (the app page's, folder icon and all) is the door from here to there. Three tabs, named by the `_tab`
 // query param (absent = overview; api.ts CANVAS_PAGE_TABS):
 //
 //   Overview  the canvas itself — the workbench framed as a VIEWER
@@ -53,8 +53,8 @@ import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactN
 import {
   AppWindow,
   Files,
+  FolderOpen,
   ListTodo,
-  PencilLine,
   RefreshCw,
   type LucideIcon,
 } from "lucide-react";
@@ -72,7 +72,7 @@ import Scheduled from "./Scheduled";
 import { peekSearch } from "./task-peek-store";
 import {
   CANVAS_PAGE_TABS,
-  ENV_LABELS,
+  ENV_NAMES,
   canvasPagePath,
   canvasPageTabFromSearch,
   canvasProjectPath,
@@ -192,7 +192,7 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
         if (cancelled) return;
         const base = status.envs[env]?.canvases_dir;
         if (!base) {
-          setError(`No clone folder for the ${ENV_LABELS[env]} environment.`);
+          setError(`No clone folder for the ${ENV_NAMES[env].label} environment.`);
           return;
         }
         setDir(base.replace(/\/+$/, "") + "/" + name);
@@ -273,9 +273,9 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
               {name}
               <span
                 className="canvases-env-chip canvas-page-env"
-                title={`${name} syncs with ${ENV_LABELS[env]}`}
+                title={`${name} syncs with ${ENV_NAMES[env].label}`}
               >
-                {ENV_LABELS[env]}
+                {ENV_NAMES[env].tag}
               </span>
             </h1>
             {/* The hosted workbench editor's URL, as the caption under the
@@ -324,8 +324,8 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
             }
             title="Open this canvas in the editor: the workbench with Claude beside it"
           >
-            <PencilLine data-icon="inline-start" />
-            <span className={APP_PAGE_FIT_LABEL}>Open in canvas editor</span>
+            <span className={APP_PAGE_FIT_LABEL}>Open</span>
+            <FolderOpen data-icon="inline-end" />
           </Button>
           {/* No "Open in Workbench" button: the caption under the name IS
               the workbench link (owner, 2026-10-20). */}

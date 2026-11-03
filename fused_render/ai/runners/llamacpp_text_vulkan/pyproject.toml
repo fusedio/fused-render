@@ -70,6 +70,17 @@
 # why that half of the gate is refused for being pointless rather than for
 # being broken — see `registry._vulkan`'s docstring for the full reasoning
 # and the evidence each half rests on.
+#
+# **SWEEP OF 0.3.30-0.3.36 (2026-10-22): the vulkan wheel is intact, and the pin
+# still stays at 0.3.29.** This runner ships one tag (manylinux x86_64 vulkan),
+# and that wheel passes `testzip()` in every release from 0.3.30 through 0.3.36.
+# It is held at 0.3.29 only because the CPU pin is: the one-version coupling
+# rule above keeps both runners on one `llama-cpp-python`, and the CPU index's
+# `macosx_11_0_arm64` wheel is corrupt in every 0.3.30-0.3.36 release that
+# publishes one (see the CPU header, `llamacpp_text/pyproject.toml`). Full table
+# (sizes, sha256 prefixes): DECISIONS.md D1413. To repeat it:
+# `scripts/llamacpp_wheel_sweep.py`.
+
 [project]
 name = "fused-render-runner-llamacpp-text-vulkan"
 version = "0.1.0"

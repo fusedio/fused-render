@@ -122,3 +122,16 @@ def test_cwd_used_when_it_exists(monkeypatch, tmp_path):
     profile = terminal_profiles.resolve_profile(cwd=str(tmp_path))
     assert profile is not None
     assert profile.cwd == str(tmp_path)
+
+
+def test_an_inherited_fused_env_is_not_passed_to_the_shell(monkeypatch):
+    """The `fused` wrapper only takes a canvas clone's env when FUSED_ENV is
+    unset, so the server's own ambient value must not reach the shell (a
+    custom clone's target IS unset)."""
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    monkeypatch.setenv("FUSED_ENV", "prod")
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(terminal_profiles, "executable", lambda p: True)
+    profile = terminal_profiles.resolve_profile()
+    assert profile is not None
+    assert "FUSED_ENV" not in profile.env

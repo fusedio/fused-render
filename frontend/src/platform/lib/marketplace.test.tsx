@@ -9,7 +9,7 @@ import { installDomShim } from "./testDomShim";
 
 installDomShim();
 
-const { actionFor, isActive, installedAppHref, categoryLabel, refreshCatalog, peekCatalog, installApp, peekJobs, searchApps, useMarketplaceSearch, SEARCH_DEBOUNCE_MS } = await import("./marketplace");
+const { actionFor, isActive, installedAppHref, sourceUrlOf, categoryLabel, refreshCatalog, peekCatalog, installApp, peekJobs, searchApps, useMarketplaceSearch, SEARCH_DEBOUNCE_MS } = await import("./marketplace");
 type AppEntry = import("./marketplace").AppEntry;
 type InstallJob = import("./marketplace").InstallJob;
 
@@ -94,6 +94,14 @@ describe("helpers", () => {
 
   test("category label falls back to a title-cased id", () => {
     expect(categoryLabel(null, "local-ai")).toBe("Local AI");
+  });
+
+  test("Source links only a github.com address — the row's string is the catalog's", () => {
+    expect(sourceUrlOf({ source_url: "https://github.com/alice/sine" })).toBe("https://github.com/alice/sine");
+    expect(sourceUrlOf({ source_url: "javascript:alert(1)" })).toBeNull();
+    expect(sourceUrlOf({ source_url: "http://github.com/alice/sine" })).toBeNull();
+    expect(sourceUrlOf({ source_url: "https://github.com.evil.example/x" })).toBeNull();
+    expect(sourceUrlOf({ source_url: null })).toBeNull();
   });
 });
 
@@ -272,5 +280,35 @@ describe("useMarketplaceSearch", () => {
     expect(h.get().apps.map((a) => a.slug)).toEqual(["fresh"]);
     expect(h.get().nextCursor).toBeNull();
     expect(h.get().loadingMore).toBe(false);
+  });
+});
+
+describe("installApp confirm answers", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("a showcase copy's overwrite question starts no job and the yes posts overwrite: true", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const queued = { slug: "sine-starter", action: "install", state: "queued", progress: 0, bytes_done: 0, bytes_total: 0, message: "" };
+    globalThis.fetch = ((url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/install") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        bodies.push(body);
+        const answer = body.overwrite
+          ? { status: "ok", job: queued }
+          : { status: "confirm", overwrite: "showcase", path: "/Users/me/Fused/showcase/sine-starter", message: "Overwrite?" };
+        return Promise.resolve(new Response(JSON.stringify(answer), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ jobs: {} }), { status: 200 }));
+    }) as typeof fetch;
+    const first = await installApp({ slug: "sine-starter", name: "Sine Starter" });
+    expect("status" in first && first.status === "confirm" && "overwrite" in first && first.overwrite).toBe("showcase");
+    expect(peekJobs()["sine-starter"]).toBeUndefined();
+    const second = await installApp({ slug: "sine-starter", name: "Sine Starter" }, { overwrite: true });
+    expect("state" in second && second.state).toBe("queued");
+    expect(bodies).toEqual([{ slug: "sine-starter" }, { slug: "sine-starter", overwrite: true }]);
   });
 });

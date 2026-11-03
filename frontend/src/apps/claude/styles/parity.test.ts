@@ -160,39 +160,19 @@ test("FIX-19 — one global rule gives every code and pre T's SF Mono stack", ()
   }
 });
 
-test("FIX-20 — the scroller's gutter is reserved, so the lock cannot reflow the column", () => {
-  // `.is-locked` swaps `overflow-y: hidden` in while a tall card is pinned,
-  // which DROPS the 8px scrollbar gutter: the log's content box went 372 → 380
-  // and every block widened with it (cards 332 → 340, option rows 302 → 310, a
-  // right-aligned receipt x 205.8 → 213.8). Legacy's `#logwrap` is
-  // `overflow-y: auto` in every state and never moves. `scrollbar-gutter:
-  // stable` reserves the space either way — a hidden scroll container is still
-  // a scroll container — so R3-4's single-scroller lock stays and costs nothing.
+test("FIX-20 — the scroller's gutter is reserved, so the column never changes width", () => {
+  // `scrollbar-gutter: stable` reserves the 8px whether or not a bar is drawn,
+  // so the log's content box is the same width in every state.
   expect(one(TRANSCRIPT, ".chat-root .chat-logwrap")).toContain("scrollbar-gutter: stable");
-  // The lock itself is deliberately still there (owner R3-4: "remove the 70%
-  // cap — it causes double scroll").
-  expect(one(TRANSCRIPT, ".chat-root .chat-logwrap.is-locked")).toContain("overflow-y: hidden");
-  // And T's tail room is T's: `#log` is `padding: 24px 20px 12px` in every
-  // state, so the pinned variant may not quietly take 4px of it back.
-  expect(one(TRANSCRIPT, ".chat-root .chat-log:has(.chat-tailpin.is-pinned)")).toContain(
-    "padding-bottom: 12px",
-  );
 });
 
-test("FIX-21 — the sticky pin's ground is the column's, and the fade shares its stop", () => {
-  // At `--c-bg` this painted rgb(25,26,30) over a rgb(30,32,37) column in dark
-  // and a pure-white band across an off-white column in light — the most
-  // visible single defect of the pass. The column is `--c-panel` (T:1254-1284's
-  // `#chat`, and `.c-chat` since FIX-12b).
-  // Two rules carry this selector (the layout, and the reduced-motion opt-out).
-  const pin = rules(TRANSCRIPT, ".chat-root .chat-tailpin.is-pinned").join(" ");
-  expect(pin).toContain("background: var(--c-panel)");
-  expect(pin).not.toContain("background: var(--c-bg)");
-  // The `::before` fade's far stop moves with it, or the gradient dissolves
-  // into a colour the column never paints.
-  const fade = one(TRANSCRIPT, ".chat-root .chat-tailpin.is-pinned::before");
-  expect(fade).toContain("var(--c-panel)");
-  expect(fade).not.toContain("var(--c-bg)");
+test("the open tail card is a plain block: no overlay, ground, fade or lock", () => {
+  const open = rules(TRANSCRIPT, ".chat-root .chat-tailpin.has-open").join(" ");
+  expect(open).not.toContain("position: sticky");
+  expect(open).not.toContain("max-height");
+  expect(open).not.toContain("background");
+  expect(TRANSCRIPT).not.toContain(".chat-tailpin.is-pinned");
+  expect(TRANSCRIPT).not.toContain(".chat-logwrap.is-locked");
 });
 
 test("FIX-22 — the card wears T's surface and T's shadow, with no extra ring", () => {

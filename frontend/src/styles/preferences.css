@@ -1534,33 +1534,12 @@
 }
 
 /* -- blocks: a card that IS a panel section (Claude Code) ------------------ */
-/* The section's own toolbar, groups, lists and rows (styles/claude-config.css)
-   inside the page's card: the card's surface under the sticky toolbar, the
-   card's padding around the whole, and a list inside it on the page's base
-   surface so card-in-card still reads as two levels. */
-.settings-block-caption {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px 0;
-  color: var(--fg-muted);
-  font-size: 12px;
-}
-
-.settings-block-caption code {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
+/* The section's own groups, lists and rows (styles/claude-config.css)
+   inside the page's card: the card's padding around the whole, and a list
+   inside it on the page's base surface so card-in-card still reads as two
+   levels. */
 .settings-block {
   padding: 2px 16px 14px;
-}
-
-.settings-block .cc-toolbar {
-  background: var(--bg-alt);
-  margin-bottom: 10px;
 }
 
 .settings-block .cc-group:last-child {
@@ -1570,10 +1549,6 @@
 .settings-block .cc-list,
 .settings-block .cc-card {
   background: var(--bg);
-}
-
-.settings-block .cc-row:last-child {
-  border-bottom: 0;
 }
 
 /* The row's list control is the app's own dropdown (shell/Dropdown): a chip
@@ -1982,7 +1957,7 @@
 }
 
 
-/* Share on local network: QR pairing + paired devices (Preferences ▸ Phone & network). */
+/* Share on local network: QR pairing + paired devices (Preferences ▸ Phone access). */
 .lan-pair {
   display: flex;
   gap: 20px;

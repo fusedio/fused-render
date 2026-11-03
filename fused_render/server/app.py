@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from fused_render import _flavor
+from fused_render import _flavor, _platform
 from fused_render import calls as shell_calls
 from fused_render import health
 from fused_render.canvases import router as canvases_router
@@ -40,7 +40,7 @@ from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_
 from fused_render.server.common import (
     STATIC_DIR,
     logger,
-    no_cache_and_log,
+    NoCacheAndLog,
     unhandled_exception,
     _forced_engine,
 )
@@ -54,8 +54,9 @@ from fused_render.server.routers.claude_config import router as claude_config_ro
 from fused_render.server.routers.agent_backends import router as agent_backends_router
 from fused_render.server.routers.claude_health import router as claude_health_router
 from fused_render.server.routers.copilot_health import router as copilot_health_router
+from fused_render.server.routers.codex_health import router as codex_health_router
+from fused_render.server.routers.gemini_health import router as gemini_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
-from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.marketplace import router as marketplace_router
 from fused_render.server.routers.github import router as github_router
 from fused_render.server.routers.clipboard import router as clipboard_router
@@ -69,6 +70,7 @@ from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers.git_snapshot import router as git_snapshot_router
+from fused_render.server.routers.git_rail import router as git_rail_router
 from fused_render.server.routers.git_upstream import router as git_upstream_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
@@ -517,14 +519,19 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     @on_startup_full
     async def _startup_prewarm_ai():
-        prewarm_ai(app)
+        # Only when Claude is enabled (Preferences): the resident process IS
+        # a `claude` CLI, so a machine with Claude off would pay a spawn for
+        # nothing. Checked at hook time so a pref flipped before boot counts.
+        # Delayed: the spawn would otherwise compete with the first requests
+        # and the other startup warms.
+        from fused_render.agent_backends import registry as agent_registry
 
-    # Warm the fused engine off the request path (else the first /api/config pays the cold import).
-    @on_startup
-    async def _startup_warm_engine():
-        from fused_render import engine
+        if not agent_registry.is_enabled("claude"):
+            return
+        prewarm_ai(app, delay=5.0)
 
-        engine.warm_unless_forced_builtin()
+    # No boot hook for the fused engine warm-up: `engine.ensure_warm()` starts
+    # it once, on the first shell load (/api/config) or the first Python run.
 
     # Background apps (background_apps.py): resurrect every autostart-opted-in
     # app's daemon at server startup. A daemon thread, not the create_app body
@@ -689,6 +696,19 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # event for the same reason as `_startup_tasks_watch`.
     @on_startup
     async def _startup_tasks_warm():
+        # Skipped on a machine with no agent transcript root at all (no
+        # Claude/Copilot/Codex/Gemini ever ran here): there is nothing to
+        # read and no builder worth keeping. `_listing`/`_narrowed` build on
+        # demand when the builder is not running, so `/api/tasks*` still
+        # answers; nothing waits on `tasks_warm` (None when skipped). The
+        # roots are checked rather than the enabled backends because
+        # `registry.enabled_ids` is never empty and a disabled backend's old
+        # sessions are still listed, so an enabled-check would never skip.
+        from fused_render import tasks_store
+
+        app.state.tasks_warm = None
+        if not any(os.path.isdir(root) for _, root in tasks_store.projects_roots()):
+            return
         from fused_render.server.routers import tasks as tasks_router_mod
 
         thread = threading.Thread(target=tasks_router_mod.warm, daemon=True,
@@ -697,6 +717,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         # For tests, which need to know when the warm's own listing is done
         # before they count listings of their own.
         app.state.tasks_warm = thread
+
+    # No boot warm for the Claude artifacts listing (claude_artifacts.py): the
+    # first `/api/claude-artifacts` request runs `list_artifacts()` and its
+    # in-memory `_CACHE` serves the rest. A machine that never opens the
+    # artifacts view never scans ~/.claude for it.
 
     # `_AI_SESSION` is constructed at import time and can be started by the
     # first `/api/ai` request even under `lean` (its prewarm startup hook is
@@ -727,28 +752,16 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # too (where a startup hook would have been skipped) and never starts
     # it at all on a process that never touches an AI route.
 
-    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17):
-    # `ai_runtime._accepts_image`/`_capability_tags` used to call
-    # `hub_metadata.get(model_id)` — a synchronous `urllib` GET with an
-    # 8-second timeout — straight from `describe_catalog`, a route the AI
-    # Models picker polls. They now read `hub_metadata.cached()` only (a
-    # plain disk read), and this background thread is the sole writer.
-    @on_startup_full
-    async def _startup_ai_hub_metadata_refresh():
-        from fused_render.ai import supervisor
-
-        supervisor.start_hub_metadata_refresh()
-
-    # Hub-catalog daily delta refresh (SPEC docs/HUB_CATALOG_SPEC.md item 4):
-    # a BUILT capability pool (`api_hub_search`'s `ensure_build_started` path)
-    # goes stale as new repos land on the Hub between builds; this widens
-    # each built pool by one `lastModified` delta per day, same background-
-    # thread shape as the two hooks immediately above.
-    @on_startup_full
-    async def _startup_ai_hub_catalog_refresh():
-        from fused_render.ai import supervisor
-
-        supervisor.start_hub_catalog_refresh()
+    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17)
+    # and the daily Hub-catalog delta refresh (docs/HUB_CATALOG_SPEC.md item 4):
+    # no startup hooks. `ai_runtime._hub_meta_cached` (every `hub_metadata.cached()`
+    # read on the AI catalog path) and `api_hub_search` call
+    # `supervisor.start_hub_metadata_refresh()` / `start_hub_catalog_refresh()`
+    # on first use — idempotent, started in `lean` mode too, never started on a
+    # process that never opens an AI catalog page. Same shape as
+    # `hw_detect.cached_hardware()` -> `start_hardware_refresh()` above. The
+    # metadata thread is the sole writer behind those reads (they are plain disk
+    # reads, never a network GET on the polled route).
 
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
@@ -820,6 +833,21 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         supervisor.unload_all()
 
+    # Every canvas sync manager stops with the server, and its clone's writer
+    # lock is released. The Mac app's quit rung (app.py `_stop_children`) does
+    # this itself because the lifespan never runs there; every exit that IS a
+    # lifespan one — the Linux supervisor's child server, a pip `fused-render`
+    # on Windows — had NO rung at all, so a lock file stayed behind naming a
+    # dead pid. Harmless under flock (the kernel drops it), but on Windows the
+    # lock is that file plus a pid probe, and a reused pid made the clone
+    # refuse every later start. `latch=False`: not a quit, so a later app in
+    # this process (tests) may still start managers.
+    @on_shutdown_always
+    async def _shutdown_canvas_sync():
+        from fused_render import canvases as _canvases
+
+        await asyncio.to_thread(_canvases.shutdown, latch=False)
+
     # Every managed engine dies with the app: template daemons and
     # background/daemon children alike (stop_all clears both).
     @on_shutdown_always
@@ -841,13 +869,17 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _startup_gc_project_venvs():
         from fused_render import projectenv
 
-        try:
-            removed = await asyncio.to_thread(projectenv.gc)
-        except Exception:  # noqa: BLE001 - never block startup on housekeeping
-            logger.exception("could not garbage-collect orphaned project venvs")
-            return
-        if removed:
-            logger.info("reclaimed %d orphaned project venv(s)", removed)
+        def _run_gc():
+            try:
+                removed = projectenv.gc()
+            except Exception:  # noqa: BLE001 - never block startup on housekeeping
+                logger.exception("could not garbage-collect orphaned project venvs")
+                return
+            if removed:
+                logger.info("reclaimed %d orphaned project venv(s)", removed)
+
+        # Fire and forget: nobody waits on this, so it must not hold the bind.
+        threading.Thread(target=_run_gc, name="project-venv-gc", daemon=True).start()
 
     app.exception_handler(Exception)(unhandled_exception)
     # A route whose feature group is not installed: 503 + `missing_extra`
@@ -886,7 +918,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         name="template-shared",
     )
 
-    app.middleware("http")(no_cache_and_log)
+    app.add_middleware(NoCacheAndLog)
 
     # React shell (D52/D54): built by Vite from frontend/ into static/
     # shell-dist/. The output is NOT committed — dev machines build it
@@ -1033,13 +1065,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # apps ranked by a query; bots under Fused Bot.
     app.include_router(launcher_router)
     # An app clicked inside a macOS native window opens in its own window.
-    # Community marketplace backend for the /apps hub's Showcase tab and the
-    # explorer preview's Clone button (routers/community.py).
-    app.include_router(community_router)
     # The Marketplace (TEMPORARY backend, routers/marketplace.py): the
     # community-apps catalog, assets, and install/update jobs into
-    # <workspace>/app/. Not gated by the `marketplace_enabled` pref —
-    # that switches the shell's entry points only.
+    # <workspace>/app/. The Community is always offered (owner, 2026-10-29).
     app.include_router(marketplace_router)
     # Git repositories on this machine for the Explorer homepage's "Repos" tab
     # (routers/git_repos.py) — candidates come from the file index, never a
@@ -1051,6 +1079,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # real file on disk. Backs the shell's `_snapshot=<sha>` URL state. Cached
     # by (repo root, app-relative folder, sha); read-only, no guard.
     app.include_router(git_snapshot_router)
+    # GET /api/git/rail + POST /api/git/rail/check (routers/git_rail.py): the
+    # Claude rail's Git section — branch, ahead/behind, last three commits.
+    app.include_router(git_rail_router)
     # /api/git-upstream (routers/git_upstream.py): repos with a known
     # upstream update, for the activity card's repo-update rows. GET is
     # unguarded (the check that populates it runs off GET /render, D301,
@@ -1111,6 +1142,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # health/refresh, install, login, login/cancel}, same snapshot keys, same
     # entry-point warm-up rule.
     app.include_router(copilot_health_router)
+    # The Codex twin (routers/codex_health.py): /api/codex/{health,
+    # health/refresh, install, login, login/cancel, link-path}, same rules.
+    app.include_router(codex_health_router)
+    # ...and Gemini's (routers/gemini_health.py): /api/gemini/{health,
+    # health/refresh, install, login, login/cancel, link-path}, same rules.
+    app.include_router(gemini_health_router)
     # The agent catalog (routers/agent_backends.py): which agents exist, which
     # are on, and each one's models/efforts/modes/caps — the one list every
     # picker reads (docs/COPILOT_BACKEND.md D11). Read-only, no auth guard.
@@ -1121,6 +1158,62 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Its own endpoint, not a /api/config field: the facts behind it are
     # process spawns, and /api/config is read on every page load.
     app.include_router(github_router)
+    # The GitHub contribution loop (routers/contrib.py, docs/CONTRIB_LOOP.md
+    # §12): install sources, your changes + Propose, the author's inbox,
+    # remixes. Reads are cached and never wait on GitHub; every POST carries
+    # the D3 X-Fused guard, names a workspace app, and answers
+    # `{ok:false, reason:"disabled"}` while its phase flag is off.
+    from fused_render.server.routers.contrib import router as contrib_router
+
+    app.include_router(contrib_router)
+    # Publish to the Marketplace (routers/listing.py, §18.6): an own copy's
+    # listing status, draft and actions. Guarded: the module lands with its
+    # workstream, and a build without it simply has no listing routes.
+    try:
+        from fused_render.server.routers.listing import router as listing_router
+    except ImportError:
+        listing_router = None
+    if listing_router is not None:
+        app.include_router(listing_router)
+    # The Community tab's ladder read and its Put it on GitHub door
+    # (routers/ladder.py, §19.2). Guarded like the listing routes.
+    try:
+        from fused_render.server.routers.ladder import router as ladder_router
+    except ImportError:
+        ladder_router = None
+    if ladder_router is not None:
+        app.include_router(ladder_router)
+
+    # The contrib inbox-count sweep (contrib/refresh.py): one daemon thread
+    # that, only while the inbox phase is on, re-lists every own app's
+    # proposals every 10 min so Apps cards carry counts. A startup hook so a
+    # TestClient that never enters the lifespan never gets the thread; full
+    # only — the bot flavor has no Apps grid.
+    @on_startup_full
+    async def _startup_contrib_sweep():
+        from fused_render.contrib import refresh as contrib_refresh
+
+        contrib_refresh.start()
+
+    # The Marketplace block list at launch (docs/CONTRIB_LOOP.md §18.4 B4):
+    # fetch the list and enforce it on every copy (`contrib.blocks.startup`
+    # — refresh + enforce_all on its own daemon thread, the last list on
+    # disk when offline): it touches the network and git, and a hard block
+    # found here must not hold up the boot. `on_startup`, not `_full`: Fused
+    # Bot's bots install Marketplace apps too, and the block list is
+    # enforced whatever the Marketplace switch says (§18.8). A build
+    # without the module skips.
+    @on_startup
+    async def _startup_marketplace_blocks():
+        try:
+            from fused_render.contrib import blocks
+        except ImportError:
+            return
+        try:
+            blocks.startup()
+        except Exception:  # noqa: BLE001 — a background check never fails the server
+            logger.exception("marketplace block list check at startup failed")
+
     # Deep links (SPEC §26): GET /clone routes every OS-delivered open link
     # to an install page or the shell's fetch hand-off. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
@@ -1129,7 +1222,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.include_router(deeplink_router)
     # .fused single-file app export/install (SPEC §43, AF-14): GET
     # /api/appfile/export download + the GET/POST /api/appfile/install pair
-    # the fusedapp template (the install page) calls (no user-facing open route).
+    # the install page (frontend FusedFilePage) calls (no user-facing open route).
     from fused_render.server.routers.appfile import router as appfile_router
 
     app.include_router(appfile_router)
@@ -1147,27 +1240,43 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     from fused_render.bots import registry as _bots_registry
     from fused_render.bots.routes import forward_middleware as _bots_forward
     from fused_render.bots.phone import router as phone_bots_router
+    from fused_render.bots.file_routes import router as botfile_router
     from fused_render.bots.routes import router as bots_router
 
     app.include_router(bots_router)
+    # The `.fusedbot` install page's `/api/botfile/*` (bots/file_routes.py, docs/bots.md §17): outside the
+    # owned prefixes ("file" would parse as a bot id), so its install POST forwards to the owner itself.
+    app.include_router(botfile_router)
     # The iOS app's door (bots/phone.py, docs/bots.md §14): `/api/phone/bots/*`, an owned prefix like the two
     # above, and the one bots prefix the LAN listener forwards (lan.py) for a paired phone.
     app.include_router(phone_bots_router)
     # One owner per machine (bots/registry.py module docstring): the process holding the bots flock serves
     # `/api/bots/*` itself, every other one forwards there. A lean `open` never elects: it forwards when an
     # owner exists and answers 503 otherwise, instead of building Bots and running engines beside the app's.
-    _bots_registry.set_lean(lean)
+    # Windows never elects: the engines and per-bot Chrome lean on POSIX process groups and
+    # signals, so there it forwards (to no one) and answers 503 like a lean server.
+    _bots_registry.set_lean(lean or _platform.IS_WINDOWS)
     app.middleware("http")(_bots_forward)
 
     # The bots' scheduler thread. `@on_startup`, so a lean `fused-render open`
-    # starts none. Its first pass elects the owner; the winner then runs the
+    # starts none; and only on a machine that has used bots (else lazily, see below). Its first pass elects the owner; the winner then runs the
     # layout migration, the FusedBot import, the Super Bot seed, the orphan
     # browser sweep and the channels router before its first tick
     # (registry._become_owner) — all of which used to run here in every process.
     @on_startup
     async def _startup_bots():
+        if _platform.IS_WINDOWS:
+            logger.info("bots are not supported on Windows; the scheduler is not started")
+            return
         from fused_render.bots import registry as bots_registry
 
+        # Only a machine that has used bots (a bot, the Super seed stamp, or a
+        # pending FusedBot import) pays the election/migration/seed at boot; any
+        # other starts the scheduler on its first bots request
+        # (`bots/routes.forward_middleware` -> `registry.ensure_started`).
+        if not bots_registry.has_been_used():
+            logger.info("bots: no prior use on this machine; the scheduler starts on the first bots request")
+            return
         try:
             # Off the loop: a win runs the layout migration, the import and the takeover walk before returning.
             await asyncio.to_thread(bots_registry.start)
@@ -1282,12 +1391,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
                 start_dir, app.state.startup_done)
             index_routes.start_index_job_bridge()
             return
-        await index_routes.startup_scan(start_dir)
-        # ...and warm the corpus path the explorer's home search reads, on a
-        # detached thread, so the gitignore sweep and the duckdb import are
-        # paid at idle rather than by the user's first keystroke
-        # (index/specs/server-api.md §4).
-        index_routes.startup_warm()
+        # The scan (prune + one detached worker per root) and then the warm of
+        # the corpus path the explorer's home search reads (index/specs/
+        # server-api.md §4) run on one daemon thread, so neither delays the bind.
+        index_routes.start_startup_scan_and_warm(start_dir)
         # ...and mirror every scan run into a sys:index:<run_id> Job so it
         # shows up in the Activity card the same way a download does. Same
         # idempotent start-once pattern as the resource-trail start
@@ -1351,7 +1458,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     #   the sidebar's "Check for updates" row would have nowhere to try
     #   against. Each platform's own start() already contains this fallback,
     #   so there is nothing left for this hook to gate on.
-    # - the env var unset and nothing packaged: a no-op (None).
+    # - `fused-render serve` from a pip/uv/pipx install (cli.py calls
+    #   update.enable_cli_check() before create_app): start() falls through to
+    #   the check-only PyPI manager (update/pypi.py), which surfaces a newer
+    #   release plus the upgrade command. The flag lives in the CLI, not here,
+    #   so create_app() in tests never reaches the network.
+    # - the env var unset, nothing packaged, not the CLI: a no-op (None).
     # Last, and off the request path: the manager's first manifest fetch runs
     # on its own thread.
     # Kept as `_startup_update_dev_manager` (not renamed to match the comment

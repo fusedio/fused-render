@@ -82,23 +82,27 @@ Stdlib only: no `fused_render` import, and (since the switch to `uv sync`) no
 `fused` import either. It runs on whatever `sys.executable` the server used.
 """
 import collections
-import fcntl
 import hashlib
 import json
 import os
-import pty
 import re
 import select
 import shutil
 import struct
 import subprocess
 import sys
-import termios
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+try:  # POSIX-only; absent on Windows, where uv runs behind a plain pipe
+    import fcntl
+    import pty
+    import termios
+except ImportError:
+    fcntl = pty = termios = None
 
 # Stages and their percentages, kept in step with fused_render/envinstall.py's
 # STAGES/STAGE_PCT. Duplicated rather than imported because this file must stay
@@ -1151,6 +1155,8 @@ def _venv_python(venv_dir):
     Kept in step with `envinstall._venv_python`; duplicated rather than imported
     for the same reason the stage percentages are (D152).
     """
+    if sys.platform == "win32":
+        return os.path.join(venv_dir, "Scripts", "python.exe")
     return os.path.join(venv_dir, "bin", "python")
 
 
@@ -2149,6 +2155,8 @@ def _detach():
     state; anything else here is not worth failing an install over, since the
     only thing lost is the tidiness of the teardown.
     """
+    if not hasattr(os, "setsid"):
+        return
     try:
         os.setsid()
     except OSError:

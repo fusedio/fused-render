@@ -113,7 +113,7 @@ reserved for the folders no scan can ever cover (§7.1).
 - **`ignore`** — the prune list (`scan-ignore.md`). `GET` also returns `defaults` so a
   UI can offer "restore defaults".
 
-Both are edited from **Preferences > Files & search** (`frontend/src/shell/settings/indexing.tsx`),
+Both are edited from **Preferences > File index** (`frontend/src/shell/settings/indexing.tsx`),
 which also carries the manual actions of §5.
 
 **A write reconciles.** The engine fingerprints the rules an index was BUILT under

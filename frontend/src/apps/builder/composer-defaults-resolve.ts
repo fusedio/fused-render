@@ -6,35 +6,39 @@ import type { ClaudeDefaults } from "@platform/lib/claude-defaults";
 import type { SessionEffort } from "@platform/lib/api";
 import { listedModelIn } from "@platform/lib/model-vocab";
 import { DEFAULT_EFFORT, DEFAULT_MODEL } from "@apps/claude/ui/composer-defaults";
-import { defaultModelOf, effortsOf, modelsOf } from "@platform/lib/agent-backends";
+import { defaultEffortFor, defaultModelOf, effortsOf, modelsOf } from "@platform/lib/agent-backends";
 
 export interface ComposerPicks {
   /** A concrete model id on the agent's own list — never "". */
   model: string;
-  /** A concrete effort the agent offers — never "". One vocabulary for
+  /** The effort the pair's model takes, or "" for a model that takes none
+   *  (a Copilot model whose catalog row lists no levels): then no flag goes
+   *  on the wire and the composer draws no effort pick. One vocabulary for
    *  every agent (`SessionEffort`, the CLI flag's values). */
-  effort: Exclude<SessionEffort, "">;
+  effort: SessionEffort;
 }
 
-/** Always a concrete pair. For Claude: the global value when this build
+/** Always a concrete model. For Claude: the global value when this build
  *  offers it, else the composer's own fallback (`null`, not read yet, is the
  *  fallback too). "Offers" is the agent catalog's Claude row
  *  (docs/COPILOT_BACKEND.md D11). For ANOTHER agent the global pair is
  *  Claude's and does not apply (the New task card's rule, NewJobModal): the
- *  pair is that agent's `default_model` and the composer's default effort
- *  when the agent lists it, else its first. */
+ *  model is that agent's `default_model` (`chosen`, when given, is the one
+ *  already picked) and the effort is THAT MODEL's default — the CLI's own
+ *  when the catalog carries it, "medium" when the model takes it, its
+ *  first level, or "" when it takes none. */
 export function resolveComposerDefaults(
   defaults: ClaudeDefaults | null,
   agent: string = "claude",
+  chosen?: string,
 ): ComposerPicks {
   if ((agent || "claude") !== "claude") {
     const models = modelsOf(agent);
-    const efforts = effortsOf(agent);
-    const want = defaultModelOf(agent);
+    const want = chosen || defaultModelOf(agent);
+    const picked = (models.includes(want) ? want : models[0]) || want || DEFAULT_MODEL;
     return {
-      model: (models.includes(want) ? want : models[0]) || want || DEFAULT_MODEL,
-      effort: ((efforts.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : efforts[0])
-        || DEFAULT_EFFORT) as ComposerPicks["effort"],
+      model: picked,
+      effort: defaultEffortFor(agent, picked) as ComposerPicks["effort"],
     };
   }
   const model = listedModelIn(defaults?.model, modelsOf("claude")) || DEFAULT_MODEL;

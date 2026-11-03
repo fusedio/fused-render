@@ -328,7 +328,11 @@ def test_the_echo_is_written_before_the_prompt_goes_out(start, agent):
     s.gate = os.path.join(agent.RUNS, "gate-x")
     assert _wait_for(lambda: len(s.out()) >= 1)
     s.say("hi")
-    assert _wait_for(lambda: s.prompts_seen())
+    # The fake logs the inbound `session/prompt` from its reader thread and
+    # the echo check from its main thread a moment later; wait for the check
+    # itself, or a read between the two writes finds no `echo_seen` entry.
+    assert _wait_for(lambda: s.prompts_seen()
+                     and any("echo_seen" in e for e in s.fake()))
     checks = [e for e in s.fake() if "echo_seen" in e]
     assert checks == [{"echo_seen": True, "text": "hi", "t": checks[0]["t"]}]
     rows = s.out()

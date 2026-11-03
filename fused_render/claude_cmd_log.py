@@ -20,6 +20,8 @@ import tempfile
 import threading
 import time
 
+from fused_render import _platform
+
 PREFIX = "claude:"
 # Fallback expiry: a chat's tab disappears this long after its last command
 # wrote anything, and the list is capped, so old chats do not pile up as tabs.
@@ -30,6 +32,11 @@ ACTIVE_WINDOW_SECONDS = 2 * 3600
 DISMISSED = ".dismissed"
 TURN_ENDED = ".turn_ended"
 MAX_CHATS = 8
+# Finished commands (an .exit exists) older than this are deleted by prune():
+# nothing else ever trims root(), and list_chats() runs on every drawer poll.
+PRUNE_AGE_SECONDS = 24 * 3600
+PRUNE_EVERY_SECONDS = 600
+_last_prune: float | None = None
 
 _ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 _BARE_LF = re.compile(rb"(?<!\r)\n")
@@ -37,7 +44,7 @@ _EVAL = re.compile(r"&& eval (.*?) < /dev/null && pwd -P >\|", re.S)
 
 
 def root() -> str:
-    return os.path.join(tempfile.gettempdir(), "fused_render_claude-%d" % os.geteuid(),
+    return os.path.join(tempfile.gettempdir(), "fused_render_claude-%d" % _platform.euid(),
                         "claude-cmds")
 
 
@@ -97,7 +104,7 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -151,20 +158,26 @@ def commands(chat: str) -> list[Cmd]:
     return [Cmd(chat, i) for i in command_ids(chat)]
 
 
-def last_activity(chat: str) -> float:
+def _newest(chat: str, names: list[str]) -> float:
+    """Newest mtime among the non-dot `names` of the chat's dir."""
     d = chat_dir(chat)
     newest = 0.0
-    try:
-        for n in os.listdir(d):
-            if n.startswith("."):
-                continue  # markers are not command activity
-            try:
-                newest = max(newest, os.stat(os.path.join(d, n)).st_mtime)
-            except OSError:
-                pass
-    except OSError:
-        pass
+    for n in names:
+        if n.startswith("."):
+            continue  # markers are not command activity
+        try:
+            newest = max(newest, os.stat(os.path.join(d, n)).st_mtime)
+        except OSError:
+            pass
     return newest
+
+
+def last_activity(chat: str) -> float:
+    try:
+        names = os.listdir(chat_dir(chat))
+    except OSError:
+        return 0.0
+    return _newest(chat, names)
 
 
 def mark(chat: str, name: str) -> None:
@@ -187,9 +200,59 @@ def _marker_time(chat: str, name: str) -> float:
         return 0.0
 
 
+def prune(max_age: float = PRUNE_AGE_SECONDS) -> None:
+    """Delete the files of finished commands (an .exit exists) whose newest
+    file is older than `max_age`. Never removes a chat dir, its dot-markers or
+    an unfinished command: a live Claude host keeps writing into its dir."""
+    try:
+        chats = os.listdir(root())
+    except OSError:
+        return
+    cutoff = time.time() - max_age
+    for chat in chats:
+        if bad_chat(chat):
+            continue
+        d = chat_dir(chat)
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        have = set(names)
+        for n in names:
+            if not n.endswith(".exit") or n.startswith("."):
+                continue
+            ident = n[:-5]
+            files = [ident + ext for ext in (".cmd", ".meta", ".out", ".exit")]
+            newest = 0.0
+            for f in files:
+                if f in have:
+                    try:
+                        newest = max(newest, os.stat(os.path.join(d, f)).st_mtime)
+                    except OSError:
+                        pass
+            if newest >= cutoff:
+                continue
+            for f in files:
+                try:
+                    os.unlink(os.path.join(d, f))
+                except OSError:
+                    pass
+
+
+def _maybe_prune() -> None:
+    global _last_prune
+    t = time.monotonic()
+    if _last_prune is not None and t - _last_prune < PRUNE_EVERY_SECONDS:
+        return
+    _last_prune = t
+    prune()
+
+
 def list_chats() -> list[dict]:
     """Chats with at least one logged command and recent activity, newest
-    first, as terminal-list entries (kind "claude")."""
+    first, as terminal-list entries (kind "claude"). One listdir per chat; only
+    commands without an .exit are ever opened (to see if their pid is alive)."""
+    _maybe_prune()
     out = []
     try:
         names = os.listdir(root())
@@ -197,10 +260,18 @@ def list_chats() -> list[dict]:
         return []
     now = time.time()
     for chat in names:
-        if bad_chat(chat) or not command_ids(chat):
+        if bad_chat(chat):
             continue
-        act = last_activity(chat)
-        running = any(c.running for c in commands(chat))
+        try:
+            files = os.listdir(chat_dir(chat))
+        except OSError:
+            continue
+        have = set(files)
+        ids = {n[:-4] for n in files if n.endswith(".cmd")}
+        if not ids:
+            continue
+        act = _newest(chat, files)
+        running = any(Cmd(chat, i).running for i in ids if i + ".exit" not in have)
         if not running and now - act > ACTIVE_WINDOW_SECONDS:
             continue
         if not running and (_marker_time(chat, DISMISSED) >= act
@@ -375,6 +446,6 @@ def stop(chat: str, grace: float = 3.0) -> list[int]:
             time.sleep(grace)
             for pid in victims:
                 if _pid_alive(pid):
-                    _signal(pid, signal.SIGKILL)
+                    _signal(pid, _platform.SIGKILL)
         threading.Thread(target=reap, daemon=True).start()
     return stopped

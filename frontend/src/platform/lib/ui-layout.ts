@@ -68,6 +68,10 @@ const VIEWSTATE_MAX_KEY = 4096;
 const VIEWSTATE_MAX_VALUE = 512;
 const RECENT_PATHS_MAX = 8;
 const TASKS_IDENT = /^[a-z0-9_-]{1,32}$/;
+// The rail card's dragged size: the server's bounds (shell/ui_layout.py); the
+// client clamps harder on read (rail-peek-lib PEEK_MIN_*, the row's room).
+const RAIL_PEEK_MIN = 120;
+const RAIL_PEEK_MAX = 10000;
 
 /** Debounce before the whole-document PUT: a resize drag or a burst of sort
  *  clicks is one write, not one per event. */
@@ -143,6 +147,14 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
   if (Array.isArray(src.recentPaths)) {
     const paths = [...new Set(src.recentPaths.filter(isKey))];
     out.recentPaths = paths.slice(0, RECENT_PATHS_MAX);
+  }
+  if (typeof src.rememberLastFolder === "boolean") out.rememberLastFolder = src.rememberLastFolder;
+  const rp = src.canvasRailPeek;
+  if (isObj(rp) && isNum(rp.width) && isNum(rp.height)) {
+    out.canvasRailPeek = {
+      width: clampInt(rp.width, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
+      height: clampInt(rp.height, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
+    };
   }
   return out;
 }

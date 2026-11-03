@@ -4,6 +4,7 @@
 // with a per-mount memory params store for the hosts that are not the page's
 // own URL.
 import { Component, lazy, Suspense, useEffect, useState, type MutableRefObject, type ReactNode } from "react";
+import type { CanvasShot } from "./shots/canvas-shot";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ChatFramePlaceholder } from "./ChatPlaceholder";
 import type { ClaudeAsk } from "./ClaudeChat";
@@ -25,6 +26,16 @@ import {
 import { isChunkLoadError } from "@platform/lib/chunk-load";
 
 const ClaudeChat = lazy(() => import("./ClaudeChat"));
+
+/** Fetch the chat's chunk ahead of a mount a host can see coming — the canvas
+ *  rail's hover card, where the first pointer-over would otherwise pay the
+ *  chunk load on top of the transcript read. Idempotent: the module graph
+ *  caches the import, and `lazy` above resolves against the same promise. */
+export function preloadChat(): void {
+  void import("./ClaudeChat").catch(() => {
+    /* the mount's own Suspense/boundary reports a failed chunk */
+  });
+}
 
 /**
  * THE CHUNK'S OWN FAILURE, which `Suspense` has no opinion about: a `lazy`
@@ -214,6 +225,11 @@ export interface ChatMountProps {
   preview?: boolean;
   /** `_noann=1` — no annotate seats, no narrow-view toggle (ClaudeChat). */
   noAnnTools?: boolean;
+  /** The host can photograph its canvas on request (`shots/canvas-shot`):
+   *  the Screenshot seat takes that picture (ClaudeChat). */
+  canvasShot?: CanvasShot;
+  /** The host pane's close button at the top row's left end (ClaudeChat). */
+  onHidePane?: () => void;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -236,6 +252,8 @@ export interface ChatMountProps {
   annotateTarget?: () => HTMLIFrameElement | null;
   /** Replaces `window.top.location` hops; defaults to `navigateUrl`. */
   onNavigate?: (url: string) => void;
+  /** The chat's worktree was removed (ClaudeChat `onWorktreeRemoved`). */
+  onWorktreeRemoved?: () => void;
   /**
    * "While you were away" — OPT-IN, and off unless this is the chat the reader
    * opened (ClaudeChat's `recap`, .claude-design/session-recap.md).
@@ -301,12 +319,15 @@ export function ChatMount(props: ChatMountProps) {
         autoFocus={!props.preview && !props.noFocus}
         {...(props.preview ? { preview: true } : {})}
         {...(props.noAnnTools ? { noAnnTools: true } : {})}
+        {...(props.canvasShot ? { canvasShot: props.canvasShot } : {})}
+        {...(props.onHidePane ? { onHidePane: props.onHidePane } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}
         {...(props.focusRef ? { focusRef: props.focusRef } : {})}
         {...(props.annotateTarget ? { annotateTarget: props.annotateTarget } : {})}
         {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
+        {...(props.onWorktreeRemoved ? { onWorktreeRemoved: props.onWorktreeRemoved } : {})}
         {...(props.recap ? { recap: true } : {})}
       />
      </Suspense>

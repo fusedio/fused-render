@@ -4,18 +4,14 @@ Ports server/lib.ts from claude-config-ui to stdlib Python. Owns:
   - CLAUDE_DIR resolution + config file paths        (config-store.md §1-2)
   - atomic read/write JSON + read-modify-write merge  (config-store.md §3-5)
   - lock-serialized mutation                          (concurrency)
-  - the settings-catalog path split (packaged vs override)
-  - the git layer over CLAUDE_DIR: whitelist .gitignore,
-    ensure_repo, commit, log, status, diff, drift      (version-control.md)
+  - the packaged settings catalog
 
 Every feature module imports from here; no feature reimplements these mechanics
-(specs: "one concept, one owner"). Stdlib only bar one intra-repo import — the
-catalog override resolves under `shell.storage.home_dir()`, which is the single
-owner of ~/.fused-render in this codebase and the reason FUSED_RENDER_HOME
-redirects the override for tests for free.
+(specs: "one concept, one owner"). Stdlib only bar two intra-repo imports:
+`_platform` (the cross-platform file lock) and `shell.storage.home_dir()` (the
+single owner of ~/.fused-render, re-exported for mcp.py's cache path).
 """
 import contextlib
-import fcntl
 import itertools
 import json
 import os
@@ -24,23 +20,8 @@ import subprocess
 import threading
 from typing import Any, Generator, Optional
 
+from fused_render import _platform
 from fused_render.shell.storage import home_dir
-
-
-# An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
-# forks unless `os.path.dirname(executable)` is truthy, and a fork in a process
-# with libproj resident dies with SIGSEGV before exec (rc -11, no output, no
-# exception). `close_fds=False` alone does NOT achieve this — see
-# fused_render/server/gitignore.py and tests/test_git_posix_spawn.py.
-_GIT_BIN = None
-
-
-def _git_bin():
-    # One resolver for the whole process — see app_git._git_bin. Imported
-    # lazily: claude_health imports this package, and git_tools imports
-    # claude_health.
-    from fused_render.shell import git_tools
-    return git_tools.git_bin()
 
 
 # --- config-store.md §1: base directory ------------------------------------
@@ -60,22 +41,19 @@ MARKETPLACES_DIR = os.path.join(CLAUDE_DIR, "plugins", "marketplaces")
 #    Short version: the server has libproj resident, so a plain fork() runs
 #    PROJ's pthread_atfork child handler into a SIGSEGV before exec, and the
 #    default close_fds=True is what takes the fork path on macOS. close_fds=False
-#    makes CPython use posix_spawn, which runs no atfork handlers.
-#
-#    This is why the MCP page stayed broken after the UTF-8 fix below: every
-#    `claude` and every `git` in this package died rc=-11 with EMPTY stderr, in
-#    0.0s, so the module reported "failed to list MCP servers" and git_ops
-#    reported `git add -A failed: ` with nothing after the colon. The same
-#    commands ran fine from a shell, because a shell has no PROJ loaded.
+#    makes CPython use posix_spawn, which runs no atfork handlers. Without it
+#    every `claude` here dies rc=-11 with EMPTY stderr, in 0.0s, and the MCP page
+#    reports "failed to list MCP servers". The same command runs fine from a
+#    shell, because a shell has no PROJ loaded.
 #
 # 2. text/encoding/errors — `text=True` alone decodes with
 #    locale.getpreferredencoding(False), and a GUI-launched server inherits no
 #    LANG/LC_ALL, so on macOS that resolves to ASCII. The moment a child prints
-#    a non-ASCII byte — `claude mcp list` draws ✔/✘/⏸, a commit message has an
-#    em dash, a statusline script emits a nerd-font glyph, a project path is
-#    accented — the decode raises UnicodeDecodeError and the whole action 500s.
-#    Pinning UTF-8 (what all of these actually emit) with errors="replace" makes
-#    the worst case a mojibake character rather than a dead page.
+#    a non-ASCII byte — `claude mcp list` draws ✔/✘/⏸, a statusline script emits
+#    a nerd-font glyph, a project path is accented — the decode raises
+#    UnicodeDecodeError and the whole action 500s. Pinning UTF-8 (what all of
+#    these actually emit) with errors="replace" makes the worst case a mojibake
+#    character rather than a dead page.
 #
 # One dict rather than two, and spread at every call site including the
 # detached Popen — the decode kwargs are inert against its DEVNULL streams, and
@@ -87,133 +65,42 @@ SUBPROCESS_KWARGS = {
     "errors": "replace",
 }
 
-# One lock serializes all config mutation (read-modify-write of settings.json +
-# the git add/commit that follows), so two concurrent actions can't clobber each
-# other. TWO mechanisms, because the port changed where the concurrency comes
-# from: as an html+py app every action was its own subprocess, and an flock on a
-# shared lock file was the only thing that could serialize them; as a server
-# router they are threadpool workers inside ONE process. The threading lock
-# covers this process; the flock still keeps a SEPARATE process (a CLI run of
-# these modules, a second desktop instance, the example app) from interleaving
-# with us. Always acquired
-# in this order, so the pair can't deadlock.
+# One lock serializes all config mutation (the read-modify-write of
+# settings.json and the other config files), so two concurrent actions can't
+# clobber each other. TWO mechanisms: requests run as threadpool workers inside
+# ONE process, where the threading lock serializes them; the flock keeps a
+# SEPARATE process (a CLI run of these modules, a second desktop instance) from
+# interleaving with us. Always acquired in this order, so the pair can't
+# deadlock. The threading lock is not reentrant: a caller holding config_lock()
+# must not call a helper that takes it again.
 _LOCK_PATH = os.path.join(CLAUDE_DIR, ".config-ui.lock")
 _THREAD_LOCK = threading.Lock()
-
-# A SEPARATE lock, only for ensure_repo()'s first-run `git init` — deliberately
-# NOT config_lock()/_THREAD_LOCK. commit() calls ensure_repo(), and every
-# config_lock()-holding caller that mutates settings (preferences patch,
-# memory writes, profile branch ops, …) already holds _THREAD_LOCK when it
-# calls commit(). _THREAD_LOCK is a plain (non-reentrant) threading.Lock, so
-# routing the init check through config_lock() would self-deadlock on the very
-# first edit: config_lock() acquires _THREAD_LOCK, calls commit(), which calls
-# ensure_repo(), which would try to acquire _THREAD_LOCK again on the SAME
-# thread and block forever (see test_config_lock_held_commit_does_not_deadlock).
-# A dedicated lock sidesteps that: it is never held by config_lock(), so
-# ensure_repo() can always take it, whether or not the caller already holds
-# config_lock().
-_INIT_LOCK = threading.Lock()
 
 
 @contextlib.contextmanager
 def config_lock() -> Generator[None, None, None]:
     os.makedirs(CLAUDE_DIR, exist_ok=True)
     with _THREAD_LOCK, open(_LOCK_PATH, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _platform.flock(lock)
         yield
 
 
-# --- preferences.md §5: the settings catalog, packaged + overridable ---------
-# The catalog used to be a checked-in file the refresh rewrote IN PLACE, next to
-# the script. That is impossible now: the shipped copy lives in site-packages
-# (or inside a signed .app bundle), which is read-only in every install that
-# isn't an editable checkout — a refresh there would either fail with EACCES or,
-# worse, succeed and silently disappear on the next upgrade.
-#
-# So the two directions are split, and — this is the part that used to be
-# missed — split BY FIELD, not by file. `load_catalog()` is the merge:
-# curated-overlay fields (label/group/control/options/optionLabels/docKey/
-# unsetLabel) always come from the PACKAGED copy, and doc/default/minVersion
-# come from the override when a refresh has ever written one for that key.
-#
-# Anything less field-grained goes stale the moment someone refreshes. A
-# refresh's own writer (refresh_catalog.py) reads the catalog, edits only
-# doc/default/minVersion, and writes the WHOLE entry back out — so an override
-# file is a full snapshot, frozen at whatever the packaged curated fields
-# looked like the day it was written. Read that snapshot wholesale afterwards
-# and every later upgrade to the packaged copy — a new option added to a
-# `select` (a model landing in or leaving `model`'s options, 2026-09), a
-# relabelled entry, a whole new catalog row — is invisible to anyone who ever
-# pressed "Refresh catalog", forever: the override shadows the packaged file
-# on every read and nothing ever regenerates it (bugbot: reported live on
-# PR #968 — the catalog edit "did not take effect" on a server with a stale
-# override, even though the packaged file was correct). Curated fields are
-# THIS APP'S code, current as of whatever shipped; an override predates that
-# by definition, so it is never a better answer for them. doc/default/
-# minVersion are the opposite — Anthropic's docs, fetched by the user, and the
-# override is the only place a fetch result lives at all.
+# --- preferences.md §5: the settings catalog ---------------------------------
+# settings_catalog.json ships next to this module: the curated list of settings
+# the Settings tab shows (refresh_catalog.CURATED). Its docs half is regenerated from
+# Anthropic's docs by `python3 -m fused_render.claude_config.refresh_catalog`
+# (a development script that rewrites the checked-in file) and read as-is at
+# runtime.
 CATALOG_FILENAME = "settings_catalog.json"
-
-# The doc-half fields a refresh owns and an override may carry per key. Used
-# both by the read-time merge (load_catalog) and to describe what a refresh is
-# allowed to touch — the curated overlay is never in this list.
-_DOC_FIELDS = ("doc", "default", "minVersion")
 
 
 def packaged_catalog_path() -> str:
-    """The catalog that shipped with this package. Read-only by policy."""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), CATALOG_FILENAME)
 
 
-def catalog_override_path() -> str:
-    """The user-writable catalog: <shell home>/claude-config/settings_catalog.json.
-    Under home_dir() so FUSED_RENDER_HOME redirects it (tests never touch the
-    real one) and so a branch ref nests it like every other shell resource."""
-    return os.path.join(home_dir(), "claude-config", CATALOG_FILENAME)
-
-
-def catalog_read_path() -> str:
-    """Which FILE a refresh's doc data currently lives in: the override when
-    it exists, else the packaged copy. This is refresh_catalog.py's own
-    starting point (it edits and rewrites a full snapshot) and a path for
-    diagnostics/tests — it is deliberately NOT what preferences.py serves to
-    the UI any more. See `load_catalog()` for that: a whole file, override or
-    packaged, is never the right answer once the two can each be stale in a
-    different way."""
-    override = catalog_override_path()
-    return override if os.path.isfile(override) else packaged_catalog_path()
-
-
 def load_catalog() -> list:
-    """The catalog preferences.py actually serves: every entry from the
-    PACKAGED copy — current curated fields, current set of keys, current
-    order — with doc/default/minVersion overlaid from the override, per key,
-    when the override still has that key. A key the packaged copy dropped
-    disappears even if the override still lists it; a key the packaged copy
-    added appears immediately even if no one has refreshed since. Only the
-    three doc-half fields ever cross from the override — see the module
-    comment above `CATALOG_FILENAME` for why the split is this granular."""
     with open(packaged_catalog_path(), "r", encoding="utf-8") as f:
-        packaged = json.load(f)
-
-    override_path = catalog_override_path()
-    if not os.path.isfile(override_path):
-        return packaged
-
-    with open(override_path, "r", encoding="utf-8") as f:
-        override = json.load(f)
-    by_key = {d["key"]: d for d in override if "key" in d}
-
-    merged = []
-    for entry in packaged:
-        entry = dict(entry)
-        refreshed = by_key.get(entry["key"])
-        if refreshed:
-            for field in _DOC_FIELDS:
-                if field in refreshed:
-                    entry[field] = refreshed[field]
-        merged.append(entry)
-    return merged
+        return json.load(f)
 
 
 # --- config-store.md §3-5: read / write / merge -----------------------------
@@ -295,16 +182,12 @@ def read_settings() -> dict:
 
 def _tmp_path(path: str) -> str:
     """A sibling temp path for the atomic write below, unique to this CALL —
-    not just this process. A bare f"{path}.tmp-{os.getpid()}" was a second,
-    smaller instance of the same TOCTOU family as ensure_repo()'s `git init`
-    race: two threadpool workers in the same server process share a pid, so
-    they'd race the SAME tmp file (one thread's open()/write() clobbering the
-    other's, one thread's os.replace() removing it out from under the other) —
-    surfaced by ensure_repo() unconditionally rewriting .gitignore on every
-    call, concurrently, from preferences.get() and gitOps.status() on first
-    paint. threading.get_ident() (unique among live threads in this process)
-    plus a counter (unique across nested/successive calls a single thread
-    makes with the same pid+tid, however unlikely) closes it."""
+    not just this process. Two threadpool workers in the same server process
+    share a pid, so a pid-only name would have them race the SAME tmp file (one
+    thread's open()/write() clobbering the other's, one thread's os.replace()
+    removing it out from under the other). threading.get_ident() (unique among
+    live threads in this process) plus a counter (unique across successive
+    calls a single thread makes) closes it."""
     return f"{path}.tmp-{os.getpid()}-{threading.get_ident()}-{next(_tmp_counter)}"
 
 
@@ -315,16 +198,11 @@ _tmp_counter = itertools.count()
 def _atomic_write(path: str) -> Generator[str, None, None]:
     """mkdir -p, yield a fresh sibling temp path to write into, then
     os.replace it over `path` (atomic on the same filesystem) on a clean
-    exit. Uniqueness per call (`_tmp_path`) closed the cross-thread name
-    collision; this closes the other half — an ORPHAN. Before this, a
-    repeating failure between `open()` and `os.replace()` (ENOSPC, a
-    `json.dump` error on a value that turns out not to be serialisable, the
-    process killed mid-write) left the per-call tmp file behind forever,
-    where the old pid-only name would at least have been reused by the next
-    attempt. `CLAUDE_DIR`'s own `.gitignore` (`/*`, ignore-everything) hides
-    the ones written there, but `catalog_override_path()` writes under
-    `~/.fused-render`, which has no such rule and nothing that ever cleans
-    orphaned tmp files up.
+    exit. Uniqueness per call (`_tmp_path`) closes the cross-thread name
+    collision; the cleanup below closes the other half — an ORPHAN. A failure
+    between `open()` and `os.replace()` (ENOSPC, a `json.dump` error on a value
+    that turns out not to be serialisable, the process killed mid-write) would
+    otherwise leave the per-call tmp file behind forever.
 
     `os.replace` itself is INSIDE the try, not after it — a version that
     only guarded the write and let `os.replace` run unguarded afterward
@@ -345,7 +223,7 @@ def _atomic_write(path: str) -> Generator[str, None, None]:
 def write_json(path: str, value: Any) -> None:
     """Atomic write (config-store.md §4): mkdir -p, write a sibling temp file,
     then os.replace over the target (atomic on the same filesystem). Pretty
-    2-space + trailing newline keeps git diffs clean (version-control.md §3)."""
+    2-space + trailing newline."""
     with _atomic_write(path) as tmp:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(value, f, indent=2, ensure_ascii=False)
@@ -387,210 +265,6 @@ def delete_path(obj: dict, path: str) -> None:
     cur.pop(leaf, None)
 
 
-def flatten(obj: Optional[dict], prefix: str = "") -> dict:
-    """Flatten a settings object to dotted leaf paths -> value, for key-level
-    diffs (version-control.md §6 settings delta)."""
-    out = {}
-    for k, v in (obj or {}).items():
-        key = f"{prefix}{k}"
-        if isinstance(v, dict):
-            out.update(flatten(v, key + "."))
-        else:
-            out[key] = v
-    return out
-
-
-# --- version-control.md §2: whitelist .gitignore (secret safety) ------------
-# ignore-everything-then-opt-in. Verbatim port; the trailing projects/* lines
-# are the surgical re-include that tracks ONLY projects/*/memory/** while
-# leaving transcripts and session state ignored.
-GITIGNORE = """/*
-!.gitignore
-!settings.json
-!settings.local.json
-!CLAUDE.md
-!keybindings.json
-!statusline-command.sh
-!hooks/
-!agents/
-!skills/
-!commands/
-!projects/
-projects/*
-!projects/*/
-projects/*/*
-!projects/*/memory/
-**/.DS_Store
-"""
-
-
-def git(*args: str, check: bool = True) -> str:
-    """Run a git command against CLAUDE_DIR, returning stripped stdout.
-
-    `git -C <dir>` rather than `cwd=`, and SUBPROCESS_KWARGS rather than the
-    defaults: both halves of the discipline app_git.py's module docstring lays
-    out, for the same reasons — a `cwd=` that no longer exists fails inside the
-    spawn instead of inside git, and a forking spawn dies rc=-11 the moment
-    PROJ is resident in this process."""
-    res = subprocess.run(
-        [_git_bin(), "-C", CLAUDE_DIR, *args],
-        capture_output=True,
-        **SUBPROCESS_KWARGS,
-    )
-    if check and res.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {res.stderr.strip()}")
-    return res.stdout
-
-
-def ensure_repo() -> None:
-    """version-control.md §1. Idempotent; safe to call at the top of every git
-    action (there is no persistent server to bootstrap once).
-
-    The init step (this function's own docstring used to just say "idempotent"
-    and leave it there) was a bare check-then-act: `os.path.isdir(.git)` then
-    `git init`, with no lock. server/routers/claude_config.py dispatches every
-    module through `run_in_threadpool` — genuine concurrency inside one
-    process — and on the Claude config page's first paint, PreferencesSection's
-    preferences.get() and useGitStatus's gitOps.status() both land here
-    UNGUARDED by config_lock() (neither action mutates anything, so neither
-    takes the lock). Two threads racing `git init` on the same fresh
-    CLAUDE_DIR: the loser dies mid-template-copy with "File exists" — git's
-    copy_file() lstats each destination and skips existing entries, then opens
-    with O_CREAT|O_EXCL, so EEXIST can only happen in that window.
-
-    Fixed with _INIT_LOCK (see its own comment for why it is a lock separate
-    from config_lock()'s _THREAD_LOCK — routing this through config_lock()
-    would deadlock the moment an edit's config_lock()-held commit() call
-    re-enters ensure_repo()). The WHOLE bootstrap — `git init`, identity, the
-    .gitignore write, the seed commit — has to live inside that one lock, not
-    just the `git init` call: the seed commit is its own TOCTOU (several
-    threads all read an unborn HEAD before any of them commits, then all run
-    `git add -A` + `git commit` and collide on git's own `index.lock`), and
-    proving that needed nothing more exotic than the SAME concurrent-first-run
-    test that caught the `git init` race — it just kept failing one step later
-    until this whole block was under the lock.
-
-    Double-checked with a cheap upfront read so the fast path — true for the
-    entire life of the repo after the first run — never touches the lock;
-    read-only actions (status, log, diff) aren't serialized behind each other
-    for the process's whole life over this. The fast path checks THREE things,
-    not two: `.git` isdir, the .gitignore content already matching, AND a born
-    HEAD (`git rev-parse --verify HEAD`). Omitting the HEAD check was an
-    earlier version of this fix and it was wrong — it let the seed commit
-    stay permanently un-retried: if that commit ever failed for a real
-    reason, the first two conditions would already be true forever after, so
-    the fast path would return early on every subsequent call and nothing
-    would heal or report the missing HEAD. A rev-parse against the local
-    on-disk repo is a stat-class git operation (no network, no working-tree
-    walk), so paying it on every call is worth the guarantee.
-
-    That still only serializes threads INSIDE this process: a SECOND process
-    (another desktop instance, a CLI invocation of these modules) racing this
-    bootstrap on the same fresh CLAUDE_DIR is not covered by any lock this
-    function holds. Belt-and-braces
-    for that gap: `git init` and the seed `git commit` treat their own
-    failure as benign ONLY if the post-condition they exist to establish
-    already holds afterward — a valid git dir, HEAD being born — the signature
-    of "someone else already won this race" rather than a real failure.
-
-    That post-condition for `git init` is deliberately NOT `os.path.isdir(.git)`
-    — checking that would be wrong, and the ORIGINAL bug report is the proof:
-    the user's error was `cannot copy … to
-    ~/.claude/.git/hooks/pre-applypatch.sample: File exists`,
-    i.e. `.git/hooks/` already existed while `git init` was genuinely still
-    failing. `git init` creates the `.git` directory FIRST, then writes
-    `HEAD`/`config`, then copies hook templates — so `.git` existing is not
-    proof init finished; a real failure partway through (`ENOSPC`, `EPERM`)
-    leaves it behind too, and checking isdir alone would swallow that error
-    and fall into `git config user.email` against a half-built repo.
-
-    It is ALSO deliberately not `git rev-parse --git-dir` — an earlier
-    version of this fix used exactly that, and a second review round caught
-    why it is wrong: `--git-dir` performs git's normal repository DISCOVERY,
-    which walks UP the filesystem looking for a `.git` directory in any
-    ancestor. Plenty of people keep `~/.claude` (or a `CLAUDE_DIR` override)
-    inside a versioned dotfiles or home repo — from a `CLAUDE_DIR` with no
-    valid `.git` of its own but a repo somewhere above it, `--git-dir` exits
-    0 and prints the ANCESTOR's git dir, so a genuinely failed init there
-    would have looked like a won race and every git() call after this —
-    identity, the seed `git add -A` + `git commit`, and every later
-    commit()/status()/log()/diff() — would have run against that ancestor
-    repo instead: rewriting its config and committing the user's whole
-    dotfiles tree. The property this needs is "THIS EXACT DIRECTORY is a
-    valid repo", never "some repo is reachable by walking up from here". `git
-    rev-parse --resolve-git-dir <path>` is the command that asks exactly
-    that question — it validates the literal path given (no discovery, no
-    walking) and fails (128) on anything short of a genuinely complete repo:
-    an absent directory, an empty one, or one missing `HEAD`/`config`. That
-    still passes for a genuinely won race (the other side's init is
-    functionally done even if it hasn't finished copying every hook
-    template, since templates come last) while correctly failing on a
-    half-built directory OR an ancestor's repo bleeding through.
-
-    An earlier version of this fix ran the seed commit with `check=False`,
-    reasoning that a losing thread's collision "just leaves HEAD as whichever
-    thread committed first." True for the race, but `check=False` also
-    swallows a REAL failure (a bad local identity, a failing
-    `commit-msg`/`pre-commit` hook someone dropped into
-    `~/.claude/.git/hooks`, a full disk, a stale `index.lock` left by a
-    crashed process) with no exception and no report — the config page would
-    then show no history, forever, with nothing to say why. Re-checking HEAD
-    before swallowing the error is what tells the two apart, symmetric with
-    `git init`'s own re-check.
-
-    NOT given the same treatment: the identity `git config` writes, `git add
-    -A`, and `git status --porcelain` inside this same block still run with
-    `check=True` unguarded. All three CAN fail on a second process's
-    `index.lock`/`config.lock` in that same cross-process window, and that
-    failure would surface as a plain `RuntimeError` out of `status()`/`log()`
-    — narrower than the bug this function exists to fix (it needs two
-    concurrent PROCESSES racing a still-empty CLAUDE_DIR, not merely two
-    threads in one), but not covered by the reasoning above. Left as a known
-    gap rather than papered over with speculative tolerance for calls that
-    have no cheap, honest post-condition to re-check (there is no equivalent
-    of "is HEAD born" for "did `git add -A` succeed") — worth hardening if it
-    is ever observed for real, not worth guessing at here.
-    """
-    os.makedirs(CLAUDE_DIR, exist_ok=True)
-    git_dir = os.path.join(CLAUDE_DIR, ".git")
-    gi_path = os.path.join(CLAUDE_DIR, ".gitignore")
-    if (
-        os.path.isdir(git_dir)
-        and read_text(gi_path) == GITIGNORE
-        and git("rev-parse", "--verify", "HEAD", check=False).strip() != ""
-    ):
-        return
-    with _INIT_LOCK:
-        if not os.path.isdir(git_dir):
-            try:
-                git("init")
-            except RuntimeError:
-                # `.git` existing is NOT proof `git init` succeeded (see the
-                # docstring), and `git rev-parse --git-dir` is NOT a safe
-                # substitute — it walks UP to an ancestor repo, so a failed
-                # init inside a versioned dotfiles/home repo would read as
-                # "already done" and every git() call below would run
-                # against the WRONG repository. `--resolve-git-dir` checks
-                # the exact given path, no discovery.
-                if git("rev-parse", "--resolve-git-dir", ".git", check=False).strip() == "":
-                    raise  # a real failure, not a lost race
-            # local identity so commits work without a global git config
-            if not git("config", "user.email", check=False).strip():
-                git("config", "user.email", "config-ui@local")
-            if not git("config", "user.name", check=False).strip():
-                git("config", "user.name", "Claude Config UI")
-        if read_text(gi_path) != GITIGNORE:
-            write_text(gi_path, GITIGNORE)
-        # seed commit if the repo has no HEAD yet
-        if git("rev-parse", "--verify", "HEAD", check=False).strip() == "":
-            git("add", "-A")
-            if git("status", "--porcelain").strip():
-                try:
-                    git("commit", "-m", "Initial snapshot of Claude config")
-                except RuntimeError:
-                    if git("rev-parse", "--verify", "HEAD", check=False).strip() == "":
-                        raise  # a real failure, not a lost race
-
 
 def read_text(path: str) -> Optional[str]:
     try:
@@ -604,97 +278,6 @@ def write_text(path: str, content: str) -> None:
     with _atomic_write(path) as tmp:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(content)
-
-
-def commit(message: str, pathspec: Optional[str] = None) -> Optional[str]:
-    """version-control.md §3: add, no-op if nothing staged, else commit.
-    Returns the new HEAD sha or None. `pathspec` narrows the commit to a
-    subset (e.g. one memory folder) leaving other drift uncommitted."""
-    ensure_repo()
-    if pathspec:
-        git("add", "-A", "--", pathspec)
-    else:
-        git("add", "-A")
-    if not git("status", "--porcelain").strip():
-        return None
-    if pathspec:
-        git("commit", "-m", message, "--", pathspec)
-    else:
-        git("commit", "-m", message)
-    return git("rev-parse", "HEAD").strip()
-
-
-def log(n: int = 50) -> list:
-    """version-control.md §4: newest-first [{sha, date, message}]."""
-    ensure_repo()
-    out = git("log", f"-{n}", "--pretty=format:%H%x1f%cI%x1f%s", check=False)
-    entries = []
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        sha, date, message = line.split("\x1f", 2)
-        entries.append({"sha": sha, "date": date, "message": message})
-    return entries
-
-
-def status() -> dict:
-    """version-control.md §5: {dirty, files} from porcelain -uall."""
-    ensure_repo()
-    out = git("status", "--porcelain", "-uall")
-    files = [line[3:] for line in out.splitlines() if line.strip()]
-    return {"dirty": bool(files), "files": files}
-
-
-def _settings_at_ref(ref: str) -> dict:
-    out = git("show", f"{ref}:settings.json", check=False)
-    try:
-        return json.loads(out) if out.strip() else {}
-    except ValueError:
-        return {}
-
-
-def _settings_delta(before: dict, after: dict) -> list:
-    fa, fb = flatten(before), flatten(after)
-    keys = sorted(set(fa) | set(fb))
-    delta = []
-    for k in keys:
-        frm, to = fa.get(k), fb.get(k)
-        if frm != to:
-            delta.append({"key": k, "from": frm, "to": to})
-    return delta
-
-
-def diff(target: str) -> dict:
-    """version-control.md §6: change preview HEAD -> target (restore/switch)."""
-    ensure_repo()
-    if git("rev-parse", "--verify", target, check=False).strip() == "":
-        raise ValueError(f"unknown ref: {target}")
-    files = []
-    out = git("diff", "--name-status", "HEAD", target, check=False)
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        files.append({"status": parts[0][0], "path": parts[-1]})
-    settings = _settings_delta(_settings_at_ref("HEAD"), _settings_at_ref(target))
-    return {"files": files, "settings": settings}
-
-
-def drift_diff() -> dict:
-    """version-control.md §6: uncommitted drift, HEAD -> working tree. Uses the
-    same porcelain source as the status badge so untracked whitelisted files
-    (e.g. a new memory file) are included."""
-    ensure_repo()
-    files = []
-    for line in git("status", "--porcelain").splitlines():
-        if not line.strip():
-            continue
-        code, path = line[:2], line[3:]
-        st = "A" if code.strip() == "??" else code.strip()[0]
-        files.append({"status": st, "path": path})
-    on_disk = read_json(SETTINGS_PATH, {})
-    settings = _settings_delta(_settings_at_ref("HEAD"), on_disk)
-    return {"files": files, "settings": settings}
 
 
 def safe_subdir(base: str, slug: str, tail: str = "") -> str:
@@ -718,8 +301,14 @@ def safe_subdir(base: str, slug: str, tail: str = "") -> str:
 
 def reveal(path: str) -> bool:
     """Open a path in the OS file explorer. Best-effort; argv, never a shell
-    string. macOS `open`; falls back to xdg-open on Linux."""
+    string. macOS `open`, `os.startfile` on Windows, else xdg-open."""
     import sys
+    if sys.platform == "win32":
+        try:
+            os.startfile(path)  # type: ignore[attr-defined]
+            return True
+        except OSError:
+            return False
     cmd = ["open"] if sys.platform == "darwin" else ["xdg-open"]
     try:
         subprocess.run([*cmd, path], capture_output=True, timeout=10, **SUBPROCESS_KWARGS)
@@ -942,120 +531,3 @@ def parse_mcp_list(text: str) -> list:
             "removable": kind == "user",
         })
     return servers
-
-
-def restore(sha: str) -> Optional[str]:
-    """version-control.md §4: checkout whitelisted files at sha, then a forward
-    commit (history is never rewritten)."""
-    ensure_repo()
-    if git("rev-parse", "--verify", sha, check=False).strip() == "":
-        raise ValueError(f"unknown ref: {sha}")
-    git("checkout", sha, "--", ".")
-    return commit(f"Restore config to {sha[:8]}")
-
-
-# --- profiles.md §1-5: git branches over CLAUDE_DIR -------------------------
-# Profiles are branches; these are the branch primitives profiles.py composes.
-# They live here (not in profiles.py) so the whole git layer has one owner.
-
-def current_profile() -> str:
-    """profiles.md §1: the checked-out branch name."""
-    ensure_repo()
-    return git("rev-parse", "--abbrev-ref", "HEAD").strip()
-
-
-def branches() -> list:
-    """profiles.md §2: all branches, marking current and default (main/master)."""
-    ensure_repo()
-    cur = current_profile()
-    out = []
-    for line in git("branch", "--format=%(refname:short)").splitlines():
-        name = line.strip()
-        if not name:
-            continue
-        out.append({
-            "name": name,
-            "current": name == cur,
-            "isDefault": name in ("main", "master"),
-        })
-    return out
-
-
-def create_branch(name: str, frm: Optional[str] = None) -> None:
-    """profiles.md §3: create a branch from `frm` (default HEAD). Never touches
-    the working tree. Raises RuntimeError if git rejects the ref name."""
-    ensure_repo()
-    git("branch", name, *( [frm] if frm else [] ))
-
-
-def switch_branch(name: str) -> None:
-    """profiles.md §4: check out `name`, rewriting tracked files in place."""
-    ensure_repo()
-    git("checkout", name)
-
-
-def delete_branch(name: str) -> None:
-    """profiles.md §5: safe delete (-d); git refuses unmerged branches and the
-    'not fully merged' error surfaces via git()."""
-    ensure_repo()
-    git("branch", "-d", name)
-
-
-def archive_zip(name: str) -> bytes:
-    """profiles.md §6: the branch's tree as a .zip, returned as raw bytes.
-    `git archive` emits binary, so this bypasses the text git() helper — and
-    therefore SUBPROCESS_KWARGS, whose text/encoding half would corrupt the zip.
-    The spawn half is NOT optional and is spelled out here instead: without
-    close_fds=False this dies rc=-11 like everything else in the package (see
-    SUBPROCESS_KWARGS). The tree is only the whitelisted, tracked files
-    (version-control.md §2), so the archive never carries plugins/,
-    ~/.claude.json, or secrets."""
-    ensure_repo()
-    res = subprocess.run(
-        [_git_bin(), "-C", CLAUDE_DIR, "archive", "--format=zip", name],
-        capture_output=True,
-        close_fds=False,
-    )
-    if res.returncode != 0:
-        raise RuntimeError(f"git archive {name} failed: {res.stderr.decode(errors='replace').strip()}")
-    return res.stdout
-
-
-def _within_claude_dir(name: str) -> Optional[str]:
-    """Confine a zip member `name` to CLAUDE_DIR (profiles.md §7 trust boundary).
-    Multi-segment analog of safe_subdir: reject absolute members and any path
-    whose realpath escapes CLAUDE_DIR (`../` traversal). Returns the absolute
-    target, or None if the entry must be refused."""
-    if name.startswith("/") or name.startswith("\\"):
-        return None
-    base_real = os.path.realpath(CLAUDE_DIR)
-    target = os.path.realpath(os.path.join(base_real, name))
-    if target != base_real and not target.startswith(base_real + os.sep):
-        return None
-    return target
-
-
-def import_archive(zip_bytes: bytes, paths: list) -> list:
-    """profiles.md §7: extract selected members of a zip into CLAUDE_DIR, each
-    overwriting in place. A selected `path` matches a file (== path) or a folder
-    (startswith path + '/'). Every member is confined to CLAUDE_DIR; traversal
-    entries are refused, not written. Returns the sorted rel paths written."""
-    import io
-    import zipfile
-
-    written = []
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        for info in zf.infolist():
-            name = info.filename
-            if name.endswith("/"):
-                continue  # directory marker; its files carry the content
-            if not any(name == p or name.startswith(p.rstrip("/") + "/") for p in paths):
-                continue
-            target = _within_claude_dir(name)
-            if target is None:
-                continue  # traversal / absolute — refuse
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with zf.open(info) as src, open(target, "wb") as dst:
-                dst.write(src.read())
-            written.append(name)
-    return sorted(written)

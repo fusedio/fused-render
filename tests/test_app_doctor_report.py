@@ -82,6 +82,7 @@ def _clean_git_upstream_state(monkeypatch):
     monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
 
 PAGE = ('<html><head><meta name="fused-app" />'
+        '<meta name="fused-app-id" content="demo-0a1b2c3d" />'
         '<meta name="fused-api-version" content="{v}" /></head><body>hi</body></html>')
 
 
@@ -134,6 +135,7 @@ def _state(report, cid):
 _EXPECTED_META = {
     "secrets": ("essentials", "critical", "candidate"),
     "entry": ("essentials", "critical", "fact"),
+    "app-id": ("essentials", "warning", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
     "readme": ("essentials", "info", "fact"),
@@ -142,7 +144,9 @@ _EXPECTED_META = {
     "git": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
-    "cross-browser": ("sharing", "warning", "candidate"),
+    # Always present since the contribution loop stopped being a flag
+    # (2026-10-29, `contrib/flags.py`: `sources()` is on everywhere).
+    "fused-dir-committed": ("sharing", "warning", "fact"),
 }
 
 
@@ -167,6 +171,8 @@ def test_checks_are_grouped_essentials_then_sharing_in_server_order(workspace):
     d = _app(workspace)
     report = app_doctor.report(str(d))
     ids = [c["id"] for c in report["checks"]]
+    # Every row, `fused-dir-committed` included: the contribution loop is
+    # always on (2026-10-29), so the row is no longer flag-gated away.
     assert ids == list(app_doctor.CHECK_ORDER)
     sections = [c["section"] for c in report["checks"]]
     # Every essentials row before every sharing row.
@@ -187,6 +193,35 @@ def test_ok_is_false_on_a_failing_warning_row(workspace):
     report = app_doctor.report(str(d))
     assert _state(report, "preview") == "fail"
     assert report["ok"] is False
+
+
+def test_a_missing_app_id_is_a_warning_naming_the_entry_and_the_tag(workspace):
+    """The Community lists apps by their fused-app-id: a page without one
+    (or with a malformed one) is a warning row; the fix names the tag."""
+    d = _app(workspace)
+    page = d / "index.html"
+    page.write_text(page.read_text().replace(
+        '<meta name="fused-app-id" content="demo-0a1b2c3d" />', ""))
+    report = app_doctor.report(str(d))
+    row = _rows(report)["app-id"]
+    assert (row["state"], row["severity"], row["section"]) == ("fail", "warning", "essentials")
+    assert "index.html" in row["detail"] and '<meta name="fused-app-id"' in row["detail"]
+    assert row["findings"][0]["path"] == "index.html"
+    assert report["ok"] is False
+    assert app_doctor.report_one(str(d), "app-id")["state"] == "fail"
+    page.write_text(page.read_text().replace(
+        '<meta name="fused-app" />',
+        '<meta name="fused-app" /><meta name="fused-app-id" content="Not An Id" />'))
+    assert app_doctor.report_one(str(d), "app-id")["state"] == "fail"
+    from fused_render import app_id
+
+    page.write_text(page.read_text().replace(
+        '<meta name="fused-app-id" content="Not An Id" />', ""))
+    assert app_id.ensure(str(page), "Demo")
+    row = app_doctor.report_one(str(d), "app-id")
+    assert row["state"] == "pass" and app_id.app_id(str(page)) in row["detail"]
+    prompt = app_doctor.doctor_prompt(str(page), "app-id", [], "x")
+    assert "`app-id`" in prompt and "commit" in prompt
 
 
 def test_a_missing_readme_is_info_and_does_not_make_the_app_not_ok(workspace):
@@ -229,9 +264,8 @@ def test_a_clean_app_passes_every_check_it_can_answer(workspace):
     rows = _rows(report)
     assert report["ok"] is True
     assert report["entry"] == str(d / "index.html")
-    # Every row is one of the four states (`unrun` is the on-demand
-    # cross-browser row before anyone asked for it), and none of them failed.
-    assert {c["state"] for c in report["checks"]} <= {"pass", "fail", "skip", "unrun"}
+    # Every row is one of the three states, and none of them failed.
+    assert {c["state"] for c in report["checks"]} <= {"pass", "fail", "skip"}
     assert [c["id"] for c in report["checks"] if c["state"] == "fail"] == []
     # pyproject.toml is present (the fixture writes one) and parses.
     assert rows["pyproject"]["state"] == "pass"
@@ -1114,8 +1148,8 @@ def test_post_creates_one_task_for_the_named_row_invoking_the_skill(
     (d / "README.md").unlink()
     seen = []
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda entry, prompt, *rest:
-                        seen.append((entry, prompt)) or ({"id": "t1", "run_id": "r1"}, None))
+                        lambda entry, prompt, *rest, **kw:
+                        seen.append((entry, prompt, kw)) or ({"id": "t1", "run_id": "r1"}, None))
     r = client.post("/api/apps/doctor", json={"path": str(d), "check": "readme"},
                     headers=HDRS)
     assert r.status_code == 200
@@ -1127,7 +1161,9 @@ def test_post_creates_one_task_for_the_named_row_invoking_the_skill(
     # The task lands on the FILE (that is what lets "open this task" reach the
     # page rather than the folder), and its prompt invokes the skill by name
     # and points at this row's own section.
-    (entry, prompt), = seen
+    (entry, prompt, kw), = seen
+    # A doctor session is a lean one (`--strict-mcp-config`, #1802).
+    assert kw.get("strict_mcp") is True
     assert entry == str(d / "index.html")
     assert app_doctor.is_doctor_prompt(prompt)
     assert app_doctor.doctor_task_check_id(prompt) == "readme"
@@ -1154,7 +1190,7 @@ def test_post_check_all_covers_every_failing_row_in_one_task(
     (d / "app.py").write_text('DATA = "/Users/alice/data.csv"\n')
     seen = []
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda entry, prompt, *rest:
+                        lambda entry, prompt, *rest, **kw:
                         seen.append(prompt) or ({"id": "t1", "run_id": "r1"}, None))
     r = client.post("/api/apps/doctor", json={"path": str(d), "check": "all"},
                     headers=HDRS)

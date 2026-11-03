@@ -27,17 +27,19 @@ test("the lists and labels are the CLI's vocabulary, verbatim (T:11823-11876)", 
   ]);
   expect(EFFORTS).toEqual(["low", "medium", "high", "xhigh", "max"]);
   expect(PERMISSION_MODES).toEqual(["plan", "prompt", "acceptEdits", "auto"]);
+  // The New task card's words, shared through platform/lib/permission-modes
+  // (Akshil, 2026-11-02: one vocabulary for both pickers).
   expect(PERMISSION_MODES.map((m) => PERMISSION_LABELS[m])).toEqual([
-    "plan first",
-    "ask every time",
-    "auto-accept edits",
-    "Claude decides",
+    "Plan only",
+    "Ask every time",
+    "Accept edits",
+    "Auto",
   ]);
   expect(PERMISSION_MODES.map((m) => PERMISSION_SHORT[m])).toEqual([
-    "plan",
-    "ask",
-    "edits",
-    "decides",
+    "Plan",
+    "Ask",
+    "Edits",
+    "Auto",
   ]);
   expect([DEFAULT_MODEL, DEFAULT_EFFORT, DEFAULT_PERMISSION]).toEqual([
     "sonnet",
@@ -119,4 +121,19 @@ test("permission ranks recorded > param > global pref > auto; unknown is the str
   expect(resolvePermission("yolo")).toBe("prompt");
   expect(resolvePermission("yolo", undefined, "auto")).toBe("prompt");
   expect(resolvePermission(undefined, undefined, "yolo")).toBe("prompt");
+});
+
+test("resolveEffort: a model that takes no effort resolves to none; a model's own default leads the fallback", () => {
+  // No levels at all: "" whatever a record, a param or detection carries.
+  expect(resolveEffort("high", "low", "medium", [])).toBe("");
+  // The model's own default is the fallback when it is one of its levels…
+  expect(resolveEffort(undefined, undefined, undefined, ["low", "high"], "high")).toBe("high");
+  // …else medium when listed, else the first level.
+  expect(resolveEffort(undefined, undefined, undefined, ["low", "high"], "max")).toBe("low");
+  expect(resolveEffort(undefined, undefined, undefined, ["low", "medium", "high"], "max")).toBe("medium");
+  // An unlisted value at any rank falls to that fallback, never through.
+  expect(resolveEffort("max", undefined, undefined, ["low", "medium"], "low")).toBe("low");
+  expect(resolveEffort(undefined, undefined, "xhigh", ["low", "medium"], "low")).toBe("low");
+  // A listed value still wins over the default.
+  expect(resolveEffort(undefined, undefined, "medium", ["low", "medium"], "low")).toBe("medium");
 });

@@ -48,12 +48,14 @@
 //     (McpDialog) rather than in the sidebar, whose two remaining companions are
 //     tabs now (SideChrome's SideTabs). The dialog's open state lives in
 //     Preview.tsx because Open With → MCP has to reach it too.
+import { canonFsPath } from "@platform/lib/path-url";
 import { useEffect, useState, type ReactNode } from "react";
-import { Plug, Stethoscope } from "lucide-react";
+import { Plug, Stethoscope, Users } from "lucide-react";
 import { addCurrentApp, getAppEntry } from "@platform/lib/api";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
+import { ContribModal } from "@shell/contrib/ContribModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
@@ -68,6 +70,11 @@ import type { MenuEntry } from "@platform/ui/ContextMenu";
 // lucide at MenuIcons' own weight (1.5 on a 24 grid, 16px) so the two rows that
 // have no MenuIcons glyph sit in the list at the same stroke as the rest.
 const LUCIDE = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
+
+// The server answers os.path.abspath (backslashes on Windows) while fsPath is
+// the shell's canonical forward-slash form — same drive-letter-only
+// normalization rule as the URL codec (a backslash in a POSIX filename must not
+// be rewritten).
 
 export interface EntryActionsMenuProps {
   // The app's ENTRY PAGE, or the page that might be one. Over a file preview
@@ -154,14 +161,22 @@ export function useAppActionRows({
   const [isEntryProbed, setIsEntry] = useState(false);
   const isEntry = isEntryKnown ?? isEntryProbed;
   const [doctorOpen, setDoctorOpen] = useState(false);
+  // The Community sheet (shell/contrib/ContribModal, CONTRIB_LOOP.md §19.5):
+  // the app page's Community tab as a dialog — where this app stands, its
+  // changes and proposals, every button — so a person working in the
+  // explorer never has to leave for the app page. Offered on every app,
+  // whatever the Community switches say (§19.2): the sheet reads the ladder,
+  // which answers for any app of the user's own.
+  const [contribOpen, setContribOpen] = useState(false);
   useEffect(() => {
     let alive = true;
     setIsEntry(false);
     setDoctorOpen(false);
+    setContribOpen(false);
     if (isEntryKnown !== undefined) return; // the caller answered; nothing to ask
     getAppEntry(dir)
       .then((r) => {
-        if (alive) setIsEntry(r.entry != null && r.entry === fsPath);
+        if (alive) setIsEntry(r.entry != null && canonFsPath(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no rows for nothing */
@@ -188,7 +203,7 @@ export function useAppActionRows({
   // opens the sheet; OFF, it is the "Download app" row this menu carried
   // before the sheet — the same `.fused` straight to Downloads, a toast saying
   // where — with its own spinner, since there is no sheet to narrate the save.
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
   const [exporting, setExporting] = useState(false);
   const shareDisabled = snapshotPending || snapshotError || exporting;
   // One Share entry opens the unified sheet (ShareAppModal): the public link
@@ -302,6 +317,16 @@ export function useAppActionRows({
   const doctor: MenuEntry[] = [];
   if (isEntry) {
     doctor.push({
+      label: "Community",
+      icon: <Users {...LUCIDE} />,
+      title:
+        "Where " + name + " stands: put it on GitHub, list it in the Community, " +
+        "bring in the latest, propose changes, review what others sent",
+      onClick: () => setContribOpen(true),
+    });
+  }
+  if (isEntry) {
+    doctor.push({
       label: "App Doctor",
       icon: <Stethoscope {...LUCIDE} />,
       title:
@@ -318,8 +343,9 @@ export function useAppActionRows({
   // whose parent IS the folder; the file preview hands it the previewed
   // file, whose parent is the file's own directory — exactly "a folder →
   // that folder, a file → its parent" the row is meant to open.
-  // `useCanRunInTerminal()` is the one place the gate lives
-  // (platform/lib/terminalDockStore.ts).
+  // Also hidden on Windows: the server routes 501 there regardless (see
+  // fused_render/server/routers/terminal.py). `useCanRunInTerminal()` is the
+  // one place both conditions live (platform/lib/terminalDockStore.ts).
   const canRun = useCanRunInTerminal();
   const terminal: MenuEntry[] = !canRun
     ? []
@@ -353,7 +379,9 @@ export function useAppActionRows({
     terminal,
     isEntry,
     badge: isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined,
-    modal: doctorOpen ? (
+    modal: contribOpen ? (
+      <ContribModal dir={dir} slug={name} onClose={() => setContribOpen(false)} />
+    ) : doctorOpen ? (
       <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} onOpenGit={onOpenGit} />
     ) : null,
   };

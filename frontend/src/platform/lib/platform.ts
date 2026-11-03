@@ -28,6 +28,32 @@ function detectMac(): boolean {
 
 export const isMac: boolean = detectMac();
 
+/** "Win32" / "Windows" but not "darwin" (which also contains "win"). */
+export function matchesWindows(source: string): boolean {
+  return /^win|windows/i.test(source);
+}
+
+function detectWindows(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return matchesWindows(nav.userAgentData?.platform ?? nav.platform ?? nav.userAgent ?? "");
+}
+
+export const isWindows: boolean = detectWindows();
+
+/** "Linux x86_64" / "Linux", but not Android, whose platform string is Linux too. */
+export function matchesLinux(source: string, userAgent: string = ""): boolean {
+  return /linux/i.test(source) && !/android/i.test(userAgent);
+}
+
+function detectLinux(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return matchesLinux(nav.userAgentData?.platform ?? nav.platform ?? nav.userAgent ?? "", nav.userAgent ?? "");
+}
+
+export const isLinux: boolean = detectLinux();
+
 export function isMod(e: ModifierEvent): boolean {
   return isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 }

@@ -2556,6 +2556,10 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    # Lazy start of the Hub refresh threads (no boot hook): idempotent.
+    from fused_render.ai import supervisor as _supervisor
+
+    _supervisor.start_hub_refreshers()
     q, task = body.get("q"), body.get("task")
     # D843: `capability` is the search screen's own scope now that the left
     # pane, not this screen's own (now-removed) Task menu, picks the job — a

@@ -56,6 +56,12 @@ describe("fitPathMiddle", () => {
     expect(fitPathMiddle("fused-render", upTo(8))).toBe("…-render");
   });
 
+  it("reads a Windows path in the same alphabet as every other", () => {
+    const win = "C:\\Users\\akshil\\dev\\fused-render";
+    expect(fitPathMiddle(win, upTo(25))).toBe("C:/Users/…/fused-render");
+    expect(fitPathMiddle(win, upTo(20))).toBe("C:/…/fused-render");
+  });
+
   it("ignores a trailing separator rather than fitting around an empty tail", () => {
     expect(fitPathMiddle("~/Desktop/fused/fused-render/", upTo(25))).toBe(
       "~/Desktop/…/fused-render",

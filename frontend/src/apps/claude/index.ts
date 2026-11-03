@@ -3,7 +3,7 @@
 // host that imports this barrel, which is exactly what `ChatMount`'s
 // `React.lazy` boundary exists to keep out of the shell's entry chunk.
 export type { ClaudeChatProps, ChatParamsSource, ClaudeAsk } from "./ClaudeChat";
-export { ChatMount, type ChatMountProps } from "./ChatMount";
+export { ChatMount, preloadChat, type ChatMountProps } from "./ChatMount";
 // The skeleton a host shows while it is still deciding whether a chat goes in
 // a box (the tasks wall resolving a card's folder) — the same one ChatMount's
 // own `Suspense` shows, so the two waits look like one.
@@ -16,3 +16,18 @@ export { ChatFramePlaceholder } from "./ChatPlaceholder";
  *  learn. Leaf helpers, so this costs the shell chunk nothing but the
  *  functions. */
 export { draftChatUrl, draftHref } from "./ui/list-rows";
+
+/** The canvas page's shot contract and the framed chat's ask (`shots/canvas-shot`). */
+export {
+  CANVAS_SHOT_FROM_PARENT,
+  requestCanvasShotFromParent,
+  type CanvasShot,
+  type CanvasShotAnswer,
+  type CanvasShotBy,
+  type CanvasShotWhat,
+} from "./shots/canvas-shot";
+
+/** The shot viewer, for a host that draws a framed chat's pictures itself
+ *  (CanvasWorkspace `fused-shot-view`). */
+export { ShotViewer } from "./ui/ShotViewer";
+export type { Viewable } from "./ui/attachApi";

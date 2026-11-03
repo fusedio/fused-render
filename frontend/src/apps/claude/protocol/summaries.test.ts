@@ -177,6 +177,16 @@ describe("summarizePermission", () => {
     expect(leftoverInput({ a: 1, b: 2 }, out.covered)).toBeNull();
   });
 
+  test("the Codex host's `_codex` sidecar is plumbing, never shown (docs/CODEX_BACKEND.md D14)", () => {
+    const sidecar = { _codex: { type: "commandExecution", itemId: "item_1" } };
+    const bash = summarizePermission(row("Bash", { command: "ls", description: "ls", ...sidecar }));
+    expect(bash.body).toBe("ls");
+    expect(leftoverInput({ command: "ls", description: "ls", ...sidecar }, bash.covered)).toBeNull();
+    const mcp = summarizePermission(row("mcp__fused_approvals__app_state", { a: 1, ...sidecar }));
+    expect(mcp.body).toBe('{\n  "a": 1\n}');
+    expect(leftoverInput({ a: 1, ...sidecar }, mcp.covered)).toBeNull();
+  });
+
   test("nothing truncates — the payload goes in verbatim", () => {
     const content = "x".repeat(5000);
     expect(summarizePermission(row("Write", { file_path: "/a", content })).body).toBe(content);

@@ -1,6 +1,7 @@
-"""The desk's order lives on the server (D1386): new apps insert at the top,
-POST /api/current-apps/order rewrites it, and a legacy oldest-first file
-reads reversed until its first write stamps it."""
+"""The desk lists by RECENCY (owner, 2026-10-23): newest task activity under
+each folder first, a row with no tasks by when it was added, ties in stored
+(newest-added-first) order. No user order, no drag, no order route. A legacy
+oldest-first file reads reversed until its first write stamps it."""
 import json
 import os
 
@@ -69,29 +70,46 @@ def test_legacy_file_reads_reversed_then_is_stamped(env):
     assert [x["path"] for x in raw["apps"]] == [c, b, a]
 
 
-def test_order_route(env):
+def test_lists_by_newest_task_activity(env, monkeypatch):
+    """A task happening under an older app lifts it above the newer ones; a
+    running task counts; an archived one does not; a row with no live task
+    falls back to when it was added — and opening an app moves nothing."""
+    _, (a, b, c) = env
+    for p in (a, b, c):
+        current_apps.add(p)
+    assert _paths() == [c, b, a]
+    # Activity is matched by containment (`is_under`): a task on a subfolder
+    # of the app is the app's.
+    now = current_apps._now_epoch()
+    rows = [{"key": "ka", "project": a, "status": "done", "happened_at": now + 10},
+            {"key": "kb", "project": b + "/sub", "status": "in_progress", "happened_at": now + 5}]
+    current_apps.observe(rows)
+    assert _paths() == [a, b, c]
+    assert {x["path"]: x["active_at"] for x in current_apps.list_apps()} == {
+        a: now + 10, b: now + 5, c: 0.0}
+    # Opening is not activity: the list stands.
+    current_apps.mark_opened(c, now + 100)
+    assert _paths() == [a, b, c]
+    # Archiving a's task drops its activity; it falls back to added (oldest).
+    rows[0]["status"] = "archived"
+    current_apps.observe(rows)
+    assert _paths() == [b, c, a]
+    # OLD activity still outranks a fresh `addedAt`: a task that finished long
+    # ago under c (discovered just now, so its addedAt is newer) sorts c by
+    # that task, under b's live one — not by the discovery time.
+    rows.append({"key": "kc", "project": c, "status": "done", "happened_at": now - 1000})
+    current_apps.observe(rows)
+    assert _paths() == [b, a, c]
+
+
+def test_get_lists_by_recency_and_there_is_no_order_route(env):
     tmp_path, (a, b, c) = env
     for p in (a, b, c):
         current_apps.add(p)
-    current_apps.mark_opened(b, 42.0)
+    current_apps.observe([{"key": "ka", "project": a, "status": "done",
+                           "happened_at": current_apps._now_epoch() + 10}])
     client = TestClient(create_app(start_dir=str(tmp_path)))
-
-    assert client.post("/api/current-apps/order", json={"paths": [a, b, c]}).status_code == 403
-
-    resp = client.post("/api/current-apps/order", json={"paths": [a, b, c]}, headers=FUSED)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["ok"] is True and [x["path"] for x in body["apps"]] == [a, b, c]
-    # Row fields ride along untouched — the dicts are reordered, not rebuilt.
-    assert next(x for x in body["apps"] if x["path"] == b)["opened_at"] == 42.0
-
-    # Unnamed apps keep their relative order and go first; unknown, relative
-    # and repeated paths are dropped; a trailing slash is the same app.
-    resp = client.post("/api/current-apps/order", headers=FUSED,
-                       json={"paths": [c + "/", "/nope", "rel", c, a]})
-    assert [x["path"] for x in resp.json()["apps"]] == [b, c, a]
-    assert _paths() == [b, c, a]
-
-    for bad in ({"paths": "x"}, {"paths": [1]}, {}, {"paths": None}):
-        r = client.post("/api/current-apps/order", json=bad, headers=FUSED)
-        assert r.status_code == 400, bad
+    body = client.get("/api/current-apps").json()
+    assert [x["path"] for x in body["apps"]] == [a, c, b]
+    r = client.post("/api/current-apps/order", json={"paths": [b, c, a]}, headers=FUSED)
+    assert r.status_code in (404, 405)

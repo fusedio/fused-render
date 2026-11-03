@@ -518,16 +518,25 @@ def test_child_exited_does_not_reap(registry, tmp_path, monkeypatch):
     """_child_exited sees the exit but leaves the zombie in place: returncode
     stays None until the reader's own proc.wait(), so kill()'s `alive` check
     keeps the pid reserved."""
+    import threading
     monkeypatch.setattr(pty_session, "resolve_profile",
                          lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "exit 0"]))
-    session = registry.create()
-    # Hold the reader off the pty so it cannot reap while we look.
-    session._flowing.clear()
-    session._paused[object()] = time.monotonic()
-    assert _wait_until(session._child_exited, timeout=3.0)
-    assert session.proc.returncode is None  # not reaped
-    assert session._child_exited()  # idempotent
-    session._flowing.set()
+    # Hold the reader off the pty so it cannot reap while we look — by not
+    # starting it. A pause cannot: the reader is usually already blocked in
+    # `os.read` (past `_wait_flowing`) by the time `create()` returns, so the
+    # child's exit (EIO) reaps at once — and `_wait_flowing` itself never
+    # holds back an exited child's reap, by design.
+    held = []
+    with monkeypatch.context() as m:
+        m.setattr(threading.Thread, "start", lambda self: held.append(self))
+        session = registry.create()
+    assert held == [session._reader]
+    try:
+        assert _wait_until(session._child_exited, timeout=3.0)
+        assert session.proc.returncode is None  # not reaped
+        assert session._child_exited()  # idempotent
+    finally:
+        session._reader.start()  # the fixture's shutdown joins it
     assert _wait_until(lambda: not session.alive, timeout=3.0)
     assert session.proc.returncode is not None
 

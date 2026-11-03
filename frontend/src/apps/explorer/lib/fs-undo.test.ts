@@ -9,13 +9,20 @@
 // it needs no mechanics of its own: a trash is a rename into ~/.Trash whose
 // destination the server names, so it inverts, reports and toasts through the
 // same code as a move.
-import { beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeEach, expect, test } from "bun:test";
 
 // The apply path renames through the api layer, and the toast wording reaches
 // fs-actions and from there the router, which reads `location` at module scope —
 // so both stubs precede the (therefore dynamic) import, the same trade
 // fs-move.test.ts makes rather than carrying a DOM.
+const realLocation = (globalThis as { location?: unknown }).location;
 (globalThis as { location?: unknown }).location = new URL("http://x/");
+// Put back when the file is done: bun runs every file in one process, and a
+// `location.host` left behind sends every later suite's agent calls down a
+// real WebSocket (agentSocket.ts's `socketUsable`) instead of their fetch stub.
+afterAll(() => {
+  (globalThis as { location?: unknown }).location = realLocation;
+});
 // A trash-move posts {from, to} where a rename posts {src, dst} — same pair,
 // different endpoint — so the stub reads whichever the body carries.
 type Req = { url: string; body: { src?: string; dst?: string; from?: string; to?: string } };

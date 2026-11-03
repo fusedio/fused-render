@@ -33,6 +33,7 @@ stays is the backend half.
 import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -167,6 +168,31 @@ def test_the_shots_dir_is_created_private_and_adopted_on_a_second_call(
     assert stat.S_IMODE(os.lstat(shots).st_mode) == 0o700
     # second message, same directory
     assert agent.main(action="shots_dir") == {"dir": agent._wire_path(str(shots))}
+
+
+def test_an_existing_shots_dir_is_adopted_on_windows(agent, tmp_path,
+                                                     monkeypatch):
+    """Windows has no mode bits: lstat reports every directory as 0o777 and
+    chmod cannot clear them. The first paste created the dir, and every later
+    one hit the "readable by others" refusal, so images never attached."""
+    shots = tmp_path / "fr" / "shots"
+    monkeypatch.setattr(agent, "SHOTS", str(shots))
+    assert "error" not in agent._shots_dir()
+    monkeypatch.delattr(os, "geteuid", raising=False)
+    real_lstat = os.lstat
+
+    class _Lstat:
+        def __init__(self, st):
+            self._st = st
+            self.st_mode = stat.S_IFDIR | 0o777
+
+        def __getattr__(self, name):
+            return getattr(self._st, name)
+
+    monkeypatch.setattr(os, "lstat", lambda p, *a, **k: _Lstat(real_lstat(p, *a, **k)))
+    monkeypatch.setattr(os, "chmod", lambda *a, **k: None)
+    got = agent._shots_dir()
+    assert "error" not in got, got
 
 
 def test_a_shots_dir_anyone_can_write_to_is_refused(agent, tmp_path, monkeypatch):
@@ -648,16 +674,25 @@ _READER_FNS = ["const ANN_STANZA_HEAD", "const ANN_STANZA_CLOCK",
                "function annStanzaIn(", "function annotationsIn("]
 
 
-def test_the_agent_cannot_ask_for_a_screenshot():
+def test_the_agent_cannot_ask_for_a_pane_screenshot():
     """Deliberately out of the app_state tool's reach. Letting the model request
-    pixels every turn is the cost this design avoids: app_state already answers
-    "did my edit land" symbolically. The whole-pane picture and the crops are BOTH
-    the user's own act — a button they pressed, a note they wrote — and neither is
-    something the model may reach for."""
+    pixels of the PANE every turn is the cost this design avoids: app_state
+    already answers "did my edit land" symbolically. The whole-pane picture and
+    the crops are BOTH the user's own act — a button they pressed, a note they
+    wrote — and neither is something the model may reach for.
+
+    The ONE picture the model may ask for is the canvas's (`canvas_screenshot`,
+    tests/test_claude_canvas_shot.py; Akshil, 2026-10-23): a workbench graph or
+    a UDF node's output, which the model itself edits and otherwise cannot see
+    at all — the pane there is a cross-origin frame app_state cannot read. So
+    the roster carries exactly that one screenshot tool, and no pane-shot
+    spelling anywhere."""
     server = open(os.path.join(AGENT_DIR, "permission_server.py"),
                   encoding="utf-8").read()
-    for word in ("pane_shot", "paneShot", "screenshot", "view_shot"):
+    for word in ("pane_shot", "paneShot", "view_shot", "pane screenshot"):
         assert word not in server, word
+    tools = re.findall(r'TOOL = "([a-z_]+)"', server)
+    assert [t for t in tools if "screenshot" in t] == ["canvas_screenshot"], tools
 
 
 # ------------------ the pane-shot toggle wears the composer's own clothes

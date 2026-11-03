@@ -11,7 +11,7 @@ installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
-const { ClaudeChat } = await import("./ClaudeChat");
+const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
@@ -407,6 +407,39 @@ test("the seats are absent on a chat-only mount with no host getter at all", asy
   const { r } = await mountChat();
   await settle(20);
   expect(byClass(r, "c-anncta").length).toBe(0);
+});
+
+test("`noAnnTools` with a URL-carried annmode=1 boots DISARMED, and stays so", async () => {
+  // The canvas node pane (`_noann=1`): the chat is pinned to its chat view, so
+  // an armed mode would have no toggle to undo it. `bootFromParam` arms AFTER
+  // the hook's mount-time disarm (it waits for the target), which is why the
+  // armed state itself is watched (CodeRabbit, #1880).
+  const params = createMemoryParamsStore();
+  params.set({ annmode: "1" });
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(
+      <ClaudeChat {...baseProps} params={params} annotateTarget={hostFrameStub()} noAnnTools />,
+    );
+  });
+  mounted.push(r);
+  await settle(20);
+  const ann = annotationsForTests();
+  expect(ann).not.toBeNull();
+  expect(ann!.armed).toBe(false);
+  expect(ann!.locked).toBe(false);
+});
+
+test("the same annmode=1 boot ARMS without `noAnnTools` (the control)", async () => {
+  const params = createMemoryParamsStore();
+  params.set({ annmode: "1" });
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<ClaudeChat {...baseProps} params={params} annotateTarget={hostFrameStub()} />);
+  });
+  mounted.push(r);
+  await settle(20);
+  expect(annotationsForTests()!.armed).toBe(true);
 });
 
 test("a CONTROLLER REBUILD does not re-send a spent ask (QA #1061)", async () => {

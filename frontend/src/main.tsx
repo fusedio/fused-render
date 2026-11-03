@@ -7,6 +7,7 @@ import { installShellErrorReporter, reportShellError } from "@platform/lib/shell
 import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
 import { installNetTiming, shellPageIdentity } from "@platform/lib/netTiming";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
+import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
 import { hydrateUiState } from "@platform/lib/hydrate-ui-state";
@@ -174,7 +175,9 @@ Promise.all([getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }), uiSt
           bookmarkPollInFlight = false;
         });
     };
-    setInterval(pollBookmarks, BOOKMARK_POLL_MS);
+    // Not ticked while the window is hidden (pause-while-hidden.ts); the focus
+    // listener below catches it up on return.
+    setInterval(pauseWhileHidden(pollBookmarks), BOOKMARK_POLL_MS);
     // Also refresh the instant the window regains focus — the common case for
     // the missing-file flag (D127): switch away, fix/restore the file, switch
     // back, and the sidebar reflects it immediately instead of waiting out the

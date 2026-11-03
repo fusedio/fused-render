@@ -63,9 +63,12 @@ export interface CommandMenuProps {
   active: number;
   onPick(name: string): void;
   onHover?(index: number): void;
+  /** The list's class. The chat's default dresses it from composer.css; a host
+   *  outside the chat bundle (the New task box) passes its own. */
+  className?: string;
 }
 
-export function CommandMenu({ id, rows, active, onPick, onHover }: CommandMenuProps) {
+export function CommandMenu({ id, rows, active, onPick, onHover, className = "chat-cmd-menu" }: CommandMenuProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
   // The highlighted row stays in view as ↑/↓ walk past the eighth.
   useEffect(() => {
@@ -76,7 +79,7 @@ export function CommandMenu({ id, rows, active, onPick, onHover }: CommandMenuPr
     el?.scrollIntoView?.({ block: "nearest" });
   }, [active]);
   return (
-    <div ref={listRef} className="chat-cmd-menu" role="listbox" id={id} aria-label="Commands">
+    <div ref={listRef} className={className} role="listbox" id={id} aria-label="Commands">
       {rows.map((row, i) => (
         <div
           key={row.name}

@@ -65,8 +65,8 @@ describe("storedOptionLabel", () => {
   it("keeps the bare spelling qualified when the qualified form isn't listed but the base is", () => {
     // The catalog does not enumerate every model's `[1m]` permutation — only a
     // couple (`opus[1m]`, `sonnet[1m]`) are listed outright. A model missing
-    // its own listed variant (a fresh entry, or one refresh_catalog hasn't
-    // caught up on) still resolves through the base id — and with no curated
+    // its own listed variant (a fresh entry, or one the catalog
+    // script hasn't caught up on) still resolves through the base id — and with no curated
     // label for that base, the bare spelling is what carries the suffix.
     expect(storedOptionLabel(MODEL_ENTRY, "haiku[1m]")).toBe("haiku [1m]");
   });

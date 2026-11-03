@@ -19,8 +19,12 @@ _LSOF_TIMEOUT_S = 2.0
 _PORT = re.compile(r":(\d+)\s+\(LISTEN\)")
 
 
-def _lsof_ports(pid: int) -> list[int]:
-    """TCP ports `pid` listens on (lsof; macOS ships it, many Linux boxes too)."""
+def lsof_ports(pids: list[int]) -> list[int]:
+    """TCP ports any of `pids` listens on, in ONE lsof call (macOS ships it,
+    many Linux boxes too). [] for no pids, no lsof, or a call that failed."""
+    ids = sorted({int(p) for p in pids if int(p) > 0})
+    if not ids:
+        return []
     # Absolute exe + close_fds=False + no cwd: posix_spawn, never a fork() (a
     # fork with libproj resident dies with SIGSEGV; see app_git.py).
     exe = next((p for p in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.path.exists(p)),
@@ -29,12 +33,18 @@ def _lsof_ports(pid: int) -> list[int]:
         return []
     try:
         proc = subprocess.run(
-            [os.path.abspath(exe), "-nP", "-a", "-p", str(int(pid)), "-iTCP", "-sTCP:LISTEN"],
+            [os.path.abspath(exe), "-nP", "-a", "-p", ",".join(map(str, ids)),
+             "-iTCP", "-sTCP:LISTEN"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_LSOF_TIMEOUT_S, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return []
     return sorted({int(m.group(1)) for m in _PORT.finditer(proc.stdout or "")})
+
+
+def _lsof_ports(pid: int) -> list[int]:
+    """TCP ports `pid` listens on."""
+    return lsof_ports([pid])
 
 
 def _venv_of(args: list[str] | None) -> str | None:

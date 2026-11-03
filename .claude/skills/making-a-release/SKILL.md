@@ -1,13 +1,13 @@
 ---
 name: making-a-release
-description: Use when cutting a new fused-render release, bumping the version, or creating a release tag — bumps __version__, lands it on protected main via a bump PR, then tags vX.Y.Z and pushes the tag to trigger the DMG build/release workflow.
+description: Use when cutting a new fused-render release, bumping the version, or creating a release tag — bumps __version__, lands it on protected main via a bump PR, then tags vX.Y.Z and pushes the tag to trigger the release workflow (DMG/AppImage builds, GitHub Release, PyPI upload).
 ---
 
 # Making a Release
 
 ## Overview
 
-A release is: bump `__version__`, land that bump on `main` **through a PR**, then tag the merged commit `vX.Y.Z` and push the tag. Pushing the tag is what triggers `.github/workflows/release.yml` (build → sign → notarize → publish DMG + GitHub Release).
+A release is: bump `__version__`, land that bump on `main` **through a PR**, then tag the merged commit `vX.Y.Z` and push the tag. Pushing the tag is what triggers `.github/workflows/release.yml`: build → sign → notarize → publish DMG + GitHub Release, and in parallel `build-pypi` → `publish-pypi`, which uploads the wheel to https://pypi.org/p/fused-render through trusted publishing.
 
 **`main` is a protected branch.** Direct pushes are rejected (`GH006: Changes must be made through a pull request`), so the bump PR is not optional — it is the only path. Do not try `git push origin main` first.
 
@@ -83,6 +83,12 @@ A release is: bump `__version__`, land that bump on `main` **through a PR**, the
    gh run list --workflow=release.yml --limit 3
    git branch -d bump-X.Y.Z && git push origin --delete bump-X.Y.Z
    ```
+   Once the run finishes, confirm PyPI has the version:
+   ```bash
+   curl -s https://pypi.org/pypi/fused-render/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])'
+   ```
+   If `publish-pypi` failed, rerun just that job (`gh run rerun <run-id> --failed`);
+   `build-pypi` refusing a tag/version mismatch means the tag is wrong, not the job.
 
 ## Quick Reference
 
@@ -91,6 +97,7 @@ A release is: bump `__version__`, land that bump on `main` **through a PR**, the
 | Version source | `fused_render/__init__.py` → `__version__` |
 | Tag format | `vX.Y.Z` (must match `__version__`) |
 | Release trigger | pushing a `v*` tag → `.github/workflows/release.yml` |
+| PyPI | `publish-pypi` job in the same run; wheel only, trusted publishing, environment `pypi` |
 | Commit message | `Bump version to X.Y.Z` |
 | How the bump lands | bump PR into protected `main`, squash-merged (never a direct push) |
 | What gets tagged | the squash-merge commit on `main`, after `git pull` |
@@ -110,5 +117,7 @@ A release is: bump `__version__`, land that bump on `main` **through a PR**, the
   wait for `state: MERGED`.
 - **Forgetting the tag push.** No tag push = no release, even once the bump is on `main`.
 - **Reusing an existing tag.** Tags are immutable releases; pick an unused version. Check `git tag` first.
+  PyPI is stricter still: once a version is uploaded it can never be uploaded
+  again, even after deleting it there. A broken release ships as the next patch version.
 - **Skipping `git pull`.** Tagging a stale local `main` builds and ships an old
   commit. Always pull (steps 1 and 6) so the tag points at the true latest.

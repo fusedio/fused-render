@@ -44,8 +44,12 @@ export function PathCrumbs({
 
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice((home as string).length) : fsPath;
-  const parts = rest.split("/").filter((s) => s.length > 0);
-  const rootTarget = underHome ? (home as string) : "/";
+  const allParts = rest.split("/").filter((s) => s.length > 0);
+  // A Windows path's first segment is the drive ("C:"): that drive IS the root
+  // crumb and targets "C:/" (bare "C:" is cwd-relative, "/" is no root there).
+  const isDrive = !underHome && /^[A-Za-z]:$/.test(allParts[0] || "");
+  const parts = isDrive ? allParts.slice(1) : allParts;
+  const rootTarget = underHome ? (home as string) : isDrive ? allParts[0] + "/" : "/";
 
   const pieces: ReactNode[] = [
     <a
@@ -60,15 +64,15 @@ export function PathCrumbs({
         navigate(rootTarget, { isDir: true, sel: cameFromSelParam(rootTarget, fsPath) });
       }}
     >
-      {underHome ? "~" : "/"}
+      {underHome ? "~" : isDrive ? allParts[0] : "/"}
     </a>,
   ];
-  let acc = underHome ? (home as string) : "";
+  let acc = rootTarget === "/" ? "" : rootTarget;
   parts.forEach((part, i) => {
     acc = acc + (acc.endsWith("/") ? "" : "/") + part;
     const target = acc;
     const isLast = i === parts.length - 1;
-    if (i > 0 || underHome) {
+    if (i > 0 || underHome || isDrive) {
       pieces.push(
         <span key={"sep" + i} className="path-crumb-sep">
           /

@@ -60,7 +60,6 @@ def main(action: str = "list", name: str = "", kind: str = "github",
             s = lib.read_settings()
             s["extraKnownMarketplaces"] = {**(s.get("extraKnownMarketplaces") or {}), name: entry}
             lib.write_json(lib.SETTINGS_PATH, s)
-            lib.commit(f"Add marketplace {name}")
         return {"ok": True, "name": name}
 
     if action == "remove":
@@ -72,7 +71,6 @@ def main(action: str = "list", name: str = "", kind: str = "github",
             del extra[name]
             s["extraKnownMarketplaces"] = extra
             lib.write_json(lib.SETTINGS_PATH, s)
-            lib.commit(f"Remove marketplace {name}")
         return {"ok": True, "name": name}
 
     return {"ok": False, "error": f"unknown action: {action}"}

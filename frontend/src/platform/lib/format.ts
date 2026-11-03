@@ -55,8 +55,8 @@ export function labelForSource(source: string | undefined): string {
   // documented fallback for the same "not a known route" case — see the file
   // header comment above for why this function stops here rather than also
   // resolving a project name.
-  const stripped = withoutQuery.replace(/\/+$/, "");
-  const segments = stripped.split("/").filter(Boolean);
+  const stripped = withoutQuery.replace(/[/\\]+$/, "");
+  const segments = stripped.split(/[/\\]/).filter(Boolean);
   const base = segments[segments.length - 1] || stripped;
   const dot = base.lastIndexOf(".");
   const name = dot > 0 ? base.slice(0, dot) : base;
@@ -213,4 +213,15 @@ export function dirname(fsPath: string): string {
   const idx = fsPath.replace(/\/+$/, "").lastIndexOf("/");
   if (idx <= 0) return idx === 0 ? "/" : "";
   return fsPath.slice(0, idx);
+}
+
+/** A release's date as people say it: "Mar 4", with the year only when it is
+ *  not this year ("Mar 4, 2025"). Null for a missing or unreadable ISO date.
+ *  The Marketplace's "release of <date>" wording (stage B) reads it. */
+export function releaseDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
 }

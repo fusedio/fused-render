@@ -22,12 +22,14 @@ chat's other actions answer with, so the route returns it as a 200 answer.
 """
 from __future__ import annotations
 
+import copy
 import functools
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -48,6 +50,17 @@ QUICK_S = 5.0
 STATUS_S = 2.0
 #: Each of the (up to five) best-effort commands that undo a failed add.
 CLEANUP_S = 0.6
+
+#: Seconds the git-derived part of a listing (root, rows, dirty flags) is
+#: reused. The chat asks for it on every open and refocus; each answer costs a
+#: rev-parse, a `worktree list` and one `git status` per worktree.
+_LIST_TTL_S = 10.0
+_LIST_CACHE: dict[str, tuple[float, tuple]] = {}
+_LIST_INFLIGHT: dict[str, threading.Event] = {}
+_LIST_LOCK = threading.Lock()
+#: Bumped by `_list_cache_clear`, so a listing already in flight when a
+#: create/remove lands cannot store its pre-mutation answer afterwards.
+_LIST_GEN = 0
 
 #: Same env and `-c` flags as `templates/git/ops.py`: never prompt for a
 #: credential, never page, never colour, raw bytes in paths.
@@ -299,6 +312,58 @@ def _dirty(path: str) -> bool | None:
     return bool(out.strip()) if rc == 0 else None
 
 
+def _list_cache_clear() -> None:
+    """Forget every cached listing (after any worktree mutation, and tests)."""
+    global _LIST_GEN
+    with _LIST_LOCK:
+        _LIST_CACHE.clear()
+        _LIST_GEN += 1
+
+
+def _list_git(path: str) -> tuple:
+    """`(root, rows, dirty)`: the git-derived part of a listing."""
+    root, _, rows = _located_or_refuse(path, _deadline())
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        dirty = list(ex.map(_dirty, [r["path"] for r in rows]))
+    return root, rows, dirty
+
+
+def _list_git_cached(path: str) -> tuple:
+    """`_list_git` behind a `_LIST_TTL_S` single-flight cache keyed on the
+    resolved start directory. Refusals/errors propagate and are never stored,
+    nor is an answer where git failed to say whether an existing worktree is
+    dirty (a timeout) — that one is returned uncached."""
+    key = os.path.realpath(_start_dir(path)) if _start_dir(path) else ""
+    while True:
+        with _LIST_LOCK:
+            hit = _LIST_CACHE.get(key)
+            if hit is not None and time.monotonic() - hit[0] < _LIST_TTL_S:
+                return copy.deepcopy(hit[1])
+            flight = _LIST_INFLIGHT.get(key)
+            owner = flight is None
+            if owner:
+                flight = _LIST_INFLIGHT[key] = threading.Event()
+                gen = _LIST_GEN
+        if not owner:
+            flight.wait(BUDGET_S)
+            continue
+        try:
+            result = _list_git(path)
+            _root, rows, dirty = result
+            complete = not any(d is None and os.path.isdir(r["path"])
+                               for r, d in zip(rows, dirty))
+            if complete and key:
+                with _LIST_LOCK:
+                    if gen == _LIST_GEN:
+                        _LIST_CACHE[key] = (time.monotonic(),
+                                            copy.deepcopy(result))
+            return result
+        finally:
+            with _LIST_LOCK:
+                _LIST_INFLIGHT.pop(key, None)
+            flight.set()
+
+
 @_guarded
 def list_worktrees(path: str) -> dict:
     """Every worktree of `path`'s repo, and which one `path` is in.
@@ -309,11 +374,9 @@ def list_worktrees(path: str) -> dict:
     worktree nested under the main checkout wins over main), else `root`.
     The dirty reads run side by side — each is bounded by `STATUS_S`, and in
     series a dozen worktrees would eat the route's whole budget."""
-    root, _, rows = _located_or_refuse(path, _deadline())
+    root, rows, dirty = _list_git_cached(path)
     start = os.path.realpath(_start_dir(path))
     managed_dir = _managed_dir(root)
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        dirty = list(ex.map(_dirty, [r["path"] for r in rows]))
     worktrees = []
     for i, (r, d) in enumerate(zip(rows, dirty)):
         worktrees.append({
@@ -457,6 +520,19 @@ def _undo_add(root: str, target: str, branch: str) -> None:
             pass
 
 
+def _invalidates_list(fn):
+    """Clear the listing cache after `fn` — failure paths included: a failed
+    create may have half-made a worktree."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _list_cache_clear()
+    return wrapper
+
+
+@_invalidates_list
 @_guarded
 def create_worktree(path: str, name: str, base: str = "") -> dict:
     """`git worktree add -b <branch> <root>/.claude/worktrees/<name> <base>`
@@ -508,6 +584,7 @@ def create_worktree(path: str, name: str, base: str = "") -> dict:
     return {"path": target, "branch": branch}
 
 
+@_invalidates_list
 @_guarded
 def remove_worktree(path: str, name: str, force: bool = False) -> dict:
     """`git worktree remove [--force]` on a MANAGED worktree → `{"removed":

@@ -65,8 +65,10 @@ def test_keep_subdirs_drops_ignored_and_hardcoded_skips():
 
 def test_expanduser_applies_to_path_patterns():
     r = IgnoreRules(["~/Library/Caches"])
-    # `IgnoreRules.__init__` compiles the pattern through `norm(expanduser(...))`;
-    # the path being tested against that regex makes the same trip.
+    # `IgnoreRules.__init__` compiles the pattern through `norm(expanduser(...))`
+    # (forward-slashed even on Windows, where `expanduser` itself hands back
+    # `C:\Users\...`); the path being tested against that regex has to make
+    # the same trip or a native separator never matches at all.
     assert r.is_ignored(norm(os.path.expanduser("~/Library/Caches")))
 
 

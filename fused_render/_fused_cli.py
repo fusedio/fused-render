@@ -45,4 +45,12 @@ if __name__ == "__main__":
 
     from fused._cli import main
 
+    # Before main(): a `--env` of a dev/PR env sets its own (higher) value
+    # later; every other env would otherwise run on the SDK's 5 s default.
+    try:
+        from fused_render._fused_options import raise_request_timeout
+
+        raise_request_timeout()
+    except Exception:  # noqa: BLE001 - the timeout bump must never block the real CLI
+        pass
     main()

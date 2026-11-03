@@ -46,11 +46,13 @@ def require_private(path: str) -> None:
     if not stat.S_ISDIR(st.st_mode):
         raise NotADirectoryError(
             "%s is not a directory (a symlink or file is in the way)" % path)
-    if st.st_uid != os.geteuid():
+    # Windows has no uid: st_uid is always 0 there, so there is nothing to compare.
+    if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
         raise PermissionError(
             "%s belongs to uid %d, not %d — refusing to keep this conversation "
             "under a directory another account controls" % (path, st.st_uid, os.geteuid()))
-    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    # Nor does it have mode bits: lstat reports every directory as 0o777 there.
+    if hasattr(os, "geteuid") and st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise PermissionError(
             "%s is writable by others (mode %04o) — refusing to keep this "
             "conversation there" % (path, stat.S_IMODE(st.st_mode)))

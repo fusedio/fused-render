@@ -136,6 +136,8 @@ export function AppsPanel({ folder }: { folder: string | null }) {
   // importapp strips the wrapper folder, refuses paths that escape the target and never overwrites an existing app.
   const uploadApp = async (file: File | null | undefined) => {
     if (!file) return;
+    // A bot package is not an app: it installs a bot (and its apps) from its own page, reached by a drop on the Bots page.
+    if (/\.fusedbot$/i.test(file.name)) { showBanner("That is a bot package. Drop it on the Bots page, not the apps panel."); return; }
     if (!/\.(zip|fused)$/i.test(file.name)) { showBanner(`${file.name}: upload a .zip of the app folder or a .fused export.`); return; }
     if (file.size > UPLOAD_MAX) { showBanner(`${file.name} is ${(file.size / 1048576).toFixed(0)} MB; app uploads are limited to 64 MB.`); return; }
     setBusy(true);
@@ -151,7 +153,12 @@ export function AppsPanel({ folder }: { folder: string | null }) {
   const dropOk = () => !folder;
   const onDragOver = (e: DragEvent<HTMLDivElement>) => { if (dropOk()) { e.preventDefault(); setDrag(true); } };
   const onDragLeave = (e: DragEvent<HTMLDivElement>) => { if (!panelRef.current?.contains(e.relatedTarget as Node | null)) setDrag(false); };
-  const onDrop = (e: DragEvent<HTMLDivElement>) => { e.preventDefault(); setDrag(false); if (dropOk()) void uploadApp(e.dataTransfer?.files?.[0]); };
+  // A bot package dropped on an open app's view still hears why it was refused (uploadApp says it) rather than vanishing.
+  const onDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault(); setDrag(false);
+    const f = e.dataTransfer?.files?.[0];
+    if (dropOk() || (f && /\.fusedbot$/i.test(f.name))) void uploadApp(f);
+  };
 
   const under = root ? ` under ${root}` : "";
   return (

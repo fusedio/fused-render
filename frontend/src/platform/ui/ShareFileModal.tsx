@@ -475,6 +475,12 @@ export function ShareFileModal({
             </Button>
           </div>
         </div>
+        {shared.public_refused && (
+          <p className="m-0 text-[13px] leading-5 text-muted-foreground">
+            Public links are off for this Fused environment, so this one is shared with your
+            team and expires after 30 minutes.
+          </p>
+        )}
       </div>
     );
   } else {

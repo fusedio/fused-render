@@ -115,6 +115,9 @@ export interface ChatDraft {
 export interface TaskDraftForm {
   title: string;
   description: string;
+  /** The one writing box, verbatim — beats title + description on reopen
+   *  (the split drifts on a single newline). Optional: older drafts lack it. */
+  text?: string;
   target: string;
   when: string | null;
   repeat: string | null;

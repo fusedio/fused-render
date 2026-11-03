@@ -109,14 +109,14 @@ def test_the_link_opens_the_form_immediately(page):
     # key so a fresh card cannot inherit the previous one's answers. The deep link
     # is an opening like any other, and what this test cares about is unchanged —
     # it opens on arrival, prefilled, with no button left to press.
-    assert "const at = new Date(Date.now() + NEW_LINK_LEAD_MS);" in effect
     # A bare `?new=1` with no key — the app page's own "+ New task" link, and an
     # EMPTY never-sent composer's Schedule, which has no record to hand over —
-    # opens on the lead date with nothing stored behind it. It still honours the
+    # opens on Now ("blank", like the page's own "+ New task" button; #1832)
+    # with nothing stored behind it. It still honours the
     # folder and the route back when the link names them (Akshil, 2026-09-16):
     # a blank card that opened on the reader's home with no way out would be the
     # press half working.
-    assert "openForm(\n        at,\n        null," in effect
+    assert 'openForm(\n        "blank",\n        null,' in effect
     assert 'from ? { key: "", from } : NO_HOP,' in effect
     assert 'at0 ? { id: "", form: { target: at0 } } : null,' in effect
     # A KEYED HOP READS THE RECORD FIRST (design "one record", §1). The key that

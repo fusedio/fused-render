@@ -3284,3 +3284,42 @@ def test_these_tests_cannot_reach_the_network():
         socket.getaddrinfo("huggingface.co", 443)
     with pytest.raises(AssertionError, match="tried to reach"):
         socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("1.1.1.1", 80))
+
+
+# -- Windows: no os.pwrite --------------------------------------------------------
+
+
+def test_a_multi_segment_fetch_works_without_os_pwrite(base, monkeypatch,
+                                                       tmp_path, payload):
+    """Windows has no `os.pwrite`; the first segment write used to raise
+    AttributeError. The seek+write fallback must give identical bytes."""
+    url, state = _start_server(payload)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.delattr(os, "pwrite")
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert len(_ranges(state["log"])) > 1
+
+
+def test_pwrite_fallback_is_atomic_across_threads(base, monkeypatch, tmp_path):
+    monkeypatch.delattr(os, "pwrite")
+    path = tmp_path / "f.bin"
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0))
+    lock = threading.Lock()
+    pieces = [(i * 1000, bytes([i]) * 1000) for i in range(16)]
+    threads = [threading.Thread(target=base._pwrite, args=(fd, d, off, lock))
+               for off, d in pieces]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    os.close(fd)
+    assert path.read_bytes() == b"".join(d for _, d in pieces)
+
+
+def test_pwrite_uses_os_pwrite_when_present(base, tmp_path):
+    path = tmp_path / "g.bin"
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT)
+    assert base._pwrite(fd, b"abc", 2, threading.Lock()) == 3
+    os.close(fd)
+    assert path.read_bytes() == b"\0\0abc"

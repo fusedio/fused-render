@@ -16,6 +16,12 @@ export const FETCH_APPFILE_PARAM = "_fetch_appfile";
 // a `.fused` and `FetchAppFileBoot` opens it. Mirrored in deeplink.py
 // (`FETCH_APPGIT_PARAM`).
 export const FETCH_APPGIT_PARAM = "_fetch_appgit";
+// The `?_fetch_market=<slug>` hand-off (CONTRIB_LOOP.md §18.5): a
+// `fused-render://open?marketplace=<slug>` listing link. Nothing is
+// downloaded here — `InstallLinkPage` opens the app's Marketplace page
+// (`/marketplace/app/<slug>?via=link`), whose Get installs the reviewed
+// release. Mirrored in deeplink.py.
+export const FETCH_MARKET_PARAM = "_fetch_market";
 
 /** The value of a boot hand-off param in `search`, or null. Empty is null
  *  too: a bare `?_edit_appfile=` names nothing to open. */
@@ -60,4 +66,9 @@ export function fetchAppGitFromSearch(search: string): string | null {
 
 export function withoutFetchAppGit(url: string): string {
   return withoutBootParam(url, FETCH_APPGIT_PARAM);
+}
+
+/** The Marketplace slug a boot URL's search carries, or null. */
+export function fetchMarketFromSearch(search: string): string | null {
+  return bootParamFromSearch(search, FETCH_MARKET_PARAM);
 }

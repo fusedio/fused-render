@@ -441,3 +441,90 @@ def test_a_symlinked_prefix_above_the_repo_keeps_the_inner_layout(repo, tmp_path
     feat = next(w for w in out["worktrees"] if w["name"] == "feat")
     assert feat["mapped"] == {"path": os.path.join(made["path"], "src", "app.py"),
                               "exists": True}
+
+
+# ------------------------------------------------------------------ list cache
+
+
+@pytest.fixture(autouse=True)
+def _fresh_list_cache():
+    wt._list_cache_clear()
+    yield
+    wt._list_cache_clear()
+
+
+def _counting_locate(monkeypatch, delay=0.0):
+    import time
+
+    calls = []
+    real = wt._locate
+
+    def counting(*a, **kw):
+        calls.append(1)
+        if delay:
+            time.sleep(delay)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(wt, "_locate", counting)
+    return calls
+
+
+def test_list_worktrees_is_cached_within_ttl(repo, monkeypatch):
+    calls = _counting_locate(monkeypatch)
+    first = wt.list_worktrees(repo)
+    second = wt.list_worktrees(repo)
+    assert len(calls) == 1
+    assert first == second
+    # Fresh copies: a caller mutating its result cannot poison the cache.
+    first["worktrees"][0]["dirty"] = "poisoned"
+    assert wt.list_worktrees(repo)["worktrees"][0]["dirty"] is False
+
+
+def test_path_dependent_fields_are_recomputed_per_call(repo, monkeypatch):
+    calls = _counting_locate(monkeypatch)
+    a = wt.list_worktrees(os.path.join(repo, "a.txt"))
+    b = wt.list_worktrees(repo)
+    assert len(calls) == 1
+    assert a["relative"] == "a.txt" and b["relative"] == ""
+
+
+def test_list_worktrees_cache_expires(repo, monkeypatch):
+    monkeypatch.setattr(wt, "_LIST_TTL_S", 0)
+    calls = _counting_locate(monkeypatch)
+    wt.list_worktrees(repo)
+    wt.list_worktrees(repo)
+    assert len(calls) == 2
+
+
+def test_create_and_remove_clear_the_cache(repo):
+    assert len(wt.list_worktrees(repo)["worktrees"]) == 1
+    assert "error" not in wt.create_worktree(repo, "feat")
+    assert len(wt.list_worktrees(repo)["worktrees"]) == 2
+    assert "error" not in wt.remove_worktree(repo, "feat")
+    assert len(wt.list_worktrees(repo)["worktrees"]) == 1
+
+
+def test_errors_are_not_cached(tmp_path):
+    d = tmp_path / "plain"
+    d.mkdir()
+    assert set(wt.list_worktrees(str(d))) == {"error"}
+    _git_init = ["git", "-C", str(d)]
+    subprocess.run([*_git_init, "init", "-q", "-b", "main"], check=True)
+    subprocess.run([*_git_init, "-c", "user.email=t@e.com", "-c", "user.name=T",
+                    "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+    assert "error" not in wt.list_worktrees(str(d))
+
+
+def test_single_flight(repo, monkeypatch):
+    import threading
+
+    calls = _counting_locate(monkeypatch, delay=0.2)
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(wt.list_worktrees(repo)))
+               for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert len(calls) == 1
+    assert len(out) == 4 and all("error" not in o for o in out)

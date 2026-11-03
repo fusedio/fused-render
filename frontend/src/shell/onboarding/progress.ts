@@ -17,8 +17,7 @@
 //   models   none fetched, none     none here, one or more       one or more
 //            downloading            downloading                  models here
 //   app      nothing built          —                            composer made an
-//                                                                app, or a showcase
-//                                                                app was opened
+//                                                                app
 //
 // plus `n/a` for a stage this machine does not have (Disk Access and Git off
 // macOS, Models when no engine can serve anything, Chrome where no bot will
@@ -109,9 +108,8 @@ function set(next: OnboardingState | null) {
 // EVERY REPLY IS THE WHOLE STATE, AND REPLIES DO NOT ARRIVE IN ORDER. Two
 // stage POSTs in one tick, or the sidebar's mount-time GET racing the last
 // write the wizard made on its way out — whichever lands LAST would win, and a
-// stale one would put a stage back to what it was (bugbot: a showcase open is
-// the sharp case, since the server cannot observe it and nothing would ever
-// correct the loss). So a reply is MERGED, not adopted:
+// stale one would put a stage back to what it was. So a reply is MERGED, not
+// adopted:
 //   * flags (completed/dismissed/opened) only ever gain a value — a stamp the
 //     server has made cannot be un-made by an older reply;
 //   * each stage keeps whichever record is NEWER by `updated_at`. An optimistic

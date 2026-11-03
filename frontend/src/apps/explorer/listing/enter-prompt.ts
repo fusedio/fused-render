@@ -29,8 +29,10 @@
 // search on a missing folder instead of failing, which this prompt cannot
 // know about synchronously. Recorded as a known limitation in
 // DECISIONS-one-field-search.md rather than solved here.
+import { canonFsPath, isDriveAbs } from "@platform/lib/path-url";
 export function folderToOpen(query: string): string | null {
-  const segments = query.split("/");
+  // Backslashes separate only a drive-letter query (canonFsPath gates on it).
+  const segments = canonFsPath(query).split("/");
   const globIdx = segments.findIndex((s) => /[*?]/.test(s));
   const folderSegments = globIdx === -1 ? segments.slice(0, -1) : segments.slice(0, globIdx);
   const folder = folderSegments.join("/");
@@ -50,8 +52,8 @@ export function folderToOpen(query: string): string | null {
 // `escapesFsPath` (query-base.ts) already does for its own, narrower
 // yes/no question — `home === undefined` returns null (nothing resolvable
 // yet) the same way that predicate stays on the safe side when home has
-// not loaded. Any other folder (no leading "~") passes through unchanged,
-// same as `folderToOpen` leaves it.
+// not loaded. An already-absolute or drive-letter folder (no leading "~")
+// passes through unchanged, same as `folderToOpen` leaves it.
 //
 // FINDINGS 3 & 4 (code review, 2026-09-10) are the same root cause: this
 // function does not touch the filesystem (that's the whole point of it —
@@ -66,7 +68,7 @@ export function folderToOpen(query: string): string | null {
 //   with `_walk_from`, which climbs however many real directories it
 //   actually takes, exactly the computation this function would have to
 //   duplicate — badly, and without seeing the disk — to get right.
-// - A bare, non-`~` absolute path (finding 4):
+// - A bare, non-`~`, non-drive-letter absolute path (finding 4):
 //   `/Users/*/notes.md` typed on a machine with no `/Users` produces the
 //   guessed folder `/Users`, and `navigate` there lands on a folder that
 //   does not exist — an error listing, and the query is gone. The server
@@ -85,14 +87,14 @@ export function folderToOpen(query: string): string | null {
 // access at all, so it stays the one case worth the (already-documented,
 // already-accepted) risk that the named folder itself does not exist yet.
 export function resolveFolderToOpen(query: string, home: string | undefined): string | null {
-  if (query.split("/").includes("..")) return null;
+  if (canonFsPath(query).split("/").includes("..")) return null;
   const folder = folderToOpen(query);
   if (folder === null) return null;
   if (folder === "~" || folder.startsWith("~/")) {
     if (home === undefined) return null;
     return home + folder.slice(1);
   }
-  if (folder.startsWith("/")) return null;
+  if (folder.startsWith("/") && !isDriveAbs(folder)) return null;
   return folder;
 }
 

@@ -265,6 +265,56 @@ def _appfile_row(a: dict, *, recent: bool = False) -> dict:
     }
 
 
+def canvas_page_for(clone_dir: str) -> str | None:
+    """The shell URL PATH a canvas row opens at — the canvas's PROJECT page
+    (`/canvases-project/<env>/<name>`, the sidebar's canvas-row door, owner
+    2026-10-20: the tabbed read-only view, not the editor), or None when
+    ``clone_dir`` is not a clone. The native side (app.py
+    ``_open_from_launcher``) resolves the row's key through this, the way
+    `window_policy.shell_path_for` resolves an app folder's."""
+    from fused_render.canvases import clone_dir_for
+
+    clone = clone_dir_for(clone_dir)
+    if clone is None:
+        return None
+    env, name, _dir = clone
+    return f"/canvases-project/{env}/{name}"
+
+
+def _canvas_row(env: str, name: str, clone_dir: str, *, pinned: bool) -> dict:
+    """A cloned canvas (`~/Fused/canvas/<env>/<name>`): ``kind: "canvas"``,
+    ``path`` the clone dir (the key the open callback receives, and what
+    `file_results` dedupes against), ``url`` the project page, ``env`` so
+    the panel can say which Fused a same-named prod/unstable pair belongs
+    to. Never ``running``: a window's key (`window_policy.window_key_of`)
+    names /apps and /explorer URLs only, so no window is ever keyed on a
+    canvas page — accepted, not worth a view prefix for the dot."""
+    path = canonical_fs_path(os.path.abspath(clone_dir)).rstrip("/") or clone_dir
+    return {
+        "path": path,
+        "url": f"/canvases-project/{env}/{name}",
+        "name": name,
+        "title": name,
+        "kind": "canvas",
+        "env": env,
+        "pinned": pinned,
+        "recent": False,
+        "running": False,
+        "icon": None,
+    }
+
+
+def _canvases_offered() -> bool:
+    """Whether canvas rows exist at all: the `canvases_enabled` preference
+    (D427). Off, the launcher lists no canvas — not even one on the desk,
+    which the sidebar hides too (its Canvases section is behind the same
+    switch). The flag alone, not the account: the project page answers
+    signed out, as every canvases route does."""
+    from fused_render.shell.prefs import canvases_enabled
+
+    return canvases_enabled()
+
+
 def recent_rows(limit: int = MAX_RESULTS) -> list[dict]:
     """The recently opened apps, newest open first — Home's definition
     (`routers.apps.recent_apps`), so the panel and the Home strip never
@@ -310,8 +360,18 @@ def desk_rows() -> list[dict]:
     from fused_render import app_listing, current_apps
 
     rows = []
+    offered = _canvases_offered()
     for a in current_apps.list_apps():
         if not a.get("exists"):
+            continue
+        canvas = a.get("canvas")
+        if canvas:
+            # A canvas clone on the desk (its Canvases section): a canvas
+            # row to its project page, never an app row to an app page the
+            # clone does not have. Dropped outright while the feature is
+            # off, as the sidebar drops the section.
+            if offered:
+                rows.append(_canvas_row(canvas["env"], canvas["name"], a["path"], pinned=True))
             continue
         entry = a.get("entry")
         title = app_listing.entry_title(entry) if entry else None
@@ -388,6 +448,23 @@ def _registry_uncached() -> list[dict]:
             continue
         seen.add(k)
         rows.append(_folder_row(a, pinned=False))
+    # Every cloned canvas (`canvases.cloned_canvases`), search-only like a
+    # workspace app — only the desk's clones (above) fill the empty query.
+    # Behind the canvases_enabled preference (`_canvases_offered`).
+    if _canvases_offered():
+        try:
+            from fused_render.canvases import cloned_canvases
+
+            clones = cloned_canvases()
+        except Exception:  # noqa: BLE001 — a clone root that cannot be read is zero rows
+            logger.debug("cloned canvases failed", exc_info=True)
+            clones = []
+        for env, name, clone_dir in clones:
+            k = key_of(clone_dir)
+            if k in seen:
+                continue
+            seen.add(k)
+            rows.append(_canvas_row(env, name, clone_dir, pinned=False))
     # Bots last, search-only (`_bot_registry`): a bot id is not a path, so it
     # is not run through the realpath dedupe above.
     rows.extend(_bot_registry(listed=False))
@@ -397,7 +474,8 @@ def _registry_uncached() -> list[dict]:
 def registry(running=frozenset()) -> list[dict]:
     """Every app the launcher can open: the recently opened ones first
     (newest open first), then the rest of the desk (newest-added first),
-    then the workspace + linked apps. Cached
+    then the workspace + linked apps, then — with Canvases on — every
+    cloned canvas (``kind: "canvas"``, search-only unless on the desk). Cached
     for a couple of seconds: the workspace walk is not free and a query
     arrives per keystroke. ``running`` marks the rows whose path a window
     shows. Ties in a search keep this order, so a recent app outranks a

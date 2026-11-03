@@ -38,10 +38,12 @@ machine that has a FusedBot tree (owner's ask, 2026-10-06):
   the stamp is written only when nothing failed, so the next start retries
   just those (everything else is skip-if-exists).
 
-Runs from `_startup_bots` in fused_render/server/app.py, in the worker thread
-that runs `paths.migrate_layout()` (so the destination is in today's layout
-first) and before `registry.start()` (so the scheduler's first pass sees the
-imported bots). Never raises.
+The copy lands in the LEGACY per-bot layout (`paths.legacy_data_dir()` /
+`legacy_cache_dir()`, the layout FusedBot itself uses), and `migrate_v3` lifts
+it into the per-bot workspace folders on the same start: one mover, one set of
+rules. Runs from `registry._become_owner`, after `paths.migrate_layout()` (so
+the destination is in the legacy layout first) and before `migrate_v3` and the
+scheduler's first pass. Never raises.
 """
 from __future__ import annotations
 
@@ -50,6 +52,7 @@ import os
 import shutil
 import time
 
+from fused_render import _platform
 from fused_render.bots import paths as _bpaths
 from fused_render.bots.store import write_json_atomic
 
@@ -106,7 +109,7 @@ def _hot_pid(bot_dir: str) -> int | None:
     try:
         target = os.readlink(os.path.join(bot_dir, "profile", "SingletonLock"))
         pid = int(target.rsplit("-", 1)[1])
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)  # never os.kill(pid, 0): CTRL_C_EVENT on Windows
         return pid
     except (OSError, ValueError, IndexError):
         return None
@@ -146,8 +149,9 @@ def _import_once() -> dict | None:
         "cache": [], "ledgers": [],
     }
 
-    # Bots: data/bots/<id> (or flat data/<id>) -> data/bots/<id>.
-    dst_bots = _bpaths.data_dir()
+    # Bots: data/bots/<id> (or flat data/<id>) -> data/bots/<id> (the legacy layout; migrate_v3 lifts it next).
+    dst_bots = _bpaths.legacy_data_dir()
+    os.makedirs(dst_bots, exist_ok=True)
     for bid, sdir in _subdirs(os.path.join(src, "data"), "bot.json").items():
         ddir = os.path.join(dst_bots, bid)
         if os.path.exists(ddir):
@@ -160,7 +164,8 @@ def _import_once() -> dict | None:
         report["bots" if _copy_tree(sdir, ddir) else "failed"].append(bid)
 
     # Caches: deletable, but the last screenshot and session are worth having.
-    dst_cache = _bpaths.cache_dir()
+    dst_cache = _bpaths.legacy_cache_dir()
+    os.makedirs(dst_cache, exist_ok=True)
     for bid, sdir in _subdirs(os.path.join(src, "cache"), None).items():
         ddir = os.path.join(dst_cache, bid)
         if not os.path.exists(ddir) and _copy_tree(sdir, ddir):

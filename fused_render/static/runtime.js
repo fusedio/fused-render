@@ -78,8 +78,14 @@
  *     itself is a namespace, not a function. The old callable
  *     `fused.ai(prompt)` is GONE, not aliased (D631) — a page still calling
  *     it gets "fused.ai is not a function".
- *     opts.provider: "local" | "apple" | "claude" — which tier serves the
- *     call. Omitted, the model decides: the apple tier's PINNED ids
+ *     opts.provider: "local" | "apple" | "claude" | "copilot" | "codex" |
+ *     "gemini" — which tier serves the call. The last three (D1433) are
+ *     the agent CLIs, run as tool-less one-shots (text only; `history`,
+ *     `raw`, `images` rejected like Claude's tier; no streaming — onChunk
+ *     gets the whole text once; 409 `ai_unavailable` with
+ *     `reason: "backend_disabled"` while that agent is off in
+ *     Preferences; omitted `model` = the agent's catalog default).
+ *     Omitted provider: the model decides: the apple tier's PINNED ids
  *     ("afm-text" here, "afm-speech" on .transcribe, "afm-embedding" on
  *     .embed — D700) name their tier outright, then the shape rule applies
  *     (a repo id or .gguf filename is weights on this machine, anything else
@@ -804,6 +810,106 @@
   }
 
   startTheme();
+
+  // --- Scrollbars -----------------------------------------------------------
+  //
+  // Every view gets the shell's quiet scrollbar (frontend/src/styles/
+  // scrollbars.css): a 10px classic bar, transparent track, and a thumb that
+  // shows only while the pointer is over the element that scrolls. Without
+  // this a view's bars are whatever the engine draws by default, and some
+  // engines draw a light track in a dark frame however `color-scheme` is set,
+  // which is why apps kept pasting their own `::-webkit-scrollbar` block.
+  //
+  // The thumb's ink is `currentColor`, so it reads against whatever the view
+  // paints, opted into theming or not, with no palette here.
+  //
+  // The sheet goes in now, while this parser-blocking script is the only thing
+  // in <head>, so it lands ahead of every stylesheet the view has. Each rule is
+  // `*`-level specificity, so the view's own rules at the same specificity win
+  // by order, and anything more specific wins outright. An element with a
+  // non-`auto` `scrollbar-width`/`scrollbar-color` makes Chromium ignore the
+  // pseudo rules, so standard scrollbar CSS still wins too. A view that wants
+  // the engine's native bars puts `data-fused-scrollbars="native"` on <html>.
+  //
+  // The custom property is set on EVERY element (as in scrollbars.css): it
+  // inherits, and every ancestor of the pointer is `:hover`, so without a value
+  // of its own each scroller under the pointer would light up together.
+  //
+  // The VIEWPORT scrollbar's track is the exception to "transparent": that bar
+  // sits outside the canvas, so a transparent track shows the parent document
+  // through the frame (a dark stripe down a white page). It is painted with
+  // the document's own canvas colour, which syncScrollbarCanvas keeps in
+  // `--fused-sb-canvas` on <html>. WebKit matches the viewport bar only with
+  // an unqualified `::-webkit-scrollbar-*` selector (`html::…` and `:root::…`
+  // never apply), but it does inherit <html>'s custom properties, so every
+  // track reads the variable and everything inside <body> resets it.
+  var SCROLLBAR_CSS =
+    ":where(*){--fused-sb-thumb:transparent}" +
+    ":where(*:hover){--fused-sb-thumb:color-mix(in srgb,currentColor 25%,transparent)}" +
+    ":where(body *){--fused-sb-canvas:transparent}" +
+    "::-webkit-scrollbar{width:10px;height:10px}" +
+    "::-webkit-scrollbar-track,::-webkit-scrollbar-corner" +
+    "{background:var(--fused-sb-canvas,transparent)}" +
+    "::-webkit-scrollbar-thumb{background:var(--fused-sb-thumb);" +
+    "background-clip:padding-box;border:3px solid transparent;border-radius:999px}";
+
+  function isTransparent(color) {
+    return !color || color === "transparent" || /^rgba\(.*,\s*0\)$/.test(color);
+  }
+
+  // The canvas colour, by the CSS background propagation rule: <html>'s
+  // background if it has one, else <body>'s. Neither means the document paints
+  // no canvas, and the track stays transparent like the rest of it.
+  function syncScrollbarCanvas() {
+    var root = document.documentElement;
+    var color = getComputedStyle(root).backgroundColor;
+    if (isTransparent(color) && document.body) color = getComputedStyle(document.body).backgroundColor;
+    var next = isTransparent(color) ? "" : color;
+    // Only on a change: the root observer below watches `style`, and an
+    // unconditional write would wake it again every frame.
+    if (root.style.getPropertyValue("--fused-sb-canvas") === next) return;
+    if (next) root.style.setProperty("--fused-sb-canvas", next);
+    else root.style.removeProperty("--fused-sb-canvas");
+  }
+
+  function startScrollbars() {
+    var root = document.documentElement;
+    var head = document.head;
+    if (!root || !head) return;
+    if (root.getAttribute("data-fused-scrollbars") === "native") return;
+    var style = document.createElement("style");
+    style.setAttribute("data-fused-scrollbars", "");
+    style.textContent = SCROLLBAR_CSS;
+    head.insertBefore(style, head.firstChild);
+    // The canvas colour is only known once the view's stylesheets and <body>
+    // exist, and it moves when the view re-themes: a class or attribute flip
+    // on <html>/<body>, a preset's tokens landing in <html>'s style, or a
+    // `prefers-color-scheme` block.
+    var sync = function () {
+      requestAnimationFrame(syncScrollbarCanvas);
+    };
+    var observeBody = function () {
+      if (document.body) {
+        new MutationObserver(sync).observe(document.body, { attributes: true });
+      }
+    };
+    document.addEventListener("DOMContentLoaded", function () {
+      observeBody();
+      sync();
+    });
+    window.addEventListener("load", sync);
+    new MutationObserver(sync).observe(root, {
+      attributes: true,
+      attributeFilter: ["class", "style", "data-theme", "data-fused-theme-name"],
+    });
+    try {
+      window.matchMedia(DARK_QUERY).addEventListener("change", sync);
+    } catch (e) {
+      /* no matchMedia — the observers above still follow a re-theme */
+    }
+  }
+
+  startScrollbars();
 
   // --- The pane focus contract (`_nofocus=1`) -------------------------------
   //
@@ -3472,6 +3578,10 @@
           attempt().then((next) => handle(next, installed))
         );
       }
+      // The open gate's 423 (a blocked Community copy): no `ok`, no `error`,
+      // just the block — said as its sentence, the same over the socket and
+      // the POST (the socket strips `status`, so the body is the signal).
+      if (data.blocked && data.ok === undefined) throw blockedError(data.blocked);
       if (!data.ok) {
         const err = new Error(data.error && data.error.message);
         err.type = data.error && data.error.type;
@@ -3604,6 +3714,29 @@
     ));
   }
 
+  // The open gate's refusal (docs/CONTRIB_LOOP.md §18.4 B4): a Community copy
+  // Fused blocked — hard, or soft and not said yes to yet — answers 423
+  // `{blocked: {level, reason, what_to_do, …}}` on every run door (`/api/run`,
+  // its socket, the background start/restart). The page gets one Error whose
+  // message is the plain sentence, never a bare "undefined" or an HTTP code:
+  // `type: "blocked"`, `status: 423`, and the facts on `.blocked`.
+  function blockedError(blocked) {
+    const b = blocked && typeof blocked === "object" ? blocked : {};
+    const reason = typeof b.reason === "string" ? b.reason.trim() : "";
+    const todo = typeof b.what_to_do === "string" ? b.what_to_do.trim() : "";
+    const head = b.level === "soft"
+      ? "This app waits for your OK before it runs"
+      : "This app is blocked by Fused";
+    let message = reason ? head + ": " + reason : head + ".";
+    if (todo) message += " " + todo;
+    if (b.level === "soft") message += " Open its app page and choose Open anyway to use it.";
+    const err = new Error(message);
+    err.type = "blocked";
+    err.status = 423;
+    err.blocked = b;
+    return err;
+  }
+
   function _daemonPost(path, marksRunning, extraBody) {
     return fetch(path, {
       method: "POST",
@@ -3617,6 +3750,7 @@
           // only note the engine_id (still useful for status()), never
           // marksRunning.
           _noteDaemonPayload(data, undefined);
+          if (res.status === 423 && data && data.blocked) throw blockedError(data.blocked);
           const err = new Error((data && data.error) || `${path} failed`);
           throw err;
         }
@@ -3957,11 +4091,17 @@
       payload.expected_mtime = opts.expectedMtime;
     }
     if (opts && opts.create) payload.create = true;
-    return fetch("/api/fs/write", {
+    const init = {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(payload),
-    })
+    };
+    // `keepalive`: the request outlives its document — a last write from a
+    // pagehide handler (an editor frame being torn down with a dirty buffer)
+    // would otherwise be aborted with the frame. Small bodies only (the
+    // browser caps keepalive requests at 64 KB in flight).
+    if (opts && opts.keepalive) init.keepalive = true;
+    return fetch("/api/fs/write", init)
       .then((res) => res.json().then((data) => ({ res, data })))
       .then(({ res, data }) => {
         if (res.status === 409 && payload.create) {
@@ -4543,6 +4683,11 @@
   // (view, embed, standalone /render) gets it for free.
   let autoReloadEnabled = true;
   const watched = new Set();
+  // fused.onFileChanged listeners: a page that opted OUT of reloading (the
+  // code editor) but still wants to hear that a watched file moved, to fold
+  // the new text into its live view instead of reloading over the cursor.
+  // While any is registered the change socket stays open with reload off.
+  const fileChangeListeners = new Set();
   let es = null;
   let started = false;       // watching begins on DOMContentLoaded (LR-5)
   let resubscribeTimer = null;
@@ -4598,7 +4743,7 @@
       es = null; // null first so old.onclose knows the close was deliberate
       old.close();
     }
-    if (!autoReloadEnabled || watched.size === 0) return;
+    if ((!autoReloadEnabled && fileChangeListeners.size === 0) || watched.size === 0) return;
     const query = [...watched].map((p) => "path=" + encodeURIComponent(p)).join("&");
     // WebSocket, not EventSource (D74): SSE holds an HTTP/1.1 socket per open
     // pane and Chrome caps those at 6 per origin — a 6-pane panel starved
@@ -4615,6 +4760,16 @@
         return;
       }
       if (data.keepalive) return;
+      // Listeners first: a page that turned reloading off still hears the
+      // change (the code editor rebases the disk text into its buffer).
+      for (const cb of [...fileChangeListeners]) {
+        try {
+          cb({ path: data.path, mtime: data.mtime });
+        } catch (e) {
+          /* one listener's throw must not take the feed down */
+        }
+      }
+      if (!autoReloadEnabled) return;
       // Any change (including deletion, mtime: null → LR-6) reloads after a
       // 300 ms debounce that coalesces bursts.
       clearTimeout(reloadTimer);
@@ -4635,7 +4790,7 @@
     // Never watch call logs (see isCallLog).
     if (isUnwatchable(p)) return;
     watched.add(p);
-    if (!autoReloadEnabled || !started) return; // before start, paths just accumulate
+    if ((!autoReloadEnabled && fileChangeListeners.size === 0) || !started) return; // before start, paths just accumulate
     // Debounce resubscribe so a page firing several runPython calls on load
     // reconnects once (LR-4).
     clearTimeout(resubscribeTimer);
@@ -4645,15 +4800,41 @@
   function autoReload(enabled) {
     autoReloadEnabled = !!enabled;
     if (!autoReloadEnabled) {
-      clearTimeout(resubscribeTimer);
       clearTimeout(reloadTimer);
-      if (es) {
-        es.close();
-        es = null;
+      // The socket stays up for fused.onFileChanged listeners; with none,
+      // nothing is listening and it closes.
+      if (fileChangeListeners.size === 0) {
+        clearTimeout(resubscribeTimer);
+        if (es) {
+          es.close();
+          es = null;
+        }
       }
     } else if (started) {
       resubscribe();
     }
+  }
+
+  // fused.onFileChanged(cb): `cb({path, mtime})` whenever a watched file
+  // changes on disk (the same feed auto-reload rides; `mtime` is the
+  // watcher's signature, null for a deletion). For a page that must not
+  // reload — an editor — but wants another writer's edits live. Watches the
+  // page's own `_file`/`path` like auto-reload does; call watchPath for
+  // more. Returns the unsubscribe.
+  function onFileChanged(cb) {
+    if (typeof cb !== "function") return () => {};
+    fileChangeListeners.add(cb);
+    if (started && watched.size) {
+      clearTimeout(resubscribeTimer);
+      resubscribeTimer = setTimeout(resubscribe, 100);
+    }
+    return () => {
+      fileChangeListeners.delete(cb);
+      if (!autoReloadEnabled && fileChangeListeners.size === 0 && es) {
+        es.close();
+        es = null;
+      }
+    };
   }
 
   function startAutoReload() {
@@ -4673,7 +4854,7 @@
       if (own && !isUnwatchable(own)) watched.add(own);
       const file = params.get("_file");
       if (file && !isUnwatchable(file)) watched.add(file);
-      if (autoReloadEnabled) resubscribe();
+      if (autoReloadEnabled || fileChangeListeners.size) resubscribe();
     };
     // loadConfig's own promise chain does the callsDir/callsSuffix
     // assignment now — this just waits on it. loadConfig
@@ -8061,6 +8242,7 @@
     trackJob,
     watchJob,
     autoReload,
+    onFileChanged,
     // Whether THIS frame is inside a git snapshot, and what it resolved to —
     // `null` when there is none (no `_snapshot` on this frame's url, or the
     // resolve failed: no app folder here, git trouble),

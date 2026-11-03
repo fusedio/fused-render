@@ -67,6 +67,14 @@ void FRCefApp::OnBeforeCommandLineProcessing(const CefString& process_type,
   command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
   // Chromium's own crash handling would need a reporter; keep it quiet.
   command_line->AppendSwitch("disable-breakpad");
+  // An NSWindow another window fully covers is marked occluded, and
+  // Chromium then treats its page as hidden: the renderer stops producing
+  // frames and the compositor drops the last one (oldest hidden widgets
+  // first). The CEF child layer is empty from then on, so Mission Control
+  // and the Dock's window previews showed the host view's grey background
+  // for the windows covered longest. WKWebView kept its last frame; keep
+  // rendering occluded windows so the engine does too.
+  command_line->AppendSwitch("disable-backgrounding-occluded-windows");
   // No keychain: the cookie-encryption key is Chromium's fixed mock one,
   // not a login-keychain item. The shared item ("Chromium Safe Storage",
   // every CEF app on the Mac) threw a keychain ACL prompt on first start;

@@ -5,7 +5,7 @@ import { emptyMessage, lanesFor, listFor, laneOf, listOrder, openCount, taskPill
 
 const t = (o: Record<string, unknown>) => ({ key: "k", task_id: "T-1", status: "done", last_active: 1, ...o }) as any;
 
-test("homeTasks: drops archived and drafts, keeps done, newest first", () => {
+test("homeTasks: drops archived and drafts, keeps done; running ahead of done", () => {
   const out = homeTasks([
     t({ key: "a", last_active: 5 }),
     t({ key: "b", status: "archived", last_active: 9 }),
@@ -15,6 +15,22 @@ test("homeTasks: drops archived and drafts, keeps done, newest first", () => {
     t({ key: "f", status: "in_progress", last_active: 8 }),
   ]);
   expect(out.map((x) => x.key)).toEqual(["f", "a", "d", "e"]);
+});
+
+test("homeTasks: the Tasks page's list order — lane by lane, not one last-active sort", () => {
+  // A done row touched a minute ago used to outrank every open one; the page's
+  // List puts queued and running ahead of done whatever their clocks say.
+  const ran = (at: number) => ({ messages: [{ state: "done", ran_at: at }] });
+  const out = homeTasks([
+    t({ key: "done-new", last_active: 900, ...ran(900) }),
+    t({ key: "run", status: "in_progress", last_active: 100, ...ran(100) }),
+    t({ key: "done-old", last_active: 500, ...ran(500) }),
+    t({ key: "needs", status: "needs_attention", last_active: 50, ...ran(50) }),
+    t({ key: "queued", status: "queued", last_active: 10 }),
+  ]);
+  // The lane rules themselves are tasks-lib's (tasks-lib.test.ts); this pins
+  // only that the widget reads them: open before done, done by its last run.
+  expect(out.map((x) => x.key)).toEqual(["run", "queued", "needs", "done-new", "done-old"]);
 });
 
 test("laneOf maps statuses to the four lanes", () => {

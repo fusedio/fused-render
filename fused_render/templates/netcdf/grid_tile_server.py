@@ -60,8 +60,13 @@ def _me():
     return os.path.join(os.path.abspath(sys.path[0]), "grid_tile_server.py")
 
 
+# platutil is stdlib-only, so the daemon's venv can import it without fused_render.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_me())), "shared"))
+from platutil import venv_python  # noqa: E402
+
+
 def _daemon_python():
-    vp = os.path.join(DAEMON_VENV, "bin", "python")
+    vp = venv_python(DAEMON_VENV)
     if os.path.exists(vp):
         return vp
     import shutil

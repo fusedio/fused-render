@@ -1512,11 +1512,13 @@ def _old_bundles(parent):
     return sorted(d for d in os.listdir(parent) if mac._old_bundle_re().match(d))
 
 
-def _swap_through_fakes(monkeypatch, manager, tmp_path, *, fail_second_rename=False):
+def _swap_through_fakes(monkeypatch, manager, tmp_path, *, fail_second_rename=False,
+                        spawn_refusal=None):
     """Drive `_install_dmg` through the real rename swap with the DMG, the
     mount and `ditto` faked: the "image" is a directory holding a 9.9.9
-    bundle, `ditto` is a copytree, `hdiutil detach` a no-op. Returns the
-    `shutil.rmtree` calls the swap made."""
+    bundle, `ditto` is a copytree, `hdiutil detach` a no-op, and the staged
+    python's spawn check answers `spawn_refusal` (None: it spawns). Returns
+    the `shutil.rmtree` calls the swap made."""
     import plistlib
     import shutil
 
@@ -1564,10 +1566,19 @@ def _swap_through_fakes(monkeypatch, manager, tmp_path, *, fail_second_rename=Fa
     monkeypatch.setattr(manager, "_attach", lambda dmg: str(mount))
     monkeypatch.setattr(mac.subprocess, "run", fake_run)
     monkeypatch.setattr(mac.shutil, "rmtree", recording_rmtree)
+    spawn_checked = []
+
+    def fake_ensure_spawnable(contents, *, what):
+        """The staged copy's verdict, recorded so a test can see it was asked."""
+        spawn_checked.append(contents)
+        return spawn_refusal
+
+    monkeypatch.setattr(mac.bundle_exec, "ensure_spawnable", fake_ensure_spawnable)
     if fail_second_rename:
         monkeypatch.setattr(mac.os, "rename", failing_rename)
     manager.install()
     manager._install_thread.join(timeout=5)
+    assert spawn_checked == [str(tmp_path / ".FusedRender-update.app" / "Contents")]
     return removed
 
 
@@ -1639,6 +1650,25 @@ def test_a_failed_second_rename_rolls_the_bundle_back(monkeypatch, tmp_path):
     assert manager.status()["state"] == "error"
     assert (tmp_path / "FusedRender.app" / "Contents" / "marker").read_text() == "the running bundle"
     assert _old_bundles(tmp_path) == []  # renamed back, nothing left behind
+    assert not (tmp_path / ".FusedRender-update.app").exists()
+
+
+def test_a_staged_python_that_will_not_spawn_is_never_swapped_in(monkeypatch, tmp_path):
+    """The staged bundle's python must spawn before it replaces the app: when
+    it will not, the install errors, the running bundle stays exactly where it
+    was, and the staged copy is removed."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    (tmp_path / "FusedRender.app" / "Contents").mkdir()
+    (tmp_path / "FusedRender.app" / "Contents" / "marker").write_text("the running bundle")
+
+    _swap_through_fakes(monkeypatch, manager, tmp_path,
+                        spawn_refusal="PermissionError: [Errno 13] Permission denied")
+
+    status = manager.status()
+    assert status["state"] == "error"
+    assert "cannot be run on this Mac" in status["error"], status
+    assert (tmp_path / "FusedRender.app" / "Contents" / "marker").read_text() == "the running bundle"
+    assert _old_bundles(tmp_path) == []
     assert not (tmp_path / ".FusedRender-update.app").exists()
 
 

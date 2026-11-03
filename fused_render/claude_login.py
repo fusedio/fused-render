@@ -60,12 +60,13 @@ from fused_render import claude_health, claude_install
 
 logger = logging.getLogger(__name__)
 
-#: How long a sign-in may stay open before the watchdog ends it. Matches
-#: canvases.LOGIN_CHILD_TIMEOUT, and for the same reason: this is a person
-#: finding a browser window, reading a consent screen and probably a password
-#: manager, not a machine doing work. The child itself never gives up — with no
-#: browser it sits at the paste prompt indefinitely — so this is the only thing
-#: that ends an abandoned attempt.
+#: How long a sign-in may stay open before the watchdog ends it. Generous on
+#: purpose: this is a person finding a browser window, reading a consent screen
+#: and probably a password manager, not a machine doing work. The child itself
+#: never gives up — with no browser it sits at the paste prompt indefinitely —
+#: so this is the only thing that ends an abandoned attempt. (The Fused
+#: sign-in, canvases.LOGIN_CHILD_TIMEOUT, is shorter: its child has no paste
+#: prompt and a refused consent ends it on its own.)
 LOGIN_TIMEOUT_S = 600.0
 
 #: How long `cancel` waits for a terminated child before letting go of it.

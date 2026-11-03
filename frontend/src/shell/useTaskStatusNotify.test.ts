@@ -256,3 +256,31 @@ describe("useTaskStatusNotify", () => {
     h.unmount();
   });
 });
+
+// A task you have open is never news (Workspace scope, exception 1): the full
+// chat page names its conversation as `session_id`, and a visible window on it
+// raises no notice for that task's transitions.
+describe("useTaskStatusNotify on an open task", () => {
+  test("no notice for the task whose chat page this window is showing", async () => {
+    const loc = globalThis.location as unknown as { search: string };
+    const before = loc.search;
+    loc.search = "?_side=claude&session_id=s9";
+    const h = mountHook();
+    await flush();
+    await publish([task({ key: "s9", session_id: "s9", status: "in_progress" })]);
+    await publish([task({ key: "s9", session_id: "s9", status: "needs_attention" })]);
+    expect(getPopupNotification()).toBeNull();
+    // ...while another task still does
+    await publish([
+      task({ key: "s9", session_id: "s9", status: "needs_attention" }),
+      task({ key: "t2", session_id: "t2", status: "in_progress" }),
+    ]);
+    await publish([
+      task({ key: "s9", session_id: "s9", status: "needs_attention" }),
+      task({ key: "t2", session_id: "t2", status: "needs_attention" }),
+    ]);
+    expect(getPopupNotification()?.title).toContain("needs your input");
+    h.unmount();
+    loc.search = before;
+  });
+});

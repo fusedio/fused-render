@@ -11,13 +11,12 @@ module top: this module is imported by the server (routers/index.py), and a
 `stats` call on a missing index should not pay a duckdb import.
 """
 import contextlib
-import errno
-import fcntl
 import json
 import os
 import threading
 import time
 
+from fused_render import _platform
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import ignored_for_index
 
@@ -142,16 +141,12 @@ def store_lock(cfg: IndexConfig, cancel_flag=None, on_wait=None):
     acquired = False
     try:
         if cancel_flag is None and on_wait is None:
-            fcntl.flock(f, fcntl.LOCK_EX)
+            _platform.flock(f)
         else:
             last_beat = time.monotonic()
             while True:
-                try:
-                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if _platform.flock(f, blocking=False):
                     break
-                except OSError as e:
-                    if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
-                        raise
                 if cancel_flag is not None and os.path.exists(cancel_flag):
                     raise StoreLockCancelled()
                 if (on_wait is not None
@@ -164,7 +159,7 @@ def store_lock(cfg: IndexConfig, cancel_flag=None, on_wait=None):
     finally:
         if acquired:
             try:
-                fcntl.flock(f, fcntl.LOCK_UN)
+                _platform.funlock(f)
             except OSError:
                 pass
         f.close()

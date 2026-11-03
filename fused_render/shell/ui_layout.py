@@ -38,6 +38,9 @@ MAX_VIEW_STATE = 500
 MAX_PATH = 4096
 MAX_QUERY = 512
 MAX_RECENT_PATHS = 8
+# The canvas rail's pinned preview card, as dragged (RailPeek's corner grips).
+RAIL_PEEK_MIN = 120
+RAIL_PEEK_MAX = 10000
 _IDENT_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 
@@ -128,6 +131,18 @@ def _clean(doc) -> dict:
         _check(isinstance(rp, list) and len(rp) <= MAX_RECENT_PATHS)
         _check(all(_is_key(p) for p in rp))
         out["recentPaths"] = list(rp)
+    if "rememberLastFolder" in doc:
+        _check(isinstance(doc["rememberLastFolder"], bool))
+        out["rememberLastFolder"] = doc["rememberLastFolder"]
+    if "canvasRailPeek" in doc:
+        rp = doc["canvasRailPeek"]
+        _check(isinstance(rp, dict))
+        size: dict = {}
+        for key in ("width", "height"):
+            v = rp.get(key)
+            _check(_is_int(v) and RAIL_PEEK_MIN <= v <= RAIL_PEEK_MAX)
+            size[key] = v
+        out["canvasRailPeek"] = size
     return out
 
 
@@ -157,5 +172,12 @@ def put_ui_layout(layout=Body(default=None), x_fused: str | None = Header(defaul
         clean = _clean(layout)
     except _Invalid:
         return JSONResponse({"error": "invalid layout"}, status_code=400)
+    # A document from an OLDER bundle (another window, the desktop app before
+    # its relaunch) says nothing of `canvasRailPeek`; the whole-document PUT
+    # must not drop the size a newer one saved (CodeRabbit on #2062).
+    if "canvasRailPeek" not in clean:
+        stored = read_layout()
+        if stored and "canvasRailPeek" in stored:
+            clean["canvasRailPeek"] = stored["canvasRailPeek"]
     storage.write_json(_path(), clean)
     return {"ok": True}

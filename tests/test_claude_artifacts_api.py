@@ -301,3 +301,34 @@ def test_cwd_param_scopes_listing_to_one_directory(client, projects_dir, tmp_pat
     unfiltered = client.get("/api/claude-artifacts").json()["artifacts"]
     assert {a["remote_url"] for a in unfiltered} == {URL_A, URL_B}
     assert client.get("/api/claude-artifacts", params={"cwd": "/nowhere"}).json()["artifacts"] == []
+
+
+def test_concurrent_listings_scan_once_at_a_time(monkeypatch):
+    import threading
+    import time
+
+    active = 0
+    peak = 0
+    guard = threading.Lock()
+
+    def slow_scan():
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.2)
+        with guard:
+            active -= 1
+        return [{"id": "x"}]
+
+    monkeypatch.setattr(claude_artifacts_mod, "_scan_all", slow_scan)
+    results = []
+    threads = [threading.Thread(
+        target=lambda: results.append(claude_artifacts_mod.list_artifacts()))
+        for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert peak == 1
+    assert results == [[{"id": "x"}]] * 4

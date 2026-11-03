@@ -45,8 +45,8 @@ import { useAgent } from "./agent-context";
 export interface PlanCardProps {
   row: PermissionRow;
   /** The picker's CURRENT `permission` param. Only a member of
-   *  SWITCHABLE_MODES is offered as the landing mode; sitting on "plan first"
-   *  or "ask every time" sends no mode at all (T:14586-14595). */
+   *  SWITCHABLE_MODES is offered as the landing mode; sitting on "Plan only"
+   *  or "Ask every time" sends no mode at all (T:14586-14595). */
   pickerMode?: string;
   onDecide: ChatController["decidePlan"];
 }

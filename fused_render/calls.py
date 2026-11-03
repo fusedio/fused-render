@@ -63,6 +63,7 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Body, Header, Request
 from fastapi.responses import JSONResponse
 
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.claude_agent import CLAUDE_PAGE_ID
 from fused_render.claude_agent import HERE as _CLAUDE_AGENT_DIR
 from fused_render.shell import storage
@@ -184,13 +185,13 @@ UNATTRIBUTED = "_unattributed"
 # that convenience.
 INDEX_NAME = "index.json"
 
-_SLUG_MAX = 24  # bounded so the layout's extra depth stays short
+_SLUG_MAX = 24  # bounded so the layout's extra depth stays inside Windows MAX_PATH
 
 
 def partition_name(app_dir: str) -> str:
     """The ONE resolver of a partition's directory name (CL-18).
 
-    Identity is `normcase(realpath(app_dir))`, hashed —
+    Identity is `canonical_fs_path(normcase(realpath(app_dir)))`, hashed —
     symlinks resolved and case folded where the platform folds it BEFORE two
     spellings of one folder can become two partitions (D147's bug class, with a
     worse failure mode here: a split partition is structural, not a filter
@@ -208,7 +209,7 @@ def _partition_name_cached(app_dir: str) -> str:
     # realpath costs a syscall chain and this runs on the record() hot path, so
     # it sits behind an LRU. A symlink retargeted mid-process keeps its old
     # partition until restart — accepted (design §4.7).
-    resolved = os.path.normcase(os.path.realpath(app_dir))
+    resolved = canonical_fs_path(os.path.normcase(os.path.realpath(app_dir)))
     digest = hashlib.blake2b(resolved.encode("utf-8", "replace"),
                              digest_size=8).hexdigest()
     # Slug from the RESOLVED path, not the input: the hash already folds a
@@ -661,10 +662,15 @@ def mark_superseded(call_ids: list) -> int:
     with _superseded_lock:
         for known, seen in list(_SUPERSEDED.items()):
             # >=, not >: a TTL of exactly 0.0 (tests use this to mean "already
-            # expired") must evict on the very next sweep, even when two
-            # time.monotonic() reads land on the identical tick. >= evicts on
-            # that tie without changing anything at the real 300s TTL, where
-            # the boundary instant is never observable.
+            # expired") must evict on the very next sweep. time.monotonic() on
+            # Windows is GetTickCount64-backed (~15.6ms resolution, tied to the
+            # system timer) rather than the sub-microsecond POSIX
+            # clock_gettime(CLOCK_MONOTONIC), so two calls a few Python
+            # bytecodes apart routinely read back the identical tick — a
+            # strict `>` then never fires and a mark meant to be immediately
+            # stale lingers for a full TTL. >= evicts on that tie without
+            # changing anything at the real 300s TTL, where the boundary
+            # instant is never observable.
             if now - seen >= _SUPERSEDED_TTL_S:
                 del _SUPERSEDED[known]
         added = 0
@@ -956,9 +962,32 @@ def _shrink(rec: dict) -> dict:
     return out
 
 
+# The path-valued fields, all three of which a reader compares against a
+# caller-supplied path (see _matches: "this file" is any of the three roles).
+_PATH_FIELDS = ("page", "target_file", "entrypoint")
+
+
+def _canonicalize_paths(rec: dict) -> None:
+    """Bring every path field to the shell's canonical form, in place.
+
+    Enforced here rather than at each producer because the producers disagree
+    on Windows: `page`/`target_file` arrive from headers and the read routes'
+    `path` param already canonical, but /api/run's relative-`py` branch builds
+    its target with `os.path.normpath` and gets backslashes back. One
+    backslashed field is enough to make an exact-match filter miss a record
+    forever, so the store holds ONE form by construction — a reader can then
+    compare with `==` and be right, which is the property `_matches` assumes.
+    """
+    for field in _PATH_FIELDS:
+        value = rec.get(field)
+        if isinstance(value, str) and value:
+            rec[field] = canonical_fs_path(value)
+
+
 def record(rec: dict) -> None:
     """Queue one record. Never raises, never blocks, never touches the disk."""
     global _dropped
+    _canonicalize_paths(rec)
     page = rec.get("page") or ""
     if page and not _rate_ok(page):
         _dropped += 1

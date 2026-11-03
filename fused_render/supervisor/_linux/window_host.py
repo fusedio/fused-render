@@ -301,8 +301,17 @@ def pick_unix_signal_add(glib, glib_unix_loader):
     return glib_unix.signal_add
 
 
+def configure_webkit_env() -> None:
+    """Turn WebKitGTK's DMABUF renderer off: with it on, every page
+    navigation flickers. A value the user already set wins. WebKit's web and
+    network processes inherit this process's environment, so setting it here,
+    before WebKit loads, covers them."""
+    os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+
+
 def load_toolkit() -> SimpleNamespace:
     """Import GTK3 + WebKit2 4.1 through PyGObject or say exactly why not."""
+    configure_webkit_env()
     try:
         import gi
     except ImportError as error:
@@ -427,6 +436,7 @@ class GtkBackend:
         window.connect("delete-event", lambda _w, _e: self.save_frame(win) and False)
         window.connect("destroy", lambda _w: self._host().window_closed(win))
         window.connect("key-press-event", lambda _w, e: self._on_key(win, e))
+        view.connect("button-press-event", lambda _v, e: self._on_button(win, e))
         view.load_uri(url)
         return win
 
@@ -489,6 +499,19 @@ class GtkBackend:
             win.view.go_forward()
         elif ctrl and key == Gdk.KEY_w:
             win.window.close()
+        else:
+            return False
+        return True
+
+    def _on_button(self, win: _Win, event) -> bool:
+        # The mouse's side buttons (X11/evdev 8 and 9). WebKitGTK does not map
+        # them to history on every release, so the window does it itself.
+        if event.type != self.tk.Gdk.EventType.BUTTON_PRESS:
+            return False
+        if event.button == 8:
+            win.view.go_back()
+        elif event.button == 9:
+            win.view.go_forward()
         else:
             return False
         return True

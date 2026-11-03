@@ -622,6 +622,11 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return "automatic-speech-recognition", "its CTranslate2 Whisper layout"
     if formats.is_mlx_whisper_snapshot(names, config):
         return "automatic-speech-recognition", "its MLX Whisper weights"
+    if formats.is_sherpa_transducer_snapshot(names):
+        # The Parakeet export (D1423). It has no config.json, so the `target`
+        # check cannot see it, and an `encoder.int8.onnx` + `joiner` + `decoder`
+        # triple is a transducer — speech recognition and nothing else.
+        return "automatic-speech-recognition", "its sherpa-onnx transducer export"
     # Either mflux table — a Fill checkpoint is as much text-to-image here as
     # a Klein one; `mflux_native_mode` is the one membership test for both.
     if formats.mflux_native_mode(repo_id) and formats.has_mflux_components(dirnames):
@@ -634,6 +639,8 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return _ai_registry.DECISIONS, "its Laya decision-head config"
     if formats.is_qwen3_tts_snapshot(config, dirnames):
         return _ai_registry.TEXT_TO_SPEECH, "its Qwen3-TTS speech tokenizer"
+    if formats.is_kokoro_snapshot(names, dirnames):
+        return _ai_registry.TEXT_TO_SPEECH, "its Kokoro sherpa-onnx files"
     if formats.vision_torch_recipe(repo_id):
         return _ai_registry.VISION, "its vision-torch recipe"
     return None
@@ -744,11 +751,17 @@ def _safetensors_params(path: str, quantized_bits: int | None = None) -> tuple[i
     return total, unpacked
 
 
-# Metadata is read once per snapshot directory and remembered: a snapshot's
-# contents are immutable once written (every file in it is a link to a
-# content-addressed blob), so its own mtime is a sufficient key, and a Refresh
-# on a 40-repo cache re-reads nothing.
-_META_CACHE: dict[str, tuple[float, _RepoMeta]] = {}
+# Metadata is read once per snapshot directory and remembered, keyed by
+# `(snapshot mtime, mflux registry stamp)`. A snapshot's contents are immutable
+# once written (every file in it is a link to a content-addressed blob), so its
+# own mtime alone would key everything that is read FROM the snapshot. It is
+# not the whole story: `loaders` also derives from the installed mflux's
+# `AVAILABLE_MODELS` registry (`hub_loadable.mflux_registry_stamp`), which lives
+# outside the snapshot and changes when mflux is installed or upgraded. The
+# second component makes that re-derive the card's loaders without the snapshot
+# being touched, while a Refresh on a 40-repo cache with an unchanged registry
+# still re-reads nothing.
+_META_CACHE: dict[str, tuple[tuple, _RepoMeta]] = {}
 
 
 def _default_snapshot(repo_dir: str) -> str | None:
@@ -776,6 +789,11 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         stamp = os.stat(snapshot).st_mtime
     except OSError:
         return _RepoMeta()
+    # The loaders derive from the installed mflux registry too, so its
+    # identity is part of the memo key: installing mflux after a download
+    # must not leave the card engine-less until restart.
+    from fused_render.ai import hub_loadable
+    stamp = (stamp, hub_loadable.mflux_registry_stamp())
     cached = _META_CACHE.get(snapshot)
     if cached is not None and cached[0] == stamp:
         return cached[1]
@@ -1240,7 +1258,17 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     the modality (`formats.DECISIVE`).
     """
     capability = reading.capability
-    if not meta.loaders:
+    # A HONOURED pin is the escape hatch for a classifier gap, so it is read
+    # BEFORE the empty-loaders early return: the load path, the Engines tab and
+    # `resolve_for_model` all serve it whatever `formats.loaders` lists.
+    pin_honoured = False
+    if not meta.loaders and capability and repo_id:
+        early_pin = _ai_registry.model_pin(repo_id)
+        if early_pin != _ai_registry.AUTO:
+            early = _ai_registry.resolve_for_loaders(capability, repo_id, (), early_pin)
+            pin_honoured = (early.runner is not None and early.honoured
+                            and early.runner.code == early_pin)
+    if not meta.loaders and not pin_honoured:
         # **No FORMAT evidence — which is not the same as no evidence.** Two very
         # different repos land here: one that is fully downloaded and whose files
         # no engine reads (the honest `None`, and the answer this field has
@@ -1315,12 +1343,6 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     if capability is None:
         return None, None
     candidates = [r for r in runners if r.capability == capability]
-    if not candidates:
-        # The trap this whole field exists for: the task is one this app serves
-        # and the FORMAT is one no runner of that capability reads. That is
-        # `openai/whisper-large-v3` — a speech model, and unloadable by both
-        # speech runners that ship.
-        return None, capability
     # **The engine that would SERVE, not merely one that could read it.** A
     # capability holds one resident model and the registry picks which backend
     # loads it, so a repo readable by the OTHER backend is not loadable today
@@ -1328,9 +1350,42 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     # a Diffusers repo on a Mac whose image engine is MLX FLUX, and a Load there
     # reaches a runner that refuses it by name. That is the exact promise this
     # field exists to stop the page making.
-    serving = _ai_registry.for_capability(capability)
-    if serving is not None and any(r.code == serving.code for r in candidates):
+    # Resolved FOR THIS REPO (D1456): a pin, then the engines that read it, then
+    # the capability's preference. `resolve_for_loaders`, not `resolve_for_model`,
+    # because `meta.loaders` is the evidence being handed in — asking the cache
+    # for it again from here would recurse.
+    pin = _ai_registry.model_pin(repo_id) if repo_id else _ai_registry.AUTO
+    if pin == _ai_registry.AUTO and not candidates:
+        # The trap this whole field exists for: the task is one this app serves
+        # and the FORMAT is one no runner of that capability reads. That is
+        # `openai/whisper-large-v3` — a speech model, and unloadable by both
+        # speech runners that ship. Answered BEFORE resolving: with no pin
+        # there is nothing a resolution could add.
+        return None, capability
+    pin_serves = False
+    if repo_id:
+        resolution = _ai_registry.resolve_for_loaders(
+            capability, repo_id, tuple(meta.loaders), pin)
+        serving = resolution.runner
+        # A HONOURED pin is the documented escape hatch for classifier gaps: the
+        # load path serves it whatever `meta.loaders` says, so the card must
+        # offer it too, even when no candidate reads the format.
+        pin_serves = (serving is not None and pin != _ai_registry.AUTO
+                      and serving.code == pin and resolution.honoured)
+    else:
+        serving = _ai_registry.for_capability(capability)
+    if not candidates and not pin_serves:
+        # The trap this whole field exists for: the task is one this app serves
+        # and the FORMAT is one no runner of that capability reads. That is
+        # `openai/whisper-large-v3` — a speech model, and unloadable by both
+        # speech runners that ship.
+        return None, capability
+    if serving is not None and (
+            pin_serves or any(r.code == serving.code for r in candidates)):
         status = serving.available()
+        reason = status.reason or None
+        if pin_serves and not any(r.code == serving.code for r in candidates):
+            reason = f"pinned to {serving.short} on the Engines tab"
         return {
             "code": serving.code,
             # All three, named so a reader cannot pick the wrong one by
@@ -1343,7 +1398,7 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
             "shortLabel": serving.short,
             "familyLabel": serving.family,
             "available": status.ok,
-            "reason": status.reason or None,
+            "reason": reason,
         }, capability
     # Otherwise: name the backend that DOES read it, and say what stands in the
     # way. Both reasons are actionable and they are different actions — one is
@@ -1414,6 +1469,11 @@ class CacheReading(NamedTuple):
     tag: str | None = None
     runner_code: str | None = None
     runner_reason: str | None = None
+    #: EVERY runner code whose format check accepts this snapshot
+    #: (`_RepoMeta.loaders`), not only the one `_engine` named: two runners of
+    #: one capability can both read a repo (mflux and diffusers on FLUX.2), and
+    #: `registry.resolve_for_model` picks among them (D1456).
+    loaders: tuple[str, ...] = ()
 
 
 def embed_family(repo_id: str) -> str | None:
@@ -1486,6 +1546,25 @@ def embed_media(repo_id: str) -> tuple[str, ...] | None:
     return tuple(embed_common.EMBED_MEDIA.get(family, ()))
 
 
+def repo_dir_for(repo_id: str) -> str | None:
+    """`repo_id`'s cache folder, or None when the id is not one path segment.
+
+    The one derivation of `models--<owner>--<name>` and its path-segment guard: a
+    repo id reaches here out of a request body and is not a place to go looking
+    for `..` or a path separator.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return None
+    return os.path.join(hub_cache_dir(), dirname)
+
+
+def repo_signature(repo_id: str) -> tuple | None:
+    """Public `_repo_signature` for a repo id (None for an unusable id)."""
+    repo_dir = repo_dir_for(repo_id)
+    return None if repo_dir is None else _repo_signature(repo_dir)
+
+
 def _embed_snapshot_dir(repo_id: str) -> str | None:
     """`repo_id`'s default cached snapshot directory, or None.
 
@@ -1494,10 +1573,10 @@ def _embed_snapshot_dir(repo_id: str) -> str | None:
     a repo id reaches both of these out of a request body and is not a place to
     go looking for `..` or a path separator.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+    repo_dir = repo_dir_for(repo_id)
+    if repo_dir is None:
         return None
-    return _default_snapshot(os.path.join(hub_cache_dir(), dirname))
+    return _default_snapshot(repo_dir)
 
 
 def has_vision_tower(repo_id: str) -> bool:
@@ -1549,7 +1628,40 @@ def speech_traits(repo_id: str) -> dict | None:
     snapshot_dir = _embed_snapshot_dir(repo_id)
     if snapshot_dir is None:
         return None
-    return formats.speech_traits(_read_json(os.path.join(snapshot_dir, "config.json")) or {})
+    config = _read_json(os.path.join(snapshot_dir, "config.json"))
+    traits = formats.speech_traits(config or {})
+    if traits is not None:
+        return traits
+    # Kokoro's sherpa export has no config.json of its own — the layout is the
+    # evidence, and `formats.loaders` claims it whatever config sits beside it,
+    # so this asks the same question of the same snapshot. Only reached when the
+    # config did NOT read as speech, so a Qwen3 snapshot never pays the listing.
+    try:
+        entries = os.listdir(snapshot_dir)
+    except OSError:
+        entries = []
+    dirnames = {name for name in entries if os.path.isdir(os.path.join(snapshot_dir, name))}
+    return formats.kokoro_traits_from_names(set(entries), dirnames)
+
+
+def is_sherpa_transducer(repo_id: str) -> bool | None:
+    """Is the cached snapshot of `repo_id` a sherpa-onnx transducer export
+    (Parakeet, D1423)? None when nothing is cached to read, so a caller can tell
+    "no" from "not downloaded yet" and fall back to the curated row.
+
+    Read off the snapshot's top-level NAMES (`formats.is_sherpa_transducer_
+    snapshot`), the same test the runner's `load()` and `download()` use — the
+    export carries no config for anything subtler. Same path-segment guard as
+    every other reader here (`_embed_snapshot_dir`).
+    """
+    snapshot_dir = _embed_snapshot_dir(repo_id)
+    if snapshot_dir is None:
+        return None
+    try:
+        names = set(os.listdir(snapshot_dir))
+    except OSError:
+        return None
+    return formats.is_sherpa_transducer_snapshot(names)
 
 
 def has_cached_snapshot(repo_id: str) -> bool:
@@ -1570,6 +1682,20 @@ def has_cached_snapshot(repo_id: str) -> bool:
     return _embed_snapshot_dir(repo_id) is not None
 
 
+def cached_loaders(repo_id: str) -> tuple[str, ...] | None:
+    """The runner codes whose `load()` accepts the cached snapshot of `repo_id`
+    by format, or None when nothing usable is cached (so the format has not
+    been seen and has no say). Local only, with `cached_capability`'s
+    path-segment guard."""
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return None
+    repo_dir = os.path.join(hub_cache_dir(), dirname)
+    if not os.path.isdir(repo_dir) or _default_snapshot(repo_dir) is None:
+        return None
+    return tuple(_repo_meta(repo_dir).loaders or ())
+
+
 def cached_capability(repo_id: str) -> CacheReading:
     """Which capability `repo_id` would load as, read off the local snapshot.
 
@@ -1586,13 +1712,11 @@ def cached_capability(repo_id: str) -> CacheReading:
     on disk is `cached=False` — an interrupted download leaves a folder behind,
     and a folder is not evidence.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    # Built from a request body, so it is checked to be one path segment, the
-    # same way `_segment` checks a delete target. Anything else reads as "not
-    # cached" rather than as a path to go looking at.
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+    # Built from a request body: `repo_dir_for` checks it is one path segment.
+    # Anything else reads as "not cached" rather than as a path to look at.
+    repo_dir = repo_dir_for(repo_id)
+    if repo_dir is None:
         return CacheReading(False, None, None)
-    repo_dir = os.path.join(hub_cache_dir(), dirname)
     if not os.path.isdir(repo_dir) or _default_snapshot(repo_dir) is None:
         return CacheReading(False, None, None)
 
@@ -1644,7 +1768,8 @@ def cached_capability(repo_id: str) -> CacheReading:
     return CacheReading(True, capability, looks_like,
                         reading.support, reading.reason, reading.tag,
                         _row.get("code") if _row else None,
-                        _row.get("reason") if _row else None)
+                        _row.get("reason") if _row else None,
+                        tuple(meta.loaders))
 
 
 def _article(word: str) -> str:
@@ -2142,10 +2267,9 @@ def discard_empty_shell(repo_id: str) -> bool:
     thread's way out, and a cache folder it could not tidy is not a reason to
     turn a cancelled download into an error.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+    repo_dir = repo_dir_for(repo_id)
+    if repo_dir is None:
         return False
-    repo_dir = os.path.join(hub_cache_dir(), dirname)
     try:
         if not os.path.isdir(repo_dir) or os.path.islink(repo_dir):
             return False

@@ -19,6 +19,9 @@ import pytest
 
 from fused_render.server import create_app
 from fused_render.server.app import _lifespan
+from fused_render.server.routers.index import (
+    start_startup_scan_and_warm as _REAL_START_SCAN_AND_WARM,  # conftest stubs the attribute
+)
 
 #: Same real, spawnable fixture daemon test_background_apps.py uses — stdlib
 #: only, binds :0, publishes {port, token, pid} (see its own docstring).
@@ -118,7 +121,6 @@ def test_handlers_registered_after_the_app_is_built_are_still_picked_up():
 #: the mechanism driving them.
 EXPECTED_STARTUP = [
     "_startup_prewarm_ai",
-    "_startup_warm_engine",
     "_startup_resurrect_background_apps",
     "_startup_sync_user_plugin",
     # Added 2026-10-16: kicks the workbench skills fetch for Fused Web's
@@ -134,8 +136,6 @@ EXPECTED_STARTUP = [
     "_startup_queue_manager",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
-    "_startup_ai_hub_metadata_refresh",
-    "_startup_ai_hub_catalog_refresh",
     # Event-loop lag gauge + pool/lane snapshots for the Monitor dashboard.
     "_startup_loop_lag",
     "_startup_resource_trail",
@@ -143,6 +143,12 @@ EXPECTED_STARTUP = [
     # TEMPORARY upgrade shim (legacy_mounts_cleanup.py); a startup hook so lean
     # and bare create_app() never run it.
     "_startup_legacy_mounts_cleanup",
+    # Added 2026-10-16: the contribution loop's inbox-count sweep
+    # (contrib/refresh.py), registered beside its router include.
+    "_startup_contrib_sweep",
+    # Added 2026-10-26: the Marketplace block list fetched + enforced at
+    # launch (docs/CONTRIB_LOOP.md §18.4 B4), a daemon thread.
+    "_startup_marketplace_blocks",
     # Added 2026-10-06: the Bots sub-app's scheduler + iMessage bridge
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",
@@ -168,6 +174,10 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_resource_trail",
     "_shutdown_captures",
     "_shutdown_ai_workers",
+    # Every canvas sync manager stopped and its clone's writer lock released —
+    # the rung the Mac quit runs itself (app.py `_stop_children`) and every
+    # lifespan exit (Linux supervisor child, pip on Windows) had none of.
+    "_shutdown_canvas_sync",
     "_shutdown_engines",
     # Status-bar terminal (PLAN-status-bar-terminal.md): registered where
     # `terminal_router` is included in `create_app`, well after the handlers
@@ -224,6 +234,10 @@ EXPECTED_SHUTDOWN_LEAN = [
     "_startup_shutdown_ai",
     "_shutdown_captures",
     "_shutdown_ai_workers",
+    # Every canvas sync manager stopped and its clone's writer lock released —
+    # the rung the Mac quit runs itself (app.py `_stop_children`) and every
+    # lifespan exit (Linux supervisor child, pip on Windows) had none of.
+    "_shutdown_canvas_sync",
     "_shutdown_engines",
     "_shutdown_terminal_sessions",
     # A request can start a bot's Chrome in a lean app too.
@@ -555,6 +569,8 @@ def test_with_the_flag_on_the_startup_scan_is_not_awaited(monkeypatch):
     monkeypatch.setattr(index_routes, "start_index_job_bridge", lambda: None)
     monkeypatch.setattr(index_routes, "start_deferred_startup_scan",
                         lambda d, ev: calls.append(("deferred", ev)))
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda d: calls.append("scan+warm"))
 
     monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: True)
     asyncio.run(_index_scan_handler(app)())
@@ -563,7 +579,47 @@ def test_with_the_flag_on_the_startup_scan_is_not_awaited(monkeypatch):
     calls.clear()
     monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: False)
     asyncio.run(_index_scan_handler(app)())
-    assert calls == ["scan", "warm"]
+    assert calls == ["scan+warm"]
+
+
+def test_with_the_flag_off_the_startup_scan_is_not_awaited(monkeypatch):
+    import fused_render.shell.prefs as prefs
+    from fused_render import extras
+    from fused_render.server.routers import index as index_routes
+
+    app = create_app(start_dir=".")
+    started = []
+
+    async def must_not_run(start_dir=None):
+        raise AssertionError("startup_scan must not be awaited on the boot path")
+
+    monkeypatch.setattr(extras, "available", lambda name: True)
+    monkeypatch.setattr(index_routes, "startup_scan", must_not_run)
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda d: started.append(d))
+    monkeypatch.setattr(index_routes, "start_index_job_bridge", lambda: None)
+    monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: False)
+    asyncio.run(_index_scan_handler(app)())
+    assert started == ["."]
+
+
+def test_start_startup_scan_and_warm_runs_scan_then_warm_off_thread(monkeypatch):
+    import threading
+
+    from fused_render.server.routers import index as index_routes
+
+    order = []
+    release = threading.Event()
+    monkeypatch.setattr(index_routes, "run_startup_scan",
+                        lambda d=None: (release.wait(5), order.append("scan")))
+    monkeypatch.setattr(index_routes, "run_startup_warm",
+                        lambda: order.append("warm"))
+    t = _REAL_START_SCAN_AND_WARM(".")
+    assert t.daemon and t.is_alive()  # returned while the scan still blocks
+    assert order == []
+    release.set()
+    t.join(5)
+    assert order == ["scan", "warm"]
 
 
 @pytest.fixture()
@@ -644,3 +700,196 @@ def test_the_deferred_scan_is_skipped_when_startup_never_finished(deferred):
         ".", threading.Event(), delay_s=0.0, wait=lambda s: None,
         ready_timeout_s=0.01)
     assert calls == []
+
+
+# ------------------------------------------------ housekeeping off the boot path
+
+
+def test_project_venv_gc_is_not_awaited(tmp_path, monkeypatch):
+    """The gc is a disk walk nobody waits on: the handler starts a daemon
+    thread and returns before `projectenv.gc` finishes."""
+    import threading
+
+    from fused_render import projectenv
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def slow_gc():
+        entered.set()
+        release.wait(10)
+        return 0
+
+    monkeypatch.setattr(projectenv, "gc", slow_gc)
+    handler, run = _grab_startup_handler(
+        tmp_path, monkeypatch, "_startup_gc_project_venvs")
+    run(handler())  # returns although gc is still blocked
+    assert entered.wait(5)
+    assert not release.is_set()
+    thread = next(t for t in threading.enumerate() if t.name == "project-venv-gc")
+    assert thread.daemon
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+
+
+def test_startup_prewarm_ai_defers_the_spawn(tmp_path, monkeypatch):
+    from fused_render.server import app as app_mod
+
+    seen = {}
+
+    def fake_prewarm(app, delay=0.0):
+        seen["delay"] = delay
+
+    monkeypatch.setattr(app_mod, "prewarm_ai", fake_prewarm)
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_prewarm_ai")
+    run(handler())
+    assert seen["delay"] == 5.0
+
+
+def test_no_artifacts_warm_at_boot_and_first_request_lists(tmp_path, monkeypatch):
+    """The boot warm is gone: no hook, no thread; the first request scans."""
+    import threading
+
+    from fused_render import claude_artifacts
+
+    calls = []
+    monkeypatch.setattr(claude_artifacts, "list_artifacts",
+                        lambda: calls.append(1) or [])
+    app = create_app(start_dir=str(tmp_path))
+    assert "_startup_artifacts_warm" not in [f.__name__ for f in app.state.startup_handlers]
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        assert not any(t.name == "artifacts-warm" for t in threading.enumerate())
+        assert calls == []
+        assert client.get("/api/claude-artifacts").json() == {"artifacts": []}
+        assert calls == [1]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_startup_prewarm_ai_gates_on_claude_enabled(tmp_path, monkeypatch, enabled):
+    from fused_render.agent_backends import registry
+    from fused_render.server import app as app_mod
+
+    seen = []
+    monkeypatch.setattr(app_mod, "prewarm_ai", lambda app, delay=0.0: seen.append(delay))
+    monkeypatch.setattr(registry, "is_enabled", lambda b: enabled and b == "claude")
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_prewarm_ai")
+    run(handler())
+    assert seen == ([5.0] if enabled else [])
+
+
+def test_startup_tasks_warm_skips_without_any_transcript_root(tmp_path, monkeypatch):
+    from fused_render import tasks_store
+    from fused_render.server.routers import tasks as tasks_mod
+
+    started = []
+    monkeypatch.setattr(tasks_mod, "warm", lambda: started.append(1))
+    monkeypatch.setattr(tasks_store, "projects_roots",
+                        lambda *a: [("claude", str(tmp_path / "nope"))])
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_tasks_warm")
+    run(handler())
+    assert started == []
+
+
+def test_startup_tasks_warm_runs_when_a_root_exists(tmp_path, monkeypatch):
+    from fused_render import tasks_store
+    from fused_render.server.routers import tasks as tasks_mod
+
+    started = []
+    monkeypatch.setattr(tasks_mod, "warm", lambda: started.append(1))
+    monkeypatch.setattr(tasks_store, "projects_roots",
+                        lambda *a: [("claude", str(tmp_path))])
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_tasks_warm")
+    run(handler())
+    import time
+    for _ in range(100):
+        if started:
+            break
+        time.sleep(0.05)
+    assert started == [1]
+
+
+def test_no_hub_refresh_hooks_at_boot_and_catalog_read_starts_them(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from fused_render.ai import supervisor
+
+    app = create_app(start_dir=str(tmp_path))
+    names = [f.__name__ for f in app.state.startup_handlers]
+    assert "_startup_ai_hub_metadata_refresh" not in names
+    assert "_startup_ai_hub_catalog_refresh" not in names
+    meta, cat = [], []
+    monkeypatch.setattr(supervisor, "start_hub_metadata_refresh", lambda: meta.append(1))
+    monkeypatch.setattr(supervisor, "start_hub_catalog_refresh", lambda: cat.append(1))
+    with TestClient(app) as client:
+        assert meta == [] and cat == []
+        assert client.get("/api/ai/catalog").status_code == 200
+        assert meta and cat
+
+
+def _bots_home_fixture(tmp_path, monkeypatch):
+    from fused_render.bots import paths as bpaths
+    from fused_render.bots import registry as bots_registry
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    # bots v3: a bot's folder lives under <workspace>/bots/, so the workspace is per test too, and the id ->
+    # folder map (cached per process) and the registry's Bot cache must forget the previous test's
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "ws"))
+    bpaths._reset_folders()
+    bots_registry.reset_for_tests()
+    return bpaths
+
+
+def test_bots_not_started_at_boot_without_prior_use_then_started_by_first_request(
+        tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from fused_render import _platform
+    from fused_render.bots import registry as bots_registry
+
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    _bots_home_fixture(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(bots_registry, "start", lambda: calls.append(1))
+    app = create_app(start_dir=str(tmp_path))
+    with TestClient(app) as client:
+        assert calls == []  # boot: nothing
+        client.get("/api/bots/setup")
+        assert calls == [1]  # first bots request starts it
+
+
+def test_bots_started_at_boot_with_prior_use(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from fused_render import _platform
+    from fused_render.bots import registry as bots_registry
+
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    _bots_home_fixture(tmp_path, monkeypatch)
+    stamp = bots_registry.seed_stamp_path()
+    os.makedirs(os.path.dirname(stamp), exist_ok=True)
+    open(stamp, "w").write("{}")
+    calls = []
+    monkeypatch.setattr(bots_registry, "start", lambda: calls.append(1))
+    with TestClient(create_app(start_dir=str(tmp_path))):
+        assert calls == [1]
+
+
+def test_bots_has_been_used_counts_a_bot_and_a_pending_fusedbot_tree(tmp_path, monkeypatch):
+    from fused_render.bots import paths as bpaths
+    from fused_render.bots import registry as bots_registry
+
+    _bots_home_fixture(tmp_path, monkeypatch)
+    legacy = tmp_path / "legacy"
+    monkeypatch.setenv("FUSED_RENDER_APP_HOME", str(legacy))
+    assert bots_registry.has_been_used() is False
+    (legacy / "bots").mkdir(parents=True)
+    assert bots_registry.has_been_used() is True  # legacy import pending
+    import shutil
+    shutil.rmtree(legacy)
+    folder = bpaths.place("b1b1b1b1", "One")  # <ws>/bots/one/: a bot once its bot.json is written
+    assert bots_registry.has_been_used() is False
+    open(os.path.join(folder, "bot.json"), "w").write('{"id": "b1b1b1b1"}')
+    assert bots_registry.has_been_used() is True

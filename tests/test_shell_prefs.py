@@ -18,6 +18,9 @@ from fused_render.ai import registry as ai_registry
 from fused_render.server import create_app
 from _hardware_probe_helpers import force_no_accelerators
 
+# Taken at import, before conftest's autouse fixture patches it to True.
+_REAL_IS_DESKTOP_APP = prefs_mod.is_desktop_app
+
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -183,6 +186,48 @@ def test_put_rejects_bad_canvases_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def _fused_settings(tmp_path, monkeypatch, text):
+    from fused_render import canvases
+
+    path = tmp_path / "settings.toml"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(canvases, "_FUSED_SETTINGS_FILES", (str(path),))
+
+
+def test_canvases_embed_proxy_follows_the_switch_when_the_settings_file_is_silent(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    _fused_settings(tmp_path, monkeypatch, 'base_url = "https://acme.fused.io/server/v1"\n')
+    body = client.get("/api/prefs").json()["canvases"]
+    assert body["embed_proxy"] is False and body["embed_proxy_locked"] is False
+    body = client.put("/api/prefs", json={"canvases_embed_proxy": True}, headers=FUSED).json()
+    assert body["canvases"]["embed_proxy"] is True
+    assert prefs_mod.canvases_embed_proxy_enabled() is True
+
+
+def test_canvases_embed_proxy_settings_file_wins_both_ways(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"canvases_embed_proxy": True}, headers=FUSED)
+    _fused_settings(tmp_path, monkeypatch, "[render]\ncanvases_embed_proxy_enabled = false\n")
+    body = client.get("/api/prefs").json()["canvases"]
+    assert body["embed_proxy"] is False and body["embed_proxy_locked"] is True
+    assert prefs_mod.canvases_embed_proxy_enabled() is False
+    _fused_settings(tmp_path, monkeypatch, "[render]\ncanvases_embed_proxy_enabled = true\n")
+    assert prefs_mod.canvases_embed_proxy_enabled() is True
+    # The switch cannot change a pinned value, and the stored pref is left alone.
+    r = client.put("/api/prefs", json={"canvases_embed_proxy": False}, headers=FUSED)
+    assert r.status_code == 423 and "canvases_embed_proxy_enabled" in r.json()["error"]
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["canvases_embed_proxy"] is True
+
+
+def test_canvases_embed_proxy_ignores_a_non_boolean_settings_value(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    _fused_settings(tmp_path, monkeypatch, '[render]\ncanvases_embed_proxy_enabled = "yes"\n')
+    body = client.get("/api/prefs").json()["canvases"]
+    assert body["embed_proxy"] is False and body["embed_proxy_locked"] is False
+    assert client.put("/api/prefs", json={"canvases_embed_proxy": True},
+                      headers=FUSED).status_code == 200
+
+
 def test_monitor_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Default off: the System chip and /monitor page are opt-in.
@@ -214,25 +259,24 @@ def test_put_rejects_bad_monitor_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
-def test_marketplace_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+def test_marketplace_and_contrib_are_always_on(tmp_path, monkeypatch):
+    """The Community and the contribution loop stopped being switches on
+    2026-10-29: the payload says on, a stored key is ignored, and a PUT of
+    the old keys is no known preference."""
     client, home = _client(tmp_path, monkeypatch)
-    # Default off: the Marketplace entry points are opt-in.
-    assert client.get("/api/prefs").json()["marketplace"]["enabled"] is False
-    body = client.put("/api/prefs", json={"marketplace_enabled": True}, headers=FUSED).json()
-    assert body["marketplace"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["marketplace_enabled"] is True
-    assert prefs_mod.marketplace_enabled() is True
-    assert client.put("/api/prefs", json={"marketplace_enabled": False}, headers=FUSED).json()[
-        "marketplace"
-    ]["enabled"] is False
-    # A hand-edited junk value reads as off; a non-boolean PUT is refused.
-    (home / "prefs.json").write_text(json.dumps({"marketplace_enabled": "yes"}), encoding="utf-8")
-    assert prefs_mod.marketplace_enabled() is False
-    assert (
-        client.put("/api/prefs", json={"marketplace_enabled": "yes"}, headers=FUSED).status_code
-        == 400
-    )
+    got = client.get("/api/prefs").json()
+    assert got["marketplace"]["enabled"] is True and got["contrib"]["enabled"] is True
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"marketplace_enabled": False, "contrib_enabled": False}),
+                                     encoding="utf-8")
+    assert prefs_mod.marketplace_enabled() is True and prefs_mod.contrib_enabled() is True
+    assert client.get("/api/prefs").json()["marketplace"]["enabled"] is True
+    for key in ("marketplace_enabled", "contrib_enabled"):
+        assert client.put("/api/prefs", json={key: True}, headers=FUSED).status_code == 400
+    # Remix keeps its switch.
+    assert client.put("/api/prefs", json={"contrib_remix_enabled": True}, headers=FUSED).json()[
+        "contrib"
+    ]["remix"] is True
 
 
 def test_removed_always_on_prefs_are_not_in_the_payload(tmp_path, monkeypatch):
@@ -369,6 +413,65 @@ def test_indexing_enabled_defaults_on_and_toggles(tmp_path, monkeypatch):
     assert client.put("/api/prefs", json={"indexing_enabled": True}, headers=FUSED).json()[
         "indexing"
     ]["enabled"] is True
+
+
+def _indexing_env(tmp_path, monkeypatch, *, desktop, stored=None, dev=False, env=None):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    monkeypatch.delenv(prefs_mod.INDEXING_ENV, raising=False)
+    monkeypatch.delenv("FUSED_RENDER_DEV", raising=False)
+    if dev:
+        monkeypatch.setenv("FUSED_RENDER_DEV", "1")
+    if env is not None:
+        monkeypatch.setenv(prefs_mod.INDEXING_ENV, env)
+    monkeypatch.setattr(prefs_mod, "is_desktop_app", lambda: desktop)
+    if stored is not None:
+        (tmp_path / "prefs.json").write_text(
+            json.dumps({"indexing_enabled": stored}), encoding="utf-8")
+
+
+def test_indexing_default_off_outside_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=False)
+    assert prefs_mod.indexing_enabled() is False
+
+
+def test_indexing_default_on_in_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=True)
+    assert prefs_mod.indexing_enabled() is True
+
+
+def test_indexing_stored_true_wins_outside_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=False, stored=True)
+    assert prefs_mod.indexing_enabled() is True
+
+
+def test_indexing_stored_false_wins_in_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=True, stored=False)
+    assert prefs_mod.indexing_enabled() is False
+
+
+def test_indexing_env_override_wins_outside_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=False, env="1")
+    assert prefs_mod.indexing_enabled() is True
+
+
+def test_indexing_dev_run_stays_off_even_in_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=True, dev=True)
+    assert prefs_mod.indexing_enabled() is False
+
+
+def test_is_desktop_app_reads_the_instance_env(monkeypatch):
+    ident = "FUSED_RENDER_DESKTOP_INSTANCE_ID"
+    token = "FUSED_RENDER_DESKTOP_INSTANCE_TOKEN"
+    monkeypatch.delenv(ident, raising=False)
+    monkeypatch.delenv(token, raising=False)
+    assert _REAL_IS_DESKTOP_APP() is False
+    monkeypatch.setenv(ident, "abc")
+    assert _REAL_IS_DESKTOP_APP() is False  # half-set pair is not the app
+    monkeypatch.delenv(ident)
+    monkeypatch.setenv(token, "tok")
+    assert _REAL_IS_DESKTOP_APP() is False
+    monkeypatch.setenv(ident, "abc")
+    assert _REAL_IS_DESKTOP_APP() is True
 
 
 def test_put_rejects_bad_indexing_enabled(tmp_path, monkeypatch):
@@ -1553,6 +1656,54 @@ def test_task_recap_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monke
     assert prefs_mod.task_recap_titles_enabled() is False
 
 
+def test_canvas_shot_slow_fallback_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """The slow in-canvas screenshot fallback (Settings › Canvas screenshots):
+    same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["canvas_shot"] == {"slow_fallback": False}
+    body = client.put("/api/prefs", json={"canvas_shot_slow_fallback_enabled": True},
+                      headers=FUSED).json()
+    assert body["canvas_shot"]["slow_fallback"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["canvas_shot_slow_fallback_enabled"] is True
+    assert prefs_mod.canvas_shot_slow_fallback_enabled() is True
+    bad = client.put("/api/prefs", json={"canvas_shot_slow_fallback_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "canvas_shot_slow_fallback_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"canvas_shot_slow_fallback_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.canvas_shot_slow_fallback_enabled() is False
+
+
+def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """The collapsed Claude rail's hover preview card (Settings › Canvases):
+    same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""
+    client, home = _client(tmp_path, monkeypatch)
+    # The payload is the switch alone: the trigger choice of 2026-10-31 is
+    # gone (a hover previews, a click pins).
+    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"canvas_rail_peek_enabled": True},
+                      headers=FUSED).json()
+    assert body["canvas_rail_peek"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["canvas_rail_peek_enabled"] is True
+    assert prefs_mod.canvas_rail_peek_enabled() is True
+    bad = client.put("/api/prefs", json={"canvas_rail_peek_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "canvas_rail_peek_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.canvas_rail_peek_enabled() is False
+    # The retired trigger key: ignored on disk, refused in a PUT.
+    (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_trigger": "hover"}),
+                                     encoding="utf-8")
+    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False}
+    assert client.put("/api/prefs", json={"canvas_rail_peek_trigger": "hover"},
+                      headers=FUSED).status_code == 400
+
+
 def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
     """Same opt-in idiom as the recap flag: only a stored `true` is on."""
     client, home = _client(tmp_path, monkeypatch)
@@ -1584,24 +1735,24 @@ def test_task_summary_titles_solo_put_saves_and_turns_off(tmp_path, monkeypatch)
     assert client.get("/api/prefs").json()["task_summary_titles"] == {"enabled": False}
 
 
-def test_claude_strict_mcp_defaults_on_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """Lean sessions are the default: only a stored `false` turns them off."""
+def test_claude_strict_mcp_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Lean sessions are opt-in: only a stored `true` turns them on."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["claude_strict_mcp"] == {"enabled": True}
-    assert prefs_mod.claude_strict_mcp_enabled() is True
-    body = client.put("/api/prefs", json={"claude_strict_mcp_enabled": False},
-                      headers=FUSED).json()
-    assert body["claude_strict_mcp"]["enabled"] is False
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["claude_strict_mcp_enabled"] is False
+    assert client.get("/api/prefs").json()["claude_strict_mcp"] == {"enabled": False}
     assert prefs_mod.claude_strict_mcp_enabled() is False
+    body = client.put("/api/prefs", json={"claude_strict_mcp_enabled": True},
+                      headers=FUSED).json()
+    assert body["claude_strict_mcp"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["claude_strict_mcp_enabled"] is True
+    assert prefs_mod.claude_strict_mcp_enabled() is True
     bad = client.put("/api/prefs", json={"claude_strict_mcp_enabled": "yes"},
                      headers=FUSED)
     assert bad.status_code == 400
     assert "claude_strict_mcp_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}),
+    (home / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 1}),
                                      encoding="utf-8")
-    assert prefs_mod.claude_strict_mcp_enabled() is True
+    assert prefs_mod.claude_strict_mcp_enabled() is False
 
 
 def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
@@ -1708,6 +1859,101 @@ def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
     assert prefs_mod.indexing_enabled() is expect
 
 
+# -- per-model engine pins (D1456) ----------------------------------------------
+#
+# The sibling of the per-capability preference above: `model_engines` maps a
+# cached repo id to a runner code. Same store/validate/degrade rules; what a pin
+# does to RESOLUTION is `tests/test_ai_runtime.py`'s.
+
+
+def _fake_cache(monkeypatch, models):
+    """`models`: {repo_id: capability}. Patches the two readers prefs uses."""
+    from fused_render.ai import hub_cache
+
+    def reading(repo_id):
+        cap = models.get(repo_id)
+        if cap is None:
+            return hub_cache.CacheReading(False, None, None)
+        return hub_cache.CacheReading(True, cap, None)
+
+    monkeypatch.setattr(hub_cache, "cached_capability", reading)
+    monkeypatch.setattr(
+        hub_cache, "cached_models",
+        lambda: [hub_cache.CachedModel(i, c, 1) for i, c in models.items()])
+
+
+def test_a_model_engine_pin_round_trips_and_persists(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs",
+                      json={"model_engines": {"acme/chat": "llamacpp-text"}},
+                      headers=FUSED).json()
+
+    rows = {m["id"]: m for m in body["engines"]["models"]}
+    assert rows["acme/chat"]["selected"] == "llamacpp-text"
+    assert rows["acme/chat"]["capability"] == "text-generation"
+    assert json.loads((home / "prefs.json").read_text())["model_engines"] == {
+        "acme/chat": "llamacpp-text"}
+    # Per-capability engines are untouched by a model pin.
+    assert "engines" not in json.loads((home / "prefs.json").read_text())
+
+
+def test_a_model_pin_set_back_to_auto_is_removed(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"model_engines": {"acme/chat": "llamacpp-text"}},
+               headers=FUSED)
+    body = client.put("/api/prefs", json={"model_engines": {"acme/chat": "auto"}},
+                      headers=FUSED).json()
+
+    assert json.loads((home / "prefs.json").read_text())["model_engines"] == {}
+    assert body["engines"]["models"][0]["selected"] == "auto"
+
+
+def test_a_model_pin_for_an_uncached_or_mismatched_model_is_refused(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+
+    gone = client.put("/api/prefs", json={"model_engines": {"acme/gone": "llamacpp-text"}},
+                      headers=FUSED)
+    assert gone.status_code == 400
+    assert "not downloaded" in gone.json()["error"]
+
+    wrong = client.put("/api/prefs", json={"model_engines": {"acme/chat": "mlx-whisper"}},
+                       headers=FUSED)
+    assert wrong.status_code == 400
+    assert "does not serve" in wrong.json()["error"]
+
+    notmap = client.put("/api/prefs", json={"model_engines": ["acme/chat"]}, headers=FUSED)
+    assert notmap.status_code == 400
+    assert not (home / "prefs.json").exists() or "model_engines" not in json.loads(
+        (home / "prefs.json").read_text())
+
+
+def test_a_model_pin_naming_a_withdrawn_engine_still_reports_with_a_reason(
+        tmp_path, monkeypatch):
+    """Written to disk directly (the endpoint would refuse it), like the
+    per-capability sibling: the READ path degrades, never rewrites."""
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"model_engines": {"acme/chat": "transformers-text"}}))
+
+    row = client.get("/api/prefs").json()["engines"]["models"][0]
+    assert row["selected"] == "transformers-text"
+    assert "not a runner this build knows" in row["ignoredReason"]
+    assert json.loads((home / "prefs.json").read_text())["model_engines"] == {
+        "acme/chat": "transformers-text"}
+
+
+def test_the_models_block_lists_every_cached_model_with_a_capability(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation", "acme/none": None})
+    client, _ = _client(tmp_path, monkeypatch)
+    rows = client.get("/api/prefs").json()["engines"]["models"]
+    assert [r["id"] for r in rows] == ["acme/chat"]
+    assert rows[0]["selected"] == "auto"
+    assert rows[0]["choices"], "the same choices the capability row carries"
 def test_claude_default_permission_defaults_auto_and_validates(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert client.get("/api/prefs").json()["claude_default_permission"] == "auto"
@@ -1725,38 +1971,33 @@ def test_claude_default_permission_defaults_auto_and_validates(tmp_path, monkeyp
     assert prefs_mod.claude_default_permission() == "auto"
 
 
-# -- chromium_windows_enabled (experimental) ----------------------------------------
+# -- chromium_windows_enabled -------------------------------------------------------
 
 
-def _chromium_fakes(monkeypatch, state="missing"):
-    """`fused_render.chromium` with no disk or network: a canned status and
-    a recording `install`/`remove`."""
+def _chromium_fakes(monkeypatch, state="ready"):
+    """`fused_render.chromium` with no engine on disk: a canned status."""
     from fused_render import chromium
 
-    calls = []
     monkeypatch.setattr(chromium, "status", lambda *a, **k: {
-        "state": state, "progress": 0.0, "error": None, "engine_version": "1",
-        "cef_version": "x", "path": "/p"})
-    monkeypatch.setattr(chromium, "install", lambda *a, **k: calls.append("install"))
-    monkeypatch.setattr(chromium, "remove", lambda *a, **k: calls.append("remove") or True)
-    return calls
+        "state": state, "cef_version": "x" if state == "ready" else None, "path": "/p"})
 
 
-def test_chromium_windows_defaults_off_and_unavailable_without_native_windows(tmp_path, monkeypatch):
-    """Opt-in like the other optional features; `available` needs the
+def test_chromium_windows_defaults_on_and_unavailable_without_native_windows(tmp_path, monkeypatch):
+    """Default on (D1415: the app ships the engine); `available` needs the
     native-window hook (the macOS app) AND a platform that can host CEF."""
     _chromium_fakes(monkeypatch)
     client, _ = _client(tmp_path, monkeypatch)
     body = client.get("/api/prefs").json()["chromium_windows"]
-    assert body["enabled"] is False
+    assert body["enabled"] is True
     assert body["available"] is False
-    assert body["engine"]["state"] == "missing"
+    assert body["engine"]["state"] == "ready"
+    assert prefs_mod.chromium_windows_enabled() is True
 
 
 def test_chromium_windows_available_only_with_hook_and_supported_platform(tmp_path, monkeypatch):
     from fused_render import window_policy
 
-    calls = _chromium_fakes(monkeypatch)
+    _chromium_fakes(monkeypatch)
     client, _ = _client(tmp_path, monkeypatch)
     window_policy.native_hooks["apply"] = lambda on: None
     try:
@@ -1765,33 +2006,200 @@ def test_chromium_windows_available_only_with_hook_and_supported_platform(tmp_pa
         assert client.get("/api/prefs").json()["chromium_windows"]["available"] is False
     finally:
         window_policy.native_hooks.clear()
-    assert calls == []
 
 
-def test_chromium_windows_enabled_put_saves_and_starts_the_download(tmp_path, monkeypatch):
-    calls = _chromium_fakes(monkeypatch)
+def test_chromium_windows_enabled_put_saves(tmp_path, monkeypatch):
+    _chromium_fakes(monkeypatch)
     client, home = _client(tmp_path, monkeypatch)
-    body = client.put("/api/prefs", json={"chromium_windows_enabled": True}, headers=FUSED).json()
-    assert body["chromium_windows"]["enabled"] is True
-    assert json.loads((home / "prefs.json").read_text())["chromium_windows_enabled"] is True
-    assert calls == ["install"]
-    # off writes false and starts nothing
     body = client.put("/api/prefs", json={"chromium_windows_enabled": False}, headers=FUSED).json()
     assert body["chromium_windows"]["enabled"] is False
-    assert calls == ["install"]
+    assert json.loads((home / "prefs.json").read_text())["chromium_windows_enabled"] is False
+    assert prefs_mod.chromium_windows_enabled() is False
+    body = client.put("/api/prefs", json={"chromium_windows_enabled": True}, headers=FUSED).json()
+    assert body["chromium_windows"]["enabled"] is True
     assert client.put("/api/prefs", json={"chromium_windows_enabled": "yes"}, headers=FUSED).status_code == 400
 
 
 def test_chromium_engine_routes(tmp_path, monkeypatch):
-    calls = _chromium_fakes(monkeypatch, state="failed")
+    _chromium_fakes(monkeypatch)
+    client, _ = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs/chromium").json()["engine"]["state"] == "ready"
+    # the download-era routes are gone (D1415: nothing to install or remove)
+    assert client.post("/api/prefs/chromium/install", headers=FUSED).status_code == 404
+    assert client.post("/api/prefs/chromium/remove", headers=FUSED).status_code == 404
+    # reopen needs the X-Fused header (D3) and a window host
+    assert client.post("/api/prefs/chromium/reopen-windows").status_code == 403
+    assert client.post("/api/prefs/chromium/reopen-windows", headers=FUSED).status_code == 409
+
+
+# -- warm_run_enabled (SPEC PY-20) --------------------------------------------
+
+
+def test_warm_run_defaults_on_toggles_and_reports_forced(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs/chromium").json()["engine"]["state"] == "failed"
-    # the POSTs need the X-Fused header (D3)
-    assert client.post("/api/prefs/chromium/install").status_code == 403
-    assert client.post("/api/prefs/chromium/install", headers=FUSED).status_code == 200
-    assert calls == ["install"]
-    client.put("/api/prefs", json={"chromium_windows_enabled": True}, headers=FUSED)
-    body = client.post("/api/prefs/chromium/remove", headers=FUSED).json()
-    assert body["enabled"] is False
-    assert json.loads((home / "prefs.json").read_text())["chromium_windows_enabled"] is False
-    assert calls[-1] == "remove"
+    monkeypatch.delenv("FUSED_RENDER_WARM_RUN", raising=False)
+    monkeypatch.setattr(os, "name", "posix")
+    assert client.get("/api/prefs").json()["warm_run"] == {"enabled": True, "forced": False}
+    body = client.put("/api/prefs", json={"warm_run_enabled": False}, headers=FUSED).json()
+    assert body["warm_run"]["enabled"] is False
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "warm_run_enabled"] is False
+    assert client.put("/api/prefs", json={"warm_run_enabled": True},
+                      headers=FUSED).json()["warm_run"]["enabled"] is True
+
+
+def test_put_rejects_bad_warm_run_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    resp = client.put("/api/prefs", json={"warm_run_enabled": "yes"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "'warm_run_enabled' must be a boolean"
+    assert not (home / "prefs.json").exists()
+
+
+def test_warm_run_env_beats_the_pref_and_windows_is_always_off(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(os, "name", "posix")
+    client.put("/api/prefs", json={"warm_run_enabled": True}, headers=FUSED)
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "0")
+    assert prefs_mod.warm_run_enabled() is False
+    assert client.get("/api/prefs").json()["warm_run"] == {"enabled": False, "forced": True}
+    client.put("/api/prefs", json={"warm_run_enabled": False}, headers=FUSED)
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "1")
+    assert prefs_mod.warm_run_enabled() is True
+    monkeypatch.setattr(os, "name", "nt")
+    assert prefs_mod.warm_run_enabled() is False
+
+
+# -- unavailable features --------------------------------------------------------
+
+
+@pytest.fixture
+def everything_present(monkeypatch):
+    """Every probe says "available", so a test forces one feature missing."""
+    from fused_render import _platform, extras, pty_session, update
+
+    monkeypatch.setattr(extras, "available", lambda extra: True)
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(update, "manager", lambda: object())
+    monkeypatch.setattr(prefs_mod, "_native_windows_state",
+                        lambda: {"enabled": True, "available": True})
+    monkeypatch.setattr(pty_session, "terminal_available", lambda: True)
+
+
+def test_nothing_is_unavailable_when_everything_is_present(everything_present):
+    assert prefs_mod._unavailable_features() == {}
+
+
+@pytest.mark.parametrize("extra", ["index", "hf", "fused"])
+def test_a_missing_extra_is_reported_with_its_install_line(everything_present,
+                                                           monkeypatch, extra):
+    from fused_render import extras
+
+    monkeypatch.setattr(extras, "available", lambda e: e != extra)
+    assert prefs_mod._unavailable_features() == {
+        extra: f"Needs pip install 'fused-render[{extra}]'"}
+
+
+def test_update_unavailable_off_windows_names_pip(everything_present, monkeypatch):
+    from fused_render import update
+
+    monkeypatch.setattr(update, "manager", lambda: None)
+    monkeypatch.setattr(update, "supported", lambda: False)
+    reason = prefs_mod._unavailable_features()["update"]
+    assert "pip install -U fused-render" in reason
+
+
+def test_update_unavailable_with_check_only_pypi_manager(everything_present,
+                                                         monkeypatch):
+    from fused_render import update
+    from fused_render.update import pypi
+
+    from fused_render.update import linux, mac
+
+    inst = pypi.PyPIUpdateManager()
+    monkeypatch.setattr(pypi, "_manager", inst)
+    monkeypatch.setattr(mac, "manager", lambda: None)
+    monkeypatch.setattr(linux, "manager", lambda: None)
+    monkeypatch.setattr(update, "manager", lambda: pypi.manager())
+    monkeypatch.setattr(update, "supported", lambda: False)
+    assert update.manager() is inst
+    reason = prefs_mod._unavailable_features()["update"]
+    assert "pip install -U fused-render" in reason
+
+
+def test_update_is_available_when_supported_but_not_started(everything_present,
+                                                            monkeypatch):
+    from fused_render import update
+
+    monkeypatch.setattr(update, "manager", lambda: None)
+    monkeypatch.setattr(update, "supported", lambda: True)
+    assert "update" not in prefs_mod._unavailable_features()
+
+
+def test_windows_reasons(everything_present, monkeypatch):
+    from fused_render import _platform, update
+
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(update, "manager", lambda: None)
+    monkeypatch.setattr(update, "supported", lambda: False)
+    monkeypatch.setattr(prefs_mod, "_native_windows_state",
+                        lambda: {"enabled": True, "available": False})
+    out = prefs_mod._unavailable_features()
+    assert out["update"] == "Not available on Windows"
+    assert out["native_windows"] == "Not available on Windows"
+
+
+def test_native_windows_off_a_desktop_app(everything_present, monkeypatch):
+    monkeypatch.setattr(prefs_mod, "_native_windows_state",
+                        lambda: {"enabled": True, "available": False})
+    assert prefs_mod._unavailable_features() == {"native_windows": "Only in the desktop app"}
+
+
+def test_terminal_unavailable_names_the_cli_extra(everything_present, monkeypatch):
+    from fused_render import pty_session
+
+    monkeypatch.setattr(pty_session, "terminal_available", lambda: False)
+    assert prefs_mod._unavailable_features() == {
+        "terminal": "Needs pip install 'fused-render[cli]'"}
+
+
+def test_a_failing_probe_reports_nothing(everything_present, monkeypatch):
+    from fused_render import extras
+
+    def boom(extra):
+        raise RuntimeError("probe broke")
+
+    monkeypatch.setattr(extras, "available", boom)
+    assert prefs_mod._unavailable_features() == {}
+
+
+def test_prefs_response_carries_the_unavailable_map(tmp_path, monkeypatch,
+                                                    everything_present):
+    from fused_render import extras
+
+    monkeypatch.setattr(extras, "available", lambda e: e != "index")
+    client, _ = _client(tmp_path, monkeypatch)
+    body = client.get("/api/prefs").json()
+    assert body["unavailable"] == {"index": "Needs pip install 'fused-render[index]'"}
+
+
+def test_update_supported_follows_start_rules(monkeypatch):
+    from fused_render import update
+    from fused_render.update import common, mac
+
+    monkeypatch.setattr("sys.platform", "win32")
+    assert update.supported() is False
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", True)
+    monkeypatch.setattr(mac, "bundle_path", lambda: "/Applications/X.app")
+    assert update.supported() is True
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", False)
+    assert update.supported() is False
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", True)
+    monkeypatch.setattr(mac, "bundle_path", lambda: None)
+    monkeypatch.delenv("FUSED_RENDER_DEV_UPDATE_MANAGER", raising=False)
+    from fused_render.update._manager import DEV_MANAGER_ENV
+    monkeypatch.delenv(DEV_MANAGER_ENV, raising=False)
+    assert update.supported() is False
+    monkeypatch.setenv(DEV_MANAGER_ENV, "1")
+    assert update.supported() is True

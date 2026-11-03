@@ -14,7 +14,7 @@
 // composer is pinned to the bottom of a pane) and the dismissal contract
 // (outside press, Escape). Its trigger is an inert overlay on the pill's own
 // box rather than the select, so nothing intercepts the select's keys.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   Popover,
   PopoverContent,
@@ -26,6 +26,9 @@ export interface PillOption {
   value: string;
   /** What the MENU shows — always the full spelling (T:12537). */
   label: string;
+  /** One line on what the option MEANS, shown on hover of its menu row
+   *  (`data-hint`, platform/lib/hints) and never printed in the row. */
+  hint?: string;
 }
 
 export interface PillSelectProps {
@@ -81,6 +84,11 @@ export function PillSelect({
    *  "a second press on the same pill closes" (T:12574). */
   const wasOpen = useRef(false);
   const [minWidth, setMinWidth] = useState<number | undefined>();
+  // The hints' ids, one per option: the hover panel is aria-hidden, so a
+  // screen reader gets the same sentence from a clipped span the row describes
+  // itself by. (The native <option> rows cannot carry one — an option takes no
+  // children and no describedby — so that path says the name alone.)
+  const hintBase = useId();
 
   useEffect(() => {
     openRef.current = open;
@@ -160,19 +168,27 @@ export function PillSelect({
         >
           <div className="c-selpop-head">{group}</div>
           {options.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={`c-selpop-opt${option.value === value ? " is-on" : ""}`}
-              onClick={() => {
-                setOpen(false);
-                // Fired even when the value is unchanged: picking the value
-                // detection guessed is how the user PINS it (T:12540).
-                onChange(option.value);
-              }}
-            >
-              <span>{option.label}</span>
-            </button>
+            <Fragment key={option.value}>
+              <button
+                type="button"
+                className={`c-selpop-opt${option.value === value ? " is-on" : ""}`}
+                data-hint={option.hint}
+                aria-describedby={option.hint ? `${hintBase}-${option.value}` : undefined}
+                onClick={() => {
+                  setOpen(false);
+                  // Fired even when the value is unchanged: picking the value
+                  // detection guessed is how the user PINS it (T:12540).
+                  onChange(option.value);
+                }}
+              >
+                <span>{option.label}</span>
+              </button>
+              {/* A SIBLING, not a child: inside the button it would join the
+                  row's accessible name. */}
+              {option.hint && (
+                <span id={`${hintBase}-${option.value}`} className="sr-only">{option.hint}</span>
+              )}
+            </Fragment>
           ))}
         </PopoverContent>
       </Popover>

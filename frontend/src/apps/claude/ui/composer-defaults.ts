@@ -44,11 +44,13 @@ import {
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
 import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
+import { PERMISSION_LABELS as SHARED_PERMISSION_LABELS } from "@platform/lib/permission-modes";
 import { narrowPermission, useDefaultPermission } from "../feature-flag";
 import {
   capsOf,
+  defaultEffortFor,
   defaultModelOf,
-  effortsOf,
+  effortsForModel,
   isBackendEnabled,
   modelsOf,
   useAgentBackends,
@@ -61,7 +63,7 @@ import { useChatParams } from "../params/useChatParams";
 /** `claude --model`'s vocabulary, one entry per model (T:11823).
  *
  *  THE STATIC CLAUDE ROW since the agent catalog (docs/COPILOT_BACKEND.md
- *  D11): the live lists are `modelsOf(backend)` / `effortsOf(backend)` off
+ *  D11): the live lists are `modelsOf(backend)` / `effortsForModel(backend, model)` off
  *  `platform/lib/agent-backends`, and these constants are what every reader
  *  sees before the catalog lands and what the Claude row says once it has.
  *
@@ -89,25 +91,29 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
   "acceptEdits",
   "auto",
 ];
+/** How each mode is SAID — the card's words (platform/lib/permission-modes),
+ *  shared with the New task card so the two pickers read the same (Akshil,
+ *  2026-11-02). Typed down to the four keys here. */
 export const PERMISSION_LABELS: Record<PermissionMode, string> = {
-  plan: "plan first",
-  prompt: "ask every time",
-  acceptEdits: "auto-accept edits",
-  auto: "Claude decides",
+  plan: SHARED_PERMISSION_LABELS.plan,
+  prompt: SHARED_PERMISSION_LABELS.prompt,
+  acceptEdits: SHARED_PERMISSION_LABELS.acceptEdits,
+  auto: SHARED_PERMISSION_LABELS.auto,
 };
-/** The same labels with the AGENT named in the one that names it ("Copilot
- *  decides", D18). The Claude row is `PERMISSION_LABELS` byte for byte. */
-export function permissionLabelsFor(agent: string): Record<PermissionMode, string> {
-  return agent === "Claude" ? PERMISSION_LABELS : { ...PERMISSION_LABELS, auto: `${agent} decides` };
+/** One vocabulary for every agent now that no label names one ("Copilot
+ *  decides" went with "Claude decides"). Kept so the readers that asked by
+ *  agent still get an answer. */
+export function permissionLabelsFor(_agent: string): Record<PermissionMode, string> {
+  return PERMISSION_LABELS;
 }
 /** The DISTINGUISHING word of each label, never a truncation — for the pill
  *  only, and only when the row has run out of width (T:11858-11870). The menu
  *  always spells the sentences out. */
 export const PERMISSION_SHORT: Record<PermissionMode, string> = {
-  plan: "plan",
-  prompt: "ask",
-  acceptEdits: "edits",
-  auto: "decides",
+  plan: "Plan",
+  prompt: "Ask",
+  acceptEdits: "Edits",
+  auto: "Auto",
 };
 
 export const DEFAULT_MODEL = "sonnet";
@@ -123,7 +129,7 @@ export const DEFAULT_PERMISSION: PermissionMode = "prompt";
 export const GROUP_LABELS = {
   model: "Model",
   effort: "Effort",
-  permission: "Approvals",
+  permission: "Mode",
 } as const;
 /** Pill accessible names (03 §F). */
 export const PILL_ARIA = {
@@ -169,8 +175,15 @@ export function resolveEffort(
   detected?: string,
   recorded?: string,
   list: readonly string[] = EFFORTS,
+  preferred?: string,
 ): string {
-  const fallback = list.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : list[0] || DEFAULT_EFFORT;
+  // A model that takes no effort has NO value here — "" is "no flag", and the
+  // pill is not drawn — whatever a record or a param still carries from a
+  // model that did.
+  if (!list.length) return "";
+  const fallback = preferred && list.includes(preferred)
+    ? preferred
+    : list.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : list[0];
   return pick(list, recorded || param || detected || fallback, fallback);
 }
 /** `syncSelects`'s permission branch (T:12171). The first ABSENT value ends
@@ -196,7 +209,7 @@ export interface ComposerDefaults {
    * session's own, once the wire has named it (`ChatState.backend`, handed in
    * as `sessionBackend`), else the `backend` param — the Agent pill's pick for
    * a chat that has no session yet — else the catalog's default. The model
-   * and effort lists are THIS agent's (`modelsOf`/`effortsOf`), so a value the
+   * and effort lists are THIS agent's (`modelsOf`/`effortsForModel`), so a value the
    * other agent recorded folds to this one's default rather than a blank pill.
    */
   backend: string;
@@ -279,7 +292,6 @@ export function useComposerDefaults(
   const paramBackend = snapshot.backend && isBackendEnabled(snapshot.backend) ? snapshot.backend : "";
   const backend = ownBackend || paramBackend || catalog.default;
   const models = modelsOf(backend);
-  const efforts = effortsOf(backend);
   const fallbackModel = defaultModelOf(backend);
   const [detected, setDetected] = useState<{ model: string; effort: string }>({
     model: "",
@@ -339,13 +351,13 @@ export function useComposerDefaults(
 
   // ── THE GLOBAL PAIR — the answer for a chat that has no conversation yet ──
   //
-  // `~/.claude/settings.json`'s `model` / `effortLevel`, read (and written)
-  // through `platform/lib/claude-defaults`, which is the single home the New
-  // task card shares. It is the SAME answer the slow `defaults` read gives a
+  // `~/.claude/settings.json`'s `model` / `effortLevel`, read through
+  // `platform/lib/claude-defaults`, which is the single home the New task card
+  // shares. Only the Claude settings page writes it. It is the SAME answer the slow `defaults` read gives a
   // sessionless chat — `agent._global_defaults` is literally what that action
   // falls through to now — but it arrives off one JSON endpoint in
-  // milliseconds instead of a subprocess in seconds, and it MOVES: another
-  // surface changing it has to reach a composer that is already open.
+  // milliseconds instead of a subprocess in seconds, and it MOVES: a save on
+  // the settings page has to reach a composer that is already open.
   //
   // Consulted only while this chat has no session. A conversation that exists
   // answers for itself (record, then its own transcript) and the global must
@@ -565,7 +577,6 @@ export function useComposerDefaults(
   // per read before the list depended on the agent). Only the PARAM folds to
   // the default instead — see `resolveModel`'s header.
   const lm = (v: string) => listedModelIn(v, models);
-  const le = (v: string) => (efforts.includes(v) ? v : "");
   const model = resolveModel(
     paramModel,
     lm(globModel) || lm(detected.model),
@@ -573,11 +584,18 @@ export function useComposerDefaults(
     models,
     fallbackModel,
   );
+  // THE EFFORTS ARE THE MODEL'S, so they are read once the model is known:
+  // per model where the catalog knows them per model (Copilot's `auto` and
+  // Claude ids take none; its GPT ids each name their levels), the agent's
+  // list otherwise. An empty list resolves to "" and hides the pill.
+  const efforts = effortsForModel(backend, model);
+  const le = (v: string) => (efforts.includes(v) ? v : "");
   const effort = resolveEffort(
     paramEffort,
     le(globEffort) || le(detected.effort),
     le(recorded.effort) || le(local.effort),
     efforts,
+    defaultEffortFor(backend, model),
   );
   // An agent with no plan mode (§7 `plan_mode`) never shows "plan": the pill
   // has no such row for it, and the send would be refused.
@@ -616,9 +634,12 @@ export function useComposerDefaults(
     recordAnswered &&
     (!!lm(recorded.model) || !!lm(local.model) || !!paramModel || !!lm(globModel) ||
       (globalReady && detectionReady));
+  // A model that takes no effort has nothing in flight that could change the
+  // (absent) pill, so its field is settled with the model's.
   const effortSettled =
     recordAnswered &&
-    (!!le(recorded.effort) || !!le(local.effort) || !!paramEffort || !!le(globEffort) ||
+    (efforts.length === 0 ||
+      !!le(recorded.effort) || !!le(local.effort) || !!paramEffort || !!le(globEffort) ||
       (globalReady && detectionReady));
   const pillsReady = modelSettled && effortSettled;
 

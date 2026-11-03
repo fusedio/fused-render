@@ -141,10 +141,11 @@ export function recapTitlesOn(task: { recap?: unknown }): boolean {
  *  where some cards carried a message and others were simply blank would read
  *  as a wall of broken cards.
  *
- *  SUMMARY-ONLY TITLES (prefs `task_summary_titles.enabled`; the server puts
+ *  STABLE AI TITLES (prefs `task_summary_titles.enabled`; the server puts
  *  `title_mode: "summary"` on every row with it on) beat everything below:
  *  the row is titled by the server's stable `title` alone (user-set title,
- *  else Claude Code's ai-title summary, else the first message), never by the
+ *  else the app's own AI title, else Claude Code's ai-title, else the first
+ *  message), never by the
  *  newest message, the recap or the reply. An empty title falls through.
  *
  *  A RENAMED TASK beats all of it (`title_source: "renamed"`: the server's
@@ -189,7 +190,7 @@ export function cardTitleLine(task: {
 /** A path as a person reads it: $HOME collapsed to "~". */
 export function tildePath(path: string, home: string): string {
   if (!home) return path;
-  const h = home.replace(/\/+$/, "");
+  const h = home.replace(/[\\/]+$/, "");
   if (path === h) return "~";
   if (path.startsWith(h + "/")) return "~/" + path.slice(h.length + 1);
   return path;
@@ -199,7 +200,7 @@ export function tildePath(path: string, home: string): string {
 export { shortTaskId } from "@platform/lib/task-id";
 
 export function basename(path: string): string {
-  const parts = path.replace(/\/+$/, "").split("/").filter(Boolean);
+  const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }
 
@@ -742,7 +743,8 @@ export function draftRing(task: Task): boolean {
 //     whose word is "background" (`BACKGROUND_LABEL`);
 //   * sits in the IN PROGRESS lane/group (`boardLane`), among the running rows,
 //     ordered by that lane's own rule (`LANE_SORTS.in_progress`);
-//   * keeps the "1 job running" badge (job names on hover) and Stop job.
+//   * keeps the "1 job running" badge (job names on hover), and Stop job on
+//     the Board card and Cards wall (not the List row, Akshil 2026-10-23).
 //
 // THE API STATUS STAYS `done`, and so does `taskColumn`. Only PLACEMENT and
 // TONE move: Bots' build watch waits on `done`, the project queue reads the
@@ -762,7 +764,7 @@ export function liveJobs(
 
 /** THE ONE RULE: a row the server calls Done whose chat still holds a live
  *  background job. The blue ring, the In Progress placement (`boardLane`), the
- *  badge and Stop job all ask this and nothing else. */
+ *  badge and (Board/Cards) Stop job all ask this and nothing else. */
 export function liveJobRow(
   task: Pick<Task, "background_jobs" | "status" | "kind">,
 ): boolean {
@@ -1580,8 +1582,10 @@ export function isExpanded(expanded: Set<string>, key: string): boolean {
 // second spelling of `/tasks` that would show up in every share and every
 // bookmark while saying nothing at all.
 
-/** Which of the page's four views is up. */
-export type TaskView = "list" | "board" | "calendar" | "cards" | TaskGroupBy;
+/** Which of the page's views is up. `detailed` is the open-work view
+ *  (workspace-lib.ts, TaskWorkspace.tsx): not a default tab, reached from the
+ *  switcher's `+`. It was first called `workspace`; see `normalizeView`. */
+export type TaskView = "list" | "board" | "calendar" | "cards" | "detailed" | TaskGroupBy;
 
 /** The three GROUPED LISTS (Akshil, 2026-10-16): the List's own rows, in the
  *  List's own order, cut into sections by when they last moved, by the folder
@@ -1596,7 +1600,7 @@ export const GROUP_VIEWS: TaskGroupBy[] = ["time", "project", "pr"];
 export const DEFAULT_VIEW_TABS: TaskView[] = ["list", "board"];
 
 /** Every view the switcher's `+` can add, in the order the menu lists them. */
-export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
+export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "detailed"];
 
 /** The word each view wears on its tab (and in the editor's chips). */
 export const VIEW_LABELS: Record<TaskView, string> = {
@@ -1604,6 +1608,7 @@ export const VIEW_LABELS: Record<TaskView, string> = {
   board: "Board",
   cards: "Cards",
   calendar: "Calendar",
+  detailed: "Detailed",
   time: "Recent",
   project: "Project",
   pr: "PR",
@@ -1612,6 +1617,15 @@ export const VIEW_LABELS: Record<TaskView, string> = {
 /** `time` / `project` / `pr` for a grouped list, null for every other view. */
 export function groupOfView(view: TaskView): TaskGroupBy | null {
   return (GROUP_VIEWS as string[]).includes(view) ? (view as TaskGroupBy) : null;
+}
+
+/** Old spellings of a view name, still read from a link or a stored value. */
+const VIEW_ALIASES: Record<string, TaskView> = { workspace: "detailed" };
+
+/** A stored or linked view name with its old spelling mapped to the current one
+ *  (`workspace` is now `detailed`); anything else passes through unchanged. */
+export function normalizeView<T>(v: T): T | TaskView {
+  return typeof v === "string" && Object.prototype.hasOwnProperty.call(VIEW_ALIASES, v) ? VIEW_ALIASES[v] : v;
 }
 
 /**
@@ -1633,7 +1647,8 @@ export function parseViewTabs(raw: unknown): TaskView[] {
   }
   if (!Array.isArray(parsed)) return DEFAULT_VIEW_TABS;
   const out: TaskView[] = [];
-  for (const v of parsed) {
+  for (const name of parsed) {
+    const v = normalizeView(name);
     if (typeof v === "string" && (TASK_VIEWS as string[]).includes(v) && !out.includes(v as TaskView)) {
       out.push(v as TaskView);
     }
@@ -1648,7 +1663,7 @@ export const VIEW_PARAM = "view";
  * read by the parser below and by the test that holds the switcher's buttons to
  * it — a view that exists in the union and not here is a view a link cannot
  * reach, which is exactly the bug a second hand-written list invites. */
-export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "time", "project", "pr"];
+export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "detailed", "time", "project", "pr"];
 
 /**
  * The view a URL asks for, or `fallback` when it asks for nothing this page
@@ -1659,7 +1674,7 @@ export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "ti
  */
 export function viewFromSearch(search: string, fallback: TaskView = "list"): TaskView {
   const raw = search.startsWith("?") ? search.slice(1) : search;
-  const v = new URLSearchParams(raw).get(VIEW_PARAM);
+  const v = normalizeView(new URLSearchParams(raw).get(VIEW_PARAM));
   return (TASK_VIEWS as string[]).includes(v ?? "") ? (v as TaskView) : fallback;
 }
 
@@ -3331,7 +3346,8 @@ export function parseViewFilters(raw: string | null | undefined): Partial<Record
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const lanes = new Set<string>([...BOARD_COLUMNS.map((c) => c.key), "draft"]);
   const out: Partial<Record<TaskView, ViewFacets>> = {};
-  for (const [view, v] of Object.entries(parsed as Record<string, unknown>)) {
+  for (const [name, v] of Object.entries(parsed as Record<string, unknown>)) {
+    const view = normalizeView(name);
     if (!(TASK_VIEWS as string[]).includes(view)) continue;
     if (!v || typeof v !== "object" || Array.isArray(v)) continue;
     const row = v as { statuses?: unknown; projects?: unknown };
@@ -3415,7 +3431,8 @@ export const LANES_BUT_UPCOMING: BoardColumn[] = BOARD_LANES.map((l) => l.key).f
 
 /** The status + folder facets a tab starts with before the reader touches
  *  them: every lane but Archive on a grouped view, every lane the wall draws on
- *  Cards (ticked, so the menu says what is on screen), nothing elsewhere. */
+ *  Cards (ticked, so the menu says what is on screen), nothing elsewhere
+ *  (Detailed starts unfiltered; its Archived group starts folded instead). */
 export function defaultViewFacets(view: TaskView): ViewFacets {
   if (view === "cards") return { statuses: [...LANES_BUT_UPCOMING], projects: [] };
   return { statuses: groupOfView(view) ? [...LANES_BUT_ARCHIVE] : [], projects: [] };
@@ -5432,7 +5449,7 @@ export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
 /** What a notice calls the task: the reader's OWN newest message, so the card
  *  names the thing they remember asking for, and stays put until they say
  *  something new (a recap or reply line lands later and reads as a title that
- *  changed under them). A renamed task, summary-only titles and a task nothing
+ *  changed under them). A renamed task, stable AI titles and a task nothing
  *  has been said in yet keep the server `title` — `cardTitleLine` already
  *  answers those. One short line. */
 export function taskNoticeTitle(task: TaskPulseTask): string {
@@ -6234,6 +6251,11 @@ function timeBucketOf(task: Task, now: number, sortBy: TaskSortBy = "changed"): 
  *  is its next run answers its last activity instead. A cron due next week
  *  must not pin its folder to the top of the Project view for a week. 0 when
  *  the task has no clock of any kind. */
+/** How far AHEAD of the page's clock a stamp may be and still count as
+ *  activity happening now — see `activityAt`. Longer than `useNow`'s minute
+ *  tick, shorter than any "run in a few minutes" due time. */
+export const ACTIVITY_SLACK_SEC = 90;
+
 export function activityAt(task: Task, now: number = Date.now()): number {
   const w = taskWhen(task, now);
   const nowSec = Math.floor(now / 1000);
@@ -6242,13 +6264,26 @@ export function activityAt(task: Task, now: number = Date.now()): number {
   // row's last_active keeps the due time"), and the row's own stamp can be
   // that same value — neither is an interaction, and clamping one to now
   // would make a folder with nothing but a run next week read as live.
-  const past = (t: number | null | undefined) => (t && t <= nowSec ? t : 0);
-  const active = past(task.last_active);
-  if (w.kind === "next") return active;
+  // …BUT A STAMP A FEW SECONDS AHEAD IS NOW, NOT NEVER (Sina, 2026-10-21: the
+  // folder of a task just continued vanished from the top of the Project view
+  // for fifteen seconds). While a sent mark stands the server stamps the row
+  // with ITS clock (`_live`: `last_active = now`, and the message in flight
+  // carries the same instant), and `now` here is `useNow`'s minute tick — up
+  // to sixty seconds stale. Zeroing everything past the tick made a folder
+  // that had just been touched the oldest on the page, and it sank to the
+  // bottom until the mark expired. A due time is minutes or days ahead; a
+  // stamp inside `ACTIVITY_SLACK_SEC` is clock lag, and reads as now.
+  const past = (t: number | null | undefined, slack: number) =>
+    t && t <= nowSec + slack ? Math.min(t, nowSec) : 0;
+  // NO SLACK FOR A ROW WHOSE STAMP IS ITS NEXT RUN: `last_active` keeps the
+  // due time there, and a run due in a minute is still a run that has not
+  // happened (reviewer, 2026-10-22).
+  if (w.kind === "next") return past(task.last_active, 0);
+  const active = past(task.last_active, ACTIVITY_SLACK_SEC);
   // THE NEWER OF THE TWO (CodeRabbit, #1756): the row's stamp can be its last
   // RUN while `last_active` records a message since, and the section must
   // sort and open by the later one.
-  return Math.max(past(w.at), active);
+  return Math.max(past(w.at, ACTIVITY_SLACK_SEC), active);
 }
 
 /** Sections with activity inside the last day (Akshil, 2026-10-19): what the
@@ -6423,6 +6458,23 @@ export function openOnFirstVisit(groups: TaskGroup[], by: TaskGroupBy, now: numb
   };
   for (const g of groups) walk(g);
   return open;
+}
+
+/** The fold keys of every section holding one of `keys` — and of the sections
+ *  above it, since a pull request open under a folded repository is still
+ *  out of sight. What a NEW task unfolds (Sina, 2026-10-21: "when I create a
+ *  new task it should open it, otherwise very confusing"). */
+export function sectionsHolding(groups: TaskGroup[], by: TaskGroupBy, keys: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  const walk = (g: TaskGroup, above: string[]): boolean => {
+    const here = [...above, `${by}:${g.key}`];
+    let hit = g.rows.some((t) => keys.has(t.key));
+    for (const c of g.groups ?? []) if (walk(c, here)) hit = true;
+    if (hit) for (const k of here) if (!out.includes(k)) out.push(k);
+    return hit;
+  };
+  for (const g of groups) walk(g, []);
+  return out;
 }
 
 /** `collapsed` with every section of `by` folded but the ones a first visit

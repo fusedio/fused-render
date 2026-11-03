@@ -16,16 +16,18 @@ import {
   AgentSigninPointer,
   ClaudeAgentControl,
   ClaudeModelPointer,
+  CodexAgentControl,
   CopilotAgentControl,
   DefaultAgentControl,
   EnginesPointer,
+  GeminiAgentControl,
 } from "./ai";
 import {
   CanvasesControl,
-  GithubLinkControl,
+  CanvasesEmbedProxyControl,
+  CanvasRailPeekControl,
   GitSyncControl,
   LivePreviewsControl,
-  MarketplaceControl,
   MonitorControl,
   NotifyTerminalControl,
   ProjectQueueControl,
@@ -34,6 +36,7 @@ import {
   TaskRecapsControl,
   TaskSummaryTitlesControl,
   ClaudeStrictMcpControl,
+  ContribRemixControl,
   ClaudeDefaultPermissionControl,
 } from "./toggles";
 import {
@@ -45,16 +48,8 @@ import {
 } from "./indexing";
 import { LanControl } from "./lan";
 import { ConnectionsPointer } from "../Connections";
+import { ClaudeCliMissing } from "./claude";
 import { FusedAccountControl, HuggingFaceControl, WorkbenchEnvControl } from "./accounts";
-import {
-  ClaudeCatalogControl,
-  ClaudeHistoryBlock,
-  ClaudeMcpBlock,
-  ClaudeMemoryBlock,
-  ClaudePluginsBlock,
-  ClaudeSkillsBlock,
-  ClaudeStatuslineBlock,
-} from "./claude";
 import {
   CallLogControl,
   CallParamsControl,
@@ -63,6 +58,7 @@ import {
   DiagnosticsControl,
   IndexQueryControl,
 } from "./advanced";
+import { CanvasScreenshotsControl, CanvasScreenshotsFallbackControl } from "./screenshots";
 
 export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   appearance: AppearanceControl,
@@ -73,34 +69,33 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "auto-update": AutoUpdateControl,
   "agent-claude": ClaudeAgentControl,
   "agent-copilot": CopilotAgentControl,
+  "agent-codex": CodexAgentControl,
+  "agent-gemini": GeminiAgentControl,
   "agent-default": DefaultAgentControl,
   "claude-model": ClaudeModelPointer,
+  "claude-cli-missing": ClaudeCliMissing,
   engines: EnginesPointer,
-  "claude-plugins": ClaudePluginsBlock,
-  "claude-memory": ClaudeMemoryBlock,
-  "claude-skills": ClaudeSkillsBlock,
-  "claude-statusline": ClaudeStatuslineBlock,
-  "claude-mcp": ClaudeMcpBlock,
-  "claude-catalog": ClaudeCatalogControl,
-  "claude-history": ClaudeHistoryBlock,
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
   "claude-default-permission": ClaudeDefaultPermissionControl,
+  "canvas-screenshots": CanvasScreenshotsControl,
+  "canvas-screenshots-fallback": CanvasScreenshotsFallbackControl,
   "claude-max-sessions": ClaudeMaxSessionsControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
   "share-sheet": ShareSheetControl,
-  "github-link": GithubLinkControl,
   "live-previews": LivePreviewsControl,
+  "contrib-remix": ContribRemixControl,
   indexing: IndexingControl,
   "ranked-search": RankedSearchControl,
   "low-impact": LowImpactControl,
   "skipped-folders": SkippedFoldersControl,
   "rebuild-index": RebuildIndexControl,
   canvases: CanvasesControl,
-  marketplace: MarketplaceControl,
+  "canvases-embed-proxy": CanvasesEmbedProxyControl,
+  "canvases-rail-peek": CanvasRailPeekControl,
   monitor: MonitorControl,
   reader: ReaderControl,
   "chromium-windows": ChromiumWindowsControl,

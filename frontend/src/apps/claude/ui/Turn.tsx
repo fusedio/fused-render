@@ -13,9 +13,11 @@ import { splitCommand } from "../protocol/commands";
 import { viewKind, type SegmentKind } from "../protocol/segments";
 import { toolChipSummary } from "../protocol/summaries";
 import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound, type AnnotationWire } from "../protocol/wire";
+import type { Receipt } from "../shots/types";
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
+import { CompactDivider } from "./CompactDivider";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { useAgent } from "./agent-context";
 import { MarkdownView } from "./MarkdownView";
@@ -91,10 +93,6 @@ export interface TurnProps {
    *  is never foldable — the run is blocked on something inside it, and folding
    *  the block away is folding away the thing to do (design.md §B). */
   pendingCard?: boolean;
-  /** A click on a bubble this page has NOT handed to the run yet
-   *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
-   *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
-  onPullPending?: (key: string) => void;
   /** "Fork from here" on a sent user turn: park it and everything after it and
    *  re-ask it in the composer. Passed only for a Claude chat that is idle;
    *  absent, no button is drawn. One callback for the log, keyed by the turn. */
@@ -103,6 +101,13 @@ export interface TurnProps {
    *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first. */
   cwd?: string | null;
+  /** `Worked for 2m 10s`, drawn muted at the foot of an OPEN settled reply.
+   *  Computed by `Transcript` (`workedForPlan`) because only the log knows which
+   *  reply is the last one for its user message. Not drawn on a folded row: the
+   *  fold is one line and nothing else. */
+  workedFor?: string;
+  /** The exact start time, for the line's hover. */
+  workedHint?: string;
 }
 
 /** MEMOIZED. Every 400 ms poll replaces `state.turns`, but a SETTLED turn's own
@@ -122,9 +127,10 @@ export const Turn = memo(function Turn({
   collapsed = false,
   onToggleCollapse,
   pendingCard,
-  onPullPending,
   onFork,
   cwd,
+  workedFor,
+  workedHint,
 }: TurnProps) {
   const agent = useAgent();
   // BEFORE the early returns below: a hook may not sit behind one, and the id
@@ -163,19 +169,13 @@ export const Turn = memo(function Turn({
     // for a live send. Absent on an old transcript, and then no time is drawn.
     const ts = turn.ts;
     const stamp = formatStamp(ts);
-    // THE OUTBOX TAG (ui/outbox.ts). A line this page is still holding wears
-    // "queued" — grey, the way Claude Code's terminal lists a line typed while it
-    // works — or "not sent" for one handed back. Both are a door: the click
-    // pulls the words back into the box, so a queued line is never a bubble the
-    // reader can only watch.
-    const pending = turn.pending;
     // A terminal ask (Ask Claude / Fix with AI) is drawn as a chip + selection
     // block, not its raw `[terminal id: ...]` line and code fences.
     const termAsk = isMarkerOnly(turn.text) ? null : parseTerminalAsk(turn.text);
     const termDir = termAsk?.cwd ? termAsk.cwd.replace(/\/+$/, "").split("/").pop() || "/" : "";
     return (
       <div
-        className={cn("turn", "user", anchored && "is-anchored", pending && "is-pending")}
+        className={cn("turn", "user", anchored && "is-anchored")}
         // The uuid a `?msg=` link addresses. On the element itself, because the
         // anchor is looked for right after the append (T:13459-13463).
         {...(turn.uuid ? { "data-msg": turn.uuid } : {})}
@@ -200,7 +200,7 @@ export const Turn = memo(function Turn({
           {/* FORK FROM HERE — a SIBLING before the bubble, never inside it: the
               re-attach probe matches `.user .bubble`'s text. Only a message the
               transcript knows (uuid) and this page has really sent. */}
-          {turn.uuid && !pending && onFork ? (
+          {turn.uuid && onFork ? (
             <button
               type="button"
               className="turn-fork"
@@ -244,21 +244,6 @@ export const Turn = memo(function Turn({
             )}
           </div>
         </div>
-        {pending ? (
-          <button
-            type="button"
-            className={cn("turn-pending", pending === "notSent" && "is-not-sent")}
-            title={
-              pending === "notSent"
-                ? "This was not sent. Click to put it back in the box."
-                : "Waiting to send. Click to put it back in the box."
-            }
-            onClick={onPullPending ? () => onPullPending(turn.key) : undefined}
-            disabled={!onPullPending}
-          >
-            {pending === "notSent" ? "not sent · click to edit" : "queued"}
-          </button>
-        ) : null}
         {/* SIBLINGS of the bubble, not wrappers around it: the re-attach probe
             matches on `.user .bubble`'s text, and folding a receipt inside
             would make every such turn stop matching (T:16584-16588). Legacy's
@@ -302,6 +287,7 @@ export const Turn = memo(function Turn({
       </div>
     );
   }
+  if (turn.role === "compact") return <CompactDivider turn={turn} />;
   if (turn.role === "note") {
     // A one-liner for something that happened BESIDE the conversation: the
     // agent reading the app state on its own, a skill it reached for, the user
@@ -454,6 +440,11 @@ export const Turn = memo(function Turn({
               {children}
             </>
           )}
+          {workedFor && !folded && !turn.streaming ? (
+            <div className="turn-worked" {...(workedHint ? { "data-hint": workedHint } : {})}>
+              {workedFor}
+            </div>
+          ) : null}
         </span>
       </div>
       {/* The run was stopped by the user: a note beside the conversation, not
@@ -604,6 +595,58 @@ export function firstLine(text: string): string {
 }
 
 export default Turn;
+
+/**
+ * A LINE THIS PAGE IS STILL HOLDING (ui/outbox.ts), drawn as a user bubble at
+ * the foot of the transcript, its pictures under it the way a sent turn's
+ * receipts are. "queued" for one that will go when the turn ends, "not sent"
+ * for one handed back. Both are a door: the click pulls the line back into
+ * the box.
+ */
+export function HeldTurn({
+  id,
+  text,
+  receipts,
+  notSent,
+  onPull,
+  paneNoun,
+  onOpenShot,
+}: {
+  id: string;
+  text: string;
+  receipts: Receipt[];
+  notSent: boolean;
+  onPull: () => void;
+  paneNoun?: string;
+  onOpenShot?: (shot: Viewable) => void;
+}) {
+  const turn = useMemo<UserTurn>(
+    () => ({ role: "user", key: "held:" + id, text, ...(receipts.length ? { attachments: receipts } : {}) }),
+    [id, text, receipts],
+  );
+  return (
+    <div className="turn user is-pending">
+      {text ? (
+        <div className="turn-line">
+          <div className="bubble">{text}</div>
+        </div>
+      ) : null}
+      {receipts.length && onOpenShot ? (
+        <Receipts turn={turn} paneNoun={paneNoun ?? "preview"} onOpenShot={onOpenShot} />
+      ) : null}
+      <button
+        type="button"
+        className={cn("turn-pending", notSent && "is-not-sent")}
+        title={
+          notSent ? "This was not sent. Click to put it back in the box." : "Waiting to send. Click to put it back in the box."
+        }
+        onClick={onPull}
+      >
+        {notSent ? "not sent · click to edit" : "queued"}
+      </button>
+    </div>
+  );
+}
 
 /** A user turn's own words — and a SLASH COMMAND's first token as a chip
  *  (SPEC C-3), the rest plain. The pieces join back into exactly the text, so

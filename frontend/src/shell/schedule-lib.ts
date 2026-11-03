@@ -11,7 +11,7 @@ import type {
   TaskMessage,
 } from "@platform/lib/api";
 import { chatUrl } from "@platform/lib/queue";
-import { backendOf } from "@platform/lib/agent-backends";
+import { backendOf, effortsForModel } from "@platform/lib/agent-backends";
 
 export function formatDue(iso: string): string {
   const d = new Date(iso);
@@ -1985,10 +1985,16 @@ export function taskModelsOf(backend: string | null | undefined): { key: string;
   return backendOf(backend).models.map((m) => ({ key: m.id, label: m.label }));
 }
 
-/** One agent's efforts, labelled the card's way; an id it has no word for
- *  is said as itself. */
-export function taskEffortsOf(backend: string | null | undefined): { key: string; label: string }[] {
-  return backendOf(backend).efforts.map((e) => ({ key: e, label: EFFORT_WORDS[e] ?? e }));
+/** One agent's efforts — or, with `model`, the efforts THAT model takes
+ *  (`effortsForModel`: empty for a Copilot model that takes none, and the
+ *  card then draws no Thinking section) — labelled the card's way; an id it
+ *  has no word for is said as itself. */
+export function taskEffortsOf(
+  backend: string | null | undefined,
+  model?: string | null,
+): { key: string; label: string }[] {
+  const list = model ? effortsForModel(backend, model) : backendOf(backend).efforts;
+  return list.map((e) => ({ key: e, label: EFFORT_WORDS[e] ?? e }));
 }
 
 // How one stored value is SAID — the list's label if it has one, else the value

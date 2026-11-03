@@ -29,6 +29,18 @@ minutes on a long recording, so it is ticked from a thread — see
 `_call_with_ticks`, which exists because the first cut left exactly that window
 silent and uncancellable.
 
+**Two model formats, one runner (D1423).** A snapshot with `model.bin` is a
+CTranslate2 Whisper conversion and goes through `WhisperModel`, as it always
+did. A snapshot with the sherpa-onnx transducer files (`formats.
+SHERPA_TRANSDUCER_FILES`) is NVIDIA Parakeet TDT 0.6B v3, run through the
+sherpa-onnx this folder already depends on for diarization — so there is no
+third venv and no third runner. `load()` records which one it built in
+`_loaded["kind"]` and `generate()` dispatches on it. The two are indistinguishable
+to a page (AI-10c): same reply, same files, same `words` shape. Parakeet has no
+built-in VAD and sherpa's offline transducer takes one utterance, so that path
+cuts the recording into packs with the SAME detector and packing the MLX runner
+uses (`stt_common`, `vad.py`) and decodes them one at a time.
+
 **Nothing here shells out to ffmpeg.** faster-whisper decodes through PyAV,
 whose wheels carry the ffmpeg libraries — see this folder's `pyproject.toml`.
 A `subprocess` call to a binary the app does not ship would work on the machine
@@ -46,8 +58,10 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
+import engine_options  # noqa: E402 - the SHARED refusals; see engine_options.py
 import formats  # noqa: E402 - the shared format checks; see formats.py
 import partial  # noqa: E402 - the SHARED progressive transcript; see runners/partial.py
+import stt_common  # noqa: E402 - the VAD policy both STT runners share
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded model. One per process.
@@ -58,10 +72,23 @@ _loaded = {}
 
 
 def download(model_id):
-    """faster-whisper's own file set (`formats.CT2_FILES`) — `model.bin` and the
-    JSON configs. A closed set, so an allow list; never an ignore of `*.bin`."""
-    return worker_base.download_snapshot(
-        model_id, allow_patterns=list(formats.CT2_FILES))
+    """This runner's two closed file sets in one allow list: faster-whisper's own
+    (`formats.CT2_FILES` — `model.bin` and the JSON configs) and the sherpa-onnx
+    transducer's (`formats.SHERPA_TRANSDUCER_FILES`). An allow list; never an
+    ignore of `*.bin`. A repo carries one format or the other, so the union
+    fetches exactly what the format it is needs — and a Parakeet repo's
+    `test_wavs/` stays out.
+
+    **A Parakeet repo also pre-fetches the speech detector**, as the MLX runner's
+    download does: its cuts depend on Silero, so a download that leaves it behind
+    degrades the first offline run to fixed slices. Whisper does not need it —
+    faster-whisper ships its own."""
+    snapshot = worker_base.download_snapshot(
+        model_id,
+        allow_patterns=list(formats.CT2_FILES + formats.SHERPA_TRANSDUCER_FILES))
+    if formats.is_sherpa_transducer_snapshot(set(os.listdir(snapshot))):
+        stt_common.prefetch_detector(worker_base)
+    return snapshot
 
 
 def _placement():
@@ -117,28 +144,66 @@ def _placement():
 _CT2_WEIGHTS = formats.CT2_WEIGHTS
 
 
+def _load_sherpa(fetched):
+    """Parakeet TDT as a sherpa-onnx offline transducer, on the CPU.
+
+    `model_type="nemo_transducer"` is not optional: the default `transducer`
+    loads the same graphs and decodes garbage. **CPU only, and that is the
+    design, not a gap** — the int8 graphs are the CPU build, ONNX Runtime's CPU
+    provider is the one every platform this runner ships on has, and at several
+    times faster than Whisper turbo on a CPU there is nothing to buy by adding a
+    GPU provider that two of the three platforms lack. `num_threads` is the
+    shared diarization finding (`diarize.NUM_THREADS`): threads past the
+    performance cores make an ONNX model SLOWER on a P+E part, and this is the
+    same ONNX Runtime underneath.
+
+    `feature_dim=80` is sherpa's own default, spelled out. (Measured with the
+    gate on the real export: the NeMo reader takes the mel size from the
+    model's metadata, so the value does not change the result.)
+    """
+    import sherpa_onnx
+
+    def at(name):
+        return os.path.join(fetched, name)
+
+    _loaded["model"] = sherpa_onnx.OfflineRecognizer.from_transducer(
+        encoder=at("encoder.int8.onnx"), decoder=at("decoder.int8.onnx"),
+        joiner=at("joiner.int8.onnx"), tokens=at("tokens.txt"),
+        num_threads=diarize.NUM_THREADS, sample_rate=SAMPLE_RATE, feature_dim=80,
+        model_type="nemo_transducer", provider="cpu")
+    _loaded["kind"] = "sherpa"
+    _loaded["device"] = "cpu"
+    worker_base.set_state(device="cpu")
+
+
 def load(model_id, fetched):
     # The format check comes FIRST, before either import. A repo in the wrong
     # format is a fact about the download, not about this environment, and
     # ordering the import ahead of it would replace the explanation below with
     # whichever ImportError happened to come first.
     if not os.path.isfile(os.path.join(fetched, _CT2_WEIGHTS)):
+        if formats.is_sherpa_transducer_snapshot(
+                {name for name in formats.SHERPA_TRANSDUCER_FILES
+                 if os.path.isfile(os.path.join(fetched, name))}):
+            return _load_sherpa(fetched)
         # The same trap text generation has with GGUF and AWQ repos: the AI
         # Models page offers Load on anything whose task label maps to a
         # capability, and the format is not in the label. Naming the fix here is
         # the difference between a user changing one string and a web search.
         raise RuntimeError(
-            f"{model_id} has no {_CT2_WEIGHTS} — this looks like a "
-            "transformers-format Whisper repo, and this runner loads "
-            "CTranslate2 conversions. Try "
+            f"{model_id} has no {_CT2_WEIGHTS} and is not a sherpa-onnx "
+            "transducer export either — this looks like a transformers-format "
+            "Whisper repo, and this runner loads CTranslate2 conversions "
+            "(Whisper) and sherpa-onnx int8 exports (Parakeet). Try "
             # Named models a refusal points at, and they must be models the
             # CATALOG actually offers — a refusal naming a repo the page no
             # longer suggests sends the user to a Hub search, which is the whole
             # thing this string exists to prevent (the rule was first written
             # for `torch_text._TRY_INSTEAD`, removed with that runner) — update
-            # this pair if SUGGESTIONS["faster-whisper"] moves.
+            # these three if SUGGESTIONS["faster-whisper"] moves.
             "deepdml/faster-whisper-large-v3-turbo-ct2 or "
-            "Systran/faster-whisper-small.")
+            "Systran/faster-whisper-small for Whisper, or "
+            "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 for Parakeet.")
 
     from faster_whisper import WhisperModel
 
@@ -173,6 +238,7 @@ def load(model_id, fetched):
     # If this is ever revisited, it needs a quiet machine and several parts, not a
     # bigger number.
     _loaded["model"] = WhisperModel(fetched, device=device, compute_type=compute_type)
+    _loaded["kind"] = "ct2"
     _loaded["device"] = device
     # See `worker_base.STATE["device"]`. CTranslate2 has no Metal backend, so an
     # Apple Silicon machine transcribes on its CPU cores — which is fine, and is
@@ -316,7 +382,7 @@ def _await_orphan(job, row):
     _orphan["thread"] = None
 
 
-def _call_with_ticks(call, job, row, detail):
+def _call_with_ticks(call, job, row, detail, wait_on_cancel=False):
     """Run `call()` on a thread, ticking once a second until it returns.
 
     **`model.transcribe()` is not the lazy call it looks like.** It hands back a
@@ -334,6 +400,14 @@ def _call_with_ticks(call, job, row, detail):
     here leaves the decode running on a daemon thread that nobody waits for —
     it finishes into a result that is discarded, which is the same trade the
     download path already makes and is bounded by the file.
+
+    **`wait_on_cancel` is the caller saying "a ✕ on THIS call is too late to
+    honour".** The last Parakeet pack is the case: its decode is the only work
+    left, so a ✕ landing on it must not discard a transcript that is one call
+    from finished (the rule `_consume_ct2` and MLX's `late_cancel` state). When
+    true, a cancel makes the call be WAITED for — ticking stops, since every
+    further tick would answer the same ✕ — and its value is returned. Bounded by one pack (`vad.BUDGET_S`) now that no pack is longer.
+    A call that finished by raising keeps its error: there is nothing to salvage.
     """
     result = {}
 
@@ -357,12 +431,21 @@ def _call_with_ticks(call, job, row, detail):
                                          done=None, total=None, detail=detail)
             if not worker_base.CANCEL.is_set():
                 continue
+        except worker_base.Cancelled:
+            if wait_on_cancel:
+                thread.join()
+                break
+            _orphan["thread"] = thread
+            raise
         except BaseException:
             # Handing the thread over BEFORE unwinding, so the next request
             # waits for it. Doing this only on the way out of a cancel is what
             # keeps the normal path free of it.
             _orphan["thread"] = thread
             raise
+        if wait_on_cancel:
+            thread.join()
+            break
         _orphan["thread"] = thread
         raise worker_base.Cancelled()
     if "error" in result:
@@ -473,11 +556,347 @@ def _speaker_turns(audio, sample_rate, speakers, job, row):
         job, row, "Finding speakers…")
 
 
+def _ct2_words(segment):
+    """faster-whisper's `segment.words` in the shape both engines publish.
+
+    The library's DTW alignment, mapped to `{start, end, word}` and nothing
+    else: `probability` is an engine-tell (AI-10c) — a transducer has no such
+    number, so publishing it would make the reply depend on which engine ran.
+    `word` keeps the library's LEADING SPACE, which is how the text reconstructs
+    by concatenation (the MLX runner and the Parakeet path keep it too). A
+    segment the library returned no `words` for — it can, on a very short one —
+    gets an empty list rather than a missing key, so a caller that asked for
+    words reads "none were timed" rather than "this engine declined".
+    """
+    return [{"start": round(float(w.start), 2), "end": round(float(w.end), 2),
+             "word": w.word}
+            for w in (getattr(segment, "words", None) or [])]
+
+
+def _consume_ct2(stream, progressive, job, row, total, transcribing_since, words):
+    """The CTranslate2 decode loop: one tick per segment, the last one safe.
+
+    Everything about cancelling lives in the comments below and moved here
+    unchanged when the Parakeet path was added (D1423).
+    """
+    segments = []
+    for segment in stream:
+        segments.append({
+            "start": round(float(segment.start), 2),
+            "end": round(float(segment.end), 2),
+            "text": segment.text.strip(),
+        })
+        if words:
+            # ADDITIVE and only when asked, the rule `diarize` follows: a run
+            # without the flag writes exactly the bytes it always did. Placed
+            # after `text`, so an existing transcript's key order is untouched.
+            segments[-1]["words"] = _ct2_words(segment)
+        # Appended BEFORE the tick, so a page tailing the file already has
+        # the segment by the time the row says the bar moved past it.
+        progressive.add(segments[-1])
+        done = segments[-1]["end"]
+        elapsed = time.time() - transcribing_since
+        try:
+            # `report_or_cancel`, not `report`: this loop is the only place
+            # a stop can be honoured, and the reply to this tick is how the
+            # ✕ gets here.
+            worker_base.report_or_cancel(
+                job=job, **row, state="running", done=done, total=total,
+                detail="Transcribing — %s of %s%s" % (
+                    _clock(done), _clock(total) if total else "?",
+                    _eta(total - done if total else None, elapsed, done)))
+            if not worker_base.CANCEL.is_set():
+                continue
+            raise worker_base.Cancelled()
+        except worker_base.Cancelled:
+            # **A cancel is only worth honouring while there is work left to
+            # stop.** This tick fires AFTER its segment is appended, so a ✕
+            # landing on the last one used to raise straight past the write
+            # below — an hour of decoding discarded at 99%, with the
+            # transcript complete in memory and nothing on disk to show.
+            #
+            # Asking the generator for one more segment is what tells the
+            # two apart, and it is only ever paid for on the cancel path. If
+            # one comes back it is dropped, which costs nothing: we are
+            # stopping. It does cost the DECODE of that segment, so a ✕ on a
+            # long segment is honoured seconds later than it was pressed —
+            # the price of not throwing away a finished transcript, and paid
+            # only once.
+            #
+            # **A failure in the probe must not become the outcome.**
+            # Decoding the tail of a file is exactly where a container or
+            # codec error surfaces, and an exception raised here would
+            # REPLACE the `Cancelled` in flight: `_single` would answer
+            # `{"ok": false}` and the row would end in `error`, telling the
+            # user the transcription they cancelled had failed. Unknown
+            # means "assume there is more", which re-raises the cancel — the
+            # honest answer to a ✕.
+            try:
+                more = next(stream, None) is not None
+            except BaseException:  # noqa: BLE001 - the cancel is the outcome
+                more = True
+            if more:
+                raise
+            break
+
+    return segments
+
+
+# -------------------------------------------------------------------- Parakeet
+
+#: Characters that end a sentence in the languages Parakeet v3 covers.
+_SENTENCE_END = ".?!\u2026"
+#: …and what may trail them without moving the end: a closing quote or bracket.
+_CLOSERS = "\"'\u201d\u2019)]\u00bb"
+
+
+def _sherpa_words(tokens, stamps):
+    """Group sherpa's tokens into words: `[(start, text), …]`, clip time.
+
+    A token that begins a word carries a LEADING SPACE — the SentencePiece `▁`
+    boundary, which sherpa 1.13.8 hands back already decoded to a plain space
+    (measured; `▁` is also accepted, in case an export or a later release does
+    not decode it). A token without one — a word piece or a punctuation mark —
+    continues the word before it, so "sk" joins " A" and "?" joins " what". The
+    first token starts a word whatever it looks like. A token of only whitespace
+    is a boundary, not a word: it is dropped, and the token after it starts a
+    new word.
+
+    Each word's text keeps its leading space, like the other two engines'
+    (`_ct2_words`).
+    """
+    words = []
+    boundary = True
+    for token, at in zip(tokens, stamps):
+        token = str(token).replace("\u2581", " ")
+        if not token.strip():
+            # A bare space is a word boundary and nothing else: kept as a word
+            # it would be published as a phantom " " (the text is truthy).
+            boundary = True
+            continue
+        if boundary or token[:1] == " ":
+            words.append([float(at), token if token[:1] == " " else " " + token])
+        else:
+            words[-1][1] += token
+        boundary = False
+    return [(at, text) for at, text in words]
+
+
+def _sherpa_segments(result, pack_seconds):
+    """One pack's result as sentences: `[(start, end, text, words), …]` in CLIP
+    time, `words` being `[(start, end, text), …]`.
+
+    Parakeet v3 emits punctuation, and a sentence is what a transcript line
+    should be, so segments split after a word ending in `. ? ! …` (a closing
+    quote or bracket may trail it). The text is rebuilt from the tokens so it
+    agrees with the words by construction.
+
+    **Abbreviations split a sentence, and that is accepted.** "Dr.", "e.g.",
+    "U.S." and "Mr." end a segment like any full stop, with no heuristic to tell
+    them apart: a list of abbreviations is per-language guesswork, and the one
+    cheap guard (a lower-case next word) fixes "e.g. the" but not "Dr. Smith".
+    It costs little because a segment is a timing container, not a unit of
+    meaning — the text of consecutive segments concatenates back to the same
+    sentence, and every word keeps its own span.
+
+    **Ends are the next thing's start**, as a transducer gives no ends: a word
+    ends where the next word begins, a sentence where the next sentence begins,
+    and the last of each where the pack does. The pack's own end is the honest
+    bound — there is no later timestamp to prefer. All ends are clamped to
+    `[start, pack_seconds]`, so the mapping back to the recording starts from
+    monotonic input.
+
+    **No usable timestamps is one segment over the whole pack**, with the text
+    and no word spans (`_consume_sherpa` then publishes an empty `words`): `tokens` and `timestamps` that disagree in length mean the
+    export or the library changed under us, and a transcript with coarse times
+    is a better answer than a failed run or a silently shifted one.
+    """
+    text = str(getattr(result, "text", "") or "").strip()
+    tokens = list(getattr(result, "tokens", None) or [])
+    stamps = list(getattr(result, "timestamps", None) or [])
+    if not tokens or len(tokens) != len(stamps):
+        return [(0.0, pack_seconds, text, [])] if text else []
+
+    words = [(min(max(at, 0.0), pack_seconds), word)
+             for at, word in _sherpa_words(tokens, stamps)]
+    sentences, current = [], []
+    for item in words:
+        current.append(item)
+        if item[1].rstrip().rstrip(_CLOSERS).endswith(tuple(_SENTENCE_END)):
+            sentences.append(current)
+            current = []
+    if current:
+        sentences.append(current)
+
+    out = []
+    for index, sentence in enumerate(sentences):
+        start = sentence[0][0]
+        end = (sentences[index + 1][0][0] if index + 1 < len(sentences)
+               else pack_seconds)
+        end = max(end, start)
+        spans = []
+        for position, (at, word) in enumerate(sentence):
+            until = (sentence[position + 1][0] if position + 1 < len(sentence)
+                     else end)
+            spans.append((at, max(until, at), word))
+        out.append((start, end, "".join(w for _, _, w in spans).strip(), spans))
+    return out
+
+
+def _cut(start, end):
+    """`[start, end)` as consecutive single-region packs of at most
+    `vad.BUDGET_S` seconds. The first starts at `start` and the last ends at
+    `end` exactly, so a caller's edges survive and only the inside is cut."""
+    import vad as vad_module
+
+    packs, at = [], start
+    while at < end:
+        stop = min(at + vad_module.BUDGET_S, end)
+        packs.append([(at, stop)])
+        at = stop
+    return packs
+
+
+def _time_slices(duration):
+    """A recording as consecutive packs of at most `vad.BUDGET_S` seconds.
+
+    What "no speech regions" becomes on this path. The MLX runner can hand a
+    whole file to one call because Whisper windows internally; sherpa's offline
+    transducer takes ONE utterance and its memory grows with it, so a two-hour
+    recording must not arrive as one. The cut is at a fixed offset rather than a
+    pause — which can split a word — and that is the cost of having no detector
+    (`vad: false`, or one that could not be fetched); with the detector the cuts
+    are at silence (`vad.pack_regions`).
+    """
+    return _cut(0.0, duration)
+
+
+def _bounded_packs(packs):
+    """`vad.pack_regions`' packs with no pack over the budget.
+
+    `pack_regions` lets a region longer than the budget through ALONE, because
+    Whisper windows internally and a cut chosen there would be worse than its
+    own seeking. Sherpa has no such seeking and its memory grows with the
+    utterance, so a minutes-long unbroken region (a lecture, a monologue) is cut
+    here at fixed offsets from the region's own start. The region's edges are the
+    detector's; only the inside is a blind cut, which can split a word — the same
+    cost `_time_slices` documents, paid only where the detector found no pause.
+    """
+    import vad as vad_module
+
+    out = []
+    for pack in packs:
+        if vad_module.packed_duration(pack) <= vad_module.BUDGET_S:
+            out.append(pack)
+            continue
+        # Over-budget packs hold one region by construction; a general pack is
+        # handled anyway by cutting each of its regions on its own.
+        for start, end in pack:
+            out.extend(_cut(start, end))
+    return out
+
+
+def _decode_pack(recognizer, clip):
+    """One sherpa decode, on the thread `_call_with_ticks` gave it."""
+    stream = recognizer.create_stream()
+    stream.accept_waveform(SAMPLE_RATE, clip)
+    recognizer.decode_stream(stream)
+    return stream.result
+
+
+def _speech_regions(audio, total, job, row):
+    """Where the speech is, or `None` — `stt_common.speech_regions` bound to this
+    worker's base and loaded dict. A module function so a test can pin what the
+    detector finds, as the MLX runner's tests do."""
+    return stt_common.speech_regions(worker_base, _loaded, audio, total, job, row)
+
+
+def _consume_sherpa(recognizer, audio, packs, progressive, job, row, total,
+                    duration, words, transcribing_since):
+    """Decode each pack and return `(segments)` in RECORDING time.
+
+    One tick per pack, after its segments are in the partial file — the CT2
+    loop's order, so a page tailing the file has a line before the bar moves
+    past it. `done`/`total` are seconds of the RECORDING (AI-10a); the ETA's
+    rate is seconds of SPEECH decoded per wall second, the MLX runner's rule
+    and for its reason (a position in the recording is not a measure of work
+    once silence is dropped).
+
+    **Every endpoint travels `vad.py`'s inverse on its own**, a segment's start
+    and end through `original_start`/`original_end` and its words through
+    `stt_common.words_in_original_time` (never stretched across a join), because
+    the clip the recognizer heard had the silence removed. Words are then clamped
+    into their segment and never dropped — the invariant a caller builds on is that a
+    segment's words are its text, in order, complete.
+    """
+    import vad as vad_module
+
+    segments = []
+    speech_total = sum(vad_module.packed_duration(pack) for pack in packs)
+    decoded = 0.0
+    for index, pack in enumerate(packs):
+        last = index == len(packs) - 1
+        speech = vad_module.packed_duration(pack)
+        clip = (audio if pack == [(0.0, duration)]
+                else vad_module.packed_samples(audio, pack, SAMPLE_RATE))
+        if len(clip) < SAMPLE_RATE // 10:
+            # Under a tenth of a second: nothing to hear, and a few hundred
+            # samples is where a decoder invents a word. Skipped, but NOT past
+            # the tick below — a skipped last pack would otherwise leave the bar
+            # at the previous pack's end and the ✕ unchecked.
+            found = []
+        else:
+            # The last pack's decode is the only work left: a ✕ on it is late
+            # (see `_call_with_ticks`), the rule the post-tick `except` below
+            # states too.
+            result = _call_with_ticks(lambda: _decode_pack(recognizer, clip),
+                                      job, row, "Transcribing…",
+                                      wait_on_cancel=last)
+            found = _sherpa_segments(result, len(clip) / SAMPLE_RATE)
+        # Counted for a skipped pack too: its seconds are handled, and the ETA's
+        # remaining term only reaches zero if every pack's are.
+        decoded += speech
+        for start, end, text, spans in found:
+            at = vad_module.original_start(pack, start)
+            until = max(vad_module.original_end(pack, end), at)
+            line = {"start": round(at, 2), "end": round(until, 2), "text": text}
+            if words:
+                # An EMPTY list when the result had no usable timings, like
+                # `_ct2_words`: a caller that asked reads "none were timed".
+                line["words"] = stt_common.words_in_original_time(
+                    pack, spans, at, until)
+            segments.append(line)
+            progressive.add(line)
+        done = round(min(pack[-1][1], duration), 2)
+        elapsed = time.time() - transcribing_since
+        try:
+            worker_base.report_or_cancel(
+                job=job, **row, state="running", done=done, total=total,
+                detail="Transcribing — %s of %s%s" % (
+                    _clock(done), _clock(total) if total else "?",
+                    _eta(speech_total - decoded if speech_total else None,
+                         elapsed, decoded)))
+            if not worker_base.CANCEL.is_set():
+                continue
+            raise worker_base.Cancelled()
+        except worker_base.Cancelled:
+            # A cancel is only worth honouring while there is work left to stop:
+            # on the LAST pack the transcript is finished, and discarding it
+            # would be an hour of decoding thrown away at 99% (the CT2 loop's
+            # rule, and the MLX runner's).
+            if not last:
+                raise
+            break
+    return segments
+
+
 def generate(body):
     """Transcribe one file. Returns `{path, output, segments, language, …}`."""
     model = _loaded.get("model")
     if model is None:
         raise RuntimeError("no model is loaded")
+    # A model loaded before `kind` existed, or by a test, is CTranslate2.
+    sherpa = _loaded.get("kind") == "sherpa"
 
     source = str(body.get("path") or "")
     out = str(body.get("out") or "")
@@ -493,17 +912,34 @@ def generate(body):
         raise ValueError("'out' and 'outText' must be where to write the transcript")
 
     task = str(body.get("task") or "transcribe")
-    # `words` (D392) is ignored here, and ignoring it is the DESIGNED answer
-    # rather than an oversight: it is the one option answered best-effort, since
-    # a caller sees on the segment whether it was honoured. CTranslate2 could
-    # supply it — `model.transcribe` takes `word_timestamps` and returns
-    # `segment.words` from the same DTW alignment the MLX runner uses — so
-    # wiring it is a mapping into `{start, end, word}` and nothing else.
-    #
+    # `words` (D392) is honoured on BOTH formats now: faster-whisper's own DTW
+    # alignment on the CTranslate2 path (`word_timestamps=True`, mapped by
+    # `_ct2_words`) and the transducer's token timestamps on the Parakeet one.
+    # Only for `transcribe`: `translate` timings are the English text's against
+    # the foreign audio, which a caller cannot use — the MLX runner's rule too.
+    # Still the one option answered best-effort (see `engine_options`): a caller
+    # reads on the segment whether it was honoured.
+    words = bool(body.get("words")) and task == "transcribe"
     # None, not "": faster-whisper reads a falsy language as "detect it", and an
     # empty string would be passed through as a language code that matches none.
     language = str(body.get("language") or "") or None
     initial_prompt = str(body.get("initialPrompt") or "") or None
+    if (language or "").lower() == "auto":
+        # The one spelling of "detect it" a caller can send, on BOTH formats:
+        # Parakeet always detects, and faster-whisper rejects the literal "auto"
+        # as a language code, so it is None before either branch sees it.
+        language = None
+    if sherpa:
+        # Refused HERE as well as at the endpoint, which asks the same question
+        # of the model's layout (`ai_runtime`) before a job row exists: this is
+        # the last line of defence for a request that reached the worker some
+        # other way. Not in `engine_options.UNSUPPORTED`, which is per runner
+        # CODE and this runner's code also serves Whisper — what cannot translate,
+        # be pinned to a language or take a prompt is this MODEL: Parakeet v3
+        # picks its own language among the 25 it was trained on, so a pinned one
+        # would be accepted and ignored. Before a row is touched.
+        engine_options.transcribe_only_or_raise(
+            task=task, language=language, initial_prompt=initial_prompt)
     # `is None`, not `get("vad", True)`: a JSON null is "not specified", and a
     # default reached only by an absent KEY inverts for the caller that spreads
     # an options object carrying an unset one.
@@ -530,35 +966,62 @@ def generate(body):
     worker_base.report(job=job, **row, state="running",
                        done=0, total=None, detail="Decoding audio…")
     _await_orphan(job, row)
-    # PHASE ZERO, and only when diarizing: the samples, which this runner
-    # otherwise never holds (see `_waveform`). `audio` then goes to
-    # `transcribe()` in place of the path, so the file is decoded once whether
-    # or not speakers were asked for.
-    audio = _waveform(source, model, job, row) if diarizing else None
+    # PHASE ZERO: the samples. Only when diarizing on the CTranslate2 path,
+    # which otherwise never holds them (see `_waveform`) — `audio` then goes to
+    # `transcribe()` in place of the path, so the file is decoded once whether or
+    # not speakers were asked for. ALWAYS on the Parakeet path: sherpa takes
+    # samples, never a path, and the VAD and the diarization read the same array.
+    audio = _waveform(source, model, job, row) if (diarizing or sherpa) else None
     # …and who was speaking, over all of it, before a word is transcribed. A
     # fast pre-pass with its own `detail` line rather than a share of the
     # transcript's bar — see `_speaker_turns`.
     turns = (_speaker_turns(audio, _model_sample_rate(model), speakers, job, row)
              if diarizing else None)
-    # TWO phases, and only the second one is lazy. `transcribe` returns a
-    # generator that decodes segment by segment as it is consumed — but it
-    # decodes the whole file and runs the VAD before handing that generator
-    # over, so this call blocks for minutes on a long recording. Ticking
-    # through it is what keeps the ✕ live in that window (see `_call_with_ticks`).
-    stream, info = _call_with_ticks(
-        lambda: model.transcribe(
-            source if audio is None else audio,
-            task=task, language=language, initial_prompt=initial_prompt,
-            vad_filter=vad),
-        job, row, "Decoding audio…")
-    # `info.duration` is the whole AUDIO; a segment's `end` is where SPEECH
-    # ended. With the VAD on (the default) those differ by however much silence
-    # the recording trails off with — so the bar legitimately stops short of its
-    # total on a file that ends quietly, and that is not an off-by-one to fix.
-    # Making them agree would mean either reporting against speech-only
-    # duration, which is not knowable until the end, or disabling the VAD, which
-    # costs the wall-clock saving it exists for.
-    total = round(float(getattr(info, "duration", 0) or 0), 2) or None
+    regions = None
+    if sherpa:
+        duration = round(len(audio) / SAMPLE_RATE, 2)
+        total = duration or None
+        # Independent of the diarization and after it, as on the MLX runner: the
+        # segmenter finds its own silence and is better at it than a threshold
+        # over Silero probabilities. Called SYNCHRONOUSLY, as the MLX runner
+        # does: `stt_common.speech_regions` reports into this row itself (its
+        # own tick and the detector download's, both through `report_or_cancel`
+        # so a ✕ still lands), and ticking it from `_call_with_ticks` too would
+        # put two threads on one row, interleaving determinate and
+        # indeterminate progress.
+        if vad:
+            regions = _speech_regions(audio, total, job, row)
+        # Branched on what the detector RETURNED, not on the shape of the packs:
+        # a region that happens to span the whole file is its answer, and the
+        # sink below is scoring speakers against exactly that list.
+        packs = (_bounded_packs(stt_common.packs_to_decode(regions, duration))
+                 if regions else _time_slices(duration))
+        stream = None
+        # Parakeet auto-detects and sherpa reports no language, so the reply
+        # carries none rather than inventing a code a page would then trust (a
+        # pinned `language` was refused above, so there is nothing to echo).
+        detected = None
+    else:
+        # TWO phases, and only the second one is lazy. `transcribe` returns a
+        # generator that decodes segment by segment as it is consumed — but it
+        # decodes the whole file and runs the VAD before handing that generator
+        # over, so this call blocks for minutes on a long recording. Ticking
+        # through it is what keeps the ✕ live in that window (see `_call_with_ticks`).
+        stream, info = _call_with_ticks(
+            lambda: model.transcribe(
+                source if audio is None else audio,
+                task=task, language=language, initial_prompt=initial_prompt,
+                vad_filter=vad, **({"word_timestamps": True} if words else {})),
+            job, row, "Decoding audio…")
+        # `info.duration` is the whole AUDIO; a segment's `end` is where SPEECH
+        # ended. With the VAD on (the default) those differ by however much
+        # silence the recording trails off with — so the bar legitimately stops
+        # short of its total on a file that ends quietly, and that is not an
+        # off-by-one to fix. Making them agree would mean either reporting
+        # against speech-only duration, which is not knowable until the end, or
+        # disabling the VAD, which costs the wall-clock saving it exists for.
+        total = round(float(getattr(info, "duration", 0) or 0), 2) or None
+        detected = getattr(info, "language", None)
     # The ETA's clock starts HERE, not at `started`. The eager phase above
     # produced no segments, so charging its seconds to the first one makes the
     # rate read as wildly slower than it is: a 60-second decode and a first
@@ -567,72 +1030,29 @@ def generate(body):
     # `started` still measures the whole job, which is what `seconds` reports.
     transcribing_since = time.time()
 
-    segments = []
     # Everything from here to the final write happens inside the sink, because
     # its EXIT is the lifecycle: reaching the end means the real output landed
     # and the partial file is duplicate bytes; a `Cancelled` means the user does
     # not want this transcript at all; anything else LEAVES the file, which is
     # the only salvage from a run that died halfway. See `runners/partial.py`.
-    with partial.sink(out_partial, turns=turns,
+    # `spans` (the detector's regions, when one ran) is the scoring mask the MLX
+    # runner passes for the same reason: the sink labels each line as it lands,
+    # and a live label scored over a dropped pause is a speaker the page would
+    # have to un-render when the final file disagrees (D366).
+    with partial.sink(out_partial, turns=turns, spans=regions or None,
                       cancelled=(worker_base.Cancelled,)) as progressive:
-        for segment in stream:
-            segments.append({
-                "start": round(float(segment.start), 2),
-                "end": round(float(segment.end), 2),
-                "text": segment.text.strip(),
-            })
-            # Appended BEFORE the tick, so a page tailing the file already has
-            # the segment by the time the row says the bar moved past it.
-            progressive.add(segments[-1])
-            done = segments[-1]["end"]
-            elapsed = time.time() - transcribing_since
-            try:
-                # `report_or_cancel`, not `report`: this loop is the only place
-                # a stop can be honoured, and the reply to this tick is how the
-                # ✕ gets here.
-                worker_base.report_or_cancel(
-                    job=job, **row, state="running", done=done, total=total,
-                    detail="Transcribing — %s of %s%s" % (
-                        _clock(done), _clock(total) if total else "?",
-                        _eta(total - done if total else None, elapsed, done)))
-                if not worker_base.CANCEL.is_set():
-                    continue
-                raise worker_base.Cancelled()
-            except worker_base.Cancelled:
-                # **A cancel is only worth honouring while there is work left to
-                # stop.** This tick fires AFTER its segment is appended, so a ✕
-                # landing on the last one used to raise straight past the write
-                # below — an hour of decoding discarded at 99%, with the
-                # transcript complete in memory and nothing on disk to show.
-                #
-                # Asking the generator for one more segment is what tells the
-                # two apart, and it is only ever paid for on the cancel path. If
-                # one comes back it is dropped, which costs nothing: we are
-                # stopping. It does cost the DECODE of that segment, so a ✕ on a
-                # long segment is honoured seconds later than it was pressed —
-                # the price of not throwing away a finished transcript, and paid
-                # only once.
-                #
-                # **A failure in the probe must not become the outcome.**
-                # Decoding the tail of a file is exactly where a container or
-                # codec error surfaces, and an exception raised here would
-                # REPLACE the `Cancelled` in flight: `_single` would answer
-                # `{"ok": false}` and the row would end in `error`, telling the
-                # user the transcription they cancelled had failed. Unknown
-                # means "assume there is more", which re-raises the cancel — the
-                # honest answer to a ✕.
-                try:
-                    more = next(stream, None) is not None
-                except BaseException:  # noqa: BLE001 - the cancel is the outcome
-                    more = True
-                if more:
-                    raise
-                break
+        if sherpa:
+            segments = _consume_sherpa(model, audio, packs, progressive, job, row,
+                                       total, duration, words, transcribing_since)
+        else:
+            segments = _consume_ct2(stream, progressive, job, row, total,
+                                    transcribing_since, words)
 
         # The join, through the same shared function the MLX runner calls on the
         # same two lists — which is what makes "identical labels" structural
         # rather than a thing to keep testing (AI-10c).
-        speaker_list = (diarize.assign_speakers(segments, turns)
+        speaker_list = (diarize.assign_speakers(segments, turns,
+                                                spans=regions or None)
                         if turns is not None else None)
 
         text = " ".join(s["text"] for s in segments).strip()
@@ -642,7 +1062,7 @@ def generate(body):
             "outputText": out_text,
             "model": body.get("model") or "",
             "task": task,
-            "language": getattr(info, "language", None),
+            "language": detected,
             "duration": total,
             "seconds": round(time.time() - started, 2),
             "segments": segments,

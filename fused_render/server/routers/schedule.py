@@ -10,6 +10,7 @@ rather than there, because it needs what only this layer knows:
 Reads are unguarded like every other read endpoint. Both POSTs carry the D3
 X-Fused guard: one of them schedules code execution, and the other stops it.
 """
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -131,50 +132,57 @@ async def api_schedule_shot(file: UploadFile | None = File(default=None),
     if not raw:
         return _error("file: empty upload", status=400)
 
-    mime = file.content_type or ""
-    ext = image_convert.ext_for(mime, file.filename)
-    shots = schedule.shots_dir()
-    os.makedirs(shots, mode=0o700, exist_ok=True)
-    # Server-minted name, never the client's: the path returned here is what
-    # `schedule._images` later trusts, and a filename is the one field in a
-    # multipart body a page chooses freely. Only the EXTENSION is taken from the
-    # client (sanitised by `ext_for`), because it is what decides the template a
-    # preview opens the file in.
-    name = (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            + "-" + os.urandom(4).hex() + ext)
-    path = os.path.join(shots, name).replace("\\", "/")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(raw)
+    content_type, filename = file.content_type, file.filename
 
-    if not image_convert.is_image(ext, mime):
-        return {"path": path, "kind": "file"}
+    def _store() -> dict:
+        # Everything below is blocking disk/CPU (write, Pillow/sips transcode,
+        # dimensions): one thread hop keeps it off the event loop.
+        mime = content_type or ""
+        ext = image_convert.ext_for(mime, filename)
+        shots = schedule.shots_dir()
+        os.makedirs(shots, mode=0o700, exist_ok=True)
+        # Server-minted name, never the client's: the path returned here is what
+        # `schedule._images` later trusts, and a filename is the one field in a
+        # multipart body a page chooses freely. Only the EXTENSION is taken from the
+        # client (sanitised by `ext_for`), because it is what decides the template a
+        # preview opens the file in.
+        name = (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+                + "-" + os.urandom(4).hex() + ext)
+        path = os.path.join(shots, name).replace("\\", "/")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
 
-    # A PICTURE gets one more decision, and it is taken HERE rather than in the
-    # browser (the chat takes it in the page, with a canvas; D613). Server-side
-    # for this form because the two cases are one call from here — a format no
-    # engine can decode and a picture merely too big share a ladder — where in
-    # the client they are two code paths, one of which cannot exist at all: a
-    # canvas cannot downscale bytes it cannot draw. The card stays small and the
-    # bytes are already on disk by the time the question is asked.
-    out, width, height = path, None, None
-    blind = image_convert.browser_blind(ext, mime)
-    if blind or len(raw) > image_convert.PNG_MAX_BYTES:
-        # A DIFFERENT name, not a same-extension sibling: a 6 MB `.png` being
-        # downscaled would otherwise be asked to overwrite itself.
-        conv = image_convert.transcode(
-            path, os.path.splitext(path)[0] + "-view")
-        if conv.get("path"):
-            out = conv["path"]
-            width, height = conv.get("width"), conv.get("height")
-    if width is None:
-        size = image_convert.dimensions(out)
-        if size:
-            width, height = size
-    body = {"path": out, "kind": "image"}
-    if width and height:
-        body["width"], body["height"] = width, height
-    return body
+        if not image_convert.is_image(ext, mime):
+            return {"path": path, "kind": "file"}
+
+        # A PICTURE gets one more decision, and it is taken HERE rather than in the
+        # browser (the chat takes it in the page, with a canvas; D613). Server-side
+        # for this form because the two cases are one call from here — a format no
+        # engine can decode and a picture merely too big share a ladder — where in
+        # the client they are two code paths, one of which cannot exist at all: a
+        # canvas cannot downscale bytes it cannot draw. The card stays small and the
+        # bytes are already on disk by the time the question is asked.
+        out, width, height = path, None, None
+        blind = image_convert.browser_blind(ext, mime)
+        if blind or len(raw) > image_convert.PNG_MAX_BYTES:
+            # A DIFFERENT name, not a same-extension sibling: a 6 MB `.png` being
+            # downscaled would otherwise be asked to overwrite itself.
+            conv = image_convert.transcode(
+                path, os.path.splitext(path)[0] + "-view")
+            if conv.get("path"):
+                out = conv["path"]
+                width, height = conv.get("width"), conv.get("height")
+        if width is None:
+            size = image_convert.dimensions(out)
+            if size:
+                width, height = size
+        body = {"path": out, "kind": "image"}
+        if width and height:
+            body["width"], body["height"] = width, height
+        return body
+
+    return await asyncio.to_thread(_store)
 
 
 def resolve_target(value, field: str = "target"):

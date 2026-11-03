@@ -47,6 +47,7 @@ import {
   groupOfView,
   groupRows,
   activityAt,
+  ACTIVITY_SLACK_SEC,
   defaultViewFacets,
   LANES_BUT_ARCHIVE,
   LANES_BUT_UPCOMING,
@@ -55,6 +56,7 @@ import {
   parseSeededViews,
   parseViewFilters,
   seedCollapsedGroups,
+  sectionsHolding,
   groupSize,
   parseViewTabs,
   flattenGroupRefs,
@@ -191,6 +193,7 @@ import {
   jobCountLabel,
   liveJobRow,
   liveJobs,
+  VIEW_LABELS,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -1875,7 +1878,7 @@ describe("the unarchive drag", () => {
   it("is the call the Board makes, and it sends no lane", () => {
     // The handler's own half of the rule, read out of the source: one call over
     // the task key, and the `lane` the drop was made on is not in it.
-    const from = VIEWS.indexOf('const drop = async (lane: BoardLane)');
+    const from = VIEWS.indexOf('const drop = async (lane: BoardLane');
     const handler = VIEWS.slice(from, VIEWS.indexOf("onReload();", from));
     expect(handler).toContain('action.kind === "unarchive"');
     // Through the shared helper — one call over the task key, and the `lane` the
@@ -2526,12 +2529,18 @@ describe("the unread mark", () => {
     expect(TASKS_CSS).toMatch(
       /\.tasks-msg\.is-unread \.tasks-msg-body \{[^}]*font-weight: 600/,
     );
-    // NOT on a List row: it carries the ring-dot, and bolding its title too would
-    // state one fact twice on one line.
-    expect(ROW).not.toContain("is-unread");
-    expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
-      ".tasks-title.is-unread",
-    );
+    // …and on a List row and a Cards-wall card too (Akshil, 2026-10-23: bold
+    // while unread, weight 400 once read) — the weight is the same claim on every
+    // surface, and it replaced the recap/message weight split.
+    expect(ROW).toContain('(unread > 0 ? " is-unread" : "")');
+    expect(block(TASKS_CSS, ".tasks-title")).toContain("font-weight: 400");
+    expect(block(TASKS_CSS, ".tasks-title.is-unread")).toContain("font-weight: 600");
+    expect(TASKS_CSS).not.toContain(".tasks-title.is-recap");
+    expect(CARDS).toContain('className={"task-card-title" + (task.unread > 0 ? " is-unread" : "")}');
+    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 400");
+    expect(block(CARDS_CSS, ".task-card-title.is-unread")).toContain("font-weight: 600");
+    // …and says it: weight is not in the accessibility tree (CodeRabbit, #1913).
+    expect(CARDS).toContain("${task.unread > 0 ? `, ${taskUnreadLabel(task.unread)}` : \"\"}");
     // ...and the title is still a title: the words, then nothing an eye can see.
     // The words are `cardTitleLine`'s (tasks-lib) — the reader's newest
     // message, else the task's name — the same function the List row and the
@@ -2693,7 +2702,7 @@ describe("the unread mark", () => {
     // Akshil, 2026-08-18. The List is mostly history and the rows scheduled ahead
     // are the ones a reader is not being asked to read yet — so they recede
     // without leaving the list. The predicate is the lib's, asked once per row.
-    expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "") + (line.kind === "recap" ? " is-recap" : "")}');
+    expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "") + (unread > 0 ? " is-unread" : "")}');
     // …and a DRAFT row reads the same (Akshil, 2026-09-15): unsent words are
     // work further ahead than a scheduled run, in the same lane.
     expect(VIEWS).toContain("const ahead = isUpcomingTask(task) || isDraftTask(task);");
@@ -4522,7 +4531,7 @@ describe("the archive action", () => {
     // answer, and for BOTH directions, because Unarchive flipped just as
     // instantly — and cleared by the row's own mouseleave.
     expect(NODE).toContain("const [refiled, setRefiled] = useState(false);");
-    const refileAt = NODE.indexOf("const refile = async (intent: FilingIntent)");
+    const refileAt = NODE.indexOf("const doRefile = async (intent: FilingIntent)");
     const refile = NODE.slice(refileAt, NODE.indexOf("\n  };", refileAt));
     expect(refile).toContain("setRefiled(true);");
     expect(ROW).toContain('(refiled ? " is-refiled" : "")');
@@ -5843,14 +5852,18 @@ describe("the Project filter's glyph", () => {
     // radiogroup, which is a different control naming the same facet and comes
     // first in the file. The indent is what tells the two apart.
     const project = VIEWS.slice(VIEWS.indexOf('\n          label={filters.projects.length === 1'));
-    expect(project.slice(0, project.indexOf("onClear"))).toContain("icon={ICON_FOLDER}");
+    expect(project.slice(0, project.indexOf("onClear"))).toContain("icon={ICON_PROJECT}");
+    // Workspace scope, Unit 7: a folded trigger is nothing BUT its glyph, so
+    // Project wears a mark of its own (layers), not the folder that also marks
+    // "open the folder" and the view tab. The folder stays on those.
+    expect(project.slice(0, project.indexOf("onClear"))).not.toContain("ICON_FOLDER");
     // A prop with the ring as its default, so the Status menu is untouched — there
     // the ring IS the vocabulary a status is stated in.
     // The word rides a `.schedule-fit-lbl` span so the toolbar can fold it to
     // an icon when the row runs out of width (shell/row-fit.ts) — the glyph and
     // the label are still one control and still in this order.
     expect(VIEWS).toContain(
-      '{glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{label}</span>',
+      '{glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{value && count > 0 ? value : label}</span>',
     );
     const status = VIEWS.slice(VIEWS.indexOf('label="Status"'));
     expect(status.slice(0, status.indexOf("onClear"))).not.toContain("icon=");
@@ -6623,6 +6636,14 @@ describe("the grouped lists start with every lane but Archive ticked (2026-10-17
     for (const view of BASE_VIEWS.filter((v) => v !== "cards")) {
       expect(defaultViewFacets(view)).toEqual({ statuses: [], projects: [] });
     }
+  });
+
+  it("starts the Detailed view unfiltered (its Archived group starts folded instead)", () => {
+    expect(defaultViewFacets("detailed")).toEqual({ statuses: [], projects: [] });
+    const f = { ...EMPTY_FILTERS, ...defaultViewFacets("detailed") };
+    expect(filterTasks(tasks, filtersForView(f, "detailed")).map((t) => t.key)).toEqual(
+      tasks.map((t) => t.key),
+    );
   });
 
   it("starts the Cards wall on every lane it draws (no Upcoming), ticked, so the menu matches the wall", () => {
@@ -8269,8 +8290,14 @@ describe("the two filter menus", () => {
     // project name in that instead of 'Project 1'") — safe now that the press
     // closes the menu — and the badge stands down there, because a "1" after a
     // name is the same fact twice. Status is untouched: its badge still counts.
+    // Unit 7: the Status trigger names its value ("Running +3"), and the badge
+    // stands down whenever a value is on the trigger.
     expect(VIEWS).toContain(
-      '{badge && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}');
+      '{badge && !(value && count > 0) && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}');
+    expect(VIEWS).toContain("{value && count > 0 ? value : label}");
+    // …and clearing is a row in the menu: the separate ✕ segment is gone.
+    expect(VIEWS).not.toContain('className="schedule-tv-filter-x"');
+    expect(VIEWS).toContain("schedule-tv-pop-clear");
     expect(VIEWS).toContain(
       'label={filters.projects.length === 1 ? basename(filters.projects[0]) : "Project"}');
     expect(VIEWS).toContain("badge={filters.projects.length !== 1}");
@@ -8712,7 +8739,7 @@ describe("sortForList: the page's one order", () => {
     // cut, and `rows` is still the sorted list, flattened in section order.
     expect(VIEWS).toContain('<div className="tasks-list-frame">{rows.map(rowAt)}</div>');
     expect(VIEWS).toContain(
-      "groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null",
+      "groupBy ? groupRows(sorted, groupBy, home, Math.max(now, Date.now()), sortBy, (k) => prStatuses[k]) : null",
     );
     // The index rides along ONLY so the row can take its React key from
     // `taskListKeys` (the queue's identity rule).
@@ -9218,7 +9245,7 @@ describe("the Cards view's frame", () => {
       "scrollbar-color: var(--sb-thumb) transparent",
     );
     expect(SCHED_CSS).not.toContain(".task-cards-scroll::-webkit-scrollbar");
-    expect(CARDS).toContain('<div className="task-cards-scroll" ref={wallRef}>');
+    expect(CARDS).toContain('<div className="task-cards-scroll" ref={wallRef}');
     // ...and a wheel in the margins reaches it, by the List's own rule — ONE
     // hook for both views (useMarginWheel), not a second forwarding rule.
     expect(CARDS).toContain("useMarginWheel(wallRef);");
@@ -10920,12 +10947,13 @@ describe("provisionalTasks", () => {
     expect(taskUnread(none, new Set())).toBe(0);
   });
 
-  it("the four views print the PAGE's one empty sentence, full width, centred", () => {
-    // One `emptyLabel` computed in Scheduled and handed to List, Board, Cards
-    // and Calendar; each prints it as the same `.schedule-tv-empty` paragraph.
+  it("the views print the PAGE's one empty sentence, full width, centred", () => {
+    // One `emptyLabel` computed in Scheduled and handed to List, Board, Cards,
+    // Calendar and the Workspace; each prints it as the same
+    // `.schedule-tv-empty` paragraph.
     // The Board used to show five bare rails and the Calendar a bare grid.
     const SCHED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
-    expect((SCHED.match(/emptyLabel=\{emptyLabel\}/g) ?? []).length).toBe(4);
+    expect((SCHED.match(/emptyLabel=\{emptyLabel\}/g) ?? []).length).toBe(5);
     // The Board keeps its `note` beside the sentence: a move that emptied the
     // board is when "where did it go" matters most (Bugbot).
     const boardEmpty = VIEWS.slice(VIEWS.indexOf("if (tasks.length === 0) {"));
@@ -11416,7 +11444,7 @@ describe("the optimistic queue claim", () => {
   });
 });
 
-describe("cardTitleLine — summary-only titles (title_mode: summary)", () => {
+describe("cardTitleLine — stable AI titles (title_mode: summary)", () => {
   const base = {
     title: "Fix login\nsecond line",
     last_message: { text: "newest message" },
@@ -11659,6 +11687,50 @@ describe("groupRows", () => {
     expect(activityAt(due, NOW)).toBe(0);
     expect([...openOnFirstVisit(groupRows([{ ...due, project: "/later" }], "project", "", NOW), "project", NOW)]).toEqual([]);
     expect(activityAt(t, NOW)).toBe(sec("2026-10-16T09:00:00"));
+  });
+  it("activityAt reads a stamp a few seconds ahead of the page clock as now (Sina, 2026-10-21)", () => {
+    // The server stamps a running row with ITS clock; `useNow` ticks once a
+    // minute, so the stamp can be ahead of `now`. That is activity NOW — the
+    // folder must stay on top — never "no activity", which sank it to the bottom.
+    const nowSec = Math.floor(NOW / 1000);
+    const live = task({
+      key: "live",
+      status: "in_progress",
+      messages: [msg({ message_id: "MSG-l", state: "sent", at: nowSec + 40 })],
+      last_active: nowSec + 40,
+    }, 0);
+    expect(activityAt(live, NOW)).toBe(nowSec);
+    const g = groupRows([
+      row({ key: "old", project: "/Users/me/old", last_active: sec("2026-10-16T09:00:00") }),
+      { ...live, project: "/Users/me/live" },
+    ], "project", "/Users/me", NOW);
+    expect(g.map((x) => x.label)).toEqual(["live", "old"]);
+    // Beyond the slack it is a due time, and a due time is still no activity.
+    const due = task({ key: "due", status: "upcoming", messages: [], last_active: nowSec + 600 }, 0);
+    expect(activityAt(due, NOW)).toBe(0);
+    // The slack's edge: inside it reads as now, one second past it does not.
+    const edge = (ahead: number) => task({ key: "e", status: "in_progress", messages: [], last_active: nowSec + ahead }, 0);
+    expect(activityAt(edge(ACTIVITY_SLACK_SEC), NOW)).toBe(nowSec);
+    expect(activityAt(edge(ACTIVITY_SLACK_SEC + 1), NOW)).toBe(0);
+    // …and no slack at all for a row whose stamp is its NEXT run: a cron due
+    // in thirty seconds has not happened, whatever `last_active` says.
+    const soon = row({ key: "soon", status: "upcoming", next_run: nowSec + 30, next_run_entry: "e1", last_active: nowSec + 30 });
+    expect(taskWhen(soon, NOW).kind).toBe("next");
+    expect(activityAt(soon, NOW)).toBe(0);
+  });
+  it("sectionsHolding names the section of each key, and the repository above a PR", () => {
+    const p = groupRows([
+      row({ key: "a", project: "/Users/me/a" }),
+      row({ key: "b", project: "/Users/me/b" }),
+    ], "project", "/Users/me", NOW);
+    expect(sectionsHolding(p, "project", new Set(["b"]))).toEqual(["project:/Users/me/b"]);
+    expect(sectionsHolding(p, "project", new Set(["nope"]))).toEqual([]);
+    const pr = groupRows([
+      row({ key: "x", title: "PR #12", repo: "o/r" }),
+      row({ key: "y", title: "no pr" }),
+    ], "pr", "", NOW);
+    const repo = pr.find((g) => g.groups?.length)!;
+    expect(sectionsHolding(pr, "pr", new Set(["x"]))).toEqual([`pr:${repo.key}`, `pr:${repo.groups![0]!.key}`]);
   });
   it("by PR: repositories newest activity first, rows keep list order in a status section", () => {
     const pr = (key: string, n: number, repo: string, iso: string) =>
@@ -12009,5 +12081,35 @@ describe("Sort by: Created", () => {
     (globalThis as any).localStorage = { getItem: () => { throw new Error("blocked"); } };
     expect(readTaskSort()).toBe("changed");
     delete (globalThis as any).localStorage;
+  });
+});
+
+describe("bold unread titles in every view (Revision 2)", () => {
+  it("bolds an unread title on the List row, the Cards wall and the Workspace card", () => {
+    const CARDS = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
+    const WS = readFileSync(join(SHELL, "TaskWorkspace.tsx"), "utf8");
+    const CARDS_CSS = readFileSync(join(SHELL, "../styles/task-cards.css"), "utf8");
+    const WS_CSS = readFileSync(join(SHELL, "../styles/task-workspace.css"), "utf8");
+    expect(CARDS).toContain('(task.unread > 0 ? " is-unread" : "")');
+    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 400");
+    expect(block(CARDS_CSS, ".task-card-title.is-unread")).toContain("font-weight: 600");
+    expect(WS).toContain('(task.unread > 0 ? " is-unread" : "")');
+    expect(block(WS_CSS, ".ws-title")).toContain("font-weight: 400");
+    expect(block(WS_CSS, ".ws-title.is-unread")).toContain("font-weight: 600");
+  });
+});
+
+describe("the Detailed view (once called workspace)", () => {
+  it("is labelled Detailed and written as ?view=detailed", () => {
+    expect(VIEW_LABELS.detailed).toBe("Detailed");
+    expect(viewUrl("/tasks", "", "detailed")).toBe("/tasks?view=detailed");
+    expect(viewFromSearch("?view=detailed")).toBe("detailed");
+  });
+  it("the old ?view=workspace, a stored tab and a stored filter row still resolve to it", () => {
+    expect(viewFromSearch("?view=workspace")).toBe("detailed");
+    expect(parseViewTabs(["list", "workspace", "detailed"])).toEqual(["list", "detailed"]);
+    expect(parseViewTabs(JSON.stringify(["workspace"]))).toEqual(["detailed"]);
+    const row = { workspace: { statuses: [], projects: ["/p"] } };
+    expect(Object.keys(parseViewFilters(JSON.stringify(row)))).toEqual(["detailed"]);
   });
 });

@@ -38,6 +38,7 @@ import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { navigateUrl } from "@platform/lib/router";
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -894,7 +895,12 @@ export function TaskPeek({
   };
 
   const filing = task ? filingIntent(task) : null;
-  const refile = async () => {
+  const archiveAsk = useArchiveConfirm();
+  const refile = (): void => {
+    if (filing?.kind === "archive" && task) archiveAsk.guard(task, () => void doRefile());
+    else void doRefile();
+  };
+  const doRefile = async () => {
     if (!filing || !task || acting) return;
     const from = task.key;
     setActing(true);
@@ -1397,6 +1403,11 @@ export function TaskPeek({
                 // this panel's own listener sees it, so the blur-first rule has
                 // to be applied here too (see `escapeOrBlur`).
                 onEscape={() => escapeOrBlur(document)}
+                // REMOVING THE WORKTREE STAYS ON THIS PAGE (bug report,
+                // 2026-10-22: it used to leave for the explorer, the landing
+                // the explorer's own chat wants). The rows are re-read so the
+                // task's folder registers as missing and this body says so.
+                {...(onReload ? { onWorktreeRemoved: onReload } : {})}
                 // FOCUS STAYS ON THE TRIGGER (design.md, Keyboard — Notion's
                 // behaviour): the peek is a place to look first and type
                 // second, and a panel that steals the caret makes the next
@@ -1441,6 +1452,7 @@ export function TaskPeek({
           }}
         />
       )}
+      {archiveAsk.node}
     </>
   );
 }

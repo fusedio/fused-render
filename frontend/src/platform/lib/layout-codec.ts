@@ -306,7 +306,9 @@ export function readEmbedLoc(iframe: HTMLIFrameElement): EmbedLoc | null {
     const p = loc.pathname;
     if (p && p.startsWith(EMBED_PREFIX)) {
       const rest = p.slice(EMBED_PREFIX.length);
-      // rootedFsPath keeps the shell's canonical form (leading slash).
+      // rootedFsPath keeps the shell's canonical form: leading slash for
+      // POSIX, none for Windows drive paths ("C:/…") — a bare "/"-prefixed
+      // drive path would never prefix-match home or other fs paths.
       const path = rootedFsPath(
         rest
           .split("/")

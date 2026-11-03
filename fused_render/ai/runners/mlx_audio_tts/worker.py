@@ -5,12 +5,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import contextlib  # noqa: E402
 import json  # noqa: E402
-import re  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
-import wave  # noqa: E402
 
 import formats  # noqa: E402
+import speech_common  # noqa: E402
 import worker_base  # noqa: E402
 
 _loaded = {}
@@ -19,10 +18,6 @@ _STREAMS = {}
 _STREAMS_LOCK = threading.Lock()
 
 TOKENS_PER_SECOND = 12
-CHUNK_CHARS = 600
-PARAGRAPH_PAUSE_S = 0.5
-_PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
-_SENTENCE_END = re.compile(r"(?<=[.!?。！？])")
 
 
 def _pin_stream():
@@ -102,31 +97,6 @@ def release():
         clear()
 
 
-def _sentences(paragraph, limit):
-    for sentence in _SENTENCE_END.split(paragraph):
-        while len(sentence) > limit:
-            cut = sentence.rfind(" ", 0, limit) + 1 or limit
-            yield sentence[:cut]
-            sentence = sentence[cut:]
-        yield sentence
-
-
-def speech_chunks(text, limit=CHUNK_CHARS):
-    paragraphs = []
-    for block in _PARAGRAPH_BREAK.split(text):
-        chunks, current = [], ""
-        for sentence in _sentences(" ".join(block.split()), limit):
-            if current.strip() and len(current) + len(sentence) > limit:
-                chunks.append(current.strip())
-                current = ""
-            current += sentence
-        if current.strip():
-            chunks.append(current.strip())
-        if chunks:
-            paragraphs.append(chunks)
-    return paragraphs
-
-
 class _Progress:
     def __init__(self, job, total):
         self.job = job
@@ -167,27 +137,13 @@ def _progress_hook(progress):
         qwen3_tts.tqdm = original
 
 
-def _write_wav(path, samples, sample_rate):
-    import numpy as np
-
-    pcm = np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0)
-    pcm = (pcm * 32767.0).astype("<i2")
-    tmp = path + ".part"
-    with wave.open(tmp, "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(int(sample_rate))
-        handle.writeframes(pcm.tobytes())
-    os.replace(tmp, path)
-
-
 def generate(body):
     _pin_stream()
     model = _loaded.get("model")
     if model is None:
         raise RuntimeError("no model is loaded")
     out = str(body.get("out") or "")
-    paragraphs = speech_chunks(str(body.get("text") or ""))
+    paragraphs = speech_common.speech_chunks(str(body.get("text") or ""))
     if not paragraphs or not out:
         raise ValueError("'text' and 'out' are required")
     options = formats.speech_options(_loaded["model_id"], _loaded["traits"], body)
@@ -201,7 +157,7 @@ def generate(body):
     worker_base.report(job=job, state="running", kind="task", unit="",
                        done=0, total=progress.total, detail="Speaking")
     sample_rate = model.sample_rate
-    pause = np.zeros(int(sample_rate * PARAGRAPH_PAUSE_S), dtype=np.float32)
+    pause = np.zeros(int(sample_rate * speech_common.PARAGRAPH_PAUSE_S), dtype=np.float32)
     pieces = []
     with _progress_hook(progress):
         for index, chunks in enumerate(paragraphs):
@@ -218,7 +174,7 @@ def generate(body):
     if not any(piece is not pause and piece.size for piece in pieces):
         raise RuntimeError(f"{_loaded['model_id']} returned no audio for this text")
     audio = np.concatenate(pieces)
-    _write_wav(out, audio, sample_rate)
+    speech_common.write_wav(out, audio, sample_rate)
     return {"path": out, "seconds": round(time.time() - started, 2),
             "audioSeconds": round(audio.size / sample_rate, 2), "parts": progress.total,
             **options}

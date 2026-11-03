@@ -38,6 +38,8 @@ import os
 import threading
 import time
 
+from fused_render import _platform
+
 logger = logging.getLogger(__name__)
 
 LEASE_NAME = "index-watcher.lock"
@@ -82,7 +84,7 @@ def _pid_alive(pid) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except PermissionError:

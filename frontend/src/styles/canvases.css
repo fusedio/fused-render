@@ -206,41 +206,53 @@
   color: var(--fg-muted);
 }
 
-/* New-canvas inline form (replaces the head actions while open). */
+/* New-canvas inline form (replaces the head actions while open). The error
+   line hangs BELOW the row out of flow: it comes and goes per keystroke, and
+   in-flow it would grow the head and nudge the title and search box on every
+   character. The head instead opens a gap under itself ONCE, while the form
+   is up, so the line never lands on the subtitle paragraph. */
+.canvases-head.is-creating {
+  margin-bottom: 28px;
+}
+
 .canvases-new-form {
+  position: relative;
+}
+
+.canvases-new-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
+.canvases-new-name {
+  width: 220px;
+}
+
+.canvases-new-name[aria-invalid="true"],
+.canvases-new-name[aria-invalid="true"]:focus {
+  border-color: var(--error);
+}
+
+/* Anchored to the form's right edge and growing LEFT, one line: rule text
+   fits in the form's width, a long create-call message stretches toward the
+   title and is clipped at the end (full text in the title tooltip). */
+.canvases-new-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  max-width: min(640px, 70vw);
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--error);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .canvases-empty {
   color: var(--fg-muted);
   padding: 32px 0;
-}
-
-/* The canvas workspace's NODE PANE strip (CanvasWorkspace.tsx): the node's
-   name and the Claude / Code tabs over the explorer engine. Shares the
-   explorer sidebar's header rule (.preview-side-header, preview.css). */
-.canvas-node-side-name {
-  font-size: 12px;
-  font-weight: 600;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
-}
-
-/* The peek's close: the ✕ after the Claude / Code strip (CanvasWorkspace). */
-.canvas-node-close {
-  flex: none;
-  margin-left: 6px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--fg-muted);
-}
-.canvas-node-close:hover {
-  color: var(--fg);
 }
 
 /* ---- The canvas project page (/canvases-project/<env>/<name>, CanvasPage.tsx) */
@@ -335,4 +347,112 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--fg-muted);
+}
+
+/* Custom environment with no settings.toml: the prompt that stands where the
+   sign-in button would, and the editor modal it opens. */
+.canvases-settings-prompt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.canvases-settings-prompt .canvases-sub {
+  margin: 0;
+}
+
+.canvases-settings-lead {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.canvases-settings-path {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.canvases-settings-editor {
+  display: block;
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  box-sizing: border-box;
+}
+
+.canvases-settings-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--error);
+  white-space: pre-wrap;
+}
+
+/* THE SCRIM OVER THE WORKBENCH WHILE A PICTURE IS TAKEN (CanvasWorkspace,
+   canvas-shot-scrim.ts). The capture runs inside the cross-origin frame and
+   mutates its DOM for seconds; the frame itself shows nothing, so the host
+   draws the sign and takes the pointer. The same shape the workbench's own
+   "Update thumbnail" overlay has (wash, card, spinner, one line), so a user
+   who has seen one recognises the other. */
+.canvas-shot-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  pointer-events: auto;
+  cursor: wait;
+  animation: canvas-shot-scrim-in var(--dur-fast, 120ms) ease-out;
+}
+.canvas-shot-scrim-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 320px;
+  padding: 20px 28px;
+  border-radius: 14px;
+  background: var(--bg-panel, var(--bg));
+  color: var(--fg);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px var(--shadow-ink-deep);
+  text-align: center;
+}
+.canvas-shot-scrim-spinner {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.7;
+  animation: canvas-shot-scrim-spin 0.8s linear infinite;
+}
+.canvas-shot-scrim-label {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.canvas-shot-scrim-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+@keyframes canvas-shot-scrim-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes canvas-shot-scrim-in {
+  from {
+    opacity: 0;
+  }
 }

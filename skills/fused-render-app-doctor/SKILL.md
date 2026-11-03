@@ -15,7 +15,7 @@ Share-readiness pass over one app folder. `fused-render` ships as a packaged des
 
 **Not a code audit.** No opinion on logic bugs, cache eviction, date math, dedup, DOM injection, error handling, perf. Even when the request says "review for correctness": say this skill covers share-readiness, offer the audit as separate work.
 
-**Two kinds of row.** `fact` — a file read or git call settled it, nothing to judge. `candidate` — a regex over arbitrary text (or, for `cross-browser`, a model reading a rubric), so it locates a SHAPE, not a verdict; read the surrounding file before calling any hit real. The regex engine over 8 apps in a live workspace: all 40 candidate findings were false positives.
+**Two kinds of row.** `fact` — a file read or git call settled it, nothing to judge. `candidate` — a regex over arbitrary text, so it locates a SHAPE, not a verdict; read the surrounding file before calling any hit real. The regex engine over 8 apps in a live workspace: all 40 candidate findings were false positives.
 
 ## `secrets` — leaked credentials
 
@@ -37,6 +37,12 @@ Real: live-looking key shape, long random string, or a PEM block, in a file the 
 **fact** — `app_listing.app_entry` found no page carrying `<meta name="fused-app">`.
 
 **Fix.** Add that tag to the `<head>` of the page meant to open. Multiple candidates: first non-hidden one in name order wins, so pick accordingly.
+
+## `app-id` — has an app id
+
+**fact**, severity **warning** — the entry page has no well-formed `<meta name="fused-app-id" content="…">`. The Community lists and catalogs apps by this id (it is the listing's slug), so Publish to the Community refuses without one.
+
+**Fix.** Add ONE tag to the entry page's `<head>`, next to `<meta name="fused-app">`: `<meta name="fused-app-id" content="<name>-<8 hex>">` — `<name>` the app's name kebab-cased (lowercase letters, digits and dashes, starting with a letter or digit, at most 48 characters), then a dash and exactly 8 random lowercase hex digits, e.g. `sine-starter-0a1b2c3d`. Generate the hex freshly (never copy another app's id: a copy with the same id reads as the same app). Change nothing else, then commit the page. If the app already had an id that was lost, and you can find it (git history, `metadata.json`), restore that one instead of minting a new one.
 
 ## `api-version` — declares the current fused API version
 
@@ -83,22 +89,6 @@ Real: a hardcoded `/Users/alex/data.csv` (or `/home/…`, `/Volumes/…`) the ap
 
 **Fix.** A path relative to the app folder, or one the runtime hands the app at call time. Never another absolute path.
 
-## `cross-browser` — renders and works alike in Chrome, Firefox and Safari
-
-**candidate** — a Sonnet read of the app's `.html`/`.css`/`.js`/`.svg` files against `fused-render-cross-browser`'s own SKILL.md, run as an App Doctor **check task** (a session on the entry page, listed under the app's Tasks tab) only when someone pressed the row's Check button. The check task runs in **plan mode** (read-only, enforced by the CLI) and ends its reply with the verdict as a fenced JSON block; the server lifts that into `.fused/cache/app-doctor/cross-browser.verdict.json` beside its own run record keyed on a checksum of those files, so the findings you are handed describe the folder as it was when Check was last pressed (the panel refuses to open a fix session on a stale verdict, and a fix and a check never run at once on one app).
-
-If YOU are the check task (your prompt says "run check `cross-browser`"): read only the listed files and answer in the chat exactly as the prompt asks — plain lines, then one JSON block last. You cannot edit or commit, and must not try.
-
-Not a finding:
-
-- **Already guarded** — the flagged feature sits inside an `@supports (…) {}` block, or the `-webkit-` twin is on the very next line and the model missed it.
-- **Vendored third-party file** — a bundled library's minified CSS/JS. Not this app's authoring to fix; say so.
-- **Rubric drift** — the row cites a feature the current MDN compat table now marks Baseline widely available. The rubric is the skill's table; check that table before agreeing with the model, not the other way round.
-
-Real: a line the skill's trap table names, in a view this app ships, with no fallback.
-
-**Fix.** Invoke **`fused-render-cross-browser`** and apply its paste-in baseline and trap table to exactly the cited lines — prefix, `@supports` fallback, or the replacement the table names. Never restructure the view; never add a build step or autoprefixer (the authoring contract has none). Say in one line per finding what changed.
-
 ## `git` — repo in sync
 
 **fact** — one consolidated row covering three things (with auto-sync on and the repo on its default branch, unpushed commits and behind-origin pass — they sync automatically — and a standing auto-sync failure fails the row instead; uncommitted paths always fail): every change committed (`git status --porcelain`, scoped to the app folder), every commit pushed (`git rev-list --count @{upstream}..HEAD` — no network call, so as stale as the last fetch), and not behind origin (a real background `git fetch`, dispatched when App Doctor opens and read from cache here — never run inline, so it can be unresolved). The row's `detail` names whichever of the three apply; its findings mix uncommitted paths and unpushed commit subjects. Skip means no readable git repo, no git, no upstream configured, or the remote check hasn't resolved (offline, unreachable, or just not checked yet) — none of those are a defect in the app.
@@ -108,7 +98,15 @@ Real: a line the skill's trap table names, in a view this app ships, with no fal
 - **Unpushed commits** — push the branch. The findings are the unpushed subject lines — if any read as work-in-progress, say so instead of pushing blindly. The row knows the commits exist, not that they're ready.
 - **Behind origin** — this is exactly what the row's own "Pull" action (in the App Doctor panel, not this skill) is for; a fix session should pull (fast-forward only) rather than force anything, and stop and say so if a pull cannot fast-forward.
 
+- **"The author's latest overlaps your changes"** or **"couldn't be sent to GitHub"** — a copy fused keeps in step by itself (an app installed from someone's GitHub link, or your own app while the contribution loop is on). Do NOT run git in it — no pull, rebase, merge, reset or push: fused moves this folder only through its own safe path. Tell the user to open the app's page and use **Merge with Claude** there (overlap), or to sign in to GitHub again (couldn't send), and stop.
+
 So what you share is what you tested, matches what you pushed, and matches what origin has.
+
+## `fused-dir-committed` — the repo leaves out the .fused folder
+
+**fact** — the app's own repository tracks paths under `.fused/` (`git ls-files -- .fused`; the findings are those paths). `.fused/` holds this machine's data for the app — the install stamp, `meta.json` with this machine's absolute path, data and caches — so committing it ships the author's machine state to everyone who installs the app. Skip means the app is not its own repository.
+
+**Fix.** Untrack the folder without deleting it: `git rm -r --cached --sparse -- .fused` (fused marks these paths skip-worktree so its own writes never read as edits, and git then refuses a plain `rm` with a "sparse-checkout definition" message — `--sparse` is what lets it through; drop the flag only on a git too old to know it), add `.fused/` to the repo's `.gitignore`, and commit both (the `.gitignore` edit too, or it is itself an uncommitted change). Never delete the folder's files on disk — the app's data lives there.
 
 ## `generated` — no generated files outside .fused/
 
@@ -136,7 +134,6 @@ No row above judges whether a real `fused.*` call is correct. Read what the app 
 | `fused.daemon`, `[tool.fused-render.app]` (Python alive after the page closes) | `fused-render-background-apps` |
 | stale or missing `fused-api-version` | `fused-render-api-migration` |
 | an `icon.svg` / `icon.png` that exists and fails to parse | `fused-render-app-icon` |
-| a `cross-browser` finding, or a CSS/JS feature whose Safari/Firefox support is in doubt | `fused-render-cross-browser` |
 
 Each row comes from that skill's own `description:` line — re-check there rather than guessing from a name.
 
@@ -151,7 +148,7 @@ Asked to set up CI: write the files yourself, don't tell the user to copy them.
 
 That workflow is a floor, not a substitute for this review. It runs `app_check.py` (stdlib-only, nothing to install) per app folder and exits 1 only on a **fact** finding of severity **critical** or **warning**. It prints without failing: every **candidate** (all 40 in the measurement above were false positives, so one must never block a push) and a **suggested** fact — a missing README or `preview.png`, real but cosmetic. `suggested` exists only for this exit-code decision; the checklist's quiet tier is `info` (a failing info row never turns the app not-ok or the header dot yellow). Gating on `kind == "fact"` alone would fail a build over a thumbnail while a leaked-credential candidate exited 0.
 
-The floor is deliberately a subset — no `entry`/`api-version`/`git`/`generated`, which need the runtime's own knowledge or a live repo a fresh checkout may not have, and no `cross-browser`, which needs a model.
+The floor is deliberately a subset — no `entry`/`api-version`/`git`/`generated`, which need the runtime's own knowledge or a live repo a fresh checkout may not have.
 
 ## No panel
 

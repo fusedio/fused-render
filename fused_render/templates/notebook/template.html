@@ -1791,9 +1791,10 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     return "/explorer/view/";
   }
   function viewUrlFor(path) {
-    // mirror the shell's /view codec (frontend/src/lib/router.ts):
-    // per-segment encoding, no leading slash
-    return shellPrefix() + path.replace(/^\/+/, "").split("/").filter(Boolean)
+    // mirror the shell's /view codec (frontend/src/lib/router.ts): forward
+    // slashes for drive paths, per-segment encoding, no leading slash
+    const norm = /^[A-Za-z]:[\\/]/.test(path) ? path.replace(/\\/g, "/") : path;
+    return shellPrefix() + norm.replace(/^\/+/, "").split("/").filter(Boolean)
       .map(encodeURIComponent).join("/");
   }
   function navigateShell(path) {
@@ -1866,12 +1867,33 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     }
     if (!modalCtx || gen !== modalCtx.gen) return; // superseded / closed
     modalCtx.dir = d.path;
+    const unc = d.path.startsWith("//"); // "//server/share/…" — the "//" is the root
     const segs = d.path.split("/").filter(Boolean);
-    const dirAt = (i) => "/" + segs.slice(0, i + 1).join("/");
+    const winRoot = /^[A-Za-z]:$/.test(segs[0] || ""); // "C:" drive paths take no leading "/"
+    const rooted = winRoot || unc; // neither gets a standalone "/" crumb
+    // Same roots as templates/zarr_aoi/browse.py `_crumbs`: a drive root is
+    // "C:/" (bare "C:" is drive-relative) and a UNC root is "//server/share"
+    // (a bare "//server" is not a path), one crumb for server AND share.
+    const crumbs = [];
+    let acc = "";
+    let tail = segs;
+    if (unc) {
+      acc = "//" + segs.slice(0, 2).join("/");
+      crumbs.push({ label: acc, path: acc });
+      tail = segs.slice(2);
+    } else if (winRoot) {
+      acc = segs[0] + "/";
+      crumbs.push({ label: segs[0], path: acc });
+      tail = segs.slice(1);
+    }
+    for (const s of tail) {
+      acc = acc.replace(/\/$/, "") + "/" + s;
+      crumbs.push({ label: s, path: acc });
+    }
     modalLocEl.innerHTML =
-      `<span data-dir="/">/</span>` +
-      segs.map((s, i) =>
-        ` › <span data-dir="${escapeHtml(dirAt(i))}">${escapeHtml(s)}</span>`).join("");
+      (rooted ? "" : `<span data-dir="/">/</span>`) +
+      crumbs.map((c, i) =>
+        `${i || !rooted ? " › " : ""}<span data-dir="${escapeHtml(c.path)}">${escapeHtml(c.label)}</span>`).join("");
     const rows = [];
     if (d.path !== d.parent) rows.push(`<div data-dir="${escapeHtml(d.parent)}">⬆ ..</div>`);
     for (const n of d.dirs) {
@@ -1958,9 +1980,16 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
                 source: "", outputs: [], execution_count: null }],
       metadata: {}, nbformat: 4, nbformat_minor: 5 }, null, 1) + "\n";
   }
-  // mirrors the shell's dirname(): a root-level notebook yields "/"
+  // mirrors the shell's dirname(): a bare drive letter is cwd-relative to
+  // os.path, so a drive-root notebook yields "C:/" and a POSIX-root one "/".
+  // A backslash separates only a Windows-form path (drive letter or UNC); on
+  // POSIX it is a legal filename character ("/tmp/a\\b.ipynb" -> "/tmp").
   function dirOf(path) {
-    return path.slice(0, path.lastIndexOf("/")) || "/";
+    const winForm = /^([A-Za-z]:[\\/]|\\\\)/.test(path);
+    const i = winForm ? Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) : path.lastIndexOf("/");
+    const dir = path.slice(0, i);
+    if (!dir) return "/";
+    return /^[A-Za-z]:$/.test(dir) ? dir + "/" : dir;
   }
   function newNotebook() {
     openModal({

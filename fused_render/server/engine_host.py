@@ -48,6 +48,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
+from fused_render import _platform
 from fused_render.crashlog import report_child_exit
 
 logger = logging.getLogger(__name__)
@@ -162,7 +163,7 @@ _reinit: dict[str, "OrderedDict[str, dict]"] = {}
 #: heal-restart mid-call still counts the live call; guards warm-app idle-retire.
 _busy: dict[str, int] = {}
 
-SPAWN_KWARGS = {"start_new_session": True}
+SPAWN_KWARGS = _platform.detach_kwargs()
 
 #: Called with a Child right after it is terminated, so consumers (the proxy's
 #: per-child connection pool) can release resources tied to that child.
@@ -250,16 +251,10 @@ def _kill_tree(child: Child) -> None:
     pid = child.pid
     if not pid:
         return
-    try:
-        leader = os.getpgid(pid) == pid
-    except OSError:
-        leader = False
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    for sig in (signal.SIGTERM, _platform.SIGKILL):
         if not _alive(child):
             return
-        try:
-            os.killpg(pid, sig) if leader else os.kill(pid, sig)
-        except OSError:
+        if not _platform.kill_tree(pid, sig):
             return
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and _alive(child):

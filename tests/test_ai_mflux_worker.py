@@ -310,6 +310,8 @@ def load_worker(monkeypatch, base, with_mflux=True, model=None, mlx_core=None,
     assert spec is not None and spec.loader is not None, WORKER_PATH
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # The worker's own top-level `formats` instance: no dev-machine registry.
+    module.formats.set_mflux_registry_reader(lambda: {})
     return module, made
 
 
@@ -365,6 +367,58 @@ def test_the_defaults_are_the_OTHER_RUNNERS_defaults(monkeypatch, base, tmp_path
     assert model.calls[0]["num_inference_steps"] == 28
     assert model.calls[0]["guidance"] == 4.0
     assert (model.calls[0]["width"], model.calls[0]["height"]) == (1024, 1024)
+
+
+def test_a_recipe_that_PINS_guidance_renders_when_the_request_matches(
+        monkeypatch, base, tmp_path):
+    """Qwen-Image 2.1 Turbo raises on any guidance but 1 (mflux's
+    `Qwen21TurboScheduler.check_generate`); the catalog row's `defaults`
+    seeds 1.0, so an ordinary request arrives matching the pin."""
+    worker, model = load_worker(monkeypatch, base)
+    recipe = dict(worker.formats.MFLUX_VARIANTS[MODEL], guidance=1.0)
+    monkeypatch.setitem(worker.formats.MFLUX_VARIANTS, MODEL, recipe)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path, guidance=1.0))
+
+    assert [c["guidance"] for c in model.calls] == [1.0]
+
+
+def test_a_recipe_that_PINS_guidance_refuses_a_different_request(
+        monkeypatch, base, tmp_path):
+    """A mismatch is refused by name, never swapped for the pinned value."""
+    worker, model = load_worker(monkeypatch, base)
+    recipe = dict(worker.formats.MFLUX_VARIANTS[MODEL], guidance=1.0)
+    monkeypatch.setitem(worker.formats.MFLUX_VARIANTS, MODEL, recipe)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    with pytest.raises(ValueError, match=f"{MODEL} runs without CFG"):
+        worker.generate(_request(tmp_path, guidance=2.5))
+    assert model.calls == []
+
+
+def test_a_recipe_that_PINS_guidance_supplies_it_when_the_request_omits_it(
+        monkeypatch, base, tmp_path):
+    worker, model = load_worker(monkeypatch, base)
+    recipe = dict(worker.formats.MFLUX_VARIANTS[MODEL], guidance=1.0)
+    monkeypatch.setitem(worker.formats.MFLUX_VARIANTS, MODEL, recipe)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path))
+    assert [c["guidance"] for c in model.calls] == [1.0]
+
+    with pytest.raises(ValueError, match="runs without CFG"):
+        worker.generate(_request(tmp_path, guidance=4.0))
+
+
+def test_a_guidance_of_ZERO_reaches_the_model_as_zero(monkeypatch, base, tmp_path):
+    """`float(x or 4.0)` turned a legal 0.0 into 4.0."""
+    worker, model = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path, guidance=0.0))
+
+    assert model.calls[0]["guidance"] == 0.0
 
 
 def test_the_image_is_written_where_the_SERVER_said(monkeypatch, base, tmp_path):
@@ -771,6 +825,24 @@ def test_a_model_with_no_variant_is_named_as_the_cause(monkeypatch, base, tmp_pa
     message = str(caught.value)
     assert "mlx-community/FLUX.2-Klein-4B-4bit" in message
     assert "Diffusers" in message
+
+
+def test_a_repo_only_the_installed_mflux_lists_resolves_to_a_recipe(monkeypatch, base, tmp_path):
+    """The variant is DERIVED from the installed mflux's `AVAILABLE_MODELS`,
+    not a two-entry table: a FLUX 3 repo that appears in no override table
+    builds, and the recipe names the registry key's config."""
+    worker, _ = load_worker(monkeypatch, base)
+    repo = "black-forest-labs/flux-3-image-klein"
+    # The worker imports `formats` as a top-level module (its own instance),
+    # so the registry reader is installed on THAT one.
+    monkeypatch.setattr(worker.formats, "_mflux_registry_reader",
+                        lambda: formats.parse_mflux_available_models(
+        'AVAILABLE_MODELS = {"flux3-image-klein": ModelConfig(priority=11, '
+        'aliases=["flux3"], model_name="%s", base_model=None)}' % repo))
+    recipe = worker._recipe_for(repo, "generate")
+    assert (recipe["variant"], recipe["config"]) == ("Flux3Klein", "flux3_image_klein")
+    assert worker._recipe_for(repo, "edit")["variant"] == "Flux3KleinEdit"
+    assert worker._recipe_for(repo, "fill") is None
 
 
 def test_a_repo_in_the_WRONG_FORMAT_is_named_as_the_cause(monkeypatch, base, tmp_path):

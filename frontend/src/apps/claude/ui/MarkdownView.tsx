@@ -7,6 +7,8 @@
 // marked alone). This component is the render site and the code-block pass.
 import { memo, useEffect, useMemo, useRef } from "react";
 
+import { useHome } from "@platform/lib/home-path";
+
 import { enhanceCodeBlocks, renderMd, renderMdInert } from "../protocol/markdown";
 import { useFilePreview } from "./filePreview";
 import { linkifyEnabled, linkifyPaths, PATH_LINK_CLASS } from "./linkifyPaths";
@@ -55,6 +57,7 @@ export const MarkdownView = memo(function MarkdownView({
 }: MarkdownViewProps) {
   const ref = useRef<HTMLDivElement>(null);
   const openPreview = useFilePreview();
+  const home = useHome();
   const html = useMemo(() => (links ? renderMd(text) : renderMdInert(text)), [text, links]);
   useEffect(() => {
     // After paint, once per FINAL render: hljs rewrites the `<code>` it
@@ -66,8 +69,8 @@ export const MarkdownView = memo(function MarkdownView({
     // does a streaming tail (`enhance` false): a stat per frame is not free.
     const root = ref.current;
     if (!root || !linkifyEnabled({ links, enhance, hasOpener: !!openPreview })) return;
-    void linkifyPaths(root, { cwd, live: () => ref.current === root });
-  }, [html, enhance, links, cwd, openPreview]);
+    void linkifyPaths(root, { cwd, home, live: () => ref.current === root });
+  }, [html, enhance, links, cwd, home, openPreview]);
   const onPathActivate = (target: EventTarget | null) => {
     const el = (target as Element | null)?.closest?.("." + PATH_LINK_CLASS);
     const path = el?.getAttribute("data-path");

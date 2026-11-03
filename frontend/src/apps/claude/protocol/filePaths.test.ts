@@ -42,3 +42,22 @@ test("pathCandidate", () => {
   expect(pathCandidate("foo()")).toBeNull();
   expect(pathCandidate("a/b|c")).toBeNull();
 });
+
+test("pathCandidate: a leading ~/ is a path, any other ~ is not", () => {
+  expect(pathCandidate("~/a/b.html")).toEqual({ path: "~/a/b.html" });
+  expect(pathCandidate("~/a.ts:3")).toEqual({ path: "~/a.ts", line: 3 });
+  expect(pathCandidate("~")).toBeNull();
+  expect(pathCandidate("~/")).toBeNull();
+  expect(pathCandidate("a~b")).toBeNull();
+  expect(pathCandidate("a/~/b.ts")).toBeNull();
+  expect(pathCandidate("~user/x.ts")).toBeNull();
+  expect(pathCandidate("~/a~b.ts")).toBeNull();
+  expect(pathCandidate("echo ~/x")).toBeNull();
+});
+
+test("resolveAgainst: ~/ expands to home, never joins cwd", () => {
+  expect(resolveAgainst("~/a/b.html", "/w", "/home/u")).toBe("/home/u/a/b.html");
+  expect(resolveAgainst("~/a.html", "/w", "/home/u/")).toBe("/home/u/a.html");
+  expect(resolveAgainst("~/a/b.html", "/w", "C:\\Users\\x")).toBe("C:/Users/x/a/b.html");
+  expect(resolveAgainst("~/a.html", "/w", undefined)).toBe("~/a.html");
+});

@@ -125,7 +125,6 @@ two lines.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import glob
 import json
 import math
@@ -136,6 +135,7 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 
+from fused_render import _platform
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.agent_backends import roots
 
@@ -266,7 +266,7 @@ def locked_path(lock_path: str):
     must keep its own depth guard — see `schedule._store_lock`."""
     handle = _open_lockfile(lock_path)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        _platform.flock(handle)
         yield
     finally:
         # Closing the handle drops the flock.
@@ -382,7 +382,7 @@ def acquire_lease_blocking(name: str) -> None:
         if name in _lease_handles:
             return
     handle = _open_lease_file(name)
-    fcntl.flock(handle, fcntl.LOCK_EX)
+    _platform.flock(handle)
     with _lease_lock:
         if name in _lease_handles:
             handle.close()
@@ -401,9 +401,7 @@ def try_acquire_lease(name: str, *, machine_wide: bool = False) -> bool:
         if name in _lease_handles:
             return True
         handle = _open_lease_file(name, machine_wide=machine_wide)
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        if not _platform.flock(handle, blocking=False):
             handle.close()
             return False
         _lease_handles[name] = handle
@@ -965,6 +963,74 @@ def mark_deleted(key: str, now: float | None = None) -> None:
     _update(DELETED_FILE, mutate)
 
 
+# ------------------------------------------------------------ archived.json
+#
+#     {"<task-key>": {"at": 1755300000.0}}
+#
+# THE ARCHIVE FILING FOR A TASK THAT HAS NO SESSION. Archiving normally writes
+# `status: archived` onto the session's triage record (claude_sessions
+# `write_triage`), and a task keyed by a session id always has somewhere for
+# that to land. A task keyed `pending:<entry-id>` does not: it exists because
+# a scheduled message made it and the run never reported a session — the one
+# shape that stays on the board for ever is a send whose spawn FAILED (a
+# Copilot or Codex integration error, a refused model, a disabled agent), an
+# `error` entry with no conversation behind it. Delete already works on those
+# rows because the tombstone is keyed by TASK KEY (`deleted.json` above);
+# archive did not, because it was keyed by session only, so the row answered
+# `filed: False` and came straight back red on the next poll.
+#
+# Same shape as the tombstone and read the same way: `archived_at` carries
+# the WHEN so the router's `_revived` can drop a filing the task has outgrown
+# (a re-send that actually runs postdates the stamp and the row comes back).
+# A filing for a key the task has since left — the watcher stamped a session
+# onto the entry and the row re-keyed — is a few bytes nobody reads, the same
+# price the tombstone pays. `clear_archived` is the Unarchive gesture's half.
+
+ARCHIVED_FILE = "archived.json"
+
+
+def archived_state() -> dict:
+    """The key-keyed archive filings, as saved. Missing/corrupt reads as {} —
+    nothing filed — so a bad file costs a filing, never a row."""
+    return load_state(ARCHIVED_FILE)
+
+
+def archived_at(state: dict, key: str) -> float:
+    """When this key was filed, or 0.0 — which every real timestamp beats, so
+    an unreadable record can never hide a task."""
+    rec = state.get(str(key))
+    if not isinstance(rec, dict):
+        return 0.0
+    try:
+        at = float(rec.get("at"))
+    except (TypeError, ValueError):
+        return 0.0
+    return at if at > 0 else 0.0
+
+
+def mark_archived(key: str, now: float | None = None) -> None:
+    """File one task key away. Idempotent by intent: archiving twice re-stamps
+    the WHEN, which is what the second gesture means."""
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        state[str(key)] = {"at": stamp}
+        return None, True
+
+    _update(ARCHIVED_FILE, mutate)
+
+
+def clear_archived(key: str) -> bool:
+    """Take the key-keyed filing back. True when there was one to drop."""
+    def mutate(state: dict):
+        had = str(key) in state
+        if had:
+            del state[str(key)]
+        return had, had
+
+    return bool(_update(ARCHIVED_FILE, mutate))
+
+
 # -------------------------------------------------- session_settings.json
 #
 #     {"<session-id>": {"model": "haiku", "effort": "low", "at": 1755300000.0}}
@@ -1146,6 +1212,61 @@ def record_recap(session_id: str, for_uuid: str, text: str,
         rec["recap"] = recap
         state[session_id] = rec
         return recap, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
+# THE STABLE AI TITLE (prefs `task_summary_titles_enabled`) is one more field
+# on the same record, under `ai_title`:
+#
+#     {"<session-id>": {..., "ai_title": {"text": "…", "at": 1.0, "turns": 4,
+#                                         "failed_at": 0.0}}}
+#
+# `turns` is how many of the reader's prompts the session had when the title
+# was written (even when haiku repeated the old one), so the next refresh waits
+# for more prompts. `failed_at` is the last failed attempt; it never blanks
+# `text`, because the row is already showing that title.
+
+
+def session_ai_title(state: dict, session_id: str) -> dict | None:
+    """The stored AI title — `{"text", "at", "turns", "failed_at"}` — or None
+    when there is none (or the record is not that shape). `text` is "" when
+    only failures have been recorded."""
+    rec = state.get(str(session_id or ""))
+    title = rec.get("ai_title") if isinstance(rec, dict) else None
+    if not isinstance(title, dict):
+        return None
+    return {"text": str(title.get("text") or ""),
+            "at": float(title.get("at") or 0.0),
+            "turns": int(title.get("turns") or 0),
+            "failed_at": float(title.get("failed_at") or 0.0)}
+
+
+def record_ai_title(session_id: str, text: str, turns: int,
+                    now: float | None = None) -> dict:
+    """Store a title (or, for an empty `text`, a failed attempt) on the
+    session's record. A failure keeps the previous text/at/turns and only sets
+    `failed_at`; a success clears it. Nothing for an empty session id."""
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return {}
+    stamp = time.time() if now is None else float(now)
+    text = str(text or "").strip()
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        old = rec.get("ai_title") if isinstance(rec.get("ai_title"), dict) else {}
+        if text:
+            title = {"text": text, "at": stamp, "turns": int(turns), "failed_at": 0.0}
+        else:
+            title = {"text": str(old.get("text") or ""),
+                     "at": float(old.get("at") or 0.0),
+                     "turns": int(old.get("turns") or 0),
+                     "failed_at": stamp}
+        rec["ai_title"] = title
+        state[session_id] = rec
+        return title, True
 
     return _update(SETTINGS_FILE, mutate)
 

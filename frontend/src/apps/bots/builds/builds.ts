@@ -16,6 +16,7 @@ import { api, type Bot, type BuildRow } from "../lib/api";
 import { errMsg, getState, goChat, setBuildsChip, showBanner, showToast, subscribe } from "../state/store";
 import { botsMounted } from "../lib/root";
 import { parseBotsPath, tasksHref } from "../routes";
+import { getConfig } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { tasksCreate, tasksList, tasksMarkRead, tasksUi, tasksWatch, type TaskHandle, type TaskRow } from "./tasks";
 
@@ -31,8 +32,8 @@ export function setBuildsRoot(root: string): void {
   for (const l of [...rootSubs]) l();
 }
 export function rootReady(): Promise<void> {
-  return rootP || (rootP = fetch("/api/config").then((r) => r.json())
-    .then((c: { fused_dir?: string } | null) => { if (c && c.fused_dir) setBuildsRoot(`${c.fused_dir}/app`); })
+  return rootP || (rootP = getConfig()
+    .then((c) => { if (c && c.fused_dir) setBuildsRoot(`${c.fused_dir}/app`); })
     .catch(() => {}));
 }
 /** BUILDS_ROOT for React (the panel subtitles); kicks off the /api/config read. */

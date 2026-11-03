@@ -1,0 +1,659 @@
+/* The Workspace view: a grid of cards, one per open task. The chrome mirrors the
+   Board card (schedule.css `.schedule-tv-card`): hairline, radius, padding, hover
+   and peeked fill. The card sits on the page ground (--bg), like the List view's
+   rows, so the hairline does the separating. Every rule here spells out its own margins,
+   because Tailwind runs without preflight. */
+.ws-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* The page is overflow: hidden and every view owns its scroller, like
+   `.schedule-tv-tree` (schedule.css): the root fills what the toolbar leaves
+   and the list scrolls inside it. The undo toast and search palette are fixed,
+   so they stay outside the scrolling element. */
+.schedule-page .schedule-main > .ws-root {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.ws-root > .ws-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-thumb) transparent;
+  /* overflow-y: auto clips the x axis too, so the per-card checkbox gutter left of
+     the cards (.ws-check) lives inside the scroll box: 24px of padding, pulled back
+     by margin so the cards do not move. */
+  padding-left: 24px;
+  margin-left: -24px;
+}
+.ws-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ws-card {
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 9px 14px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px var(--shadow-sm);
+  cursor: pointer;
+  transition: background-color 0.08s ease, border-color 0.08s ease;
+}
+.ws-card:hover {
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+.ws-card.is-peeked,
+.ws-card.is-peeked:hover {
+  background: var(--row-bg-selected);
+}
+.ws-card.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.ws-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ws-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 400;
+}
+.ws-title.is-unread {
+  font-weight: 600;
+}
+/* A fixed-width column ("4h ago", "10h ago" and "just now" differ in width), so
+   the pin button before it lands at the same x on every card. */
+.ws-time {
+  flex: none;
+  min-width: 8ch;
+  text-align: right;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* The pin button: fixed box in the head's flow (no shift when it appears),
+   ink-less until the card is hovered or the button is keyboard-focused. A
+   pinned card keeps it drawn, in the accent. Selectors are prefixed with
+   .ws-card and button so they outrank the generic .prefs-section button rule
+   (the Tasks page sits inside a .prefs-section), which would otherwise add its
+   own border, background and padding. */
+.ws-card button.ws-pin {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+}
+.ws-card button.ws-pin svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.ws-card:hover button.ws-pin,
+.ws-card:has(button.ws-pin:focus-visible) button.ws-pin,
+.ws-card button.ws-pin.is-pinned {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ws-card button.ws-pin.is-pinned {
+  color: var(--accent);
+}
+.ws-card button.ws-pin:hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  color: var(--fg);
+}
+.ws-card button.ws-pin.is-pinned:hover {
+  color: var(--accent);
+}
+/* One badge shape for every fact: same height, radius, font and gap. The tone
+   is --ws-tone; the wash is a color-mix of that same palette token. */
+.ws-badge {
+  --ws-tone: var(--fg-muted);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--ws-tone) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ws-tone) 12%, transparent);
+  color: var(--ws-tone);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+}
+/* Neutral facts recede: no border, a soft fill, muted ink. The badges that carry
+   meaning (status, uncommitted, unread, safe to archive, the PR pills) keep their
+   colour. */
+.ws-branch,
+.ws-bg,
+.ws-port {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg-muted);
+}
+/* The pending-holds placeholder: a badge-sized .skel-bar (explorer.css owns the
+   shimmer keyframe). */
+.ws-skel {
+  flex: none;
+  width: 64px;
+  height: 20px;
+  border-radius: 10px;
+}
+.ws-card-line2 {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  font-size: 12px;
+}
+.ws-card-ctx {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--fg-muted);
+}
+.ws-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-card-facts {
+  flex: 0 1 auto;
+  max-width: 65%;
+  margin-left: auto;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+  color: var(--fg-muted);
+}
+.ws-branch {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.ws-branch svg {
+  flex: none;
+}
+/* The branch is the one shrinkable fact; everything else keeps its width, so the
+   facts stay on one line. */
+.ws-card-facts > * {
+  flex: none;
+}
+.ws-card-facts > .ws-branch {
+  flex: 0 1 auto;
+  min-width: 8ch;
+}
+.ws-branch-name {
+  min-width: 0;
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-prs,
+.ws-bgs {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+}
+.ws-pr {
+  display: inline-flex;
+  align-items: center;
+}
+.task-pr-num {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+/* The "+N" overflow trigger is the chat header's .task-pr-more (the popover is
+   platform/ui/TaskPrChip's); here it wears the neutral badge look. */
+.ws-prs .task-pr-more {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 20px;
+  margin: 0;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ws-prs .task-pr-more:hover {
+  color: var(--fg);
+}
+/* A narrow card drops the message preview: line 2 is the project chip on the
+   left and the facts on the right. */
+@container (max-width: 640px) {
+  .ws-preview {
+    display: none;
+  }
+  .ws-card-facts {
+    max-width: 100%;
+  }
+}
+.ws-bg {
+  max-width: 34ch;
+}
+.ws-port {
+  font-variant-numeric: tabular-nums;
+}
+.ws-port:hover {
+  color: var(--fg);
+  text-decoration: none;
+}
+.ws-marker {
+  --ws-tone: var(--warning);
+}
+.ws-clear {
+  --ws-tone: var(--success);
+}
+.ws-undo {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-popover);
+  color: var(--fg);
+  z-index: 60;
+}
+.ws-undo-text {
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-undo-btn {
+  border: 0;
+  background: transparent;
+  color: var(--accent-soft);
+  font-weight: 600;
+  cursor: pointer;
+}
+.ws-search-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  background: var(--scrim);
+}
+.ws-search {
+  width: min(640px, calc(100vw - 32px));
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-popover);
+  overflow: hidden;
+}
+.ws-search-input {
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+}
+.ws-search-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+}
+.ws-search-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ws-search-item.is-active {
+  background: var(--bg-alt);
+}
+.ws-search-item[data-closed] .ws-search-title {
+  color: var(--fg-muted);
+}
+.ws-search-num {
+  flex: none;
+  min-width: 3.5em;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ws-search-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-search-meta {
+  flex: none;
+  color: var(--fg-muted);
+}
+.ws-search-empty {
+  padding: 12px 10px;
+  color: var(--fg-muted);
+}
+
+/* The project chip on a card is IdentityChip with no onPick, so it is the plain
+   label span and missed the hairline box the List row's tag button wears (the
+   .ws-card .schedule-tv-id--tag skin in tasks.css). Same border, radius and ink,
+   at the 20px height of the badges beside it. */
+.ws-card .schedule-tv-id:not(.schedule-tv-id--tag) {
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg-muted);
+  flex: none;
+}
+
+/* Group headers: the List view's .tasks-group-head, pinned to the top of the
+   scroller with the page behind it. 12px of air above every header but the first;
+   the cards keep the list's 6px gap. */
+.ws-list > .ws-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  justify-content: flex-start;
+  gap: 6px;
+  /* Left inset 13px + the toggle's own 2px = 15px: the card's 1px border plus its
+     14px padding, so the chevron stands over the status ring and the label over
+     the T-id. The right inset is the same 15px, so the select-all control's right
+     edge lines up with the card content, above the time column. */
+  padding: 4px 15px 4px 13px;
+  background: var(--bg);
+}
+.ws-list > .ws-group-head:not([data-first]) {
+  margin-top: 12px;
+}
+
+/* The header is a toggle button; the chevron turns with the group. */
+.ws-group-toggle > svg {
+  transform: rotate(90deg);
+}
+.ws-group-head[data-collapsed="1"] .ws-group-toggle > svg {
+  transform: rotate(0deg);
+}
+.ws-more-row {
+  list-style: none;
+  display: flex;
+}
+
+/* -- Bulk select (Workspace, List and the grouped views) ----------------------
+   One checkbox look everywhere: the app's shadcn Checkbox (a role=checkbox
+   button, 14px; TaskBulk.tsx), never a native input. It is hidden until the row
+   or card is hovered or holds focus, and stays drawn while any task is
+   selected, so the reader can see what is picked. */
+.tasks-check {
+  margin: 0;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+.tasks-group-check {
+  margin-left: 2px;
+}
+/* A heading's select-all (List, Board lanes) is quiet at rest too. It keeps its
+   box (opacity, not display), so showing it moves no caret or label. */
+.tasks-group-head .tasks-group-check,
+.schedule-tv-lane-headwrap > .tasks-group-check {
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-group-head:hover .tasks-group-check,
+.tasks-group-head:focus-within .tasks-group-check,
+.schedule-tv-lane-headwrap:hover > .tasks-group-check,
+.schedule-tv-lane-headwrap:focus-within > .tasks-group-check,
+[data-selecting] .tasks-group-head .tasks-group-check,
+[data-selecting] .schedule-tv-lane-headwrap > .tasks-group-check,
+.tasks-group-head .tasks-group-check[data-checked],
+.tasks-group-head .tasks-group-check[data-indeterminate],
+.schedule-tv-lane-headwrap > .tasks-group-check[data-checked],
+.schedule-tv-lane-headwrap > .tasks-group-check[data-indeterminate] {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Workspace group headers read as plain labels at rest: a labelled "Select all"
+   sits at the header's right edge and shows on hover or focus-within, or while a
+   selection exists, like the card checkboxes. It keeps its box (opacity, not
+   display), so showing it moves nothing. The label is the control's own wrapper,
+   so the generic hide above is overridden on the box itself: the wrapper owns the
+   fade. */
+.ws-group-select {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s ease;
+}
+.ws-group-head:hover .ws-group-select,
+.ws-group-head:focus-within .ws-group-select,
+.ws-group-head[data-selecting] .ws-group-select,
+.ws-group-select:has(.tasks-group-check[data-checked]),
+.ws-group-select:has(.tasks-group-check[data-indeterminate]) {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ws-group-select:hover {
+  color: var(--fg);
+}
+.ws-group-head .ws-group-select > .tasks-group-check {
+  margin: 0;
+  opacity: 1;
+  pointer-events: auto;
+}
+/* The card's mark slot is the List's (`.tasks-rowmark` / `.tasks-act`, tasks.css):
+   the ring at rest, the Archive button in the same box on hover or keyboard
+   focus. tasks.css keys those reveals on `.tasks-row`, so the card repeats them.
+   The slot's size tokens are normally set by `.tasks-node`; the card states
+   them itself. */
+.ws-card {
+  --tasks-rail-w: 16px;
+  --tasks-row-pad-y: 9px;
+  --tasks-row-gap: 8px;
+}
+.ws-card:hover .tasks-act,
+.ws-card:has(.tasks-act:focus-visible) .tasks-act {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ws-card:hover .tasks-rowmark .schedule-ring,
+.ws-card .tasks-rowmark:has(.tasks-act:focus-visible) .schedule-ring {
+  opacity: 0;
+  pointer-events: none;
+}
+/* No button to hand over to (a run in flight): keep the ring under the pointer. */
+.ws-card:hover .tasks-rowmark:not(:has(.tasks-act)) .schedule-ring {
+  opacity: 1;
+}
+/* The selection checkbox sits in the gutter left of the card column, out of
+   flow, on the card's first line: its right edge is 8px left of the card border,
+   the same column as the group header's select-all (left = -22px there; here
+   the head sits 15px inside the card: 1px border + 14px padding). */
+.ws-card-head {
+  position: relative;
+}
+.ws-card-head > .ws-check {
+  position: absolute;
+  left: -37px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+}
+.ws-card:hover .ws-check,
+.ws-card:focus-within .ws-check,
+.ws-card[data-selecting] .ws-check,
+.ws-card-head > .ws-check[data-checked] {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* The List's row: the checkbox sits in the row's own left padding, inside the
+   list box and left of the caret, so no column moves when it shows. The padding
+   is 14px elsewhere; a row that carries a checkbox gets 24px (the thread's
+   offsets derive from it, so they follow) so the 14px box clears both edges. */
+.tasks-node:has(> .tasks-row > .tasks-row-check) {
+  --tasks-row-pad: 24px;
+}
+.tasks-row .tasks-row-check {
+  position: absolute;
+  top: 50%;
+  left: 5px;
+  transform: translateY(-50%);
+  z-index: 3;
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-row:hover > .tasks-row-check,
+.tasks-row:focus-within > .tasks-row-check,
+[data-selecting] .tasks-row .tasks-row-check,
+.tasks-row .tasks-row-check[data-checked] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.tasks-bulk-bar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+.tasks-bulk-count {
+  margin-right: auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tasks-bulk-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.tasks-bulk-btn:hover,
+.tasks-bulk-btn:focus-visible {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.tasks-bulk-archive {
+  color: var(--accent-soft);
+  font-weight: 600;
+}
+
+/* Bulk select on the Board and Cards: a lane head carries its select-all at the
+   left, a card carries its own box in the top-left corner. Same reveal rule as
+   the List row: on hover or focus, and always once anything is selected. */
+.schedule-tv-lane-headwrap {
+  position: relative;
+}
+.schedule-tv-lane-headwrap > .tasks-group-check {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+.schedule-tv-lane-headwrap > .schedule-tv-lane-head {
+  padding-left: 30px;
+}
+.tasks-card-wrap > .tasks-row-check,
+.task-card > .tasks-row-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  opacity: 0;
+}
+.tasks-card-wrap:hover > .tasks-row-check,
+.tasks-card-wrap:focus-within > .tasks-row-check,
+.task-card:hover > .tasks-row-check,
+.task-card:focus-within > .tasks-row-check,
+[data-selecting] .tasks-card-wrap > .tasks-row-check,
+[data-selecting] .task-card > .tasks-row-check,
+.tasks-card-wrap > .tasks-row-check[data-checked],
+.task-card > .tasks-row-check[data-checked] {
+  opacity: 1;
+}
+.tasks-card-wrap[data-checked],
+.task-card[data-checked] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

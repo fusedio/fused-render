@@ -23,6 +23,7 @@ import os
 import re
 import stat
 
+from fused_render import _platform
 from fused_render.index.ignore import SHARED_IGNORE_DIRS, MountGuard
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -36,7 +37,9 @@ _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 # every page on every listing.
 FUSED_META_NAME = "fused-app"
 _FUSED_META_RE = re.compile(
-    rb"<meta\s[^>]*name\s*=\s*[\"']?fused-app[\"']?", re.IGNORECASE)
+    # The value must END there (closing quote, or unquoted then a space,
+    # `/` or `>`): `name="fused-app-id"` is the app id tag, not the marker.
+    rb"<meta\s[^>]*name\s*=\s*(?:\"fused-app\"|'fused-app'|fused-app(?=[\s/>]))", re.IGNORECASE)
 _META_SCAN_BYTES = 4096
 
 
@@ -565,7 +568,7 @@ def is_workspace_app_entry(fs_path: str, root: str) -> bool:
     except OSError:
         return False
     path = os.path.abspath(fs_path)
-    rel = os.path.relpath(path, root)
+    rel = _platform.relpath_within(path, root)
     if rel == "." or rel.startswith(".."):
         return False
     segments = rel.split(os.sep)

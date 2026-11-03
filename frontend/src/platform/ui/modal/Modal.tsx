@@ -83,6 +83,17 @@ export interface ModalProps {
    * dialog. This is a caption on the title.
    */
   titleAside?: ReactNode;
+  /**
+   * A control that sits BEFORE the title, in the same `.modal-head-title` row
+   * (the New task modal's agent picker: `[ Claude ▾ › ] New task`). Same rule as
+   * `titleAside`: it is rendered beside the `h2`, never inside it, because the
+   * `h2` is what `aria-labelledby` names the dialog by and a `<button>` has no
+   * place in a heading.
+   *
+   * OPTIONAL AND OFF BY DEFAULT: with neither this nor `titleAside` the head
+   * renders the bare `h2`, byte-identical for every existing caller.
+   */
+  titleLead?: ReactNode;
   onClose: () => void;
   children: ReactNode;
   // When true, Esc / backdrop / ✕ do NOT close (an action is running that must
@@ -139,6 +150,7 @@ export function Modal({
   title,
   ariaLabel,
   titleAside,
+  titleLead,
   onClose,
   children,
   busy = false,
@@ -392,11 +404,12 @@ export function Modal({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="modal-head deploy-head">
-          {titleAside ? (
+          {titleAside || titleLead ? (
             // The heading and its caption as ONE flex child of the head, so the
             // head is still `[ title | ✕ ]` and `justify-content: space-between`
             // does not push the caption into the middle of the bar.
             <div className="modal-head-title">
+              {titleLead}
               <h2 id={titleId}>{title}</h2>
               {titleAside}
             </div>

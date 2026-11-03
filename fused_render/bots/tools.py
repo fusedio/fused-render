@@ -312,7 +312,7 @@ TOOL_SPECS: dict[str, dict] = {
         "inputSchema": _s()},
     # The Marketplace (every bot, only while the Marketplace is enabled in Preferences; docs §15).
     "marketplace_search": {
-        "description": "Search the Marketplace, the catalog of community apps the user can install on this Mac: `query` "
+        "description": "Search the Community, the catalog of apps people share that the user can install on this Mac: `query` "
                        "words are matched against each app's name, description, tags and category (omit it for the "
                        f"whole catalog; at most {MARKET_HITS} results). Each hit gives the app's slug, what it does, its "
                        "version, whether it needs Python, and whether it is already INSTALLED (then it is in APPS: `show` "
@@ -320,12 +320,15 @@ TOOL_SPECS: dict[str, dict] = {
                        "that is not in APPS, or when a community app would do the task better than browsing.",
         "inputSchema": _s(query={"type": "string", "description": "words to match; omit for the whole catalog"})},
     "marketplace_install": {
-        "description": "Install one Marketplace app (by `slug` from marketplace_search) into the user's workspace. ALWAYS "
-                       "raises an approval card first: say which app and why in one sentence before calling it, and never "
-                       "call it for an app the search marked installed (use `update: true` only when the user asks to "
-                       "update it). Waits for the download; the result names the app's folder, which is then in APPS: "
-                       "`show` it as a card, `goto` its link, or call its tools.",
-        "inputSchema": _s(slug=REQ, update={"type": "boolean", "description": "true: update an installed copy to the catalog's version"})},
+        "description": "Install one Community app (by `slug` from marketplace_search) into the user's workspace: a copy of "
+                       "the author's GitHub repo at the version Fused reviewed (Community apps are reviewed GitHub "
+                       "releases). ALWAYS raises an approval card first: say which app and why in one sentence before "
+                       "calling it, and never call it for an app the search marked installed (use `update: true` only when "
+                       "the user asks to update it to the newest reviewed release). Waits for the download; the result "
+                       "names the app's folder, which is then in APPS: `show` it as a card, `goto` its link, or call its "
+                       "tools. If the user already follows the app by GitHub link, switching it to reviewed releases is "
+                       "the user's choice in the app: this tool refuses it.",
+        "inputSchema": _s(slug=REQ, update={"type": "boolean", "description": "true: update an installed copy to the newest reviewed release"})},
 }
 
 
@@ -339,9 +342,8 @@ READ_TOOLS = ("bot_chat",)
 # effective_approval. Creating or reshaping an agent is the user's call every time.
 MANAGE_TOOLS = ("bot_create", "bot_settings")
 SUPER_TOOLS = HANDOFF_TOOLS + MANAGE_TOOLS + READ_TOOLS
-# Every bot's door into the Marketplace (docs §15), on the roster only while
-# `shell.prefs.marketplace_enabled()` (the pref gates entry points; a bot tool
-# is one). Installing third-party code onto the Mac is ALWAYS_ASK like bot
+# Every bot's door into the Marketplace (docs §15), always on the roster
+# (the Community is no longer a switch, 2026-10-29). Installing third-party code onto the Mac is ALWAYS_ASK like bot
 # management: the card is raised under "Never ask" too, never approved forever.
 MARKET_TOOLS = ("marketplace_search", "marketplace_install")
 # The bot's own terminal (docs §16): on the roster only while terminal_enabled(bot).
@@ -433,7 +435,10 @@ def terminal_enabled(bot) -> bool:
 # would never fire. ALWAYS_ASK calls and a phone-started Super Bot task never get a
 # rule (forever_rule returns None for both: no button on the card, no match).
 # Revoked in Settings › Permissions › Approved forever.
-FOREVER_KINDS = frozenset({"browser", "tool", "py", "builtin", "text", "upload", "build", "terminal"})
+# `trusted` is the app-level rule: it lives in bot.json `trusted_apps` (the Settings checkbox "Apps it may use
+# without asking"), never in `allow_rules`. The old per-tool kinds `tool` / `py` migrate into it (migrate_app_rules).
+FOREVER_KINDS = frozenset({"browser", "builtin", "text", "upload", "build", "terminal"})
+TRUSTED_KIND = "trusted"
 _TRAIL_COUNT = re.compile(r"[\s(\[]*\d+[)\]]*$")  # "Submit review (3)" / "Approve 2" -> "Submit review"
 
 
@@ -467,17 +472,18 @@ def forever_rule(bot, act: str, d: dict, obs: dict):
         verb = {"click": "clicks", "type": "types into", "press": "presses a key in", "select": "picks in"}[act]
         return {"kind": "browser", "key": f"{host}|{lbl}", "label": f'{verb} "{lbl}" on {host}'}
     if act == "tool":
+        # One rule per APP, not per tool: a forever answer ticks "Apps it may use without asking" (trusted_apps),
+        # the one switch Settings › Permissions shows for an app.
         app, name, _ = apptools.tool_ref(d)
         rec = apptools.find(apptools.registry(), app, name)
         if rec is None:
             return None
-        return {"kind": "tool", "key": f"{apptools.norm_app(rec.app)}/{rec.name}", "label": f"calls {rec.app} › {rec.name}"}
+        return trusted_rule(rec.app)
     if act == "py":
         app_dir, file, _ = bot.py_ref(d)
         if not app_dir or not file:
             return None
-        stem = os.path.basename(app_dir)
-        return {"kind": "py", "key": f"{apptools.norm_app(stem)}/{file}", "label": f"runs {stem} › {file}"}
+        return trusted_rule(os.path.basename(app_dir))
     if act == "text":
         c = bot.contact(d)
         if not c:
@@ -569,6 +575,37 @@ def builtin_forever_rule(bot, name: str, inp: dict):
     return {"kind": "builtin", "key": name, "label": verb or f"uses {name}"}
 
 
+def trusted_rule(app: str):
+    """The app-level rule for `app` (a folder name, any spelling): {kind: trusted, key: <normalised folder>}."""
+    key = apptools.norm_app(app)
+    return {"kind": TRUSTED_KIND, "key": key, "label": f"uses the {app} app"} if key else None
+
+
+def migrate_app_rules(meta) -> bool:
+    """Old per-tool `allow_rules` (kind `tool` key `app/tool`, kind `py` key `app/file`) become ticks in
+    `trusted_apps`, and every finished build (`builds[].done_at`) is ticked too: both ran without a card before,
+    and the checkbox is now the one place that says so. ONCE per bot (`trusted_migrated`): a later restart must not
+    re-tick a build the user unticked in Settings (new builds tick themselves when they finish, bot.py). True when
+    meta changed."""
+    if meta.get("trusted_migrated"):
+        return False
+    meta["trusted_migrated"] = True
+    changed = True
+    keep, apps = [], []
+    for r in meta.get("allow_rules") or []:
+        if isinstance(r, dict) and r.get("kind") in ("tool", "py") and "/" in str(r.get("key") or ""):
+            apps.append(str(r["key"]).split("/", 1)[0])
+        else:
+            keep.append(r)
+    for bd in meta.get("builds") or []:
+        if isinstance(bd, dict) and bd.get("done_at") and bd.get("dir"):
+            apps.append(os.path.basename(str(bd["dir"]).rstrip("/")))
+    for app in apps:
+        apptools.trust_app(meta, app)
+    meta["allow_rules"] = keep
+    return changed
+
+
 def clean_allow_rules(v) -> list:
     """The stored form of allow_rules: known kinds, non-empty keys, deduped, order kept."""
     if not isinstance(v, list):
@@ -593,6 +630,8 @@ def forever_match(bot, rule) -> bool:
     if not rule:
         return False
     meta = getattr(bot, "meta", None) or {}
+    if rule["kind"] == TRUSTED_KIND:
+        return apptools.is_trusted(meta, rule["key"])
     rules = clean_allow_rules(meta.get("allow_rules"))
     if rule["kind"] == "terminal":
         return any(r["kind"] == "terminal" and terminal_rule_covers(r["key"], rule["key"]) for r in rules)
@@ -604,7 +643,10 @@ def add_allow_rule(bot, rule) -> None:
     if not rule or forever_match(bot, rule):
         return
     with bot.lock:
-        bot.meta["allow_rules"] = clean_allow_rules([*(bot.meta.get("allow_rules") or []), rule])
+        if rule["kind"] == TRUSTED_KIND:
+            apptools.trust_app(bot.meta, rule["key"])  # the Settings checkbox, not a rule row
+        else:
+            bot.meta["allow_rules"] = clean_allow_rules([*(bot.meta.get("allow_rules") or []), rule])
     bot.save()
     bot.emit("note", f"Won't ask again when this bot {rule['label']}. Undo it in Settings › Permissions.")
 
@@ -1070,15 +1112,15 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         return "press Ctrl-C in the terminal"
     if act == "marketplace_search":
         q = " ".join(str(d.get("query") or d.get("text") or "").split())
-        return f"search the Marketplace for \"{q[:80]}\"" if q else "list the Marketplace"
+        return f"search the Community for \"{q[:80]}\"" if q else "list the Community"
     if act == "marketplace_install":
         slug, update, err = _market_target(d)
         if err:
-            return f"install Marketplace app \"{slug or '?'}\" ({err})"
+            return f"install Community app \"{slug or '?'}\" ({err})"
         name, ver = _market_name(slug)
-        from fused_render import marketplace as _mkt
-        return (f"{'update' if update else 'install'} the Marketplace app \"{name}\"" + (f" v{ver}" if ver else "")
-                + f" into {os.path.join(_mkt.install_root(), slug)}")
+        where = _market_where(slug)
+        return (f"{'update' if update else 'install'} the Community app \"{name}\"" + (f" v{ver}" if ver else "")
+                + (f" {'at' if update else 'into'} {where}" if where else ""))
     if act == "tool":
         app, name, args = apptools.tool_ref(d)
         rec = apptools.find(apptools.registry(), app, name)
@@ -1201,9 +1243,10 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         slug, update, err = _market_target(d)
         if err or not marketplace_on():
             return ""
-        return ("It downloads this community app's files (code written by someone else) onto this Mac and "
-                + ("replaces the installed copy's app files with the catalog's version." if update
-                   else "puts them under the apps folder, where every bot and the Apps page can open it."))
+        return ("It downloads this community app (code written by someone else, at the version Fused reviewed) "
+                "from its author's GitHub repo onto this Mac and "
+                + ("moves the installed copy to the newest reviewed release, the user's own changes kept." if update
+                   else "puts it under the apps folder, where every bot and the Apps page can open it."))
     if act == "build":
         return ("It starts a Claude Code session that writes files and spends model credit"
                 + (", unattended (Builds: full access)." if effective_build_access(bot) == "full" else "."))
@@ -1212,10 +1255,10 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         rec = apptools.find(apptools.registry(), app, name)
         if rec is None:
             return ""
+        if apptools.is_trusted(bot.meta, rec.app):
+            return ""  # ticked under "Apps it may use without asking" (bot.json trusted_apps): runs at once, risky or not
         if d.get("risky") is True:
             return f"It calls {rec.app} › {rec.name}, which changes something outside this chat."
-        if apptools.is_trusted(bot.meta, rec.app):
-            return ""  # the user whitelisted this app for this bot (bot.json trusted_apps)
         if apptools.is_write(rec):
             return f"It calls {rec.app} › {rec.name}, which changes something outside this chat."
         return ""
@@ -1229,15 +1272,14 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
             return ""
         says = f" Its SKILL.md: \"{skill['files'][name][:200]}\"" if skill["files"].get(name) else ""
         stem = os.path.basename(app_dir)
-        if d.get("risky") is not True and apptools.is_trusted(bot.meta, stem):
-            return ""  # whitelisted app: its documented scripts run without a card
-        if apptools.is_owned(app_dir, bot.meta.get("builds")):
-            if name in skill["approve"]:
-                return f"It runs {stem} › {name}, which the app's SKILL.md marks as needing approval.{says}"
-            if d.get("risky") is True:
-                return f"It runs {stem} › {name}; the bot flagged it as irreversible.{says}"
-            return ""
-        return f"It runs {stem} › {name} on this Mac, an app this bot did not build.{says}"
+        if apptools.is_trusted(bot.meta, stem):
+            return ""  # ticked under "Apps it may use without asking": its documented scripts run without a card
+        # A build this bot made is ticked when it finishes (bot.py); an unticked app always asks, built or not.
+        if name in skill["approve"]:
+            return f"It runs {stem} › {name}, which the app's SKILL.md marks as needing approval.{says}"
+        if d.get("risky") is True:
+            return f"It runs {stem} › {name}; the bot flagged it as irreversible.{says}"
+        return f"It runs {stem} › {name} on this Mac; this bot may not use {stem} without asking.{says}"
     if act not in ("click", "type", "press", "select"):
         return ""
     if d.get("risky") is True:
@@ -1303,22 +1345,21 @@ def _url_refusal(bot, url: str) -> str | None:
 
 # ---- the Marketplace (docs §15) ------------------------------------------------
 def marketplace_on() -> bool:
-    """Whether the Marketplace tools are on the roster: the same pref that shows the shell its entry points."""
-    try:
-        from fused_render.shell import prefs
-        return bool(prefs.marketplace_enabled())
-    except Exception:  # noqa: BLE001
-        return False
+    """Whether the Marketplace tools are on the roster: always, since the
+    Community stopped being a switch (2026-10-29)."""
+    return True
 
 
 def _market_target(d: dict) -> tuple[str, bool, str]:
     """(slug, update, error) for a `marketplace_install` decision: the error names why
-    no card is raised (bad slug, unknown app, already installed without `update`)."""
+    no card is raised (bad slug, unknown app, already installed without `update`, a copy
+    the installer refuses, or a GitHub-link copy whose switch to reviewed releases is the
+    user's to make). `marketplace.plan_install` is the one answer, the same the job reads."""
     from fused_render import marketplace as _mkt
     slug = str((d or {}).get("slug") or (d or {}).get("name") or (d or {}).get("value") or "").strip()
     update = (d or {}).get("update") is True
     if not _mkt.is_slug(slug):
-        return slug, update, "not a Marketplace slug; take it from marketplace_search"
+        return slug, update, "not a Community slug; take it from marketplace_search"
     snap, err = _mkt.cached_snapshot()
     if snap is not None and slug not in (snap.get("apps") or {}):
         # The server's search (marketplace_search) can rank an app the cached catalog predates: rebuild it
@@ -1326,19 +1367,43 @@ def _market_target(d: dict) -> tuple[str, bool, str]:
         # same cache file, so what passed here is what it installs.
         snap, err = _mkt.get_snapshot(force=True)
     if snap is None:
-        return slug, update, f"the Marketplace catalog is unavailable ({err or 'no catalog'})"
-    if slug not in (snap.get("apps") or {}):
+        return slug, update, f"the Community catalog is unavailable ({err or 'no catalog'})"
+    row = (snap.get("apps") or {}).get(slug)
+    if row is None:
         return slug, update, "no such app in the catalog; take the slug from marketplace_search"
-    rec = _mkt.installed_apps().get(slug)
-    if rec and not update:
-        return slug, update, f"already installed at {rec['path']} (in APPS; pass update: true only to update it)"
-    if not rec and update:
+    try:
+        plan = _mkt.plan_install(slug, row)
+    except Exception as e:  # noqa: BLE001 — a plan that cannot be read raises no card
+        return slug, update, f"could not check this Mac for a copy of the app ({e.__class__.__name__})"
+    where = plan.get("path")
+    if plan["action"] == "refuse":
+        return slug, update, plan.get("reason") or "the installer refuses this app here"
+    if plan["action"] == "switch":
+        # D13 (docs/CONTRIB_LOOP.md §18.4): changing a copy's trust level is the user's explicit choice.
+        return slug, update, (f"the user already follows this app by GitHub link at {where} (every change, "
+                              "unreviewed); switching it to reviewed releases is not a bot's call: the user decides "
+                              "that in the app (its Community page)")
+    if plan["action"] == "update" and not update:
+        return slug, update, f"already installed at {where} (in APPS; pass update: true only to update it)"
+    if plan["action"] == "install" and plan.get("showcase"):
+        # Overwriting the user's showcase copy (its data moves, the copy is hidden) is the user's call.
+        return slug, update, (f"the user already has this app in their showcase folder at {plan['showcase']}; "
+                              "installing the Community version means overwriting that copy, which is the "
+                              "user's choice: the user decides that in the app (its Community page)")
+    if plan["action"] == "install" and update:
         update = False  # nothing to update: a plain install
-    dest = os.path.join(_mkt.install_root(), slug)
-    if not rec and os.path.lexists(dest) and not _mkt._is_husk(dest):
-        # install_app refuses a folder it did not stamp; refuse here, before the user approves a write into it.
-        return slug, update, f"a local app already occupies {dest} (not a Marketplace install); the user has to move or rename it first"
     return slug, update, ""
+
+
+def _market_where(slug: str) -> str:
+    """The folder a `marketplace_install` of `slug` lands in (or updates), for the card."""
+    from fused_render import marketplace as _mkt
+    snap, _ = _mkt.cached_snapshot()
+    row = ((snap or {}).get("apps") or {}).get(slug)
+    try:
+        return (_mkt.install_dest(slug, row) or "") if row else ""
+    except Exception:  # noqa: BLE001 — a sentence on a card
+        return ""
 
 
 def _market_name(slug: str) -> tuple[str, str]:
@@ -1363,7 +1428,7 @@ def _market_hits(q: str) -> tuple[list[dict], int, str]:
             return apps[:MARKET_HITS], len(apps) + (1 if got.get("next_cursor") else 0), ""
     cat = _mkt.catalog()
     if cat.get("status") != "ok":
-        return [], 0, f"error: the Marketplace is unavailable ({cat.get('message') or 'no catalog'})"
+        return [], 0, f"error: the Community is unavailable ({cat.get('message') or 'no catalog'})"
     words = [w for w in re.split(r"[^a-z0-9+#.]+", q) if w]
     scored = []
     for a in cat.get("apps") or []:
@@ -1422,23 +1487,32 @@ def _market_install(bot, d: dict) -> str:
     if err:
         return f"error: {err}"
     try:
-        job = _mkt.start_install(slug)
+        job = _mkt.start_install(slug, update=update)
     except _mkt.InstallError as e:
         return f"error: {e}"
+    if job.get("status") == "confirm":
+        # The plan changed between the card and the call (the user installed by link, or cloned the
+        # showcase, meanwhile).
+        if job.get("overwrite") == "showcase":
+            return (f"error: the user already has this app in their showcase folder at {job.get('path')}; "
+                    "installing the Community version means overwriting that copy, which is the user's "
+                    "choice: the user decides that in the app (its Community page)")
+        return ("error: the user follows this app by GitHub link; switching it to reviewed releases is the user's "
+                "choice: the user decides that in the app (its Community page)")
     deadline = time.monotonic() + MARKET_INSTALL_WAIT_S
     while job.get("state") not in ("done", "error"):
         if bot.stop_flag.is_set():
-            return f"error: stopped while the {job.get('action') or 'install'} of {slug} was running; it finishes on its own (see the Marketplace page)."
+            return f"error: stopped while the {job.get('action') or 'install'} of {slug} was running; it finishes on its own (see the Community page)."
         if time.monotonic() > deadline:
             return (f"error: the {job.get('action') or 'install'} of {slug} is still running after "
-                    f"{MARKET_INSTALL_WAIT_S} s ({job.get('message') or '…'}); the user can follow it on the Marketplace page.")
+                    f"{MARKET_INSTALL_WAIT_S} s ({job.get('message') or '…'}); the user can follow it on the Community page.")
         time.sleep(1.0)
         job = (_mkt.list_jobs().get("jobs") or {}).get(slug) or job
     if job.get("state") == "error":
         return f"error: {job.get('error') or job.get('message') or 'install failed'}"
     apptools.apps(force=True)
     apptools.registry(force=True)
-    path = job.get("path") or os.path.join(_mkt.install_root(), slug)
+    path = job.get("path") or _market_where(slug) or _mkt.install_root()
     name, ver = _market_name(slug)
     folder = os.path.basename(path.rstrip("/"))
     verb = "Updated" if job.get("action") == "update" else "Installed"
@@ -1643,9 +1717,6 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             return describe(bot, act, d, obs), botmod.bot_chat(bot, d.get("bot") or d.get("name") or "", d.get("last"))
         if act in MARKET_TOOLS:
             label = describe(bot, act, d, obs)  # BEFORE the install: afterwards the same call describes as "already installed"
-            if not marketplace_on():
-                # The roster and the steps prompt drop these while the pref is off; a model that names one anyway is refused.
-                return label, "error: the Marketplace is off (the user turns it on in Preferences › Optional features)"
             return label, (_market_search(d) if act == "marketplace_search" else _market_install(bot, d))
         if act in TERMINAL_TOOLS:
             label = describe(bot, act, d, obs)

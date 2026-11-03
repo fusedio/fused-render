@@ -157,7 +157,9 @@ export function boundDraftPayload(
   let effort = saved.effort ?? "";
   if (agent && loaded) {
     if (isForeignModel(model, agent)) model = defaultModelOf(agent);
-    if (isUnlistedEffort(effort, agent)) effort = "";
+    // Against the MODEL's own list where the catalog knows it per model: a
+    // level this model does not take (or a model that takes none) goes.
+    if (isUnlistedEffort(effort, agent, model)) effort = "";
   }
   return buildSchedulePayload({
     target: saved.target ?? "",

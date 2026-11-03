@@ -6,6 +6,8 @@ import traceback
 import uuid
 from urllib.parse import unquote, urlsplit
 from fastapi import Request
+from starlette.datastructures import MutableHeaders
+from starlette.requests import ClientDisconnect
 from fastapi.responses import (
     JSONResponse,
 )
@@ -13,6 +15,7 @@ from fastapi.responses import (
 from fused_render import calls as shell_calls
 from fused_render import jobs as shell_jobs
 from fused_render import netlog
+from fused_render.server.asset_version import asset_version
 
 
 
@@ -85,7 +88,11 @@ STATIC_DIR = os.path.join(HERE, "static")
 #: prompt on the machine; `claude` is the one that leaves it. The order is
 #: fixed in code, never a user preference. A hosted gateway is appended here
 #: when it arrives.
-AI_PROVIDERS = ("local", "apple", "claude")
+AI_PROVIDERS = ("local", "apple", "claude", "copilot", "codex", "gemini")
+#: The three that are AGENT CLIs run as tool-less one-shots by
+#: `agent_oneshot.py` (D1433): text only, gated on the agent's Preferences
+#: switch, listed to the embedded workbench by the canvas host.
+AI_AGENT_PROVIDERS = ("copilot", "codex", "gemini")
 
 #: The apple tier's PINNED model ids -> the capability each serves (D700). The
 #: OS owns the weights and picks the variant (AFM 3 Core vs Core Advanced by
@@ -267,11 +274,11 @@ async def unhandled_exception(request, exc):
 # request (SPEC CL-5a's named gap). Both obvious approaches are dead ends
 # under this app's shape, verified rather than assumed:
 #
-#   * From a ROUTE: `BaseHTTPMiddleware` (which `@app.middleware("http")`
-#     builds) wraps the downstream `receive`, so `request.is_disconnected()`
-#     inside a handler never observes `http.disconnect` — a watcher there
-#     waits forever. Without the middleware in front it fires immediately,
-#     which is what makes this easy to "verify" wrongly.
+#   * From a ROUTE: a route still cannot see a hang-up from inside the
+#     handler to record it as `disconnected` in the call log. (The old
+#     `BaseHTTPMiddleware` wrapped `receive` so `is_disconnected()` never
+#     fired; `NoCacheAndLog` below is pure ASGI and passes `receive` through,
+#     and it DOES notice a failed `send` / cancelled app call.)
 #   * From HERE: the middleware's own request CAN see the disconnect, but
 #     `is_disconnected()` peeks by CONSUMING a message off the receive
 #     channel (starlette.requests, an immediately-cancelled CancelScope
@@ -295,161 +302,187 @@ _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
 # immutable stops every native window from revalidating each chunk on open —
 # those all share WebKit's 6-connection HTTP/1.1 pool per host:port (measured
 # 2026-10-08), so a burst of 304 round-trips queues real API calls behind it.
-# shell-dist/index.html, runtime.js and /template-assets are NOT hashed and
-# keep no-cache (the stale-half-old-UI reason above still holds for them).
+# shell-dist/index.html, runtime.js and /template-assets are NOT hashed, so
+# unversioned requests for them keep no-cache (the stale-half-old-UI reason
+# above still holds). A request carrying `?v=` whose token equals the file's
+# current stat token (asset_version.py) is content-versioned and served
+# immutable; a mismatching token keeps no-cache.
 _IMMUTABLE_PREFIX = "/static/shell-dist/assets/"
+_VERSIONED_PREFIXES = ("/static/runtime.js", "/template-assets/", "/template-shared/")
 # Marketplace asset bytes (routers/marketplace.py) are cached per catalog
 # commit server-side and answered with their own `max-age=3600`, which this
 # middleware keeps instead of overwriting with no-cache — the browse grid
 # re-requests every preview on each visit otherwise.
 _OWN_CACHE_PREFIX = "/api/marketplace/asset/"
 
-async def no_cache_and_log(request, call_next):
-    # The app call log's single write point (calls.py, design §4.5). begin()
-    # returns a record only for a request carrying runtime.js's
-    # X-Fused-Page header — so the shell's own /api/fs/list, the conditions
-    # probe, and every non-page caller are excluded by construction rather
-    # than by an endpoint blocklist that would drift. Route handlers enrich
-    # the same dict through request.state.fused_call; only finish() writes.
-    call = shell_calls.begin(request)
-    request.state.fused_call = call
-    # App code changes between restarts and user files change on disk;
-    # stale browser caches of shell/runtime JS cause confusing half-old UIs.
-    # Also the browser request log (SPEC SV-3): one INFO line per request
-    # with status + duration, so the log reconstructs the sequence of calls
-    # a page made — the context you need to see *which* request 500'd and
-    # what led to it. A 500 raised in a route escapes call_next; log the
-    # request line before re-raising so the access trail stays complete
-    # (the catch-all handler then logs the traceback).
-    path = request.url.path
-    logged = not path.startswith(_LOG_SKIP_PREFIXES)
-    start = time.monotonic()
-    # SPEC-quiet-notifications.md bug 2: every request gets a chance to name
-    # who raised it, regardless of route — unlike `shell_calls.begin` above,
-    # which only fires for a page's own `X-Fused-Page`. Read from the header
-    # only, never the body (same spoof-proofing `X-Fused-Page` gets in
-    # `server/routers/jobs.py`), and `jobs.upsert` only consults this when a
-    # producer's own explicit `source=` resolves empty.
-    raw_source = request.headers.get("x-fused-source")
-    ambient_source = unquote(raw_source) if raw_source else ""
-    # The request ring behind the Monitor's Network tab (netlog.py). Opened
-    # here and closed in `_track_body` when the last byte is sent, or below if
-    # the request dies first — a request is "in flight" for as long as it holds
-    # one of the browser's 6 connections, which is until the body ends.
-    net = netlog.get()
-    nrec = _net_begin(net, request, path)
-    try:
-        with shell_jobs.ambient_source(ambient_source):
-            response = await _no_cache_and_log_inner(request, call_next, call, path, logged, start)
-    except asyncio.CancelledError:
-        net.finish(nrec, outcome="disconnected")
-        raise
-    except Exception:
-        net.finish(nrec, status=500, outcome="error")
-        raise
-    server_ms = (time.monotonic() - start) * 1000
-    net.headers_sent(nrec, response.status_code, server_ms)
-    # While a dashboard is open, tell the browser how long the server took, so
-    # the page's own timing can split "queued in the browser" from "slow server"
-    # (platform/lib/netTiming.ts, static/runtime.js). `fr-watch` is the signal
-    # to flush; nothing is sent when nobody watches.
-    if path.startswith("/api/") and net.watched():
-        response.headers["Server-Timing"] = f"fr;dur={server_ms:.1f}, fr-watch"
-    _track_body(net, nrec, response, server_ms)
-    return response
-
-
-def _net_begin(net, request, path):
+def _net_begin(net, scope, path, headers):
     # Bookkeeping must never fail a request.
     try:
-        client = request.client.host if request.client else ""
-        return net.begin(request.method, path, request.url.query, request.headers, client)
+        client = scope.get("client")
+        qs = scope.get("query_string", b"").decode("latin-1")
+        return net.begin(scope["method"], path, qs, headers, client[0] if client else "")
     except Exception:  # noqa: BLE001
         logger.debug("netlog.begin failed", exc_info=True)
         return None
 
 
-def _track_body(net, nrec, response, server_ms):
-    """Close `nrec` when the response body has been fully sent (or abandoned)."""
-    if nrec is None:
-        return
-    it = getattr(response, "body_iterator", None)
-    if it is None:
-        net.finish(nrec, server_ms=server_ms)
-        return
+class NoCacheAndLog:
+    """Pure-ASGI middleware: the app call log, the request ring, no-cache.
 
-    async def body():
-        sent, outcome = 0, "ok"
+    Replaces an `@app.middleware("http")` function (BaseHTTPMiddleware), which
+    cost an extra task + memory-stream pair per request and wrapped every body
+    iterator. Behaviour is the same, but the response is observed by wrapping
+    `send` instead of by holding a Response object.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        # The app call log's single write point (calls.py, design §4.5).
+        # begin() returns a record only for a request carrying runtime.js's
+        # X-Fused-Page header — so the shell's own /api/fs/list, the
+        # conditions probe, and every non-page caller are excluded by
+        # construction rather than by an endpoint blocklist that would drift.
+        # Route handlers enrich the same dict through
+        # request.state.fused_call; only finish() writes.
+        request = Request(scope)
+        call = shell_calls.begin(request)
+        scope.setdefault("state", {})["fused_call"] = call
+        # App code changes between restarts and user files change on disk;
+        # stale browser caches of shell/runtime JS cause confusing half-old
+        # UIs. Also the browser request log (SPEC SV-3): one INFO line per
+        # request with status + duration, so the log reconstructs the sequence
+        # of calls a page made.
+        path = scope["path"]
+        method = scope["method"]
+        logged = not path.startswith(_LOG_SKIP_PREFIXES)
+        start = time.monotonic()
+        # SPEC-quiet-notifications.md bug 2: every request gets a chance to
+        # name who raised it, regardless of route. Read from the header only,
+        # never the body (same spoof-proofing `X-Fused-Page` gets in
+        # `server/routers/jobs.py`).
+        raw_source = request.headers.get("x-fused-source")
+        ambient_source = unquote(raw_source) if raw_source else ""
+        # The request ring behind the Monitor's Network tab (netlog.py). A
+        # request is "in flight" for as long as it holds one of the browser's
+        # 6 connections, which is until the body ends.
+        net = netlog.get()
+        nrec = _net_begin(net, scope, path, request.headers)
+        st = {"status": None, "server_ms": None, "sent": 0, "done": False}
+
+        def _close_net(**kw):
+            if st["done"]:
+                return
+            st["done"] = True
+            if nrec is not None:
+                net.finish(nrec, **kw)
+
+        async def send_wrapper(message):
+            mtype = message["type"]
+            if mtype == "http.response.start":
+                status = message["status"]
+                st["status"] = status
+                dur = (time.monotonic() - start) * 1000
+                st["server_ms"] = dur
+                if logged:
+                    logger.info("%s %s -> %s (%.0f ms)", method, path, status, dur)
+                headers = MutableHeaders(scope=message)
+                if call is not None:
+                    shell_calls.finish(
+                        call, status=status, elapsed_ms=dur,
+                        content_length=headers.get("content-length"),
+                    )
+                self._cache_headers(headers, request, method, path, status)
+                net.headers_sent(nrec, status, dur)
+                # While a dashboard is open, tell the browser how long the
+                # server took, so the page's own timing can split "queued in
+                # the browser" from "slow server" (platform/lib/netTiming.ts,
+                # static/runtime.js). `fr-watch` is the signal to flush;
+                # nothing is sent when nobody watches.
+                if path.startswith("/api/") and net.watched():
+                    headers["Server-Timing"] = f"fr;dur={dur:.1f}, fr-watch"
+            elif mtype == "http.response.body":
+                st["sent"] += len(message.get("body", b""))
+                await send(message)
+                if not message.get("more_body", False):
+                    _close_net(server_ms=st["server_ms"], nbytes=st["sent"], outcome="ok")
+                return
+            await send(message)
+
         try:
-            async for chunk in it:
-                sent += len(chunk)
-                yield chunk
-        except Exception:
-            outcome = "error"
+            with shell_jobs.ambient_source(ambient_source):
+                await self.app(scope, receive, send_wrapper)
+        except asyncio.CancelledError:
+            # The client went away mid-request — overwhelmingly a runPython
+            # superseded by a newer call for the same .py (D114/RH-9) or a
+            # closed tab. Recorded as its own outcome and kept out of every
+            # latency statistic.
+            if call is not None and st["status"] is None:
+                shell_calls.finish(
+                    call, status=None, elapsed_ms=(time.monotonic() - start) * 1000,
+                    outcome="disconnected",
+                )
+            _close_net(outcome="disconnected")
             raise
-        except BaseException:  # GeneratorExit / cancellation: the client left
-            outcome = "disconnected"
+        except Exception as exc:
+            if isinstance(exc, ClientDisconnect):
+                _close_net(
+                    server_ms=st["server_ms"], nbytes=st["sent"], outcome="disconnected"
+                )
+                raise
+            if st["status"] is None:
+                if logged:
+                    dur = (time.monotonic() - start) * 1000
+                    logger.info("%s %s -> 500 (%.0f ms)", method, path, dur)
+                # An unhandled exception escapes the app: @app.exception_handler
+                # runs in ServerErrorMiddleware, OUTSIDE user middleware, so
+                # this is the only place the record can be closed out. Mint the
+                # correlation id here (we run before the handler) and stash it
+                # so the handler can echo the same id into the 500 body.
+                err_id = uuid.uuid4().hex[:12]
+                scope["state"]["fused_err_id"] = err_id
+                if call is not None:
+                    shell_calls.finish(
+                        call, status=500, elapsed_ms=(time.monotonic() - start) * 1000,
+                        outcome="error", err_id=err_id,
+                    )
+                _close_net(status=500, outcome="error")
+            else:
+                _close_net(
+                    server_ms=st["server_ms"], nbytes=st["sent"], outcome="error"
+                )
             raise
         finally:
-            net.finish(nrec, server_ms=server_ms, nbytes=sent, outcome=outcome)
+            # A streamed response whose client left can end the app call
+            # quietly (starlette's disconnect listener cancels the stream and
+            # returns) with the last body chunk never sent.
+            if not st["done"]:
+                _close_net(
+                    server_ms=st["server_ms"], nbytes=st["sent"],
+                    outcome="disconnected" if st["status"] is not None else "ok",
+                )
 
-    response.body_iterator = body()
-
-
-async def _no_cache_and_log_inner(request, call_next, call, path, logged, start):
-    try:
-        response = await call_next(request)
-    except asyncio.CancelledError:
-        # The client went away mid-request — overwhelmingly a runPython
-        # superseded by a newer call for the same .py (D114/RH-9) or a
-        # closed tab. Recorded as its own outcome and kept out of every
-        # latency statistic: a slider scrub would otherwise report dozens
-        # of "slow" calls for what the user experienced as one request.
-        if call is not None:
-            shell_calls.finish(
-                call, status=None, elapsed_ms=(time.monotonic() - start) * 1000,
-                outcome="disconnected",
-            )
-        raise
-    except Exception:
-        if logged:
-            dur = (time.monotonic() - start) * 1000
-            logger.info("%s %s -> 500 (%.0f ms)", request.method, path, dur)
-        # An unhandled exception escapes call_next: @app.exception_handler
-        # runs in ServerErrorMiddleware, OUTSIDE user middleware, so this
-        # except branch is the only place the record can be closed out.
-        # Mint the correlation id here (we run before the handler) and stash
-        # it so the handler can echo the same id into the 500 body.
-        err_id = uuid.uuid4().hex[:12]
-        request.state.fused_err_id = err_id
-        if call is not None:
-            shell_calls.finish(
-                call, status=500, elapsed_ms=(time.monotonic() - start) * 1000,
-                outcome="error", err_id=err_id,
-            )
-        raise
-    if logged:
-        dur = (time.monotonic() - start) * 1000
-        logger.info(
-            "%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur
-        )
-    if call is not None:
-        shell_calls.finish(
-            call,
-            status=response.status_code,
-            elapsed_ms=(time.monotonic() - start) * 1000,
-            content_length=response.headers.get("content-length"),
-        )
-    # 304 too: a browser refreshes a cached entry's headers from a 304, so an
-    # asset cached back when it was no-cache gets upgraded on its next look.
-    if path.startswith(_IMMUTABLE_PREFIX) and response.status_code in (200, 304):
-        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-    elif (path.startswith(_OWN_CACHE_PREFIX) and response.status_code == 200
-          and "cache-control" in response.headers):
-        pass
-    else:
-        response.headers["Cache-Control"] = "no-cache"
-    return response
+    @staticmethod
+    def _cache_headers(headers, request, method, path, status):
+        # 304 too: a browser refreshes a cached entry's headers from a 304, so
+        # an asset cached back when it was no-cache gets upgraded on its next
+        # look.
+        if path.startswith(_IMMUTABLE_PREFIX) and status in (200, 304):
+            headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif (status in (200, 304) and method in ("GET", "HEAD")
+              and path.startswith(_VERSIONED_PREFIXES)
+              and request.query_params.get("v") is not None
+              and request.query_params.get("v") == asset_version(path)):
+            headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif (path.startswith(_OWN_CACHE_PREFIX) and status == 200
+              and "cache-control" in headers):
+            pass
+        else:
+            headers["Cache-Control"] = "no-cache"
 
 
 def get_start_dir(request: Request) -> str:

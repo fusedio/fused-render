@@ -601,9 +601,14 @@ def test_a_send_with_images_pre_allows_the_task_shots_dir(tmp_path, monkeypatch)
                     "session_id": "", "permission_mode": "auto",
                     "images": [shot]})
     assert seen["kw"]["extra_read_dirs"] == [schedule.shots_dir()]
-    assert shot in seen["prompt"]
+    # The wire spells the path with forward slashes on every platform (the
+    # template's reader and the Read rule both do), so a Windows join is
+    # compared in that spelling too.
+    assert shot.replace("\\", "/") in seen["prompt"]
 
 
+@pytest.mark.skipif(os.name == "nt",
+                    reason="os.symlink needs elevation on Windows")
 def test_the_pre_allowed_dir_and_the_stored_paths_have_ONE_spelling(tmp_path, monkeypatch):
     """The Read rule matches TEXT, so both sides must resolve identically.
 

@@ -15,26 +15,39 @@ import { dropRecentsFor } from "@apps/explorer/lib/recents";
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 import { KNOWN_SENTINEL_MODES, modeTitle, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 
+// Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — mirrors
+// router.ts's rootedFsPath / Breadcrumb's drive detection. The canonical drive
+// root is "C:/" (colon + forward slash); a bare "C:" is cwd-relative to
+// os.stat, so it must never be handed to the API as a directory path.
+const DRIVE_RE = /^[A-Za-z]:/;
+
 // Parent directory of an absolute path, in the shell's canonical forward-slash
-// form. Root's parent is root.
+// form. Root's parent is root — and on Windows, a drive root's ("C:/") parent
+// is itself, same as POSIX "/".
 export function dirname(p: string): string {
   const norm = p.replace(/\/+$/, "");
+  const drive = DRIVE_RE.test(norm) ? norm.slice(0, 2) : null; // e.g. "C:"
+  if (drive && norm.length === drive.length) return drive + "/"; // "C:" -> "C:/"
   const i = norm.lastIndexOf("/");
+  if (drive) return i === drive.length ? drive + "/" : norm.slice(0, i); // "C:/item" -> "C:/"
   return i <= 0 ? "/" : norm.slice(0, i);
 }
 
 // Canonical directory form. A listing's `base` is `fsPath` with the trailing
 // "/" stripped, so at the filesystem root it collapses to "" — the API rejects
 // "" as a directory path and only accidentally survives string joins. Treat ""
-// as "/" wherever a parent/target dir is derived.
+// as "/" wherever a parent/target dir is derived. Same problem on Windows: a
+// bare drive letter ("C:") strips to a cwd-relative path, not the drive root —
+// canonicalize it to "C:/".
 export function normDir(dir: string): string {
   if (dir === "") return "/";
+  if (/^[A-Za-z]:$/.test(dir)) return dir + "/";
   return dir;
 }
 
 // Join a directory and a child name into a path, root-safe: at the filesystem
-// root the dir is "/", where a plain `dir + "/" + name` would yield a double
-// slash. Everywhere else it's
+// root the dir is "/", and on Windows a drive root is "C:/" — in both cases a
+// plain `dir + "/" + name` would yield a double slash. Everywhere else it's
 // the ordinary concat.
 export function join(dir: string, name: string): string {
   return dir.endsWith("/") ? dir + name : dir + "/" + name;
@@ -327,8 +340,8 @@ export function friendlyFsError(err: unknown, ctx: { verb: string; name: string 
 // for a reason rather than for tidiness: the server names it only where the move
 // was a rename IT chose the destination for (api.ts's `trashed_to`) — macOS
 // ~/.Trash and the Linux XDG trash. It is absent for the macOS cross-device
-// Finder fallback, where the OS owns the location and restoring goes through
-// the OS's own UI. A trash WITH a destination is an
+// Finder fallback and for the Windows Recycle Bin, where the OS owns the location
+// and restoring goes through the OS's own UI. A trash WITH a destination is an
 // undoable rename pair; one without is recoverable but not undoable, and a caller
 // must not invent a path for it.
 export type TrashOutcome =

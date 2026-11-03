@@ -24,11 +24,11 @@ up in `raw` on the next rebuild and `_model_row` picks it up like always.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import time
 
+from fused_render import _platform
 from fused_render.ai.runners import formats
 
 from fused_render.ai.hub_catalog_config import HubCatalogConfig, load_config
@@ -70,11 +70,11 @@ def store_lock(cfg: HubCatalogConfig):
     os.makedirs(cfg.dir, exist_ok=True)
     f = open(os.path.join(cfg.dir, ".catalog.lock"), "a")
     try:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        _platform.flock(f)
         yield
     finally:
         try:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            _platform.funlock(f)
         except OSError:
             pass
         f.close()

@@ -39,6 +39,7 @@ import sys
 import threading
 import time
 
+from fused_render import _platform
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -327,7 +328,10 @@ def _delete_state(home, base_home, environ, platform, user_home) -> None:
 
 
 def start_background() -> None:
-    """Fire-and-forget: run the cleanup on a daemon thread."""
+    """Fire-and-forget: run the cleanup on a daemon thread. Skipped on Windows,
+    which never had the rclone mounts it sweeps."""
+    if _platform.IS_WINDOWS:
+        return
     try:
         threading.Thread(target=run, name="legacy-mounts-cleanup",
                          daemon=True).start()

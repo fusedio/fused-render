@@ -622,3 +622,148 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
     # (".git", from /api/fs/list) and a nested one ("sub/.git", from walk) go.
     ignored.update(n for n in rel_names if n == ".git" or n.endswith("/.git"))
     return ignored
+
+
+# --- cached `_git_ignored` for directory listings ---------------------------
+#
+# `/api/fs/list` asks about the same directory over and over (re-listing after
+# a poll, a focus return) and each ask is a `git check-ignore` spawn. The
+# answer only changes when a rule file, the index, or the directory's own
+# entries change, so it is memoized on a stat fingerprint of exactly those
+# inputs; nothing here parses a gitignore. Any doubt (a GIT_* override, no
+# `.git` found, a stat failure) goes to the raw function.
+#
+# Known residual risk: replacing a file with a directory of the same name in
+# the same mtime tick on a coarse-mtime filesystem can serve one stale answer
+# until the next mtime change (a `build/` rule matches only directories). An
+# `include.path` in a git config is not followed either; the 300 s TTL bounds
+# both.
+_IGNORED_CACHE_SIZE = 256
+_IGNORED_MAX_AGE_S = 300.0
+_ignored_cache: "OrderedDict[str, tuple[float, tuple, frozenset]]" = OrderedDict()
+_excludes_cache: "dict[tuple, str | None]" = {}
+_ignored_lock = threading.Lock()
+
+
+def _git_ignored_cache_clear() -> None:
+    """Drop every memoized answer. For tests (HOME changes move the inputs)."""
+    with _ignored_lock:
+        _ignored_cache.clear()
+        _excludes_cache.clear()
+
+
+def _fp(path) -> "tuple | None":
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _find_git(cwd: str) -> "tuple[str, str, str] | None":
+    """(toplevel, gitdir, commondir) by walking up for `.git`, no subprocess."""
+    d = os.path.abspath(cwd)
+    while True:
+        dot = os.path.join(d, ".git")
+        if os.path.isdir(dot):
+            return d, dot, dot
+        if os.path.isfile(dot):
+            try:
+                with open(dot, encoding="utf-8", errors="replace") as f:
+                    line = f.readline().strip()
+            except OSError:
+                return None
+            if not line.startswith("gitdir:"):
+                return None
+            gitdir = os.path.normpath(os.path.join(d, line[7:].strip()))
+            common = gitdir
+            try:
+                with open(os.path.join(gitdir, "commondir"), encoding="utf-8") as f:
+                    common = os.path.normpath(os.path.join(gitdir, f.readline().strip()))
+            except OSError:
+                pass
+            return d, gitdir, common
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def _excludes_file(top: str, config_fps: tuple) -> "str | None":
+    """`core.excludesFile` (expanded), resolved once per config fingerprint."""
+    with _ignored_lock:
+        if config_fps in _excludes_cache:
+            return _excludes_cache[config_fps]
+    value = None
+    try:
+        proc = subprocess.run(
+            [git_bin(), "-C", top, "config", "--path", "--get", "core.excludesFile"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
+            **_spawn_kwargs(),
+        )
+        if proc.returncode == 0:
+            value = os.fsdecode(proc.stdout).strip() or None
+    except (OSError, subprocess.SubprocessError):
+        value = None
+    with _ignored_lock:
+        if len(_excludes_cache) > 64:
+            _excludes_cache.clear()
+        _excludes_cache[config_fps] = value
+    return value
+
+
+def _ignored_fingerprint(cwd: str, names: list[str], found) -> tuple:
+    import hashlib
+
+    top, gitdir, common = found
+    home = os.path.expanduser("~")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    config_paths = [
+        os.path.join(common, "config"), os.path.join(gitdir, "config.worktree"),
+        os.path.join(home, ".gitconfig"), os.path.join(xdg, "git", "config"),
+        "/etc/gitconfig",
+    ]
+    config_fps = tuple(_fp(p) for p in config_paths)
+    extra = [_excludes_file(top, (top, *config_paths, *config_fps))]
+    files = [os.path.join(gitdir, "index"), os.path.join(common, "info", "exclude"),
+             os.path.join(xdg, "git", "ignore"), *config_paths]
+    if extra[0]:
+        files.append(os.path.expanduser(extra[0]))
+    d = os.path.abspath(cwd)
+    rel = os.path.relpath(d, top)
+    parts = [] if rel == "." else rel.split(os.sep)
+    for i in range(len(parts) + 1):
+        files.append(os.path.join(top, *parts[:i], ".gitignore"))
+    h = hashlib.blake2b(digest_size=16)
+    for n in sorted(names):
+        h.update(os.fsencode(n) + b"\0")
+    return (_fp(d), h.digest(), tuple(_fp(f) for f in files))
+
+
+def _git_ignored_cached(cwd: str, names: list[str]) -> set[str]:
+    """`_git_ignored`, memoized on a stat fingerprint of its inputs."""
+    if not names:
+        return set()
+    if any(os.environ.get(k) for k in _GIT_ENV_KEYS if k not in ("HOME", "XDG_CONFIG_HOME")):
+        return _git_ignored(cwd, names)
+    found = _find_git(cwd)
+    if found is None:
+        return set()
+    try:
+        fp = _ignored_fingerprint(cwd, names, found)
+    except OSError:
+        return _git_ignored(cwd, names)
+    key = os.path.abspath(cwd)
+    now = time.monotonic()
+    with _ignored_lock:
+        hit = _ignored_cache.get(key)
+        if hit is not None and hit[1] == fp and now - hit[0] < _IGNORED_MAX_AGE_S:
+            _ignored_cache.move_to_end(key)
+            return set(hit[2])
+    result = _git_ignored(cwd, names)
+    with _ignored_lock:
+        _ignored_cache[key] = (time.monotonic(), fp, frozenset(result))
+        _ignored_cache.move_to_end(key)
+        while len(_ignored_cache) > _IGNORED_CACHE_SIZE:
+            _ignored_cache.popitem(last=False)
+    return set(result)

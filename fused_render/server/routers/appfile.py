@@ -7,8 +7,8 @@ nothing persisted server-side, same unguarded-GET posture as the
 template-pack export.
 
 Opening has no user-facing route (D390): a ``.fused`` renders at its own
-``/explorer/view|embed/<path>`` URL through the ``fusedapp`` template, which
-is the INSTALL PAGE (AF-14, owner 2026-10-13): nothing in a file runs until
+``/explorer/view|embed/<path>`` URL as the shell's INSTALL PAGE (frontend
+apps/marketplace FusedFilePage, AF-14, owner 2026-10-13): nothing in a file runs until
 it is installed. The page reads ``GET /api/appfile/install`` (what installing
 would do: new / update / diverged / same / downgrade, the README, the member
 list — read-only, never an extraction), ``/api/appfile/icon`` and
@@ -21,6 +21,7 @@ work (``needs_force``) answers 409 until the client sends ``force``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 import shutil
@@ -114,13 +115,23 @@ async def api_appfile_export_with_preview(
         preview_bytes = await preview.read(appfile.MAX_PREVIEW_BYTES + 1)
         if not preview_bytes or len(preview_bytes) > appfile.MAX_PREVIEW_BYTES:
             preview_bytes = None
-    tmp_dir = tempfile.mkdtemp(prefix="fused-appfile-export-")
     file_name = appfile.default_file_name(path)
-    out_path = os.path.join(tmp_dir, file_name)
+
+    def _build() -> tuple[str, str]:
+        # mkdtemp + the zip of the whole app folder + the error-path rmtree are
+        # all blocking disk work: off the event loop.
+        tmp_dir = tempfile.mkdtemp(prefix="fused-appfile-export-")
+        out_path = os.path.join(tmp_dir, file_name)
+        try:
+            appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+        return tmp_dir, out_path
+
     try:
-        appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)
+        tmp_dir, out_path = await asyncio.to_thread(_build)
     except appfile.AppFileError as exc:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         return _error(str(exc))
     return FileResponse(
         out_path,

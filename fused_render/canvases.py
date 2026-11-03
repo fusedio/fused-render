@@ -83,6 +83,7 @@ shell/* routers.
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import hashlib
 import io
@@ -91,22 +92,30 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import tomllib
+import urllib.parse
 import zipfile
+import zlib
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from fused_render import canvas_snapshot, canvas_sync_state
+from fused_render._platform import is_within
 from fused_render.fusedcli import (
+    CUSTOM_WORKBENCH_ENV,
     WORKBENCH_ENV_CHOICES,
     WORKBENCH_ENV_VAR,
     child_env,
     cli_error,
     fused_cli,
+    set_fused_env,
     workbench_env,
     workbench_env_locked,
 )
@@ -117,7 +126,38 @@ router = APIRouter()
 
 # `fused canvas list/whoami` are one control-plane call each.
 LIST_TIMEOUT = 30.0
-WHOAMI_TIMEOUT = 20.0
+# 40 s, not 20: the CLI child is an interpreter importing `fused` before one
+# round trip, and on a loaded Mac (load avg 20+, 2026-10-23) that alone took
+# 17 s — the old 20 s tripped, the workspace bannered, and the workbench frame
+# never loaded. The answer is the user's handle, which does not change.
+WHOAMI_TIMEOUT = 40.0
+# …and that answer is kept for an hour rather than 45 s: every reopen of a
+# canvas within the hour frames the workbench without spawning anything.
+_WHOAMI_CACHE_TTL_S = 3600.0
+# whoami / list / token each spawn an interpreter (importing `fused`) for a
+# control-plane answer that rarely changes: the parsed RESULT is reused this
+# long (see `_cached_cli`). Errors are never reused.
+_CLI_CACHE_TTL_S = 45.0
+# A token expiring within this window is not reused: re-running the shim
+# refreshes it.
+_TOKEN_EXPIRY_MARGIN_S = 120.0
+_CLI_CACHE_LOCK = threading.Lock()
+_cli_cache: dict[tuple, tuple[float, object]] = {}  # key -> (monotonic expiry, value)
+_cli_cache_gen = 0
+
+
+class _Flight:
+    """One in-flight computation other callers of the same key wait on."""
+
+    __slots__ = ("event", "result")
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.result = None
+
+
+_cli_flights: dict[tuple, _Flight] = {}
+
 # A pull downloads and extracts the canvas zip; canvases are small (source
 # files, not data), so a minute is generous headroom for a slow link.
 PULL_TIMEOUT = 180.0
@@ -126,7 +166,11 @@ PUSH_TIMEOUT = 180.0
 TOKEN_TIMEOUT = 30.0
 # `fused login` blocks on its browser callback; its own HTTP server times out
 # after ~30s per request, but give the child room for slow human sign-ins.
-LOGIN_CHILD_TIMEOUT = 600.0
+# Five minutes: long enough to find the window and a password manager, short
+# enough that an abandoned or wedged attempt frees the page (and the one-at-a-
+# time login slot) before the person gives up on it. The page watches
+# `login_in_flight` and reports the timeout when the child dies at this mark.
+LOGIN_CHILD_TIMEOUT = 300.0
 # Quiet period after the last observed file change before a push fires.
 DEBOUNCE_S = 1.5
 # Folder fingerprint poll cadence.
@@ -153,11 +197,8 @@ _FRESH_WINDOW_S = 10.0
 # here also keeps the name safe as a path segment and an argv element.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
-# How long the manual push/pull endpoints wait for the manager's _flight_lock
-# (and a push or pull for each short _op_lock phase) before giving up with a
-# 409. Short on purpose: the caller is a Claude session that just asked to
-# publish, and "a sync operation is in flight, try again" is a better answer
-# than a request that hangs for the whole PUSH_TIMEOUT.
+# How long the manual pull endpoint waits for the manager's _flight_lock (and a
+# push or pull for each short _op_lock phase) before giving up with a 409.
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
 # How long /api/canvases/snapshot waits on _op_lock before answering 409.
 SNAPSHOT_LOCK_WAIT_S = 1.0
@@ -167,13 +208,6 @@ SNAPSHOT_LOCK_WAIT_S = 1.0
 STOP_JOIN_S = 5.0
 # SIGTERM → SIGKILL grace for a push CLI the quit rung stops.
 PUSH_TERMINATE_GRACE_S = 2.0
-# How long a file the embed created WITHOUT its node (a snapshot's
-# `new_files` slug missing from `nodes`: the stale-closure race) waits for the
-# workbench's own row before the host invents one. Synthesizing at once put a
-# made-up position into the frame by delta and the new node jumped. Within the
-# grace the file is left out of deltas and the push is held; past it the row
-# is synthesized as for any orphan.
-ROWLESS_GRACE_S = 5.0
 
 # The Fused environment is part of a canvas's IDENTITY, not a process-wide
 # knob. The `<env>` segment of `~/Fused/canvas/<env>/<name>` (D1382) is what
@@ -187,7 +221,10 @@ ROWLESS_GRACE_S = 5.0
 # share uploads — so it is read here in four places only: the status payload,
 # the FUSED_RENDER_WORKBENCH_URL override, the FUSED_RENDER_WORKBENCH_ENV pin
 # (`_require_env`), and the env-less credential calls (`_auth_env`). Never
-# frozen into a module constant: the preference moves at runtime.
+# frozen into a module constant: the preference moves at runtime. The third
+# env, `custom` (fusedcli.CUSTOM_WORKBENCH_ENV), is no Fused of its own: its
+# runs get FUSED_ENV unset so the CLI keeps `~/.fused/settings.toml`'s
+# endpoint, and its iframe loads that endpoint's web origin.
 
 # Cap on the per-line push-error transcript kept for the UI and the fix
 # session — enough for any real validation report (one line per problem plus
@@ -204,6 +241,159 @@ _ENV_WEB_URLS = {
 }
 
 
+# fused's own settings files, in its load order (fused `_options.py`
+# OPTIONS_PATH, then OPTIONS_JSON_PATH): where the custom environment's
+# endpoint comes from. Read here, not by importing fused, because the server
+# never imports fused (every fused call is a subprocess) and these are read
+# per status call — cheap, and an edit to the file shows on the next one.
+_FUSED_SETTINGS_FILES = ("~/.fused/settings.toml", "~/.fused/settings.json")
+# fused's `Options.base_url` default — what an absent file or key means.
+_FUSED_DEFAULT_API_URL = "https://www.fused.io/server/v1"
+# fused's `Options.base_web_url`: the hosted API URLs whose web origin is not
+# simply the API URL's own origin. Anything else is `scheme://netloc`.
+_FUSED_API_WEB_URLS = {
+    "https://staging.fused.io/server/v1": "https://staging.fused.io",
+    "https://unstable.fused.io/server/v1": "https://unstable.fused.io",
+    "http://localhost:8783/v1": "http://localhost:3000",
+}
+
+
+def _fused_settings() -> dict:
+    """The settings fused loads from `~/.fused/settings.toml` (else
+    `settings.json`), or {} — what a custom-environment run, with FUSED_ENV
+    unset, actually uses. Like fused, a file that does not parse is skipped
+    for the next one."""
+    for raw in _FUSED_SETTINGS_FILES:
+        path = os.path.expanduser(raw)
+        try:
+            with open(path, "rb") as fh:
+                data = tomllib.load(fh) if path.endswith(".toml") else json.load(fh)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:  # TOMLDecodeError is a ValueError
+            logger.warning("could not read %s for the custom canvas environment: %s",
+                           path, exc)
+            continue
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def fused_settings_base_url() -> str:
+    """The API `base_url` fused loads from its settings file, else fused's
+    default (a parsed file without `base_url` means the default)."""
+    value = _fused_settings().get("base_url")
+    return value if isinstance(value, str) and value else _FUSED_DEFAULT_API_URL
+
+
+def _fused_settings_credentials_path() -> str:
+    """Where a custom-environment run keeps its `fused login` credentials:
+    the settings file's `[auth] credentials_path` (a custom deployment has its
+    own Auth0 tenant, D1412), else fused's `AuthOptions` default."""
+    auth = _fused_settings().get("auth")
+    value = auth.get("credentials_path") if isinstance(auth, dict) else None
+    return value if isinstance(value, str) and value else "~/.fused/credentials"
+
+
+def fused_settings_embed_proxy() -> bool | None:
+    """`[render] canvases_embed_proxy_enabled` in the settings file: True or
+    False when the file sets it (it then wins over the Preferences switch,
+    shell/prefs.py), None when it does not. fused ignores a table it does not
+    know, so the deployment's own file can carry it."""
+    render = _fused_settings().get("render")
+    value = render.get("canvases_embed_proxy_enabled") if isinstance(render, dict) else None
+    return value if isinstance(value, bool) else None
+
+
+def fused_settings_present() -> bool:
+    """Whether there is a `~/.fused/settings.toml` (or `settings.json`) for
+    the custom environment to follow."""
+    return any(os.path.isfile(os.path.expanduser(raw)) for raw in _FUSED_SETTINGS_FILES)
+
+
+def fused_settings_configured() -> bool:
+    """Whether the settings file actually points the custom environment
+    somewhere: present AND naming a `base_url`. Without one a custom run is
+    just prod under another clone folder. The Canvases page offers custom
+    regardless and opens the settings editor when this is false (the empty
+    file the editor starts from must NOT count as configured, or dismissing
+    it would leave custom silently equal to prod); the Settings picker
+    offers it too."""
+    value = _fused_settings().get("base_url")
+    return isinstance(value, str) and bool(value.strip())
+
+
+def fused_settings_path() -> str:
+    """The file the settings editor reads and writes: fused's TOML settings
+    file (the first in its load order), expanded."""
+    return os.path.expanduser(_FUSED_SETTINGS_FILES[0])
+
+
+def _read_fused_settings_text() -> tuple[str, bool]:
+    """(text, exists) of the TOML settings file. A missing file is ("", False);
+    one that cannot be read raises OSError for the caller to report."""
+    try:
+        with open(fused_settings_path(), encoding="utf-8") as fh:
+            return fh.read(), True
+    except FileNotFoundError:
+        return "", False
+
+
+def _write_fused_settings_text(text: str) -> None:
+    """Write the TOML settings file atomically (temp + os.replace): a status
+    poll reading it mid-write must never see half a file. The temp name is
+    unique per call (handlers run in FastAPI's threadpool, so two Saves can
+    overlap), and a failed write leaves no temp behind."""
+    path = fused_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=os.path.dirname(path),
+            prefix=f"{os.path.basename(path)}.", suffix=".tmp", delete=False,
+        ) as fh:
+            tmp = fh.name
+            fh.write(text)
+        os.replace(tmp, path)
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+
+
+def _create_fused_settings_empty() -> bool:
+    """Create the TOML settings file empty, exclusively. True when this call
+    created it; False when another writer (an overlapping open, a Save) got
+    there first — in which case the caller re-reads rather than clobbering
+    what was just written."""
+    path = fused_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        return False
+    return True
+
+
+def _fused_settings_web_url() -> str:
+    """The workbench origin for `fused_settings_base_url()`, by fused's own
+    `Options.base_web_url` rule."""
+    api = fused_settings_base_url()
+    known = _FUSED_API_WEB_URLS.get(api)
+    if known:
+        return known
+    try:
+        parts = urllib.parse.urlparse(api)
+        parts.port  # noqa: B018 — raises on a non-numeric port, which `new URL()` rejects
+    except ValueError:  # e.g. an unclosed IPv6 bracket, `https://[::1`, or `host:bogus`
+        return _ENV_WEB_URLS["prod"]
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return _ENV_WEB_URLS["prod"]
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 # The pinned env's workbench origin override (dev recipe: a local workbench).
 _WORKBENCH_URL_VAR = "FUSED_RENDER_WORKBENCH_URL"
 
@@ -217,10 +407,13 @@ def workbench_base_url(env: str) -> str:
     (localhost:3000) standing in for unstable. Keyed off the mutable DEFAULT
     instead, flipping the preference to prod would dress prod canvases in
     that local frame; without a pin the var is ignored
-    (`log_url_override_without_pin` says so once at startup)."""
+    (`log_url_override_without_pin` says so once at startup). The custom
+    env's origin comes from `~/.fused/settings.toml` (`_fused_settings_web_url`)."""
     override = os.environ.get(_WORKBENCH_URL_VAR)
     if override and workbench_env_locked() and env == workbench_env():
         return override
+    if env == CUSTOM_WORKBENCH_ENV:
+        return _fused_settings_web_url()
     return _ENV_WEB_URLS.get(env, "https://www.fused.io")
 
 
@@ -232,6 +425,53 @@ def log_url_override_without_pin() -> None:
     if os.environ.get(_WORKBENCH_URL_VAR) and not workbench_env_locked():
         logger.warning("%s is ignored without %s: the URL override applies only to "
                        "the pinned environment", _WORKBENCH_URL_VAR, WORKBENCH_ENV_VAR)
+
+
+def _embed_proxy_wanted() -> bool:
+    """The custom env's embed goes through the loopback proxy
+    (canvas_embed_proxy.py) when the preference is on and custom is usable."""
+    from fused_render.shell.prefs import canvases_embed_proxy_enabled
+
+    return canvases_embed_proxy_enabled() and fused_settings_present()
+
+
+def _custom_token() -> str:
+    """The proxy's token source: the custom env's own login, or an exception
+    whose text the proxy relays as a 502 (it runs off the event loop)."""
+    token, problem, _status = access_token(CUSTOM_WORKBENCH_ENV)
+    if token is None:
+        raise RuntimeError(problem or "could not read the fused access token")
+    return token
+
+
+def _custom_creds_sig() -> tuple | None:
+    """The proxy's credentials stamp: a sign-out, sign-in or account switch
+    on the custom env changes it, and the proxy drops its cached token."""
+    return _creds_sig(CUSTOM_WORKBENCH_ENV)
+
+
+def _apply_embed_proxy() -> None:
+    """Start, retarget or stop the proxy to match the preference and the
+    settings file's current origin. Idempotent; called from status."""
+    from fused_render.canvas_embed_proxy import controller
+
+    if _embed_proxy_wanted():
+        controller.apply(workbench_base_url(CUSTOM_WORKBENCH_ENV), _custom_token,
+                         _custom_creds_sig)
+    else:
+        controller.apply(None, None)
+
+
+def embed_base_url(env: str) -> str:
+    """The origin the workspace frames for `env` and posts its messages to:
+    `workbench_base_url(env)`, except the custom env while its proxy runs."""
+    if env == CUSTOM_WORKBENCH_ENV:
+        from fused_render.canvas_embed_proxy import controller
+
+        url = controller.url()
+        if url:
+            return url
+    return workbench_base_url(env)
 
 
 def _cli_env(cli, env: str) -> dict[str, str]:
@@ -257,9 +497,12 @@ def _cli_env(cli, env: str) -> dict[str, str]:
     the interception. So the push POSTed back to /api/canvases/sync/push, was
     refused because a push was already running (itself), and recorded that
     refusal as a CLI failure: push_state "error" with push_seq stuck at 0.
+
+    The custom env gets FUSED_ENV REMOVED (`set_fused_env`), so the CLI keeps
+    the endpoint `~/.fused/settings.toml` names.
     """
     child = child_env(cli)
-    child["FUSED_ENV"] = env
+    set_fused_env(child, env)
     child[_canvas_push_internal_env()] = "1"
     return child
 
@@ -271,7 +514,8 @@ def _auth_env() -> str:
     whoami` under both), so between them the choice is moot; the DEFAULT env
     is used so that a FUSED_RENDER_WORKBENCH_ENV pin to a dev/PR environment
     (fused's `_dev_auth`: its own tenant and `credentials-dev` store) signs in
-    where that environment reads."""
+    where that environment reads. A custom default runs with FUSED_ENV unset
+    (`_cli_env`), so it signs in wherever `~/.fused/settings.toml` points."""
     return workbench_env()
 
 
@@ -392,19 +636,110 @@ def _kick_workbench_skills() -> None:
                      daemon=True).start()
 
 
-def _credentials_file() -> str:
-    # The `fused login` store (fused-py _options.py: ~/.fused/credentials).
-    # The env override is ours (tests, relocated stores) — the fused package
-    # itself points elsewhere only via its settings file.
-    return os.environ.get("FUSED_RENDER_FUSED_CREDENTIALS") or os.path.expanduser(
-        "~/.fused/credentials"
-    )
+def credentials_file(env: str | None = None) -> str:
+    # The `fused login` store `env`'s runs read (None = the auth env, the
+    # default). prod/unstable: fused's default ~/.fused/credentials —
+    # `fused._env()` resets `[auth]` to the hosted tenant. custom: FUSED_ENV is
+    # unset, so fused keeps the settings file's `[auth] credentials_path`.
+    # The env override is ours (tests, relocated stores) and wins for all.
+    override = os.environ.get("FUSED_RENDER_FUSED_CREDENTIALS")
+    if override:
+        return override
+    if (env or _auth_env()) == CUSTOM_WORKBENCH_ENV:
+        return os.path.expanduser(_fused_settings_credentials_path())
+    return os.path.expanduser("~/.fused/credentials")
 
 
-def _logged_in() -> bool:
+def _logged_in(env: str | None = None) -> bool:
     # Presence-only: the CLI refreshes an expired-but-refreshable token
     # silently; the CLI stays the authority at action time.
-    return os.path.isfile(_credentials_file())
+    return os.path.isfile(credentials_file(env))
+
+
+def _creds_sig(env: str | None = None) -> tuple | None:
+    """`(mtime_ns, size)` of the credentials store, None when absent. A login,
+    logout or on-disk token refresh changes it, which invalidates cached CLI
+    results by construction."""
+    try:
+        st = os.stat(credentials_file(env))
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _cli_cache_clear() -> None:
+    global _cli_cache_gen
+    with _CLI_CACHE_LOCK:
+        _cli_cache.clear()
+        _cli_cache_gen += 1
+
+
+def _fresh(result):
+    """A result with its payload deep-copied (`api_canvases_list` mutates its
+    entries, so a hit must never hand out the stored object)."""
+    if result is not None and result[0] == "ok":
+        return ("ok", copy.deepcopy(result[1]))
+    return result
+
+
+def _cached_cli(kind: str, env: str, compute, ttl_for=None):
+    """Run `compute()` once per (kind, env, credentials signature) per TTL, and
+    share one run between concurrent callers (single flight).
+
+    `compute()` returns `("ok", payload)` or `("err", message, status)`; the
+    same shape comes back, payload deep-copied on every return. Errors reach
+    the running caller and its current waiters but are never stored. `ttl_for(
+    payload)` overrides the TTL (<= 0 means do not store)."""
+    key = (kind, env, _creds_sig(env))
+    with _CLI_CACHE_LOCK:
+        hit = _cli_cache.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return _fresh(("ok", hit[1]))
+        flight = _cli_flights.get(key)
+        leader = flight is None
+        if leader:
+            flight = _cli_flights[key] = _Flight()
+            gen = _cli_cache_gen
+    if not leader:
+        flight.event.wait(TOKEN_TIMEOUT + LIST_SHIM_TIMEOUT)
+        if flight.result is not None:
+            return _fresh(flight.result)
+        return _fresh(compute())
+    result = None
+    try:
+        result = compute()
+        return _fresh(result)
+    finally:
+        flight.result = result
+        flight.event.set()
+        with _CLI_CACHE_LOCK:
+            if _cli_flights.get(key) is flight:
+                del _cli_flights[key]
+        if result is not None and result[0] == "ok" and gen == _cli_cache_gen:
+            ttl = ttl_for(result[1]) if ttl_for is not None else _CLI_CACHE_TTL_S
+            if ttl > 0:
+                # The child may have refreshed the credentials file, which
+                # changes its signature: store under the POST signature so the
+                # next call (which reads the new one) hits.
+                post_key = (kind, env, _creds_sig(env))
+                # Credentials gone WHILE the child ran (a logout): the answer
+                # is already stale, so a long TTL (whoami's hour) is capped
+                # to the default — the next minute re-asks (CodeRabbit #1918).
+                if post_key[2] is None:
+                    ttl = min(ttl, _CLI_CACHE_TTL_S)
+                with _CLI_CACHE_LOCK:
+                    if gen == _cli_cache_gen:
+                        _cli_cache[post_key] = (
+                            time.monotonic() + ttl, copy.deepcopy(result[1]))
+
+
+def _err_of(response: JSONResponse) -> tuple:
+    """`("err", message, status)` from an `_error(...)` response."""
+    try:
+        message = json.loads(response.body)["error"]
+    except (ValueError, KeyError, TypeError):
+        message = "request failed"
+    return ("err", message, response.status_code)
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -484,10 +819,20 @@ def _run_cli(args: list[str], timeout: float,
 class _ActiveLogin:
     proc: subprocess.Popen
     started_at: float
+    # The credentials store this login writes (`credentials_file(env)`): prod
+    # and unstable share one, custom's may be its own (D1412). Reuse, status
+    # and logout match on it, never on "a login is running".
+    store: str
 
 
 _LOGIN_LOCK = threading.Lock()
 _active_login: _ActiveLogin | None = None
+
+
+def _login_for(store: str) -> _ActiveLogin | None:
+    """The live login child if it writes `store`, else None."""
+    login = _reap_login()
+    return login if login is not None and login.store == store else None
 
 
 def _reap_login() -> _ActiveLogin | None:
@@ -506,49 +851,162 @@ def _watch_login(login: _ActiveLogin) -> None:
     except subprocess.TimeoutExpired:
         login.proc.kill()
         login.proc.wait()
+    # Whoever the login now belongs to, earlier whoami/list/token answers are stale.
+    _cli_cache_clear()
+
+
+def _status_auth_env(env: str) -> str:
+    """The env whose login `/api/canvases/status?env=` reports: `env` when it
+    is one this process serves, else the auth env. Lenient on purpose — the
+    catalog asks with its URL's pick before it knows about a pin, and a cheap
+    unguarded read should not 400 over that; `auth_env` in the answer says
+    which login was described."""
+    if env:
+        value, bad = _require_env(env)
+        if bad is None:
+            return value
+    return _auth_env()
 
 
 @router.get("/api/canvases/status")
-def api_canvases_status():
+def api_canvases_status(env: str = ""):
     """Cheap local read: CLI presence, login-file presence, in-flight login,
     and per environment its workbench origin, clone folder and clone count.
 
-    Env-less on purpose: one credentials file serves both environments, and
-    the page needs every env's `base_url` (the workspace's iframe and
-    postMessage origin) and counts (the Preferences row) in one read. The
+    `logged_in` / `creds_stamp` describe ONE environment's `fused login`
+    store: `env`'s when given (the catalog names its pick), else the default
+    env's. prod and unstable share one store; custom has its own
+    (`credentials_file`). The rest is every env at once: the page needs each
+    env's `base_url` (the workspace's iframe and postMessage origin) and
+    counts (the Preferences row) in one read. The
     username needed for the workbench slug URL is NOT here — it costs a
     control-plane call per env, so it lives behind guarded
     /api/canvases/whoami?env= instead.
     """
     cli = fused_cli()
+    auth_env = _status_auth_env(env)
     try:
-        stamp = os.path.getmtime(_credentials_file())
+        stamp = os.path.getmtime(credentials_file(auth_env))
     except OSError:
         stamp = None
+    # The one place the embed proxy's lifecycle is driven: every page that
+    # frames a canvas reads status first, so the proxy is up (or retargeted
+    # after a settings.toml edit) by the time `embed_url` below is used.
+    _apply_embed_proxy()
     return {
         "cli_found": cli is not None,
-        "logged_in": _logged_in(),
+        "logged_in": _logged_in(auth_env),
+        # Which env's login the two fields around this describe.
+        "auth_env": auth_env,
         # Credentials-file mtime: a re-login over a STALE-but-present store
         # never flips logged_in, so the client watches this stamp change to
         # know the browser flow completed.
         "creds_stamp": stamp,
-        "login_in_flight": _reap_login() is not None,
+        # Only a login writing THIS store: another env's sign-in in the
+        # browser is not one this answer's `logged_in` will flip on.
+        "login_in_flight": _login_for(credentials_file(auth_env)) is not None,
         # The DEFAULT environment (the catalog's initial pick), and whether
         # FUSED_RENDER_WORKBENCH_ENV pins it — the catalog then disables its
         # environment picker, since `_require_env` refuses the other env.
         "workbench_env": workbench_env(),
         "locked": workbench_env_locked(),
         # Clone counts are a local listdir, no CLI — informational on the
-        # Preferences row.
+        # Preferences row. `available` is false only for custom whose
+        # settings file names no `base_url` (`fused_settings_configured`):
+        # both pickers still offer it; the Canvases page opens the settings
+        # editor instead of the sign-in.
         "envs": {
             env: {
                 "base_url": workbench_base_url(env),
+                # Where the workspace's iframe loads from and posts to: the
+                # workbench origin itself, or — custom env, embed proxy on —
+                # the loopback proxy standing in front of it.
+                "embed_url": embed_base_url(env),
                 "canvases_dir": canvases_root(env),
                 "cloned_count": len(_cloned_names(env)),
+                "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_configured(),
             }
             for env in WORKBENCH_ENV_CHOICES
         },
+        # Where the custom environment's settings live — what the Canvases
+        # page's editor shows the reader.
+        "settings_path": fused_settings_path(),
     }
+
+
+@router.post("/api/canvases/settings/open")
+def api_canvases_settings_open(x_fused: str | None = Header(default=None)):
+    """The settings editor's read: the TOML settings file's text, creating
+    it EMPTY when there is none so the reader is editing a real file at a
+    real path from the first keystroke. An empty file configures nothing
+    (`fused_settings_configured`), so creating it changes no answer."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        text, exists = _read_fused_settings_text()
+        created = False
+        if not exists:
+            created = _create_fused_settings_empty()
+            if not created:
+                text, _ = _read_fused_settings_text()
+    except OSError as exc:
+        return _error(f"could not open {fused_settings_path()}: {exc}", 500)
+    return {"path": fused_settings_path(), "text": text, "created": created,
+            "configured": fused_settings_configured()}
+
+
+@router.post("/api/canvases/settings/save")
+def api_canvases_settings_save(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Write the TOML settings file. Parsed first, so a paste that is not
+    TOML is refused with the parser's own sentence (400) and the file on disk
+    stays what it was; fused itself would silently skip an unparsable file
+    and fall through to prod."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    text = body.get("text")
+    if not isinstance(text, str):
+        return _error("'text' must be a string")
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return JSONResponse({"error": f"not valid TOML: {exc}", "code": "invalid_toml"},
+                            status_code=400)
+    try:
+        _write_fused_settings_text(text)
+    except OSError as exc:
+        return _error(f"could not write {fused_settings_path()}: {exc}", 500)
+    # Cached CLI answers (whoami, listings) were computed against the old
+    # endpoint; the next call must run afresh.
+    _cli_cache_clear()
+    base_url = data.get("base_url")
+    return {"ok": True, "path": fused_settings_path(),
+            "configured": fused_settings_configured(),
+            "base_url": base_url if isinstance(base_url, str) else None,
+            "web_url": workbench_base_url(CUSTOM_WORKBENCH_ENV)}
+
+
+@router.post("/api/canvases/settings/delete")
+def api_canvases_settings_delete(x_fused: str | None = Header(default=None)):
+    """Remove the TOML settings file: the custom environment goes back to
+    unconfigured and the Canvases page offers the editor again. Only the
+    TOML file — a `settings.json` beside it is fused's own fallback and not
+    something this editor wrote. An already-missing file is a no-op."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = fused_settings_path()
+    try:
+        os.remove(path)
+        removed = True
+    except FileNotFoundError:
+        removed = False
+    except OSError as exc:
+        return _error(f"could not delete {path}: {exc}", 500)
+    _cli_cache_clear()
+    return {"ok": True, "path": path, "removed": removed,
+            "configured": fused_settings_configured()}
 
 
 def _cloned_names(env: str) -> set[str]:
@@ -564,6 +1022,23 @@ def _cloned_names(env: str) -> set[str]:
     except OSError:
         return set()
     return {d for d in entries if os.path.isfile(os.path.join(root, d, "canvas.toml"))}
+
+
+def cloned_canvases() -> list[tuple[str, str, str]]:
+    """Every clone on this machine, both environments: ``(env, name,
+    clone_dir)`` in env order (`WORKBENCH_ENV_CHOICES`), names sorted
+    casefold within an env. The launcher's canvas rows (launcher.py): a
+    clone is findable by typing whether or not it is on the desk, the way
+    a workspace app is. The clone rule is `_cloned_names`'s (a dir holding
+    a canvas.toml); a root that is missing or unreadable is simply empty."""
+    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
+
+    out: list[tuple[str, str, str]] = []
+    for env in WORKBENCH_ENV_CHOICES:
+        for name in sorted(_cloned_names(env), key=str.casefold):
+            if _NAME_RE.match(name):
+                out.append((env, name, _canvas_dir(env, name)))
+    return out
 
 
 def clone_dir_for(path: str) -> tuple[str, str, str] | None:
@@ -595,7 +1070,7 @@ def clone_dir_for(path: str) -> tuple[str, str, str] | None:
     for env in WORKBENCH_ENV_CHOICES:
         root = canvases_root(env)
         for base in {os.path.normpath(root), os.path.realpath(root)}:
-            if cand == base or not cand.startswith(base + os.sep):
+            if not is_within(cand, base, strict=True):
                 continue
             name = cand[len(base) + 1:].split(os.sep)[0]
             if not _NAME_RE.match(name):
@@ -623,45 +1098,83 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
         env, bad = _require_env(env)
         if bad is not None:
             return bad
-    proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
-    if err is not None:
-        return err
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError:
-        return _error(
-            f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
-            502,
+
+    def compute():
+        proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
+        if err is not None:
+            return _err_of(err)
+        try:
+            data = json.loads(proc.stdout)
+        except ValueError:
+            return (
+                "err",
+                f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
+                502,
+            )
+        if not isinstance(data, dict):
+            return ("err", "unexpected `fused whoami` payload", 502)
+        # The slug URL needs the user's handle; the payload's field name has
+        # drifted historically, so take the first plausible one.
+        handle = next(
+            (
+                data[key]
+                for key in ("handle", "username", "user_name", "nickname")
+                if isinstance(data.get(key), str) and data[key]
+            ),
+            None,
         )
-    if not isinstance(data, dict):
-        return _error("unexpected `fused whoami` payload", 502)
-    # The slug URL needs the user's handle; the payload's field name has
-    # drifted historically, so take the first plausible one.
-    handle = next(
-        (
-            data[key]
-            for key in ("handle", "username", "user_name", "nickname")
-            if isinstance(data.get(key), str) and data[key]
-        ),
-        None,
+        return ("ok", {"handle": handle, "raw": data})
+
+    # An hour only for an answer WITH a handle; a logged-out "no handle" keeps
+    # the short default so a login lands within a minute.
+    result = _cached_cli(
+        "whoami", env, compute,
+        lambda payload: _WHOAMI_CACHE_TTL_S if payload.get("handle") else _CLI_CACHE_TTL_S,
     )
-    return {"handle": handle, "raw": data}
+    if result[0] == "err":
+        return _error(result[1], result[2])
+    return result[1]
+
+
+def _optional_env(env: str) -> tuple[str | None, JSONResponse | None]:
+    """A credential call's env: validated when given (400/423), else the auth
+    env. Credentials are per env only through custom's own `[auth]`, so the
+    callers that just mean "this machine's Fused login" (Settings, Share)
+    omit it."""
+    if not env:
+        return _auth_env(), None
+    return _require_env(env)
 
 
 @router.post("/api/canvases/login")
-def api_canvases_login(x_fused: str | None = Header(default=None)):
+def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)):
+    """Start the browser `fused login` for `env` (default: the auth env).
+    A custom deployment signs in against the settings file's `[auth]`
+    tenant, and only a run with FUSED_ENV unset (`_cli_env`) reads it. One
+    login at a time, whatever its env."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    env, bad = _optional_env(env)
+    if bad is not None:
+        return bad
     cli = fused_cli()
     if cli is None:
         return _no_cli_error()
     global _active_login
+    store = credentials_file(env)
     with _LOGIN_LOCK:
         login = _active_login
+        if login is not None and login.proc.poll() is None and login.store != store:
+            # One browser sign-in at a time, and this one writes another
+            # store: reusing it would leave the caller waiting on a stamp that
+            # never changes; killing it would drop a sign-in someone is
+            # mid-way through.
+            return _busy("a Fused sign-in for another environment is already waiting "
+                         "in the browser — finish or cancel it first")
         if login is None or login.proc.poll() is not None:
-            env = _cli_env(cli, _auth_env())
-            env["PYTHONUNBUFFERED"] = "1"
+            child = _cli_env(cli, env)
+            child["PYTHONUNBUFFERED"] = "1"
             # The CLI's own login gives the browser only 30s before its
             # callback server dies (fused.workbench._auth), which loses real
             # human sign-ins. When the CLI is our own interpreter, run the
@@ -683,11 +1196,12 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    env=env,
+                    env=child,
                 )
             except OSError as e:
                 return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
-            login = _ActiveLogin(proc=proc, started_at=time.time())
+            _cli_cache_clear()
+            login = _ActiveLogin(proc=proc, started_at=time.time(), store=store)
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
     return {"ok": True, "login_in_flight": True}
@@ -708,8 +1222,14 @@ def api_canvases_login_cancel(x_fused: str | None = Header(default=None)):
 
 
 @router.get("/api/canvases/token")
-def api_canvases_token(x_fused: str | None = Header(default=None)):
+def api_canvases_token(env: str = "", x_fused: str | None = Header(default=None)):
     """The `fused login` access token, for seeding the workbench iframe.
+
+    `env` is the CANVAS's environment, and the token comes from that env's
+    login: the iframe is that env's workbench origin, so a custom canvas must
+    get the custom deployment's own `[auth]` token — never the hosted one,
+    which its tenant would reject and which must not be handed to another
+    origin (D1412). Omitted, it is the auth env (older callers).
 
     Guarded (D36): this hands a real credential to the caller — the loopback
     trust model means any local page could otherwise read it with a blind GET.
@@ -727,41 +1247,77 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    if not _logged_in():
-        return _error("not signed in to Fused — sign in from the Canvases page", 409)
+    env, bad = _optional_env(env)
+    if bad is not None:
+        return bad
+    token, problem, status = access_token(env)
+    if token is None:
+        return _error(problem or "could not read the fused access token", status)
+    return {"access_token": token}
+
+
+def access_token(env: str) -> tuple[str | None, str | None, int]:
+    """`env`'s `fused login` access token, refreshed through the package's
+    own child when the CLI is our interpreter: `(token, None, 200)`, or
+    `(None, reason, http_status)`. Shared by /api/canvases/token and the
+    custom env's embed proxy (canvas_embed_proxy.py), so the two never
+    disagree on which store an env reads or how a refresh runs."""
+    if not _logged_in(env):
+        return None, "not signed in to Fused — sign in from the Canvases page", 409
     cli = fused_cli()
     if cli is not None and not cli.external:
         shim = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fused_token.py")
-        try:
-            proc = subprocess.run(
-                [sys.executable, shim],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=TOKEN_TIMEOUT,
-                env=_cli_env(cli, _auth_env()),
-            )
-        except subprocess.TimeoutExpired:
-            return _error(f"token refresh timed out after {int(TOKEN_TIMEOUT)}s", 502)
-        except OSError as e:
-            return _error(f"could not run the token helper: {e}", 502)
-        if proc.returncode != 0:
-            return _error(cli_error(proc.stderr, "could not read the fused access token"), 502)
-        token = proc.stdout.strip()
-        if not token:
-            return _error("the token helper printed nothing", 502)
-        return {"access_token": token}
+
+        def compute():
+            try:
+                proc = subprocess.run(
+                    [sys.executable, shim],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=TOKEN_TIMEOUT,
+                    env=_cli_env(cli, env),
+                    close_fds=False,
+                )
+            except subprocess.TimeoutExpired:
+                return ("err", f"token refresh timed out after {int(TOKEN_TIMEOUT)}s", 502)
+            except OSError as e:
+                return ("err", f"could not run the token helper: {e}", 502)
+            if proc.returncode != 0:
+                return ("err", cli_error(proc.stderr, "could not read the fused access token"), 502)
+            token = proc.stdout.strip()
+            if not token:
+                return ("err", "the token helper printed nothing", 502)
+            return ("ok", token)
+
+        def ttl_for(_payload):
+            # Reuse only while the stored token stays comfortably valid: one
+            # expiring within the margin is re-run (which refreshes it).
+            try:
+                with open(credentials_file(env), encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                return 0
+            exp = _iso_epoch(data.get("expires_at")) if isinstance(data, dict) else None
+            if exp is None:
+                return 0
+            return min(_CLI_CACHE_TTL_S, exp - time.time() - _TOKEN_EXPIRY_MARGIN_S)
+
+        result = _cached_cli("token", env, compute, ttl_for)
+        if result[0] == "err":
+            return None, result[1], result[2]
+        return result[1], None, 200
     # External-CLI fallback: the raw store, no refresh.
     try:
-        with open(_credentials_file(), encoding="utf-8") as f:
+        with open(credentials_file(env), encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
-        return _error(f"could not read the fused credentials file: {e}", 502)
+        return None, f"could not read the fused credentials file: {e}", 502
     token = data.get("access_token") if isinstance(data, dict) else None
     if not isinstance(token, str) or not token:
-        return _error("the fused credentials file has no access token", 502)
-    return {"access_token": token}
+        return None, "the fused credentials file has no access token", 502
+    return token, None, 200
 
 
 # -- listing and cloning -----------------------------------------------------------
@@ -852,7 +1408,7 @@ def _rmtree_quiet(path: str) -> None:
 # merge base, and listed in .fusedignore so `canvas push` never uploads them.
 # The CLI's `pull --force` deletes them (they're not in the bundle), so every
 # pull path re-seeds afterwards.
-_SYNC_IGNORED_BASENAMES = frozenset({"CLAUDE.md", ".fusedignore"})
+_SYNC_IGNORED_BASENAMES = canvas_snapshot.IGNORED_BASENAMES
 
 _CLONE_FUSEDIGNORE = "CLAUDE.md\n.fusedignore\n"
 
@@ -940,6 +1496,8 @@ problem — fix them and push again.
 Push when a change set is COHERENT (e.g. a rename: the `.py` file *and* its
 `canvas.toml` entry), not after every edit.
 
+- A push that starts while another one runs waits for it, so the command
+  can take several minutes: give it a 600000 ms Bash timeout.
 - If you never push, nothing is lost: the watcher pushes the folder on its
   next tick once you stop working.
 - `--no-validate` / `--no-ignore` are refused here. Fix validation errors
@@ -972,6 +1530,9 @@ protection described above.
   canvas is rejected at push time and the error surfaces to the user.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
+  A file without a row gets a default row at push (write the row when its
+  place matters); to remove a node, delete its file and its row. A node
+  whose file is missing is removed from the server at the next push.
 - **Folders** are `[[canvas.nodes]]` rows with `type = "udf-folder"`. Give a
   folder row `udfName` equal to its `folderName`. Membership lives ONLY in
   the folder's `childUdfOrder` (the child rows' `udfName`s; one folder per
@@ -1026,15 +1587,20 @@ def _seed_clone_claude_files(target: str, name: str) -> None:
     cli = fused_cli()
     if cli is None or _shim_manifest_command(cli) is None:
         return
-    for basename, content in (
-        ("CLAUDE.md", _CLONE_CLAUDE_MD.format(name=name)),
-        (".fusedignore", _CLONE_FUSEDIGNORE),
-    ):
-        try:
-            with open(os.path.join(target, basename), "w", encoding="utf-8") as f:
-                f.write(content)
-        except OSError:
-            pass
+    try:
+        with open(os.path.join(target, "CLAUDE.md"), "w", encoding="utf-8") as f:
+            f.write(_CLONE_CLAUDE_MD.format(name=name))
+        with open(os.path.join(target, ".fusedignore"), "a+", encoding="utf-8",
+                  errors="replace") as f:
+            f.seek(0)
+            text = f.read()
+            add = [line for line in _CLONE_FUSEDIGNORE.splitlines()
+                   if line not in text.splitlines()]
+            if add:
+                f.write("\n" * bool(text and not text.endswith("\n"))
+                        + "".join(f"{line}\n" for line in add))
+    except OSError:
+        pass
 
 
 def _iso_epoch(value) -> float | None:
@@ -1050,6 +1616,22 @@ def _iso_epoch(value) -> float | None:
 
 
 def _list_entries(env: str):
+    """`_list_entries_uncached` behind the CLI result cache (see `_cached_cli`):
+    `(entries, error)`, errors never cached."""
+
+    def compute():
+        entries, err = _list_entries_uncached(env)
+        if err is not None:
+            return _err_of(err)
+        return ("ok", entries)
+
+    result = _cached_cli("list", env, compute)
+    if result[0] == "err":
+        return None, _error(result[1], result[2])
+    return result[1], None
+
+
+def _list_entries_uncached(env: str):
     """(entries, error) for `env`'s account: each entry is {name, id,
     preview_url, n_code_udfs, updated_at}.
 
@@ -1166,7 +1748,7 @@ def api_canvases_list(env: str = "", x_fused: str | None = Header(default=None))
     env, bad = _require_env(env)
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     canvases, err = _list_entries(env)
     if err is not None:
@@ -1229,7 +1811,7 @@ def api_canvases_previews(
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     ids = body.get("ids")
     if not isinstance(ids, list):
@@ -1301,34 +1883,110 @@ def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(def
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     proc, err = _run_cli(["workbench", "canvas", "create", name], LIST_TIMEOUT, env)
     if err is not None:
         return err
+    _cli_cache_clear()
+    try:
+        _seed_default_udf(env, name)
+    except Exception as e:  # noqa: BLE001 — best effort, see _seed_default_udf
+        logger.warning("canvas %s: starter UDF not seeded — %s", _sync_key(env, name), e)
     return {"ok": True, "name": name}
 
 
+# The starter UDF a new canvas opens with — the workbench's own
+# `constants/default_udf.py`, under the same `udf` name it gives it.
+_DEFAULT_UDF_NAME = "udf"
+# Per seed CLI call. The canvas is one tiny file; the create request waits on
+# both calls, so a stalled Fused costs seconds, not PULL_TIMEOUT twice.
+SEED_TIMEOUT = 45.0
+_DEFAULT_UDF_CODE = '''@fused.udf(cache_max_age="0s")
+def udf(name: str = "world"):
+    import pandas as pd
+
+    return pd.DataFrame({"hello": [name]})
+'''
+
+
+def _seed_default_udf(env: str, name: str) -> None:
+    """Give a just-created canvas its starter UDF ON THE SERVER, before
+    anything clones it.
+
+    `fused workbench canvas create` makes an EMPTY collection. The workbench
+    seeds a default UDF into an empty canvas client-side only (unsaved,
+    waiting on autosave), and in the embed the host's full disk state
+    (`fused-embed-hello` → delta, `full=1`) arrives first and removes every
+    UDF it does not name — so the starter flashed up and vanished. Seeding it
+    in the clone would not help: a fresh watcher adopts seconds-old files as
+    its clean baseline and never pushes them. So the canvas is pulled into a
+    scratch folder, the file and its row added, and pushed; the clone that
+    follows pulls a canvas that already holds it.
+
+    Best effort: a failure leaves the canvas created and empty (what it was
+    before this existed), logged, never a failed create."""
+    key = _sync_key(env, name)
+    with tempfile.TemporaryDirectory(prefix="fused-canvas-seed-") as scratch:
+        target = os.path.join(scratch, name)
+        _, err = _run_cli(
+            ["workbench", "canvas", "pull", name, "-o", target, "--force"], SEED_TIMEOUT, env
+        )
+        if err is not None:
+            logger.warning("canvas %s: starter UDF not seeded — pull failed: %s",
+                           key, err.body.decode("utf-8", "replace"))
+            return
+        try:
+            doc = canvas_snapshot._load_toml(os.path.join(target, "canvas.toml"))
+            # Not empty after all (a row, or any source file even without
+            # one): nothing to seed, and nothing of the user's to overwrite.
+            if canvas_snapshot.rows_of_doc(doc)["nodes"] or canvas_snapshot.node_files(target):
+                return
+            with open(os.path.join(target, f"{_DEFAULT_UDF_NAME}.py"), "w",
+                      encoding="utf-8") as f:
+                f.write(_DEFAULT_UDF_CODE)
+            canvas_snapshot.reconcile_rows(target)
+        except Exception as e:  # noqa: BLE001 — best effort, see docstring
+            logger.warning("canvas %s: starter UDF not seeded — %s", key, e)
+            return
+        _, err = _run_cli(
+            ["workbench", "canvas", "push", target, "--canvas", name], SEED_TIMEOUT, env
+        )
+        if err is not None:
+            logger.warning("canvas %s: starter UDF not seeded — push failed: %s",
+                           key, err.body.decode("utf-8", "replace"))
+
+
 @router.post("/api/canvases/logout")
-def api_canvases_logout(x_fused: str | None = Header(default=None)):
+def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    env, bad = _optional_env(env)
+    if bad is not None:
+        return bad
+    store = credentials_file(env)
     # A completing browser login could rewrite the credentials file right
-    # after we clear it — cancel it first.
-    login = _reap_login()
+    # after we clear it — cancel it first. Only one writing THIS store: a
+    # custom sign-out must not drop a hosted sign-in in progress.
+    login = _login_for(store)
     if login is not None:
         login.proc.terminate()
-    # Pause every watcher — both environments': they share the one
-    # credentials file — for the CLI call (no push/pull spam using
-    # about-to-be-cleared credentials) but don't stop them until logout
-    # actually succeeds — a failed logout leaves the user signed in, and
-    # stopping first would leave sync dead until a canvas is reopened.
+    # Pause every watcher on the store being cleared — prod's and unstable's
+    # share one; custom's may be its own (`credentials_file`) — for the CLI
+    # call (no push/pull spam using about-to-be-cleared credentials) but
+    # don't stop them until logout actually succeeds — a failed logout leaves
+    # the user signed in, and stopping first would leave sync dead until a
+    # canvas is reopened.
+
+    def on_store() -> list:
+        return [(key, m) for key, m in _syncs.items() if credentials_file(m.env) == store]
+
     with _SYNC_LOCK:
-        managers = list(_syncs.values())
+        managers = [m for _, m in on_store()]
     for manager in managers:
         manager.pause()
-    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT, _auth_env())
+    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT, env)
     if err is not None:
         # Still signed in — resume so sync keeps working until the user
         # retries. Resuming a manager we're about to stop (success path)
@@ -1337,10 +1995,12 @@ def api_canvases_logout(x_fused: str | None = Header(default=None)):
         for manager in managers:
             manager.resume(rebaseline=False)
         return err
+    _cli_cache_clear()
     with _SYNC_LOCK:
-        managers = list(_syncs.values())
-        _syncs.clear()
-    for manager in managers:
+        signed_out = on_store()
+        for key, _ in signed_out:
+            del _syncs[key]
+    for _, manager in signed_out:
         manager.stop()
     return {"ok": True}
 
@@ -1356,7 +2016,7 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     # Fetch/refresh the `workbench` skills, whose names the CLAUDE.md seeded
     # below uses (`workbench:canvas-toml` and friends), and publish the root for
@@ -1443,6 +2103,76 @@ def _agent_module():
     return project_queue.agent_module()
 
 
+def forget_file_sessions(files: list[str], *, backup=None, log=None) -> dict:
+    """Erase every Claude session that was opened on one of `files` — node
+    source files a canvas snapshot just deleted.
+
+    A node's chat is filed under its FILE (the explorer embed's per-file
+    sessions, `agent._cli_sessions`): delete `udf_2`, make a new `udf_2`, and
+    without this the new node's pane offers — and the Tasks page lists — every
+    conversation about the old one (owner, 2026-10-25: "the new udf_2 comes
+    back with all the claude context for the deleted udf_2"). The file is
+    gone, so the chats about it go the way `POST /api/tasks/erase` takes a
+    task: transcript, sidecars, triage, read marks, drafts (`tasks.erase_task`).
+
+    A session still RUNNING is left alone and reported (the erase route 409s
+    it too; its transcript is under a writing process). `backup(rel, bytes)`
+    receives each transcript before it goes. Returns `{erased: [sid],
+    skipped: [sid], files: n}`; never raises for one bad session."""
+    out: dict = {"erased": [], "skipped": [], "files": len(files)}
+    agent = _agent_module()
+    listing = getattr(agent, "_cli_sessions", None) if agent is not None else None
+    if listing is None:
+        return out
+    from fused_render.server.routers import tasks as tasks_router
+
+    collected: dict | None = None
+    for file in files:
+        try:
+            rows = listing(file, limit=None)
+        except Exception:  # noqa: BLE001 — one unreadable store, not a failure
+            logger.warning("canvas: listing sessions on %s failed", file, exc_info=True)
+            continue
+        for row in rows:
+            sid = str(row.get("id") or "")
+            if not sid:
+                continue
+            if row.get("running"):
+                out["skipped"].append(sid)
+                continue
+            if backup is not None and row.get("path"):
+                data = canvas_snapshot._read_bytes(row["path"])
+                if data is not None:
+                    backup(os.path.join("_sessions", str(row.get("backend") or "claude"),
+                                        sid + ".jsonl"), data)
+            if collected is None:
+                collected = tasks_router._collect()
+            task = collected.get(sid)
+            try:
+                if task is not None:
+                    tasks_router.erase_task(sid, task)
+                else:
+                    # A transcript the Tasks page does not list (not a task):
+                    # the files and the per-session state still go.
+                    _removed, _erased, failed, refused = tasks_router._erase_session_files(
+                        sid, row.get("path"))
+                    if failed or refused:
+                        # As the route: a transcript still on disk is not an
+                        # erased session, and its state stays with it.
+                        raise OSError(f"{failed + refused} session file(s) not removed")
+                    tasks_router.sessions.forget_triage(sid)
+                    tasks_router.tasks_store.forget_session(sid)
+            except Exception:  # noqa: BLE001 — HTTPException 409/500 included
+                logger.warning("canvas: erasing session %s on %s failed", sid, file,
+                               exc_info=True)
+                out["skipped"].append(sid)
+                continue
+            out["erased"].append(sid)
+    if log is not None and (out["erased"] or out["skipped"]):
+        log(f"node sessions erased={len(out['erased'])} skipped={len(out['skipped'])}")
+    return out
+
+
 class _SyncManager:
     """One watcher thread: fingerprint the clone folder, debounce, push.
 
@@ -1491,12 +2221,8 @@ class _SyncManager:
         self._flight_lock = threading.Lock()
         self._push_started_at: float | None = None
         self._push_proc: subprocess.Popen | None = None
-        # ROWLESS: slug → when an embed snapshot created its file with no node
-        # (ROWLESS_GRACE_S). Written under _op_lock by apply_snapshot, expired
-        # by the watcher tick: its own small lock.
-        self._rowless: dict[str, float] = {}
-        self._rowless_lock = threading.Lock()
-        self._rowless_hold_logged: frozenset = frozenset()
+        self._rowless: set[str] = set()
+        self._fileless: set[str] = set()
         # leg → the last folder-fix set logged (`_log_folder_fixes`).
         self._folder_fixes_logged: dict[str, frozenset] = {}
         self._pull_started_at: float | None = None
@@ -1546,9 +2272,17 @@ class _SyncManager:
         self._base_path = os.path.join(self.root, ".sync", f"{name}.json")
         self._base_files: dict[str, str] | None = None
         self._remote: dict | None = None
+        # The collection stamp the poll leg last downloaded a bundle for to
+        # check a stamp-only move (_stamp_only_move): one download per stamp,
+        # not one per poll while a real layout change stays unpulled.
+        self._stamp_checked: str | None = None
         # The compact rows of canvas.toml at the sync point (merge_toml's base).
         self._base_toml: dict | None = None
         self.merge_rollback_seq = 0
+        self._last_validate_output: list[str] = []
+        # `_adopt_converged_deletes`' memo of the server state whose merge
+        # rolled back, so the poll does not retry it every tick.
+        self._adopt_failed: tuple | None = None
         # Cached answer to "is a Claude session live in this clone?" — see
         # AGENT_LIVE_CACHE_S. Written by whichever of the watcher thread and a
         # status request asks first; a lost race just means one extra scan, so
@@ -1612,6 +2346,19 @@ class _SyncManager:
         # the old canvas straight back. The deadline keeps a frame that never
         # acks (closed, reloading) from fencing the clone for good.
         self._hard_fence: dict | None = None
+        # The body channel's own fence after a hard pull: the disk_rev the
+        # pull left, held until the frame ACKS a delta at or past it (or
+        # re-hydrates from the server). No deadline: a snapshot fenced too
+        # long is a lost layout edit, but a body let through would put the
+        # discarded text — or a file the pull removed, which hashes as the
+        # empty text — straight back. A frame that never acks posts nothing
+        # worth taking.
+        self._body_fence_rev: int | None = None
+        # Body channel (canvas_snapshot.body_hash): node → the hash of the text
+        # this channel last wrote for it. A body whose `base_hash` is that hash
+        # overwrites the frame's own previous write, so nothing goes to trash;
+        # any other base (Claude's text, a pull) is trashed before the write.
+        self._body_written: dict[str, str] = {}
         self._load_base()
         # Bumped on every `_fingerprint` assignment (the property below), so the
         # scan can tell that a pull or push re-baselined while it was walking.
@@ -1630,6 +2377,10 @@ class _SyncManager:
         # than that.
         now = time.time()
         fresh = all(now - mtime < _FRESH_WINDOW_S for mtime, _ in self._fingerprint.values())
+        try:
+            canvas_snapshot.add_canvas_type(self.dir)
+        except Exception as exc:
+            self.log_event("server_to_disk", "type not added", ok=False, detail=str(exc))
         self._dirty_since: float | None = None if fresh else now
         self.push_state = "idle" if fresh else "pending"  # idle | pending | pushing | error
         self._last_pull_poll = time.time()
@@ -1827,12 +2578,13 @@ class _SyncManager:
 
     # -- sync-point state (merge base + remote manifest) -------------------
 
-    def _take_file_hashes(self) -> dict[str, str]:
-        """Per-file md5 of the clone, same walk/skip rules as the
-        fingerprint (relpaths are os-native, matching zip relpaths after
-        os.path.join normalization on this platform)."""
+    def _take_file_hashes(self, top: str) -> dict[str, str]:
+        """Per-file md5 of `top` (the clone, or the frozen copy a push
+        ships), same walk/skip rules as the fingerprint (relpaths are
+        os-native, matching zip relpaths after os.path.join normalization
+        on this platform)."""
         hashes: dict[str, str] = {}
-        for root, dirs, files in os.walk(self.dir):
+        for root, dirs, files in os.walk(top):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in files:
                 if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
@@ -1843,7 +2595,7 @@ class _SyncManager:
                         digest = hashlib.md5(fh.read()).hexdigest()
                 except OSError:
                     continue
-                hashes[os.path.relpath(path, self.dir)] = digest
+                hashes[os.path.relpath(path, top)] = digest
         return hashes
 
     def _load_base(self) -> None:
@@ -1911,6 +2663,18 @@ class _SyncManager:
         # a disk_rev move: count a manifest rotation as one.
         self._note_disk()
 
+    def _reconcile_rows(self, leg: str, directory: str, **kw) -> list[str]:
+        try:
+            result = canvas_snapshot.reconcile_rows(directory, **kw)
+        except Exception as exc:
+            self.log_event(leg, "rows not reconciled", ok=False, detail=str(exc))
+            return []
+        if result["changed"]:
+            self.log_event(leg, "rows reconciled",
+                           detail=f"dropped {', '.join(result['dropped']) or 'none'}; "
+                                  f"added {', '.join(result['added']) or 'none'}")
+        return result["dropped"]
+
     def _new_trash_dir(self) -> str | None:
         """A fresh timestamped folder under .sync/trash/<name>/ for the files
         the current pull/merge is about to overwrite or delete; prunes the
@@ -1969,13 +2733,18 @@ class _SyncManager:
             return None
         try:
             proc = subprocess.run(
-                [*cli.command, "workbench", "canvas", "validate", self.dir],
+                [*cli.command, "workbench", "canvas", "validate", self.dir, "--skip", "node_files"],
                 capture_output=True, text=True, timeout=VALIDATE_TIMEOUT,
                 encoding="utf-8", errors="replace",
                 env=_cli_env(cli, self.env),
             )
         except (subprocess.TimeoutExpired, OSError):
             return None
+        # Kept for the rollback's pull error: "validate failed" alone leaves
+        # the reader guessing which node or edge the merge broke.
+        self._last_validate_output = [
+            ln.strip() for ln in ((proc.stdout or "") + "\n" + (proc.stderr or "")).splitlines()
+            if ln.strip()][:_ERROR_DETAIL_MAX]
         return proc.returncode == 0
 
     def _log_folder_fixes(self, leg: str, fixes: list[str]) -> None:
@@ -2072,17 +2841,74 @@ class _SyncManager:
         nothing (_note_server_stale compares hashes and finds no change)."""
         if prev.get("last_updated") != cur.get("last_updated"):
             return True
+        return _SyncManager._udf_edits(prev) != _SyncManager._udf_edits(cur)
 
-        def edits(udfs) -> dict:
-            if not isinstance(udfs, dict):
-                return {}
-            return {
-                slug: ((info.get("hash"), info.get("last_updated"))
-                       if isinstance(info, dict) else info)
-                for slug, info in udfs.items()
-            }
+    @staticmethod
+    def _udf_edits(manifest: dict) -> dict:
+        """Each UDF's (hash, stamp) — the edit half of _remote_moved."""
+        udfs = manifest.get("udfs")
+        if not isinstance(udfs, dict):
+            return {}
+        return {
+            slug: ((info.get("hash"), info.get("last_updated"))
+                   if isinstance(info, dict) else info)
+            for slug, info in udfs.items()
+        }
 
-        return edits(prev.get("udfs")) != edits(cur.get("udfs"))
+    def _stamp_only_move(self, probe: dict) -> bool:
+        """Did only the collection stamp move — no UDF edit — on a stamp this
+        leg has not checked yet? The server bumps `last_updated` on writes
+        that change no file: the workbench's share settings (access scope,
+        passcode) are the common one. Worth a bundle download to tell such a
+        bump from a real layout save (_bundle_matches_sync_point)."""
+        remote = self._remote
+        stamp = probe.get("last_updated")
+        return (
+            remote is not None
+            and self._base_files is not None
+            and stamp != remote.get("last_updated")
+            and stamp != self._stamp_checked
+            and self._udf_edits(remote) == self._udf_edits(probe)
+        )
+
+    def _bundle_matches_sync_point(self, bundle: dict[str, bytes]) -> bool:
+        """Is the server's bundle the sync point's files? Same paths, and each
+        file's md5 equals the base hash — except a .toml the server
+        re-serialized (canvas.toml comes back from its database, not as the
+        bytes pushed). That one counts when it parses equal to the local file
+        that is still the base; or, the local file edited since (an unpushed
+        layout change), when its [canvas] rows equal the sync point's
+        (`_base_toml`) and every other table equals the local file's.
+        Under _op_lock."""
+        base = self._base_files
+        if base is None or set(bundle) != set(base):
+            return False
+        for rel, data in bundle.items():
+            if hashlib.md5(data).hexdigest() == base[rel]:
+                continue
+            if not rel.endswith(".toml"):
+                return False
+            try:
+                with open(os.path.join(self.dir, rel), "rb") as f:
+                    local = f.read()
+            except OSError:
+                return False
+            try:
+                remote_doc = tomllib.loads(data.decode("utf-8"))
+                local_doc = tomllib.loads(local.decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+                return False
+            if hashlib.md5(local).hexdigest() == base[rel]:
+                if remote_doc != local_doc:
+                    return False
+                continue
+            if rel != "canvas.toml" or self._base_toml is None:
+                return False
+            rest = lambda doc: {k: v for k, v in doc.items() if k != "canvas"}  # noqa: E731
+            if (canvas_snapshot.rows_of_doc(remote_doc) != self._base_toml
+                    or rest(remote_doc) != rest(local_doc)):
+                return False
+        return True
 
     def _download_zip(self, collection_id: str) -> zipfile.ZipFile | None:
         cli = fused_cli()
@@ -2124,10 +2950,17 @@ class _SyncManager:
                 # the local seed.
                 if rel.rsplit("/", 1)[-1] in _SYNC_IGNORED_BASENAMES:
                     continue
-                bundle[os.path.join(*rel.split("/"))] = zf.read(info.filename)
+                try:
+                    data = zf.read(info.filename)
+                except (zipfile.BadZipFile, zlib.error, OSError, EOFError):
+                    # A corrupt member is a transient failure like a failed
+                    # download — never an exception that kills the watcher.
+                    return None
+                bundle[os.path.join(*rel.split("/"))] = data
         return bundle
 
-    def _merge_remote(self, probe: dict, bundle: dict[str, bytes] | None) -> bool:
+    def _merge_remote(self, probe: dict, bundle: dict[str, bytes] | None, *,
+                      two_way: bool = False) -> bool:
         """Apply remote changes into a DIRTY clone, per file, three-way.
         Under _op_lock; `bundle` is `_fetch_bundle(probe)`, fetched by the
         caller BEFORE taking the lock (None = that download failed).
@@ -2153,8 +2986,18 @@ class _SyncManager:
 
         Returns True when the remote state was reconciled (merged, rolled
         back, or nothing to do) and False on a transient failure (the zip
-        download) — the caller must NOT push over an unreconciled remote."""
+        download) — the caller must NOT push over an unreconciled remote.
+
+        `two_way` (an explicit Pull on a dirty clone with no sync point, e.g.
+        after its `.sync/<name>.json` was lost): merge against an EMPTY base
+        instead — every local file that differs from the server's wins, files
+        only the server has come in, nothing local is deleted, and
+        canvas.toml takes only the nodes local lacks. It used to be a
+        wholesale `pull --force` whose trash copy was the only one left of
+        the session's edits, and the next push published the old files."""
         base = self._base_files
+        if base is None and two_way:
+            base = {}
         if base is None:
             self._rotate_remote(probe)
             self._save_base()
@@ -2283,7 +3126,12 @@ class _SyncManager:
             rolled_back = True
         else:
             rolled_back = False
-        self._base_files = new_base
+        if not (rolled_back and self._base_files is None):
+            # A two-way merge that rolled back restored every file it wrote:
+            # the clone still has no sync point, and a partial dict here would
+            # pass for one (three-way Pulls, `_converged_deletes`, the push
+            # refusal's wording).
+            self._base_files = new_base
         if not rolled_back:
             remote_toml = bundle.get("canvas.toml")
             if remote_toml is not None:
@@ -2307,9 +3155,12 @@ class _SyncManager:
             self.last_pull_at = time.time()
         return True
 
-    def _poll_remote(self, probe: dict) -> None:
+    def _poll_remote(self, probe: dict, bundle: dict[str, bytes] | None = None) -> None:
         """Shim-backed poll leg: adopt a baseline on the first look; after
-        that only DETECT a remote move (`server_stale`). Read-only."""
+        that only DETECT a remote move (`server_stale`). Read-only — except
+        a stamp-only move whose `bundle` (fetched by the caller when
+        _stamp_only_move) is the sync point's files: nothing to pull, so the
+        probe becomes the baseline instead of a "server changed" chip."""
         if self._remote is None:
             # First look (fresh manager, or right after clone/push dropped
             # it): adopt as baseline. A remote edit made before this first
@@ -2334,14 +3185,88 @@ class _SyncManager:
         if not self._remote_moved(self._remote, probe):
             self.server_stale = None
             return
+        if (
+            bundle is not None
+            and self._udf_edits(self._remote) == self._udf_edits(probe)
+            and self._bundle_matches_sync_point(bundle)
+        ):
+            self._rotate_remote(probe)
+            self._save_base()
+            self.log_event("server_to_disk", "probe adopt",
+                           detail="the server's stamp moved; its files did not")
+            return
         # The remote moved: do what a hosted tab does — stop writing the
         # server and say so. Nothing is pulled or merged here; pull() is the
         # user's (or the session's) explicit act.
         self._note_server_stale(probe)
 
+    def _converged_deletes(self, probe: dict) -> list[str]:
+        """The UDFs the server deleted that this clone has ALREADY deleted
+        too, when that is the remote move's only UDF change; [] otherwise.
+
+        The common case is the workbench's own "Delete UDF permanently": a
+        workbench build that still deletes on the server while it also drops
+        the node from the snapshot, which removes the file here. Nothing is
+        in conflict, yet read as "server changed" it held every push until
+        someone pressed Pull — and a Claude session cannot press it. Under
+        _op_lock or not: it only reads."""
+        remote = self._remote
+        if remote is None or self._base_files is None:
+            return []
+        before = self._udf_hashes(remote.get("udfs"))
+        after = self._udf_hashes(probe.get("udfs"))
+        if any(slug not in before or before[slug] != after[slug] for slug in after):
+            return []  # an add or an edit on the server: a real pull
+        removed = sorted(set(before) - set(after))
+        if not removed:
+            return []
+        try:
+            local = canvas_snapshot.node_files(self.dir)
+        except OSError:
+            return []
+        return [] if any(slug in local for slug in removed) else removed
+
+    def _adopt_converged_deletes(self, probe: dict | None = None) -> bool:
+        """Fold a remote move that only deleted UDFs this clone has deleted as
+        well (`_converged_deletes`) into the sync point: the same three-way
+        merge a Pull runs (the layout keeps local edits), done without asking.
+        True when it landed and `server_stale` is clear. The caller holds
+        `_flight_lock` and NOT `_op_lock`; `probe` is fetched when not given."""
+        if probe is None:
+            probe = self._probe_remote()
+        if probe is None or not self._converged_deletes(probe):
+            return False
+        # One merge attempt per server state: one that rolled back would roll
+        # back again on every 10 s poll (a download, a validate run and a
+        # trash snapshot each time). A new remote move, or a local change
+        # since, gets a fresh try.
+        # Local content, not the fingerprint generation: a rollback rewrites
+        # the files it touched with the same bytes but new mtimes, so a
+        # generation key would re-arm the retry it exists to stop.
+        key = (probe.get("last_updated"), tuple(sorted(self._udf_hashes(probe.get("udfs")).items())),
+               tuple(sorted(self._take_file_hashes(self.dir).items())))
+        if key == self._adopt_failed:
+            return False
+        bundle = self._fetch_bundle(probe)
+        if bundle is None:
+            return False  # transient: retried next poll
+        with self._op_lock:
+            gone = self._converged_deletes(probe)  # re-read: disk may have moved
+            if not gone:
+                return False
+            rollbacks = self.merge_rollback_seq
+            if not self._merge_remote(probe, bundle):
+                return False  # transient: retried next poll
+            if self.merge_rollback_seq != rollbacks:
+                self._adopt_failed = key
+                return False
+        self.log_event("server_to_disk", "server delete adopted",
+                       detail=f"{', '.join(gone)}: already deleted here")
+        return True
+
     def _force_pull(self, probe: dict, cli) -> str | None:
-        """pull()'s shim-backed wholesale branch (clean clone, or dirty with no
-        merge base), after it has committed to writing: CLI force pull,
+        """pull()'s shim-backed wholesale branch (clean clone, or a hard
+        pull), after it has committed to writing: CLI force pull,
         post-pull divergence recheck, re-baseline.
 
         Returns None when the pull LANDED, else the user-facing reason it did
@@ -2463,72 +3388,24 @@ class _SyncManager:
 
     def _freeze_copy(self) -> str:
         """Copy the clone to `.sync/push/<name>/` (fresh each push) for the
-        CLI to read while _op_lock is free. Dot-DIRS are left out (the
-        fingerprint and every sync walk skip them too); dot-files — the
-        clone's `.fusedignore` above all, which the CLI reads from the folder
-        it pushes — are copied. Under _op_lock, so no snapshot write lands
-        half-way through the copy. Raises OSError/shutil.Error on failure."""
-        import fnmatch
-
+        CLI to read while _op_lock is free: dot-dirs and what `.fusedignore`
+        names are left out; `.fusedignore` itself travels. Under _op_lock,
+        so no snapshot write lands half-way through the copy. Raises
+        OSError/shutil.Error on failure."""
         dest = self._push_copy_dir()
         _rmtree_quiet(dest)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        # What the clone's .fusedignore lists is never pushed (the CLI skips
-        # it), so it is not worth copying either — but only where this can be
-        # SURE: the copy is what gets published, and a file wrongly left out
-        # here is deleted server-side, while one wrongly copied is still
-        # dropped by the CLI's own (full gitignore) filter. So a deliberately
-        # small subset: a pattern without a "/" matches a FILE by basename at
-        # the clone root only and a DIRECTORY by name at any depth (a trailing
-        # "/" = directories only), last match wins with `!` re-including. Any
-        # rule with a "/" in it (`/x.py`, `src/*.py`, where fnmatch's `*`
-        # would cross "/") turns the subset off: everything is copied and the
-        # CLI decides. `.fusedignore` itself always travels (the CLI reads it).
-        rules: list[tuple[str, bool, bool]] = []
-        try:
-            with open(os.path.join(self.dir, ".fusedignore"), encoding="utf-8",
-                      errors="replace") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    negated = line.startswith("!")
-                    line = line[1:] if negated else line
-                    dir_only = line.endswith("/")
-                    line = line.rstrip("/")
-                    if not line:
-                        continue
-                    if "/" in line:
-                        rules = []
-                        break
-                    rules.append((line, negated, dir_only))
-        except OSError:
-            rules = []
-
-        def ignored(name: str, is_dir: bool, at_root: bool) -> bool:
-            if not is_dir and not at_root:
-                return False
-            out = False
-            for pattern, negated, dir_only in rules:
-                if dir_only and not is_dir:
-                    continue
-                if fnmatch.fnmatchcase(name, pattern):
-                    out = not negated
-            return out
-
+        rules = canvas_snapshot.fusedignore_rules(self.dir)
         root = os.path.normpath(self.dir)
 
         def ignore(folder: str, names: list[str]) -> list[str]:
-            out = []
             at_root = os.path.normpath(folder) == root
+            out = []
             for n in names:
                 is_dir = os.path.isdir(os.path.join(folder, n))
-                if n.startswith(".") and is_dir:
-                    out.append(n)
-                    continue
-                if n == ".fusedignore" or not rules:
-                    continue
-                if ignored(n, is_dir, at_root):
+                if ((is_dir and n.startswith("."))
+                        or (n != ".fusedignore" and canvas_snapshot.fusedignored(
+                            rules, n, is_dir=is_dir, at_root=at_root))):
                     out.append(n)
             return out
 
@@ -2611,21 +3488,6 @@ class _SyncManager:
         could not be had within `lock_wait` (default MANUAL_PUSH_LOCK_WAIT_S)
         — nothing changed then, the clone stays as dirty as it was."""
         wait = MANUAL_PUSH_LOCK_WAIT_S if lock_wait is None else lock_wait
-        # A file the embed created without its node (ROWLESS_GRACE_S): its row
-        # is either on its way from the workbench or about to be synthesized.
-        # The CLI only WARNS on a file with no row, so pushing now would
-        # publish the UDF node-less (invariant 2). Hold — nothing changes, the
-        # clone stays dirty, the next tick (or the session's retry) pushes.
-        rowless = self._rowless_in_grace()
-        if rowless:
-            key = frozenset(rowless)
-            if key != self._rowless_hold_logged:
-                self._rowless_hold_logged = key
-                self.log_event("disk_to_server", "push held", ok=False,
-                               detail=f"waiting for the workbench's row for "
-                                      f"{', '.join(sorted(rowless)[:5])}")
-            return "busy"
-        self._rowless_hold_logged = frozenset()
         prev_state, prev_dirty = self.push_state, self._dirty_since
         cli = fused_cli()
         if cli is None:
@@ -2694,22 +3556,26 @@ class _SyncManager:
         if not self._op_lock.acquire(timeout=wait):
             return deferred("another sync step held the clone")
         try:
-            # A rowless file that arrived while the probe ran: hold, as above.
-            if self._rowless_peek():
-                return deferred("a new node's row is still on its way from the workbench")
-            # Rows for orphan source files FIRST, so the fingerprint, hashes
-            # and copy below all include them.
-            self._synthesize_orphans()
-            frozen = self._take_fingerprint()
-            self._fingerprint = frozen
+            served = {os.path.splitext(f)[0] for f in self._base_files or ()
+                      if f.endswith(canvas_snapshot.BODY_SUFFIXES)}
+            dropped = self._reconcile_rows(
+                "disk_to_server", self.dir, pending=self._rowless, drop=served - self._fileless,
+                backup=lambda rel, data: self._backup_to(self._new_trash_dir(), rel, data))
+            self._fingerprint = frozen = self._take_fingerprint()
             self._dirty_since = None
-            base_snapshot = self._take_file_hashes()
-            base_toml_snapshot = self._toml_rows()
             try:
                 copy_dir = self._freeze_copy()
             except (OSError, shutil.Error) as exc:
                 copy_dir = None
                 copy_error = str(exc)
+            else:
+                dropped += self._reconcile_rows("disk_to_server", copy_dir, publish=True)
+                base_snapshot = self._take_file_hashes(copy_dir)
+                base_toml_snapshot = self._toml_rows(copy_dir)
+                if gone := [n for n in sorted(served.intersection(dropped))
+                            if n not in base_toml_snapshot["nodes"]]:
+                    self.log_event("disk_to_server", "removed from server (no source file)",
+                                   ok=False, detail=", ".join(gone))
         finally:
             self._op_lock.release()
         if copy_dir is None:
@@ -2751,8 +3617,10 @@ class _SyncManager:
         # the next poll adopts a fresh baseline. Probed BEFORE the fold, so the
         # lock is not held across it.
         after = self._probe_remote()
+        # A push changes the account's canvas list (updated_at): drop cached
+        # list answers. Module-level, called with no lock held.
+        _cli_cache_clear()
         with self._op_lock:
-            self.push_seq += 1
             self.last_push_at = time.time()
             self.last_error = None
             self.error_detail = []
@@ -2764,8 +3632,12 @@ class _SyncManager:
             if moved:
                 # Written while the CLI ran: not in the copy, so not pushed.
                 self._dirty_since = self._dirty_since or time.time()
-        self._push_started_at = None
-        self.push_state = "pending" if moved else "idle"
+            self._push_started_at = None
+            self.push_state = "pending" if moved else "idle"
+            # Last: `status()` reads without the lock, so a reader that sees
+            # the new push_seq must already see the push settled, not
+            # push_seq 1 with push_state still "pushing".
+            self.push_seq += 1
         self.log_event("disk_to_server", "push end", ms=(time.time() - started) * 1000,
                        detail=f"push_seq {self.push_seq}"
                               + ("; the clone changed during the push, pushing again"
@@ -2881,9 +3753,6 @@ class _SyncManager:
             # of the cache except once every AGENT_LIVE_CACHE_S (3 s), so it
             # does not add a scan per tick.
             self.agent_run_id()
-            # Expire rowless files past their grace: the forced disk_rev bump
-            # makes the page cut again, and that cut synthesizes their rows.
-            self._rowless_in_grace()
             gen = self._fp_gen
             current = self._take_fingerprint()
             self._note_disk(current)
@@ -2951,9 +3820,23 @@ class _SyncManager:
                         # network call — so outside _op_lock; only adopting
                         # the answer takes it.
                         probe = self._probe_remote()
+                        # Not while a Claude session is live: the merge may
+                        # rewrite canvas.toml, which the session writes
+                        # without a lock. Its own push adopts the same move
+                        # through the push route instead.
+                        if (probe is not None and self._remote is not None
+                                and self._remote_moved(self._remote, probe)
+                                and not self.agent_run_id()
+                                and self._adopt_converged_deletes(probe)):
+                            continue  # the server only caught up with this clone
                         if probe is not None:
+                            bundle = None
+                            if self._stamp_only_move(probe):
+                                bundle = self._fetch_bundle(probe)
+                                if bundle is not None:  # a failed download retries
+                                    self._stamp_checked = probe.get("last_updated")
                             with self._op_lock:
-                                self._poll_remote(probe)
+                                self._poll_remote(probe, bundle)
                     elif self._dirty_since is None and self.push_state == "idle":
                         # External CLI (no shims): legacy dry-run probe, detect
                         # only, and CLEAN clones only — a `pull --dry-run` cannot
@@ -2977,18 +3860,18 @@ class _SyncManager:
         self._last_pull_poll = 0.0
         self.log_event("server_to_disk", "server check", detail="page focused")
 
-    def _toml_rows(self) -> dict | None:
-        """The compact rows of the clone's canvas.toml, or None."""
+    def _toml_rows(self, top: str) -> dict | None:
+        """The compact rows of `top`'s canvas.toml, or None."""
         try:
             return canvas_snapshot.rows_of_doc(
-                canvas_snapshot._load_toml(os.path.join(self.dir, "canvas.toml")))
+                canvas_snapshot._load_toml(os.path.join(top, "canvas.toml")))
         except Exception:  # noqa: BLE001 — no toml, or unparsable: no base rows
             return None
 
     def _set_sync_point(self) -> None:
         """Disk IS the sync point: file hashes and canvas.toml rows alike."""
-        self._base_files = self._take_file_hashes()
-        self._base_toml = self._toml_rows()
+        self._base_files = self._take_file_hashes(self.dir)
+        self._base_toml = self._toml_rows(self.dir)
 
     def _merge_toml_bytes(self, local: bytes, remote: bytes) -> bytes | None:
         """canvas.toml merged per node against the sync point's rows, as the
@@ -3050,10 +3933,11 @@ class _SyncManager:
         → wholesale `pull --force` either way, trash snapshot first when
         dirty. Clears `server_stale` on success.
 
-        Only the merge KEEPS local edits. The two wholesale legs — external
-        CLI, and a dirty shim clone with no sync point to merge against —
-        replace them with the server's files; the trash snapshot is then the
-        only copy. That is deliberate rather than a refusal: on those legs
+        Only the merge KEEPS local edits (a dirty shim clone with no sync point
+        merges two-way: local wins every file it holds). The wholesale
+        external-CLI leg replaces them with the server's files; the trash
+        snapshot is then the only copy. That is deliberate rather than a
+        refusal: on that leg
         nothing else ever clears `server_stale` (the legacy detector and the
         sync point are both clean-only, and push 409s while it is set), so a
         refused pull would leave the clone with no exit at all. The banner and
@@ -3091,6 +3975,7 @@ class _SyncManager:
                 self._embed_view = None
                 self._hard_fence = {"rev": self.disk_rev,
                                     "until": time.time() + HARD_FENCE_S}
+                self._body_fence_rev = self.disk_rev
             if hard and self.push_state == "error":
                 # The files that push failed on are gone: the clone is the
                 # server's copy now (or a fresh local edit over it, which the
@@ -3129,7 +4014,7 @@ class _SyncManager:
             probe = self._probe_remote()
             if probe is None:
                 return {"ok": False, "error": "could not read the canvas from the server"}
-            if dirty and self._base_files is not None and not hard:
+            if dirty and not hard:
                 bundle = self._fetch_bundle(probe)
                 if bundle is None:
                     return {"ok": False,
@@ -3138,15 +4023,19 @@ class _SyncManager:
                     return busy
                 try:
                     rollbacks_before = self.merge_rollback_seq
-                    if not self._merge_remote(probe, bundle):
+                    if not self._merge_remote(probe, bundle,
+                                              two_way=self._base_files is None):
                         return {"ok": False,
                                 "error": "could not download the canvas from the server; "
                                          "try again"}
                     if self.merge_rollback_seq != rollbacks_before:
+                        why = "; ".join(self._last_validate_output[:5])
                         return {"ok": False,
                                 "error": "merging the server's changes would break the canvas "
-                                         "(fused canvas validate failed); nothing was changed. "
-                                         "Publish or revert your local edits, then pull again"}
+                                         "(fused canvas validate failed"
+                                         + (f": {why}" if why else "") + "); nothing was "
+                                         "changed. Fix or revert the local files it names, "
+                                         "then pull again"}
                     self.pull_seq += 1
                     self.last_pull_at = time.time()
                     _seed_clone_claude_files(self.dir, self.name)
@@ -3159,9 +4048,8 @@ class _SyncManager:
                 finally:
                     self._op_lock.release()
             else:
-                # Clean — or dirty with no sync point to merge against, where
-                # the server wins and the trash keeps what it overwrote.
-                # `_force_pull` rotates the baseline (clearing `server_stale`)
+                # Clean (or a hard pull): the server's copy wholesale, trash
+                # snapshot first. `_force_pull` rotates the baseline (clearing `server_stale`)
                 # only on the path where the pull landed.
                 if self.agent_run_id(fresh=True):
                     return agent_live
@@ -3205,9 +4093,14 @@ class _SyncManager:
             # delta that re-seeds the view. It also holds what a hard pull
             # just brought down, so the fence has nothing left to hold out.
             self._embed_view = None
+            self._rowless = set()
+            if self._fileless:
+                self._reconcile_rows("embed_to_disk", self.dir, drop=self._fileless, add=False)
+                self._fileless = set()
             self._embed_applied = {}
             self._embed_max_seq = -1
             self._hard_fence = None
+            self._body_fence_rev = None
         done = self._embed_applied.get((gen, seq))
         if done is not None:
             return done
@@ -3302,8 +4195,8 @@ class _SyncManager:
         """diff(disk, embed_view) for the page to post to the frame. Under
         _op_lock, so a snapshot write never lands between the toml read and
         the file reads. Returns `{rev, base_rev, ops, full}`; `{rev, held}`
-        when the clone is mid-write (a row whose source file is not there
-        yet, an unparsable toml) — the page asks again shortly. Empty ops
+        when the clone has no readable canvas.toml (not cloned yet, or
+        mid-write): the page asks again shortly. Empty ops
         against a known view mean the embed already holds disk: the view
         moves here and nothing is posted.
 
@@ -3314,30 +4207,18 @@ class _SyncManager:
         carry the pre-write content under the post-write rev and the scan
         would see nothing left to report.
 
-        A source file with no row (Claude wrote `foo.py` and no
-        `[[canvas.nodes]]` entry) arrives in `disk` as a SYNTHESIZED row
-        (canvas_snapshot, invariant 2); it is written into canvas.toml here,
-        under the same lock, so the next push ships the node with its file.
-
         A cut does NOT mark a frame as seen: the page cuts on every disk_rev
         move and drops the answer when it has no frame (boot, a reload), so
         only a frame's own ack or snapshot is evidence that one is there —
-        otherwise disk_to_embed would read "pending" with nobody to ack.
-
-        Files the embed just created without their node are left out while in
-        their ROWLESS_GRACE_S (expiring them first may itself bump the rev, so
-        it runs before the rev is taken)."""
-        exclude = self._rowless_in_grace()
+        otherwise disk_to_embed would read "pending" with nobody to ack."""
         self._note_disk()
         rev = self.disk_rev
         try:
-            disk = self._disk_reading(exclude)
+            disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
         except FileNotFoundError:
             return self._cut_held(rev, "the clone has no canvas.toml yet")
         except Exception as exc:  # noqa: BLE001 — rtoml's own error types
             return self._cut_held(rev, f"canvas.toml unreadable: {exc}")
-        if disk["missing"]:
-            return self._cut_held(rev, "source file missing for " + ", ".join(disk["missing"][:3]))
         if self._last_cut_held is not None:
             self.log_event("disk_to_embed", "delta unheld", detail=f"rev {rev}")
             self._last_cut_held = None
@@ -3346,11 +4227,9 @@ class _SyncManager:
             # A good cut (the frame's hello asks for one) starts the leg over.
             self._delta_error = None
             self._bump()
-        synthesized = list(disk.get("synthesized") or [])
-        if synthesized:
-            self._persist_synthesized(synthesized)
         view = None if full else self._embed_view
         ops = canvas_snapshot.diff_views(disk, view)
+        disk["edges"] = canvas_snapshot.held_edges(disk, view["nodes"] if view else ())
         if view is not None and not ops:
             self._embed_view = self._adopt(disk)
             self._view_rev = rev
@@ -3372,113 +4251,6 @@ class _SyncManager:
             self._last_cut_held = reason
             self.log_event("disk_to_embed", "delta held", ok=False, detail=f"rev {rev}: {reason}")
         return {"rev": rev, "held": reason}
-
-    # -- rowless files: the embed's new file, its node still in flight ------------
-
-    def _note_rowless(self, nodes, rowless, *, deleted=()) -> None:
-        """After an embed snapshot: `nodes` (the names it sent) settle any
-        rowless entry — the workbench's own row arrived — and so does a slug
-        the snapshot `deleted` (dropped before its row ever came); `rowless`
-        (apply_snapshot's `rowless_files`) start a grace each. Under _op_lock
-        (apply_snapshot)."""
-        names = set(nodes)
-        gone = set(deleted)
-        now = time.time()
-        started: list[str] = []
-        with self._rowless_lock:
-            for slug in [s for s in self._rowless if s in names or s in gone]:
-                del self._rowless[slug]
-            for slug in rowless or []:
-                if isinstance(slug, str) and slug not in names and slug not in self._rowless:
-                    self._rowless[slug] = now
-                    started.append(slug)
-        if started:
-            self.log_event("embed_to_disk", "row deferred",
-                           detail=f"{', '.join(started[:5])}: file written, its node not "
-                                  f"in the snapshot; waiting up to {ROWLESS_GRACE_S:g}s for "
-                                  "the workbench's row before synthesizing one")
-
-    def _rowless_peek(self) -> set[str]:
-        now = time.time()
-        with self._rowless_lock:
-            return {s for s, t in self._rowless.items() if now - t < ROWLESS_GRACE_S}
-
-    def _rowless_in_grace(self) -> set[str]:
-        """Slugs still inside ROWLESS_GRACE_S. Expires the rest; an expiry
-        forces a disk_rev bump (nothing on disk moved, so no scan would) so the
-        page cuts again and that cut synthesizes their rows."""
-        now = time.time()
-        with self._rowless_lock:
-            pending = bool(self._rowless)
-        # A row that reached disk some other way (Claude wrote it, a rename)
-        # settles the entry just as a snapshot naming the node does.
-        rows = (self._toml_rows() or {}).get("nodes", {}) if pending else {}
-        with self._rowless_lock:
-            for slug in [s for s in self._rowless if s in rows]:
-                del self._rowless[slug]
-            aged = [s for s, t in self._rowless.items() if now - t >= ROWLESS_GRACE_S]
-            for slug in aged:
-                del self._rowless[slug]
-            live = set(self._rowless)
-        if aged:
-            self.log_event("embed_to_disk", "row grace elapsed",
-                           detail=f"{', '.join(sorted(aged)[:5])}: no row from the workbench "
-                                  f"in {ROWLESS_GRACE_S:g}s; synthesizing")
-            self._force_rev()
-        return live
-
-    def _force_rev(self) -> None:
-        """Advance disk_rev although no file moved (a decision changed, not
-        the disk), so the page asks for a delta."""
-        with self._rev_lock:
-            self._rev_key = None
-        self._note_disk()
-
-    def _disk_reading(self, exclude: set[str]) -> dict:
-        """compact_state_from_disk, leaving `exclude` (rowless files in their
-        grace) out: no synthesized row, no delta op, no persist."""
-        return canvas_snapshot.compact_state_from_disk(
-            self.dir, self._remote_ids(), exclude_orphans=exclude)
-
-    def _synthesize_orphans(self) -> None:
-        """Invariant 2 on the PUSH path: a root-level source file with no
-        `[[canvas.nodes]]` row gets its synthesized row written into
-        canvas.toml before the push freezes the clone — whether or not any
-        frame ever cut a delta — so a node is never published without its
-        file's row. Under _op_lock (the push's freeze phase)."""
-        rows = self._toml_rows()
-        if rows is None:
-            return  # no or unparsable canvas.toml: the push's validation says so
-        exclude = self._rowless_in_grace()
-        try:
-            orphans = canvas_snapshot.orphan_sources(
-                self.dir, rows["nodes"].keys(), exclude=exclude)
-        except Exception as exc:  # noqa: BLE001 — never block a push on this
-            logger.warning("canvas %s: orphan scan failed: %s",
-                           _sync_key(self.env, self.name), exc)
-            return
-        if orphans:
-            self._persist_synthesized([slug for slug, _file in orphans], leg="disk_to_server")
-
-    def _persist_synthesized(self, names: list[str], *, leg: str = "disk_to_embed") -> None:
-        """canvas_snapshot.persist_synthesized, logged on the ring; a cut
-        itself already carries the rows either way. Under _op_lock (cut_delta's
-        caller and the push's freeze phase hold it)."""
-        try:
-            written = canvas_snapshot.persist_synthesized(self.dir, names)
-        except Exception as exc:  # noqa: BLE001 — the row reaches the frame anyway
-            self.log_event(leg, "synthesize failed", ok=False,
-                           detail=f"{', '.join(names[:5])}: {exc}")
-            return
-        # canvas.toml moved: note it now rather than on the next scan/fs event.
-        # The rows are byte-identical to the reading the cut carries, so the
-        # follow-up cut diffs to nothing.
-        self._note_disk()
-        if not written:
-            return  # idempotent: already in canvas.toml, nothing to log
-        self.log_event(leg, "rows synthesized",
-                       detail="canvas.toml rows written for " + ", ".join(written[:5])
-                              + (f" (+{len(written) - 5})" if len(written) > 5 else ""))
 
     def ack_delta(self, rev: int, ok: bool, reason: str | None = None) -> dict:
         """The frame applied (or refused) the delta cut at `rev`. `reason` is
@@ -3504,6 +4276,10 @@ class _SyncManager:
             self.log_event("disk_to_embed", "delta refused", ok=benign,
                            detail=f"rev {rev}" + (f": {reason}" if reason else ""))
             return {"ok": True, "rev": rev, "reset": True}
+        if self._body_fence_rev is not None and rev >= self._body_fence_rev:
+            # The frame applied the pulled state: its bodies describe it now.
+            self._body_fence_rev = None
+            self.log_event("embed_to_disk", "body fence lifted", detail=f"rev {rev}")
         if self._hard_fence is not None and rev >= self._hard_fence["rev"]:
             # The frame applied a reading cut after the hard pull: it shows
             # the server's copy now, and its snapshots describe that.
@@ -3545,6 +4321,13 @@ class _SyncManager:
         delete."""
         cur = self._embed_view or {}
         out = dict(disk)
+        held = [n for n in cur.get("nodes", {}) if n not in disk["nodes"]
+                and (n in disk["rowed"] or n in disk["files"])]
+        if held:
+            out["nodes"] = {**disk["nodes"],
+                            **{n: disk["rowed"].get(n, cur["nodes"][n]) for n in held}}
+            out["bodies"] = {**disk["bodies"],
+                             **{n: cur["bodies"][n] for n in held if n in cur.get("bodies", {})}}
         if cur.get("embed_rows"):
             out["embed_rows"] = cur["embed_rows"]
         held_ids = cur.get("ids") or {}
@@ -3576,10 +4359,8 @@ class _SyncManager:
             self._backup_to(trash[0], rel, data)
 
         prev = self._embed_view
-        # `rowless_prev`: a rowless file the embed has since dropped (UDF gone,
-        # no node) is a delete, not an orphan to synthesize later.
         result = canvas_snapshot.apply_snapshot(self.dir, new, prev, backup=backup,
-                                                rowless_prev=self._rowless_peek())
+                                                rowless_prev=self._rowless)
         self._log_folder_fixes("embed_to_disk", result.get("folder_fixes") or [])
         # The embed now holds what it just sent: disk rows for ITS nodes only
         # (a disk-only node is Claude's and still owed to it as a delta), its
@@ -3597,20 +4378,143 @@ class _SyncManager:
         # them.
         held = list(new["nodes"]) + [n for n in result.get("deferred_deletes") or []
                                      if n not in new["nodes"]]
-        # A file this snapshot created with no node: grace before any row is
-        # invented for it; a node it names settles an earlier one.
-        self._note_rowless(new["nodes"], result.get("rowless_files"),
-                           deleted=result.get("deleted") or ())
+        self._rowless = set(result.get("rowless_files") or ())
+        self._fileless = (self._fileless | set(result["fileless"])) - set(result["deleted"])
+        for gone in result.get("deleted") or ():
+            self._body_written.pop(gone, None)
         self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
                                        bodies=bodies, embed_rows=new["nodes"])
+        deleted_files = list(result.get("deleted_files") or ())
+        if deleted_files:
+            # A node deleted in the canvas takes its file's chats with it
+            # (`forget_file_sessions`): off this lock and off the ack —
+            # listing a file's transcripts reads their heads.
+            threading.Thread(
+                target=self._forget_file_sessions, args=(deleted_files, trash[0]),
+                name=f"canvas-forget-sessions-{self.name}", daemon=True).start()
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "upserted": result["upserted"], "deleted": result["deleted"],
+               "deleted_files": deleted_files,
                "created": result["created"], "push_seq": self.push_seq}
-        # Rows apply_snapshot wrote for files the snapshot sent with no node
-        # (canvas_snapshot, invariant 2) — the frame learns of them by delta.
-        if result.get("synthesized"):
-            ack["synthesized"] = list(result["synthesized"])
         return self._embed_record(gen, seq, ack)
+
+    def _forget_file_sessions(self, rels: list[str], trash: str | None) -> None:
+        """`forget_file_sessions` for this clone's `rels`, backing each
+        transcript up into the snapshot's trash batch first (so the recovery
+        recipe for a wrongly applied snapshot — `.sync/trash/<canvas>/
+        <stamp>/` — still has the chats beside the files)."""
+        try:
+            if trash is None:
+                trash = self._new_trash_dir()
+            forget_file_sessions([os.path.join(self.dir, rel) for rel in rels],
+                                 backup=lambda rel, data: self._backup_to(trash, rel, data),
+                                 log=lambda what: self.log_event("embed_to_disk", what))
+        except Exception:  # noqa: BLE001 — a cleanup must never take the sync down
+            logger.warning("canvas %s: forgetting node sessions failed", self.name,
+                           exc_info=True)
+
+    def apply_body(self, node: str, file: str, base_hash: str, text: str) -> dict:
+        """One source text from the workbench's body channel → the clone, by
+        compare-and-swap on content (canvas_snapshot.body_hash). Under
+        _op_lock (the route takes it), so it never interleaves with a
+        snapshot moving the file, a pull or a push.
+
+        The frame names the hash of the text it last agreed on with this
+        host (`base_hash`); the write lands only when disk still hashes to
+        that. Otherwise — Claude or a pull wrote the file meanwhile — nothing
+        is written and the answer carries what disk holds (`stale`,
+        `disk_text`, `disk_hash`): the frame rebases its edits onto it and
+        posts again. A missing file hashes as the empty text, so a file the
+        frame created is written on its first post. Content-gated: a body
+        equal to disk is acked without a write (no mtime move, no disk_rev,
+        no delta). Returns the ack the page relays to the frame.
+        """
+        stem, dot, ext = file.rpartition(".")
+        if not dot or stem != node or "/" in file or file.startswith(".") \
+                or ("." + ext) not in canvas_snapshot.BODY_SUFFIXES:
+            raise ValueError(f"{file!r} is not {node!r}'s source file")
+        # A node has ONE source. A post naming another suffix than the file
+        # already there (a type the frame changed) would plant a second
+        # source.
+        existing = canvas_snapshot.node_files(self.dir).get(node)
+        if existing is not None and existing != file:
+            raise ValueError(f"{node!r} is {existing!r} on disk, not {file!r}")
+        # A hard pull replaced the clone (see `_body_fence_rev`): until the
+        # frame has acked the pulled state, a body describes the canvas the
+        # pull discarded — written, it would put that text (or a file the
+        # pull removed, hashed here as the empty text) straight back. Not
+        # stale (the frame would rebase and repost at once) but `fenced`:
+        # the frame holds its text and tries again later, by which time the
+        # full delta has re-seeded its base. Bound to the ack, never to a
+        # clock: the snapshot fence's deadline does not apply here.
+        if self._body_fence_rev is not None:
+            self.log_event("embed_to_disk", "body fenced",
+                           detail=f"{file}: predates the hard pull (rev "
+                                  f"{self._body_fence_rev} not acked); not written")
+            return {"ok": False, "code": "fenced", "node": node, "file": file}
+        path = os.path.join(self.dir, file)
+        current = canvas_snapshot.read_body(path)
+        current_hash = canvas_snapshot.body_hash(current if current is not None else "")
+        if current_hash != base_hash:
+            self.log_event("embed_to_disk", "body stale",
+                           detail=f"{file}: disk moved under the workbench's base; "
+                                  "sent back for a rebase")
+            return {"ok": False, "code": "stale", "node": node, "file": file,
+                    "disk_text": current if current is not None else "",
+                    "disk_hash": current_hash}
+        new_hash = canvas_snapshot.body_hash(text)
+        if current == text:
+            self._body_written[node] = new_hash
+            return {"ok": True, "node": node, "file": file, "hash": new_hash,
+                    "changed": False, "created": False}
+        if current is not None and self._body_written.get(node) != base_hash:
+            # Not the frame's own previous text: keep a copy, as a note body
+            # overwrite does.
+            trash = self._new_trash_dir()
+            self._backup_to(trash, file, current.encode("utf-8", "replace"))
+        # Re-read right before the replace: the trash copy above took time,
+        # and Claude writes without _op_lock. A write that landed in between
+        # is answered stale like any other, instead of being overwritten
+        # (the remaining window is the replace itself, microseconds).
+        latest = canvas_snapshot.read_body(path)
+        if latest != current:
+            latest_text = latest if latest is not None else ""
+            self.log_event("embed_to_disk", "body stale",
+                           detail=f"{file}: disk moved while the body was being applied")
+            return {"ok": False, "code": "stale", "node": node, "file": file,
+                    "disk_text": latest_text,
+                    "disk_hash": canvas_snapshot.body_hash(latest_text)}
+        # An OSError propagates: the route answers busy, the frame keeps the
+        # body pending and posts again.
+        canvas_snapshot._write_atomic(path, text)
+        self._body_written[node] = new_hash
+        created = current is None
+        if created:
+            # The frame's row for a new UDF comes with its snapshot, usually
+            # within the same second; until then the file is row-less.
+            rows = set()
+            try:
+                doc = canvas_snapshot._load_toml(os.path.join(self.dir, "canvas.toml"))
+                rows = set(canvas_snapshot.rows_of_doc(doc)["nodes"])
+            except Exception:  # noqa: BLE001 — no toml yet: the row is owed either way
+                pass
+            self._fileless.discard(node)
+            if node not in rows:
+                self._rowless.add(node)
+        # The frame holds what it just wrote: the view's body moves with
+        # disk, so the next delta carries nothing for this node (its own
+        # write never echoes). A node the view does not know (a new file,
+        # or no view at all) is owed to the frame by the next cut, which
+        # then carries this very text and a hash equal to the frame's base.
+        view = self._embed_view
+        if view is not None and node in view.get("nodes", {}):
+            view.setdefault("bodies", {})[node] = text
+        self._note_disk()
+        self._view_rev = self.disk_rev
+        self._frame_seen = True
+        self._bump()
+        return {"ok": True, "node": node, "file": file, "hash": new_hash,
+                "changed": True, "created": created}
 
     def apply_rename(self, gen: int, seq: int, frm: str, to: str,
                      file_from: str | None, file_to: str | None) -> dict:
@@ -3622,12 +4526,12 @@ class _SyncManager:
         if stale is not None:
             return stale
         result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
-        # A file still in its row grace keeps the grace under its new name
-        # (same start): otherwise the renamed file is an orphan at once and
-        # the next cut invents the very row the grace exists to wait for.
-        with self._rowless_lock:
-            if frm in self._rowless and to not in self._rowless:
-                self._rowless[to] = self._rowless.pop(frm)
+        for held in (self._rowless, self._fileless):
+            if frm in held and result["changed"]:
+                held.discard(frm)
+                held.add(to)
+        if frm in self._body_written:
+            self._body_written[to] = self._body_written.pop(frm)
         renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
         if renamed is None:
             # Nothing known before the rename, nothing known after: the next
@@ -3702,9 +4606,6 @@ class _SyncManager:
                 reason = "sync is paused"
             elif self._agent_run_id:
                 reason = "waiting for the Claude session in this folder to finish"
-            elif self._rowless_peek():
-                reason = ("waiting for the workbench's row for "
-                          + ", ".join(sorted(self._rowless_peek())[:3]))
             d2s = {"state": "pending", "oldest_age_ms": age(dirty), "reason": reason}
         else:
             d2s = {"state": "idle", "oldest_age_ms": None, "reason": None}
@@ -3818,6 +4719,10 @@ class _CanvasOwned(Exception):
         super().__init__(f"pid {owner.get('pid')} owns this canvas")
         self.owner = owner
 
+class _CanvasDeleting(Exception):
+    """api_canvases_delete is running on this clone: no manager starts."""
+
+
 _SYNC_LOCK = threading.Lock()
 # Keyed (env, name): prod's `alpha` and unstable's `alpha` are two clones with
 # two managers, live at once. (Keyed by name alone, a manager had to read the
@@ -3832,6 +4737,23 @@ _QUITTING = False
 # canvas would run two `pull --force` into one folder. Per canvas, not
 # global, so a slow clone of one canvas never holds up another's.
 _CLONE_GATES: dict[tuple[str, str], threading.Lock] = {}
+# Canvases mid-delete (api_canvases_delete), under _SYNC_LOCK: stopping the
+# manager wakes the page's events socket, which reads "no watcher" and asks
+# sync/start to heal — while canvas.toml still exists. Without this, a new
+# manager (and lock) would start under the delete, and the folder would be
+# removed from under a live watcher.
+_DELETING: set[tuple[str, str]] = set()
+
+
+class _CanvasHandingOver(Exception):
+    """This process is handing the clone over (sync/release in progress)."""
+
+
+# Clones this process is releasing to another fused-render right now
+# (sync/release): its own sync/start is held off for the length of the stop,
+# or the owner's page self-heal would re-claim the still-held flock as `ours`
+# and start a new watcher under the taker's feet.
+_HANDING_OVER: set[tuple[str, str]] = set()
 
 
 def _clone_gate(env: str, name: str) -> threading.Lock:
@@ -3846,12 +4768,22 @@ def refuse_new_managers() -> None:
         _QUITTING = True
 
 
-def shutdown() -> None:
+def shutdown(*, latch: bool = True) -> None:
     """Quit rung: stop every sync manager — a push CLI in flight, its watcher
     and fs threads, its writer lock — then close any claim left open. The
-    packaged app never runs the server's lifespan (app.py
+    packaged Mac app never runs the server's lifespan (app.py
     QUIT_CHILDREN_BUDGET_S), so without this a push CLI outlived the app as
-    an orphan and the lock fds were left to the process exit.
+    an orphan and the lock fds were left to the process exit. The server's
+    lifespan shutdown (server/app.py) runs it too, with `latch=False`, for
+    every exit that IS a lifespan one — the Linux supervisor's child, a pip
+    `fused-render` on Windows, where the lock is a pid-probed file that
+    nothing but this release ever clears (an unreleased file + pid reuse is a
+    canvas no later start can claim).
+
+    `latch` arms `_QUITTING` (no new manager from here on): the quit rung's
+    contract. The lifespan caller leaves it off — a test process (or an
+    embedding) that builds a second app after the first one shut down must
+    still be able to start managers.
 
     A push is STOPPED, not waited for: its CLI is terminated (SIGTERM, then
     SIGKILL after PUSH_TERMINATE_GRACE_S) so its fold never runs on a half
@@ -3862,7 +4794,8 @@ def shutdown() -> None:
     by STOP_JOIN_S, and the kernel drops any flock left at exit."""
     global _QUITTING
     with _SYNC_LOCK:
-        _QUITTING = True
+        if latch:
+            _QUITTING = True
         managers = list(_syncs.values())
         _syncs.clear()
     for manager in managers:
@@ -3897,6 +4830,10 @@ def _sync_manager(env: str, name: str, create: bool) -> _SyncManager | None:
             manager = None
         if manager is None and create and _QUITTING:
             return None  # the quit latch: no new watcher (and no lock)
+        if manager is None and create and key in _DELETING:
+            raise _CanvasDeleting()  # same critical section as the creation
+        if manager is None and create and key in _HANDING_OVER:
+            raise _CanvasHandingOver()
         if manager is None and create:
             path = _lock_path(env, name)
             outcome, record = canvas_sync_state.claim_lock(path)
@@ -3918,8 +4855,58 @@ def _sync_manager(env: str, name: str, create: bool) -> _SyncManager | None:
         return manager
 
 
-@router.post("/api/canvases/sync/start")
-def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def _stop_manager(env: str, name: str) -> _SyncManager | None:
+    """Stop and forget this process's manager for (env, name), if any: a
+    push in flight is terminated (never folded on a half state), the
+    watcher and fs threads joined, the writer lock released. The logout
+    success path, for one canvas."""
+    with _SYNC_LOCK:
+        manager = _syncs.pop((env, name), None)
+    if manager is None:
+        return None
+    manager.stop_event.set()
+    try:
+        manager.terminate_push()
+    except Exception:  # noqa: BLE001 — the stop below still runs
+        logger.warning("canvas %s: stopping the push before delete failed",
+                       _sync_key(env, name), exc_info=True)
+    manager.stop()
+    return manager
+
+
+def _clone_leftovers(env: str, name: str) -> list[str]:
+    """What a clone leaves under `<root>/.sync` besides the folder itself:
+    the merge base, the writer lock, the push freeze and the trash. All go
+    with the canvas — a later clone of the same name must not inherit a
+    stale merge base, and the trash held versions of files that no longer
+    have a canvas to go back to."""
+    sync = os.path.join(canvases_root(env), ".sync")
+    return [
+        os.path.join(sync, f"{name}.json"),
+        os.path.join(sync, f"{name}.lock"),
+        os.path.join(sync, "push", name),
+        os.path.join(sync, "trash", name),
+    ]
+
+
+@router.post("/api/canvases/delete")
+def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Delete canvas (env, name) on the server AND on this machine: the
+    embedded workbench's "Delete canvas" hands the confirmed delete here
+    (`fused-embed-delete`) because the host is the canvas's one writer — a
+    frame-side DELETE would race the host's push.
+
+    Order: claim the clone's writer lock for the whole delete (refused while
+    another fused-render process owns the clone); stop
+    this process's sync (so no push lands on a canvas being deleted) and hold
+    sync/start off with `_DELETING` (the stop wakes the page, which would
+    otherwise heal a new watcher under the delete); delete
+    on the server through the CLI; only then remove the clone, its `.sync`
+    leftovers and its desk row (tasks under it archived, as the desk's own
+    remove does). A CLI failure leaves the clone untouched — the page's
+    self-heal re-arms sync/start — and is the response. A clone that is
+    gone already (never cloned, or removed by hand) is fine: the server
+    delete alone runs."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -3929,21 +4916,104 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
+    if not _logged_in(env):
+        return _error("not signed in to Fused — sign in first", 409)
+    root = os.path.realpath(canvases_root(env))
+    clone = os.path.realpath(_canvas_dir(env, name))
+    # The one folder this may remove is `<root>/<name>` — never the root, never
+    # anything a stray separator or link could point the name at.
+    if os.path.dirname(clone) != root or os.path.basename(clone) != name:
+        return _error("refusing to delete: the clone folder is not under the canvases root", 500)
+    # The clone's writer lock is THIS request's for the whole delete: claimed
+    # before anything else (a live foreign holder refuses the delete — it is
+    # theirs to run), re-stamped over this process's own manager's claim so
+    # the manager's stop() below releases nothing, and dropped only after the
+    # cleanup. Another fused-render cannot take the lock and sync or push a
+    # canvas mid-delete; `_DELETING` holds this process's own sync/start off.
+    lock_path = _lock_path(env, name)
+    try:
+        outcome, record = canvas_sync_state.claim_lock(lock_path)
+    except OSError as exc:
+        return _error(f"could not take the canvas sync lock: {exc}", 500)
+    if outcome == "refused":
+        owner = {k: record.get(k) for k in ("pid", "port", "since")}
+        return JSONResponse(
+            {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
+                      f"(pid {owner['pid']}, port {owner['port']}); delete it from there",
+             "code": "owned", "owner": owner}, status_code=409)
+    lock_since = (canvas_sync_state.read_lock(lock_path) or {}).get("since")
+    key = (env, name)
+    with _SYNC_LOCK:
+        _DELETING.add(key)
+    try:
+        manager = _stop_manager(env, name)
+        if manager is not None and manager.thread.is_alive():
+            # A watcher mid-subprocess past STOP_JOIN_S could still write the
+            # clone after the wait; not a folder to delete under. Bounded: no
+            # second wait, the user retries.
+            return _error(f"canvas {name!r} is still syncing; retry the delete shortly", 409)
+        _proc, err = _run_cli(["workbench", "canvas", "delete", name], LIST_TIMEOUT, env)
+        _cli_cache_clear()
+        if err is not None:
+            return err  # the page's self-heal re-arms sync/start once this lifts
+        removed_local = False
+        if os.path.isdir(clone):
+            try:
+                shutil.rmtree(clone)
+            except OSError as exc:
+                return _error(f"canvas {name!r} was deleted on the server, but its folder "
+                              f"could not be removed ({clone}): {exc}", 500)
+            removed_local = True
+        for path in _clone_leftovers(env, name):
+            if os.path.isdir(path):
+                _rmtree_quiet(path)
+            else:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+    finally:
+        canvas_sync_state.release_lock(lock_path, lock_since)
+        with _SYNC_LOCK:
+            _DELETING.discard(key)
+    try:
+        from fused_render import current_apps
+        from fused_render.server.routers.current_apps import _archive_folder
+
+        # The CONFIGURED spelling, not the resolved one: the desk row and the
+        # tasks' project were recorded as `canvases_dir + "/" + name`
+        # (CanvasPage), and canonical_fs_path resolves no symlinks.
+        desk_dir = _canvas_dir(env, name)
+        current_apps.remove(desk_dir)
+        _archive_folder(desk_dir)
+    except Exception:  # noqa: BLE001 — the desk row is cosmetic next to the delete
+        logger.warning("canvas %s: dropping the desk row after delete failed",
+                       _sync_key(env, name), exc_info=True)
+    logger.info("canvas %s: deleted (clone removed: %s)", _sync_key(env, name), removed_local)
+    return {"ok": True, "name": name, "env": env, "removed_local": removed_local}
+
+
+def _sync_start_response(env: str, name: str):
+    """The body of sync/start, shared with sync/takeover: claim the writer
+    lock and start this process's watcher on the clone, or say who owns it."""
     if not os.path.isfile(os.path.join(_canvas_dir(env, name), "canvas.toml")):
         return _error(f"canvas {name!r} is not cloned yet (no canvas.toml)", 409)
     # The writer lock FIRST: a refused start must not touch a folder another
     # process owns (the seeding below writes into it).
     try:
         manager = _sync_manager(env, name, create=True)
+    except _CanvasDeleting:
+        return JSONResponse({"error": f"canvas {_sync_key(env, name)!r} is being deleted",
+                             "code": "deleting"}, status_code=409)
+    except _CanvasHandingOver:
+        # The page retries on `busy`; by then the taker holds the lock and
+        # the answer is its `owned`.
+        return _busy(f"canvas {_sync_key(env, name)!r} is being handed over to another fused-render")
     except _CanvasOwned as owned:
         # One writer per clone: another fused-render (the desktop app and a
         # dev server, two branches) is already syncing this folder. The page
         # says who and does not start its delta leg (owner decision Q4).
-        owner = {k: owned.owner.get(k) for k in ("pid", "port", "since")}
-        return JSONResponse(
-            {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
-                      f"(pid {owner['pid']}, port {owner['port']})",
-             "code": "owned", "owner": owner}, status_code=409)
+        return _owned_response(env, name, owned.owner)
     except OSError as exc:
         return _error(f"could not take the canvas sync lock: {exc}", 500)
     if manager is None:
@@ -3969,6 +5039,332 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
     # external-CLI leg still cannot churn on it.
     _seed_clone_claude_files(manager.dir, name)
     return manager.status()
+
+
+def _owned_response(env: str, name: str, owner: dict, *, code: str = "owned",
+                    error: str | None = None, **extra) -> JSONResponse:
+    """The 409 the page reads as "another process owns this clone"
+    (`ownerFromError`): `{error, code, owner: {pid, port, since}}`. `extra`
+    fields ride along (takeover's `can_force_quit`)."""
+    owner = {k: owner.get(k) for k in ("pid", "port", "since")}
+    body = {"error": error or (f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
+                               f"(pid {owner['pid']}, port {owner['port']})"),
+            "code": code, "owner": owner}
+    body.update(extra)
+    return JSONResponse(body, status_code=409)
+
+
+def _is_fused_process(pid: int) -> bool:
+    """Is `pid` a live process of THIS app (a fused-render / Fused desktop
+    process), by its executable: the very same executable as ours (full path),
+    or one named for the app or the package. The gate before `sync/force_quit`
+    signals a lock holder — a pid that was reused by something else is never
+    ours, whatever the lock file says."""
+    if not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return False
+    if not canvas_sync_state.pid_alive(pid):
+        return False
+    exe_path = canvas_sync_state.process_executable(pid)
+    if not exe_path:
+        return False
+    # The SAME executable as ours (a dev server's venv python, a pip install's
+    # python.exe on Windows): full path, not basename — `Program Files\\x.exe`
+    # and `Program Files\\y.exe` share a basename of nothing useful, and a
+    # reused pid under another python must not read as ours.
+    own = canvas_sync_state.process_executable(os.getpid()) or sys.executable
+    try:
+        if own and os.path.normcase(os.path.realpath(exe_path)) == os.path.normcase(os.path.realpath(own)):
+            return True
+    except OSError:
+        pass
+    # Or an executable NAMED for this app (the packaged app's main binary; an
+    # older bundle moved to a hidden sibling path still carries the name).
+    exe = os.path.basename(exe_path).lower()
+    if "fused_render" in exe or "fused-render" in exe or "fusedrender" in exe:
+        return True
+    from fused_render import _flavor
+
+    app = _flavor.app_name().lower()
+    if app and app in exe:
+        return True
+    # Or a Python running THIS package by name: the Linux supervisor's child
+    # (`python3 -I -m fused_render.cli serve`, under a per-launch AppImage
+    # mount, so its path never equals ours after an update) or a pip
+    # install's `fused-render serve` from another venv. Tokens are tested as
+    # the module name or a script's BASENAME — a checkout path that merely
+    # contains `fused-render` (every process started under the repo) is not
+    # a match.
+    for token in canvas_sync_state.process_argv(pid) or []:
+        if token == "fused_render" or token.startswith("fused_render."):
+            return True
+        # Both separators: the card may be read on any platform, and a
+        # Windows token is `C:\\…\\Scripts\\fused-render.exe`.
+        if token.replace("\\", "/").rsplit("/", 1)[-1].lower() in _FUSED_SCRIPT_NAMES:
+            return True
+    return False
+
+
+#: The package's console scripts (pyproject `[project.scripts]`), as argv[0]
+#: basenames on every platform.
+_FUSED_SCRIPT_NAMES = frozenset({
+    "fused-render", "fused-render.exe", "fused-render-script.py",
+    "fused-render-app", "fused-render-app.exe", "fused-render-app-script.py",
+})
+
+
+def _unreachable_owner_response(env: str, name: str, held: dict, *, why: str) -> JSONResponse:
+    """The takeover's answer when the lock's holder cannot be asked: `code`
+    `owner_unreachable`, plus `can_force_quit` — true when the card's pid is
+    a live process of this app (and not us), so the page can offer the
+    user a "Force quit" of it. Nothing is signalled here."""
+    pid = held.get("pid")
+    can_force_quit = isinstance(pid, int) and _is_fused_process(pid)
+    hint = (" You can force quit that process from here." if can_force_quit
+            else " Close it there.")
+    return _owned_response(env, name, held, code="owner_unreachable",
+                           error=f"pid {pid} owns this canvas but {why}.{hint}",
+                           can_force_quit=can_force_quit)
+
+
+@router.post("/api/canvases/sync/start")
+def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    return _sync_start_response(env, name)
+
+
+# A peer's `sync/release` waits up to RELEASE_PUSH_WAIT_S for a publish in
+# flight to end (a clone that was dirty when it opened pushes within seconds
+# of starting, exactly when a second page tends to ask for it), then joins
+# its watcher for up to STOP_JOIN_S; the hand-over's HTTP wait covers both,
+# never a push's full PUSH_TIMEOUT (past the wait the peer answers `busy`).
+RELEASE_PUSH_WAIT_S = 20.0
+RELEASE_HTTP_TIMEOUT_S = RELEASE_PUSH_WAIT_S + STOP_JOIN_S + 5.0
+
+
+def _ask_peer_release(port: int, env: str, name: str) -> tuple[int | None, dict]:
+    """POST /api/canvases/sync/release on the fused-render at `port` (always
+    loopback: the lock's business card names a port on this machine).
+    Returns `(status, body)`; `(None, {})` when nothing answered there."""
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    payload = json.dumps({"name": name, "env": env}).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/canvases/sync/release",
+        data=payload, method="POST",
+        headers={"Content-Type": "application/json", "X-Fused": "1"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=RELEASE_HTTP_TIMEOUT_S) as response:
+            raw = response.read()
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read()
+        except (OSError, http.client.HTTPException):
+            raw = b""
+        status = exc.code
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
+        # BadStatusLine / IncompleteRead derive from HTTPException, not
+        # OSError: a half-answer from the peer is "did not answer" too.
+        return None, {}
+    try:
+        data = json.loads(raw.decode("utf-8")) if raw else {}
+    except ValueError:
+        data = {}
+    return status, data if isinstance(data, dict) else {}
+
+
+@router.post("/api/canvases/sync/release")
+def api_canvases_sync_release(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Hand this clone over: stop THIS process's watcher and drop its writer
+    lock, so the fused-render that asked (sync/takeover on another port) can
+    claim it. `{released: true}` when a watcher ran here and is now stopped;
+    `{released: false}` when none did (the lock was never ours — nothing to
+    give). A watcher mid-publish or mid-pull is waited for
+    (RELEASE_PUSH_WAIT_S), then answers 409 `busy` and keeps the lock: a
+    release under a running push CLI would let the taker push over it, the
+    two-writer race the lock exists to prevent. Own sync/start is held off
+    (`_HANDING_OVER`) until the flock is dropped. The page here notices its
+    watcher is gone on its next state read, re-arms through sync/start, gets
+    the taker's `owned` and shows the same Take-over button back."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    key = (env, name)
+    with _SYNC_LOCK:
+        if _syncs.get(key) is None:
+            return {"released": False, "name": name, "env": env}
+        # Own sync/start held off from here to the end of the stop: the
+        # owner's page self-heals through it the moment its watcher goes,
+        # and `claim_lock` would hand it the still-held flock as `ours`.
+        _HANDING_OVER.add(key)
+    try:
+        # Quiesce first, then stop — the activity flags alone are not enough:
+        # a request thread (the page's Pull, a session's push through the
+        # intercept) can be past them and about to write. Wait, bounded, for
+        # no push CLI, no pull, and both of the manager's locks idle — a
+        # dirty clone pushes seconds after it opens, right when a second page
+        # tends to ask for it. Past the wait: `busy`, nothing touched.
+        deadline = time.monotonic() + RELEASE_PUSH_WAIT_S
+        while True:
+            with _SYNC_LOCK:
+                manager = _syncs.get(key)
+            if manager is None:
+                return {"released": False, "name": name, "env": env}
+            quiet = (manager._push_proc is None and not manager._pull_in_flight
+                     and not manager._flight_lock.locked() and not manager._op_lock.locked())
+            if quiet:
+                break
+            if time.monotonic() >= deadline:
+                return _busy(f"canvas {_sync_key(env, name)!r} is publishing; try again when it is done")
+            time.sleep(0.25)
+        manager.log_event("watcher", "lock handed over",
+                          detail=f"released on request of another fused-render (pid {os.getpid()} stops)")
+        # stop_event goes up first inside: a push that slipped past the check
+        # above aborts at its own stop check before (or right after) its CLI
+        # starts, and `terminate_push` covers one already running. The
+        # manager's own stop() releases the flock last.
+        stopped = _stop_manager(env, name)
+        if stopped is not None and stopped.thread.is_alive():
+            # Past STOP_JOIN_S mid-subprocess: it may still write the clone.
+            # Bounded, like the delete: the taker's page retries.
+            return _busy(f"canvas {_sync_key(env, name)!r} is still syncing; try again shortly")
+    finally:
+        with _SYNC_LOCK:
+            _HANDING_OVER.discard(key)
+    return {"released": True, "name": name, "env": env}
+
+
+@router.post("/api/canvases/sync/takeover")
+def api_canvases_sync_takeover(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Make THIS process the clone's writer when another fused-render on this
+    machine holds the lock: ask that process (the port in the lock's business
+    card) to `sync/release`, then start here exactly as sync/start does. The
+    answer is sync/start's: the manager's status on success, or the 409
+    `owned` the page already understands — with `code` `owner_too_old` when
+    the owner runs a build without the release route (close it there, as
+    before), `busy` when it is mid-publish, and the owner's own error when it
+    refused for another reason. A lock nobody holds any more just starts."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    held = canvas_sync_state.lock_holder(_lock_path(env, name))
+    if held is not None:
+        port = held.get("port")
+        if not isinstance(port, int) or port <= 0:
+            return _unreachable_owner_response(env, name, held, why="published no port to ask")
+        if canvas_sync_state.card_names_this_server(held):
+            # The card names OUR port: the holder is a predecessor that lost
+            # the port to us (an update's restart, a quit that never released).
+            # Asking it would ask ourselves — `{released: false}`, then the
+            # same refusal, and a button that visibly does nothing.
+            return _unreachable_owner_response(
+                env, name, held, why=f"its port {port} is now this Fused's own, so it cannot be asked")
+        status, answer = _ask_peer_release(port, env, name)
+        if status == 404:
+            return _owned_response(env, name, held, code="owner_too_old", error=(
+                f"pid {held.get('pid')} (port {port}) runs an older Fused that cannot hand a "
+                f"canvas over; close it there"))
+        if status is None:
+            return _unreachable_owner_response(
+                env, name, held, why=f"nothing answered on its port {port}")
+        if status != 200:
+            return _owned_response(env, name, held, code=str(answer.get("code") or "owned"),
+                                   error=str(answer.get("error") or
+                                             f"pid {held.get('pid')} (port {port}) refused to hand "
+                                             f"the canvas over (HTTP {status})"))
+        logger.info("canvas %s: lock handed over by pid %s (port %s), released=%s",
+                    _sync_key(env, name), held.get("pid"), port, answer.get("released"))
+    return _sync_start_response(env, name)
+
+
+FORCE_QUIT_WAIT_S = 6.0
+
+
+@router.post("/api/canvases/sync/force_quit_owner")
+def api_canvases_sync_force_quit_owner(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """USER-PRESSED: send SIGTERM to the process holding this clone's writer
+    lock, when it is one of this app's own processes that can no longer be
+    asked to hand over (sync/takeover answered `owner_unreachable`). The
+    case is an update's restart that left the old instance alive without a
+    server, or a quit that never finished: a live flock with nobody behind
+    it, which no page could clear before (D1440 rejected killing a LIVE
+    owner — one that still answers; this never signals such a one).
+
+    Guards, all re-checked here and not trusted from the page: the lock is
+    held right now by a pid other than ours; that pid is a Fused process by
+    its command line (`_is_fused_process`); and its port, if any, either is
+    ours or does not answer `sync/release` — an owner that answers is asked
+    to release instead and never signalled. Then SIGTERM (the ordinary quit
+    signal; never SIGKILL from here), and a bounded wait for the lock to
+    free. Answers `{ok, freed, pid}`; the page re-arms through sync/start
+    once `freed`."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    path = _lock_path(env, name)
+    held = canvas_sync_state.lock_holder(path)
+    if held is None:
+        return {"ok": True, "freed": True, "pid": None, "signalled": False}
+    pid = held.get("pid")
+    if not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return _error("the lock holder's pid is unknown; close that Fused yourself", 409)
+    if not _is_fused_process(pid):
+        return _error(f"pid {pid} is not a running Fused process; nothing was signalled", 409)
+    port = held.get("port")
+    if isinstance(port, int) and port > 0 and not canvas_sync_state.card_names_this_server(held):
+        status, answer = _ask_peer_release(port, env, name)
+        if status is not None:
+            # It answers (a 404 included: an older build without the release
+            # route is a LIVE owner): not a leftover, not ours to kill.
+            return _owned_response(env, name, held, error=(
+                f"pid {pid} (port {port}) is a running Fused that still answers; "
+                f"use Take over, or close it there"))
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        return _error(f"could not signal pid {pid}: {exc}", 500)
+    logger.warning("canvas %s: SIGTERM sent to lock holder pid %s (port %s) on the user's request",
+                   _sync_key(env, name), pid, port)
+    deadline = time.monotonic() + FORCE_QUIT_WAIT_S
+    freed = False
+    while time.monotonic() < deadline:
+        now_held = canvas_sync_state.lock_holder(path)
+        if now_held is None or now_held.get("pid") != pid:
+            freed = True
+            break
+        time.sleep(0.2)
+    return {"ok": True, "freed": freed, "pid": pid, "signalled": True}
 
 
 @router.post("/api/canvases/snapshot")
@@ -4071,13 +5467,80 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
         manager._op_lock.release()
 
 
+@router.post("/api/canvases/body")
+def api_canvases_body(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """One source text from the embedded workbench → the clone, by
+    compare-and-swap on content (embed v3 body channel,
+    SyncManager.apply_body). The workspace page relays the frame's
+    `fused-embed-body {seq, name, file, base_hash, text}` here and posts the
+    answer back as `-body-applied` / `-body-rejected`.
+
+    200 `{ok: true, hash}` when written (or already on disk); 200 `{ok:
+    false, code: "stale", disk_text, disk_hash}` when disk no longer hashes
+    to `base_hash` — the frame rebases and posts again, so this is not an
+    error; 200 `{ok: false, code: "fenced"}` while a hard pull's fence
+    holds (the frame retries later). 409 `busy` as the snapshot route; 400
+    `rejected` for a malformed post (the frame drops it and logs the reason).
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    node, file = body.get("node"), body.get("file")
+    base_hash, text = body.get("base_hash"), body.get("text")
+    if not isinstance(node, str) or not node or not isinstance(file, str) or not file:
+        return _error("'node' and 'file' must be non-empty strings")
+    if not isinstance(base_hash, str) or not isinstance(text, str):
+        return _error("'base_hash' and 'text' must be strings")
+    manager = _sync_manager(env, name, create=False)
+    if manager is None:
+        return JSONResponse(
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    started = time.time()
+    if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
+        manager.log_event("embed_to_disk", "body busy", ok=False,
+                          ms=(time.time() - started) * 1000,
+                          detail=f"{file}: the clone stayed locked past {SNAPSHOT_LOCK_WAIT_S:g}s")
+        return _busy("a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        with manager.pause_lock:
+            if manager.pause_count > 0:
+                return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
+        try:
+            ack = manager.apply_body(node, file, base_hash, text)
+        except OSError as exc:
+            manager.log_event("embed_to_disk", "body busy", ok=False,
+                              detail=f"{file}: write failed: {exc}")
+            return _busy(f"could not write {file}: {exc}")
+        except Exception as exc:  # noqa: BLE001 — the reason goes back to the frame
+            manager.log_event("embed_to_disk", "body rejected", ok=False,
+                              detail=f"{file}: {type(exc).__name__}: {exc}")
+            return JSONResponse(
+                {"ok": False, "code": "rejected", "error": f"{type(exc).__name__}: {exc}"},
+                status_code=400)
+        if ack.get("ok") and ack.get("changed"):
+            manager.log_event("embed_to_disk", "body written",
+                              ms=(time.time() - started) * 1000,
+                              detail=f"{file}: {len(text)} chars"
+                                     + (" (new file)" if ack.get("created") else ""))
+        return JSONResponse(ack)
+    finally:
+        manager._op_lock.release()
+
+
 def _snapshot_ack_detail(what: str, gen: int, seq: int, ack: dict) -> str:
     if ack.get("stale"):
         return f"{what} {gen}/{seq}: superseded by a later seq, not written"
     parts = [f"{what} {gen}/{seq}"]
     if not ack.get("changed"):
         parts.append("no change")
-    for key in ("upserted", "deleted", "created", "synthesized"):
+    for key in ("upserted", "deleted", "created"):
         names = ack.get(key) or []
         if names:
             parts.append(f"{key} {', '.join(map(str, names[:5]))}"
@@ -4161,8 +5624,7 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
     "pushes are serialized per canvas" invariant true and makes the sync point
     move WITH the push, so the poll that follows has nothing to react to.
 
-    Refuses rather than queues (409) when the watcher is paused, when a push is
-    already running, or when another sync leg holds the lock: the caller is an
+    Refuses rather than queues (409) when the watcher is paused: the caller is an
     agent that can read the answer and retry, and a silent no-op would leave it
     believing it had published.
 
@@ -4225,52 +5687,57 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
     # error_detail, so the clone stays dirty, the watcher's backstop still
     # publishes it, and the Fix-with-Claude button (gated on
     # push_state == "error") never lights up for a race there is nothing to fix.
-    if manager.push_state == "pushing":
-        return _busy("a push is already running for this canvas")
-    if manager.server_stale is not None:
-        # What a hosted tab's save does while the server moved: refuse until
-        # the user pulls. Carries the list so a session can say what changed.
-        changed = ", ".join(
-            f"{u['slug']} ({u['kind']})" for u in manager.server_stale.get("udfs", [])
-        ) or "the canvas layout"
-        # Promise "kept" only where pull() merges: a manifest shim AND a sync
-        # point. The external-CLI leg and a dirty clone with no sync point pull
-        # wholesale (see pull()), and a session told its edits survive would
-        # pull and lose them — so name the trash copy instead.
-        cli = fused_cli()
-        trash = os.path.join(manager.root, ".sync", "trash", name)
-        if cli is None or _shim_manifest_command(cli) is None:
-            kept = ("this fused CLI cannot merge, so the pull REPLACES your local "
-                    f"edits with the server's files; a copy is kept under {trash}")
-        elif manager._base_files is None:
-            kept = ("there is no sync point to merge against, so the pull REPLACES "
-                    f"your local edits with the server's files; a copy is kept under {trash}")
-        else:
-            kept = "your edits are merged with them and kept"
-        return JSONResponse(
-            {"error": "the canvas changed on the server since the last sync "
-                      f"({changed}); pull first — the Pull button in the canvas view "
-                      f"brings those changes into this folder ({kept}), "
-                      "then push again",
-             "code": "server_changed", "server_stale": manager.server_stale},
-            status_code=409)
     # The flight lock, not _op_lock: _push takes _op_lock itself, only for its
     # short freeze and fold phases, and never across the CLI.
-    if not manager._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
-        return _busy(
-            "a sync operation is in flight for this canvas; try again in a moment")
-    try:
+    before = manager.push_seq
+    with manager._flight_lock:
         # Re-checked under the lock: pause() sets the count and then waits on
         # this same lock, so holding it is what makes the answer stable.
         with manager.pause_lock:
-            if manager.pause_count > 0:
+            if manager.pause_count > 0 or manager.stop_event.is_set():
                 return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
-        before = manager.push_seq
-        if manager._push() == "busy":
-            return _busy(
-                "a sync operation is in flight for this canvas; try again in a moment")
-    finally:
-        manager._flight_lock.release()
+        if manager.server_stale is not None and manager._adopt_converged_deletes():
+            pass  # the server only deleted what this clone already deleted
+        elif manager.server_stale is not None:
+            # What a hosted tab's save does while the server moved: refuse until
+            # the user pulls. Carries the list so a session can say what changed.
+            changed = ", ".join(
+                f"{u['slug']} ({u['kind']})" for u in manager.server_stale.get("udfs", [])
+            ) or "the canvas layout"
+            # Promise "kept" only where pull() merges: a manifest shim. The
+            # external-CLI leg pulls wholesale (see pull()), and a session told
+            # its edits survive would pull and lose them — so name the trash
+            # copy instead.
+            cli = fused_cli()
+            trash = os.path.join(manager.root, ".sync", "trash", name)
+            if cli is None or _shim_manifest_command(cli) is None:
+                kept = ("this fused CLI cannot merge, so the pull REPLACES your local "
+                        f"edits with the server's files; a copy is kept under {trash}")
+            elif manager._base_files is None:
+                kept = ("there is no sync point, so every file you changed is kept "
+                        "as it is and only what the server added comes in")
+            else:
+                kept = "your edits are merged with them and kept"
+            # A Pull that was pressed and failed is the one thing a session
+            # told "pull first" cannot see from here: the refusal reads the
+            # same before and after it. Say so, verbatim, or the session
+            # reports a landed pull and a "stale guard" (the HLS_Tiff loop).
+            pull_error = manager._last_pull_error
+            failed = (f" The last Pull did NOT land: {pull_error}" if pull_error else "")
+            return JSONResponse(
+                {"error": "the canvas changed on the server since the last sync "
+                          f"({changed}); pull first — the Pull button in the canvas view "
+                          f"brings those changes into this folder ({kept}), "
+                          "then push again." + failed,
+                 "code": "server_changed", "server_stale": manager.server_stale,
+                 "pull_error": pull_error},
+                status_code=409)
+        if manager.push_seq == before or manager._dirty_since is not None \
+                or manager._take_fingerprint() != manager._fingerprint:
+            before = manager.push_seq
+            if manager._push() == "busy":
+                return _busy(
+                    "a sync operation is in flight for this canvas; try again in a moment")
     status = manager.status()
     # "The counter moved and no error" is success: the push LANDED. Not
     # `push_state == "idle"` — a write during the CLI run (not in the frozen
@@ -4314,8 +5781,8 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
     "Server changes · Pull" (the hosted workbench's pull, for this tab).
     Clean clone: force pull. Dirty: the three-way merge, canvas.toml per
     node, local edits kept; the held push then ships the merged folder —
-    except with no shim or no sync point, where the pull is wholesale and the
-    trash holds the overwritten edits (see _SyncManager.pull). Returns the
+    except with no shim, where the pull is wholesale and the trash holds the
+    overwritten edits (see _SyncManager.pull). Returns the
     status with `ok`, false (plus `pull_error`) when the pull did not land."""
     guard = _require_fused(x_fused)
     if guard is not None:

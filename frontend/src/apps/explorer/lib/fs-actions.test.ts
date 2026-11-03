@@ -3,14 +3,21 @@
 // the submenu the lazy loader hands to ContextMenu. There are no React
 // component tests in this repo, so the menu's shape is only testable because
 // buildCompressItems lives here rather than inline in Listing.tsx.
-import { afterEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, expect, mock, test } from "bun:test";
 
 import type { MenuItem } from "@platform/ui/ContextMenu";
 
 // fs-actions reaches the router, which reads `location` at module scope, so the
 // stub has to precede the (therefore dynamic) import — same trade as
 // fs-clipboard.test.ts: the suite carries no DOM and this is cheaper than one.
+const realLocation = (globalThis as { location?: unknown }).location;
 (globalThis as { location?: unknown }).location = new URL("http://x/");
+// Put back when the file is done: bun runs every file in one process, and a
+// `location.host` left behind sends every later suite's agent calls down a
+// real WebSocket (agentSocket.ts's `socketUsable`) instead of their fetch stub.
+afterAll(() => {
+  (globalThis as { location?: unknown }).location = realLocation;
+});
 const { archiveName, buildCompressItems, claudeTerminalCommand, copyToClipboard, freeArchivePath } =
   await import("@apps/explorer/lib/fs-actions");
 const { getClipboard, setClipboard } = await import("@apps/explorer/lib/fs-clipboard");

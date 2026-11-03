@@ -93,7 +93,7 @@ _RANK = {name: i for i, name in enumerate(STATUS_ORDER)}
 # and lose every decoration beneath it — the exact failure this comment used
 # to say the line prevented. `sys.platform` names the case-insensitive-by-
 # default platform directly instead.
-_FOLDS_CASE = sys.platform == "darwin"
+_FOLDS_CASE = sys.platform in ("win32", "darwin")
 
 
 def classify(xy: str) -> str | None:

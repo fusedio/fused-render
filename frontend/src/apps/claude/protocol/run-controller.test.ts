@@ -322,6 +322,122 @@ describe("start → poll → done", () => {
     expect(users(controller).map((t) => t.ts)).toEqual([1]);
   });
 
+  test("a reply that ends live is stamped with WHEN it ended (the Worked for line's fallback)", async () => {
+    // Live delta rows carry no clock, so the page stamps the end itself, in
+    // epoch seconds off the wall clock, on every bubble the run settled.
+    let ms = 1_000;
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      poll: () => {
+        ms = 131_000;
+        return poll({ done: true, text: "ok", segments: [text("ok")] });
+      },
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => ms,
+      wallClock: () => ms,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    await controller.sendMessage("hi");
+    expect(users(controller)[0]!.ts).toBe(1);
+    expect(assistants(controller).map((t) => t.endedAt)).toEqual([131]);
+    controller.dispose();
+  });
+
+  test("a reply a follow-up seam closed keeps its own end stamp, not the run's", async () => {
+    // One shared settle stamp would date reply A at the run's end and fold B's
+    // work into A's "Worked for" line.
+    let ms = 1_000;
+    let controller!: ChatController;
+    const A = text("Reply A.");
+    const B = text("Reply B.");
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("and this");
+          return poll({ segments: [A], text: A.text });
+        }
+        if (n === 1) {
+          ms = 50_000; // the poll that sees the seam
+          return poll({
+            segments: [A, B],
+            text: A.text + B.text,
+            turn_breaks: [{ segments: 1, text: A.text.length }],
+          });
+        }
+        ms = 131_000; // the settle poll
+        return poll({
+          done: true,
+          segments: [A, B],
+          text: A.text + B.text,
+          turn_breaks: [{ segments: 1, text: A.text.length }],
+        });
+      },
+    });
+    controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => ms,
+      wallClock: () => ms,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    await controller.sendMessage("go");
+    expect(assistants(controller).map((t) => t.endedAt)).toEqual([50, 131]);
+    controller.dispose();
+  });
+
+  test("a reply the cursor stepped past with no seam keeps its own end stamp", async () => {
+    // The step is seen only as the payload moving (continuity), never as a
+    // seam, so the seam-side stamp never runs for reply A.
+    let ms = 1_000;
+    let controller!: ChatController;
+    const A = text("Markdown was made by John Gruber.");
+    const B = text("Done again.");
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A], text: A.text });
+        if (n === 1) {
+          await controller.sendFollowUp("do it again");
+          return poll({ segments: [], text: "" });
+        }
+        if (n === 2) {
+          ms = 50_000; // the poll the cursor steps on
+          return poll({ segments: [B], text: B.text });
+        }
+        ms = 131_000; // the settle poll
+        return poll({ done: true, segments: [B], text: B.text });
+      },
+    });
+    controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => ms,
+      wallClock: () => ms,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    await controller.sendMessage("go");
+    expect(assistants(controller).map((t) => t.endedAt)).toEqual([50, 131]);
+    controller.dispose();
+  });
+
   test("the stamp is WALL CLOCK — a fake duration clock cannot date a message in 1970", async () => {
     // Review #9. `now` is shared by every elapsed-time reader in the controller
     // and is free to be monotonic (`performance.now`) or fake; reading a DATE
@@ -408,82 +524,8 @@ describe("start → poll → done", () => {
     const key = controller.postOptimisticUser("say PONG only, nothing else");
     await controller.sendMessage("say PONG only, nothing else", { optimisticKey: key });
     expect(users(controller).map((t) => t.text)).toEqual(["say PONG only, nothing else"]);
-    expect(users(controller)[0]!.pending).toBeUndefined();
     expect(assistants(controller).map((t) => t.text)).toEqual(["PONG"]);
     expect(controller.getState().status).toBe("idle");
-  });
-
-  test("a queued tag comes off when the real send adopts the row", async () => {
-    const { controller } = makeController({
-      start: () => ({ run_id: "r1" }),
-      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
-    });
-    const key = controller.postOptimisticUser("later", "queued");
-    expect(users(controller)[0]!.pending).toBe("queued");
-    controller.setOptimisticPending(key, "notSent");
-    expect(users(controller)[0]!.pending).toBe("notSent");
-    await controller.sendMessage("later", { optimisticKey: key });
-    expect(users(controller).length).toBe(1);
-    expect(users(controller)[0]!.pending).toBeUndefined();
-  });
-
-  test("a follow-up with `orStart` opens a fresh turn when no run is live, same bubble", async () => {
-    // A line the page parked behind a send drains after that run has already
-    // ended. Without the flag this road hands the words back ("no run to attach");
-    // with it, the same bubble becomes the opening message of a new turn.
-    const { controller, agent, stranded, returned } = makeController({
-      start: () => ({ run_id: "r2", session_id: "s2" }),
-      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
-    });
-    const key = controller.postOptimisticUser("parked line", "queued");
-    await controller.sendFollowUp("parked line", { optimisticKey: key, orStart: true });
-    expect(agent.of("start")).toHaveLength(1);
-    expect(agent.of("start")[0]!.fields).toMatchObject({ message: "parked line" });
-    expect(users(controller).map((t) => t.text)).toEqual(["parked line"]);
-    expect(users(controller)[0]!.pending).toBeUndefined();
-    expect(controller.getState().queued).toEqual([]);
-    expect(stranded).toEqual([]);
-    expect(returned).toEqual([]);
-    // …and without the flag, the old road: handed back, no start.
-    const plain = makeController({
-      start: () => ({ run_id: "r3" }),
-      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
-    });
-    await plain.controller.sendFollowUp("alone", {});
-    expect(plain.agent.of("start")).toHaveLength(0);
-    expect(plain.returned.map((r) => r.text)).toEqual(["alone"]);
-  });
-
-  test("two `orStart` follow-ups with no run: the first opens the turn, the second follows it in", async () => {
-    // Bugbot 4122227219: both used to take `sendMessage`; the second hit the
-    // `sending` gate, was refused, and never went out — the "third message
-    // swallowed" this queue exists to end. Now the second waits for the run the
-    // first is opening and goes in as a follow-up, in order, one bubble each.
-    let openStart!: () => void;
-    const held = new Promise<void>((resolve) => {
-      openStart = resolve;
-    });
-    const { controller, agent, returned, stranded } = makeController({
-      start: async () => {
-        await held;
-        return { run_id: "r2", session_id: "s2" };
-      },
-      send: () => ({ sent: true as const }),
-      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
-    });
-    const kA = controller.postOptimisticUser("A", "queued");
-    const kB = controller.postOptimisticUser("B", "queued");
-    const a = controller.sendFollowUp("A", { optimisticKey: kA, orStart: true });
-    const b = controller.sendFollowUp("B", { optimisticKey: kB, orStart: true });
-    // Let A reach the held `start` and B reach its wait.
-    for (let i = 0; i < 6; i++) await Promise.resolve();
-    openStart();
-    await Promise.all([a, b]);
-    expect(agent.of("start").map((c) => c.fields.message)).toEqual(["A"]);
-    expect(agent.of("send").map((c) => c.fields.message)).toEqual(["B"]);
-    expect(users(controller).map((t) => t.text)).toEqual(["A", "B"]);
-    expect(returned).toEqual([]);
-    expect(stranded).toEqual([]);
   });
 
   test("a dead host, a refusal or a respawn all fall through to `start`", async () => {

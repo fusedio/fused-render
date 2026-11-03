@@ -1026,3 +1026,11 @@ test("claude tab: an open drawer picks a new chat's tab up from the list and Sto
     expect(stop).toBeDefined();
   } finally { srv.restore(); }
 });
+
+test("terminalAvailable hides the terminal only on an explicit false", async () => {
+  const { terminalAvailable } = await import("@platform/lib/api");
+  expect(terminalAvailable({ terminal_available: false })).toBe(false);
+  expect(terminalAvailable({ terminal_available: true })).toBe(true);
+  expect(terminalAvailable({})).toBe(true);
+  expect(terminalAvailable(null)).toBe(true);
+});

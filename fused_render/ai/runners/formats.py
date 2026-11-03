@@ -120,6 +120,15 @@ MLX_IGNORE = (
 CT2_FILES = ("config.json", "preprocessor_config.json", CT2_WEIGHTS,
              "tokenizer.json", "vocabulary.*")
 
+#: The sherpa-onnx NeMo transducer export of Parakeet TDT
+#: (`csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8`): three int8 graphs
+#: and a token table. The `faster-whisper` runner reads it as its SECOND format
+#: (D1423), beside the CTranslate2 one, because its venv already carries
+#: sherpa-onnx for diarization. Closed set, so an allow list — and it leaves out
+#: `test_wavs/`, which is most of the repo's file count and none of its use.
+SHERPA_TRANSDUCER_FILES = ("encoder.int8.onnx", "decoder.int8.onnx",
+                           "joiner.int8.onnx", "tokens.txt")
+
 #: What `mlx_whisper.load_model` opens: `config.json` and one of the three weight
 #: spellings (see `MLX_WHISPER_WEIGHTS`). The tokenizer ships inside the package,
 #: so nothing else in the repo is read.
@@ -207,7 +216,211 @@ MFLUX_VARIANTS = {
         "config": "flux2_klein_9b",
         "vae": "AutoencoderKLFlux2",
     },
+    # Z-Image Turbo (October 2026 refresh). Distilled, no CFG: `ZImage` zeroes
+    # guidance itself when `ModelConfig.supports_guidance` is False. **No `vae`
+    # key, so no live preview** — its VAE is bit-identical to the FLUX.1 one
+    # (the Fill row's, 260 tensors, max|diff| 0.0), a 16-channel latent, and
+    # `preview.PROJECTIONS["AutoencoderKL"]` is SD1.5's 4-channel fit, which
+    # would project garbage (see `MFLUX_FILL_VARIANTS`).
+    "mflux-community/z-image-turbo-mflux-q4": {
+        "variant": "ZImage",
+        "module": "mflux.models.z_image.variants",
+        "config": "z_image_turbo",
+    },
+    # Qwen-Image 2.1 Turbo. The package `__init__`s under `qwen21/variants`
+    # are empty, so `module` is the full submodule path. No `vae` key: its VAE
+    # is `AutoencoderKLQwenImage`, which `preview.PROJECTIONS` has no row for,
+    # so it gets no preview. `guidance` PINS the value the worker passes —
+    # mflux raises on anything but 1 for the Turbo checkpoint
+    # (`Qwen21TurboScheduler.check_generate`), and a plain request arrives
+    # with the worker's 4.0 default.
+    "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit": {
+        "variant": "QwenImage21",
+        "module": "mflux.models.qwen21.variants.txt2img.qwen_image_21",
+        "config": "qwen_image_21_turbo",
+        "guidance": 1.0,
+    },
 }
+
+#: **Derived variants: the installed mflux's own `AVAILABLE_MODELS`, not a
+#: table we maintain.** Shape of that registry (read off mflux 0.23's
+#: `mflux/models/common/config/model_config.py`): a module-level dict
+#: literal `AVAILABLE_MODELS = {"<key>": ModelConfig(priority=..,
+#: aliases=[..], model_name="<hf repo id>", base_model=None, ...), ...}`.
+#: The KEY (`"flux3-image-klein"`) names the `ModelConfig.<key with - as _>()`
+#: staticmethod that returns the entry; the VALUE is a `ModelConfig(...)` call
+#: whose `model_name` keyword is the Hub repo id. It names NO variant class —
+#: which class denoises a checkpoint lives in the per-family packages
+#: (`mflux.models.flux2.variants`, `...flux3.variants`) — so the one thing
+#: that stays a hand table is `MFLUX_FAMILIES` below: registry-key prefix ->
+#: variant classes, one row per model FAMILY (not per repo), which is what
+#: made the old per-repo `MFLUX_VARIANTS` rot (a new klein or FLUX 3 repo was
+#: refused until somebody typed its id). `MFLUX_VARIANTS` /
+#: `MFLUX_EDIT_VARIANTS` / `MFLUX_FILL_VARIANTS` are now OVERRIDES layered
+#: over the derived map: they keep the ids mflux does not list (the
+#: mlx-community quantised conversions) and win for any id they name.
+#:
+#: Longest prefix wins. `vae` is the autoencoder class name the live
+#: preview's projection table is keyed by; a family whose latent space has
+#: not been fitted names none and simply gets no thumbnail.
+MFLUX_FAMILIES = (
+    ("flux3-image-klein", {
+        "variant": "Flux3Klein",
+        "module": "mflux.models.flux3.variants",
+        "edit": {"variant": "Flux3KleinEdit", "module": "mflux.models.flux3.variants"},
+    }),
+    ("flux2-klein", {
+        "variant": "Flux2Klein",
+        "module": "mflux.models.flux2.variants",
+        "vae": "AutoencoderKLFlux2",
+        "edit": {"variant": "Flux2KleinEdit",
+                 "module": "mflux.models.flux2.variants.edit.flux2_klein_edit"},
+    }),
+)
+
+
+def parse_mflux_available_models(source: str) -> dict[str, str]:
+    """`{repo id: registry key}` read statically (`ast`, never imported —
+    importing mflux pulls in `mlx.core`) out of mflux's `model_config.py`
+    source: each `AVAILABLE_MODELS` entry's `model_name`, plus any repo-shaped
+    (`/`-containing) alias. Several entries can share a repo id (the FLUX.1-dev
+    ControlNets); the FIRST in source order wins, which is the plain
+    text-to-image entry. `{}` on a syntax error or no registry found.
+
+    **Parsed with `ast`, never imported.** Importing
+    `mflux.models.common.config.model_config` pulls in `mlx.core` (Metal
+    init), a runner-venv dependency the server process must not carry
+    (`hub_loadable.mlx_vlm_model_types` likewise reads the filesystem rather
+    than importing `mlx_vlm`). Admission wants the key set (a repo id shared
+    by several entries is matched by object identity in mflux's
+    `resolve_key`, which a flat dict cannot represent, but admission only asks
+    whether ANY entry has the id), the worker wants the key."""
+    import ast
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    found: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "AVAILABLE_MODELS"
+                   for t in node.targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        for key_node, value_node in zip(node.value.keys, node.value.values):
+            if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
+                continue
+            if not isinstance(value_node, ast.Call):
+                continue
+            for kw in value_node.keywords:
+                if kw.arg == "model_name":
+                    if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                        found.setdefault(kw.value.value, key_node.value)
+                elif kw.arg == "aliases" and isinstance(kw.value, ast.List):
+                    for elt in kw.value.elts:
+                        if (isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                                and "/" in elt.value):
+                            found.setdefault(elt.value, key_node.value)
+    return found
+
+
+#: `(model_config.py path, st_mtime_ns)` -> parsed registry. One parse per
+#: file version, however many recipes are asked for; cleared by
+#: `set_mflux_registry_reader`.
+_MFLUX_PARSE_CACHE: dict[tuple[str, int], dict[str, str]] = {}
+
+
+def _in_process_mflux_registry() -> dict[str, str]:
+    """The registry of the mflux importable in THIS process (the mflux
+    runner's own venv, where the worker runs). `{}` when mflux is not
+    importable here."""
+    import importlib.util
+    import os
+    try:
+        spec = importlib.util.find_spec("mflux")
+    except (ImportError, ValueError):
+        return {}
+    if spec is None or not spec.submodule_search_locations:
+        return {}
+    path = os.path.join(list(spec.submodule_search_locations)[0],
+                        "models", "common", "config", "model_config.py")
+    try:
+        key = (path, os.stat(path).st_mtime_ns)
+        parsed = _MFLUX_PARSE_CACHE.get(key)
+        if parsed is None:
+            with open(path, encoding="utf-8") as fh:
+                parsed = parse_mflux_available_models(fh.read())
+            _MFLUX_PARSE_CACHE[key] = parsed
+        return parsed
+    except OSError:
+        return {}
+
+
+def _installed_mflux_registry() -> dict[str, str]:
+    """The default registry reader. In the server process the
+    `fused_render` package imports, and the mflux venv's registry is read by
+    `hub_loadable.mflux_available_models` (the server has no mflux of its own).
+    In the mflux worker venv there is no `fused_render` package, the import
+    fails, and the mflux importable in this process is read instead. Lazy on
+    purpose: nothing has to have imported `hub_loadable` first."""
+    try:
+        from fused_render.ai import hub_loadable
+    except ModuleNotFoundError as exc:
+        # Only "the root fused_render package is not here" (the mflux worker
+        # venv) falls back; a missing fused_render.* submodule is a broken
+        # server import and surfaces.
+        if exc.name != "fused_render":
+            raise
+        return _in_process_mflux_registry()
+    return hub_loadable.mflux_available_models() or {}
+
+
+_mflux_registry_reader = _installed_mflux_registry
+
+
+def set_mflux_registry_reader(reader) -> None:
+    """Install the `{repo id: registry key}` reader (a zero-arg callable);
+    `None` restores the default. Tests use it. Also drops the parse memo."""
+    global _mflux_registry_reader
+    _mflux_registry_reader = reader or _installed_mflux_registry
+    _MFLUX_PARSE_CACHE.clear()
+
+
+def _derived_mflux_family(model_id: str) -> tuple[str, dict] | None:
+    key = _mflux_registry_reader().get(model_id)
+    if not key:
+        return None
+    best = None
+    for prefix, family in MFLUX_FAMILIES:
+        if key == prefix or key.startswith(prefix + "-"):
+            if best is None or len(prefix) > len(best[0]):
+                best = (prefix, family)
+    if best is None:
+        return None
+    return key, best[1]
+
+
+def _derived_recipe(derived: tuple[str, dict]) -> dict:
+    key, family = derived
+    recipe = {"variant": family["variant"], "module": family["module"],
+              "config": key.replace("-", "_")}
+    if family.get("vae"):
+        recipe["vae"] = family["vae"]
+    return recipe
+
+
+def mflux_variant_recipe(model_id: str) -> dict | None:
+    """The plain text-to-image recipe for `model_id`: the `MFLUX_VARIANTS`
+    override row when there is one, else one derived from the installed
+    mflux's registry key plus its family (`MFLUX_FAMILIES`), else None."""
+    row = MFLUX_VARIANTS.get(model_id)
+    if row is not None:
+        return dict(row)
+    derived = _derived_mflux_family(model_id)
+    return None if derived is None else _derived_recipe(derived)
+
 
 #: The EDIT counterpart of `MFLUX_VARIANTS` — one entry per model that also
 #: supports base-image editing, keyed by the same repo id.
@@ -267,7 +480,14 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
     silent drift rather than a loud one.
     """
     edit = MFLUX_EDIT_VARIANTS.get(model_id)
-    plain = MFLUX_VARIANTS.get(model_id)
+    if model_id in MFLUX_VARIANTS:
+        plain = mflux_variant_recipe(model_id)
+    else:
+        # One derivation serves both the plain recipe and the edit row.
+        derived = _derived_mflux_family(model_id)
+        plain = None if derived is None else _derived_recipe(derived)
+        if edit is None and derived is not None:
+            edit = derived[1].get("edit")
     if edit is None or plain is None:
         return None
     # `.get("vae")`, not a hard index: `MFLUX_VARIANTS`'s own docstring
@@ -277,7 +497,11 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
     # not make the edit recipe raise where the plain row itself would not.
     # `config` stays a hard index: every row in this table names one, and
     # `_build_variant` reads it unconditionally.
-    return {**edit, "config": plain["config"], "vae": plain.get("vae")}
+    recipe = {**edit, "config": plain["config"], "vae": plain.get("vae")}
+    # A no-CFG checkpoint's pin must read the same on both rows.
+    if "guidance" in plain:
+        recipe["guidance"] = plain["guidance"]
+    return recipe
 
 
 #: The INPAINT counterpart (`fused.ai.image({image, mask})`, mflux-only): a
@@ -345,7 +569,7 @@ def mflux_native_mode(model_id: str) -> str | None:
     (one checkpoint cannot both need and refuse a mask); `generate` wins
     there only so the answer is deterministic.
     """
-    if model_id in MFLUX_VARIANTS:
+    if mflux_variant_recipe(model_id) is not None:
         return "generate"
     if model_id in MFLUX_FILL_VARIANTS:
         return "fill"
@@ -1184,13 +1408,17 @@ GGUF_RECIPES = {
         "repo": "unsloth/gemma-4-E4B-it-GGUF",
         "file": "gemma-4-E4B-it-Q4_K_M.gguf",
     },
-    "LFM2.5-8B-A1B-Q4_K_M.gguf": {
-        "repo": "LiquidAI/LFM2.5-8B-A1B-GGUF",
-        "file": "LFM2.5-8B-A1B-Q4_K_M.gguf",
-    },
     "Qwen3.8-27B-UD-Q3_K_XL.gguf": {
         "repo": "unsloth/Qwen3.8-27B-GGUF",
         "file": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+    },
+    "LFM2.5-24B-A2B-Q4_K_M.gguf": {
+        "repo": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+        "file": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+    },
+    "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf": {
+        "repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "file": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
     },
     "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf": {
         "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
@@ -1744,7 +1972,13 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             "laya-mlx",
             # Only curated repo ids reach it (`VISION_TORCH_RECIPES`), so the claim is exact.
             "vision-torch",
+            # The CUDA variant, for the diffusers variants' reason below:
+            # membership is a statement about the FORMAT, not the machine.
+            "vision-torch-cuda",
             "mlx-audio-tts",
+            # A root `model.onnx` + `voices.bin` + `tokens.txt` with espeak-ng
+            # data is Kokoro's sherpa export and nothing else's.
+            "sherpa-tts",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
@@ -1799,6 +2033,17 @@ def unloadable_quant(config: dict) -> str | None:
 
 def has_ct2_weights(names) -> bool:
     return CT2_WEIGHTS in names
+
+
+def is_sherpa_transducer_snapshot(names) -> bool:
+    """All four files of a sherpa-onnx transducer export at the snapshot root.
+
+    Keyed on the NAMES, because the export carries no `config.json` for the
+    NeMo check (`is_parakeet_checkpoint`) to read. All four, not any: an
+    `encoder.int8.onnx` alone is a fragment, and the runner's `load()` would
+    refuse it with a file-not-found from inside sherpa.
+    """
+    return all(name in names for name in SHERPA_TRANSDUCER_FILES)
 
 
 def has_gguf_weights(names) -> bool:
@@ -1985,12 +2230,76 @@ def speech_traits(config: dict) -> dict | None:
     }
 
 
+#: Kokoro-82M v1.1-zh as sherpa-onnx ships it (`csukuangfj/kokoro-multi-lang-v1_1`).
+#: A snapshot is this when the three engine files are at the root and the
+#: espeak-ng phonemizer data sits beside them; `loaders()` hands it to
+#: `sherpa-tts` and to nothing else, because a `model.onnx` at the root is
+#: otherwise an `onnx-embed` graph question and this one is not an embedder.
+KOKORO_FILES = ("model.onnx", "voices.bin", "tokens.txt")
+KOKORO_DATA_DIR = "espeak-ng-data"
+#: The Chinese front end's folder; `sherpa_tts.worker.load` always passes it, so
+#: the claim requires it too rather than letting sherpa-onnx's constructor fail.
+KOKORO_DICT_DIR = "dict"
+#: Speaker id -> name, index = sid (the sherpa-onnx table for kokoro-multi-lang-v1_1:
+#: https://k2-fsa.github.io/sherpa/onnx/tts/all/Chinese-English/kokoro-multi-lang-v1_1.html).
+#: Three English voices, then 55 `zf_*` and 45 `zm_*` Chinese ones. The count is
+#: fixed by `voices.bin`: 103 voices x 510 style rows x 256 float32 = 53,790,720
+#: bytes, the file's size. NOT the v1.0 table (53 voices, `af_heart` ...) that
+#: sits higher up the same docs page.
+KOKORO_VOICES = (
+     "af_maple", "af_sol", "bf_vale", "zf_001", "zf_002", "zf_003", "zf_004", "zf_005",
+     "zf_006", "zf_007", "zf_008", "zf_017", "zf_018", "zf_019", "zf_021", "zf_022",
+     "zf_023", "zf_024", "zf_026", "zf_027", "zf_028", "zf_032", "zf_036", "zf_038",
+     "zf_039", "zf_040", "zf_042", "zf_043", "zf_044", "zf_046", "zf_047", "zf_048",
+     "zf_049", "zf_051", "zf_059", "zf_060", "zf_067", "zf_070", "zf_071", "zf_072",
+     "zf_073", "zf_074", "zf_075", "zf_076", "zf_077", "zf_078", "zf_079", "zf_083",
+     "zf_084", "zf_085", "zf_086", "zf_087", "zf_088", "zf_090", "zf_092", "zf_093",
+     "zf_094", "zf_099", "zm_009", "zm_010", "zm_011", "zm_012", "zm_013", "zm_014",
+     "zm_015", "zm_016", "zm_020", "zm_025", "zm_029", "zm_030", "zm_031", "zm_033",
+     "zm_034", "zm_035", "zm_037", "zm_041", "zm_045", "zm_050", "zm_052", "zm_053",
+     "zm_054", "zm_055", "zm_056", "zm_057", "zm_058", "zm_061", "zm_062", "zm_063",
+     "zm_064", "zm_065", "zm_066", "zm_068", "zm_069", "zm_080", "zm_081", "zm_082",
+     "zm_089", "zm_091", "zm_095", "zm_096", "zm_097", "zm_098", "zm_100",
+)
+
+
+def kokoro_lexicons(names) -> list[str]:
+    """The `lexicon-*.txt` files, sorted (`lexicon-us-en` before `lexicon-zh`,
+    the order the model card gives). `load` passes them all to sherpa-onnx."""
+    return sorted(name for name in names
+                  if name.startswith("lexicon-") and name.endswith(".txt"))
+
+
+def is_kokoro_snapshot(names, dirnames) -> bool:
+    return (all(name in names for name in KOKORO_FILES) and bool(kokoro_lexicons(names))
+            and KOKORO_DATA_DIR in dirnames and KOKORO_DICT_DIR in dirnames)
+
+
+def kokoro_traits() -> dict:
+    """What `speech_traits` says for Kokoro: preset voices, no style line.
+
+    `languages` is empty on purpose: the export picks the language from the
+    voice (English voices speak English, `z*` voices Chinese) and the engine
+    has no language input, so an advertised list would be a selector that
+    does nothing. An empty list hides the Language control.
+    """
+    return {"mode": "preset", "voices": list(KOKORO_VOICES),
+            "languages": [], "instructable": False}
+
+
+def kokoro_traits_from_names(names, dirnames) -> dict | None:
+    return kokoro_traits() if is_kokoro_snapshot(names, dirnames) else None
+
+
 def _option_names(keys) -> str:
     return ", ".join(f"'{key}'" for key in SPEECH_OPTIONS if key in keys)
 
 
 def speech_options(model_id: str, traits: dict, options: dict) -> dict:
     what, allowed, required = _SPEECH_MODE_RULES[traits["mode"]]
+    if traits.get("instructable") is False and options.get("instruct"):
+        raise ValueError(f"{model_id} has no style line; it takes "
+                         f"{_option_names(allowed - {'instruct'})}, not 'instruct'")
     resolved = {key: options[key] for key in SPEECH_OPTIONS if options.get(key)}
     given = set(resolved) - {"language"}
     if given - allowed:
@@ -2114,6 +2423,21 @@ LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
 ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm")
 
 
+def is_diffusers_snapshot(names) -> bool:
+    """LOADING predicate: a flat `model_index.json` is present. `loaders()`
+    uses it. Admission (`hub_architecture.is_diffusers_repo`) is a wider
+    Hub-metadata net (flat index, modular index or `library_name`), because
+    the search path has only metadata, no filenames.
+
+    Deliberately narrow. The worker only knows `AutoPipelineForText2Image.
+    from_pretrained`, which needs the flat index; a modular-only repo has no
+    loader until a `ModularPipeline` adapter exists, and `library_name:
+    diffusers` is set on every LoRA repo, none of which load standalone. So
+    such rows are admitted but not loadable; the gap is deliberate and
+    recorded in D1455."""
+    return DIFFUSERS_INDEX in names
+
+
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
            onnx_weights: bool = False,
            gguf_architecture: str | None = None) -> tuple[str, ...]:
@@ -2137,6 +2461,15 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     found: list[str] = []
     if has_ct2_weights(names):
         found.append("faster-whisper")
+    if is_sherpa_transducer_snapshot(names):
+        # The runner's second format (D1423), and claimed EXCLUSIVELY: the
+        # graphs are `.onnx`, which the ONNX embedding rows below would
+        # otherwise be offered (`onnx_weights`), and nothing but sherpa-onnx
+        # can open a transducer. Already decisive, via `faster-whisper`'s place
+        # in `DECISIVE`.
+        if "faster-whisper" not in found:
+            found.append("faster-whisper")
+        return tuple(found)
     # Checked EARLY and returned on unconditionally, ahead of mflux/diffusers
     # below: a `.gguf` at the root is llama.cpp's format and nothing else's
     # (`DECISIVE`), and letting it fall through to those checks first is how
@@ -2174,10 +2507,15 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     if vision_torch_recipe(repo_id):
         # A curated vision repo and nothing else: Moondream's safetensors plus
         # config.json would otherwise fall through to the text runner below.
-        found.append("vision-torch")
+        found.extend(("vision-torch", "vision-torch-cuda"))
         return tuple(found)
     if is_qwen3_tts_snapshot(config, dirnames):
         found.append("mlx-audio-tts")
+        return tuple(found)
+    if is_kokoro_snapshot(names, dirnames):
+        # …and NOTHING else: the root `model.onnx` would otherwise be offered
+        # to the ONNX embedders below, which would refuse it after a download.
+        found.append("sherpa-tts")
         return tuple(found)
     if has_ltx_split_layout(names):
         found.append("ltx-video")
@@ -2202,7 +2540,7 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     # the two must not disagree about which repos are mflux's.
     if mflux_native_mode(repo_id) and has_mflux_components(dirnames):
         found.append("mflux-image")
-    if DIFFUSERS_INDEX in names:
+    if is_diffusers_snapshot(names):
         found.extend(DIFFUSERS_RUNNERS)
     if is_parakeet_checkpoint(config) and PARAKEET_WEIGHTS in names:
         # D406 withdrew the `parakeet-mlx` runner (maintenance cost not

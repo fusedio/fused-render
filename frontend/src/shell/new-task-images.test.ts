@@ -214,8 +214,8 @@ describe("the wiring the pure tests cannot see", () => {
     expect(MODAL).toContain("attachFiles(e.dataTransfer.files);");
   });
 
-  it("BOTH text fields take the paste — a file dropped on the title attaches too", () => {
-    expect(MODAL.split("onPaste={pasteFiles}").length - 1).toBe(2);
+  it("the one box takes the paste — a pasted file attaches", () => {
+    expect(MODAL.split("onPaste={pasteFiles}").length - 1).toBe(1);
   });
 
   it("NO caps and NO picker are left in the source", () => {
@@ -399,7 +399,9 @@ describe("the chat handoff's attachments", () => {
     // point.
     expect(SCHEDULED).not.toContain("parseAttachmentsParam");
     expect(SCHEDULED).not.toContain('q.get("attachments")');
-    expect(SCHEDULED).toContain("attachments: record.attachments ?? [],");
+    // `chatHopSeed` lives beside the card now (the canvas rail seeds a draft
+    // with it too), and the page imports it from there.
+    expect(MODAL).toContain("attachments: record.attachments ?? [],");
     const BUTTON = readFileSync(
       join(import.meta.dir, "..", "apps", "claude", "ui", "SchedButton.tsx"), "utf8");
     expect(BUTTON).toContain(".then(hand);");

@@ -37,6 +37,10 @@ describe("repoName", () => {
     expect(repoName("/Users/me/Work/widget/")).toBe("widget");
   });
 
+  it("normalizes backslashes", () => {
+    expect(repoName("C:\\Users\\me\\widget")).toBe("widget");
+  });
+
   it("is the whole string when there is no separator", () => {
     expect(repoName("widget")).toBe("widget");
   });
@@ -305,6 +309,17 @@ describe("appPathInRepo", () => {
   });
 });
 
+describe("appPathInRepo on Windows paths", () => {
+  it("compares drive paths case-insensitively and slash-agnostically", () => {
+    expect(appPathInRepo("c:\\work\\repo\\app", "C:\\Work\\repo")).toBe(true);
+    expect(appPathInRepo("C:/Work/Repo", "c:/work/repo/")).toBe(true);
+    expect(appPathInRepo("C:/Work/repo-two", "C:/Work/repo")).toBe(false);
+  });
+  it("keeps POSIX paths case-sensitive", () => {
+    expect(appPathInRepo("/Users/me/Repo/x", "/Users/me/repo")).toBe(false);
+  });
+});
+
 describe("failuresForApp / pullsForApp", () => {
   it("keeps only the repo containing this window's app", () => {
     const app = "/Users/me/a/apps/x/index.html";
@@ -316,5 +331,15 @@ describe("failuresForApp / pullsForApp", () => {
   it("shows nothing when the window has no app path", () => {
     expect(failuresForApp([fail("/Users/me/a")], null)).toEqual([]);
     expect(pullsForApp([pull("/Users/me/a")], null)).toEqual([]);
+  });
+});
+
+describe("backslashes outside a drive path", () => {
+  it("are literal filename characters", async () => {
+    const { repoName, appPathInRepo } = await import("./repo-updates-lib");
+    expect(repoName("/Users/me/we\\ird")).toBe("we\\ird");
+    expect(repoName("C:\\Users\\me\\repo")).toBe("repo");
+    expect(appPathInRepo("/r/a\\b/app", "/r/a")).toBe(false);
+    expect(appPathInRepo("C:\\r\\a\\app", "C:/r/a")).toBe(true);
   });
 });

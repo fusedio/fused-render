@@ -186,7 +186,7 @@ export function reposMessage(view: ReposView): string {
     case "unavailable":
       // Deliberately actionable: this is the state where nothing is going to
       // happen on its own, including after a scan was cancelled or failed.
-      return "The file index hasn't been built yet, so there's nothing to list repos from. Rebuild it from Preferences → Files & search.";
+      return "The file index hasn't been built yet, so there's nothing to list repos from. Rebuild it from Preferences → File index.";
     case "ready":
       return "No git repositories found on this machine.";
   }

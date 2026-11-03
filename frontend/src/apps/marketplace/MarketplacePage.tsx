@@ -3,7 +3,11 @@
 //
 //   /marketplace                 Discover  (?category=<id>, ?q=<text>)
 //   /marketplace/installed       Installed / Updates
-//   /marketplace/app/<slug>      App detail
+//   /marketplace/app/<slug>      App detail (`?via=link`: reached from a
+//                                listing link, fused-render://open?
+//                                marketplace=<slug> — shown bare, with no
+//                                store chrome, while the store is off;
+//                                CONTRIB_LOOP.md §18.5)
 //   /marketplace/file?path=<p>   A `.fused` app file's install page
 //                                (FusedFilePage) — also rendered in place
 //                                for `/explorer/view|embed/<p>.fused` by
@@ -15,7 +19,8 @@
 // other pages Enter carries it to Discover.
 import { useEffect, useRef, useState } from "react";
 import { IS_EMBED, navigateUrl, pushHistory, replaceSearch } from "@platform/lib/router";
-import { MARKETPLACE_HOME, useCatalog } from "@platform/lib/marketplace";
+import { useNavEpoch } from "@platform/lib/hooks";
+import { MARKETPLACE_HOME, releaseWaiting, useCatalog } from "@platform/lib/marketplace";
 import { StoreHeader, type StoreTab } from "./StoreHeader";
 import { CatalogFooter, Discover } from "./Discover";
 import { InstalledPage } from "./InstalledPage";
@@ -66,16 +71,26 @@ function searchFor(category: string, q: string): string {
   const sp = new URLSearchParams();
   if (category && category !== "all") sp.set("category", category);
   if (q.trim()) sp.set("q", q.trim());
+  // Discover's sort (?sort=) is its own control's to change: kept here.
+  const sort = new URLSearchParams(location.search).get("sort");
+  if (sort) sp.set("sort", sort);
   const s = sp.toString();
   return MARKETPLACE_HOME + (s ? "?" + s : "");
 }
 
 export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
+  // Discover, Installed and an app's page are paths of ONE mounted page, so the
+  // header and scroll container survive a hop between them. `useNavEpoch` is
+  // the subscription (it counts pushState and popstate alike); the route is
+  // re-read from the URL on every render.
+  const navEpoch = useNavEpoch();
   const route: Route = fusedFile ? { kind: "file", path: fusedFile } : parseMarketplacePath(location.pathname, location.search);
   // A chrome-free embed (the window a `.fused` double-click opened) shows the
-  // page alone: no store header to wander off into the catalog from.
+  // page alone: no store header to wander off into the catalog from, and no
+  // catalog read. (Until 2026-10-29 a `.fused` or a listing link opened with
+  // the store switched off rendered bare too; the store is always on now.)
   const bare = route.kind === "file" && IS_EMBED;
-  const snap = useCatalog();
+  const snap = useCatalog(!bare);
   const initial = route.kind === "discover" ? readParams() : { category: "all", q: "" };
   const [category, setCategory] = useState(initial.category);
   const [q, setQ] = useState(initial.q);
@@ -92,6 +107,23 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Landing on another page of the store, or on Discover with other filters
+  // than the page shows (the Discover link dropping them): back to the top, and
+  // on Discover the filters the URL names. Not on the first render, which
+  // already read them.
+  const routeKey = route.kind === "app" ? "app:" + route.slug : route.kind === "file" ? "file:" + route.path : route.kind;
+  const lastRouteKey = useRef(routeKey);
+  useEffect(() => {
+    const next = route.kind === "discover" ? readParams() : { category: "all", q: "" };
+    const moved = lastRouteKey.current !== routeKey;
+    if (!moved && next.category === category && next.q === q) return;
+    lastRouteKey.current = routeKey;
+    scrollRef.current?.scrollTo({ top: 0 });
+    setCategory(next.category);
+    setQ(next.q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navEpoch, routeKey]);
 
   // Back/Forward between two filters of THIS page: the chip's pushState is
   // not a navigation (no nav event), so the shell's route mark never moved
@@ -110,7 +142,7 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
   }, [route.kind]);
 
   const apps = snap.catalog?.apps ?? [];
-  const updates = apps.filter((a) => a.installed && a.update_available && a.compatible).length;
+  const updates = apps.filter((a) => releaseWaiting(a) && a.compatible).length;
   const installedCount = apps.filter((a) => a.installed).length;
 
   const onQ = (next: string) => {
@@ -135,17 +167,20 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
   } else if (route.kind === "installed") {
     body = <InstalledPage snap={snap} />;
   } else if (route.kind === "app") {
-    body = <AppDetailPage slug={route.slug} snap={snap} />;
+    // Keyed by slug: a hop to another app's page (a "More like this" card)
+    // is a fresh mount, so what the page remembers about an install asked
+    // for there (AppDetailPage `asked`) dies with the hop.
+    body = <AppDetailPage key={route.slug} slug={route.slug} snap={snap} bare={bare} />;
   } else if (route.kind === "file") {
     body = <FusedFilePage key={route.path} path={route.path} />;
   } else {
     body = (
       <EmptyState
         title="Page not found"
-        body="This Marketplace address doesn't lead anywhere."
+        body="This Community address doesn't lead anywhere."
         action={
           <button type="button" className="mp-btn" onClick={() => navigateUrl(MARKETPLACE_HOME)}>
-            Go to the Marketplace
+            Go to the Community
           </button>
         }
       />
@@ -168,7 +203,9 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
       )}
       <main className="mp-inner">
         {body}
-        {route.kind !== "unknown" && route.kind !== "file" && <CatalogFooter catalog={snap.catalog} loading={snap.loading} />}
+        {route.kind !== "unknown" && route.kind !== "file" && !bare && (
+          <CatalogFooter catalog={snap.catalog} loading={snap.loading} />
+        )}
       </main>
       <InstallSheetHost />
     </div>

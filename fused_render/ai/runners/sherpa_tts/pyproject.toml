@@ -1,0 +1,42 @@
+# The Kokoro text-to-speech runner's environment (`sherpa-tts`).
+#
+# One engine, named in one place, in an interpreter that is not fused-render's.
+#
+# **Why sherpa-onnx.** It is already a dependency this app trusts: diarization
+# (`../diarize.py`) and VAD (`../vad.py`) run on it inside the two whisper
+# runners. Its wheels are CPU builds that exist on every platform this app
+# runs on, and it needs no PyTorch — so text to speech on a Linux or Windows
+# machine costs one small wheel instead of a CUDA stack. The model is Kokoro-82M
+# (Apache-2.0) in the ONNX export `csukuangfj/kokoro-multi-lang-v1_1`.
+#
+# **The provider is CPU everywhere**, on Apple Silicon too, for the reason
+# `../diarize.py` gives: CoreML measured slower than the CPU provider
+# (sherpa-onnx#2910), and 82M parameters is already faster than real time.
+#
+# `sherpa-onnx-core` is NOT redundant — see `../faster_whisper/pyproject.toml`
+# for the whole story (`libonnxruntime` lives in that distribution and
+# sherpa-onnx's own metadata cannot get it into a lock). Both lines stay, and
+# `tests/test_ai_runner_deps.py` pins the pairing. The primary carries the
+# version window and the companion stays unbounded because the primary's own
+# wheels pin it.
+#
+#   sherpa-onnx       the engine: `OfflineTts` with the Kokoro model config
+#   sherpa-onnx-core  its onnxruntime
+#   numpy             float samples -> 16-bit PCM, silence between paragraphs
+#   huggingface_hub   downloads
+#   psutil            answers "how much memory is this costing"
+[project]
+name = "fused-render-runner-sherpa-tts"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "sherpa-onnx>=1.13,<2",
+    "sherpa-onnx-core",
+    "numpy>=1.26,<3",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

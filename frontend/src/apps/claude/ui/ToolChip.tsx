@@ -18,7 +18,7 @@ import { chipHint, chipWhen } from "./run-when";
 import { useMinuteTick } from "./useMinuteTick";
 
 import {
-  ACP_KEY,
+  SIDECAR_KEYS,
   acpOf,
   withoutAcp,
   ANSWERABLE_TOOL,
@@ -227,8 +227,8 @@ function ChipBody({
   nested?: NestedRenderer;
 }) {
   const inp = asRecord(seg.input);
-  // The Copilot sidecar (`_acp`) is plumbing, never a leftover.
-  const extra = leftoverInput(inp, [...usedKeys(seg, inp), ACP_KEY]);
+  // The host sidecars (`_acp`, `_codex`) are plumbing, never a leftover.
+  const extra = leftoverInput(inp, [...usedKeys(seg, inp), ...SIDECAR_KEYS]);
   const out = chipOutput(seg.output);
   const children = Array.isArray(seg.children) ? seg.children : [];
   return (
@@ -356,7 +356,8 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>, cwd?: strin
     default:
       // No renderer for this tool, so the input IS the body: a chip that showed
       // part of an unknown call would be a chip that misdescribed what ran.
-      // Less the Copilot sidecar, which the header already says (`acpOf`).
+      // Less the host sidecars: Copilot's the header already says (`acpOf`),
+      // Codex's is for logs.
       {
         const bare = withoutAcp(inp);
         return Object.keys(bare).length ? (

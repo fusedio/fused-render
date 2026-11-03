@@ -466,7 +466,7 @@ def test_relay_remote_job_row_origin_defaults_to_playground(monkeypatch):
 def test_relay_remote_job_row_origin_names_the_callers_page_when_given(
         monkeypatch):
     # A caller with its own real page (here, the Scheduler) gets its own
-    # honest caption rather than "Claude setup" — the same derivation
+    # honest caption rather than "Claude Code" — the same derivation
     # `_ai_relay`'s `page` argument already drives for the row's `page`.
     _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
     asyncio.run(_server_ai._ai_relay({"prompt": "hello"}, page="/tasks"))
@@ -1645,3 +1645,25 @@ def test_ai_spawn_strips_bundle_python_vars(monkeypatch):
                  "PYTHONUSERBASE", "PYTHONINSPECT"):
         assert name not in env
     assert env["PATH"] == "/usr/bin:/bin"
+
+
+def test_prewarm_default_delay_defers_work(monkeypatch):
+    spawned = []
+
+    async def fake_spawn(self, model, prompt):
+        spawned.append(model)
+        return object()
+
+    monkeypatch.setattr(_server_ai._AiSession, "_spawn", fake_spawn)
+    session = _server_ai._AiSession()
+
+    async def go():
+        session.prewarm_default(delay=0.2)
+        await asyncio.sleep(0.05)
+        early = list(spawned)
+        await asyncio.sleep(0.45)
+        return early
+
+    early = asyncio.run(go())
+    assert early == []
+    assert len(spawned) == 1

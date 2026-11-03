@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from fused_render.bots import paths as bpaths
 from fused_render.bots import agent_engine, apptools, tools
 from fused_render.bots import bot as botmod
 
@@ -33,6 +35,9 @@ JPEG = b"\xff\xd8\xff\xe0fakejpeg\xff\xd9"
 
 
 # ----------------------------------------------------------------- fakes ---
+B1 = "b1b1b1b1"  # ids are 8 hex (paths._ID_RE)
+
+
 def _el(ref, tag, text="", **kw):
     return {"ref": ref, "tag": tag, "text": text, **kw}
 
@@ -121,12 +126,16 @@ class FakeBot:
     def serving_task(self):
         yield
 
-    def __init__(self, bid="b1"):
+    def __init__(self, bid=B1):
         self.id = bid
         self.meta = {"name": "Tester", "model": "haiku", "effort": "low", "approval": "ask", "routines": []}
+        # agent_engine.run resolves the bot's cache dir by id (paths.bot_cache_dir), which needs a placed folder
+        # under <ws>/bots/ (app_home gives every test its own FUSED_RENDER_DIR)
+        bpaths.place(bid, self.meta["name"])
         self.browser = FakeBrowser()
         self.events = []
         self.statuses = []
+        self.doings = []       # distinct consecutive set_doing values
         self.inbox = []
         self.lock = threading.RLock()
         self.cond = threading.Condition()
@@ -152,6 +161,10 @@ class FakeBot:
                 self.action_obs.append(self.browser.observes)
             self.cond.notify_all()
         return ev
+
+    def set_doing(self, text):
+        if not self.doings or self.doings[-1] != text:
+            self.doings.append(text)
 
     def set_status(self, status, **kw):
         self.meta["status"] = status
@@ -403,6 +416,26 @@ def run_task(bot, script, monkeypatch, task="say hi"):
 
 
 # ----------------------------------------------------------------- tests ---
+def test_terminate_without_sigkill_attr(monkeypatch):
+    """Windows has no `signal.SIGKILL`: stopping a turn must not raise
+    AttributeError evaluating it at the `_terminate` call site."""
+    monkeypatch.delattr(signal, "SIGKILL")
+    sent = []
+
+    class FakeProc:
+        pid = 2 ** 22 + 12345  # no such process group: _signal falls back
+        stdin = None
+
+        def send_signal(self, sig):
+            sent.append(sig)
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("fake", timeout)
+
+    agent_engine._terminate(FakeProc(), grace=0.01)
+    assert len(sent) == 2 and sent[0] == signal.SIGTERM
+
+
 def test_text_then_done(server, fake_cli, monkeypatch):
     bot = FakeBot()
     run_task(bot, [{"text": "Hi! How can I help?"}, {"result": "Hi! How can I help?"}], monkeypatch)
@@ -430,7 +463,7 @@ def test_text_then_done(server, fake_cli, monkeypatch):
         assert f.read() == agent_engine.SYSTEM_PROMPT
     cfg = json.load(open(argv[argv.index("--mcp-config") + 1]))
     srv = cfg["mcpServers"]["bot"]
-    assert srv["args"][1:3] == [server, "b1"] and srv["timeout"] == (agent_engine.APPROVAL_WAIT_S + 60) * 1000
+    assert srv["args"][1:3] == [server, B1] and srv["timeout"] == (agent_engine.APPROVAL_WAIT_S + 60) * 1000
     tools_listed = fake_cli("tools")[0]["tools"]
     assert "goto" in tools_listed and "tool" not in tools_listed and "text" not in tools_listed
     first = fake_cli("user")[0]["user"]
@@ -644,7 +677,7 @@ def test_stale_token(server, fake_cli, monkeypatch):
             agent_engine.handle_tool(bot, "not-the-token", "observe", {})
         with pytest.raises(agent_engine.StaleToken):
             agent_engine.roster_for(bot, None)
-        req = urllib.request.Request(f"{server}/api/bots/b1/tool", method="POST",
+        req = urllib.request.Request(f"{server}/api/bots/{B1}/tool", method="POST",
                                      data=json.dumps({"name": "observe", "args": {}, "token": "old"}).encode(),
                                      headers={"X-Fused": "1", "Content-Type": "application/json"})
         with pytest.raises(urllib.error.HTTPError) as e:
@@ -1187,7 +1220,7 @@ def test_botmcp_stale_token_is_a_tool_error(server):
 # prompts as approval cards, built-in calls as action rows, a bigger step cap,
 # and the web guard.
 def super_bot():
-    bot = FakeBot("ea1")
+    bot = FakeBot("ea1ea1ea")
     bot.meta.update({"name": "Super Bot", "kind": "super", "super_access": "ask", "model": "sonnet"})
     return bot
 
@@ -1385,7 +1418,7 @@ def test_builtin_label():
 class ConvBot(FakeBot):
     """FakeBot plus the conversation record `run()` resumes (bot.py's surface, in memory)."""
 
-    def __init__(self, bid="c1"):
+    def __init__(self, bid="c1c1c1c1"):
         super().__init__(bid)
         self.seq = 0
         self.conv = {"session_id": None, "tokens": 0, "since_seq": 0, "summary": "", "sent": {}, "prompt_hash": "",
@@ -1497,6 +1530,18 @@ def test_super_ask_user_question_typed_answer_joins_the_options(server, fake_cli
     opts = ans["questions"][0]["options"]
     assert [o["label"] for o in opts] == ["Small", "Large", "medium, please"]
     assert opts[-1]["description"] == agent_engine.TYPED_OPTION_NOTE
+
+
+def test_super_ask_user_question_typed_answer_stays_within_the_cli_option_cap(server, fake_cli, monkeypatch):
+    # The CLI rejects updatedInput whose options exceed 4, losing the answer entirely.
+    bot = super_bot()
+    t = start(bot, [_ask_q(_q("Which size?", "S", "M", "L", "XL")), {"result": "ok"}], monkeypatch)
+    bot.wait_event("question")
+    bot.say("medium, please")
+    finish(t)
+    ans = _answer(fake_cli)["updatedInput"]
+    assert ans["answers"] == {"Which size?": "medium, please"}
+    assert [o["label"] for o in ans["questions"][0]["options"]] == ["S", "M", "L", "XL"]
 
 
 def test_super_ask_user_question_multi_select_keeps_commas_in_labels(server, fake_cli, monkeypatch):
@@ -1620,3 +1665,92 @@ def test_bot_tool_gate_carries_risk(server, fake_cli, monkeypatch, stub_risk):
     assert stub_risk[0][0] == "click" and stub_risk[0][1] == {"ref": "sb2"}
     bot.say("approve")
     finish(t)
+
+
+def _stub_market(monkeypatch, calls):
+    """The marketplace seam (tools._market_*): a one-app catalog, no network."""
+    from fused_render.bots import tools
+
+    monkeypatch.setattr(tools, "_market_search", lambda d: (
+        '1 app matches "sine" (slug: name version [category] — what it does). INSTALLED ones are in APPS already; '
+        "`marketplace_install` with a slug installs one after the user approves.\n"
+        "- sine-starter: Sine Starter v1.0.0 [starters] — sine-starter app"))
+    monkeypatch.setattr(tools, "_market_target", lambda d: (str(d.get("slug") or ""), False, ""))
+    monkeypatch.setattr(tools, "_market_name", lambda slug: ("Sine Starter", "1.0.0"))
+    monkeypatch.setattr(tools, "_market_where", lambda slug: "/ws/app/sine-starter")
+
+    def install(bot, d):
+        calls.append(d)
+        return ("Installed Sine Starter v1.0.0 at /ws/app/sine-starter. It is now in APPS as `sine-starter`: "
+                "`show sine-starter` puts it in the chat as a card the user opens. Tell the user it is installed in one line.")
+    monkeypatch.setattr(tools, "_market_install", install)
+
+
+def test_marketplace_install_asks_even_under_never_ask(server, fake_cli, monkeypatch):
+    """docs §15: a bot searches the Community without a card, and installing
+    an app raises the approval card whatever the Approvals setting says
+    (ALWAYS_ASK); the install runs only after the yes, once per slug."""
+    installs = []
+    _stub_market(monkeypatch, installs)
+    bot = FakeBot()
+    bot.meta["approval"] = "auto"  # "Never ask"
+    t = start(bot, [{"tool": "marketplace_search", "args": {"query": "sine"}},
+                    {"tool": "marketplace_install", "args": {"slug": "sine-starter"}},
+                    {"tool": "marketplace_install", "args": {"slug": "sine-starter"}},
+                    {"result": "Installed Sine Starter."}], monkeypatch)
+    ev = bot.wait_event("approval")
+    assert ev and ev["text"].startswith('About to install the Community app "Sine Starter" v1.0.0 into /ws/app/sine-starter. '
+                                        "It downloads this community app")
+    assert ev["detail"] == 'install the Community app "Sine Starter" v1.0.0 into /ws/app/sine-starter'
+    assert "forever" not in ev  # never approvable for good
+    assert installs == []  # nothing ran before the yes
+    bot.say("approve")
+    finish(t)
+    assert installs == [{"slug": "sine-starter"}]
+    calls = fake_cli("call")
+    assert calls[0]["result"].startswith('1 app matches "sine"')
+    assert calls[1]["result"].startswith('APPROVED by the user: install the Community app "Sine Starter" v1.0.0 into '
+                                         "/ws/app/sine-starter\n\nInstalled Sine Starter v1.0.0 at /ws/app/sine-starter")
+    assert calls[2]["result"].startswith("NOT RUN AGAIN")  # a second install of the same slug: no second card
+    assert sum(1 for e in bot.events if e["role"] == "approval") == 1
+    acts = [e for e in bot.events if e["role"] == "action"]
+    assert [a["text"] for a in acts][:2] == ['search the Community for "sine"',
+                                             'install the Community app "Sine Starter" v1.0.0 into /ws/app/sine-starter']
+    assert acts[0]["result"] == "1 app found" and acts[1]["result"] == "Installed Sine Starter v1.0.0 at /ws/app/sine-starter"
+
+
+def test_marketplace_install_denied_does_not_run(server, fake_cli, monkeypatch):
+    installs = []
+    _stub_market(monkeypatch, installs)
+    bot = FakeBot()
+    t = start(bot, [{"tool": "marketplace_install", "args": {"slug": "sine-starter"}},
+                    {"result": "Left it."}], monkeypatch)
+    assert bot.wait_event("approval")
+    bot.say("no")
+    finish(t)
+    assert installs == []
+    assert fake_cli("call")[0]["result"].startswith('DENIED by the user: install the Community app "Sine Starter"')
+
+
+def test_drive_reports_what_the_bot_is_doing(server):
+    """thinking block -> a built-in tool -> its result -> a reply -> done: the live activity follows, and ends cleared."""
+    bot = FakeBot()
+    sess = agent_engine.session(bot)
+    sess = agent_engine.Turn(bot) if sess is None else sess
+    sess.is_super = True
+    evs = [
+        {"type": "assistant", "message": {"id": "m1", "content": [{"type": "thinking", "thinking": "hmm"}]}},
+        {"type": "assistant", "message": {"id": "m1", "content": [
+            {"type": "tool_use", "id": "t1", "name": "WebSearch", "input": {"query": "RL fine-tuning"}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+        {"type": "assistant", "message": {"id": "m2", "content": [{"type": "text", "text": "Here you go."}]}},
+        {"type": "result", "subtype": "success", "result": "Here you go."},
+    ]
+    assert agent_engine._drive(bot, sess, _Proc(evs)) == ("done", "Here you go.")
+    assert bot.doings == ["thinking", "search the web for RL fine-tuning", "thinking", "writing", ""]
+
+
+def test_mcp_tool_label_and_permission_tool_skipped():
+    assert agent_engine._tool_doing("mcp__bot__goto", {"url": "https://example.com/x"}) == "goto https://example.com/x"
+    assert agent_engine._tool_doing("mcp__bot__observe", {}) == "observe"
+    assert agent_engine._tool_doing("Bash", {"command": "ls"}) == "run `ls`"

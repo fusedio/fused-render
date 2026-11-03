@@ -201,12 +201,17 @@ def test_serve_refuses_on_the_base_install_and_names_cli():
     assert "SERVE_REFUSED:" in result.stdout, (
         f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
     message = result.stdout.split("SERVE_REFUSED:", 1)[1]
-    assert "pip install 'fused-render[cli]'" in message
-    assert "or [all]" in message
+    cli_line = "pip install 'fused-render[cli]'"
+    all_line = "or pip install 'fused-render[all]'"
+    assert cli_line in message
+    # [all] as a whole install line too (the minimal-install CI job greps the
+    # refusal for it), after the [cli] one: [cli] is what `serve` needs.
+    assert all_line in message
+    assert message.index(cli_line) < message.index(all_line)
     for extra in ("index", "data", "hf", "fused"):
         assert f"[{extra}]" in message
     # Optional for serve, so never named as missing.
-    assert "[desktop]" not in message.split("or [all]")[0]
+    assert "[desktop]" not in message.split(all_line)[0]
 
 
 def test_serve_gate_needs_fused_but_not_desktop(monkeypatch):

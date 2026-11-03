@@ -1,7 +1,6 @@
 """Shapes and arithmetic shared by every sysmon backend."""
 from __future__ import annotations
 
-import pwd
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -36,8 +35,10 @@ def user_name(uid: int | None) -> str | None:
     name = _USERS.get(uid)
     if name is None:
         try:
+            import pwd  # POSIX-only; absent on Windows
+
             name = pwd.getpwuid(uid).pw_name
-        except (KeyError, OSError):
+        except (ImportError, KeyError, OSError):
             name = str(uid)
         _USERS[uid] = name
     return name

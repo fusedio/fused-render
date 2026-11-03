@@ -70,6 +70,8 @@ import threading
 import time
 import traceback
 
+from . import warm_run
+
 logger = logging.getLogger(__name__)
 
 # A traceback frame header: `  File "<path>", line N[, in func]`. SyntaxError
@@ -179,6 +181,7 @@ def reset_app_interpreter_cache() -> None:
     global _app_interpreter
     with _app_interpreter_lock:
         _app_interpreter = _UNPROBED
+    warm_run.discard_all("app interpreter cache reset")
 
 
 def _stripped_env_vars() -> tuple[str, ...]:
@@ -460,6 +463,7 @@ def reset_app_packages_cache() -> None:
     global _app_packages
     with _app_packages_lock:
         _app_packages = _UNPROBED
+    warm_run.discard_all("app packages cache reset")
 
 
 def _probe_app_packages(exe: str) -> dict | None:
@@ -765,8 +769,10 @@ _available_lock = threading.Lock()
 def warm() -> None:
     """Import the fused backend once off the request path and cache the result.
 
-    Startup daemon thread: on a fresh install the cold import is ~a minute and
-    left lazy it would freeze the first /api/config that resolves the engine."""
+    Runs on a daemon thread started by `ensure_warm()` (first shell load, i.e.
+    the first /api/config, or the first Python run — NOT at server boot): on a
+    fresh install the cold import is ~a minute. /api/config resolves the engine
+    through `available_nonblocking()`, so it never waits for this."""
     global _available_cached
     t0 = time.monotonic()
     ok = available()
@@ -774,6 +780,12 @@ def warm() -> None:
         _available_cached = ok
     logger.info("engine warm-up: fused backend %s (%.1fs)",
                 "ready" if ok else "unavailable", time.monotonic() - t0)
+    # Seed the pre-spawned interpreters (SPEC PY-20) so the first run after
+    # startup is already warm. Best effort: a failure here is just a cold first run.
+    try:
+        warm_run.prime(get_backend() if ok else None, app_interpreter)
+    except Exception:  # noqa: BLE001
+        logger.debug("warm run priming failed", exc_info=True)
 
 
 def warm_in_background() -> None:
@@ -789,9 +801,30 @@ def forced_override() -> str | None:
 
 
 def warm_unless_forced_builtin() -> None:
-    """Warm the engine in the background unless it is forced to builtin (startup hook)."""
+    """Warm the engine in the background unless it is forced to builtin (`ensure_warm`'s body)."""
     if forced_override() != "builtin":
         warm_in_background()
+
+
+_warm_started = False
+_warm_start_lock = threading.Lock()
+
+
+def ensure_warm() -> None:
+    """Start `warm_unless_forced_builtin()` at most once per process; never blocks.
+
+    Called on the first shell load (/api/config) and at the top of
+    `run_python`, replacing the boot hook so a server that never loads the UI or
+    runs Python never pays the cold import. `invalidate()` deliberately does NOT
+    reset this flag: it clears the cached availability (find_spec answers until
+    the next warm) and discards the pooled interpreters, and re-running the
+    cold import on every invalidate is not wanted."""
+    global _warm_started
+    with _warm_start_lock:
+        if _warm_started:
+            return
+        _warm_started = True
+    warm_unless_forced_builtin()
 
 
 def invalidate() -> None:
@@ -799,6 +832,7 @@ def invalidate() -> None:
     global _available_cached
     with _available_lock:
         _available_cached = None
+    warm_run.discard_all("engine invalidated")
 
 
 def available_nonblocking() -> bool:
@@ -875,6 +909,14 @@ async def _execute(code: str, requirements: list[str], interpreter: str | None, 
             # a reordering upstream would silently pass `interpreter` as something
             # else. `requirements` is deliberately omitted — the interpreter wins
             # over it upstream, and passing both would imply otherwise.
+            # A spare interpreter pair started ahead of time (SPEC PY-20), or None
+            # -> the unchanged cold call below (no spare ready, flag off, or a
+            # backend whose shape `warm_run` does not mirror).
+            warm = await asyncio.to_thread(
+                warm_run.execute_fused, backend, code, input_files, interpreter
+            )
+            if warm is not None:
+                return warm
             return await asyncio.to_thread(
                 backend._execute_sync,
                 code=code,
@@ -1190,6 +1232,7 @@ def _split_error(cleaned: str) -> tuple[str, str]:
 
 
 async def run_python(path: str, params: dict) -> dict:
+    ensure_warm()  # backstop for a server used without the UI; no-op after the first call
     if not os.path.isfile(path):
         return _error_dict("FileNotFoundError", f"no such Python file: {path}")
     try:

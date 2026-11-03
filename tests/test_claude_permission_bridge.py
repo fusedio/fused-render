@@ -609,6 +609,37 @@ def test_a_typed_answer_rides_back_as_the_answer_and_as_a_new_option(tmp_path,
         == srv.TYPED_OPTION_NOTE
 
 
+def _n_option_input(n, multi=False):
+    return {"questions": [{
+        "question": "Pick one?", "header": "Pick",
+        "options": [{"label": f"Opt{i}", "description": ""} for i in range(n)],
+        "multiSelect": multi,
+    }]}
+
+
+@pytest.mark.parametrize("n,multi,answer,custom,expected_len", [
+    (3, False, "Mine", "Mine", 4),         # room left: still grows to the cap
+    (4, False, "Mine", "Mine", 4),         # full: left alone, the CLI caps at 4
+    (4, True, "Opt0, Mine", "Mine", 4),    # multi-select, full
+])
+def test_the_typed_option_never_pushes_options_past_the_cli_cap(
+        tmp_path, server, n, multi, answer, custom, expected_len):
+    """The CLI re-validates updatedInput against the AskUserQuestion schema
+    (options maxItems 4) and rejects the whole answer past it, so the model
+    never sees what the user typed. The answer still rides in `answers`."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir, _n_option_input(n, multi))
+    _answer(perm_dir, req, decision="allow", scope="once",
+            answers={"Pick one?": answer}, custom={"Pick one?": custom})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow", payload
+    assert payload["updatedInput"]["answers"] == {"Pick one?": answer}
+    options = payload["updatedInput"]["questions"][0]["options"]
+    assert len(options) == expected_len
+    assert (options[-1]["label"] == custom) == (n < 4)
+
+
 def test_the_typed_option_is_added_to_a_copy_not_to_the_parked_request(tmp_path):
     """The parked input is handed back whole on every other branch, so growing
     an option list must build a new one rather than reach into it."""
@@ -2537,15 +2568,19 @@ def test_start_decides_strict_from_pref_or_isolate(agent, tmp_path, monkeypatch,
     assert launch["strict_mcp"] is expected
 
 
-def test_strict_mcp_pref_reads_prefs_json_and_defaults_on(agent, tmp_path, monkeypatch):
+def test_strict_mcp_pref_reads_prefs_json_and_defaults_off(agent, tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "_home_dir", lambda: str(tmp_path))
-    assert agent._strict_mcp_pref() is True  # no file
+    assert agent._strict_mcp_pref() is False  # no file
     (tmp_path / "prefs.json").write_text("{not json")
+    assert agent._strict_mcp_pref() is False
+    (tmp_path / "prefs.json").write_text("{}")
+    assert agent._strict_mcp_pref() is False
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": True}))
     assert agent._strict_mcp_pref() is True
     (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": False}))
     assert agent._strict_mcp_pref() is False
-    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}))
-    assert agent._strict_mcp_pref() is True  # only a stored False turns it off
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 1}))
+    assert agent._strict_mcp_pref() is False  # only a stored True turns it on
 
 
 def test_default_permission_pref_reads_prefs_json_and_defaults_auto(agent, tmp_path, monkeypatch):
@@ -2827,3 +2862,59 @@ def test_the_store_survives_across_two_runs_of_the_same_chat(agent, tmp_path, mo
         s.close()
     # another chat does not inherit it
     assert _store(agent, "chat-2") is None
+
+
+# ---- perm-waits: how long a card sat on the user (D1439 follow-up)
+def _waits(agent, chat="chat-1"):
+    return agent._chat_waits_load(chat)
+
+
+def _req_with_age(agent, run_dir, rid, tuid, age):
+    import time as _time
+    with open(os.path.join(agent._perm_dir(run_dir), rid + ".req.json"), "w") as fh:
+        json.dump({"id": rid, "tool": "Bash", "input": {}, "tool_use_id": tuid,
+                   "created_at": _time.time() - age}, fh)
+
+
+def test_decision_records_the_wait_keyed_by_tool_use_id(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    _req_with_age(agent, run_dir, "r1", "toolu_1", 120)
+    assert agent._write_decision(agent._perm_dir(run_dir), "r1", {"decision": "allow"})
+    start, end = _waits(agent)["toolu_1"]
+    assert 119 < end - start < 125
+
+
+def test_second_writer_does_not_record_a_wait(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    _req_with_age(agent, run_dir, "r1", "toolu_1", 120)
+    pd = agent._perm_dir(run_dir)
+    with open(os.path.join(pd, "r1.res.json"), "w") as fh:
+        json.dump({"decision": "deny"}, fh)
+    assert agent._write_decision(pd, "r1", {"decision": "allow"})
+    assert "toolu_1" not in _waits(agent)
+
+
+def test_expired_decision_records_no_wait(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    _req_with_age(agent, run_dir, "r1", "toolu_1", 120)
+    assert agent._write_decision(agent._perm_dir(run_dir), "r1", {"decision": "expired"})
+    assert "toolu_1" not in _waits(agent)
+
+
+def test_wait_store_is_capped_and_a_bad_req_is_harmless(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    for i in range(505):
+        agent._chat_waits_add(run_dir, "t%d" % i, 10.0, 11.0)
+    w = _waits(agent)
+    assert len(w) == 500 and "t504" in w and "t0" not in w
+    _add_req(agent, run_dir, "r2", "Bash", {})  # no tool_use_id / created_at
+    assert agent._write_decision(agent._perm_dir(run_dir), "r2", {"decision": "allow"})
+
+
+def test_legacy_bare_number_wait_is_skipped(agent, tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    path = agent._chat_waits_path("chat-1")
+    os.makedirs(os.path.dirname(path))
+    with open(path, "w") as fh:
+        json.dump({"old": 12.5, "ok": [10.0, 20.0], "bad": [5, 1], "short": [1]}, fh)
+    assert _waits(agent) == {"ok": (10.0, 20.0)}

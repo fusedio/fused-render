@@ -58,6 +58,7 @@ from starlette.responses import (
     FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
 )
 
+from fused_render._platform import is_within
 from fused_render.logs import uvicorn_log_config
 from fused_render.shell.seed import fused_dir
 
@@ -183,7 +184,7 @@ def _inside_root(path: str) -> bool:
         roots = [os.path.realpath(r) for r in allowed_roots()]
     except (OSError, ValueError):
         return False
-    return any(real == root or real.startswith(root + os.sep) for root in roots)
+    return any(is_within(real, root, fs_root_ok=False) for root in roots)
 
 
 def _resolve(value, anchor) -> str | None:
@@ -935,7 +936,8 @@ def lan_apps() -> list[dict]:
             "tag": app.get("tag"),
             "path": folder,
             # A linked app lives outside the workspace (registered_apps).
-            "linked": not folder.startswith(os.path.realpath(fused_dir()) + os.sep),
+            "linked": not is_within(
+                folder, os.path.realpath(fused_dir()), strict=True),
             "recency": recency,
             "url": "/render?" + urlencode({"path": entry_path}),
             # The author's preview.png (app_dict resolves it), full-bleed on the
@@ -1319,10 +1321,17 @@ class _Controller:
             self.tls_error = "no free https port among " + ", ".join(map(str, TLS_PORT_CANDIDATES))
             self.tls_port = None
             return
+        # The context is built here, not by uvicorn from `ssl.SSLContext`, which
+        # `_system_trust` replaces with a client-side wrapper whose server
+        # handshake fails on macOS. uvicorn rejects a stdlib context from
+        # `ssl_context_factory` (its isinstance check sees the wrapper), so load
+        # the config without TLS and attach the context afterwards.
         config = uvicorn.Config(LanApp(self._inner), host="0.0.0.0", port=self.tls_port,
                                 log_level="warning", lifespan="on",
-                                log_config=uvicorn_log_config(),
-                                ssl_certfile=cert, ssl_keyfile=key)
+                                log_config=uvicorn_log_config())
+        config.load()
+        config.ssl = lan_tls.server_ssl_context(
+            cert, key, getattr(config.http_protocol_class, "alpn_protocols", None))
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]},
                                   daemon=True, name="fused-lan-tls")

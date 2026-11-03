@@ -65,12 +65,25 @@ export interface SharedAppRecord {
   /** Found on the account by name rather than published from here: the
    *  canvas may carry an older file than this folder. */
   adopted?: boolean;
+  /** `public` unless the deployment refused public scope — then the shim
+   *  fell back to `temporary` (team canvas + 30-minute session token). */
+  mode?: "public" | "temporary";
+  session_expires?: string | number | null;
+  /** Computed by share_app.py at read time: a `temporary` link past its
+   *  session expiry. Update mints a fresh one. */
+  expired?: boolean;
+  /** The fallback happened because this deployment forbids public links. */
+  public_refused?: boolean;
 }
 
 export interface ShareStatus {
   app_id: string | null;
   can_share: boolean;
   refusal: string | null;
+  /** Which refusal, where a surface branches on it: "github_copy" — a
+   *  GitHub-link copy of someone else's app (contribution loop on), shared by
+   *  its GitHub link instead. Null otherwise; absent on older servers. */
+  refusal_code?: "github_copy" | null;
   cli_found: boolean;
   logged_in: boolean;
   creds_stamp: number | null;
@@ -88,6 +101,24 @@ export interface GithubLinkState {
   url: string | null;
   repo: string | null;
   reason: string | null;
+  /** Which condition failed, for a surface that must not show `reason`'s git
+   *  words (the contribution loop's share sheet maps it to a sentence —
+   *  docs/CONTRIB_LOOP.md §13). Null when `ok`, except "contributor", which
+   *  comes WITH `ok`: a GitHub-link copy of someone else's app shares the
+   *  author's link (`repo` is theirs). Absent on older servers. */
+  code?:
+    | "contributor"
+    | "not_repo"
+    | "nested"
+    | "no_remote"
+    | "not_github"
+    | "dirty"
+    | "unpushed"
+    | "no_default"
+    | null;
+  /** With `code: "contributor"`: how many edits of the reader's own the
+   *  shared link leaves out (the copy's "your changes"). */
+  changes?: number;
 }
 
 export const getGithubLink = (path: string) =>

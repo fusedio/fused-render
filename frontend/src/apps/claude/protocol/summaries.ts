@@ -39,12 +39,7 @@ export const WHOLE_TOOL_GRANTABLE: ReadonlySet<string> = new Set([
 export const SWITCHABLE_MODES: ReadonlySet<string> = new Set<SwitchableMode>(["acceptEdits", "auto"]);
 
 /** T:11845 — the picker's words for a mode, reused by a resolved perm card. */
-export const PERMISSION_LABELS: Record<string, string> = {
-  plan: "plan first",
-  prompt: "ask every time",
-  acceptEdits: "auto-accept edits",
-  auto: "Claude decides",
-};
+export { PERMISSION_LABELS } from "@platform/lib/permission-modes";
 
 /** T:11911 — the strictest mode is the default. */
 export const DEFAULT_PERMISSION: PermissionMode = "prompt";
@@ -104,6 +99,15 @@ export function permCardLabel(pretty: string): string {
  *  tool name we do not know (Copilot's free-text `title`) still has. */
 export const ACP_KEY = "_acp";
 
+/** THE CODEX HOST'S SIDECAR (docs/CODEX_BACKEND.md D14): `{type, itemId}` off
+ *  the app-server item. Nothing reads it — it is for logs and tests — but it
+ *  rides every input, so it is plumbing exactly as `_acp` is and no dump or
+ *  leftover row shows it. */
+export const CODEX_KEY = "_codex";
+
+/** Every host sidecar: keys on a tool input that the tool was not called with. */
+export const SIDECAR_KEYS: readonly string[] = [ACP_KEY, CODEX_KEY];
+
 export function acpOf(input: unknown): { kind: string; title: string } | null {
   const acp = asRecord(asRecord(input)[ACP_KEY]);
   const kind = typeof acp.kind === "string" ? acp.kind : "";
@@ -111,11 +115,11 @@ export function acpOf(input: unknown): { kind: string; title: string } | null {
   return kind || title ? { kind, title } : null;
 }
 
-/** The input with the sidecar taken out — what an unknown tool's dump shows. */
+/** The input with the sidecars taken out — what an unknown tool's dump shows. */
 export function withoutAcp(input: unknown): Record<string, unknown> {
   const inp = asRecord(input);
-  if (!(ACP_KEY in inp)) return inp;
-  return Object.fromEntries(Object.keys(inp).filter((k) => k !== ACP_KEY).map((k) => [k, inp[k]]));
+  if (!SIDECAR_KEYS.some((k) => k in inp)) return inp;
+  return Object.fromEntries(Object.keys(inp).filter((k) => !SIDECAR_KEYS.includes(k)).map((k) => [k, inp[k]]));
 }
 
 /** A COPILOT EDIT (D14) carries the change as one unified `diff` string, not
@@ -206,8 +210,8 @@ export function summarizePermission(row: Pick<PermissionRow, "tool" | "input">):
     return "";
   };
   const out = (sub: string, body: string): PermissionSummary => ({ sub, body, covered: used });
-  // The Copilot sidecar is never asked about (see ACP_KEY).
-  if (ACP_KEY in inp) used.push(ACP_KEY);
+  // The host sidecars are never asked about (see ACP_KEY, CODEX_KEY).
+  for (const k of SIDECAR_KEYS) if (k in inp) used.push(k);
 
   switch (row.tool) {
     case "Bash":
@@ -238,7 +242,7 @@ export function summarizePermission(row: Pick<PermissionRow, "tool" | "input">):
       return out(pick("url", "query"), show("prompt"));
   }
   // Unknown tool: the whole object is the body, so every key is covered —
-  // bar the Copilot sidecar, which is not part of the call.
+  // bar the host sidecars, which are not part of the call.
   const bare = withoutAcp(inp);
   const keys = Object.keys(bare);
   used.push(...keys);

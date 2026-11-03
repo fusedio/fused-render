@@ -54,7 +54,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from fused_render import _startonce, jobs
+from fused_render import _platform, _startonce, jobs
 from fused_render.crashlog import describe_exit, report_child_exit
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
@@ -411,9 +411,69 @@ class Worker:
     #: thread checks it at every step so an evicted load stops downloading
     #: instead of finishing into a table it no longer belongs to.
     stopping: bool = False
+    #: Memo for `_resolved_code`: the (prefs.json stat + write generation, repo signature, availability epoch) key the
+    #: last resolution was computed under, and what it answered. A request path
+    #: re-resolves only when one of those inputs moved.
+    resolution_key: tuple | None = field(default=None, repr=False)
+    resolved_code: str | None = field(default=None, repr=False)
+    #: `time.monotonic()` after which the memo is stale whatever its key says.
+    resolution_expiry: float = field(default=0.0, repr=False)
 
 
 _lock = threading.RLock()
+
+
+#: Bumped when a runner becomes available in THIS process (a venv build
+#: finishing). Part of every `_resolution_key`, so a worker memoised while its
+#: pin pointed at a not-yet-runnable engine re-resolves once that engine lands.
+_RESOLUTION_EPOCH = 0
+
+#: How long a memoised resolution is trusted regardless of its key: the backstop
+#: for availability flips this process cannot see (a venv built by another
+#: process, a device appearing, a mount coming back).
+_RESOLUTION_TTL = 30.0
+
+
+def _bump_resolution_epoch() -> None:
+    global _RESOLUTION_EPOCH
+    _RESOLUTION_EPOCH += 1
+
+
+def _resolution_key(worker: "Worker") -> tuple | None:
+    """What `resolve_for_model` reads, as cheap public probes: prefs.json (stat
+    plus the in-process write generation, which sees same-size writes inside one
+    mtime tick), the model's cache folder signature (format evidence) and the
+    runner-availability epoch. None when it cannot be taken, which never matches
+    a memo."""
+    try:
+        from fused_render.ai import hub_cache
+        from fused_render.shell import prefs
+
+        try:
+            st = os.stat(prefs.path())
+            prefs_key = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            prefs_key = None
+        return (prefs_key, prefs.write_generation(),
+                hub_cache.repo_signature(worker.model), _RESOLUTION_EPOCH)
+    except Exception:  # noqa: BLE001 - no key means no memo, never a failure
+        return None
+
+
+def _resolved_code(worker: "Worker") -> str | None:
+    """The runner code `resolve_for_model` gives this worker's model, memoised
+    on the worker under `_resolution_key`. Call OUTSIDE `_lock`."""
+    key = _resolution_key(worker)
+    now = time.monotonic()
+    if (key is not None and key == worker.resolution_key
+            and now < worker.resolution_expiry):
+        return worker.resolved_code
+    runner = registry.resolve_for_model(worker.capability, worker.model).runner
+    code = runner.code if runner is not None else None
+    worker.resolution_key = key
+    worker.resolution_expiry = now + _RESOLUTION_TTL
+    worker.resolved_code = code
+    return code
 #: capability -> the one Worker resident for it.
 _workers: dict[str, Worker] = {}
 #: model -> the weights-only fetch running for it right now.
@@ -644,7 +704,7 @@ def _alive(worker: Worker) -> bool:
 #: Detach a worker into its own process group so a stop reaches the CHILDREN it
 #: spawned too — a dataloader, a compile step, a `uv` download — and not just the
 #: leader that would otherwise leave them holding the weights.
-SPAWN_KWARGS = {"start_new_session": True}
+SPAWN_KWARGS = _platform.detach_kwargs()
 
 #: The worker's working directory, when the spawn cannot pass `cwd=` — see
 #: `_spawn_kwargs`. `worker_base.serve` reads it and `chdir`s first thing.
@@ -708,16 +768,10 @@ def _kill_tree(worker: Worker) -> None:
     pid = worker.pid
     if not pid:
         return
-    try:
-        leader = os.getpgid(pid) == pid
-    except OSError:
-        leader = False
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    for sig in (signal.SIGTERM, _platform.SIGKILL):
         if not _alive(worker):
             return
-        try:
-            os.killpg(pid, sig) if leader else os.kill(pid, sig)
-        except OSError:
+        if not _platform.kill_tree(pid, sig):
             return
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and _alive(worker):
@@ -1408,6 +1462,9 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
             # "3.4 GB / 3.4 GB" bar sitting under that sentence until the
             # runner's own first weight tick overwrote it.
             _report(job, done=None, total=None, unit="")
+            # A runner that could not run a moment ago can now: every memoised
+            # resolution made while it was unavailable is stale.
+            _bump_resolution_epoch()
             return envinstall.venv_python_for(runner.folder)
     raise SupervisorError(f"the environment for {runner.short} did not build")
 
@@ -1650,7 +1707,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str,
         hub_cache.discard_empty_shell(model)
 
 
-def _runner_or_raise(capability: str) -> registry.Runner:
+def _runner_or_raise(capability: str, model: str | None = None) -> registry.Runner:
     """The runner serving `capability`, or a SupervisorError saying why there isn't
     one — the machine's reason ("needs Apple Silicon") where a runner exists but
     cannot run here, and a bare "no runner provides …" where none is registered.
@@ -1662,7 +1719,11 @@ def _runner_or_raise(capability: str) -> registry.Runner:
     three wrong answers the moment text generation had two — all three named the
     Apple Silicon runner on machines that were never going to use it.
     """
-    runner = registry.for_capability(capability)
+    # With a MODEL in hand the runner follows the model (D1456): a pin, then
+    # the runners that read it, with the capability's preference as the
+    # tie-breaker. Without one it is the capability-level answer as before.
+    runner = (registry.resolve_for_model(capability, model).runner if model
+              else registry.for_capability(capability))
     if runner is None:
         raise SupervisorError(registry.unavailable_reason(capability)
                               or f"no runner provides {capability!r}")
@@ -1829,7 +1890,7 @@ def _start_resident(model: str, capability: str, *,
     when `request_path` is set, and stamped onto the new `Worker` either way,
     so a LATER request-path eviction of this worker knows who loaded it.
     """
-    runner = _runner_or_raise(capability)
+    runner = _runner_or_raise(capability, model)
     _require_build_tools()
 
     # A worker is about to become resident (joined below, or spawned fresh) —
@@ -2035,7 +2096,7 @@ def load(model: str, capability: str, *, weights_only: bool = False,
                                hold=hold, requester_id=requester_id,
                                requester_label=requester_label)[0]
 
-    runner = _runner_or_raise(capability)
+    runner = _runner_or_raise(capability, model)
     _require_build_tools()
 
     job = job_id_for(model)
@@ -2113,7 +2174,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
-    _runner_or_raise(capability)
+    _runner_or_raise(capability, model)
     _require_build_tools()
 
     # A model-slot conflict is checked HERE too, for the reason the runner
@@ -2368,7 +2429,7 @@ def start_transcribe(model: str, request: dict, job: str, page: str = "",
     identity (`transcribe_row_fields`) rather than as a one-off, the same as
     every other field a rebuilt row must not lose.
     """
-    _runner_or_raise(registry.SPEECH_TO_TEXT)
+    _runner_or_raise(registry.SPEECH_TO_TEXT, model)
     _require_build_tools()
     # See `_start_render`'s identical pre-check: a transcription that loses a
     # standoff answers with it before the row opens, not as a generic error
@@ -2701,11 +2762,16 @@ def evict_stale_engines() -> list[str]:
     switches engines mid-download almost certainly wants the download.
     """
     with _lock:
-        stale = []
-        for worker in list(_workers.values()):
-            resolved = registry.for_capability(worker.capability)
-            if resolved is not None and resolved.code != worker.runner_code:
-                stale.append(worker)
+        workers = list(_workers.values())
+    stale = []
+    for worker in workers:
+        # The resolution FOR THE RESIDENT MODEL (D1456): the capability-level
+        # answer would call a model stale whenever its serving runner is
+        # not the one the preference names, and restart it forever. Resolved
+        # OUTSIDE `_lock`: it reads prefs.json and the cache folder.
+        resolved = _resolved_code(worker)
+        if resolved is not None and resolved != worker.runner_code:
+            stale.append(worker)
     for worker in stale:
         unload(model=worker.model, capability=worker.capability)
     return [worker.model for worker in stale]
@@ -3100,6 +3166,9 @@ def _hub_catalog_refresh_tick() -> None:
             logger.exception("hub-catalog refresh failed for %s", capability)
 
 
+_hub_catalog_refresh_lock = threading.Lock()
+
+
 def start_hub_catalog_refresh() -> None:
     """Start the daily hub-catalog delta-refresh thread, once per process —
     modeled directly on `start_hardware_refresh`/`start_hub_metadata_refresh`
@@ -3108,6 +3177,9 @@ def start_hub_catalog_refresh() -> None:
     thread sleeps and re-sweeps forever). A failed sweep is logged and never
     kills the loop, same as its two siblings."""
     global _hub_catalog_refresh_thread
+    # Called on every AI catalog read (lazy start, no boot hook): the
+    # unlocked is_alive check is the cheap path; the lock makes two racing
+    # first calls start one thread.
     if _hub_catalog_refresh_thread is not None and _hub_catalog_refresh_thread.is_alive():
         return
 
@@ -3119,9 +3191,22 @@ def start_hub_catalog_refresh() -> None:
                 logger.exception("hub-catalog refresh tick failed")
             time.sleep(_HUB_CATALOG_REFRESH_INTERVAL_S)
 
-    _hub_catalog_refresh_thread = threading.Thread(
-        target=run, name="ai-hub-catalog-refresh", daemon=True)
-    _hub_catalog_refresh_thread.start()
+    with _hub_catalog_refresh_lock:
+        if (_hub_catalog_refresh_thread is not None
+                and _hub_catalog_refresh_thread.is_alive()):
+            return
+        _hub_catalog_refresh_thread = threading.Thread(
+            target=run, name="ai-hub-catalog-refresh", daemon=True)
+        _hub_catalog_refresh_thread.start()
+
+
+def start_hub_refreshers() -> None:
+    """Lazy start of the two Hub refresh threads (metadata sweep, daily catalog
+    delta). Neither runs at boot: the first AI catalog read starts them,
+    idempotently and cheaply on every later call. The one place both are
+    listed; add any further Hub refresher here."""
+    start_hub_metadata_refresh()
+    start_hub_catalog_refresh()
 
 
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to
@@ -3284,8 +3369,11 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
 
     The resolution happens OUTSIDE `_lock` — it reads prefs.json off disk, and
     that is not something to do while holding the table every other thread
-    wants. It costs one small JSON read per generation request, which is the
-    price of the preference meaning something between PUTs.
+    wants. The answer is memoised on the worker, keyed on prefs.json's mtime and
+    size plus the model's cache-folder signature (two cheap stats per request),
+    so the full resolution reruns only when a preference, a pin or the cached
+    files actually changed — which is what keeps the preference meaning
+    something between PUTs.
     """
     with _lock:
         worker = _workers.get(capability)
@@ -3305,8 +3393,8 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
     if _exited(worker):
         _drop_gone(worker)
         return None
-    resolved = registry.for_capability(capability)
-    if resolved is not None and resolved.code != worker.runner_code:
+    resolved = _resolved_code(worker)
+    if resolved is not None and resolved != worker.runner_code:
         evict_stale_engines()
         return None
     return worker
@@ -3581,8 +3669,47 @@ def speech_job_id(uid: str) -> str:
     return SPEECH_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
+def _refuse_speech_engine_mismatch(model: str, serving: registry.Runner) -> None:
+    """Raise a SupervisorError when another registered speech runner is the
+    one that reads `model`'s files and `serving` is not.
+
+    The supervisor resolves ONE runner per capability, so a Kokoro id on a Mac
+    whose speech engine is Qwen3-TTS would otherwise download 0.39 GB and fail
+    at load inside the job. A cached snapshot is judged by its layout
+    (`hub_cache.cached_loaders`); an undownloaded id by the curated lists.
+
+    A claimer that cannot run HERE still counts: a Qwen3-TTS id on Linux is
+    Qwen's, and the 2.5 GB pull would fail at load in `serving`. Its own
+    unavailable reason is what the 409 says ("needs Apple Silicon"). No claim
+    from any registered speech runner means no opinion.
+    """
+    from fused_render.ai import hub_cache
+    loaders = hub_cache.cached_loaders(model)
+    codes = loaders if loaders else catalog.runners_offering(model)
+    claimers = []
+    for code in codes:
+        runner = registry.by_code(code)
+        if runner is not None and runner.capability == registry.TEXT_TO_SPEECH:
+            claimers.append(runner)
+    if not claimers or any(runner.code == serving.code for runner in claimers):
+        return
+    usable = [runner for runner in claimers if runner.available().ok]
+    if usable:
+        names = " or ".join(dict.fromkeys(runner.label for runner in usable))
+        raise SupervisorError(
+            f"{model} is read by the {names} speech engine, not {serving.label}; "
+            f"choose the {names} speech engine on the Engines tab")
+    names = " or ".join(dict.fromkeys(runner.label for runner in claimers))
+    reasons = "; ".join(dict.fromkeys(
+        runner.available().reason for runner in claimers if runner.available().reason))
+    raise SupervisorError(
+        f"{model} is read by the {names} speech engine, which cannot run here"
+        + (f": {reasons}" if reasons else "") + f"; {serving.label} cannot load it")
+
+
 def start_speech(model: str, request: dict, job: str, page: str = "", source: str = "",
                  requester_id: str = "", requester_label: str = "") -> None:
+    _refuse_speech_engine_mismatch(model, _runner_or_raise(registry.TEXT_TO_SPEECH))
     _start_render(registry.TEXT_TO_SPEECH, model, request, job, generate_speech,
                   noun="speech clip", thread_name="ai-speech", page=page, source=source,
                   title=request.get("text"), requester_id=requester_id,

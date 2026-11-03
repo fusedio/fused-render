@@ -97,3 +97,12 @@ test("clicking the root crumb under a home prefix targets home and seeds the fir
   act(() => link.props.onClick({ preventDefault: () => {} }));
   expect(navCalls).toEqual([{ path: "/home/user", opts: { isDir: true, sel: "a" } }]);
 });
+
+test("a drive path's root crumb targets the drive root, never /", () => {
+  const renderer = mount("C:/Users/x");
+  act(() => rootCrumb(renderer).props.onClick({ preventDefault: () => {} }));
+  expect(navCalls[0].path).toBe("C:/");
+  const link = crumbLink(renderer, "Users");
+  act(() => link.props.onClick({ preventDefault: () => {} }));
+  expect(navCalls[1].path).toBe("C:/Users");
+});
