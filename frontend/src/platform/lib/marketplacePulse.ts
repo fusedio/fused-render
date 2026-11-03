@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getJson } from "./api";
-import { releaseWaiting, type AppEntry } from "./marketplace";
+import { peekCatalog, refreshCatalog, releaseWaiting, type AppEntry } from "./marketplace";
 import { CURRENT_APPS_CHANGED_EVENT } from "./tasksChanged";
 
 // What the sidebar's Community entry says about the store behind it — the
@@ -53,6 +53,10 @@ const REQUEST_MS = 15_000;
 let pulse: MarketplacePulse = EMPTY_MARKETPLACE_PULSE;
 let timer: number | null = null;
 let inFlight = false;
+/** A poll asked for while one was in flight (an uninstall landing mid-tick):
+ *  run again as soon as it settles rather than dropping the ask (bugbot,
+ *  #2078). */
+let again = false;
 /** Bumped by every publish; a self-poll that departed before a fresher
  *  publish landed must lose, not overwrite. */
 let generation = 0;
@@ -70,17 +74,32 @@ export function getMarketplacePulse(): Promise<{ apps: AppEntry[] }> {
 }
 
 async function poll() {
-  if (inFlight) return;
+  if (inFlight) {
+    again = true;
+    return;
+  }
   inFlight = true;
+  again = false;
   const departed = generation;
   try {
     const r = await getMarketplacePulse();
-    if (generation === departed) publishMarketplace(r.apps ?? []);
+    if (generation === departed) {
+      const before = pulse.updates;
+      publishMarketplace(r.apps ?? []);
+      // THE STORE'S OWN SNAPSHOT MUST NOT LAG THE DOT (bugbot, #2078): the
+      // server rebuilt its catalog behind this poll, but a mounted store
+      // page re-reads only on mount — it would list no Updates under a row
+      // saying there are some. A changed count with a catalog in hand is
+      // the cue to re-read it; `again` because a read already in flight may
+      // predate the rebuild. refreshCatalog publishes here on landing.
+      if (pulse.updates !== before && peekCatalog().catalog) void refreshCatalog({ again: true });
+    }
   } catch {
     // Offline, or a restart mid-poll: not news. The last answer stands.
   } finally {
     inFlight = false;
-    schedule();
+    if (again && listeners.size > 0) void poll();
+    else schedule();
   }
 }
 
@@ -123,6 +142,7 @@ export function resetMarketplacePulseForTests() {
   pulse = EMPTY_MARKETPLACE_PULSE;
   generation = 0;
   inFlight = false;
+  again = false;
   if (timer !== null && typeof window !== "undefined") window.clearTimeout(timer);
   timer = null;
   listeners.clear();
