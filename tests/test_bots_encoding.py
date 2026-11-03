@@ -21,14 +21,22 @@ import json, locale, os, sys
 enc = locale.getpreferredencoding(False)
 if enc.lower().replace("-", "").replace("_", "") in ("utf8", "utf8mode"):
     print("SKIP locale=" + enc); sys.exit(3)
-from fused_render.bots import store
-meta = {"id": "b1", "name": "Bot \U0001F916", "rules": [{"label": "Loading\u2026"}]}
-os.makedirs(store.bot_dir("b1"))
-with open(store.meta_path("b1"), "wb") as f:   # raw UTF-8, not \u-escaped
-    f.write(json.dumps(meta, ensure_ascii=False).encode("utf-8"))
-assert store.read_meta("b1") == meta
-store.write_meta("b1", {**meta, "name": "Renamed \u2026"})
-assert store.read_meta("b1")["name"] == "Renamed \u2026"
+import fused_render
+assert os.path.realpath(fused_render.__file__).startswith(os.path.realpath(os.getcwd()) + os.sep), fused_render.__file__
+from fused_render.bots import paths, store
+bid = "b1b1b1b1"  # 8 hex (paths._ID_RE); v3: place() the folder, then bot.json + .fused/state.json
+meta = {"id": bid, "name": "Bot \U0001F916", "instructions": "Loading\u2026", "rules": [{"label": "Caf\u00e9"}]}
+paths.place(bid, meta["name"])
+public, private = store.split_meta(meta)
+for path, half in ((store.meta_path(bid), public), (store.state_path(bid), private)):
+    with open(path, "wb") as f:   # raw UTF-8, not \u-escaped
+        f.write(json.dumps(half, ensure_ascii=False).encode("utf-8"))
+paths._reset_folders()   # resolve the id by scanning bot.json, as a fresh process would
+assert store.read_meta(bid) == meta, store.read_meta(bid)
+store.write_meta(bid, {**meta, "name": "Renamed \u2026", "rules": [{"label": "Na\u00efve"}]})
+paths._reset_folders()
+got = store.read_meta(bid)
+assert got["name"] == "Renamed \u2026" and got["rules"] == [{"label": "Na\u00efve"}], got
 print("OK locale=" + enc)
 """
 
@@ -39,10 +47,14 @@ def test_read_meta_with_raw_utf8_under_non_utf8_locale(tmp_path):
     # ASCII preferred encoding on macOS and Linux (no UTF-8 mode, no coercion).
     env = {k: v for k, v in os.environ.items() if not k.startswith("LC_") and k != "LANG"}
     env.update(LC_ALL="C", LANG="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0",
-               FUSED_RENDER_HOME=str(tmp_path / "home"), HOME=str(tmp_path / "home"))
+               FUSED_RENDER_HOME=str(tmp_path / "home"), HOME=str(tmp_path / "home"),
+               FUSED_RENDER_DIR=str(tmp_path / "ws"))  # v3: bots live at <workspace>/bots/<folder>/
     os.makedirs(env["HOME"])
+    # cwd = the repo root, so the child's `import fused_render` is the checkout under test (sys.path[0] == ""
+    # for -c) and not whatever fused_render the venv has installed (an editable install of another checkout).
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_bots_pkg.__file__))))
     p = subprocess.run([sys.executable, "-c", _CHILD], env=env, capture_output=True,
-                       text=True, timeout=60, cwd=os.path.dirname(os.path.dirname(_bots_pkg.__file__)))
+                       text=True, timeout=60, cwd=repo)
     if p.returncode == 3:
         pytest.skip("platform cannot produce a non-UTF-8 locale encoding: " + p.stdout.strip())
     assert p.returncode == 0, p.stdout + p.stderr
