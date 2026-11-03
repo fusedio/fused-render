@@ -98,6 +98,10 @@ CANVAS_SHOT_TOOL = "canvas_screenshot"
 # the run dir's `timeout` in mcp.json is set above this so THIS deny wins and
 # the user gets a sentence instead of an MCP timeout error.
 WAIT_TIMEOUT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
+# A BREAKOUT chat's switch (agent._write_mcp_config): present means this
+# session is research-only (`_breakout_policy`), and the value is the one
+# directory markdown may still be written to. Read once, like the waits above.
+BREAKOUT_HANDOFF_DIR = os.environ.get("FUSED_BREAKOUT_HANDOFF_DIR", "")
 # The app-state wait is a different order of magnitude because there is no human
 # in it: the page's poll loop answers within a tick (400 ms) for as long as the
 # turn is running, so anything past a few seconds means the chat frame is gone
@@ -767,11 +771,52 @@ def _chat_allows(tool_name, tool_input) -> bool:
             and isinstance(cmd, str) and cmd in bash)
 
 
+_BREAKOUT_EDIT_TOOLS = {"Write": "file_path", "Edit": "file_path",
+                        "MultiEdit": "file_path",
+                        "NotebookEdit": "notebook_path"}
+
+
+def _breakout_policy(tool_name, tool_input, handoff_dir=None):
+    """The read-only rule of a breakout chat, as a permission result, or None
+    when the call is none of its business (reads, web, MCP, skills: the normal
+    flow). Edits and every Bash call are refused outright, with no card; the
+    one exception is a `.md` file whose realpath is inside the handoff dir, so a
+    path that climbs out (`..`) or leaves through a symlink is refused."""
+    handoff_dir = BREAKOUT_HANDOFF_DIR if handoff_dir is None else handoff_dir
+    if not handoff_dir:
+        return None
+    key = _BREAKOUT_EDIT_TOOLS.get(tool_name)
+    if tool_name != "Bash" and key is None:
+        return None
+    if key is not None:
+        path = tool_input.get(key)
+        if isinstance(path, str) and path:
+            root = os.path.realpath(handoff_dir)
+            real = os.path.realpath(path)
+            try:
+                inside = os.path.commonpath([root, real]) == root
+            except ValueError:  # another drive on Windows
+                inside = False
+            if inside and real != root and real.lower().endswith(".md"):
+                return {"behavior": "allow", "updatedInput": tool_input,
+                        "decisionClassification": "user_temporary"}
+    return {"behavior": "deny",
+            "message": "Breakout chats are research-only; edits and shell are "
+                       "refused. Markdown under %s is the one exception."
+                       % handoff_dir,
+            "decisionClassification": "user_reject"}
+
+
 def _handle_approve(args: dict) -> dict:
     tool_name = args.get("tool_name") or "(unknown tool)"
     tool_input = args.get("input")
     if not isinstance(tool_input, dict):
         tool_input = {}
+    refused = _breakout_policy(tool_name, tool_input)
+    if refused is not None:
+        # Decided here, before anything is parked: no req card, no inflight
+        # entry, no queue notification for a call that will never wait.
+        return _text(refused)
     if _chat_allows(tool_name, tool_input):
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))

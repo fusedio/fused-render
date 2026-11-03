@@ -105,3 +105,7 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 - `session_host.py` needed two edits the plan did not list: it builds argv from the launch request (`breakout` is now in `req`), and `own_sid` treated only `resume_at` as a fork, so a tip fork would have reported the PARENT's id as its own.
 - `headsup.py` left alone (it appends its own `--permission-mode dontAsk`).
 - Handoff dir = `<_workdir(file)>/.claude/handoffs` (`agent._breakout_handoff_dir`).
+
+### Task 2
+- Policy is `permission_server._breakout_policy(tool_name, tool_input, handoff_dir=None)`, run first in `_handle_approve` (before `_chat_allows`, so an "always approve" grant cannot widen a breakout). The allow result is built inline in the same shape as `_permission_result`'s plain allow rather than through it (it needs a decision dict with no scope, and the deny has a fixed message).
+- Suite-wide: the file runs ~30 s in whole; the 9 new red tests took 93 s before the fix because each waited the 10 s response timeout.
