@@ -460,10 +460,13 @@ def test_local_app_denied_is_a_sentence_on_the_card(mac):
     assert st["state"] == "connected" and st["account"] is None
 
 
-def test_local_app_waits_on_the_prompt_then_cancel(mac, monkeypatch):
-    monkeypatch.setattr(manager, "URL_WAIT", 0.05)
+def test_local_app_waits_on_the_prompt_then_cancel(mac):
+    """While the macOS prompt is up, login answers pending AT ONCE (no URL_WAIT): the
+    card shows the wait and its Cancel instead of a blank until the user answers."""
     FakeProbe.outcome = None
+    t0 = time.time()
     st = manager.login("localdemo")
+    assert manager.PROBE_GRACE <= time.time() - t0 < manager.URL_WAIT / 2   # the grace, not URL_WAIT
     assert st["state"] == "pending" and st["kind"] == "local-app" and "url" not in st
     assert manager.login("localdemo")["joined"] is True
     st = manager.cancel("localdemo")

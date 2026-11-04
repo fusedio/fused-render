@@ -20,6 +20,7 @@ case "$FAKE_OSA" in
   gone)    echo "execution error: Notes got an error: Application isn't running. (-600)" >&2; exit 1 ;;
   junk)    echo "not json" ;;
   errobj)  echo '{"error":"no folder named X"}' ;;
+  errmore) echo '{"error":"2 notes match title Milk; pass the id of one","candidates":[{"id":"p1"},{"id":"p2"}]}' ;;
   slow)    sleep 5; echo '{}' ;;
   *)       echo "execution error: boom (-1700)" >&2; exit 1 ;;
 esac
@@ -72,6 +73,14 @@ def test_run_jxa_classifies_failures(mac, mode, exc, text):
     mac.setenv("FAKE_OSA", mode)
     with pytest.raises(exc, match=text):
         applescript.run_jxa("x", [], app="Notes")
+
+
+def test_an_error_with_candidates_is_the_answer_not_a_raise(mac):
+    """Notes' append on an ambiguous title answers error + candidates: the ids the
+    message tells the caller to pass must reach them."""
+    mac.setenv("FAKE_OSA", "errmore")
+    out = applescript.run_jxa("x", [], app="Notes")
+    assert out["error"].startswith("2 notes match") and [c["id"] for c in out["candidates"]] == ["p1", "p2"]
 
 
 def test_run_jxa_timeout_names_the_app(mac):

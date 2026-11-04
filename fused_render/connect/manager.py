@@ -75,6 +75,9 @@ URL_WAIT = 20.0
 #: How long `callback` waits for the token exchange after a pasted URL.
 CALLBACK_WAIT = 20.0
 FLOW_TIMEOUT = 600.0
+#: How long a `local-app` login waits for the app before answering "pending" (the
+#: macOS consent prompt is up); a granted app answers well inside it.
+PROBE_GRACE = 1.5
 
 KINDS = ("mcp-oauth", "oauth-pkce", "oauth-device", "cli", "api-key", "local-app")
 _TOKEN_KINDS = ("mcp-oauth", "oauth-pkce", "oauth-device")
@@ -540,12 +543,20 @@ def _local_app(key: str, p, entry: dict, flow: _Flow) -> dict:
     flow.handle = probe
     _check_cancel(flow)
     probe.start()
-    # No URL to open: the card polls until the probe (and the macOS prompt it
-    # may be waiting on) comes back. `ready` is set by `_finish`.
+    # No URL to open. A granted app answers in well under a second, and login's
+    # reply then says "connected" outright; past PROBE_GRACE the macOS prompt is
+    # up, so `ready` fires and login answers "pending" at once, which is what
+    # shows the card's wait and its Cancel instead of a blank until the user
+    # answers (`_finish` sets `ready` too, on the way out).
+    grace = threading.Timer(PROBE_GRACE, flow.ready.set)
+    grace.daemon = True
+    grace.start()
     try:
         info = probe.result(timeout=applescript.PROBE_TIMEOUT)
     except applescript.AutomationError as e:
         raise ValueError(str(e)) from None
+    finally:
+        grace.cancel()
     _check_cancel(flow)
     account = (info.get("account") or "").strip() or None
     return {"kind": "local-app", "app": entry["app"], "account": account}

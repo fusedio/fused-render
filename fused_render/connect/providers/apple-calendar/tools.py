@@ -69,9 +69,11 @@ function calendar(p) {
     for (const cal of cals()) {
       const name = cal.name();
       const hits = cal.events.whose({ _and: [{ startDate: { _greaterThanEquals: from } }, { startDate: { _lessThan: to } }] })();
-      for (const e of hits) out.push(row(e, name, false));
+      for (const e of hits) { const r = row(e, name, false); r._text = (r.summary + " " + r.location + " " + (e.description() || "")).toLowerCase(); out.push(r); }
     }
     return { from: localIso(from), to: localIso(to), rows: out.sort(byStart) }; };
+  // `_text` is the full title + location + notes, for search; the row shows a snippet.
+  const strip = rows => rows.map(r => { delete r._text; return r; });
   let out;
   switch (p.action) {
     case "calendars": {
@@ -81,14 +83,14 @@ function calendar(p) {
     case "events": {
       if (p.calendar && !cals().length) { out = { error: "no calendar named " + p.calendar }; break; }
       const w = window(); if (w.error) { out = w; break; }
-      out = { from: w.from, to: w.to, calendar: p.calendar || "", count: w.rows.length, events: w.rows.slice(0, limit) };
+      out = { from: w.from, to: w.to, calendar: p.calendar || "", count: w.rows.length, events: strip(w.rows.slice(0, limit)) };
       break; }
     case "search": {
       if (p.calendar && !cals().length) { out = { error: "no calendar named " + p.calendar }; break; }
       const w = window(); if (w.error) { out = w; break; }
       const q = String(p.query || "").toLowerCase();
-      const rows = w.rows.filter(r => (r.summary + " " + (r.location || "") + " " + (r.description || "")).toLowerCase().indexOf(q) >= 0);
-      out = { query: p.query, from: w.from, to: w.to, calendar: p.calendar || "", count: rows.length, events: rows.slice(0, limit) };
+      const rows = w.rows.filter(r => r._text.indexOf(q) >= 0);
+      out = { query: p.query, from: w.from, to: w.to, calendar: p.calendar || "", count: rows.length, events: strip(rows.slice(0, limit)) };
       break; }
     case "event": {
       let found = null;

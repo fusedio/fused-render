@@ -13,7 +13,9 @@ The record stores the kind, the app and an account label, never a credential.
     run_jxa(script, args)    one JavaScript-for-Automation program -> its JSON result;
                              raises AutomationDenied (-1743: the grant is missing, the
                              card says Reconnect) or AutomationError (anything else,
-                             the app's own last stderr line)
+                             the app's own last stderr line). A bare `{"error"}` the
+                             script returns is raised too; one with more keys beside
+                             it (candidates to pick from) is returned as the answer.
 
 `-1743` is "Not authorized to send Apple events": macOS refused, or the user
 clicked Don't Allow, or the prompt went unanswered until the timeout. The
@@ -91,7 +93,10 @@ def _parse(stdout: str, app: str) -> dict:
     if isinstance(out.get("error"), str) and out["error"]:
         if _denied(out["error"]):
             raise AutomationDenied(DENIED_HOWTO.format(app=app))
-        raise AutomationError(out["error"][:600])
+        if len(out) == 1:
+            raise AutomationError(out["error"][:600])
+        # An error with company (Notes' append: `candidates` for an ambiguous
+        # title) is an answer the caller needs whole: returned, not raised.
     return out
 
 
