@@ -482,13 +482,8 @@ body.tasks-peek-dragging {
   flex: 0 0 auto;
 }
 
-/* THE PROJECT, AND IT IS A FACT (Akshil, 2026-09-14 — design.md, Polish batch
-   4). It was a folder mark and a name, wired to the folder's Explorer page, one
-   inch from a second door that also wore a folder and went somewhere else. Two
-   doors an inch apart cannot be told apart by their pictures, so the quieter of
-   the two stops being a door: the name is the label of the project this task
-   runs in, muted, with the full path in its tooltip — and the header keeps
-   exactly one way out, which says its act in words.
+/* The chat Topbar's project label (the peek header no longer draws it): a
+   fact, not a door — muted, full path in its tooltip.
 
    No padding, no radius, no hover: nothing here is pressable, and a label that
    lights up under the pointer is a label promising a press. */
@@ -577,17 +572,13 @@ body.tasks-peek-dragging {
 
 /* THE HEADER FOLDS BEFORE IT CLIPS, exactly as the page toolbar does
    (shell/row-fit.ts `PEEK_HEAD_DROPS`): the title ellipsises all the way down
-   first, and only when even a floored title will not fit does the project name
-   go, and then the Open door — which reappears in the ⋮, because a hidden
-   control has to be somewhere. Measured, never a breakpoint.
+   first, and only when even a floored title will not fit does the Open door
+   fold — it reappears in the ⋮, because a hidden control has to be somewhere.
+   Measured, never a breakpoint.
 
    Nothing else is ever hidden: the way OUT of a panel and the way to its
    actions are what a narrow window must never take away. */
-.task-side-peek-head[data-fit]:not([data-fit="0"]) .task-side-peek-project {
-  display: none;
-}
-
-.task-side-peek-head[data-fit="2"] .task-side-peek-open {
+.task-side-peek-head[data-fit="1"] .task-side-peek-open {
   display: none;
 }
 
