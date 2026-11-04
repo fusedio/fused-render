@@ -1416,11 +1416,17 @@ const streamed = {
     const hits = layer && layer.visible ? nearestFirst(s.groups.filter(g => inView(g, view))) : [];
     const fit = [];
     let budget = STREAM_VIEW_BYTES;
-    for (const g of hits) { if (g.bytes > budget) break; fit.push(g); budget -= g.bytes; }
+    for (const g of hits) { if (g.bytes > budget) continue; fit.push(g); budget -= g.bytes; }
     const want = fit.length === hits.length || map.getZoom() >= STREAM_CLOSE_ZOOM ? fit : [];
     const now = Date.now();
     s.over = want.length < hits.length;
-    s.wanted = new Set([...want, ...s.groups.filter(g => s.loaded.has(g.index) && inView(g, near))].map(g => g.index));
+    s.wanted = new Set(want.map(g => g.index));
+    let kept = [...s.wanted].reduce((sum, i) => sum + (s.loaded.has(i) ? s.loaded.get(i).bytes : 0), 0);
+    for (const g of nearestFirst(s.groups.filter(g => s.loaded.has(g.index) && !s.wanted.has(g.index) && inView(g, near)))) {
+      kept += s.loaded.get(g.index).bytes;
+      if (kept > STREAM_CACHE_BYTES) break;
+      s.wanted.add(g.index);
+    }
     for (const i of s.wanted) { const entry = s.loaded.get(i); if (entry) entry.used = now; }
     const retry = i => !s.failed.has(i) || (s.failed.get(i).count < STREAM_RETRIES && now - s.failed.get(i).at >= STREAM_RETRY_MS);
     s.queue = want.filter(g => !s.loaded.has(g.index) && !s.loading.has(g.index) && retry(g.index));
@@ -1517,7 +1523,11 @@ const streamed = {
     for (const entry of r.stream.loaded.values()) n += entry.count;
     return n;
   },
-  busy(r) { return !!(r.stream.loading.size || r.stream.queue.length); },
+  busy(r) {
+    const s = r.stream;
+    return !!(s.loading.size || s.queue.length)
+      || [...s.wanted].some(i => s.failed.has(i) && s.failed.get(i).count < STREAM_RETRIES);
+  },
   unreadable(r) { return [...r.stream.failed.values()].filter(f => f.count >= STREAM_RETRIES); },
   status(r) {
     const s = r.stream, n = s.groups.length, unreadable = this.unreadable(r);

@@ -4,6 +4,7 @@ import { compressors } from "hyparquet-compressors";
 const MAX_VALUES = 200000;
 const VALUE_BATCH = 3;
 const HEAVY_BYTES_PER_ROW = 8;
+const MAX_GROUP_RAW_BYTES = 128 << 20;
 const BOX = ["xmin", "ymin", "xmax", "ymax"];
 const files = new Map();
 const reads = new Map();
@@ -52,20 +53,25 @@ function describe(metadata, budget) {
   if (encoding !== "WKB") return { problem: `geometry encoded as ${encoding || "unknown"}, not WKB` };
   if (!crsIsLonLat("crs" in column ? column.crs : logical.crs)) return { problem: "geometry is in a projected CRS" };
 
-  const attributes = top.filter(child => child !== geometry && displayable(child));
-  const columns = attributes
-    .filter(child => !child.children.length)
-    .map(child => child.element.name);
-
   let paths = null;
+  let bboxColumn = null;
   const covering = column.covering && column.covering.bbox;
   if (covering && BOX.every(k => Array.isArray(covering[k]))) {
     paths = BOX.map(k => covering[k].join("."));
+    bboxColumn = covering.xmin[0];
   } else {
     const struct = top.find(child => (child.element.name === "bbox" || child.element.name === `${geometryName}_bbox`)
       && BOX.every(k => child.children.some(c => c.element.name === k)));
-    if (struct) paths = BOX.map(k => `${struct.element.name}.${k}`);
+    if (struct) {
+      paths = BOX.map(k => `${struct.element.name}.${k}`);
+      bboxColumn = struct.element.name;
+    }
   }
+
+  const attributes = top.filter(child => child !== geometry && child.element.name !== bboxColumn && displayable(child));
+  const columns = attributes
+    .filter(child => !child.children.length)
+    .map(child => child.element.name);
 
   const columnBytes = new Map([[geometryName, 0], ...columns.map(name => [name, 0])]);
   let start = 0;
@@ -73,6 +79,7 @@ function describe(metadata, budget) {
     const rows = Number(group.num_rows);
     const chunks = new Map();
     const bytes = new Map();
+    const raw = new Map();
     for (const { meta_data: chunk } of group.columns) {
       chunks.set(chunk.path_in_schema.join("."), chunk);
       const name = chunk.path_in_schema[0];
@@ -80,6 +87,7 @@ function describe(metadata, budget) {
         const size = Number(chunk.total_compressed_size);
         columnBytes.set(name, columnBytes.get(name) + size);
         bytes.set(name, (bytes.get(name) || 0) + size);
+        raw.set(name, (raw.get(name) || 0) + Number(chunk.total_uncompressed_size));
       }
     }
     let bbox = paths && paths.map((path, k) => {
@@ -92,7 +100,7 @@ function describe(metadata, budget) {
       bbox = native && native.bbox && BOX.map(k => native.bbox[k]);
       if (bbox && !bbox.every(Number.isFinite)) bbox = null;
     }
-    const out = { index, rows, start, bbox: bbox || null, bytes };
+    const out = { index, rows, start, bbox: bbox || null, bytes, raw };
     start += rows;
     return out;
   });
@@ -100,9 +108,14 @@ function describe(metadata, budget) {
   const rowCount = Math.max(1, Number(metadata.num_rows));
   const fields = columns.filter(name => columnBytes.get(name) / rowCount <= HEAVY_BYTES_PER_ROW);
   const drawn = [geometryName, ...fields];
-  for (const group of rowGroups) group.bytes = drawn.reduce((sum, name) => sum + (group.bytes.get(name) || 0), 0);
+  const drawnSize = sizes => drawn.reduce((sum, name) => sum + (sizes.get(name) || 0), 0);
+  for (const group of rowGroups) {
+    group.bytes = drawnSize(group.bytes);
+    group.raw = drawnSize(group.raw);
+  }
   const groups = rowGroups.filter(g => g.rows > 0);
   if (!groups.length || !groups.every(g => isLonLatBox(g.bbox))) return { problem: "its row groups carry no longitude/latitude bounding boxes" };
+  if (groups.some(g => g.raw > MAX_GROUP_RAW_BYTES)) return { problem: "a row group is too large to draw at once" };
   const boxes = groups.map(g => g.bbox);
   const extent = boxes.reduce((e, b) => [Math.min(e[0], b[0]), Math.min(e[1], b[1]), Math.max(e[2], b[2]), Math.max(e[3], b[3])],
                               [Infinity, Infinity, -Infinity, -Infinity]);
@@ -201,7 +214,12 @@ function values({ key, indexes, field }) {
     if (!entry.summary.fields.includes(field)) return [];
     const out = [];
     for (let k = 0; k < indexes.length && out.length < MAX_VALUES; k += VALUE_BATCH) {
-      const batch = indexes.slice(k, k + VALUE_BATCH).map(index => readGroup(entry, entry.summary.rowGroups[index], [field]));
+      const slice = indexes.slice(k, k + VALUE_BATCH);
+      const share = Math.ceil((MAX_VALUES - out.length) / slice.length);
+      const batch = slice.map(index => {
+        const group = entry.summary.rowGroups[index];
+        return readGroup(entry, { ...group, rows: Math.min(group.rows, share) }, [field]);
+      });
       for (const row of (await Promise.all(batch)).flat()) {
         const value = plainValue(row[field]);
         if (value !== undefined) out.push(value);

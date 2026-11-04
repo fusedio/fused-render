@@ -284,6 +284,7 @@ def _geoparquet(path: Path, crs=None, encoding="WKB") -> list:
         "bbox": pa.array([{"xmin": x, "ymin": y, "xmax": x + 0.01, "ymax": y + 0.01} for x, y in rows],
                          pa.struct([(k, pa.float32()) for k in ("xmin", "ymin", "xmax", "ymax")])),
         "class": pa.array([rng.choice(["house", None]) for _ in rows]),
+        "names": pa.array([{"primary": f"building {i}"} for i in range(len(rows))], pa.struct([("primary", pa.string())])),
         "height": pa.array([round(rng.random() * 30, 1) for _ in rows]),
     })
     column = {"encoding": encoding, "geometry_types": ["Polygon"]}
@@ -341,7 +342,7 @@ def test_the_worker_indexes_row_groups_by_their_bbox_and_reads_one_at_a_time(tmp
     (opened, group, attributes), _ = _worker(path, [_open("buildings.parquet"), {"op": "read", "index": 3},
                                                     {"op": "row", "row": 1501}])
     assert opened["rows"] == 2000 and len(opened["rowGroups"]) == 4 and opened["geometryName"] == "geometry"
-    assert opened["fields"] == ["class", "height"] and opened["extraFields"] == ["id"]
+    assert opened["fields"] == ["class", "height"] and opened["extraFields"] == ["id", "names"]
     boxes = [g["bbox"] for g in opened["rowGroups"]]
     assert all(10 <= b[0] < b[2] <= 12.01 and 40 <= b[1] < b[3] <= 42.01 for b in boxes)
     assert boxes[0][2] < 11 and boxes[3][0] > 11 and boxes[3][1] > 41
@@ -351,7 +352,7 @@ def test_the_worker_indexes_row_groups_by_their_bbox_and_reads_one_at_a_time(tmp
     assert features[1]["id"] == 1501 and set(features[1]["properties"]) <= {"class", "height"}
     x, y = features[1]["geometry"]["coordinates"][0][0]
     assert 11 <= x <= 12 and 41 <= y <= 42
-    assert attributes == {"id": ids[1501]}
+    assert attributes == {"id": ids[1501], "names": '{"primary":"building 1501"}'}
 
 
 def test_a_server_that_ignores_ranges_is_read_once_not_once_per_row_group(tmp_path):
