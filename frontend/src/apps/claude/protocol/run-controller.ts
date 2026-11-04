@@ -104,6 +104,11 @@ import type { Receipt } from "../shots/types";
 
 // ---- constants (all with their T line) -------------------------------------
 
+/** A canonical uuid, the shape of every entry id the page and the server mint.
+ *  Narrower than the server's `_CLIENT_UUID_RE` on purpose: that one admits any
+ *  8+ character word ("continue"), which here would swallow a typed line. */
+const CLIENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** T:16377 — the poll cadence. No backoff, ever. */
 export const POLL_MS = 400;
 /** How often a finished turn's tasks panel asks the session host that is still
@@ -310,6 +315,7 @@ function emptyState(file: string | null): ChatState {
     taken: [],
     historyLoading: false,
     adopting: false,
+    adoptingRun: false,
     transcript: null,
     context: null,
     tasks: [],
@@ -2765,6 +2771,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 // server gate only looks rather than claiming a second time.
                 ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
                 ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
+                // The words as typed, when the composed wire differs from them: the server keeps them for a Stop.
+                ...(text && text !== outgoing ? { typed: text } : {}),
               },
             )) as SendResponse;
           } catch (err) {
@@ -2833,6 +2841,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
               // only looks rather than claiming a second time.
               ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
               ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
+              // The words as typed, when the composed wire differs from them: the server keeps them for a Stop.
+              ...(text && text !== outgoing ? { typed: text } : {}),
             },
           )) as StartResponse;
         } catch (startErr) {
@@ -3072,6 +3082,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // only looks rather than claiming a second time.
           ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
           ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
+          // The words as typed, when the composed wire differs from them: the server keeps them for a Stop.
+          ...(text && text !== outgoing ? { typed: text } : {}),
         },
       )) as SendResponse;
       if (res && "respawn" in res && res.respawn) {
@@ -3100,6 +3112,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // only looks rather than claiming a second time.
             ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
             ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
+            // The words as typed, when the composed wire differs from them: the server keeps them for a Stop.
+            ...(text && text !== outgoing ? { typed: text } : {}),
           },
         )) as StartResponse;
         const failed = (startedRes as { error?: string }).error;
@@ -3242,7 +3256,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // what goes BACK to the box is the TYPED form, because that is the text
         // the user owns and would edit — handing back the composed wire payload
         // would put the app-state and attachment markers into their box.
-        const at = named.indexOf(entry.wire);
+        // A current CLI names a queued message by the id the page stamped on
+        // it (`client_uuid`), so the entry's id is matched as well as its words.
+        const idAt = entry.opts.clientId ? named.indexOf(entry.opts.clientId) : -1;
+        const at = idAt >= 0 ? idAt : named.indexOf(entry.wire);
         // EVERY entry comes back (owner E2E R1, F7). A landed follow-up the
         // CLI did not name used to keep its bubble and leave the queue hint
         // — a message the reader apparently sent, with no reply, forever: the
@@ -3292,9 +3309,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (i >= 0) queued.splice(i, 1);
       }
       // Anything the CLI named that this page has no entry for (a follow-up
-      // from another viewer of the same session) is handed back verbatim
-      // rather than lost — there is no typed form to prefer.
-      for (const t of named) stranded.push({ text: t });
+      // from another viewer of the same session) is handed back rather than
+      // lost. A name shaped like a client id is an id, not words: the server's
+      // `still_queued_text` carries the words it stands for, and with none the
+      // id is dropped, since as a line it would be sent to the agent as if the
+      // user had typed it.
+      const idText = result?.still_queued_text ?? {};
+      for (const t of named) {
+        if (!CLIENT_ID_RE.test(t)) stranded.push({ text: t });
+        else if (idText[t]) stranded.push({ text: idText[t] });
+      }
       // The turn is over for every entry, handed back or not — so the hint
       // under the box goes either way, in ONE publish.
       const cleared = queued.length > 0;
@@ -3843,11 +3867,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // callers that could each reach `resumeRun` for the same id.
     if (adopting) return;
     adopting = true;
+    emit({ adoptingRun: true });
     const gen = logGen;
     try {
       await adoptWatch(sessionId, gen, opts);
     } finally {
       adopting = false;
+      emit({ adoptingRun: false });
       // THE BACKSTOP, not the ordinary road. Every early exit lands here — a
       // thrown lookup, a disposed controller, a generation bump, the laps
       // running out — so the renderer's gate can never be left up by a watch

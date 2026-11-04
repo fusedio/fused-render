@@ -63,7 +63,7 @@ import { copyToTaskShots, SchedButton } from "./SchedButton";
 import { outboxHint } from "./outbox";
 
 /** The send button's tooltip, while a run is live. */
-export const SEND_NOW_TITLE = "Send now (Ctrl+X)";
+export const SEND_NOW_TITLE = "Send now (Ctrl+X) · Queue until done (Ctrl+Enter)";
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
@@ -243,11 +243,18 @@ export interface ComposerCardProps {
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
   onFollowUp?(text: string): void;
   /**
-   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`), or Ctrl+X: stop the running
-   * turn and send this line at once, ahead of anything parked. Only asked while
-   * `running`; otherwise Ctrl/Cmd+Enter is the plain send it always was.
+   * SEND NOW — Ctrl+X with words: stop the running turn and send this line at
+   * once, ahead of anything parked. Only asked while `running`; otherwise
+   * Ctrl+X is the plain send.
    */
   onSendNow?(text: string): void;
+  /**
+   * HOLD UNTIL DONE — Ctrl+Enter with words while a run is live: the line waits
+   * until this turn is finished and every other queued line has been answered,
+   * then goes as the next turn. Idle, Ctrl+Enter is the plain send; with no
+   * seat it is the follow-up road.
+   */
+  onSendHeld?(text: string): void;
   /** Ctrl+X on an EMPTY box while a run is live and a line is queued: stop and
    *  send the queued line(s) now. */
   onSendQueuedNow?(): void;
@@ -548,6 +555,7 @@ export function ComposerCard({
   onSend,
   onFollowUp,
   onSendNow,
+  onSendHeld,
   onSendQueuedNow,
   hasQueued,
   onStop,
@@ -1889,7 +1897,7 @@ export function ComposerCard({
     [boxRef, grow],
   );
 
-  const submit = useCallback((seed?: string, now = false): boolean => {
+  const submit = useCallback((seed?: string, mode?: "now" | "hold"): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
     // typed line, not a follow-up (T:17871).
     if (blocked) return false;
@@ -1997,8 +2005,10 @@ export function ComposerCard({
       // draft's key (review, 2026-09-17).
       if (!hasSessionRef.current) onHeldGoneRef.current?.();
     }
-    // SEND NOW (Ctrl+Enter or Ctrl+X while live): stop the turn and this line goes first.
-    if (now && running && onSendNow) onSendNow(message);
+    // SEND NOW (Ctrl+X while live): stop the turn and this line goes first.
+    if (mode === "now" && running && onSendNow) onSendNow(message);
+    // HOLD (Ctrl+Enter while live): the line waits for the session to be done.
+    else if (mode === "hold" && running && onSendHeld) onSendHeld(message);
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
     else if (running && onFollowUp) onFollowUp(message);
@@ -2027,6 +2037,7 @@ export function ComposerCard({
     running,
     onFollowUp,
     onSendNow,
+    onSendHeld,
     onSend,
     controls,
     boxRef,
@@ -2163,21 +2174,23 @@ export function ComposerCard({
         const t = ev.currentTarget as HTMLTextAreaElement | undefined;
         if (t && t.selectionStart !== t.selectionEnd) return;
         ev.preventDefault();
-        submit(undefined, true);
+        submit(undefined, "now");
         return;
       }
       if (ev.key !== "Enter") return;
       // Shift+Enter is a newline. Enter never STOPS a run — a user drafting the
       // next message mid-run must not kill the turn with a keystroke meant to
-      // queue text (T:17915). CTRL+Enter while a run is LIVE is Claude Code's
-      // "send now" (`chat:sendNow`, the same chord): stop it and send this line
-      // first. Ctrl ONLY, never Cmd: ⌘↩ is the annotation round's ✓ Done chord
-      // (`pressDoneChord`, ClaudeChat's `autoSubmit`) and must not be shadowed
-      // by a stop. Cmd/Ctrl+Enter idle is the same send it always was, for the
-      // hands that learned it in every other composer in this app.
+      // queue text (T:17915). CTRL+Enter while a run is LIVE holds the line
+      // until the session is done (D1462): it is not written into the run.
+      // Ctrl ONLY, never Cmd: ⌘↩ is the annotation round's ✓ Done chord
+      // (`pressDoneChord`, ClaudeChat's `autoSubmit`) and must not be shadowed.
+      // Cmd/Ctrl+Enter idle is the same send it always was, for the hands that
+      // learned it in every other composer in this app.
       if (ev.shiftKey) return;
+      // AN IME'S Enter COMMITS ITS CANDIDATE; it never sends.
+      if (ev.nativeEvent?.isComposing || ev.keyCode === 229) return;
       ev.preventDefault();
-      submit(undefined, ev.ctrlKey && !ev.metaKey);
+      submit(undefined, ev.ctrlKey && !ev.metaKey ? "hold" : undefined);
     },
     [submit, running, hasQueued, onSendQueuedNow, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
   );
@@ -2476,7 +2489,7 @@ export function ComposerCard({
       // the window closes (ClaudeChat's outbox), so the tooltip names the
       // wait, not a refusal.
       title={
-        running && onSendNow && text.trim()
+        running && (onSendNow || onSendHeld) && text.trim()
           ? SEND_NOW_TITLE
           : running
           ? // T:4187's own string, not the shorter one this shipped with

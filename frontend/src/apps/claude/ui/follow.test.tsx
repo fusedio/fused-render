@@ -70,6 +70,7 @@ function state(over: Partial<ChatState> = {}): ChatState {
     taken: [],
     historyLoading: false,
     adopting: false,
+    adoptingRun: false,
     transcript: null,
     context: null,
     tasks: [],

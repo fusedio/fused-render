@@ -30,7 +30,7 @@ function state(over: Partial<ChatState> = {}): ChatState {
   return {
     file: "/proj", sessionId: "s1", runId: null, lastRunId: null, status: "idle",
     turns: [], permissions: [], appState: [], skills: [], working: null, trouble: null,
-    permissionMode: "prompt", queued: [], queuedKeys: [], inbox: [], historyLoading: false, adopting: false,
+    permissionMode: "prompt", queued: [], queuedKeys: [], inbox: [], historyLoading: false, adopting: false, adoptingRun: false,
     transcript: null, context: null, tasks: [], tasksRunId: null, ownRunEndedAt: 0,
     repaired: 0, transcriptGen: 0, rev: 1, ...over,
   } as ChatState;

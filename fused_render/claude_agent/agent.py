@@ -4737,6 +4737,40 @@ def _inbox_time_record(run_dir: str, entry_uuid: str) -> None:
         pass
 
 
+_INBOX_TYPED = "inbox_typed"
+
+
+def _inbox_typed_record(run_dir: str, entry_uuid: str, typed: str) -> None:
+    """Remember the words the user sent with an entry, one small file per uuid
+    under `run_dir/inbox_typed/`. The entry on the wire is the COMPOSED turn
+    (`_compose_turn`: terminal hint appended, or slash-command machinery
+    peeled; the page's app-state and attachment markers too), so a Stop
+    answering a uuid name reads the words from here. A side file rather than an
+    extra key on the row, which goes to the CLI verbatim. One file per entry, so
+    two sends never rewrite each other's record; the run dir is its lifetime.
+    `entry_uuid` is `_CLIENT_UUID_RE`-checked or server-minted, so it is a safe
+    file name. Best effort: a failed write only loses the hand-back text."""
+    folder = os.path.join(run_dir, _INBOX_TYPED)
+    path = os.path.join(folder, entry_uuid)
+    tmp = "%s.%s.tmp" % (path, os.urandom(4).hex())
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with _private_open(tmp) as f:
+            f.write(typed)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _inbox_typed_read(run_dir: str, entry_uuid: str) -> str:
+    try:
+        with open(os.path.join(run_dir, _INBOX_TYPED, entry_uuid),
+                  encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 def _turn_opening_time(run_dir: str, cursor: int, echo_pending: bool) -> float:
     """Epoch seconds the CURRENT turn's opening user message was written, or 0.
 
@@ -4780,7 +4814,8 @@ def _turn_opening_time(run_dir: str, cursor: int, echo_pending: bool) -> float:
 _CLIENT_UUID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 
-def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "") -> None:
+def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "",
+                       typed: str = "") -> None:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
     `_send` (every follow-up) write from.
@@ -4800,6 +4835,8 @@ def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "") -> Non
     Identity, never text: two "go on"s are two ids."""
     entry_uuid = client_uuid if _CLIENT_UUID_RE.match(client_uuid or "") else str(uuid.uuid4())
     _inbox_time_record(run_dir, entry_uuid)
+    if typed:
+        _inbox_typed_record(run_dir, entry_uuid, typed)
     _write_inbox_row(run_dir, {"type": "user", "uuid": entry_uuid, "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
@@ -4952,7 +4989,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            extra_read_dirs: list | None = None,
            draft_key: str = "", terminal_hint: str = "",
            backend: str = "", bot: str = "", fork_at: str = "",
-           isolate_mcp: bool = False, client_uuid: str = "",
+           isolate_mcp: bool = False, client_uuid: str = "", typed: str = "",
            breakout: bool = False, breakout_resume: bool = False) -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
@@ -5209,7 +5246,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (a later follow-up) writes the exact same shape into the exact same
     # directory, and the host does not know or care which one started the
     # session versus which one rode in on the CLI's own queue mid-turn.
-    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid)
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid,
+                       typed=typed or message)
 
     # The session host owns the CLI's stdin pipe for the life of the session
     # — see session_host.py's own module docstring for the fork-safety and
@@ -6244,7 +6282,7 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
          effort: str = "", permission_mode: str = "",
-         terminal_hint: str = "", client_uuid: str = "") -> dict:
+         terminal_hint: str = "", client_uuid: str = "", typed: str = "") -> dict:
     """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
     process for it.
 
@@ -6437,7 +6475,8 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     if client_uuid and any(r.get("uuid") == client_uuid
                            for r in _inbox_waiting(run_dir)):
         return {"sent": True}
-    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid)
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid,
+                       typed=typed or message)
     return {"sent": True}
 
 
@@ -6824,6 +6863,24 @@ def _inbox_entry(path: str, name: str) -> dict | None:
         return None
     return {"id": name, "text": text, "at": _inbox_at(name),
             "uuid": str(row.get("uuid") or "")}
+
+
+_CANONICAL_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _still_queued_text(run_dir: str, names: list) -> dict:
+    """`{uuid: typed words}` for every canonical-uuid name in `names` that a
+    written entry can account for. A current CLI names a dropped message by the
+    `uuid` `_write_inbox_entry` stamped on it, and a caller handed a bare uuid
+    has nothing to show or re-send. The words are the user's own, as
+    `_inbox_typed_record` kept them (no terminal-hint block, no peeled
+    machinery); `still_queued` itself is left exactly as the CLI named it."""
+    wanted = {n for n in names if isinstance(n, str) and _CANONICAL_UUID_RE.match(n)}
+    if not wanted:
+        return {}
+    found = {n: _inbox_typed_read(run_dir, n) for n in wanted}
+    return {n: words for n, words in found.items() if words}
 
 
 def _drained_unechoed(run_dir: str) -> list:
@@ -12340,7 +12397,12 @@ def _interrupt_turn(run_dir: str, stranded: list, queued: bool) -> dict | None:
     # way a named remainder does.
     if still or queued:
         _kill_tree(run_dir)
-    return {"cancelled": run_id, "still_queued": still}
+    out = {"cancelled": run_id, "still_queued": still}
+    # Only when a name resolved: the response keeps its shape otherwise.
+    words = _still_queued_text(run_dir, still)
+    if words:
+        out["still_queued_text"] = words
+    return out
 
 
 #: The deferred half of a Stop pressed before the run's first turn opened —
@@ -12764,7 +12826,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
          terminal_hint: str = "", task_id: str = "", backend: str = "",
          fork_at: str = "", tool_use_id: str = "",
-         client_uuid: str = "", breakout: str = "") -> dict:
+         client_uuid: str = "", breakout: str = "", typed: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -12786,7 +12848,7 @@ def main(action: str = "start", file: str = "", message: str = "",
                       extra_read_dirs=_attach_dirs(read_dirs),
                       draft_key=draft_key, terminal_hint=terminal_hint,
                       backend=backend, fork_at=fork_at, client_uuid=client_uuid,
-                      breakout=breakout in ("1", "resume"),
+                      typed=typed, breakout=breakout in ("1", "resume"),
                       breakout_resume=breakout == "resume")
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
@@ -12914,7 +12976,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         # itself decides which of the three (if any) actually changed, and
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
-                    permission_mode, terminal_hint, client_uuid)
+                    permission_mode, terminal_hint, client_uuid, typed)
     if action == "set_mode":
         # The Approvals pill changed on a live chat: apply it now, with no
         # message and no turn (`_send` only applies it piggybacked on a send).

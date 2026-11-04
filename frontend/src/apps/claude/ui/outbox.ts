@@ -38,6 +38,9 @@ export interface OutboxEntry<T> {
    *  interrupted follow-up. Drawn as "not sent" so the reader knows the run
    *  never saw it, and never silently merged into what they are typing now. */
   notSent?: boolean;
+  /** Ctrl+Enter: the line waits until the session is done — the turn over and
+   *  every other line ahead of it answered — and then goes as its own turn. */
+  hold?: true;
 }
 
 export function pushBack<T>(list: readonly OutboxEntry<T>[], entry: OutboxEntry<T>): OutboxEntry<T>[] {
@@ -75,14 +78,19 @@ export function popNewest<T>(
   return { entry: list[list.length - 1]!, rest: list.slice(0, -1) };
 }
 
-/** The next line the DRAIN may send — the oldest one that is not "not sent" —
+/** The next line the DRAIN may send — the oldest ordinary one that is not "not sent",
+ *  else (when `holdOpen`) the oldest held one —
  *  and the list without it. A `notSent` line is the reader's to resend (the run
  *  may already have read those words before a stop), so the drain steps over
  *  it and leaves it in place, order kept. */
 export function shiftOldestSendable<T>(
   list: readonly OutboxEntry<T>[],
+  holdOpen = false,
 ): { entry: OutboxEntry<T> | null; rest: OutboxEntry<T>[] } {
-  const i = list.findIndex((e) => !e.notSent);
+  // A HELD line goes only when the session is done (`holdOpen`) and no
+  // ordinary line is left to go ahead of it, one per turn, in typed order.
+  let i = list.findIndex((e) => !e.notSent && !e.hold);
+  if (i < 0 && holdOpen) i = list.findIndex((e) => !e.notSent);
   if (i < 0) return { entry: null, rest: [...list] };
   return { entry: list[i]!, rest: [...list.slice(0, i), ...list.slice(i + 1)] };
 }
@@ -134,6 +142,8 @@ export function outboxHint(sendable: number, notSent = 0): string {
 export interface PendingLine {
   id: string;
   text: string;
+  /** A Ctrl+Enter line the page is holding: a reload keeps it held. */
+  hold?: true;
 }
 
 export function pendingKey(sessionId: string): string {
@@ -173,9 +183,9 @@ export function loadPending(sessionId: string, store: PendingStore | null = pend
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
     return parsed.flatMap((l: unknown) => {
-      const line = l as { id?: unknown; text?: unknown };
+      const line = l as { id?: unknown; text?: unknown; hold?: unknown };
       if (typeof line?.id !== "string" || !line.id || typeof line.text !== "string" || !line.text) return [];
-      return [{ id: line.id, text: line.text }];
+      return [line.hold === true ? { id: line.id, text: line.text, hold: true as const } : { id: line.id, text: line.text }];
     });
   } catch {
     return [];

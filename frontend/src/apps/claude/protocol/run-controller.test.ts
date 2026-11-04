@@ -2476,6 +2476,60 @@ describe("stop (T:15901)", () => {
     expect(controller.getState().queued).toEqual([]);
   });
 
+  // The current CLI names a still-queued message by the uuid the page stamped
+  // on it, not by its words.
+  const stopWithStill = async (still: string[], stillText?: Record<string, string>) => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      cancel: () => ({ cancelled: "r1", still_queued: still, ...(stillText ? { still_queued_text: stillText } : {}) }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("say hi", { clientId: "36422243-e3e0-4d9a-bd54-aad6c0de909b" });
+          await controller.stopRun();
+          return poll({ segments: [text("half a thought")] });
+        }
+        return poll({ done: true, error: "killed", segments: [text("half a thought")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    return made;
+  };
+
+  test("a still_queued uuid naming a queued follow-up hands back its typed text once", async () => {
+    const made = await stopWithStill(["36422243-e3e0-4d9a-bd54-aad6c0de909b"]);
+    expect(made.strandedLines.length).toBe(1);
+    expect(made.strandedLines[0].map((l) => l.text)).toEqual(["say hi"]);
+    expect(made.strandedLines[0][0].clientId).toBe("36422243-e3e0-4d9a-bd54-aad6c0de909b");
+  });
+
+  test("a uuid name whose words the CLI never saw verbatim still hands back one typed line", async () => {
+    // The wire the CLI holds is the composed turn (terminal hint appended), so
+    // the words do not match; the entry's id does.
+    const id = "36422243-e3e0-4d9a-bd54-aad6c0de909b";
+    const made = await stopWithStill([id, "say hi\n\n<terminal-hint>x</terminal-hint>"], { [id]: "say hi" });
+    expect(made.stranded[0].filter((t) => t === "say hi")).toEqual(["say hi"]);
+    expect(made.stranded[0].some((t) => t === id)).toBe(false);
+  });
+
+  test("a leftover uuid with still_queued_text is handed back as those words", async () => {
+    const other = "11111111-2222-3333-4444-555555555555";
+    const made = await stopWithStill(["36422243-e3e0-4d9a-bd54-aad6c0de909b", other], { [other]: "from elsewhere" });
+    expect(made.stranded).toEqual([["say hi", "from elsewhere"]]);
+  });
+
+  test("a still_queued uuid with no entry here is dropped, not handed back as a line", async () => {
+    const made = await stopWithStill(["36422243-e3e0-4d9a-bd54-aad6c0de909b", "11111111-2222-3333-4444-555555555555"]);
+    expect(made.stranded).toEqual([["say hi"]]);
+  });
+
+  test("an unmatched plain-text still_queued name is still handed back", async () => {
+    const made = await stopWithStill(["from another viewer"]);
+    expect(made.stranded).toEqual([["say hi", "from another viewer"]]);
+  });
+
   test("a stop that never reached the backend takes its claim back", async () => {
     let controller!: ChatController;
     const made = makeController({
@@ -5482,13 +5536,14 @@ describe("the working clock survives a reload (server stamp)", () => {
 
 describe("the page-minted client id rides the wire and comes back", () => {
   test("start and follow-up send carry client_uuid; delivery reports the id", async () => {
+    const SHOTS = "<pane-shot>\n[]\n</pane-shot>";
     const delivered: string[] = [];
     let controller!: ChatController;
     const agent = fakeAgent({
       start: () => ({ run_id: "r1" }),
       send: () => ({ sent: true as const }),
       poll: async (_f, n) => {
-        if (n === 0) await controller.sendFollowUp("more", { clientId: "id-follow" });
+        if (n === 0) await controller.sendFollowUp("more", { clientId: "id-follow", blocks: [SHOTS] });
         return poll({ done: n > 0 });
       },
     });
@@ -5504,9 +5559,11 @@ describe("the page-minted client id rides the wire and comes back", () => {
       hasPane: () => true,
       onSendDelivered: (id) => delivered.push(id),
     });
-    await controller.sendMessage("go", { clientId: "id-start" });
+    await controller.sendMessage("go", { clientId: "id-start", blocks: [SHOTS] });
     expect(agent.of("start")[0]!.fields.client_uuid).toBe("id-start");
     expect(agent.of("send")[0]!.fields.client_uuid).toBe("id-follow");
+    expect(agent.of("start")[0]!.fields.typed).toBe("go");
+    expect(agent.of("send")[0]!.fields.typed).toBe("more");
     expect(delivered).toEqual(["id-start", "id-follow"]);
     controller.dispose();
   });

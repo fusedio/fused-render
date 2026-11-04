@@ -267,3 +267,70 @@ def test_a_stop_runs_while_the_poll_pool_is_saturated():
         hold.set()
         for f in busy:
             f.result(timeout=10)
+
+
+def _entry(run_dir, text, uid, hint="\n\n<terminal-hint>x</terminal-hint>"):
+    from fused_render.claude_agent import agent
+
+    agent._write_inbox_entry(str(run_dir), text + hint, uid, typed=text)
+
+
+def test_still_queued_text_resolves_uuids_to_typed_words_without_the_hint(tmp_path):
+    """The CLI's names stay as named; `still_queued_text` maps each canonical
+    uuid to the words the user typed, not the composed turn."""
+    from fused_render.claude_agent import agent
+
+    uid = "36422243-e3e0-4d9a-bd54-aad6c0de909b"
+    other = "11111111-2222-3333-4444-555555555555"
+    _entry(tmp_path, "say hi", uid)
+    out = agent._still_queued_text(str(tmp_path), [uid, other, "plain words"])
+    assert out == {uid: "say hi"}
+
+
+def test_still_queued_text_keeps_two_same_words_entries_apart(tmp_path):
+    from fused_render.claude_agent import agent
+
+    a, b = "aaaaaaaa-2222-3333-4444-555555555555", "bbbbbbbb-2222-3333-4444-555555555555"
+    _entry(tmp_path, "again", a)
+    _entry(tmp_path, "again", b)
+    assert agent._still_queued_text(str(tmp_path), [a, b]) == {a: "again", b: "again"}
+
+
+def test_still_queued_text_resolves_beyond_sixteen_entries(tmp_path):
+    from fused_render.claude_agent import agent
+
+    ids = ["%08x-2222-3333-4444-555555555555" % i for i in range(1, 31)]
+    for n, uid in enumerate(ids):
+        _entry(tmp_path, "msg %d" % n, uid)
+    assert agent._still_queued_text(str(tmp_path), [ids[0]]) == {ids[0]: "msg 0"}
+
+
+def test_still_queued_text_ignores_loose_words(tmp_path):
+    from fused_render.claude_agent import agent
+
+    assert agent._still_queued_text(str(tmp_path), ["continue", "go on please"]) == {}
+
+
+def test_typed_words_are_one_file_per_uuid_and_never_a_shared_map(tmp_path):
+    from fused_render.claude_agent import agent
+
+    a, b = "aaaaaaaa-2222-3333-4444-555555555555", "bbbbbbbb-2222-3333-4444-555555555555"
+    _entry(tmp_path, "one", a)
+    _entry(tmp_path, "two", b)
+    folder = tmp_path / "inbox_typed"
+    assert sorted(p.name for p in folder.iterdir()) == [a, b]
+    assert not (tmp_path / "inbox_typed.json").exists()
+    assert (folder / a).read_text(encoding="utf-8") == "one"
+
+
+def test_explicit_typed_words_win_over_the_composed_message(tmp_path):
+    """The page sends its own words next to the composed wire (app-state and
+    attachment markers); `send` and `start` both take them."""
+    from fused_render.claude_agent import agent
+
+    for fn in (agent._send, agent._start, agent.main):
+        assert "typed" in inspect.signature(fn).parameters
+    uid = "cccccccc-2222-3333-4444-555555555555"
+    agent._write_inbox_entry(str(tmp_path), "<live-app-state>x</live-app-state>\nhello", uid,
+                             typed="hello")
+    assert agent._still_queued_text(str(tmp_path), [uid]) == {uid: "hello"}
