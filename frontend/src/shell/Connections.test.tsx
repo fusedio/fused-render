@@ -98,7 +98,16 @@ beforeEach(() => {
     return null;
   };
 });
-afterEach(() => {
+// Every mounted page is unmounted after its test: a mounted Connections keeps
+// polling /api/connect/*, and the whole suite shares one process, so a page left
+// up goes on hitting whatever fetch a LATER file has stubbed (and counts).
+let mounted: ReactTestRenderer[] = [];
+afterEach(async () => {
+  const boxes = mounted;
+  mounted = [];
+  await act(async () => {
+    for (const b of boxes) b.unmount();
+  });
   globalThis.fetch = realFetch;
   w.open = realOpen;
 });
@@ -118,6 +127,7 @@ async function mount() {
   await act(async () => {
     box = create(createElement(Connections));
   });
+  mounted.push(box);
   await settle();
   return box;
 }
