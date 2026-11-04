@@ -28,6 +28,17 @@ describe("Turn pending tag", () => {
     expect(out).not.toContain("turn-pending");
     expect(out).toContain("is-pending");
   });
+  test("a live follow-up (no pending) gets the tag only when it is the hinted one, no dimming, click sends now", () => {
+    const plain: UserTurn = { role: "user", key: "k2", text: "go on" };
+    expect(html(plain)).not.toContain("turn-pending");
+    let sent = 0;
+    const el = createElement(Turn, { turn: plain, sendNowHint: true, onSendNow: () => (sent += 1) });
+    const out = renderToStaticMarkup(el);
+    expect(out).toContain("(Ctrl+X to send now)");
+    expect(out).toContain("turn-pending");
+    expect(out).not.toContain("is-pending");
+    expect(out).not.toContain(">queued<");
+  });
   test("not sent is unchanged", () => {
     expect(html({ ...queued, pending: "notSent" })).toContain("not sent");
   });

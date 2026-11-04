@@ -98,6 +98,8 @@ export interface TurnProps {
   onPullPending?: (key: string) => void;
   /** The newest queued bubble's tag: "(Ctrl+X to send now)". Other queued bubbles show no tag. */
   sendNowHint?: boolean;
+  /** Click on a follow-up's hint (a bubble with no `pending`): Ctrl+X's send-now. */
+  onSendNow?: () => void;
   /** "Fork from here" on a sent user turn: park it and everything after it and
    *  re-ask it in the composer. Passed only for a Claude chat that is idle;
    *  absent, no button is drawn. One callback for the log, keyed by the turn. */
@@ -134,6 +136,7 @@ export const Turn = memo(function Turn({
   pendingCard,
   onPullPending,
   sendNowHint,
+  onSendNow,
   onFork,
   cwd,
   workedFor,
@@ -257,6 +260,17 @@ export const Turn = memo(function Turn({
             )}
           </div>
         </div>
+        {!pending && sendNowHint ? (
+          <button
+            type="button"
+            className="turn-pending"
+            title="Waiting for the current turn. Click to stop it and send now."
+            onClick={onSendNow}
+            disabled={!onSendNow}
+          >
+            (Ctrl+X to send now)
+          </button>
+        ) : null}
         {pending === "notSent" || (pending && sendNowHint) ? (
           <button
             type="button"

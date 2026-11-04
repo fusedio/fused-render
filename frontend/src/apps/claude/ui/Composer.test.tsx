@@ -426,17 +426,9 @@ test("A BLOCK NEVER TAKES STOP: the button still ends a live turn (T:17193-17195
   expect(idle.sent).toEqual([]);
 });
 
-test("queued follow-ups are named under the box, singular and plural", () => {
+test("no follow-up count line under the box", () => {
   const hint = (c: ReturnType<typeof mount>) =>
-    c.root
-      .findAllByProps({ className: "c-queued" })
-      .map((n) => n.props.children);
-  expect(hint(mount({ queued: ["a"] }))).toEqual([
-    "1 follow-up is queued for this turn.",
-  ]);
-  expect(hint(mount({ queued: ["a", "b"] }))).toEqual([
-    "2 follow-ups are queued for this turn.",
-  ]);
+    c.root.findAllByProps({ className: "c-queued" }).map((n) => n.props.children);
   expect(hint(mount())).toEqual([]);
 });
 

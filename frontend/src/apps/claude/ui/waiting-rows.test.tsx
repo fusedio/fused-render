@@ -719,12 +719,9 @@ describe("a follow-up into this chat's own running turn", () => {
     expect(CHAT).not.toContain("state.queued.length");
     expect(CHAT).not.toContain('kind="inbox"');
     expect(WAITING).not.toContain("follow-up");
-    // The composer's note is gated on the flag, and the words are untouched for
-    // the build that still shows them.
-    expect(COMPOSER).toContain("{count > 0 && !queueOn ? (");
-    expect(COMPOSER).toContain('"1 follow-up is queued for this turn."');
-    expect(COMPOSER).toContain("follow-ups are queued for this turn.");
-    expect(CHAT).toContain("queueOn,");
+    // The composer's footnote is gone in both builds: the newest follow-up's
+    // bubble carries "(Ctrl+X to send now)" instead.
+    expect(COMPOSER).not.toContain("follow-ups are queued for this turn");
   });
 });
 
@@ -1003,16 +1000,5 @@ describe("a follow-up the live run is still holding", () => {
     expect(inbox).toContain("max-width: 720px");
     expect(inbox).toContain("padding: 0 20px 6px");
     expect(inbox).not.toContain("dashed");
-  });
-
-  it("counts inbox rows in the composer's queued line, flag off", () => {
-    // A reload drops `state.queued` (page memory) but the run still reports the
-    // inbox; `inboxRows` is already deduped against it, so appending is safe.
-    expect(CHAT).toContain(
-      "queued: [...state.queued, ...inboxRows.map((r) => r.text)],",
-    );
-    expect(CHAT).toContain("      state.queued,\n      inboxRows,\n");
-    // The Composer draws that line only with the flag off.
-    expect(COMPOSER).toContain("!queueOn");
   });
 });

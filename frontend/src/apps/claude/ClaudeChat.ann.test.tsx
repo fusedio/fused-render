@@ -2004,7 +2004,7 @@ test("a REFUSED admission leaves the round exactly where the reader left it", as
 
 const PENDING_KEY = "claude.outbox:s1";
 
-test("flag OFF: once the CLI has taken a mid-turn line the composer stops saying it is queued", async () => {
+test("flag OFF: a mid-turn line carries the Ctrl+X hint on its bubble, no composer line, until the CLI has taken it", async () => {
   pollLive = true;
   prefsBody = {};
   const rig = await mountChat();
@@ -2018,8 +2018,10 @@ test("flag OFF: once the CLI has taken a mid-turn line the composer stops saying
   await pressEnterInBox(rig.r);
   await settle(40);
   const queuedHint = () =>
-    byClass(rig.r, "c-queued").filter((n) => JSON.stringify(n.children).includes("queued for this turn"));
+    byClass(rig.r, "turn-pending").filter((n) => JSON.stringify(n.children).includes("Ctrl+X to send now"));
   expect(queuedHint()).toHaveLength(1);
+  expect(JSON.stringify(rig.r.toJSON())).not.toContain("queued for this turn");
+  expect(byClass(rig.r, "is-pending")).toHaveLength(0);
   // The CLI's receipt for the page's uuid arrives with the next poll.
   pollTaken = true;
   await settle(1500);
@@ -2104,6 +2106,71 @@ for (const flagOn of [false, true]) {
     expect(byClass(r, "bubble").map((n) => String(n.props.children))).toContain("later");
   });
 
+  const ctrlX = (r: Chat) =>
+    act(async () => {
+      r.root.findByType("textarea").props.onKeyDown({
+        key: "x",
+        ctrlKey: true,
+        shiftKey: false,
+        preventDefault() {},
+      });
+    });
+  const hints = (r: Chat) =>
+    byClass(r, "turn-pending").map((n) => String(n.props.children).replace(/,/g, ""));
+
+  test(`${tag}: a live follow-up carries the hint; empty-box Ctrl+X re-sends it as the next turn, never "not sent"; taken, the hint is gone`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    expect(sends()).toHaveLength(1);
+    // The hint sits on the follow-up's own bubble: no "queued" word, no dimming,
+    // and no composer line.
+    expect(hints(r)).toEqual(["(Ctrl+X to send now)"]);
+    expect(byClass(r, "is-pending")).toHaveLength(0);
+    expect(JSON.stringify(r.toJSON())).not.toContain("queued for this turn");
+    // The CLI never read it: the interrupt reports it as still queued.
+    const uuid = sends()[0]!.params.client_uuid;
+    cancelStill = [String(sends()[0]!.params.message)];
+    stickyLive = true;
+    await ctrlX(r);
+    await settle(100);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
+    stickyLive = false;
+    await settle(1500);
+    const again = [...sends(), ...started()].filter(
+      (c) => String(c.params.message).includes("keep going") && c !== sends()[0],
+    );
+    expect(again).toHaveLength(1);
+    expect(again[0]!.params.client_uuid).toBe(uuid);
+    expect(hints(r)).not.toContain("not sent · click to edit");
+    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
+  });
+
+  test(`${tag}: once the CLI has taken a live follow-up its hint is gone`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    expect(hints(r)).toEqual(["(Ctrl+X to send now)"]);
+    pollTaken = true;
+    await settle(1500);
+    expect(hints(r)).toEqual([]);
+  });
+
+  test(`${tag}: a plain Stop with a live follow-up still yields "not sent"`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    cancelStill = [String(sends()[0]!.params.message)];
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(300);
+    expect(hints(r)).toContain("not sent · click to edit");
+  });
+
   test(`${tag}: two mid-turn lines arrive in the order typed`, async () => {
     const { r } = await liveChat();
     await typeInBox(r, "one");
@@ -2143,7 +2210,7 @@ for (const flagOn of [false, true]) {
     // Not a second turn, and not queued behind itself.
     expect(started()).toHaveLength(1);
     expect(admits).toHaveLength(openings);
-    expect(byClass(r, "turn-pending")).toHaveLength(0);
+    expect(byClass(r, "is-pending")).toHaveLength(0);
   });
 
   test(`${tag}: a line with no acknowledgement yet is journalled, and dropped once the server has it`, async () => {

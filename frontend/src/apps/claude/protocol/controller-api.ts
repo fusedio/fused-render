@@ -292,6 +292,8 @@ export interface ChatState {
   permissionMode: PermissionMode;
   /** Follow-ups typed while a run is live, not yet acknowledged (T:16024 sendFollowUp). */
   queued: string[];
+  /** The transcript keys of those follow-ups' bubbles (same order as `queued`). */
+  queuedKeys: string[];
   /**
    * THE SAME MESSAGES AS THE RUN SEES THEM — the live host's undrained inbox
    * (`PollResponse.inbox`), reported by the poll and therefore SURVIVING A

@@ -4244,17 +4244,19 @@ function ChatBody(props: ChatBodyProps) {
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
-  // THE SEND-NOW HINT lives on the NEWEST queued bubble (one, not one per
-  // bubble), and Ctrl+X on an empty box sends the queued lines now.
+  // THE SEND-NOW HINT lives on the NEWEST waiting bubble (one, not one per
+  // bubble): a parked outbox line (`pending === "queued"`) or a follow-up the
+  // live run holds (the controller's `queuedKeys`). Ctrl+X on an empty box
+  // sends them now.
   let newestQueuedKey: string | null = null;
   for (let i = state.turns.length - 1; i >= 0; i--) {
     const t = state.turns[i];
-    if (t.role === "user" && t.pending === "queued") {
+    if (t.role === "user" && (t.pending === "queued" || state.queuedKeys.includes(t.key))) {
       newestQueuedKey = t.key;
       break;
     }
   }
-  const hasQueued = newestQueuedKey !== null;
+  const hasQueued = state.queuedKeys.length > 0 || newestQueuedKey !== null;
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
   const shownHint = shownWorktreeHint(state.worktreeHint, state.tasks, chatWorkdir(file, pane.noun) ?? undefined);
   const worktreeMenu = worktreeTarget && agentCaps.worktrees ? (
@@ -4922,7 +4924,6 @@ function ChatBody(props: ChatBodyProps) {
       sessionId: state.sessionId ?? "",
       controls,
       status: state.status,
-      queued: [...state.queued, ...inboxRows.map((r) => r.text)],
       // HOW FULL THE WINDOW IS, for the composer's context meter. Straight off
       // the controller — it moves with the transcript and with nothing else, so
       // the landing composer (no conversation) and a brand-new chat both get
@@ -5080,11 +5081,6 @@ function ChatBody(props: ChatBodyProps) {
       ) : rcOn ? (
         <RemoteControlNote view={rc.view} onStop={rc.stop} />
       ) : undefined,
-      // THE FLAG TAKES THE FOLLOW-UP FOOTNOTE AWAY (see `ComposerCardProps`):
-      // under the queue this pane says "waiting" about messages that really are,
-      // and a count of follow-ups the live host will drain in seconds is the one
-      // waiting state with nothing to act on.
-      queueOn,
       slashCommands,
       onLocalCommand,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
@@ -5100,8 +5096,6 @@ function ChatBody(props: ChatBodyProps) {
       rc.view,
       rc.stop,
       state.status,
-      state.queued,
-      inboxRows,
       state.context,
       controls,
       onSend,
@@ -5148,7 +5142,6 @@ function ChatBody(props: ChatBodyProps) {
       sched.blocked,
       sched.placeholder,
       sched.reason,
-      queueOn,
       slashCommands,
       onLocalCommand,
     ],
@@ -5710,6 +5703,7 @@ function ChatBody(props: ChatBodyProps) {
               {...(debugSent ? { onShowSent: setSent } : {})}
               onPullPending={onPullPending}
               sendNowKey={running ? newestQueuedKey : null}
+              onSendNow={onSendQueuedNow}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}

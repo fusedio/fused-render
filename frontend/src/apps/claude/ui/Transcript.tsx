@@ -117,6 +117,8 @@ export interface TranscriptProps {
   onPullPending?: (key: string) => void;
   /** The key of the one queued bubble that carries "(Ctrl+X to send now)". */
   sendNowKey?: string | null;
+  /** Click on that hint: the same as Ctrl+X on an empty box. */
+  onSendNow?: () => void;
   /** "Fork from here" on a user turn (`TurnProps.onFork`). */
   onFork?: (key: string) => void;
   /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
@@ -179,6 +181,7 @@ export const Transcript = memo(function Transcript({
   onShowSent,
   onPullPending,
   sendNowKey,
+  onSendNow,
   onFork,
   onOpenShot,
   paneNoun,
@@ -970,6 +973,7 @@ export const Transcript = memo(function Transcript({
                   {...(onShowSent ? { onShowSent } : {})}
                   {...(onPullPending ? { onPullPending } : {})}
                   {...(sendNowKey && sendNowKey === turn.key ? { sendNowHint: true } : {})}
+                  {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}

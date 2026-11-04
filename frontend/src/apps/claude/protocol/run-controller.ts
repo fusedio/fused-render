@@ -303,6 +303,7 @@ function emptyState(file: string | null): ChatState {
     trouble: null,
     permissionMode: defaultPermissionNow(),
     queued: [],
+    queuedKeys: [],
     inbox: [],
     taken: [],
     historyLoading: false,
@@ -548,7 +549,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     handedBack: boolean;
   }[] = [];
   let queuedSeq = 0;
-  const publishQueued = () => emit({ queued: queued.map((q) => q.typed || q.wire) });
+  const publishQueued = () =>
+    emit({ queued: queued.map((q) => q.typed || q.wire), queuedKeys: queued.map((q) => q.bubble) });
   /** Every entry, gone, published once. The run is over: the CLI has either
    *  answered these or died with them, and neither is "queued". */
   const clearQueued = () => {
