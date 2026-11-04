@@ -909,6 +909,11 @@ button.claude-rail-peek-scope.is-node:focus-visible {
   inset: 0;
   flex-direction: column;
 }
+/* The prompt bubble holds rendered markdown, whose blocks space themselves;
+   the chat bubble's `pre-wrap` is for typed words and would double the gaps. */
+.chat-root .agent-peek-prompt .bubble {
+  white-space: normal;
+}
 .agent-peek-empty {
   padding: 12px;
   opacity: 0.7;
