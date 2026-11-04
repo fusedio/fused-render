@@ -20,20 +20,11 @@
 //
 // Pure TS: no DOM, no React.
 
-import { BREAKOUT_CTX_TAG, FILES_HEADING } from "@platform/lib/breakout-context";
+import { BREAKOUT_FILES_TAG } from "@platform/lib/breakout-context";
+import { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG } from "@platform/lib/wire-tags";
 
-export { BREAKOUT_CTX_TAG, formatBreakoutContext } from "@platform/lib/breakout-context";
-
-/** T:4761 — the app-state block's tag. */
-export const APP_STATE_TAG = "live-app-state";
-/** T:4775 — the annotations block's tag. */
-export const ANN_TAG = "annotations";
-/** T:4790 — the attached-pictures block's tag. */
-export const PANE_SHOT_TAG = "pane-shot";
-/** The focused-terminal metadata line agent.py's `_with_terminal_hint` writes
- *  onto a send (D1326). Server-side only: the page never composes it, but the
- *  inbox rows and the CLI's echoed user records carry it back verbatim. */
-export const TERMINAL_HINT_TAG = "terminal-hint";
+export { formatBreakoutContext } from "@platform/lib/breakout-context";
+export { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG };
 
 // ---- markers (T:10525-10545) ----------------------------------------------
 //
@@ -470,8 +461,9 @@ export function breakoutContextIn(text: string | null | undefined): BreakoutCont
   const split = inner.indexOf("\n\n");
   const head = split < 0 ? inner : inner.slice(0, split);
   let body = split < 0 ? "" : inner.slice(split + 2);
-  const files = body.lastIndexOf("\n\n" + FILES_HEADING);
-  if (files >= 0) body = body.slice(0, files);
+  // The files list is the block's last section, in a tag quoted text cannot
+  // carry (`formatBreakoutContext` neutralizes it there).
+  body = body.replace(new RegExp("(?:^|\\n\\n)<" + BREAKOUT_FILES_TAG + ">\\n[\\s\\S]*?\\n</" + BREAKOUT_FILES_TAG + ">$"), "");
   const count = /from (\d+) messages?/.exec(head);
   const title = /titled ("(?:[^"\\]|\\.)*")/.exec(head);
   let parsed: string | undefined;
@@ -508,13 +500,15 @@ export function stripTerminalHintBlock(text: string | null | undefined): string 
 /** T:10552 `stripBlocks` — the inverse of `composeOutgoing`: exactly what the
  *  user typed, or the markers naming what a wordless send carried. */
 export function stripBlocks(text: string | null | undefined): string {
-  const noState = stripAppStateBlock(stripTerminalHintBlock(text));
+  // The breakout block goes FIRST: it quotes other text, and the other
+  // strippers must never see into it.
+  const noContext = stripBreakoutBlock(text);
+  const noState = stripAppStateBlock(stripTerminalHintBlock(noContext));
   const noPaneShot = stripPaneBlock(noState);
-  const noContext = stripBreakoutBlock(noPaneShot);
-  const bare = stripAnnBlock(noContext);
+  const bare = stripAnnBlock(noPaneShot);
   if (bare) return bare;
   const carried: string[] = [];
-  if (bare !== noContext) carried.push(MARKER_ANN);
+  if (bare !== noPaneShot) carried.push(MARKER_ANN);
   if (noPaneShot !== noState) {
     const views = paneShotIn(noState);
     // A session written before `kind` existed has none at all, which is exactly
@@ -541,15 +535,17 @@ export interface Inbound {
 /** Read a wire message whole: what to show in the bubble plus everything a
  *  restored turn needs to rebuild its receipt (T:10932 rebuilds exactly this). */
 export function parseInbound(text: string | null | undefined): Inbound {
-  const raw = text || "";
-  const out: Inbound = { text: stripBlocks(raw) };
+  const whole = text || "";
+  const out: Inbound = { text: stripBlocks(whole) };
+  // The other readers never look inside the quoted block.
+  const raw = stripBreakoutBlock(whole);
   const state = new RegExp("<" + APP_STATE_TAG + ">([\\s\\S]*?)</" + APP_STATE_TAG + ">").exec(raw);
   if (state) out.appState = state[1].trim();
   const shots = paneShotIn(raw);
   if (shots.length) out.paneShots = shots;
   const notes = annotationsIn(raw);
   if (notes.length) out.annotations = notes;
-  const ctx = breakoutContextIn(raw);
+  const ctx = breakoutContextIn(whole);
   if (ctx) out.breakoutContext = ctx;
   return out;
 }

@@ -11,8 +11,8 @@ import { IS_EMBED } from "./router";
 import type { HandoffTurn } from "./breakout-context";
 import { chatDraftKey, fetchChatDraft, saveChatDraft, type ChatDraft, type DraftAttachment } from "./drafts";
 
+export { BREAKOUT_CTX_TAG } from "./wire-tags";
 export {
-  BREAKOUT_CTX_TAG,
   buildBreakoutContext,
   exchangeKeys,
   formatBreakoutContext,
