@@ -48,8 +48,7 @@ import type { ReactNode } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
 import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
-import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
-import type { LanPairingEvent } from "@platform/lib/api";
+import { getJson, postJson } from "@platform/lib/api";
 import { navigate, navigateToJobPage, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { requestOpenSection, useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
@@ -168,18 +167,13 @@ type MutationResult = {
 };
 
 // `scope`, set only by a native app window (NativeAppSyncNotices): keep just
-// the failures and pull popups of the repo that window's app lives in, and skip
-// the LAN-pairing poll (not that window's business). The dock passes nothing.
+// the failures and pull popups of the repo that window's app lives in. The
+// dock passes nothing.
 export function useRepoUpdates(scope?: { forApp: string | null }) {
   const forApp = scope ? scope.forApp : undefined;
   const forAppRef = useRef(forApp);
   forAppRef.current = forApp;
   const [repos, setRepos] = useState<RepoStatus[]>([]);
-  // LAN pairings ride the same poll (third row kind, after D586's failures):
-  // a device pairing is a notification, and this card is the notification
-  // surface. Server-side store (lan.py `_recent_pairings`), so a dismissal
-  // holds across shells and reloads for as long as the server runs.
-  const [pairings, setPairings] = useState<LanPairingEvent[]>([]);
   // Auto-sync failures (git_upstream.sync_failures): the persistent rows that
   // say a background pull/push could not be done and nothing was changed.
   const [syncFailures, setSyncFailures] = useState<SyncFailure[]>([]);
@@ -205,16 +199,11 @@ export function useRepoUpdates(scope?: { forApp: string | null }) {
       const mine = ++generation;
       window.clearTimeout(timer);
       try {
-        const [data, paired] = await Promise.all([
-          getJson<{
-            repos?: RepoStatus[];
-            sync_failures?: SyncFailure[];
-            pulls?: SyncPull[];
-          }>("/api/git-upstream"),
-          // Its failure must not take the repo rows down with it (and vice
-          // versa): each source degrades alone.
-          forAppRef.current === undefined ? getLanPairings().catch(() => null) : null,
-        ]);
+        const data = await getJson<{
+          repos?: RepoStatus[];
+          sync_failures?: SyncFailure[];
+          pulls?: SyncPull[];
+        }>("/api/git-upstream");
         // Superseded responses are DROPPED, not painted: a fresher read is
         // already in flight, and letting an older one land after it would
         // flick stale rows back onto the screen (the same reason
@@ -241,7 +230,6 @@ export function useRepoUpdates(scope?: { forApp: string | null }) {
               notify({ title: pullPopupTitle(p) });
             }
           }
-          if (paired) setPairings(paired.pairings || []);
         }
       } catch {
         // Best-effort, like every other poll in this card: a failed read
@@ -265,64 +253,7 @@ export function useRepoUpdates(scope?: { forApp: string | null }) {
   }, []);
 
   const refresh = useCallback(() => pollRef.current(), []);
-  return { repos, pairings, setPairings, syncFailures, setSyncFailures, refresh };
-}
-
-// A device that just paired over the LAN (lan.py): title is the device's
-// UA-derived name, the sentence says what pairing means, the ✕ dismisses the
-// EVENT server-side (the device itself stays; revoking lives in Preferences).
-//
-// THE ROW ITSELF ALSO OPENS Preferences → Render local network, where the
-// paired device can actually be managed — the only row kind here whose click
-// target is a fixed shell route rather than something specific to the event.
-// Clicking clears the row exactly as the ✕ does (reuses `dismiss`): the news
-// was "a device paired", and having read it (by going to look) is as much an
-// acknowledgement as swatting it would have been.
-function PairingRowView({
-  event,
-  onGone,
-  age,
-  unseen,
-}: {
-  event: LanPairingEvent;
-  onGone: (id: string) => void;
-  /** Compact relative-time stamp (R5) — the client's own `firstSeenAt`, this
-   *  row carries no server timestamp of its own. */
-  age?: string;
-  /** The unread dot (R4) — unset while this view is also used anywhere that
-   *  doesn't track seen state (there is none today; kept optional like every
-   *  other row view's same param, for the same reason). */
-  unseen?: boolean;
-}) {
-  const dismiss = async () => {
-    // Optimistic: the row is news, and news the user swatted must go now.
-    onGone(event.id);
-    try {
-      await dismissLanPairing(event.id);
-    } catch {
-      /* the next poll restores it if the server never heard */
-    }
-  };
-  return (
-    <NotificationCard
-      title={
-        <>
-          {unseen && <span className="dl-unread-dot" aria-hidden="true" />}
-          {event.name} paired
-        </>
-      }
-      age={age}
-      onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${event.name} paired` }}
-      status="It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network."
-      rowClick={{
-        onClick: () => {
-          navigateUrl("/preferences?tab=lan");
-          void dismiss();
-        },
-        title: "Open Preferences → Render local network",
-      }}
-    />
-  );
+  return { repos, syncFailures, setSyncFailures, refresh };
 }
 
 // A BACKGROUND AUTO-SYNC THAT COULD NOT FINISH (git_upstream.sync_failures) —
@@ -933,9 +864,6 @@ function GroupJobRow({
 // (R3's "Update available" -> "Update ready") both read as new again, not as
 // the same old row lingering; a job group's carries the cluster identity
 // `groupJobs` already keys React's own list on.
-function pairingKey(event: LanPairingEvent): string {
-  return `pairing:${event.id}`;
-}
 function syncFailureKey(f: SyncFailure): string {
   return `sync:${f.id}:${f.at}`;
 }
@@ -1006,11 +934,9 @@ export function RepoUpdatesCardView({
   onDismissAll,
   onDone,
   terminal = [],
-  pairings = [],
   attention = [],
   attentionDismissed = {},
   onAttentionDismiss,
-  onPairingGone,
   syncFailures = [],
   onSyncGone,
   messages = [],
@@ -1026,8 +952,6 @@ export function RepoUpdatesCardView({
    *  further 2026-09-23, D888: a clean finish never pops a card at all any
    *  more) — it is an ordinary row here like everything else. */
   terminal?: Job[];
-  /** Devices that paired over the LAN — the third row kind. */
-  pairings?: LanPairingEvent[];
   /** Tasks parked on a question — the fourth row kind (2026-09-03). */
   attention?: AttentionRow[];
   /** Client-raised messages retained by `lib/notifications.ts` — the fifth
@@ -1041,7 +965,6 @@ export function RepoUpdatesCardView({
    *  way `dismissed` is for repo rows, but on `attentionDismissSignature`. */
   attentionDismissed?: Record<string, string>;
   onAttentionDismiss?: (key: string, signature: string) => void;
-  onPairingGone?: (id: string) => void;
   /** Standing auto-sync failures — the sixth row kind. Always "Needs you". */
   syncFailures?: SyncFailure[];
   onSyncGone?: (id: string) => void;
@@ -1126,14 +1049,13 @@ export function RepoUpdatesCardView({
   const updateMessages = messagesAttention.filter(isUpdateNotification);
   const ordinaryAttentionMessages = messagesAttention.filter((m) => !isUpdateNotification(m));
 
-  // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
+  // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586).
   // COUNTS ROWS, NOT RAW JOBS (user decision, verbatim: "yes we should count
   // rows") — eight downloads folded into one grouped row must read as one,
   // not eight.
   const total =
     visible.length +
     terminalGroups.length +
-    pairings.length +
     syncFailures.length +
     visibleAttention.length +
     messagesAttention.length +
@@ -1178,7 +1100,6 @@ export function RepoUpdatesCardView({
     ...syncFailures.map(syncFailureKey),
     ...terminalAttentionGroups.map(jobGroupKey),
     ...ordinaryAttentionMessages.map(messageKey),
-    ...pairings.map(pairingKey),
     ...visible.map(repoRowKey),
     ...terminalTrailGroups.map(jobGroupKey),
     ...messagesTrail.map(messageKey),
@@ -1318,23 +1239,6 @@ export function RepoUpdatesCardView({
   // ---- "New"/"Earlier": every non-attention row, newest-first, split on
   // whether the panel has ever been open while it was present (R4) ----
   const nonAttentionEntries: RowEntry[] = [
-    ...pairings.map((event): RowEntry => {
-      const key = pairingKey(event);
-      const ts = getFirstSeenAt(seenState, key, now);
-      return {
-        key,
-        ts,
-        node: (
-          <PairingRowView
-            key={key}
-            event={event}
-            onGone={onPairingGone ?? NOOP}
-            age={age(ts)}
-            unseen={unseen(key)}
-          />
-        ),
-      };
-    }),
     ...visible.map((row): RowEntry => {
       const key = repoRowKey(row);
       const ts = getFirstSeenAt(seenState, key, now);
@@ -1650,11 +1554,9 @@ export function RepoUpdatesDockView({
   rows,
   dismissed,
   terminal = [],
-  pairings = [],
   attention = [],
   attentionDismissed,
   onAttentionDismiss,
-  onPairingGone,
   syncFailures = [],
   onSyncGone,
   messages = [],
@@ -1672,24 +1574,20 @@ export function RepoUpdatesDockView({
    *  repo rows. Optional and defaulted so every existing caller and test
    *  keeps working unchanged. */
   terminal?: Job[];
-  /** LAN pairings — the panel opens only on hover or click (`useStatusChip`'s
-   *  `open = pinned || hovered`); a pairing arriving never opens it by
-   *  itself. The chip's own numeral is what announces one. */
-  pairings?: LanPairingEvent[];
-  /** Tasks parked on a question (2026-09-03). Same as pairings: the sidebar's
+  /** Tasks parked on a question (2026-09-03). The panel opens only on hover
+   *  or click (`useStatusChip`'s `open = pinned || hovered`): the sidebar's
    *  red Tasks dot already says a run is waiting, and nothing here throws the
    *  panel open over the chat holding the answer — hover or click still
-   *  decide when it shows. */
+   *  decide when it shows. The chip's own numeral is what announces one. */
   attention?: AttentionRow[];
   /** Client-raised messages, retained — the fifth row kind. Same "hover or
-   *  click only" rule as pairings/attention: nothing here throws the panel
+   *  click only" rule as attention: nothing here throws the panel
    *  open on arrival, the chip's own numeral (and its red state, once one is
    *  `attention`) is what announces it. */
   messages?: StoredNotification[];
   /** Which waiting-task rows a dismissal still hides. */
   attentionDismissed?: Record<string, string>;
   onAttentionDismiss?: (key: string, signature: string) => void;
-  onPairingGone?: (id: string) => void;
   syncFailures?: SyncFailure[];
   onSyncGone?: (id: string) => void;
   onDismiss: (root: string, signature: string) => void;
@@ -1721,11 +1619,9 @@ export function RepoUpdatesDockView({
       rows={rows}
       dismissed={dismissed}
       terminal={terminal}
-      pairings={pairings}
       attention={attention}
       attentionDismissed={attentionDismissed}
       onAttentionDismiss={onAttentionDismiss}
-      onPairingGone={onPairingGone}
       syncFailures={syncFailures}
       onSyncGone={onSyncGone}
       messages={messages}
@@ -1750,8 +1646,7 @@ export default function RepoUpdatesDock({
   terminal?: Job[];
   onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
 } = {}) {
-  const { repos, pairings, setPairings, syncFailures, setSyncFailures, refresh } =
-    useRepoUpdates();
+  const { repos, syncFailures, setSyncFailures, refresh } = useRepoUpdates();
   const syncGone = useCallback(
     (id: string) => setSyncFailures((list) => list.filter((f) => f.id !== id)),
     [setSyncFailures],
@@ -1772,21 +1667,15 @@ export default function RepoUpdatesDock({
   // and landing in the retained list re-renders this card the same way a new
   // repo row or terminal job already does.
   const messages = useRetainedNotifications();
-  const pairingGone = useCallback(
-    (id: string) => setPairings((list) => list.filter((p) => p.id !== id)),
-    [setPairings],
-  );
 
   return (
     <RepoUpdatesDockView
       rows={rows}
       dismissed={dismissed}
       terminal={terminal}
-      pairings={pairings}
       attention={attention}
       attentionDismissed={attentionDismissed}
       onAttentionDismiss={attentionDismissOne}
-      onPairingGone={pairingGone}
       syncFailures={syncFailures}
       onSyncGone={syncGone}
       messages={messages}

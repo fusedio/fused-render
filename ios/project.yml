@@ -1,9 +1,8 @@
 # XcodeGen spec for the FusedRender iOS app — `xcodegen generate` in this
 # folder writes FusedRender.xcodeproj (gitignored). A thin native shell around
-# the local-network listener (fused_render/lan.py): Bonjour finds the computer,
-# a QR scan pairs, a WKWebView shows the same grid, bots pages and apps a
-# phone browser would — with the native pieces a browser on plain http cannot
-# offer.
+# the local-network listener (fused_render/lan.py): a QR scan pairs (and pins
+# the computer's certificate), a WKWebView shows the grid, the bots pages and
+# the apps over https — with the native capture bridge on top.
 #
 # Two targets share Shared/: the app, and a WidgetKit extension that puts
 # individual Fused apps on the Home Screen (one configurable widget per app,
@@ -75,14 +74,17 @@ targets:
           - CFBundleURLName: io.fused.render.open
             CFBundleURLSchemes:
               - fusedrender
-        # The listener speaks plain http on the LAN (lan.py explains why).
+        # The listener is https with a pinned self-signed certificate; apps
+        # inside the webview may still load plain-http resources of their own.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
           NSAllowsArbitraryLoadsInWebContent: true
-        # Bonjour browsing for the listener's _http._tcp record.
+        # Never advertised by anyone: a browse for it is how the app finds out
+        # whether Local Network access is allowed (Reachability.swift) — iOS
+        # reports the policy error on the browse, and offers no other API.
         NSBonjourServices:
-          - _http._tcp
-        NSLocalNetworkUsageDescription: Fused finds your computer on this Wi-Fi to open the apps you build there.
+          - _fusedrender._tcp
+        NSLocalNetworkUsageDescription: Fused reaches your computer on this Wi-Fi to open the apps you build there.
         NSCameraUsageDescription: The camera reads the pairing code shown in Fused Render's Preferences.
         NSMicrophoneUsageDescription: Apps you open can record audio with your permission.
         UIViewControllerBasedStatusBarAppearance: true

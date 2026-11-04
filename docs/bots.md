@@ -2133,7 +2133,7 @@ the Mac's screen and the desktop's settings. An unknown op is a 404.
 
 **On the LAN** (`lan.py`): `/bots` and `/bots/<id>` (one segment, GET, paired)
 serve `shell-dist/lan.html` as `/` does (503 when it is not built; an unpaired
-browser gets the pairing page). The `/api/phone/bots` prefix is forwarded for
+phone gets the how-to-pair page). The `/api/phone/bots` prefix is forwarded for
 a paired device on GET/POST/DELETE (`_AsDevice`): a copy of the scope with
 any client `x-fused-device` header dropped and `X-Fused-Device: <id>` set from
 the pairing record (`_paired_record`, the cookie lookup `_paired` now wraps;

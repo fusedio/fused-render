@@ -169,10 +169,6 @@ _IMPORT_TO_DIST = {
     # NOT exempt from the completeness half: a template that reaches the Hub is
     # a template that has to declare it, the same as `requests`.
     "huggingface_hub": "huggingface-hub",
-    # mDNS for the LAN listener (lan.py advertises render.fused.local). A
-    # template has no business importing it, but the bundle ships it through
-    # `[desktop]`, so the map must name it like any other.
-    "zeroconf": "zeroconf",
     # AppKit, for the macOS clipboard bridge (shell/pasteboard/_darwin.py).
     # Only installed on darwin, so on Linux these map names nothing
     # provides — the same harmless shape as `tomli` above, and listing them is

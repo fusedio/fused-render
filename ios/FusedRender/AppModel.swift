@@ -1,71 +1,76 @@
-// App state: the computers found on this Wi-Fi, the one we are connected to,
-// and the servers this phone has paired with before (so a relaunch goes
-// straight to the grid). Pairing itself is the webview loading the pair URL —
-// the server sets a cookie in the webview's persistent store — so what is
-// remembered here is the server's address plus, for https, the private CA it
-// presents (TLSTrust.swift).
+// App state: the computer we are connected to and the computers this phone
+// has paired with before (so a relaunch goes straight to the grid). Pairing
+// itself is the webview loading the pair URL — the server sets a cookie — and
+// what is remembered here is how to reach the computer (its local name, the
+// port, an address to fall back to) and who it is (the fingerprint of the
+// certificate it presents, TLSTrust.swift). The pairing secret itself lives
+// in the Keychain (PairingSecret.swift), keyed on that fingerprint.
 import Combine
 import Foundation
 
 struct Server: Identifiable, Codable, Equatable, Hashable {
-    // One computer = one host. The same machine shows up as http:80 from
-    // Bonjour and as https:443 (+ CA) once paired; port, scheme and CA are
-    // how we reach it, not who it is — so identity, equality and hashing
-    // use the host alone.
-    static func == (a: Server, b: Server) -> Bool { a.host == b.host }
-    func hash(into h: inout Hasher) { h.combine(host) }
+    // One computer = one certificate. Its name and address are how we reach
+    // it, not who it is: both can change under us (a rename, a new DHCP
+    // lease, a network that filters mDNS), and the pairing must survive
+    // that. So identity, equality and hashing use the fingerprint alone.
+    static func == (a: Server, b: Server) -> Bool { a.fingerprint == b.fingerprint }
+    func hash(into h: inout Hasher) { h.combine(fingerprint) }
 
-    /// Bonjour service name, e.g. "Fused Render (render.fused.local)".
+    /// What the UI calls it: the local name without `.local`, else the host.
     var name: String
-    /// Host to connect through. The listener only answers a Host header it
-    /// advertises (lan.py `_host_ok`), so this is the advertised name or the
-    /// IPv4 it published — never an arbitrary resolved endpoint.
+    /// The computer's OS-advertised local name (`studio.local`) as the pairing
+    /// code carried it, or its address when the computer had no name.
     var host: String
     var port: Int
-    /// "https" once the computer's CA is known and pinned; "http" until then
-    /// (older records decode as http).
-    var scheme: String = "http"
-    /// The computer's private CA (DER) when scheme is https — the only anchor
-    /// the app accepts for this host.
-    var caDER: Data?
+    /// SHA-256 (hex) of the certificate the listener presents — the one thing
+    /// the app trusts about this computer.
+    var fingerprint: String
+    /// The address the pairing code carried beside the name, and later the
+    /// last address the computer actually answered on: where to look when the
+    /// name does not resolve.
+    var lastIP: String?
 
-    var id: String { host }
+    var id: String { fingerprint }
 
-    var isSecure: Bool { scheme == "https" && caDER != nil }
+    var baseURL: URL { url(host: host) }
 
-    var baseURL: URL {
+    /// The base URL through `host` — the name, or the fallback address.
+    func url(host: String) -> URL {
         var c = URLComponents()
-        c.scheme = scheme
+        c.scheme = "https"
         c.host = host
-        c.port = (scheme == "https" ? port == 443 : port == 80) ? nil : port
+        c.port = port
         c.path = "/"
         return c.url!
     }
 
-    enum CodingKeys: String, CodingKey { case name, host, port, scheme, caDER }
+    /// The hosts the computer may answer on, the name first.
+    var candidateHosts: [String] {
+        var hosts = [host]
+        if let ip = lastIP, ip != host { hosts.append(ip) }
+        return hosts
+    }
 
-    init(name: String, host: String, port: Int, scheme: String = "http", caDER: Data? = nil) {
+    /// Is `host` one of the ways this computer is reached?
+    func reaches(_ host: String) -> Bool { candidateHosts.contains(host) }
+
+    enum CodingKeys: String, CodingKey { case name, host, port, fingerprint, lastIP }
+
+    init(name: String, host: String, port: Int, fingerprint: String, lastIP: String? = nil) {
         self.name = name
         self.host = host
         self.port = port
-        self.scheme = scheme
-        self.caDER = caDER
+        self.fingerprint = fingerprint
+        self.lastIP = lastIP
     }
 
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        name = try c.decode(String.self, forKey: .name)
-        host = try c.decode(String.self, forKey: .host)
-        port = try c.decode(Int.self, forKey: .port)
-        scheme = try c.decodeIfPresent(String.self, forKey: .scheme) ?? "http"
-        caDER = try c.decodeIfPresent(Data.self, forKey: .caDER)
+    static func displayName(for host: String) -> String {
+        host.hasSuffix(".local") ? String(host.dropLast(".local".count)) : host
     }
 }
 
 @MainActor
 final class AppModel: ObservableObject {
-    /// Computers advertising the listener right now (Bonjour / probe).
-    @Published var discovered: [Server] = []
     /// Servers this phone opened before, most recent first.
     @Published var known: [Server] = [] {
         didSet { persistKnown() }
@@ -81,35 +86,26 @@ final class AppModel: ObservableObject {
     /// the cookie set. Remembered into `known` then, not before — an expired
     /// code must not leave a cookieless computer that auto-opens next launch.
     private var unconfirmed: Server?
-
-    private let discovery = Discovery()
-    private var bag = Set<AnyCancellable>()
+    /// The token of that pairing, so a fallback to the computer's address
+    /// (the name did not resolve on this network) can re-issue the same
+    /// /pair there: a token is only spent when the server receives it.
+    private var pendingToken: String?
 
     init() {
         known = Self.loadKnown()
-        discovery.$servers
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$discovered)
-        discovery.start()
         // A phone that paired before goes straight back in.
         if let last = known.first { current = last }
     }
 
     /// Open a computer this phone paired with before. The record carries the
-    /// scheme and the pinned CA; nothing is learned from the network here.
-    ///
-    /// The app never trusts a CA it did not get from a QR code. Asking the
-    /// computer itself (`/api/lan/tls`) would be trust-on-first-use: whoever
-    /// answers to that name on the Wi-Fi first would get pinned. So a record
-    /// paired over http before the computer had https stays http until the
-    /// user scans again (Forget → Pair).
+    /// fingerprint and the fallback address; nothing is learned from the
+    /// network here, and nothing is trusted that did not come from a code.
     func open(_ server: Server) {
-        let server = known.first(where: { $0.host == server.host }) ?? server
+        let server = known.first(where: { $0 == server }) ?? server
         // Navigating away from an in-flight pairing abandons it: only the
-        // /pair load that pair() itself started may confirm, or a later
-        // landing on this host's grid (reached through an OLD record) would
-        // persist an unproven scheme/CA with no cookie behind it.
+        // /pair load that pair() itself started may confirm.
         unconfirmed = nil
+        pendingToken = nil
         remember(server)
         current = server
     }
@@ -122,19 +118,12 @@ final class AppModel: ObservableObject {
         return comps.path == "/pair" && comps.queryItems?.contains { $0.name == "t" && !($0.value ?? "").isEmpty } == true
     }
 
-    /// The QR code (or a pasted URL) names `http://<host>[:port]/pair?t=…`,
-    /// plus `ca` (the CA fingerprint) and `s` (the https port) from a server
-    /// that has https. With those, the CA is fetched (https first, http as a
-    /// fallback — TLSTrust.fetchCA), checked against
-    /// the fingerprint from the QR — the one channel an attacker on the Wi-Fi
-    /// cannot touch — pinned, and the pairing happens over https, so the cookie
-    /// lives on the https origin. A fingerprint that does not check out ends
-    /// the pairing: there is no silent fall back to http. A code without `ca`
-    /// (a computer that has no https) pairs over http.
-    /// Async so the pair sheet stays up until the CA fetch settles: a
-    /// fingerprint mismatch (or an unreachable computer) has to land as a
-    /// visible error, not on a view that was already dismissed.
-    func pair(with url: URL) async -> Bool {
+    /// The QR code (or a pasted URL) names
+    /// `https://<host>:<port>/pair?t=…&fp=<fingerprint>[&ip=<address>]`.
+    /// Nothing is fetched first: the fingerprint IS the trust, checked on the
+    /// handshake of the /pair load itself (WebView's challenge handler), and
+    /// `ip` is kept as the address to try when the name does not resolve.
+    func pair(with url: URL) -> Bool {
         guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               comps.path == "/pair",
               let items = comps.queryItems,
@@ -144,57 +133,60 @@ final class AppModel: ObservableObject {
             pairProblem = "That is not a Fused pairing code."
             return false
         }
-        let httpPort = comps.port ?? 80
-        let fingerprint = items.first(where: { $0.name == "ca" })?.value
-        let httpsPort = items.first(where: { $0.name == "s" })?.value.flatMap(Int.init)
-        pairProblem = nil
-        var server = Server(name: discovered.first(where: { $0.host == host })?.name ?? host, host: host, port: httpPort)
-        if let fingerprint, let httpsPort {
-            switch await TLSTrust.fetchCA(host: host, httpPort: httpPort, httpsPort: httpsPort,
-                                          expected: fingerprint) {
-            case .success(let ca):
-                server = Server(name: server.name, host: host, port: httpsPort, scheme: "https", caDER: ca)
-            // Three different things go wrong here and they need three
-            // different sentences: a fresh code fixes none of the first two,
-            // and telling someone whose phone never reached the computer that
-            // a certificate did not match sends them nowhere.
-            case .failure(.unreachable):
-                pairProblem = "Could not reach \(host). Check that this phone and the computer are on the same Wi-Fi, and that Fused Render is allowed under Settings → Privacy & Security → Local Network."
-                return false
-            case .failure(.badResponse):
-                pairProblem = "\(host) answered, but not with the computer's certificate. Check that Render local network is still on in Preferences, then try a fresh code."
-                return false
-            case .failure(.mismatch):
-                pairProblem = "The computer's certificate did not match this code — another computer on this Wi-Fi may answer to \(host). Try a fresh code from Preferences → Render local network."
-                return false
-            }
+        guard comps.scheme == "https",
+              let fingerprint = items.first(where: { $0.name == "fp" })?.value?.lowercased(),
+              fingerprint.count == 64 else {
+            pairProblem = "This code comes from an older Fused Render. Update it on the computer and scan again."
+            return false
         }
-        // Cancelled while the CA was being fetched (the sheet's Cancel): do
-        // not connect behind the user's back. The token is only spent when
-        // the webview loads /pair, so backing out here leaves it usable.
-        if Task.isCancelled { return false }
-        var pairURL = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
-        pairURL.path = "/pair"
-        pairURL.queryItems = [URLQueryItem(name: "t", value: token)]
+        let port = comps.port ?? 443
+        let ip = items.first(where: { $0.name == "ip" })?.value.flatMap { $0.isEmpty ? nil : $0 }
+        pairProblem = nil
+        let server = Server(name: Server.displayName(for: host), host: host, port: port,
+                            fingerprint: fingerprint, lastIP: ip)
         unconfirmed = server
-        pendingPairURL = pairURL.url
+        pendingToken = token
+        pendingPairURL = Self.pairURL(server, host: host, token: token)
         current = server
         return true
+    }
+
+    private static func pairURL(_ server: Server, host: String, token: String) -> URL {
+        var c = URLComponents(url: server.url(host: host), resolvingAgainstBaseURL: false)!
+        c.path = "/pair"
+        c.queryItems = [URLQueryItem(name: "t", value: token)]
+        return c.url!
+    }
+
+    /// The pairing's /pair never reached the computer by its name, and the
+    /// probe found it on `host` instead: send the same code there.
+    func retryPairing(on host: String) {
+        guard let server = unconfirmed, let token = pendingToken, server.reaches(host) else { return }
+        pendingPairURL = Self.pairURL(server, host: host, token: token)
     }
 
     /// The webview landed on the grid for `host`. If a pairing was in flight
     /// for that computer, it is now proven (the /pair redirect only happens
     /// after the cookie is set) — remember it.
     func confirmPairing(host: String) {
-        guard let server = unconfirmed, server.host == host else { return }
+        guard let server = unconfirmed, server.reaches(host) else { return }
         unconfirmed = nil
+        pendingToken = nil
         remember(server)
+    }
+
+    /// The computer answered on `host` (Reachability): keep an address that
+    /// worked as the fallback for next time.
+    func noteReached(_ server: Server, host: String) {
+        guard host != server.host, host != server.lastIP,
+              let i = known.firstIndex(of: server) else { return }
+        known[i].lastIP = host
+        if current == server { current = known[i] }
     }
 
     /// A widget or quick action: `fusedrender://open?host&…` naming an app
     /// (`path`), the bots list (`page=bots`) or one bot (`bot=<id>`). Go to
-    /// that computer and straight to the page, skipping the grid. The known
-    /// record for that host carries the scheme and CA.
+    /// that computer and straight to the page, skipping the grid.
     ///
     /// Only a computer this phone already paired with. Any app can open a
     /// fusedrender:// URL; one naming a stranger's host would put the webview
@@ -203,8 +195,9 @@ final class AppModel: ObservableObject {
     /// bot id is a path segment, so DeepLink refuses any outside [A-Za-z0-9_-].
     func open(deepLink url: URL) -> Bool {
         guard let link = DeepLink(url),
-              let server = known.first(where: { $0.host == link.host }) else { return false }
+              let server = known.first(where: { $0.reaches(link.host) }) else { return false }
         unconfirmed = nil  // same rule as open(_:) — leaving the pairing abandons it
+        pendingToken = nil
         remember(server)
         var c = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
         switch link.target {
@@ -222,6 +215,7 @@ final class AppModel: ObservableObject {
     }
 
     func forget(_ server: Server) {
+        PairingSecret.delete(for: server)
         known.removeAll { $0 == server }
         if current == server { current = nil }
     }
@@ -230,6 +224,7 @@ final class AppModel: ObservableObject {
         current = nil
         pendingPairURL = nil
         unconfirmed = nil
+        pendingToken = nil
     }
 
     private func remember(_ server: Server) {
@@ -237,14 +232,21 @@ final class AppModel: ObservableObject {
         known.insert(server, at: 0)
     }
 
-    // MARK: persistence (UserDefaults — addresses and a PUBLIC CA certificate)
+    // MARK: persistence (UserDefaults — names, addresses and a PUBLIC fingerprint)
 
     private static let knownKey = "fused.knownServers"
 
     private static func loadKnown() -> [Server] {
-        guard let data = UserDefaults.standard.data(forKey: knownKey),
-              let servers = try? JSONDecoder().decode([Server].self, from: data) else { return [] }
-        return servers
+        guard let data = UserDefaults.standard.data(forKey: knownKey) else { return [] }
+        // Records from the private-CA era carry no fingerprint and cannot be
+        // used (the computer no longer presents that CA): drop them, the
+        // phone pairs again with one scan.
+        struct Loose: Decodable { let name: String; let host: String; let port: Int; let fingerprint: String?; let lastIP: String? }
+        guard let rows = try? JSONDecoder().decode([Loose].self, from: data) else { return [] }
+        return rows.compactMap { r in
+            guard let fp = r.fingerprint else { return nil }
+            return Server(name: r.name, host: r.host, port: r.port, fingerprint: fp, lastIP: r.lastIP)
+        }
     }
 
     private func persistKnown() {

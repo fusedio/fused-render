@@ -24,8 +24,9 @@ enum FusedShared {
 struct ManifestApp: Codable, Identifiable, Hashable {
     var host: String
     var port: Int
-    /// "http" or "https" — how the app reaches this computer (TLSTrust.swift).
-    var scheme: String = "http"
+    /// Always "https" now (TLSTrust.swift); kept as a field so manifests
+    /// written by earlier builds still decode.
+    var scheme: String = "https"
     var name: String
     var title: String?
     /// The app folder on the computer.

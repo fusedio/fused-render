@@ -1,14 +1,28 @@
-"""Share your apps with phones on the same Wi-Fi.
+"""Share your apps with the Fused Render app on a phone on the same Wi-Fi.
 
 Off by default (the ``lan_enabled`` preference, shell/prefs.py). When on, the
-server opens a SECOND listener on every interface and advertises it over
-mDNS as ``render.fused.local`` (alias ``render.local``), so a phone on the
-same network opens ``http://render.fused.local/`` and lands on a grid of the
-apps the /apps hub lists — every folder under ``~/Fused`` plus the linked
-external folders (``allowed_roots``). Plain http on purpose: a trusted certificate needs
-either a public domain (not local) or a CA profile installed on the phone
-(setup friction); both are recorded follow-ups. On plain http iOS withholds
-the live microphone and clipboard READ; everything server-side works.
+server opens ONE https listener on every interface, and Preferences shows a
+QR code naming this computer's own local name::
+
+    https://<LocalHostName>.local:1889/pair?t=<token>&fp=<cert sha256>&ip=<lan ip>
+
+The name is the one macOS (mDNSResponder) and Linux (avahi) already
+advertise for the computer: it survives sleep, wake, Wi-Fi changes and a
+new DHCP address without a line of code here, and the phone resolves it
+natively. fused-render advertises nothing itself. ``ip`` rides along so the
+app has an address to fall back to on a network that filters mDNS, and
+``fp`` is the SHA-256 of the one self-signed certificate (lan_tls.py) the
+app pins — the certificate never has to name an address, so it is never
+reissued, and nothing is fetched before pairing.
+
+https only: WebKit withholds the camera, the microphone and the clipboard
+from a page that is not a secure context, and those must work in the app.
+A phone browser cannot pin a certificate, so there is no http listener and
+no browser support — the app is the client. (Earlier versions carried a
+second http listener, two mDNS names registered through python-zeroconf, a
+watcher thread re-announcing them after every interface flap, and a private
+CA reissuing a leaf for every new address; see docs/LAN_SIMPLIFICATION.md
+for what each of those cost and why none is needed.)
 
 **The loopback server is untouched.** D3's one security freebie — bind
 127.0.0.1 — stays exactly as it is for the desktop; this module never calls
@@ -18,29 +32,33 @@ around the same FastAPI app that admits ONLY what an app page needs, plus
 the phone bots door ``/api/phone/bots`` (docs/bots.md §14: the bots' chat,
 stamped with the paired device's id; never the desktop's ``/api/bots``), and
 refuses everything else with 404 — the explorer, the shell, Claude sessions,
-the file index, git, config writes, and any path outside
-``~/Fused/local`` or the app state dir ``~/.fused-render`` (``allowed_roots``;
-apps keep per-install data there). Nothing on the LAN side can widen what the
-wrapper forwards without editing the allowlist below.
+the file index, git, config writes, and any path outside ``allowed_roots``
+(``~/Fused``, the linked folders, a short list of app-data leaves under the
+state dir). Nothing on the LAN side can widen what the wrapper forwards
+without editing the allowlist below.
 
 Scoping rule: every path-bearing argument (``path``, ``base``, ``py``,
 ``html``, ``image``, ``images``, ``paths``) is resolved the way the inner
 route resolves it (relative against the page named by ``html``/``base``),
-realpath'd, and must land inside the realpath of ``~/Fused/local``. A page
-outside it — or a page inside it reaching outside — gets 404, not 403: from
-the phone's point of view those files do not exist.
+realpath'd, and must land inside one of the roots. A page outside them — or
+a page inside reaching outside — gets 404, not 403: from the phone's point
+of view those files do not exist.
 
 Who gets in: only devices that scanned the QR code in Preferences (see the
-pairing section below). Unpaired requests get a how-to-pair page at ``/`` and
-401 everywhere else; a Host allowlist closes DNS rebinding. No PIN and no
+pairing section below). Unpaired requests get a how-to-pair page at ``/``
+and 401 everywhere else; a Host allowlist (the local name and the
+computer's own addresses) closes DNS rebinding. No PIN and no
 approve-on-laptop dialog, by the owner's call — the QR is the whole UX.
+
+What the computer can tell about reachability on its own (no address, a
+VPN, the firewall, the name not resolving, a rename since pairing) is
+lan_doctor.py; ``status()`` carries its ``warnings`` to Preferences.
 
 Lifecycle: ``attach(app)`` at either entry point (cli.py / app.py) hands the
 inner app over; ``apply(enabled)`` — called from the prefs PUT and once at
-startup — starts or stops the listener + mDNS on a daemon thread. Stopping is
-``should_exit`` + a bounded join + zeroconf goodbye; the process quit ladder
-(D184) is deliberately not entered from here — a daemon thread dying with the
-process costs a stale mDNS cache entry at worst.
+startup — starts or stops the listener on a daemon thread. Stopping is
+``should_exit`` + a bounded join; the process quit ladder (D184) is
+deliberately not entered from here.
 """
 from __future__ import annotations
 
@@ -50,7 +68,6 @@ import os
 import re
 import socket
 import threading
-import time
 from urllib.parse import parse_qs, urlencode
 
 from starlette.requests import Request
@@ -58,52 +75,17 @@ from starlette.responses import (
     FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
 )
 
+from fused_render import lan_doctor
 from fused_render._platform import is_within
 from fused_render.logs import uvicorn_log_config
 from fused_render.shell.seed import fused_dir
 
 logger = logging.getLogger("fused_render.lan")
 
-#: The name a phone types. Multi-label ``.local`` names resolve through Apple's
-#: mDNSResponder (verified with ``ping render.fused.local`` on macOS 15); the
-#: single-label alias covers resolvers that only answer one label.
-HOSTNAME = "render.fused.local"
-ALIAS_HOSTNAME = "render.local"
-#: Port 80 first so the URL carries no port (macOS ≥ 10.14 lets a non-root
-#: process bind it); the fallbacks are for Linux or a taken 80.
-PORT_CANDIDATES = (80, 8080, 1888)
-#: The https listener beside it (lan_tls.py): trusted by the native shell,
-#: which pins our private CA from the pairing QR; browsers keep http. 443
-#: first so the app's URL carries no port.
-TLS_PORT_CANDIDATES = (443, 8443, 1889)
-
-# How often the watcher looks at the network address (see _Controller._watch).
-WATCH_INTERVAL_S = 5.0
-# A watcher tick that took this much longer than WATCH_INTERVAL_S on the wall
-# clock was slept through (see _Controller._watch).
-SLEEP_GAP_S = 30.0
-
-# How long a failed mDNS advertise waits before it is retried (see
-# _Controller._advertise_due). `_ips` is left untouched on a failed advertise
-# so `status()`/`_watch` keep trying to recover — including the common case of
-# Wi-Fi flapping down and back up at the SAME address, which a previous fix
-# broke by recording `_ips` on failure to stop the leak. Left unbounded, that
-# recovery path re-attempts (and re-spins-up a Zeroconf instance, best-effort
-# closed each time) on every prefs poll / 5s watch tick for as long as the
-# interface stays dead — that per-poll churn plus its log line is exactly the
-# 1300-thread-in-20-hours incident, just rate-shifted instead of fixed. A
-# minute bounds that churn to once/minute while still recovering well within
-# the time it takes a human to notice devices can't reach the host — much
-# shorter than the SLEEP_GAP_S wake-detection window, which only covers a
-# flap the watcher's own poll interval missed entirely (laptop lid closed
-# between ticks), not a flap that stays down across several ticks.
-ADVERTISE_RETRY_INTERVAL_S = 60.0
-
-# Strips volatile numbers (ephemeral fds, ports, IP octets) out of a failure
-# message before _warn_once uses it to decide "is this a repeat" — see
-# _warn_once for why (a distinct fd on every retry defeated plain string
-# equality).
-_ADVERTISE_MSG_KEY_RE = re.compile(r"\d+")
+#: The https listener's port. Fixed and high so no root is needed and the
+#: fallbacks are only for a taken port; the app does not care that the URL
+#: carries one.
+PORT_CANDIDATES = (1889, 1890, 18890)
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "lan")
 
@@ -122,10 +104,10 @@ _roots_cache: tuple[float, list[str]] | None = None
 
 #: The ONLY subfolders of the app-state dir (``home_dir()``, i.e.
 #: ``~/.fused-render`` or a branch nest of it) the LAN side may reach. That dir
-#: also holds the private CA key (``lan_tls/``), every Claude transcript,
+#: also holds the certificate's private key (``lan_tls/``), every Claude transcript,
 #: logs, search indexes and gigabytes of venvs and git
 #: branches — none of an app's business, and a paired phone that could read
-#: ``lan_tls/ca.key`` could impersonate the computer's https forever. So the
+#: ``lan_tls/server.key`` could impersonate the computer's https forever. So the
 #: state dir is NOT a root; only these leaves are, and everything else there is
 #: 404 over the LAN. Apps are not meant to write under the state dir at all —
 #: when a feature deliberately needs a new folder here, add its relative path
@@ -314,24 +296,26 @@ def _not_found() -> Response:
 # ---- pairing: which devices may use the listener ----------------------------
 #
 # QR only, by the owner's call: Preferences shows a QR of
-# http://render.fused.local/pair?t=<token>; the phone scans it, /pair sets a
-# long-lived device cookie and lands on the grid. No PIN, no approval dialog.
-# The token is minted over LOOPBACK (the desktop's own API — a LAN peer cannot
-# mint one), is good for five minutes and pairs ONE device: Preferences shows a
-# fresh code the moment a pairing lands (it watches the device list) and every
-# five minutes regardless. Single-use is the owner's call (2026-08-28): a code
-# photographed off the screen must not pair a second device. The known cost —
-# iOS's Control Center scanner opens the URL in a sandboxed in-app browser
-# whose "Open in Safari" re-opens the same, now spent, URL — is accepted; the
-# Camera app and the native shell pair the right browser first time. The cookie is
-# 128 bits of randomness; the store keeps its SHA-256 plus a name derived from
-# the user agent, so a stolen store file cannot forge a cookie and the
-# Preferences list can say "iPhone · Safari, last seen 2h ago" and revoke it.
+# https://<name>.local:<port>/pair?t=<token>&fp=…&ip=…; the app scans it,
+# loads /pair, which sets a long-lived device cookie and lands on the grid. No
+# PIN, no approval dialog. The token is minted over LOOPBACK (the desktop's
+# own API — a LAN peer cannot mint one), is good for five minutes and pairs
+# ONE device: Preferences shows a fresh code the moment a pairing lands (it
+# watches the device list) and every five minutes regardless. Single-use is
+# the owner's call (2026-08-28): a code photographed off the screen must not
+# pair a second device. The cookie is 256 bits of randomness; the store keeps
+# its SHA-256 plus a name, so a stolen store file cannot forge a cookie and
+# the Preferences list can say "iPhone, last seen 2h ago" and revoke it.
+#
+# The app copies the cookie value into its Keychain after /pair lands and
+# sets it for whatever host it talks to next (the name, or the fallback
+# address), so a renamed computer or an mDNS-less network never means pairing
+# again. Nothing here cares which host the cookie arrives under: only the
+# hash of the value is checked.
 #
 # What this does and does not cover: it answers "is this MY device", not "is
-# this network safe" — over plain http the cookie travels in clear, which
-# WPA2/3 home Wi-Fi encrypts per client and an open network does not. The
-# Preferences copy says so; https stays the follow-up.
+# this network safe". The cookie only ever travels over the pinned https
+# listener (`Secure`), never in clear.
 
 COOKIE = "fused_lan_device"
 COOKIE_MAX_AGE_S = 90 * 86400
@@ -397,40 +381,23 @@ def _spend_pair_token(token: str) -> bool:
     return exp is not None and exp >= time.monotonic()
 
 
-def _device_name(user_agent: str) -> str:
+def _device_name(user_agent: str, declared: str = "") -> str:
+    """The app sends its own name (``X-Fused-Device-Name``) on the /pair
+    request; a bare user agent gets a plain kind."""
+    declared = (declared or "").strip()
+    if declared:
+        return declared[:60]
     ua = user_agent or ""
-    if "iPhone" in ua:
-        device = "iPhone"
-    elif "iPad" in ua:
-        device = "iPad"
-    elif "Android" in ua:
-        device = "Android"
-    elif "Macintosh" in ua:
-        device = "Mac"
-    elif "Windows" in ua:
-        device = "Windows PC"
-    elif "Linux" in ua:
-        device = "Linux"
-    else:
-        device = "Device"
-    if "FusedRender-iOS/" in ua:
-        # The native shell (ios/) — not a browser, whatever WebKit's UA says.
-        browser = "Fused Render app"
-    elif "CriOS" in ua or ("Chrome" in ua and "Edg" not in ua):
-        browser = "Chrome"
-    elif "Edg" in ua:
-        browser = "Edge"
-    elif "FxiOS" in ua or "Firefox" in ua:
-        browser = "Firefox"
-    elif "Safari" in ua:
-        browser = "Safari"
-    else:
-        browser = "browser"
-    return f"{device} · {browser}"
+    for kind in ("iPhone", "iPad", "Android", "Macintosh", "Windows", "Linux"):
+        if kind in ua:
+            return {"Macintosh": "Mac", "Windows": "Windows PC"}.get(kind, kind)
+    return "Device"
 
 
-def _pair_device(user_agent: str) -> tuple[str, dict]:
-    """Register a new device; returns (cookie secret, public record)."""
+def _pair_device(user_agent: str, declared_name: str = "") -> tuple[str, dict]:
+    """Register a new device; returns (cookie secret, public record). The
+    computer's local name at pairing time is kept so lan_doctor can say when
+    the computer was renamed since."""
     import secrets
     import time
 
@@ -439,9 +406,10 @@ def _pair_device(user_agent: str) -> tuple[str, dict]:
     record = {
         "id": secrets.token_hex(6),
         "hash": _hash(secret),
-        "name": _device_name(user_agent),
+        "name": _device_name(user_agent, declared_name),
         "paired_at": now,
         "last_seen": now,
+        "hostname": lan_doctor.local_hostname(),
     }
     with _devices_lock:
         devices = _read_devices()
@@ -515,15 +483,16 @@ def _paired_record(scope) -> dict | None:
 
 
 def _host_ok(scope) -> bool:
-    """Only the names we advertise (and the raw LAN address) may address the
-    listener — a website in a LAN browser that rebinds its own DNS to us would
+    """Only this computer's own names and addresses may address the listener
+    — a website in a LAN browser that rebinds its own DNS to us would
     otherwise arrive same-origin."""
-    host = _header(scope, b"host").split(":")[0].strip().lower()
+    host = _header(scope, b"host").split(":")[0].strip().lower().rstrip(".")
     if not host:
         return False
-    if host in (HOSTNAME, ALIAS_HOSTNAME):
+    name = (_controller.hostname or "").lower().rstrip(".")
+    if name and host in (name, name.removesuffix(".local")):
         return True
-    return host in (_controller._ips or lan_ips())
+    return host in (_controller.ips or lan_doctor.lan_ips())
 
 
 _PAIR_PAGE = """<!doctype html><meta charset="utf-8">
@@ -548,35 +517,23 @@ def _unauthorized(scope) -> Response:
     bare 401 (a page's fetches must not get an HTML document back)."""
     if scope["path"] in ("/", "/index.html") or _BOTS_PAGE.match(scope["path"]):
         return _pair_page(
-            "Scan to pair this device",
-            "On the computer, open Preferences → Render local network and scan the QR code "
-            "with the iPhone's Camera app — not the Control Center QR scanner, whose "
-            "in-app browser cannot pair Safari.",
-            "This device is not paired yet.")
+            "Scan to pair this phone",
+            "On the computer, open Preferences → Phone access and scan the QR code "
+            "with the Fused Render app.",
+            "This phone is not paired yet.")
     return JSONResponse({"error": "not paired"}, status_code=401)
 
 
-def _with_cookie(response: Response, secret: str, *, secure: bool) -> Response:
-    # A cookie minted over https (the app) must never travel over http: without
-    # `Secure`, a plain http://render.fused.local link inside a page would replay
-    # it in cleartext on the Wi-Fi. Browsers pair over http and keep a plain one.
+def _with_cookie(response: Response, secret: str) -> Response:
+    # `Secure`: the listener is https only, and a cookie that could travel
+    # over a plain http link inside a page would replay in cleartext.
     response.set_cookie(COOKIE, secret, max_age=COOKIE_MAX_AGE_S, httponly=True,
-                        samesite="lax", path="/", secure=secure)
+                        samesite="lax", path="/", secure=True)
     return response
 
 
-# Pairings the shell has not dismissed yet, newest last: the status bar's
-# Notifications section polls these (GET /api/lan/pairings) and shows one row
-# per event ("iPhone · Fused Render app paired"). In-memory on purpose — a
-# pairing is news, not state (the device list is the state), so a restart
-# owing nothing is right. Replaced the macOS notification-center banner
-# (rumps): the shell's own notification surface is where fused-render says
-# things now.
-_recent_pairings: list[dict] = []
-
-
 def _handle_pair(scope) -> Response:
-    """A live token pairs THIS browser and lands it on the grid. SINGLE use
+    """A live token pairs THIS client and lands it on the grid. SINGLE use
     (owner's call, 2026-08-28): one scan, one device; Preferences shows a fresh
     code the moment a pairing lands. A code that was already used, or has run
     out, gets the expired page."""
@@ -585,45 +542,12 @@ def _handle_pair(scope) -> Response:
     if not token or not _spend_pair_token(token):
         return _pair_page(
             "That code has expired",
-            "Each code pairs one device and lasts five minutes. Open Preferences → Render "
-            "local network on the computer — it shows a fresh one — and scan again.",
+            "Each code pairs one phone and lasts five minutes. Open Preferences → Phone "
+            "access on the computer — it shows a fresh one — and scan again.",
             "Not paired.")
-    secret, record = _pair_device(_header(scope, b"user-agent"))
+    secret, record = _pair_device(_header(scope, b"user-agent"), _header(scope, b"x-fused-device-name"))
     logger.info("lan: paired %s", record.get("name"))
-    with _pair_lock:
-        _recent_pairings.append({"id": record["id"], "name": record["name"], "at": record["paired_at"]})
-        del _recent_pairings[:-20]  # a bound, not a policy — nobody pairs 20 devices unseen
-    return _with_cookie(RedirectResponse("/", status_code=302), secret,
-                        secure=scope.get("scheme") == "https")
-
-
-_RUNTIME_PATH = os.path.join(os.path.dirname(_STATIC_DIR), "runtime.js")
-_PHONE_PATH = os.path.join(_STATIC_DIR, "runtime-phone.js")
-_runtime_cache: tuple[tuple[float, float], bytes] | None = None
-
-
-def _phone_runtime() -> Response:
-    """``/static/runtime.js`` for the phone: the stock runtime followed by
-    ``static/lan/runtime-phone.js``, which sets ``fused.device`` and makes
-    ``fused.capture.*`` / ``fused.fileIndex`` fail fast with an error naming
-    where they ARE available (the computer, or the Fused Render app) — the
-    desktop implementations would record the computer, which is nonsense from
-    a phone. Same URL the ``/render`` injection already emits, so no
-    HTML rewriting; the desktop's loopback server keeps serving the stock file.
-    Concatenated once per (mtime, mtime) so a dev edit shows on reload."""
-    global _runtime_cache
-    try:
-        key = (os.path.getmtime(_RUNTIME_PATH), os.path.getmtime(_PHONE_PATH))
-    except OSError:
-        return _not_found()
-    if _runtime_cache is None or _runtime_cache[0] != key:
-        with open(_RUNTIME_PATH, "rb") as f:
-            stock = f.read()
-        with open(_PHONE_PATH, "rb") as f:
-            phone = f.read()
-        _runtime_cache = (key, stock + b"\n\n" + phone)
-    return Response(_runtime_cache[1], media_type="application/javascript",
-                    headers={"Cache-Control": "no-cache"})
+    return _with_cookie(RedirectResponse("/", status_code=302), secret)
 
 
 class LanApp:
@@ -688,43 +612,6 @@ class LanApp:
             return _not_found()
         if path == "/pair" and method == "GET":
             return _handle_pair(scope)
-        if path == "/lan/ca.pem" and method == "GET":
-            # The private CA's PUBLIC certificate, for the native shell to pin
-            # after checking it against the fingerprint the QR carried.
-            #
-            # lan_tls.py has no top-level `cryptography` import — it imports
-            # lazily inside ca_pem()/ca_fingerprint() — so the ModuleNotFoundError
-            # from a bare install surfaces from the CALL, not the `import
-            # lan_tls` line itself. The call has to be inside the try too.
-            try:
-                from fused_render import lan_tls
-
-                pem = lan_tls.ca_pem()
-            except ModuleNotFoundError:
-                return PlainTextResponse(
-                    "LAN TLS needs the optional cryptography dependency "
-                    "([bundled]/[fused]); not available on this install.",
-                    status_code=503)
-
-            return Response(pem, media_type="application/x-pem-file",
-                            headers={"Cache-Control": "no-store"})
-        if path == "/api/lan/tls" and method == "GET":
-            # Where https is and which CA signs it — for a shell that found the
-            # computer over Bonjour rather than a QR (trust on first use). Same
-            # lazy-import caveat as /lan/ca.pem above: the call must be inside
-            # the try, not just the `import lan_tls` line.
-            try:
-                from fused_render import lan_tls
-
-                fingerprint = lan_tls.ca_fingerprint() if _controller.tls_running else None
-            except ModuleNotFoundError:
-                return PlainTextResponse(
-                    "LAN TLS needs the optional cryptography dependency "
-                    "([bundled]/[fused]); not available on this install.",
-                    status_code=503)
-
-            return JSONResponse({"https_port": _controller.tls_port,
-                                 "ca_fingerprint": fingerprint})
         device = _paired_record(scope)
         if device is None:
             return _unauthorized(scope)
@@ -753,17 +640,9 @@ class LanApp:
                 return _not_found()
             return _AsDevice(self.inner, str(device.get("id") or ""))
         if path == "/api/lan/apps" and method == "GET":
-            return JSONResponse({"apps": lan_apps(), "host": HOSTNAME})
+            return JSONResponse({"apps": lan_apps(), "host": _controller.host_for_url()})
         if path.startswith("/a/"):
             return self._app_shortcut(path[3:])
-        if path == "/static/runtime.js" and method in ("GET", "HEAD"):
-            # The native iOS shell (ios/) marks its user agent: it gets the
-            # STOCK runtime — a phone browser gets the "not available here"
-            # overrides, the shell installs its own native bridge on top
-            # (ios/FusedRender/Resources/runtime-ios.js).
-            if "FusedRender-iOS/" not in _header(scope, b"user-agent"):
-                return _phone_runtime()
-
         if any(path.startswith(p) for p in _PREFIXES):
             return None
         allowed = _EXACT.get(path)
@@ -955,48 +834,7 @@ def lan_apps() -> list[dict]:
     return rows
 
 
-# ---- the listener + mDNS ----------------------------------------------------
-
-
-def lan_ip() -> str | None:
-    """The address other devices reach us on: the source address of a UDP
-    socket "connected" to a private-range target (no packet is sent)."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("10.255.255.255", 1))
-        ip = s.getsockname()[0]
-    except OSError:
-        return None
-    finally:
-        s.close()
-    return None if ip.startswith("127.") else ip
-
-
-def lan_ips() -> list[str]:
-    """Every IPv4 address a device on some local network could reach us on,
-    the default-route one (lan_ip) first. Advertising and naming all of them
-    is what keeps a phone on Wi-Fi reaching the computer when a dock's
-    ethernet comes and goes: with only the default-route address advertised,
-    every such flap moved the records to the other interface and rebuilt the
-    certificate, and the phone lost the name for a while each time.
-    Loopback and link-local (169.254) are not addresses anyone dials."""
-    primary = lan_ip()
-    found: list[str] = []
-    try:
-        import ifaddr  # a zeroconf dependency
-
-        for adapter in ifaddr.get_adapters():
-            for entry in adapter.ips:
-                ip = entry.ip
-                if not isinstance(ip, str) or ip.startswith(("127.", "169.254.")):
-                    continue
-                if ip not in found:
-                    found.append(ip)
-    except Exception:  # noqa: BLE001 — the default-route address alone still works
-        logger.debug("lan: interface enumeration failed", exc_info=True)
-    if primary:
-        found = [primary] + [ip for ip in found if ip != primary]
-    return found
+# ---- the listener ----------------------------------------------------------
 
 
 class _Controller:
@@ -1005,41 +843,16 @@ class _Controller:
         self._inner = None
         self._server = None
         self._thread: threading.Thread | None = None
-        self._zeroconf = None
-        self._infos: list = []
-        # Advertised addresses (lan_ips order: default-route first). `_ip` is
-        # the first — the one QR codes and `_host_ok` name.
-        self._ips: list[str] = []
-        self._ip: str | None = None
         self.port: int | None = None
         self.error: str | None = None
+        #: The name the QR carries (lan_doctor.local_hostname()), read when
+        #: the listener starts; None when the OS advertises none.
+        self.hostname: str | None = None
+        #: The addresses `_host_ok` accepts beside the name, refreshed by
+        #: status() so a new DHCP lease is admitted without a restart.
+        self.ips: list[str] = []
         # The stored preference as last applied — see apply().
         self._want = False
-        # The https listener (lan_tls.py) beside the http one.
-        self._tls_server = None
-        self._tls_thread: threading.Thread | None = None
-        self._tls_ips: list[str] = []
-        self.tls_port: int | None = None
-        self.tls_error: str | None = None
-        # The watcher that follows the network (see _watch). `_last_seen` is
-        # what the last poll OBSERVED; `_ips` above is what is advertised.
-        self._watch_thread: threading.Thread | None = None
-        self._watch_stop = threading.Event()
-        self._last_seen: list[str] | None = None
-        # The normalized (see _warn_once/_ADVERTISE_MSG_KEY_RE) message text
-        # last logged at WARNING for an advertise (resp. unadvertise) failure,
-        # cleared on the next success — a flapping interface polls status()
-        # (every prefs read) and must not turn one dead-socket failure into
-        # per-poll log spam. Keyed on the normalized message (not a bare bool)
-        # so a DIFFERENT failure mode later — e.g. Zeroconf() itself starts
-        # failing where only register_service was before — still gets logged
-        # instead of going permanently silent after the first warning.
-        self._advertise_warned_msg: str | None = None
-        self._unadvertise_warned_msg: str | None = None
-        # Wall-clock time of the last failed advertise, or None if the most
-        # recent attempt (or none yet) succeeded. Gates retries to
-        # ADVERTISE_RETRY_INTERVAL_S apart — see _advertise_due.
-        self._advertise_failed_at: float | None = None
 
     # -- wiring
     def attach(self, inner) -> None:
@@ -1049,85 +862,64 @@ class _Controller:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive() and self.port is not None
 
-    @property
-    def tls_running(self) -> bool:
-        return self._tls_thread is not None and self._tls_thread.is_alive() and self.tls_port is not None
+    def host_for_url(self) -> str | None:
+        return self.hostname or lan_doctor.best_ip()
 
     def url(self) -> str | None:
-        if not self.running:
+        host = self.host_for_url()
+        if not self.running or not host:
             return None
-        return f"http://{HOSTNAME}/" if self.port == 80 else f"http://{HOSTNAME}:{self.port}/"
+        return f"https://{host}:{self.port}/"
 
-    def https_url(self) -> str | None:
-        if not self.tls_running:
+    def fingerprint(self) -> str | None:
+        try:
+            from fused_render import lan_tls
+
+            return lan_tls.fingerprint()
+        except ModuleNotFoundError:
             return None
-        return f"https://{HOSTNAME}/" if self.tls_port == 443 else f"https://{HOSTNAME}:{self.tls_port}/"
+        except Exception:  # noqa: BLE001
+            logger.warning("lan: certificate unavailable", exc_info=True)
+            return None
 
     def status(self) -> dict:
-        ips = lan_ips()
-        ip = ips[0] if ips else None
-        # The http listener's thread is gone but the preference is still on
-        # (INCIDENT 2026-09-07 — why it died is not known; nothing in the log
-        # ahead of it). `apply()` only runs when the preference changes, so
-        # this read is the one place that notices, and a stale `port` here is
-        # what let a pairing code advertise a dead listener.
+        ips = lan_doctor.lan_ips()
+        # The listener's thread is gone but the preference is still on
+        # (INCIDENT 2026-09-07 — why it died is not known). `apply()` only
+        # runs when the preference changes, so this read is the one place
+        # that notices, and a stale `port` is what let a pairing code
+        # advertise a dead listener.
         if self._want and self._thread is not None and not self._thread.is_alive():
             with self._lock:
                 if self._want and self._thread is not None and not self._thread.is_alive():
-                    logger.warning("lan: http listener stopped on its own; restarting")
+                    logger.warning("lan: listener stopped on its own; restarting")
                     self._server = self._thread = None
                     self.port = None
                     self._start()
-        if self.running and ips and ips != self._ips and self._advertise_due():
-            # Wi-Fi changed under us: re-advertise the new addresses, and
-            # reissue the certificate (it names them) on a fresh https
-            # listener. Under the controller lock: this runs on whatever
-            # thread asks for prefs, and must not race apply()'s start/stop of
-            # the same zeroconf and tls state.
-            #
-            # `_advertise_due()` gated here too, not just inside `_reannounce`
-            # itself: `_ips` is deliberately left empty for as long as an
-            # advertise keeps failing (see _advertise), so `ips != self._ips`
-            # is True on EVERY prefs read during that streak, not just when
-            # the address actually changes — this is the same per-poll-entry
-            # churn `_reannounce`'s own gate prevents from leaking a Zeroconf,
-            # just re-taking the lock here on every read instead. Checking it
-            # before the lock skips that entirely once a streak is underway;
-            # a genuine address change during a HEALTHY streak still fires
-            # every time (`_advertise_due()` is always True when nothing has
-            # failed).
-            with self._lock:
-                if self.running and ips != self._ips and self._advertise_due():
-                    self._reannounce(ips)
-        from fused_render import lan_tls
-
+        if self.running:
+            self.ips = ips
+            self.hostname = lan_doctor.local_hostname() or self.hostname
+        fingerprint = self.fingerprint() if self.running else None
+        devices = list_devices()
+        ip = lan_doctor.best_ip() if ips else None
         try:
-            fingerprint = lan_tls.ca_fingerprint() if self.running else None
-        except Exception:  # noqa: BLE001
-            fingerprint = None
+            warnings = lan_doctor.warnings(running=self.running, port=self.port, ip=ip,
+                                           fingerprint=fingerprint, hostname=self.hostname,
+                                           devices=_read_devices())
+        except Exception:  # noqa: BLE001 — diagnostics never break prefs
+            logger.warning("lan: doctor failed", exc_info=True)
+            warnings = []
         return {
             "running": self.running,
             "url": self.url(),
-            "host": HOSTNAME,
-            "alias": ALIAS_HOSTNAME,
+            "hostname": self.hostname,
             "ip": ip,
             "port": self.port,
             "error": self.error,
-            "https_url": self.https_url(),
-            "https_port": self.tls_port,
-            "tls_error": self.tls_error,
-            "ca_fingerprint": fingerprint,
-            "devices": list_devices(),
+            "fingerprint": fingerprint,
+            "devices": devices,
+            "warnings": warnings,
         }
-
-    def _stop_tls(self) -> None:
-        server, thread = self._tls_server, self._tls_thread
-        self._tls_server = self._tls_thread = None
-        self.tls_port = None
-        if server is not None:
-            server.should_exit = True
-        if thread is not None:
-            thread.join(timeout=5.0)
 
     # -- start/stop
     def apply(self, enabled: bool) -> None:
@@ -1137,17 +929,8 @@ class _Controller:
             self._want = enabled
             if enabled and not self.running:
                 self._start()
-            elif not enabled and self._anything_up:
+            elif not enabled and self._thread is not None:
                 self._stop()
-
-    @property
-    def _anything_up(self) -> bool:
-        """Some piece of sharing is still live. NOT `running`: with the http
-        thread dead, that reads False while the https listener and the mDNS
-        records are still up, and switching sharing off has to take those
-        down too."""
-        return (self._thread is not None or self._tls_thread is not None
-                or self._zeroconf is not None)
 
     def _start(self) -> None:
         import uvicorn
@@ -1155,6 +938,19 @@ class _Controller:
         self.error = None
         if self._inner is None:
             self.error = "server not attached"
+            return
+        try:
+            from fused_render import lan_tls
+
+            lan_tls.ensure_cert()
+            cert, key = lan_tls.cert_path(), lan_tls.key_path()
+        except ModuleNotFoundError:
+            self.error = ("LAN sharing needs the optional cryptography dependency "
+                          "([bundled]/[fused]); not available on this install.")
+            return
+        except Exception as e:  # noqa: BLE001
+            self.error = f"certificate: {e}"
+            logger.warning("lan: certificate failed: %s", e)
             return
         sock = None
         for port in PORT_CANDIDATES:
@@ -1173,160 +969,13 @@ class _Controller:
             self.error = "no free port among " + ", ".join(map(str, PORT_CANDIDATES))
             self.port = None
             return
-        # `log_config` routes uvicorn's records into the app log (logs.py)
-        # instead of uvicorn's default stderr handlers, invisible when packaged.
+        # The context is built here, not by uvicorn from `ssl.SSLContext`,
+        # which `_system_trust` replaces with a client-side wrapper whose
+        # server handshake fails on macOS (D1442). uvicorn rejects a stdlib
+        # context from `ssl_context_factory` (its isinstance check sees the
+        # wrapper), so load the config without TLS and attach it afterwards.
+        # `log_config` routes uvicorn's records into the app log (logs.py).
         config = uvicorn.Config(LanApp(self._inner), host="0.0.0.0", port=self.port,
-                                log_level="warning", lifespan="on",
-                                log_config=uvicorn_log_config())
-        server = uvicorn.Server(config)
-        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]},
-                                  daemon=True, name="fused-lan")
-        thread.start()
-        self._server, self._thread = server, thread
-        ips = lan_ips()
-        # https first: the mDNS record names its port.
-        self._start_tls(ips)
-        if ips:
-            self._advertise(ips)
-        else:
-            self.error = "no network address found"
-        self._last_seen = ips
-        self._start_watch()
-        logger.info("lan: sharing at %s / %s (%s)", self.url(), self.https_url(), ", ".join(ips))
-
-    def _start_watch(self) -> None:
-        if self._watch_thread is not None and self._watch_thread.is_alive():
-            return
-        self._watch_stop.clear()
-        self._watch_thread = threading.Thread(target=self._watch, daemon=True, name="fused-lan-watch")
-        self._watch_thread.start()
-
-    def _watch(self) -> None:
-        """Follow the network. Joining a different Wi-Fi, or leaving one and
-        coming back, leaves the mDNS records pointing at an address that is
-        gone — and the records themselves gone with the interface they were
-        announced on, even when the address comes back the same. Nothing on
-        the phone can repair that, and until this existed nothing here
-        noticed either: the check lived in status(), which only runs when
-        something reads the preferences.
-        """
-        last_tick = time.time()
-        while not self._watch_stop.wait(WATCH_INTERVAL_S):
-            # Only the current watcher works. A stop while this one waited on
-            # the lock (`_stop` holds it) hands the job to whichever thread
-            # `_start_watch` made next, and this one retires.
-            if self._watch_thread is not threading.current_thread():
-                return
-            try:
-                # Sleep. The laptop closing takes the interface down and
-                # brings it back with (usually) the same address, and no poll
-                # runs in between to see the gap — to this loop it looks like
-                # nothing happened, while zeroconf's sockets went with the
-                # interface and the phone can no longer resolve the name.
-                # The only trace a suspended process keeps is the clock: a
-                # wait for WATCH_INTERVAL_S that took far longer on the wall
-                # clock was one we slept through. Wall clock on purpose —
-                # time.monotonic() stands still during sleep on macOS.
-                now = time.time()
-                slept = now - last_tick > SLEEP_GAP_S
-                last_tick = now
-                ips = lan_ips()
-                # A DOWN → UP transition re-announces even at the same
-                # address: the sockets those records were announced on went
-                # with the interface, and zeroconf does not announce again by
-                # itself. (A flap shorter than one interval at an unchanged
-                # address, with the process running, is the gap this leaves.)
-                moved = bool(ips) and (ips != self._ips or not self._last_seen or slept)
-                self._last_seen = ips
-                if not moved and not (self._want and self._thread is not None
-                                      and not self._thread.is_alive()):
-                    continue
-                with self._lock:
-                    if self._watch_thread is not threading.current_thread():
-                        return  # stopped (or replaced) while this waited for the lock
-                    if self._want and self._thread is not None and not self._thread.is_alive():
-                        logger.warning("lan: http listener stopped on its own; restarting")
-                        self._server = self._thread = None
-                        self.port = None
-                        self._start()
-                        continue  # _start advertised and reissued for `ip` itself
-                    if moved and self.running and self._advertise_due():
-                        # `_advertise_due()` gated here, not just inside
-                        # `_reannounce`: `_ips` is deliberately left empty for
-                        # as long as an advertise keeps failing (see
-                        # _advertise), so on a live-but-advertise-failing
-                        # interface `ips != self._ips` (part of `moved`
-                        # above) is True on EVERY tick, not just when the
-                        # address changes or the laptop actually slept —
-                        # without this check `moved` stays permanently true
-                        # for the whole streak and this log line + a
-                        # `_reannounce` re-entry (retaking the lock, calling
-                        # `_start_tls`) would fire every WATCH_INTERVAL_S
-                        # instead of once per ADVERTISE_RETRY_INTERVAL_S, the
-                        # exact per-poll churn this backoff exists to bound.
-                        # A genuine change during a HEALTHY streak still
-                        # fires every time (`_advertise_due()` is always True
-                        # once nothing has failed).
-                        logger.info("lan: %s (%s -> %s); re-advertising",
-                                    "woke from sleep" if slept else "network changed",
-                                    ", ".join(self._ips) or "-", ", ".join(ips))
-                        # `_advertise` closes the old zeroconf and opens a new
-                        # one — bounded (goodbye packets, python-zeroconf
-                        # 0.151), and on this thread rather than a request's.
-                        self._reannounce(ips)
-            except Exception:  # noqa: BLE001 — a watcher that dies stops watching
-                logger.warning("lan: network watch failed", exc_info=True)
-
-    def _start_tls(self, ips: list[str]) -> None:
-        """The https listener for the native shell (lan_tls.py). Best-effort:
-        a failure here leaves http working and is reported in `tls_error`."""
-        import uvicorn
-
-        from fused_render import lan_tls
-
-        # Already listening — a restart of the http half (status()) must not
-        # start a second one, which would find 443 taken by us, land on 8443,
-        # and leave the first thread orphaned. An address the certificate
-        # does not name means reissuing it, so that one stops first. An
-        # address that merely went away (a dock unplugged) does not: a
-        # certificate naming one address too many is harmless, and tearing
-        # the listener down for it would cut every phone on the surviving
-        # address. No address at all: the live listener is the best we have.
-        if self.tls_running:
-            if not ips or set(ips) <= set(self._tls_ips):
-                return
-            self._stop_tls()
-        self.tls_error = None
-        try:
-            cert, key = lan_tls.ensure_server_cert([HOSTNAME, ALIAS_HOSTNAME], ips)
-            self._tls_ips = list(ips)
-        except Exception as e:  # noqa: BLE001
-            self.tls_error = f"certificate: {e}"
-            logger.warning("lan: tls certificate failed: %s", e)
-            return
-        sock = None
-        for port in TLS_PORT_CANDIDATES:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind(("0.0.0.0", port))
-                sock.listen(128)
-                self.tls_port = port
-                break
-            except OSError as e:
-                sock.close()
-                sock = None
-                logger.info("lan: tls port %s unavailable (%s)", port, e)
-        if sock is None:
-            self.tls_error = "no free https port among " + ", ".join(map(str, TLS_PORT_CANDIDATES))
-            self.tls_port = None
-            return
-        # The context is built here, not by uvicorn from `ssl.SSLContext`, which
-        # `_system_trust` replaces with a client-side wrapper whose server
-        # handshake fails on macOS. uvicorn rejects a stdlib context from
-        # `ssl_context_factory` (its isinstance check sees the wrapper), so load
-        # the config without TLS and attach the context afterwards.
-        config = uvicorn.Config(LanApp(self._inner), host="0.0.0.0", port=self.tls_port,
                                 log_level="warning", lifespan="on",
                                 log_config=uvicorn_log_config())
         config.load()
@@ -1334,167 +983,24 @@ class _Controller:
             cert, key, getattr(config.http_protocol_class, "alpn_protocols", None))
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]},
-                                  daemon=True, name="fused-lan-tls")
+                                  daemon=True, name="fused-lan")
         thread.start()
-        self._tls_server, self._tls_thread = server, thread
+        self._server, self._thread = server, thread
+        self.hostname = lan_doctor.local_hostname()
+        self.ips = lan_doctor.lan_ips()
+        if not self.ips:
+            self.error = "no network address found"
+        logger.info("lan: sharing at %s (%s)", self.url(), ", ".join(self.ips))
 
     def _stop(self) -> None:
-        # The watcher first: it restarts a listener that stopped, so leaving it
-        # running through a shutdown would bring sharing back. NOT joined —
-        # this runs holding the lock the watcher takes, so waiting for it here
-        # would wait out its own timeout every time. Dropping the reference is
-        # the signal: a watcher that is no longer `_watch_thread` retires.
-        self._watch_stop.set()
-        self._watch_thread = None
-        self._unadvertise()
         server, thread = self._server, self._thread
-        tls_server, tls_thread = self._tls_server, self._tls_thread
-        self._server = self._thread = self._tls_server = self._tls_thread = None
-        self.port = self.tls_port = None
-        for s in (server, tls_server):
-            if s is not None:
-                s.should_exit = True
-        for t in (thread, tls_thread):
-            if t is not None:
-                t.join(timeout=5.0)
+        self._server = self._thread = None
+        self.port = None
+        if server is not None:
+            server.should_exit = True
+        if thread is not None:
+            thread.join(timeout=5.0)
         logger.info("lan: sharing stopped")
-
-    # -- mDNS
-    def _advertise_due(self) -> bool:
-        """Whether an advertise attempt may run now: always, unless the last
-        one failed less than ADVERTISE_RETRY_INTERVAL_S ago. See that
-        constant for why this exists — without it, `_ips` staying empty after
-        a failure (needed so status()/_watch keep trying to recover) makes
-        `ips != self._ips` true on every single poll for as long as the
-        interface stays dead."""
-        return (self._advertise_failed_at is None
-                or time.time() - self._advertise_failed_at >= ADVERTISE_RETRY_INTERVAL_S)
-
-    def _reannounce(self, ips: list[str]) -> None:
-        """Shared by status() and _watch(): re-advertise + reissue the TLS
-        cert for new addresses. Must be called holding `self._lock`. The
-        advertise half is skipped (but TLS is not — cert reissue is local and
-        has no comparable failure-storm risk, gated on its own `_tls_ips`) when
-        a previous attempt failed too recently; see _advertise_due."""
-        if self._advertise_due():
-            self._advertise(ips)
-        self._start_tls(ips)
-
-    def _warn_once(self, attr: str, message: str) -> None:
-        """Log `message` at WARNING with a traceback, unless it is a repeat of
-        the last message logged through this same `attr` — in which case it
-        still goes to the log, just at DEBUG without a traceback, so a
-        permanently-broken interface retrying every ADVERTISE_RETRY_INTERVAL_S
-        does not spam WARNING forever, while a genuinely NEW failure mode
-        (a different exception/message) is never dampened.
-
-        Compared with volatile numbers (fds, ports, octets) stripped out —
-        the production incident's own log line
-        (``Error with socket NNNN (('192.168.2.118', 5353))``) embeds a fresh
-        fd number on every single retry, which defeated plain string-equality
-        dampening: the fd differs so the message never repeats even though
-        it's the same permanently-broken interface. `_ADVERTISE_MSG_KEY_RE`
-        below normalizes that out before comparing/storing; the un-normalized
-        `message` is still what actually gets logged either way."""
-        key = _ADVERTISE_MSG_KEY_RE.sub("#", message)
-        if key == getattr(self, attr):
-            logger.debug(message, exc_info=True)
-        else:
-            logger.warning(message, exc_info=True)
-            setattr(self, attr, key)
-
-    def _advertise(self, ips: list[str]) -> None:
-        try:
-            from zeroconf import ServiceInfo, Zeroconf
-        except ImportError:
-            self.error = "zeroconf not installed (pip install 'fused-render[desktop]')"
-            return
-        self._unadvertise()
-        zc = None
-        try:
-            zc = Zeroconf()
-            infos = []
-            for host in (HOSTNAME, ALIAS_HOSTNAME):
-                info = ServiceInfo(
-                    "_http._tcp.local.",
-                    f"Fused Render ({host})._http._tcp.local.",
-                    addresses=[socket.inet_aton(ip) for ip in ips],
-                    port=self.port or 80,
-                    server=host + ".",
-                    # `https`: the port the native shell should prefer.
-                    properties={"path": "/", **({"https": str(self.tls_port)} if self.tls_port else {})},
-                )
-                zc.register_service(info)
-                infos.append(info)
-            self._zeroconf, self._infos, self._ips, self._ip = zc, infos, list(ips), ips[0]
-            # Advertising is the only thing that sets `error` while the
-            # listener runs ("no network address found", a failed attempt) —
-            # a later success, e.g. status() re-advertising once Wi-Fi is
-            # back, is the recovery and must clear it.
-            self.error = None
-            self._advertise_warned_msg = None
-            self._advertise_failed_at = None
-        except Exception as e:  # noqa: BLE001 — advertising is best-effort
-            # ANY failure here — Zeroconf() itself, or register_service on any
-            # of the hosts — must not strand the half-built instance: an
-            # unclosed Zeroconf keeps its own thread + asyncio loop + ~3 UDP
-            # sockets alive forever, and this used to only log & drop the
-            # reference. `zc` may be None if Zeroconf() itself raised.
-            if zc is not None:
-                try:
-                    zc.close()
-                except Exception:  # noqa: BLE001 — close is best-effort too
-                    logger.warning("lan: mDNS close-after-failed-advertise also failed", exc_info=True)
-            # Deliberately NOT recording `_ips` here (an earlier version of
-            # this fix did, to stop `status()`/`_watch` from re-attempting —
-            # and re-leaking — on every single poll). That disabled the only
-            # recovery path: both gate re-advertise on `ips != self._ips`, and
-            # with `_ips` set to the current addresses that is permanently
-            # False even once Wi-Fi comes back on the SAME address (the
-            # common wake-from-sleep case) — mDNS then stays dead until the
-            # address actually changes. `_unadvertise()` above already reset
-            # `_ips`/`_ip` to empty/None; leaving them there also keeps them
-            # consistent with each other (`_ip` is documented as "the first of
-            # `_ips`") and makes `_host_ok`'s `_ips or lan_ips()` correctly
-            # fall back to a live read instead of a stale recorded one. The
-            # leak this used to cause is bounded instead via
-            # `_advertise_failed_at` / ADVERTISE_RETRY_INTERVAL_S, checked by
-            # callers (_advertise_due) before they call back in here.
-            self._advertise_failed_at = time.time()
-            self.error = f"mDNS advertise failed: {e}"
-            self._warn_once("_advertise_warned_msg", f"lan: mDNS advertise failed: {e}")
-
-    def _unadvertise(self) -> None:
-        zc, infos = self._zeroconf, self._infos
-        self._zeroconf, self._infos, self._ips, self._ip = None, [], [], None
-        if zc is None:
-            return
-        ok = True
-        try:
-            for info in infos:
-                try:
-                    zc.unregister_service(info)
-                except Exception as e:  # noqa: BLE001 — one dead record must not skip the rest, or the close below
-                    ok = False
-                    self._warn_once("_unadvertise_warned_msg", f"lan: mDNS unregister_service failed: {e}")
-        finally:
-            # Always runs, even if unregister_service raised (e.g. the
-            # interface's socket already died) — that used to skip close()
-            # entirely and strand the Zeroconf instance's thread + sockets.
-            try:
-                zc.close()
-            except Exception as e:  # noqa: BLE001
-                ok = False
-                self._warn_once("_unadvertise_warned_msg", f"lan: mDNS close failed: {e}")
-        # `_advertise` calls `_unadvertise()` on every attempt, including a
-        # retry (ADVERTISE_RETRY_INTERVAL_S apart) against a permanently dead
-        # interface — same per-poll-spam shape the advertise side dampens,
-        # just in the sibling function. Reset the dampening key on a clean run
-        # so an unrelated LATER failure here (a different message) still logs
-        # at WARNING with its traceback rather than being compared against a
-        # stale one.
-        if ok:
-            self._unadvertise_warned_msg = None
 
 
 _controller = _Controller()
@@ -1529,46 +1035,25 @@ def _require_fused(x_fused: str | None):
 
 @router.get("/api/lan/pair-token")
 def api_lan_pair_token():
-    """Mint a one-time pairing token and the URL to put in the QR code."""
-    from fused_render import lan_tls
+    """Mint a one-time pairing token and the URL to put in the QR code.
 
-    # NEVER a made-up base. A code naming `http://<host>/` while the http
-    # listener is down (INCIDENT 2026-09-07: the listener's thread had gone,
-    # `port` still said 80) points the phone at a port nothing answers on, and
-    # the app could only report it as a certificate that did not match. When
-    # http is down but https is up the app can still pair — it fetches the CA
-    # over https and the fingerprint below is what vouches for it — so the
-    # https base is the honest code; with neither, there is no code to give.
-    http_base, https_base = _controller.url(), _controller.https_url()
-    if not http_base and not https_base:
+    NEVER a made-up base (INCIDENT 2026-09-07: a code naming a listener whose
+    thread had gone pointed the phone at a port nothing answered on). The
+    URL names the computer's local name when the OS has one, else its LAN
+    address; `ip` rides along either way so the app can fall back to it."""
+    base = _controller.url()
+    fingerprint = _controller.fingerprint() if base else None
+    if not base or not fingerprint:
         return JSONResponse(
             {"error": _controller.error or "local-network sharing is not running"},
             status_code=503)
     token = mint_pair_token()
-    # The QR is an http URL so a browser can use it as-is. Two extra params
-    # ride along for the native shell: `ca`, the private CA's fingerprint, and
-    # `s`, the https port — it fetches /lan/ca.pem, checks the fingerprint, pins
-    # the CA, and pairs over https instead. Browsers ignore both.
-    params = {"t": token}
-    if _controller.tls_running:
-        try:
-            params["ca"] = lan_tls.ca_fingerprint()
-            params["s"] = str(_controller.tls_port)
-        except Exception:  # noqa: BLE001 — https stays optional
-            pass
-    # http while it is up, so a phone browser can use the same code; https only
-    # as the fallback that keeps the native app pairing without it.
-    over_http = bool(http_base)
-    base = http_base if over_http else https_base
-    url = base + "pair?" + urlencode(params)
-    ip = _controller._ip or lan_ip()
-    ip_url = None
-    if ip:
-        scheme, port, default = ("http", _controller.port, 80) if over_http else ("https", _controller.tls_port, 443)
-        host = f"{ip}{'' if port in (None, default) else ':' + str(port)}"
-        ip_url = f"{scheme}://{host}/pair?" + urlencode(params)
-    return {"url": url, "ip_url": ip_url, "ttl_s": PAIR_TOKEN_TTL_S,
-            "https_url": _controller.https_url(), "ca_fingerprint": params.get("ca")}
+    params = {"t": token, "fp": fingerprint}
+    ip = lan_doctor.best_ip()
+    if ip and _controller.hostname:
+        params["ip"] = ip
+    return {"url": base + "pair?" + urlencode(params), "ttl_s": PAIR_TOKEN_TTL_S,
+            "fingerprint": fingerprint, "hostname": _controller.hostname, "ip": ip}
 
 
 @router.get("/api/lan/devices")
@@ -1593,28 +1078,9 @@ def api_lan_devices_revoke_all(x_fused: str | None = Header(default=None)):
     return {"devices": []}
 
 
-@router.get("/api/lan/pairings")
-def api_lan_pairings():
-    """Pairing events the shell has not dismissed — the status bar's
-    Notifications section polls this. Loopback only (inner app; the LAN
-    wrapper never forwards it)."""
-    with _pair_lock:
-        return {"pairings": list(_recent_pairings)}
-
-
-@router.post("/api/lan/pairings/dismiss")
-def api_lan_pairing_dismiss(body: dict, x_fused: str | None = Header(default=None)):
-    if (guard := _require_fused(x_fused)) is not None:
-        return guard
-    wanted = str(body.get("id") or "")
-    with _pair_lock:
-        _recent_pairings[:] = [p for p in _recent_pairings if p["id"] != wanted]
-        return {"pairings": list(_recent_pairings)}
-
-
 def start_if_enabled() -> None:
     """Entry-point hook: honour the stored preference at boot, off the
-    startup path (mDNS + a bind can take a moment)."""
+    startup path (a bind and a certificate can take a moment)."""
     from fused_render.shell import prefs
 
     if prefs.lan_enabled():

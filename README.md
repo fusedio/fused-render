@@ -55,10 +55,10 @@ There are three tiers. The base install runs `fused-render open`. The file
 explorer (`fused-render serve`) needs `pip install '<wheel-url>[cli]'`: search,
 the index, Repos, previews, the Hugging Face login, plus deploy, share and MCP,
 about 230 MB on top of the base. `[all]` adds the native desktop integrations
-(LAN discovery, screen capture, pasteboard); `serve` runs without them and says
+(screen capture, pasteboard); `serve` runs without them and says
 so at startup. The extras on their own are `[index]` (file
 search), `[data]` (pyarrow for scripts), `[hf]` (Hugging Face login),
-`[desktop]` (LAN sharing, capture, clipboard) and `[fused]` (deploy, share,
+`[desktop]` (capture, clipboard) and `[fused]` (deploy, share,
 MCP). From a source checkout:
 
 ```

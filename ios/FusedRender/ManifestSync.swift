@@ -1,11 +1,11 @@
 // Keeps the shared manifest (Shared/AppManifest.swift) current: whenever the
-// grid loads, fetch the same /api/lan/apps the grid shows — with the webview's
-// cookie — cache each preview.png, write apps.json, and tell WidgetKit and the
+// grid loads, fetch the same /api/lan/apps the grid shows — with the pairing
+// cookie from the Keychain (PairingSecret) over the pinned session — cache
+// each preview.png, write apps.json, and tell WidgetKit and the
 // Home Screen quick actions (Bots first, then the apps). Best-effort
 // throughout: a failed refresh leaves the last manifest in place.
 import Foundation
 import UIKit
-import WebKit
 import WidgetKit
 import os
 
@@ -19,24 +19,25 @@ enum ManifestSync {
     /// host's Bots shortcut back over the computer the user has since switched to.
     private static var generation = 0
 
-    static func refresh(from webView: WKWebView, server: Server) {
+    /// `host` is the one the grid just loaded on (the name, or the fallback
+    /// address): the refresh talks to the computer the same way.
+    static func refresh(server: Server, host: String) {
         // Throttled per computer: switching computers within the window still refreshes.
-        guard server.host != lastHost || Date().timeIntervalSince(lastRefresh) > 5 else { return }
+        guard server.fingerprint != lastHost || Date().timeIntervalSince(lastRefresh) > 5 else { return }
         lastRefresh = Date()
-        lastHost = server.host
+        lastHost = server.fingerprint
         generation += 1
         let gen = generation
-        Task { await run(webView: webView, server: server, generation: gen) }
+        Task { await run(server: server, host: host, generation: gen) }
     }
 
-    private static func run(webView: WKWebView, server: Server, generation gen: Int) async {
-        let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
-        let cookieHeader = cookies
-            .filter { server.host.hasSuffix($0.domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))) }
-            .map { "\($0.name)=\($0.value)" }
-            .joined(separator: "; ")
-        let pinned = PinnedSession(caDER: server.caDER)
-        var req = URLRequest(url: server.baseURL.appendingPathComponent("api/lan/apps"))
+    private static func run(server: Server, host: String, generation gen: Int) async {
+        guard let cookieHeader = PairingSecret.cookieHeader(for: server) else {
+            log.info("manifest refresh skipped (no pairing secret yet)")
+            return
+        }
+        let pinned = PinnedSession(fingerprint: server.fingerprint)
+        var req = URLRequest(url: server.url(host: host).appendingPathComponent("api/lan/apps"))
         req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         req.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
         req.cachePolicy = .reloadIgnoringLocalCacheData
@@ -49,7 +50,7 @@ enum ManifestSync {
 
         var apps: [ManifestApp] = []
         for row in payload.apps {
-            var app = ManifestApp(host: server.host, port: server.port, scheme: server.scheme, name: row.name,
+            var app = ManifestApp(host: server.host, port: server.port, scheme: "https", name: row.name,
                                   title: row.title, path: row.path, url: row.url, tag: row.tag,
                                   recency: row.recency, previewFile: nil)
             if let preview = row.preview {

@@ -1,5 +1,8 @@
 # LAN connection: audit and simplification proposal
 
+> Status: implemented (D1463). What follows is the audit and the design as
+> proposed; the shipped code matches §3 and §7, with the port at 1889.
+
 Requirements, as stated by the owner:
 
 1. fused-render on the computer must work with the **iOS app** over the same
