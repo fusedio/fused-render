@@ -6826,6 +6826,28 @@ def _inbox_entry(path: str, name: str) -> dict | None:
             "uuid": str(row.get("uuid") or "")}
 
 
+def _still_queued_as_text(run_dir: str, names: list) -> list:
+    """The CLI's `still_queued` names with every entry uuid put back into the
+    words it stands for. A current CLI names a dropped message by the `uuid`
+    `_write_inbox_entry` stamped on it, and a caller handed a bare uuid has
+    nothing to show or re-send. The words come from the drained entries in
+    `inbox/done/`; a name that is no uuid of ours (an older CLI names the
+    words themselves) and a uuid no drained entry carries pass through."""
+    if not any(isinstance(n, str) and _CLIENT_UUID_RE.match(n) for n in names):
+        return names
+    done = os.path.join(_inbox_dir(run_dir), "done")
+    try:
+        files = sorted(n for n in os.listdir(done) if n.endswith(".json"))
+    except OSError:
+        return names
+    by_uuid = {}
+    for name in files[-_DRAINED_WALK_MAX:]:
+        entry = _inbox_entry(os.path.join(done, name), name)
+        if entry and entry["uuid"]:
+            by_uuid[entry["uuid"]] = entry["text"]
+    return [by_uuid.get(n, n) if isinstance(n, str) else n for n in names]
+
+
 def _drained_unechoed(run_dir: str) -> list:
     """The follow-ups the host has already handed to the CLI that the CLI has
     NOT yet opened a turn for — `[{"id", "text", "at"}]`, oldest first.
@@ -12327,7 +12349,8 @@ def _interrupt_turn(run_dir: str, stranded: list, queued: bool) -> dict | None:
     # duplicate here would paste the same text into the composer
     # twice, which is worse than a dropped edge case.
     still = []
-    for item in list(response.get("still_queued") or []) + list(stranded):
+    cli_named = _still_queued_as_text(run_dir, list(response.get("still_queued") or []))
+    for item in cli_named + list(stranded):
         if item and item not in still:
             still.append(item)
     # `queued` is the PAGE's knowledge: it had a follow-up in flight

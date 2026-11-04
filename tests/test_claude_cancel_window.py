@@ -267,3 +267,19 @@ def test_a_stop_runs_while_the_poll_pool_is_saturated():
         hold.set()
         for f in busy:
             f.result(timeout=10)
+
+
+def test_still_queued_uuid_names_come_back_as_their_words(tmp_path):
+    """A current CLI names a dropped message by the uuid stamped on its inbox
+    entry; `_cancel` answers with the words, and leaves other names alone."""
+    from fused_render.claude_agent import agent
+
+    done = tmp_path / "inbox" / "done"
+    done.mkdir(parents=True)
+    uid = "36422243-e3e0-4d9a-bd54-aad6c0de909b"
+    (done / "0001.json").write_text(json.dumps({
+        "type": "user", "uuid": uid,
+        "message": {"role": "user", "content": [{"type": "text", "text": "say hi"}]}}))
+    other = "11111111-2222-3333-4444-555555555555"
+    out = agent._still_queued_as_text(str(tmp_path), [uid, other, "plain words"])
+    assert out == ["say hi", other, "plain words"]

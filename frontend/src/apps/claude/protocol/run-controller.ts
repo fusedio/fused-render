@@ -104,12 +104,12 @@ import type { Receipt } from "../shots/types";
 
 // ---- constants (all with their T line) -------------------------------------
 
-/** T:16377 — the poll cadence. No backoff, ever. */
 /** A canonical uuid, the shape of every entry id the page and the server mint.
  *  Narrower than the server's `_CLIENT_UUID_RE` on purpose: that one admits any
  *  8+ character word ("continue"), which here would swallow a typed line. */
 const CLIENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** T:16377 — the poll cadence. No backoff, ever. */
 export const POLL_MS = 400;
 /** How often a finished turn's tasks panel asks the session host that is still
  *  running its background work (`watchHostTasks`, agent.py `_run_tasks`): 1 s,
