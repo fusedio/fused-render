@@ -1,32 +1,90 @@
 // THE AGENT PEEK'S LOG — one subagent drawn as a read-only chat: the prompt
-// its parent sent as the user bubble, its own rows (the Agent tool segment's
-// `children`) as the reply. The same `.chat-log` column and `Turn` reply as the
-// chat itself, with no composer and no turn actions. The bubble is drawn here,
-// not by `Turn`: a prompt Claude wrote is markdown, and a chat's user bubble
-// shows typed words as typed. Its own module so the shell's overlay
+// its parent sent as clamped prose, its own rows (the Agent tool segment's
+// `children`) as the reply, the work before its answer folded behind one `show
+// more`. The same `.chat-log` column and `Turn` reply as the chat itself, with
+// no composer and no turn actions. The prompt is drawn here, not by `Turn`: a
+// prompt Claude wrote is markdown, and a chat's user bubble shows typed words
+// as typed. Its own module so the shell's overlay
 // (`BreakoutCards`) can lazy-load it, like `SegmentView`.
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { Fragment, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { cn } from "@platform/lib/utils";
 import type { AssistantTurn, UserTurn } from "../protocol/controller-api";
-import type { ToolSegment } from "../protocol/types";
+import type { Segment, ToolSegment } from "../protocol/types";
+import { viewKind } from "../protocol/segments";
+import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
+import { RunTrigger } from "./RunTrigger";
+import { SegmentView } from "./SegmentView";
 import { Turn } from "./Turn";
 
+/** A subagent writes a sentence before nearly every call, so its rows split at
+ *  the last call: everything up to it is the work, what follows is the answer.
+ *  A call still running stays in the answer, where it is being watched. */
+function splitWork(seg: ToolSegment): { work: Segment[]; answer: Segment[] } {
+  const rows = seg.children ?? [];
+  let last = -1;
+  for (let i = rows.length - 1; i >= 0 && last < 0; i--) if (viewKind(rows[i]) !== "text") last = i;
+  if (last < 0) return { work: [], answer: rows };
+  const row = rows[last]!;
+  const at = row.kind === "tool" && row.status === "running" ? last : last + 1;
+  return { work: rows.slice(0, at), answer: rows.slice(at) };
+}
+
+/** The rows folded behind the work trigger: the subagent's prose and calls
+ *  before its answer. */
+export const agentPeekWork = (seg: ToolSegment): Segment[] => splitWork(seg).work;
+
 /** The two turns a subagent reads as. No prompt (a synthetic orphan parent,
- *  whose call was before the transcript window) means no user bubble. */
+ *  whose call was before the transcript window) means no prompt turn. The
+ *  reply is the answer alone; its work is `agentPeekWork`. */
 export function agentPeekTurns(seg: ToolSegment): (UserTurn | AssistantTurn)[] {
   const prompt = typeof seg.input?.prompt === "string" ? seg.input.prompt.trim() : "";
   const reply: AssistantTurn = {
     role: "assistant",
     key: "agent-reply",
     text: "",
-    segments: seg.children ?? [],
+    segments: splitWork(seg).answer,
     ...(seg.status === "running" ? { streaming: true } : {}),
   };
   return prompt ? [{ role: "user", key: "agent-prompt", text: prompt }, reply] : [reply];
 }
 
+/** The prompt as prose under a muted label, clamped to a few lines with the
+ *  transcript's own `show more`; the control only appears when the text runs
+ *  past the clamp. */
+function PeekPrompt({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (el && !open) setLong(el.scrollHeight > el.clientHeight + 1);
+  }, [text, open]);
+  return (
+    <div className="agent-peek-prompt">
+      <div className="agent-peek-label">Prompt</div>
+      <div ref={body} className={cn("agent-peek-prompt-text", !open && "is-clamped")}>
+        <MarkdownView className="seg-text" text={text} />
+      </div>
+      {long ? <RunTrigger open={open} onToggle={() => setOpen((o) => !o)} /> : null}
+    </div>
+  );
+}
+
+/** The folded work, behind one `show more` above the answer. */
+function PeekWork({ id, work }: { id: string; work: Segment[] }) {
+  const [open, toggle] = useCardOpen("agent-peek-work:" + id);
+  return (
+    <div className="agent-peek-work">
+      <RunTrigger open={open} onToggle={toggle} />
+      {open ? <SegmentView segments={work} /> : null}
+    </div>
+  );
+}
+
 export default function AgentPeekLog({ seg }: { seg: ToolSegment }) {
   const turns = useMemo(() => agentPeekTurns(seg), [seg]);
+  const work = useMemo(() => agentPeekWork(seg), [seg]);
   // Follow the tail while the reader is at it: a live subagent grows at the
   // bottom, and a reader who scrolled up to read is left where they are.
   const wrap = useRef<HTMLDivElement>(null);
@@ -44,15 +102,12 @@ export default function AgentPeekLog({ seg }: { seg: ToolSegment }) {
       <div className="chat-log">
         {turns.map((t) =>
           t.role === "user" ? (
-            <div key={t.key} className="turn user agent-peek-prompt">
-              <div className="turn-line">
-                <div className="bubble">
-                  <MarkdownView className="seg-text" text={t.text} />
-                </div>
-              </div>
-            </div>
+            <PeekPrompt key={t.key} text={t.text} />
           ) : (
-            <Turn key={t.key} turn={t} />
+            <Fragment key={t.key}>
+              {work.length ? <PeekWork id={seg.id} work={work} /> : null}
+              {t.segments?.length || t.streaming ? <Turn turn={t} /> : null}
+            </Fragment>
           ),
         )}
       </div>
