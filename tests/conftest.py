@@ -865,6 +865,23 @@ def _no_startup_marketplace_blocks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_contrib_sweep_thread(monkeypatch):
+    """Neutralize create_app's contrib sweep (`_startup_contrib_sweep` ->
+    `contrib.refresh.start`), the other way the block list leaks out of a
+    lifespan.
+
+    The thread lives for the worker process and, SWEEP_FIRST_S after the
+    first lifespan entered, ticks `blocks.sweep_tick` -> `refresh(force=True)`
+    -> `httpx.get` for the block list. Whatever test is running then catches
+    the request in its own patched `httpx.get`; on CI that was
+    tests/test_hub_models.py (`'search=...' in '...marketplace_blocklist.json'`).
+    The sweep's tests call `sweep_once`/`sweep_tick` directly, never the thread."""
+    from fused_render.contrib import refresh
+
+    monkeypatch.setattr(refresh, "start", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_ai_idle_reaper_thread(monkeypatch):
     """`supervisor._start_resident` starts the AI idle-unload reaper thread
     (SPEC AI-13, D414) the moment any local model becomes resident; no test
