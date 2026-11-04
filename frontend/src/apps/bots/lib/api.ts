@@ -15,7 +15,7 @@ export interface AppRef { name: string; dir: string; params?: Record<string, str
 export interface ReplyRef { seq: number; role: Role; text: string }
 /** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it.
  *  `source` is set when a preset pre-approved it rather than a card. */
-export interface AllowRule { kind: "browser" | "builtin" | "text" | "upload" | "build" | "terminal" | "trusted" | (string & {}); key: string; label: string; source?: string }
+export interface AllowRule { kind: "browser" | "builtin" | "text" | "upload" | "build" | "terminal" | "trusted" | "connect" | (string & {}); key: string; label: string; source?: string }
 
 /** A channel address (docs §10): "imessage" + the sender's handle, "routine", "botsend", "handoff" + the Super Bot's id
  *  (a task Super Bot delegated, docs §11); the web is never stamped. */
@@ -188,6 +188,10 @@ export interface Bot {
   /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. The one app-level
    *  permission: a build this bot finished and an "Always approve" on a tool/script card both tick it. */
   trusted_apps?: string[];
+  /** Connected services (provider keys: notion, github, slack…) this bot may use (Settings › Connections). Sign-in
+   *  is global (Preferences › Connections); access is per bot and off by default: a call into a service not listed
+   *  raises a card every time, even under "Never ask", and "Always approve" on it ticks the service here. */
+  connections?: string[];
   /** Calls the user approved forever from a card; revoked under Settings › Permissions. */
   allow_rules?: AllowRule[];
   /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).
@@ -436,6 +440,9 @@ export interface SettingsBody {
   super_access?: string; trusted_apps?: string[];
   /** Ticks added / removed since the dialog opened; applied to the live list, since builds and cards also write it. */
   trusted_apps_add?: string[]; trusted_apps_remove?: string[];
+  /** Services ticked / unticked since the dialog opened (Settings › Connections); applied to the live list, since a
+   *  card answered "Always approve" also writes it. */
+  connections_add?: string[]; connections_remove?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */
   allow_rules_remove?: AllowRule[];
   /** The whole list of folders the bot may read (the dialog is its only writer). */

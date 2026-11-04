@@ -28,6 +28,7 @@
 // becoming a history entry.
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SVGProps } from "react";
 import {
+  Cable,
   Search,
   SlidersHorizontal,
   Sparkles,
@@ -67,6 +68,7 @@ import { searchSettings, tokenize } from "./settings/search";
 import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
 import { IndexStateProvider } from "./settings/indexing";
+import Connections from "./Connections";
 
 /** The Claude Code group wears the Claude mark, not a terminal prompt: a `>_` reads as "developer only" to the people this page is for. The mark fills its 512 box edge to edge while lucide's 24-unit icons carry ~2px of padding, so it is drawn at 0.85 to look optically equal; the button's `[&_svg:not([class*='size-'])]:size-4` CSS sets the 16px box (it beats the width/height attributes). */
 function ClaudeNavIcon(props: SVGProps<SVGSVGElement>) {
@@ -82,6 +84,7 @@ const GROUP_ICONS: Record<GroupId, ComponentType<SVGProps<SVGSVGElement>>> = {
   apps: LayoutGrid,
   indexing: FolderSearch,
   lan: Wifi,
+  connections: Cable,
   integrations: Plug,
   advanced: Wrench,
 };
@@ -370,9 +373,13 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                           onChange={setPrefs}
                         />
                       ))
-                  : sectionsOf(entries, current).map((s) => (
-                      <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
-                    ))}
+                  : // Connections draws its own page: a card per provider
+                    // the server lists, not rows the registry knows.
+                    current === "connections"
+                    ? <Connections />
+                    : sectionsOf(entries, current).map((s) => (
+                        <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
+                      ))}
               </IndexStateProvider>
             </SettingsViewContext.Provider>
           </main>

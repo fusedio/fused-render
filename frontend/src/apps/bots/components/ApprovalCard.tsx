@@ -35,7 +35,7 @@ export function ApprovalCard({ e, live, title, botName, answer }: { e: BotEvent;
         // same thing. The label is "Always approve"; the text SENT stays "Approve, don't ask again" with forever=true
         // (the backend's YES/Forever match depends on it). Only cards whose call can be remembered carry `forever`.
         ...(e.forever
-          ? [{ key: "forever", text: "Always approve", kind: "default" as const, title: `Never ask again when this bot ${e.forever.label}. Undo it in Settings › Permissions.`, attrs: { "data-forever": "1" } }]
+          ? [{ key: "forever", text: "Always approve", kind: "default" as const, title: `Never ask again when this bot ${e.forever.label}. Undo it in Settings › ${e.forever.kind === "connect" ? "Connections" : "Permissions"}.`, attrs: { "data-forever": "1" } }]
           : []),
         { key: "deny", text: "Deny", kind: "default", attrs: { "data-deny": "1" } },
       ]}
