@@ -19,6 +19,10 @@ export interface HostAiModel {
   backendLabel: string;
   /** The effort levels this model takes; `[]` when the CLI takes none. */
   efforts: string[];
+  /** This row calls the frame's tools natively (D1460): every agent CLI
+   *  does, through the turn's MCP bridge. A frame that reads an older host
+   *  without the flag treats the row as text-only. */
+  tools: boolean;
 }
 
 export interface HostAiModels {
@@ -49,6 +53,7 @@ function rowsOf(b: AgentBackendRow): HostAiModel[] {
     efforts: (m.efforts ?? (m.reasoning === false ? [] : b.efforts)).filter((e) =>
       (AI_RELAY_EFFORTS as readonly string[]).includes(e),
     ),
+    tools: true,
   }));
 }
 

@@ -4305,7 +4305,8 @@
     // option and a missing prompt must learn about the option, or "add a
     // prompt" fixes the visible error and lands the same typo again.
     const textKeys = ["prompt", "provider", "model", "systemPrompt", "effort", "history",
-                      "raw", "images", "temperature", "maxTokens", "topP", "thinking"];
+                      "raw", "images", "temperature", "maxTokens", "topP", "thinking",
+                      "tools"];
     const textUnknownErr = rejectUnknownOptions(opts, textKeys, ["onChunk", "abortSignal"], "fused.ai.text");
     if (textUnknownErr) return Promise.reject(textUnknownErr);
     const prompt = opts.prompt;
