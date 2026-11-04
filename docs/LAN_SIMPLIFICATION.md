@@ -1,188 +1,243 @@
 # LAN connection: audit and simplification proposal
 
-Requirement taken as the only one: **fused-render on a Mac must work with the
-iOS app over the same Wi-Fi.** Phone browsers, Android, widgets and other
-clients are not requirements. Everything below is judged against that.
+Requirements, as stated by the owner:
+
+1. fused-render on the computer must work with the **iOS app** over the same
+   Wi-Fi.
+2. The connection must **survive Wi-Fi reconnections** (phone leaves and
+   rejoins, computer sleeps and wakes, DHCP hands out a new address)
+   **without pairing again**.
+3. Pages must be **https**: WebKit withholds the camera and microphone from a
+   non-secure context, and those features must work on the phone.
+
+Phone browsers, Android and widgets are not requirements. Everything below
+is judged against the three above.
 
 ## 1. What exists today
 
-Server (`fused_render/`), by component, with the line counts that go with it:
+Server (`fused_render/`), by component:
 
-| Component | Where | Lines | Needed for the iOS app? |
+| Component | Where | Lines | Needed? |
 |---|---|---|---|
-| mDNS advertising (`render.fused.local` + `render.local`, two `_http._tcp` records, zeroconf lifecycle) | `lan.py` `_advertise`/`_unadvertise` | ~130 | **No** |
-| Network watcher thread (5 s poll, sleep detection via wall clock, re-announce, 60 s retry backoff, warn-once log dampening with regex-normalised messages) | `lan.py` `_watch`, `_reannounce`, `_advertise_due`, `_warn_once` | ~200 | **No** (exists only to keep mDNS records and the cert's IP list fresh) |
-| Interface enumeration via `ifaddr` (advertise every IPv4 so dock flaps don't break the name) | `lan.py` `lan_ips` | ~30 | No |
-| Dead-listener self-heal inside `status()` (runs on every prefs read) | `lan.py` `status` | ~30 | Debatable; the incident it answers (2026-09-07) has no known cause |
-| Second, plain-http listener on 80/8080/1888 | `lan.py` `_start` | ~40 | **No** (phone browsers only) |
+| mDNS advertising via python-zeroconf (`render.fused.local` + `render.local`, two `_http._tcp` records) | `lan.py` `_advertise`/`_unadvertise` | ~130 | **No.** A stable name is needed (req. 2), but the OS already provides one; see §3 |
+| Network watcher thread (5 s poll, sleep detection, re-announce, 60 s backoff, warn-once log dampening) | `lan.py` `_watch`, `_reannounce`, `_advertise_due`, `_warn_once` | ~200 | **No.** Exists only because python-zeroconf does not re-announce after an interface flap |
+| Interface enumeration via `ifaddr` (advertise every IPv4) | `lan.py` `lan_ips` | ~30 | No |
+| Dead-listener self-heal in `status()` on every prefs read | `lan.py` `status` | ~30 | Debatable; incident of 2026-09-07 has no known cause |
+| Plain-http listener on 80/8080/1888 | `lan.py` `_start` | ~40 | **No** (phone browsers only) |
 | https listener on 443/8443/1889 | `lan.py` `_start_tls` | ~60 | Yes |
-| Private CA + leaf reissued whenever the IP set changes; chain file; 30-day/14-day renewal logic | `lan_tls.py` | 223 | Partly. TLS yes; the CA and the reissue machinery no (see §3) |
-| `/lan/ca.pem` (CA fetch) and `/api/lan/tls` (trust-on-first-use for Bonjour-found servers) | `lan.py` `_route` | ~45 | `/api/lan/tls`: **no**, the app never calls it. `/lan/ca.pem`: no, if the leaf is pinned directly |
-| Pairing: 5-minute single-use token, cookie, `lan_devices.json`, revoke, last-seen bump | `lan.py` | ~200 | Yes |
-| Pairing "news" feed (`_recent_pairings`, `/api/lan/pairings`, dismiss endpoint) and its Notifications rows | `lan.py` + `RepoUpdatesDock.tsx` | ~40 + ~60 | No. The device list in Preferences already shows the result |
-| Host-header allowlist (two names + every advertised IP) | `lan.py` `_host_ok` | ~10 | Yes, but shrinks to one IP |
-| Phone-browser pieces: HTML pair/expired pages, `runtime-phone.js` concatenation, user-agent branching, `_device_name` UA sniffing | `lan.py` + `static/lan/runtime-phone.js` | ~120 + 61 | **No** |
-| `LanApp` ASGI wrapper: route allowlist, path-argument scoping against `allowed_roots`, body replay, multipart parsing, websocket gate | `lan.py` | ~400 | **Yes.** This is the security boundary; keep it |
-| App grid (`/api/lan/apps`, `/a/<slug>` shortcuts, `lan.html` Vite page) | `lan.py` + `frontend/src/lan/App.tsx` | ~100 + ~400 | Yes (the phone's home screen) |
-| Phone bots door (`/api/phone/bots`, `bots/phone.py`, `frontend/src/lan/bots/*`) | | ~380 + ~3300 | Separate feature, not connectivity. Untouched by this proposal |
-| Desktop prefs UI (switch, QR, device list, `ip_url` and `url` variants) | `frontend/src/shell/settings/lan.tsx`, `api.ts` | ~280 | Yes, trimmed |
-| Tests | `tests/test_lan_mdns.py` | 515 | Goes with mDNS |
-| Dependencies | `zeroconf` (+ `ifaddr`), with x86_64-mac version ceilings | | Go with mDNS |
+| Private CA, leaf reissued whenever the IP set changes, chain file, renewal checks | `lan_tls.py` | 223 | Partly. TLS yes; the CA and the reissue machinery no (§3) |
+| `/lan/ca.pem` (CA fetch) and `/api/lan/tls` (trust-on-first-use) | `lan.py` `_route` | ~45 | No. The app never calls `/api/lan/tls`; `/lan/ca.pem` goes with the CA |
+| Pairing: 5-minute single-use token, cookie, `lan_devices.json`, revoke, last-seen | `lan.py` | ~200 | Yes |
+| Pairing news feed (`_recent_pairings`, `/api/lan/pairings`, dismiss) and Notifications rows | `lan.py`, `RepoUpdatesDock.tsx` | ~100 | No |
+| Host-header allowlist | `lan.py` `_host_ok` | ~10 | Yes, simplified |
+| Phone-browser pieces: HTML pair pages, `runtime-phone.js` concatenation, user-agent branching, `_device_name` | `lan.py`, `static/lan/runtime-phone.js` | ~180 | **No** |
+| `LanApp` ASGI wrapper: route allowlist, path scoping against `allowed_roots`, body replay, websocket gate | `lan.py` | ~400 | **Yes.** The security boundary; untouched |
+| App grid (`/api/lan/apps`, `/a/<slug>`, `lan.html`) | `lan.py`, `frontend/src/lan/App.tsx` | ~500 | Yes |
+| Phone bots door (`/api/phone/bots`, `bots/phone.py`, `frontend/src/lan/bots/*`) | | ~3700 | Separate feature, untouched |
+| Desktop prefs UI (switch, QR, device list, `ip_url`/`url` variants) | `settings/lan.tsx`, `api.ts` | ~280 | Yes, trimmed |
+| `tests/test_lan_mdns.py` | | 515 | Goes with python-zeroconf |
+| `zeroconf` + `ifaddr` deps, with x86_64-mac version ceilings | `pyproject.toml` | | Go with python-zeroconf |
 
 iOS (`ios/FusedRender/`):
 
 | Component | File | Lines | Needed? |
 |---|---|---|---|
-| Bonjour browse (`NWBrowser`), service-name parsing, throwaway `NWConnection` to learn the port | `Discovery.swift` | ~110 | **No**. Only fills the "On this Wi-Fi" picker; pairing never uses it |
-| 4-second HEAD probe of `render.fused.local` / `render.local` | `Discovery.swift` | ~40 | **No** |
+| Bonjour browse (`NWBrowser`), service-name parsing, throwaway connection to learn the port | `Discovery.swift` | ~110 | No. Fills a picker the pairing flow never consumes |
+| 4-second HEAD probe of the two names | `Discovery.swift` | ~40 | No |
 | QR scan, URL parse (`t`, `ca`, `s`), pasted-URL fallback | `ScannerView.swift`, `AppModel.swift`, `RootView.swift` | ~150 | Yes |
-| Two-stage CA fetch (any-cert https, then http), PEM parse, fingerprint check, CA-anchored trust evaluation, `PinnedSession` | `TLSTrust.swift` | 172 | Partly. Becomes ~40 lines with leaf pinning |
-| WKWebView with persistent cookie jar, UA marker, challenge handler, `NWPathMonitor` reload | `WebView.swift` | 280 | Yes (the `NWPathMonitor` retry is optional) |
-| Known-server store in UserDefaults, auto-open last server | `AppModel.swift` | ~100 | Yes |
-| Capture bridge, manifest sync, widgets, quick actions, deep links | `CaptureBridge.swift`, `ManifestSync.swift`, `Shared/*`, `FusedRenderWidgets/*` | ~1000 | App features, not connectivity. Out of scope here |
-
-Key finding that makes the simplification safe: **the iOS app already works
-without mDNS.** It takes the host string from the QR verbatim and stores it,
-and `/api/lan/pair-token` already emits an `ip_url` with the raw address. Bonjour
-only populates a picker list the pairing flow does not consume.
+| Two-stage CA fetch, PEM parse, fingerprint check, CA-anchored trust, `PinnedSession` | `TLSTrust.swift` | 172 | Partly; ~40 lines with leaf pinning |
+| WKWebView, persistent cookie jar, UA marker, challenge handler, `NWPathMonitor` reload | `WebView.swift` | 280 | Yes |
+| Known-server store (UserDefaults), auto-open last server | `AppModel.swift` | ~100 | Yes, with the identity change in §3 |
+| Capture bridge, manifest sync, widgets, quick actions, deep links | various | ~1000 | App features, out of scope |
 
 ## 2. Why it got complex
 
-Three design goals, none of them required by "iOS app on a LAN", drove almost
-all of the machinery:
+The three requirements above are real, but the current design meets them
+through the most expensive route:
 
-1. **A typed, port-less URL for phone browsers** (`http://render.fused.local/`).
-   That needs mDNS, port 80, the alias name, and the Host allowlist for names.
-2. **Keeping that name alive through network changes** (dock flaps, sleep,
-   Wi-Fi switch). That needs the watcher thread, the `ifaddr` enumeration, the
-   re-announce path, and then the backoff and log dampening added after the
-   1300-thread leak incident (D871 to D873). Three decision entries and a
-   515-line test file exist only to keep zeroconf from leaking.
-3. **A certificate that names the current IP**, so the leaf is reissued on
-   every address change, which needs a CA so old pins survive the reissue,
-   which needs the CA fetch endpoint, fingerprint-in-QR and the chain file.
+- **Stable name across reconnects** is met by running a full mDNS responder
+  inside Python (python-zeroconf). That library does not survive interface
+  flaps or sleep on its own, so the watcher thread, the `ifaddr`
+  enumeration, re-announce, backoff and log dampening were added one incident
+  at a time (D871 to D873; a 515-line test file exists only for this).
+- **https** is met by a private CA that must re-sign a leaf naming the current
+  IP every time the address changes, which needs the CA fetch endpoint, the
+  fingerprint in the QR and the chain file.
+- **Phone browsers** (a non-requirement) add the http listener, port 80, the
+  second mDNS name, the HTML pair pages and the runtime shim.
 
-Remove goal 1 and goals 2 and 3 fall with it.
+Two facts make a much smaller design possible:
+
+1. **macOS already runs an mDNS responder** (`mDNSResponder`) that publishes
+   `<Computer-Name>.local`, re-announces on wake and on every interface
+   change, and resolves `.local` on the iPhone side. iOS resolves it natively
+   in WKWebView. None of that needs code in fused-render.
+2. **The iOS app controls its own trust and its own cookie jar.** It can pin
+   one certificate by fingerprint regardless of hostname, and it can set the
+   pairing cookie for whatever host it is talking to. Identity therefore does
+   not have to live in a CA or in a name.
 
 ## 3. Proposed architecture
 
-One listener, raw IP in the QR, pinned self-signed certificate, cookie pairing.
-
 ```
-Preferences ──GET /api/lan/pair-token──▶ lan.py mints token
-     │                                        │
-     ▼                                        ▼
-  QR: https://192.168.1.20:1889/pair?t=<token>&fp=<sha256 of server cert>
+Preferences ── GET /api/lan/pair-token ──▶ lan.py mints token
      │
      ▼
-iOS app: parse host, port, t, fp ──▶ store {host, port, fp}
+QR: https://vas-macbook.local:1889/pair?t=<token>&fp=<sha256 of server cert DER>
      │
      ▼
-WKWebView loads https://192.168.1.20:1889/pair?t=…
-     │  TLS challenge: sha256(presented leaf DER) == fp ? accept : cancel
-     │  (SecPolicyCreateBasicX509, hostname not checked, no anchors needed)
+iOS app stores {host: "vas-macbook.local", port: 1889, fp, lastIP}
+     │
+     ▼
+WKWebView loads https://vas-macbook.local:1889/pair?t=…
+     │  TLS challenge: sha256(presented leaf) == fp ? accept : cancel
+     │  (basic X.509 policy; hostname and expiry not checked)
      ▼
 /pair sets the device cookie, 302 → / (grid) → /render?path=… (apps)
+     │
+     ▼
+App copies the cookie value into the Keychain (pairing secret, host-independent)
 ```
 
-### Server
+### Addressing (requirement 2)
 
-- **One https listener** on a fixed port (1889 first, then a fallback). No
-  port-80 attempt, no http listener, no `TLS_PORT_CANDIDATES` ladder.
-- **One self-signed certificate**, generated once, valid 10 years, with no
-  Subject Alternative Name requirements, kept in `lan_tls/server.pem`. No CA,
-  no leaf reissue, no chain, no 30-day/14-day renewal checks. The QR carries
-  the SHA-256 of its DER as `fp`. `lan_tls.py` becomes roughly: load or
-  generate one cert, return its fingerprint, build the SSL context (keep the
-  `ORIGINAL_SSL_CONTEXT` rule from D1442, it still applies).
-- **No mDNS.** Delete `_advertise`, `_unadvertise`, `_reannounce`,
-  `_advertise_due`, `_warn_once`, the watcher thread, `lan_ips`/`ifaddr`,
-  `ADVERTISE_RETRY_INTERVAL_S`, `WATCH_INTERVAL_S`, `SLEEP_GAP_S`,
-  `HOSTNAME`/`ALIAS_HOSTNAME`, and the `zeroconf` dependency (and its
-  x86_64-mac ceiling in `pyproject.toml`, and `extras.py`'s zeroconf-as-probe
-  for `[desktop]`, which needs another marker). `lan_ip()` (the UDP-connect
-  trick, 10 lines) stays as the address put in the QR.
-- **`_host_ok`** becomes: Host header equals the listener's own IP. Still
-  closes DNS rebinding.
-- **Delete** `/lan/ca.pem`, `/api/lan/tls`, `/api/lan/pairings` and its
-  dismiss route, `_recent_pairings`, the HTML pair/expired pages (return a
-  plain 401 JSON; the app shows its own copy), `_phone_runtime` and
-  `static/lan/runtime-phone.js`, the `FusedRender-iOS/` user-agent branch,
-  `_device_name` (store the device name the app sends in a header at
-  `/pair`, or just "iPhone"), the `url`/`ip_url` duality in the pair-token
-  response, and the dead-listener restart inside `status()` (if a watchdog is
-  still wanted, make it a 5-line check in `apply()`/`status()` that restarts
-  the thread, with no mDNS interplay).
-- **Keep unchanged:** `LanApp` allowlist and path scoping, `allowed_roots`
-  and `_HOME_SUBROOTS`, pairing token/cookie/devices store and revoke routes,
-  `/api/lan/apps`, `/a/<slug>`, the websocket gate, and the phone bots door.
+- **The QR names the computer's own local hostname**, `<LocalHostName>.local`,
+  read with `scutil --get LocalHostName` on macOS (hostname + avahi on Linux,
+  see below). fused-render **advertises nothing**. The OS keeps the name
+  valid through sleep, wake, Wi-Fi changes and DHCP renewals.
+- The app **also stores the last IP it reached the computer on**. If the name
+  fails to resolve (corporate networks that filter mDNS between clients, a
+  hostname collision renamed the Mac to `-2`), it tries that IP.
+- Optional last resort, about 80 Swift lines: on failure of both, probe the
+  phone's /24 subnet on the listener port in parallel with a 1-second timeout
+  and accept the first host whose certificate matches `fp`. Unambiguous and
+  safe because of the pin. Add only if users hit the first two failing.
+- Linux: `avahi-daemon` publishes `hostname.local` on most desktop distros.
+  Where it is absent, the QR carries the IP and the fallbacks above apply.
+  If a custom service name is ever wanted, `dns-sd -R` (macOS) or
+  `avahi-publish-service` (Linux) as a supervised child process gives it
+  with no Python mDNS stack; not proposed now.
 
-Estimated result: `lan.py` from 1621 to roughly 650 lines; `lan_tls.py` from
-223 to about 60; `tests/test_lan_mdns.py` (515) deleted and replaced by a
-short test that the pinned cert's fingerprint is stable across restarts.
+### Identity (requirement 2)
 
-### iOS
+- The pairing secret today is a cookie, and cookies are keyed on the host.
+  With a stable hostname that already survives reconnects. To survive a
+  hostname change or an IP fallback as well, the app **reads the cookie from
+  `WKHTTPCookieStore` after `/pair` lands** (it already reads cookies for
+  `ManifestSync`) and stores the value in the **Keychain**. On every load it
+  sets the cookie for the host it is about to use. The server side needs no
+  change: `_paired_record` only checks the hash of the value.
+- `lan_devices.json`, revoke and the device list stay as they are.
 
-- **Delete `Discovery.swift`** and the "On this Wi-Fi" section in
-  `RootView.swift`, the `NSBonjourServices` plist key, and the
-  `discovered`/`publish` plumbing in `AppModel.swift`. Keep
-  `NSLocalNetworkUsageDescription` (iOS still prompts for local-network
-  access on first connection to a private IP).
-- **`TLSTrust.swift`** shrinks to one function: given the challenge's
-  `SecTrust`, take the leaf (`SecTrustCopyCertificateChain` index 0), hash
-  `SecCertificateCopyData`, compare to the stored `fp`. No `fetchCA`, no
-  PEM parsing, no any-cert session, no `SecTrustSetAnchorCertificates`.
-  `PinnedSession` keeps the same shape with that one check.
-- **QR parse** reads `t` and `fp`; `ca` and `s` go away. The pasted-URL
-  fallback stays.
-- **Stored record** becomes `{host, port, fp}`. Drop the http `scheme`
-  branch and the legacy-record decoding.
-- Keep `WebView.swift`, the cookie jar, the UA marker (harmless, and the
-  server no longer branches on it), and the capture bridge.
+### Transport (requirement 3)
+
+- **One https listener** on a fixed port (1889, then a fallback). No http
+  listener, no port-80 attempt.
+- **One self-signed certificate**, generated once, valid 10 years, no Subject
+  Alternative Name requirements, in `lan_tls/server.pem`. No CA, no leaf
+  reissue, no chain, no renewal logic. The QR carries the SHA-256 of its DER
+  as `fp`.
+- The app accepts the TLS challenge when the presented leaf matches `fp`.
+  WebKit then treats the page as https: `isSecureContext` is true and
+  `getUserMedia` is allowed, exactly as it is today with the CA pin (the app
+  alone vouches for the certificate either way). The existing
+  `requestMediaCapturePermissionFor` handler keeps granting camera and mic for
+  the paired host.
+- Mobile Safari cannot meet requirement 3 at all without installing a CA
+  profile or a public domain with a publicly issued certificate. That is
+  consistent with "iOS app only".
+
+### What the server keeps, drops and changes
+
+Keep unchanged: `LanApp` allowlist and path scoping, `allowed_roots` and
+`_HOME_SUBROOTS`, pairing token/cookie/devices store and the revoke routes,
+`/api/lan/apps`, `/a/<slug>`, the websocket gate, the phone bots door,
+`uvicorn_log_config` on the listener (SPEC §50.1), and the
+`ORIGINAL_SSL_CONTEXT` rule (D1442).
+
+Drop: `_advertise`, `_unadvertise`, `_reannounce`, `_advertise_due`,
+`_warn_once`, the watcher thread, `lan_ips`/`ifaddr`,
+`ADVERTISE_RETRY_INTERVAL_S`, `WATCH_INTERVAL_S`, `SLEEP_GAP_S`,
+`HOSTNAME`/`ALIAS_HOSTNAME`, the http listener and `PORT_CANDIDATES`,
+`/lan/ca.pem`, `/api/lan/tls`, `/api/lan/pairings` and dismiss,
+`_recent_pairings`, the HTML pair/expired pages (plain 401 JSON instead),
+`_phone_runtime` and `static/lan/runtime-phone.js`, the `FusedRender-iOS/`
+user-agent branch, `_device_name`, the `url`/`ip_url` duality, the
+`zeroconf` dependency and its x86_64-mac ceiling, and `extras.py`'s use of
+zeroconf as the `[desktop]` marker (pick another package). Delete
+`tests/test_lan_mdns.py`; add a test that the certificate fingerprint is
+stable across restarts.
+
+Change: `_host_ok` accepts the local hostname (with and without `.local`)
+and any current address of the machine (`lan_ip()`, cached a few seconds).
+`lan_tls.py` becomes: load or generate one cert, return its fingerprint,
+build the SSL context. `/api/lan/pair-token` returns one URL and `fp`. The
+dead-listener restart in `status()` can stay as a 5-line check if wanted;
+without mDNS interplay it is harmless.
+
+Estimated result: `lan.py` from 1621 to roughly 650 lines, `lan_tls.py`
+from 223 to about 60.
+
+### What the iOS app keeps, drops and changes
+
+Drop: `Discovery.swift` entirely, the "On this Wi-Fi" picker in
+`RootView.swift`, `NSBonjourServices` in `project.yml`, the `discovered`
+plumbing in `AppModel.swift`, `fetchCA` and PEM parsing in `TLSTrust.swift`,
+the http `scheme` branch and legacy-record decoding.
+
+Change: QR parse reads `t` and `fp`. Stored record becomes
+`{host, port, fp, lastIP}` in UserDefaults with the pairing secret in the
+Keychain. `TLSTrust.accepts` becomes: take the leaf from the `SecTrust`,
+hash `SecCertificateCopyData`, compare with `fp`. `WebView` sets the cookie
+for the current host before each load and falls back to `lastIP` when the
+name does not resolve. Keep `NSLocalNetworkUsageDescription` (iOS prompts on
+first `.local` resolution or private-IP connection).
+
+Keep: `WebView.swift`, `ScannerView.swift`, the UA marker, `PinnedSession`
+(with the new check), the capture bridge, manifest sync and widgets.
 
 ### Desktop UI
 
-- `settings/lan.tsx`: one QR, one URL. Drop the `ip_url` secondary display,
-  the `https_url`/`tls_error`/`alias`/`host` fields in `Prefs.lan`, and the
-  pairing rows in `RepoUpdatesDock.tsx` (and their tests). Keep the switch,
-  the QR rotation on pairing, and the device list with revoke.
+`settings/lan.tsx`: one QR, one URL. Drop `ip_url`, `https_url`,
+`tls_error`, `alias`, `host` from `Prefs.lan`, and the pairing rows and
+their tests in `RepoUpdatesDock.tsx`. Keep the switch, QR rotation on
+pairing, and the device list with revoke.
 
-## 4. What you give up, honestly
+## 4. How each requirement is met, and what is still lost
 
-| Lost | Impact | Mitigation |
+| Case | Today | Proposed |
 |---|---|---|
-| Typed URL `render.fused.local` in a phone browser | Phone browsers are no longer supported at all (they cannot pin a cert) | Stated non-requirement |
-| Surviving a Mac IP change without re-pairing | If the Mac gets a new DHCP address, the app's stored host is stale and pages fail to load | The app shows "Scan again"; the QR in Preferences is always current. Most home routers keep leases stable; a DHCP reservation makes it permanent. This is the one real cost of dropping mDNS |
-| Android / Mac-browser pairing | Only the iOS app pairs | Non-requirement |
-| Pairing banners in the Notifications panel | None functionally | Device list in Preferences |
-| In-page `getUserMedia`/clipboard in a phone browser | N/A, browsers are gone; the app's capture goes through the native bridge, and WKWebView over https keeps the secure context anyway | — |
+| Phone leaves and rejoins Wi-Fi | Works (name + cookie) | Works: OS name, same cookie |
+| Computer sleeps and wakes | Works, via the watcher's wall-clock sleep detection and re-announce | Works: `mDNSResponder` re-announces itself |
+| Computer gets a new DHCP address | Works, via watcher, re-announce, cert reissue | Works: name follows the address, cert has no IP in it |
+| Dock ethernet comes and goes | Works, via advertising every IPv4 | Works: the OS name covers every interface |
+| Computer renamed in System Settings | Breaks (not handled today either beyond re-pairing) | `lastIP` fallback; Keychain secret means a re-scan does not re-pair |
+| Network filters mDNS between clients | Breaks | `lastIP` fallback, optional subnet probe |
+| Camera and mic in a page | Works in the app over https | Same |
+| Phone browser (Safari) | Works over http, no camera/mic | Gone, a stated non-requirement |
+| Android | Works over http | Gone |
 
-A middle option, if the IP-change case matters more than the simplicity:
-keep **advertising only** (one `ServiceInfo` registered once in `_start`,
-unregistered in `_stop`, no watcher, no re-announce) and have the iOS app
-browse for `_fusedrender._tcp` **only when the stored IP fails to connect**.
-That keeps the zeroconf dependency and about 60 lines, but none of the
-watcher/backoff/dampening layer. I would not start there; add it only if
-users actually hit the stale-IP case.
+The one thing that genuinely regresses is phone-browser access. Everything
+in the reconnect matrix is covered, and in three of the rows it is covered
+by the operating system instead of by fused-render code.
 
-## 5. Why not go further and drop TLS
+## 5. Why not drop TLS
 
-Plain http would remove `lan_tls.py` and the pinning code entirely. I
-recommend against it: the pairing cookie would travel in clear on the Wi-Fi,
-and that cookie grants `POST /api/run`, which executes Python on the Mac.
-On an open or shared network that is remote code execution for anyone
-sniffing. The pinned self-signed cert costs about 60 server lines and 40
-Swift lines and closes that.
+Plain http would remove `lan_tls.py` and the pinning entirely, but
+requirement 3 rules it out, and independently of that the pairing cookie
+grants `POST /api/run`, which executes Python on the computer. A sniffed
+cookie on a shared network would be remote code execution.
 
 ## 6. Suggested order of work
 
-1. Server: add `fp` to the pair-token response and the pinned-cert path in
-   `lan_tls.py` (additive; old app keeps working via `ca`/`s`).
-2. iOS: switch trust evaluation to leaf pinning, read `fp`, stop calling
-   `/lan/ca.pem`. Ship the app.
-3. Server: remove mDNS, the watcher, the http listener, the CA, the
-   phone-browser and pairings-feed code, and `zeroconf` from `pyproject.toml`.
-   Delete `tests/test_lan_mdns.py`; add a fingerprint-stability test. Record
-   the decision in `DECISIONS.md` (supersedes D871 to D873's reason to exist).
+1. Server, additive: emit `fp` and the hostname URL from
+   `/api/lan/pair-token`; serve the one self-signed cert (the CA path can
+   coexist for one release).
+2. iOS: leaf pinning, `fp` parsing, Keychain secret with cookie injection,
+   `lastIP` fallback. Ship the app.
+3. Server: remove python-zeroconf, the watcher, the http listener, the CA,
+   the phone-browser and pairings-feed code, and `zeroconf` from
+   `pyproject.toml`. Delete `tests/test_lan_mdns.py`; add the fingerprint
+   test. Record the decision in `DECISIONS.md` (supersedes D871 to D873).
 4. iOS: delete `Discovery.swift` and the picker.
 5. Desktop UI: trim `Prefs.lan`, `settings/lan.tsx`, `RepoUpdatesDock.tsx`.
