@@ -170,6 +170,38 @@ test("a failed Send back keeps the card open and shows one error line", async ()
   }
 });
 
+test("closing a used card mid-run stops the run once the discard is confirmed", () => {
+  resetBreakouts();
+  openBreakout({ sessionId: "s1", file: "/w/proj" });
+  let stops = 0;
+  const state = {
+    sessionId: "brk",
+    sends: 1,
+    running: true,
+    stop: () => void stops++,
+    turns: [{ role: "user", key: "u:1", text: "q" }],
+  };
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<Card card={getBreakouts()[0]!} index={0} mount={reporting(state)()} />, { createNodeMock: () => el });
+  });
+  const w = window as unknown as Record<string, unknown>;
+  const prev = w["confirm"];
+  try {
+    w["confirm"] = () => false;
+    act(() => closeBtn(r).props.onClick());
+    expect(stops).toBe(0); // declined: the run goes on
+    expect(getBreakouts()).toHaveLength(1);
+    w["confirm"] = () => true;
+    act(() => closeBtn(r).props.onClick());
+    expect(stops).toBe(1);
+    expect(getBreakouts()).toHaveLength(0);
+  } finally {
+    w["confirm"] = prev;
+    act(() => r.unmount());
+  }
+});
+
 test("close does not confirm for an unused card", () => {
   resetBreakouts();
   openBreakout({ sessionId: "s1", file: "/w/proj" });

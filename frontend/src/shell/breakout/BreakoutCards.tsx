@@ -23,7 +23,7 @@ import {
 const OFFSET = 28;
 
 /** What a breakout chat reports up (`onBreakoutState`). */
-type BreakoutState = { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number };
+type BreakoutState = { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number; running?: boolean; stop?: () => void };
 
 /** The shared floating-card chrome: the fixed box (draggable by the head row,
  *  clamped to the viewport, stacked by `index`), the head (title, note, spacer,
@@ -179,6 +179,8 @@ export function Card({
     // `sends` counts this card's own sends; the parent's restored history is not a reason to confirm.
     const used = (state.current.sends ?? 0) > 0;
     if (used && !window.confirm("Discard this breakout? The chat is not sent back.")) return;
+    // The card's own research run would otherwise outlive its only view.
+    if (state.current.running) state.current.stop?.();
     closeBreakout(card.id);
   };
   const sendBack = () => {

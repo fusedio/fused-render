@@ -239,7 +239,7 @@ export interface ChatMountProps {
   /** Open a breakout from this chat (its message / composer Breakout seats). */
   onBreakout?: (req: BreakoutRequest) => void;
   /** With `breakout`: the chat's own session id + transcript, for Send back. */
-  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number }) => void;
+  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number; running?: boolean; stop?: () => void }) => void;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
