@@ -147,6 +147,7 @@ def start(agent, tmp_path, monkeypatch):
                         lambda cmd, **kw: _HostProc(seen))
     monkeypatch.setattr(agent, "_backend_for_session",
                         lambda sid, wd, hint="": "claude")
+    monkeypatch.setattr(agent, "_breakout_pref", lambda: True)
     holder = {"rows": ROWS}
     monkeypatch.setattr(agent, "_session_transcript_path",
                         lambda wd, sid: _transcript(tmp_path, holder["rows"]))
@@ -310,6 +311,14 @@ def test_start_breakout_at_tip(agent, start):
     assert meta["breakout"] is True and meta["forked_from"] == "OLD"
     assert meta["session_id"] == new and meta["resumed_from"] == ""
     assert "fork_at" not in meta
+
+
+def test_start_breakout_refused_when_pref_off(agent, start, monkeypatch):
+    monkeypatch.setattr(agent, "_breakout_pref", lambda: False)
+    for kw in ({}, {"breakout_resume": True}):
+        out, req, run_dir = start("", breakout=True, **kw)
+        assert out["reason"] == "breakout_disabled" and "run_id" not in out
+        assert req is None and run_dir == ""
 
 
 def test_start_breakout_at_a_message(agent, start):

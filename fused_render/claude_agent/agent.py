@@ -813,6 +813,18 @@ def _backend_enabled(backend: str) -> bool:
     return False
 
 
+def _breakout_pref() -> bool:
+    """Whether Breakout is on: `breakout_enabled` stored True in
+    `<home>/prefs.json` (off by default); a stdlib read for the same reason as
+    `_backend_enabled`."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(prefs, dict) and prefs.get("breakout_enabled") is True
+
+
 def _strict_mcp_pref() -> bool:
     """Whether chat and Tasks-page sessions start "lean" — with
     `--strict-mcp-config`, so the user's own MCP servers and claude.ai
@@ -4946,6 +4958,9 @@ def _start(file: str, message: str, session_id: str, model: str,
     # live host is gone, so the page starts a new one): same policy, but the
     # session is continued, not forked again.
     tip_fork = False
+    if breakout and not _breakout_pref():
+        return {"error": "Breakout is off — turn it on in Preferences › Chats & tasks",
+                "reason": "breakout_disabled"}
     if breakout and breakout_resume:
         if not session_id or backend != "claude":
             return {"error": "breakout is only available for Claude chats",
