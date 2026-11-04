@@ -73,6 +73,11 @@ def test_fork_point_before_compaction_clamps_to_the_summary_row(agent, tmp_path)
     assert agent._fork_point(path, "u2") == ("c1", True)
 
 
+def test_fork_point_at_the_summary_row_resumes_at_itself(agent, tmp_path):
+    path = _transcript(tmp_path, ROWS_COMPACTED)
+    assert agent._fork_point(path, "c1") == ("c1", True)
+
+
 def test_fork_point_after_compaction_keeps_its_parent(agent, tmp_path):
     path = _transcript(tmp_path, ROWS_COMPACTED)
     assert agent._fork_point(path, "u3") == ("t3", False)

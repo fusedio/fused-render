@@ -146,3 +146,4 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 - CLI limit: `--resume-session-at <uuid>` only resolves records after the latest compaction summary row (`isCompactSummary: true`); an older uuid dies with "No message found with message.uuid of". Resuming at the summary row itself works.
 - Clamp: `_fork_point` now returns `(point, clamped)`; a prompt before the last compaction row yields `(summary_row_uuid, True)`. `_start` records `meta["fork_clamped"]` and answers `fork_clamped: true` (only when clamped).
 - Flag path: `fork_clamped` in the start response -> `state.forkClamped` (run-controller, set once, never cleared) -> `onBreakoutState` payload -> card note "research only · forked at the last compaction" with an explanatory title.
+- Boundary: a prompt AT the compaction summary row itself clamps to that row (`<=`, not `<`); its own parentUuid is pre-compaction and unresolvable.

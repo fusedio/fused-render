@@ -4864,7 +4864,7 @@ def _fork_point(transcript_path: str, prompt_uuid: str):
     latest compaction summary row (`type: "user"`, `isCompactSummary: true`);
     an older uuid dies with "No message found with message.uuid of". Resuming
     AT the summary row itself works. So a prompt that predates the last
-    compaction is CLAMPED: `(summary_row_uuid, True)`."""
+    compaction (or is the summary row itself) is CLAMPED: `(summary_row_uuid, True)`."""
     prompt = None  # (line index, parentUuid)
     compact = None  # (line index, uuid) of the LAST compaction row
     try:
@@ -4889,7 +4889,7 @@ def _fork_point(transcript_path: str, prompt_uuid: str):
         return None, False
     if prompt is None:
         return None, False
-    if compact is not None and prompt[0] < compact[0]:
+    if compact is not None and prompt[0] <= compact[0]:
         return compact[1], True
     return prompt[1], False
 
