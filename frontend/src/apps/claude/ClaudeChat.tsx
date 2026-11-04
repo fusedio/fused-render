@@ -5111,7 +5111,11 @@ function ChatBody(props: ChatBodyProps) {
     [props.breakout, props.breakoutContext],
   );
   const breakoutChip =
-    breakoutWire && !state.turns.some((t) => t.role === "user") ? <BreakoutContextChip context={breakoutWire} /> : null;
+    breakoutWire && !state.turns.some((t) => t.role === "user") ? (
+      <div className="annsum annsum-composer">
+        <BreakoutContextChip context={breakoutWire} />
+      </div>
+    ) : null;
   snapInvalidate.current = () => setSnapNonce((n) => n + 1);
 
   /**

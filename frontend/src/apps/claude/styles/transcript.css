@@ -2575,6 +2575,17 @@
 .chat-root .annsum .annsum-breakout svg.annsum-breakout-open {
   transform: rotate(90deg);
 }
+/* Above the composer the chip sits in its own `.annsum` wrapper, at the left
+   edge it shares with the tray. */
+.chat-root .annsum.annsum-composer {
+  margin: 0 0 4px;
+}
+.chat-root .annsum.annsum-composer .annsum-row {
+  justify-content: flex-start;
+}
+.chat-root .annsum.annsum-composer .annsum-breakout-body {
+  align-self: flex-start;
+}
 .chat-root .annsum .annsum-breakout-body {
   align-self: flex-end;
   max-width: 100%;
