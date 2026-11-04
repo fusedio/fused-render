@@ -95,8 +95,9 @@
 //   - A FAVOURITE'S RING HOVERS LIKE A LIST RING (owner, 2026-11-04: "when we
 //     hover over favourites we don't show preview if there is no favourite
 //     open — why?"): resting on it opens THIS rail's hover card on that chat
-//     (kept clear of the favourite's card, `avoid`) — unless that favourite's
-//     own card is open in this window, where the hover is its caption alone.
+//     (kept clear of the favourite's card, `avoid`) — unless ANY favourite's
+//     card is open in this window, where every favourite ring's hover is its
+//     caption alone (owner, 2026-11-04: "only the tooltip with the title").
 //     Its press opens the favourite's card and lets the hover card go.
 //   - ONE ACTIVE RING PER SECTION (owner, 2026-11-04: "in one section at a
 //     time only one item should be active"): the favourites' is their open
@@ -1275,9 +1276,9 @@ export function ClaudeRail({
               // …and the ring of the FAVOURITE whose own card is open in this
               // window (header) — in the foot, or still in the list a moment
               // after its star was pressed (`railOpenFav`): the hover is its
-              // caption. Any other favourite's ring hovers like a list ring.
+              // caption; so is every other favourite's ring while any favourite card is open.
               const favRing = wears.favRing;
-              const titleOnly = (peekOn && pinned && peekKey !== null && peekKey !== t.key) || favRing;
+              const titleOnly = (peekOn && pinned && peekKey !== null && peekKey !== t.key) || favRing || (peekOn && !wears.hovers);
               const captionless = peekOn && !titleOnly;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
@@ -1308,7 +1309,7 @@ export function ClaudeRail({
                   // Beside the ring, not at the pointer (platform/lib/hints
                   // `placeBeside`): a 48px column at the window's edge.
                   data-hint-side="left"
-                  {...(peekOn && !favRing
+                  {...(peekOn && wears.hovers
                     ? {
                         "aria-haspopup": "dialog" as const,
                         "aria-expanded": peeked,

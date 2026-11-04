@@ -443,11 +443,16 @@ describe("ringMarks (what each ring wears, per section)", () => {
     expect(marked(rings, false).map((r) => r.key)).toEqual(["A"]);
   });
 
-  it("the open favourite's ring opens no hover card; every other ring does", () => {
+  it("a favourite card open: no favourite ring opens a hover card; list rings do", () => {
     const rings = rail({ list: ["A"], favs: ["F", "G"], openFavKey: "F" });
     expect(rings.find((r) => r.key === "F")!.hovers).toBe(false);
-    expect(rings.find((r) => r.key === "G")!.hovers).toBe(true);
+    expect(rings.find((r) => r.key === "G")!.hovers).toBe(false);
     expect(rings.find((r) => r.key === "A")!.hovers).toBe(true);
+  });
+
+  it("no favourite card open: favourite rings hover like list rings", () => {
+    const rings = rail({ list: ["A"], favs: ["F", "G"] });
+    expect(rings.every((r) => r.hovers)).toBe(true);
   });
 
   it("a star pressed a moment ago: its ring still in the list opens no hover card either", () => {

@@ -423,12 +423,14 @@ export function activeRing(keys: readonly string[], wants: readonly (string | nu
  *     alone (`is-held`). A press INSIDE the rail's card over a favourite's
  *     ring may still hold that card (typing in it); its ring keeps
  *     `.peeked` only;
- *   - THE OPEN FAVOURITE'S RING OPENS NO HOVER CARD (`hovers` false), in
- *     whichever section it stands: the foot's ring of the open favourite,
- *     and — for a moment after a star pressed in the rail's card, before
- *     the pulse moves it to the foot — its ring still in the list (rail-peek-
- *     lib `railOpenFav`). Its hover is its caption; two cards on one chat
- *     would be two composers on one draft. */
+ *   - WHILE ANY FAVOURITE'S CARD IS OPEN, NO FAVOURITE RING OPENS A HOVER CARD
+ *     (`hovers` false; owner, 2026-11-04: "if one item is open, when we
+ *     hover on another it should NOT show another preview — only the tooltip
+ *     with the title"): every ring of the favourites' section, and — for a
+ *     moment after a star pressed in the rail's card, before the pulse moves
+ *     it to the foot — the open one still in the list (rail-peek-lib
+ *     `railOpenFav`). Their hover is the caption. With none open they hover
+ *     like list rings. List rings are unchanged. */
 export interface RingMarkInput {
   key: string;
   /** In the favourites section. */
@@ -467,5 +469,8 @@ export function ringMarks(o: RingMarkInput): { classes: string[]; hovers: boolea
     (!one || (o.foot ? o.activeFav === o.key && o.openFavKey !== o.key : o.activeList === o.key))
   )
     classes.push("is-last");
-  return { classes, hovers: o.peekOn && !favRing, favRing };
+  // While ANY favourite's card is open, every favourite-section ring (and
+  // the just-starred one still in the list) shows its caption only.
+  const silenced = o.openFavKey !== null && o.favsOn && fav;
+  return { classes, hovers: o.peekOn && !silenced, favRing };
 }
