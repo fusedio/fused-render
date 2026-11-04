@@ -5434,7 +5434,7 @@ describe("the page-minted client id rides the wire and comes back", () => {
     const returned: { clientId?: string }[] = [];
     const agent = fakeAgent({
       start: () => {
-        throw new AgentError("boom", 500);
+        throw new AgentError({ message: "boom" });
       },
     });
     const controller = createChatController({
