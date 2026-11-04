@@ -5062,7 +5062,7 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasks[0]!.status).toBe("killed");
   });
 
-  test("CodeRabbit: the older host's ended row keeps its grace through the newer run's polls", async () => {
+  test("CodeRabbit: the older host's ended row does not linger through the newer run's polls", async () => {
     let lap: string[] = [];
     const ended = { ...T("h"), status: "killed" as const, ended_at: Date.now() / 1000 };
     const { controller } = makeController({
@@ -5077,7 +5077,7 @@ describe("the run's tasks", () => {
     });
     await controller.openSession("s9");
     await controller.sendMessage("go");
-    expect(lap).toEqual(["h"]);
+    expect(lap).toEqual([]);
   });
 
   test("a restore lands history's tasks", async () => {

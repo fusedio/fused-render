@@ -303,11 +303,11 @@ describe("review #7: paused", () => {
 });
 
 describe("stillShown", () => {
-  test("a live row, or one ended inside the panel's grace, is still on show", () => {
-    expect(stillShown([rec({ status: "running" })], 0)).toBe(true);
-    expect(stillShown([rec({ status: "killed", ended_at: 100 })], 104_000)).toBe(true);
-    expect(stillShown([rec({ status: "killed", ended_at: 100 })], 106_000)).toBe(false);
-    expect(stillShown([rec({ status: "unknown", ended_at: null })], 0)).toBe(false);
-    expect(stillShown([], 0)).toBe(false);
+  test("only a live row is still on show", () => {
+    expect(stillShown([rec({ status: "running" })])).toBe(true);
+    expect(stillShown([rec({ status: "killed", ended_at: 100 })])).toBe(false);
+    expect(stillShown([rec({ status: "completed", ended_at: Date.now() / 1000 })])).toBe(false);
+    expect(stillShown([rec({ status: "unknown", ended_at: null })])).toBe(false);
+    expect(stillShown([])).toBe(false);
   });
 });
