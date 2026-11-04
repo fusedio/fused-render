@@ -1656,6 +1656,42 @@ def _listing_cache_path(env: str) -> str:
     return os.path.join(_listing_cache_dir(), f"canvases-listing-{env}.json")
 
 
+def _listing_account(env: str) -> str | None:
+    """A non-reversible tag for WHO the credentials store signs in as (the
+    access token's `sub` claim, hashed), or None when it cannot be read.
+
+    The baseline must not outlive the account: a `fused login` as someone
+    else from a terminal never passes through `_cli_cache_clear`, and
+    `_creds_sig` cannot stand in because a silent token refresh moves it
+    too. Decoded locally — no verification needed, nothing is trusted from
+    it beyond "same subject as last time"."""
+    try:
+        with open(credentials_file(env), encoding="utf-8") as f:
+            data = json.load(f)
+        token = data.get("access_token") if isinstance(data, dict) else None
+        header, payload, _sig = token.split(".")
+        payload += "=" * (-len(payload) % 4)
+        import base64
+
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        sub = claims.get("sub") if isinstance(claims, dict) else None
+        if not isinstance(sub, str) or not sub:
+            return None
+        return hashlib.sha256(sub.encode("utf-8")).hexdigest()
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+
+
+def _listing_deployment(env: str) -> list[str]:
+    """What the listing was taken from: the workbench origin, and for the
+    custom env the API `base_url` too — two deployments can share a host and
+    differ only in the API path."""
+    urls = [workbench_base_url(env)]
+    if env == CUSTOM_WORKBENCH_ENV:
+        urls.append(fused_settings_base_url())
+    return urls
+
+
 def _listing_cache_write(env: str, entries: list) -> None:
     """Best effort: a cache that cannot be written is a cache that misses."""
     path = _listing_cache_path(env)
@@ -1664,11 +1700,14 @@ def _listing_cache_write(env: str, entries: list) -> None:
         "env": env,
         # The custom env can be retargeted through settings.toml; a listing
         # from the previous deployment must not stand in for the new one.
-        "base_url": workbench_base_url(env),
+        "deployment": _listing_deployment(env),
+        "account": _listing_account(env),
         "saved_at": time.time(),
         "entries": entries,
     }
-    tmp = path + ".tmp"
+    # Unique per writer: two listings finishing together must not share a
+    # staging file, or one replaces the other's half-written one.
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
@@ -1691,7 +1730,12 @@ def _listing_cache_read(env: str) -> list | None:
         return None
     if not isinstance(record, dict) or record.get("version") != _LISTING_CACHE_VERSION:
         return None
-    if record.get("env") != env or record.get("base_url") != workbench_base_url(env):
+    if record.get("env") != env or record.get("deployment") != _listing_deployment(env):
+        return None
+    # Another account signed in since (see `_listing_account`): their names
+    # are not this user's to see, even for one round trip.
+    account = _listing_account(env)
+    if account is None or record.get("account") != account:
         return None
     saved_at = record.get("saved_at")
     if not isinstance(saved_at, (int, float)) or time.time() - saved_at > _LISTING_CACHE_MAX_AGE_S:
@@ -1723,10 +1767,18 @@ def _list_entries(env: str, allow_stale: bool = False):
     without it."""
 
     def compute():
+        with _CLI_CACHE_LOCK:
+            gen = _cli_cache_gen
         entries, err = _list_entries_uncached(env)
         if err is not None:
             return _err_of(err)
-        _listing_cache_write(env, entries)
+        # Same rule `_cached_cli` applies to the memory cache: a login, logout
+        # or mutation that landed while the control plane was answering has
+        # already wiped the baseline, and this answer is the one it wiped.
+        with _CLI_CACHE_LOCK:
+            current = _cli_cache_gen
+        if gen == current:
+            _listing_cache_write(env, entries)
         return ("ok", entries)
 
     if allow_stale:

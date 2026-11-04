@@ -444,6 +444,9 @@ export default function Canvases() {
         return;
       }
       setCanvases(null);
+      // A fresh listing still in flight for the old account must not leave
+      // its hint on the signed-out page.
+      setRefreshing(false);
       // Signed URLs belong to the account that just signed out.
       setPreviews({});
       previewsAskedRef.current = new Set();
@@ -688,9 +691,9 @@ export default function Canvases() {
         <p className="canvases-sub">
           Develop workbench canvases locally: pick a canvas, edit its files with
           Claude Code, and every save is pushed back to the hosted workbench.
-          {refreshing && (
-            <span className="canvases-refreshing"> Refreshing the list…</span>
-          )}
+          <span className="canvases-refreshing" role="status">
+            {refreshing ? " Refreshing the list…" : ""}
+          </span>
         </p>
         {error && <ErrorBanner>{error}</ErrorBanner>}
         {status && !status.cli_found && (
