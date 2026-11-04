@@ -2983,16 +2983,54 @@ def test_breakout_refuses_a_symlink_out_of_the_handoff_dir(breakout, tmp_path):
     assert payload["behavior"] == "deny"
 
 
-@pytest.mark.parametrize("tool,key", [
-    ("Write", "file_path"), ("Edit", "file_path"), ("MultiEdit", "file_path")])
 def test_breakout_allows_markdown_under_the_handoff_dir_without_a_card(
-        breakout, tool, key):
+        breakout):
     s, perm_dir, handoff = breakout
-    tool_input = {key: str(handoff / "notes.md"), "content": "# hi"}
-    payload = _result_payload(_approve(s, tool, tool_input).result(10))
+    tool_input = {"file_path": str(handoff / "notes.md"), "content": "# hi"}
+    payload = _result_payload(_approve(s, "Write", tool_input).result(10))
     assert payload["behavior"] == "allow"
     assert payload["updatedInput"] == tool_input
     assert _no_card(perm_dir)
+
+
+@pytest.mark.parametrize("tool,key", [
+    ("Edit", "file_path"), ("MultiEdit", "file_path"),
+    ("NotebookEdit", "notebook_path")])
+def test_breakout_denies_non_write_edits_even_on_a_handoff_md(
+        breakout, tool, key):
+    s, perm_dir, handoff = breakout
+    payload = _result_payload(_approve(
+        s, tool, {key: str(handoff / "notes.md")}).result(10))
+    assert payload["behavior"] == "deny"
+    assert _no_card(perm_dir)
+
+
+def _run_hook(handoff, stdin):
+    return subprocess.run(
+        [sys.executable, "-I", SERVER, "--breakout-hook=" + str(handoff)],
+        input=stdin, capture_output=True, text=True, timeout=30)
+
+
+def test_breakout_hook_blocks_a_write_outside_the_handoff_dir(tmp_path):
+    handoff = tmp_path / "h"
+    handoff.mkdir()
+    r = _run_hook(handoff, json.dumps({
+        "tool_name": "Write", "tool_input": {"file_path": str(tmp_path / "other.py")}}))
+    assert r.returncode == 2
+    assert "research-only" in r.stderr and str(handoff) in r.stderr
+    assert r.stdout == ""
+
+
+def test_breakout_hook_lets_a_handoff_note_through(tmp_path):
+    handoff = tmp_path / "h"
+    handoff.mkdir()
+    r = _run_hook(handoff, json.dumps({
+        "tool_name": "Write", "tool_input": {"file_path": str(handoff / "note.md")}}))
+    assert r.returncode == 0 and r.stdout == ""
+
+
+def test_breakout_hook_fails_closed_on_empty_stdin(tmp_path):
+    assert _run_hook(tmp_path, "").returncode == 2
 
 
 def test_breakout_leaves_reads_and_web_to_the_normal_flow(

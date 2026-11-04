@@ -274,6 +274,21 @@ def test_argv_breakout_hard_denies_shell_and_edit_tools(agent, tmp_path):
     assert "Write" not in deny
 
 
+def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
+    argv = _argv(agent, tmp_path, breakout=True)
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    (entry,) = settings["hooks"]["PreToolUse"]
+    assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit"
+    (hook,) = entry["hooks"]
+    assert hook["type"] == "command" and hook["onFailure"] == "block"
+    assert hook["timeout"] == 10
+    assert "permission_server.py" in hook["command"]
+    handoff = os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs")
+    assert "--breakout-hook=" + handoff in hook["command"]
+    plain = _argv(agent, tmp_path / "p")
+    assert "--settings" not in plain
+
+
 def test_argv_plain_run_has_no_deny_settings(agent, tmp_path):
     argv = _argv(agent, tmp_path)
     assert "--settings" not in argv

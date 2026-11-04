@@ -3912,9 +3912,22 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # BEFORE it calls the permission prompt tool, so a breakout's Bash call
         # ran with source "config" and never reached the bridge policy. Deny
         # rules beat allow rules, so refuse these tools in the CLI itself. Write
-        # stays on the bridge (handoff .md exception).
-        cmd += ["--settings", json.dumps({"permissions": {"deny": [
-            "Bash", "Edit", "MultiEdit", "NotebookEdit"]}})]
+        # needs the handoff .md exception, which a deny rule cannot express (and
+        # an allow rule cannot carve out of a deny), and a user `Write` allow rule
+        # would also run before the bridge. So a PreToolUse hook enforces the
+        # path limit: it runs before the permission system and exit 2 blocks the
+        # call. The bridge's `_breakout_policy` stays as defense in depth.
+        hook_argv = [sys.executable, "-I",
+                     os.path.join(HERE, "permission_server.py"),
+                     "--breakout-hook=" + _breakout_handoff_dir(file)]
+        hook_cmd = (subprocess.list2cmdline(hook_argv) if os.name == "nt"
+                    else shlex.join(hook_argv))
+        cmd += ["--settings", json.dumps({
+            "permissions": {"deny": ["Bash", "Edit", "MultiEdit", "NotebookEdit"]},
+            "hooks": {"PreToolUse": [{
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+                "hooks": [{"type": "command", "command": hook_cmd,
+                           "timeout": 10, "onFailure": "block"}]}]}})]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id and resume_at and new_session_id:
