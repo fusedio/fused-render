@@ -107,8 +107,9 @@ import type { Receipt } from "../shots/types";
 /** T:16377 — the poll cadence. No backoff, ever. */
 export const POLL_MS = 400;
 /** How often a finished turn's tasks panel asks the session host that is still
- *  running its background work (`watchHostTasks`, agent.py `_run_tasks`). */
-export const HOST_TASKS_MS = 5000;
+ *  running its background work (`watchHostTasks`, agent.py `_run_tasks`): 1 s,
+ *  so an ended job leaves the strip about a second later, like the CLI. */
+export const HOST_TASKS_MS = 1000;
 /** Failed `tasks` asks in a row before a host watch gives up. */
 export const HOST_TASKS_TRIES = 3;
 
@@ -638,8 +639,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * background Agent or a Monitor runs on after the reply, and its row stays
    * LIVE — its clock, its Stop, its Output (they address this run, which the
    * host still answers for) — until the host says the job is over
-   * (`watchHostTasks`), when it ends with its real status and leaves after the
-   * panel's 5 s grace. Only a host that is really gone downgrades.
+   * (`watchHostTasks`), when it ends with its real status and leaves the
+   * strip at once. Only a host that is really gone downgrades.
    */
   const endRunTasks = (runId: string | null) => {
     if (!runId || state.tasksRunId !== runId) return;
@@ -705,7 +706,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             return;
           }
           // The last job ended: its row now carries its real status and
-          // leaves after the panel's own 5 s grace (TasksPanel); the task row
+          // leaves the strip at once (TasksPanel lists active rows only); the task row
           // moves to Done on the Tasks page.
           if (!res.tasks_pending) return;
         }
@@ -748,7 +749,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // nothing live does not replace them (Bugbot 4307278676): history's walk
     // can name another run dir, or race the host's own liveness, and nulling
     // the owner here would kill the watch — the job's real end, the dead-host
-    // downgrade and the 5 s grace would never come. The watch ends by itself.
+    // downgrade and its leaving would never come. The watch ends by itself.
     if (!res.live_run && state.tasksRunId && hostWatched.startsWith(state.tasksRunId + "\u0000")) return;
     const owner = res.live_run || res.tasks_run || null;
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
@@ -2052,11 +2053,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // on. This run's empty list says nothing about that job, so the rows
         // stay, owned by their host (Stop/Output still reach it), and that
         // host stays watched through this turn, so its end still lands (and
-        // its ended row keeps the panel's 5 s grace, CodeRabbit).
+        // its ended row leaves the strip, CodeRabbit).
         {
           const rows = Array.isArray(poll.tasks) ? poll.tasks : [];
           const owner = state.tasksRunId;
-          if (!rows.length && owner && owner !== runId && stillShown(state.tasks, now())) {
+          if (!rows.length && owner && owner !== runId && stillShown(state.tasks)) {
             if (loopSeq === seat) watchHostTasks(owner, seat);
           } else if (rows.length || owner !== runId) publishTasks(rows, runId);
         }
