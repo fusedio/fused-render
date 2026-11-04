@@ -39,6 +39,8 @@ grep -qF "$LAZ_CDN" "$VENDOR/map.bundle.mjs"
 sed -i.bak "s#${LAZ_CDN}#new URL(\"./laz-perf.wasm\",import.meta.url).href#g" "$VENDOR/map.bundle.mjs"
 cp node_modules/copc/node_modules/laz-perf/lib/web/laz-perf.wasm "$VENDOR/laz-perf.wasm"
 rm -f "$VENDOR/map.bundle.mjs.bak"
+./node_modules/.bin/esbuild parquet-worker.mjs --bundle --format=esm --minify --platform=browser \
+  --outfile="$VENDOR/parquet.worker.bundle.mjs"
 cat node_modules/maplibre-gl/dist/maplibre-gl.css node_modules/maplibre-gl-lidar/dist/maplibre-gl-lidar.css \
   node_modules/maplibre-gl-vector/dist/maplibre-gl-vector.css > "$VENDOR/map.bundle.css"
 echo "built $VENDOR/map.bundle.mjs"
