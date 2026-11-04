@@ -26,9 +26,10 @@ describe("Turn fork button", () => {
     const bubble = out.slice(out.indexOf('class="bubble'));
     expect(bubble.slice(0, bubble.indexOf("</div>"))).not.toContain("turn-fork");
   });
-  test("absent without onFork or without uuid", () => {
+  test("absent without onFork, without uuid, or while pending", () => {
     expect(html(base)).not.toContain("turn-fork");
     const { uuid: _u, ...noUuid } = base;
     expect(html(noUuid as UserTurn, () => {})).not.toContain("turn-fork");
+    expect(html({ ...base, pending: "queued" }, () => {})).not.toContain("turn-fork");
   });
 });
