@@ -12,6 +12,7 @@ import {
   ANN_TAG,
   APP_STATE_TAG,
   BLOCK_ORDER,
+  BREAKOUT_CTX_TAG,
   blockRank,
   composeBlocks,
   composeOutgoing,
@@ -73,12 +74,13 @@ describe("composeBlocks owns §D's order", () => {
   });
 
   test("blockRank reads the opening tag, and only the opening tag", () => {
-    expect(BLOCK_ORDER).toEqual([APP_STATE_TAG, PANE_SHOT_TAG, ANN_TAG]);
+    expect(BLOCK_ORDER).toEqual([APP_STATE_TAG, PANE_SHOT_TAG, BREAKOUT_CTX_TAG, ANN_TAG]);
     expect(blockRank(state)).toBe(0);
     expect(blockRank(shots)).toBe(1);
-    expect(blockRank(notes)).toBe(2);
+    expect(blockRank("<" + BREAKOUT_CTX_TAG + ">x</" + BREAKOUT_CTX_TAG + ">")).toBe(2);
+    expect(blockRank(notes)).toBe(3);
     // Leading whitespace is not a different block.
-    expect(blockRank("\n  " + notes)).toBe(2);
+    expect(blockRank("\n  " + notes)).toBe(3);
     // Plain prose has no tag and therefore no claim on a seat.
     expect(blockRank("just words")).toBe(BLOCK_ORDER.length);
   });
@@ -171,8 +173,8 @@ describe("sendBlocks ADDS the send path's block to the caller's", () => {
       { blocks: [shots] },
     );
     expect(merged.blocks).toEqual([state, shots, notes]);
-    expect(merged.blocks!.map(blockRank)).toEqual([0, 1, 2]);
-    expect(merged.blocks).toHaveLength(BLOCK_ORDER.length);
+    expect(merged.blocks!.map(blockRank)).toEqual([0, 1, 3]);
+    expect(merged.blocks).toHaveLength(3);
     // And it reaches the wire that way, the typed words last.
     const wire = composeOutgoing("have a look", merged.blocks);
     expect(wire.indexOf(APP_STATE_TAG)).toBeLessThan(wire.indexOf(PANE_SHOT_TAG));
