@@ -141,3 +141,8 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 - CI frontend lane: `BreakoutCards.test.tsx` used `mock.module("@apps/claude", ...)`, which is process-wide and irreversible in bun, so later files (`ChatMount.render.test.tsx`, `paneState.test.tsx`) got the stub and failed. Removed. `Card` now takes an optional `mount` prop (default the real `ChatMount`); the test passes `mount={NoChat}` and imports `Card` statically. Production path unchanged. Dropped the empty `afterEach`.
 
 - Fix round 5: CI frontend lane failed JobPopupCard "iframe taking focus" because `bun test` shares one globalThis and draft-run/new-task-form tests set `window = globalThis`; BreakoutCards.test.tsx and breakouts.test.ts then overwrote `addEventListener`/`removeEventListener` (and rAF) at module scope, so later suites registered blur listeners on a private bus. Both files now save the originals, install stubs in `beforeAll`, and restore (or delete if absent) in `afterAll`.
+
+### Fix round 6
+- CLI limit: `--resume-session-at <uuid>` only resolves records after the latest compaction summary row (`isCompactSummary: true`); an older uuid dies with "No message found with message.uuid of". Resuming at the summary row itself works.
+- Clamp: `_fork_point` now returns `(point, clamped)`; a prompt before the last compaction row yields `(summary_row_uuid, True)`. `_start` records `meta["fork_clamped"]` and answers `fork_clamped: true` (only when clamped).
+- Flag path: `fork_clamped` in the start response -> `state.forkClamped` (run-controller, set once, never cleared) -> `onBreakoutState` payload -> card note "research only · forked at the last compaction" with an explanatory title.
