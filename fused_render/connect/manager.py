@@ -141,9 +141,9 @@ def _resolved(p, entry: dict) -> dict:
     if e.get("docs"):
         out["docs"] = e["docs"]
     if kind in ("oauth-pkce", "oauth-device", "mcp-oauth"):
-        # registry merges the environment's client id at load; repeated here
-        # so a variable set after the pack was read still counts.
-        e["client_id"] = (e.get("client_id") or "").strip() or _env_client_id(p.key)
+        # registry merges the environment's client id at load (it wins over the
+        # shipped one); repeated here so a variable set after the pack was read still counts.
+        e["client_id"] = _env_client_id(p.key) or (e.get("client_id") or "").strip()
     if kind not in KINDS:
         ok, reason = False, f"unknown sign-in kind {kind!r}"
     else:

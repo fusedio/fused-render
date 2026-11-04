@@ -1,8 +1,8 @@
 {
   "name": "Slack",
-  "_comment": "client_id is empty until the Fused Slack app ships with PKCE and public distribution on; FUSED_RENDER_CONNECT_SLACK_CLIENT_ID fills it, or create your own app from manifest.json (byo). There is no client secret anywhere: PKCE replaces it.",
+  "_comment": "client_id is the public id of the Fused Slack app (made from manifest.json: PKCE on, public distribution on). It is not a secret (RFC 8252: a native app cannot keep one; PKCE + loopback redirect are the locks). FUSED_RENDER_CONNECT_SLACK_CLIENT_ID overrides it, and Advanced on the card takes the id of your own app made from the same manifest. There is no client secret anywhere.",
   "auth": [
-    {"kind": "oauth-pkce", "client_id": "",
+    {"kind": "oauth-pkce", "client_id": "4468525343462.12501077804258",
      "authorize_url": "https://slack.com/oauth/v2/authorize",
      "token_url": "https://slack.com/api/oauth.v2.access",
      "revoke_url": "https://slack.com/api/auth.revoke",

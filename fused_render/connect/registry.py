@@ -25,12 +25,14 @@ process, because the page asks for the list every second while a flow runs.
   vendor's pack uses `${FUSED_RENDER_FAKE_VENDOR_URL}` this way; shipped packs
   have no reason to.
 
-**Client ids from the environment.** A kind whose `client_id` is `""` in the
-file reads `FUSED_RENDER_CONNECT_<KEY>_CLIENT_ID` (key upper-cased, `-` to
-`_`) at load time. Still empty, the kind is listed but `availability()` says
-it cannot run, and why. That is how a pack ships before Fused has registered
-its app with the vendor, without a placeholder id that would fail at the
-vendor's consent page instead of on the card.
+**Client ids from the environment.** `FUSED_RENDER_CONNECT_<KEY>_CLIENT_ID`
+(key upper-cased, `-` to `_`), when set, REPLACES the `client_id` of every
+OAuth kind in the file at load time: a self-hoster signs in through an app of
+their own instead of Fused's (the card's Advanced field does the same for one
+sign-in). A `client_id` of `""` with no variable leaves the kind listed but
+`availability()` says it cannot run, and why. That is how a pack ships before
+Fused has registered its app with the vendor, without a placeholder id that
+would fail at the vendor's consent page instead of on the card.
 
 A JSON Schema file plus a validator package was considered and rejected: it
 adds a dependency to say what thirty lines of Python say, and its messages
@@ -227,8 +229,8 @@ def _load(pack_dir: str) -> Provider:
     auth = []
     for a in d["auth"]:
         a = dict(a)
-        if "client_id" in a and not a["client_id"] and env_id:
-            a["client_id"] = env_id
+        if "client_id" in a and env_id:
+            a["client_id"] = env_id  # the environment wins over the shipped id (a self-hoster's own app)
         auth.append(a)
     icon = os.path.join(pack_dir, "icon.svg")
     tools = d.get("tools", {})

@@ -90,12 +90,14 @@ def test_cli_availability_is_about_the_command_on_path(monkeypatch):
 def test_slack_pack_and_manifest_agree():
     p = registry.get("slack")
     a = p.auth[0]
-    assert a["kind"] == "oauth-pkce" and a["client_id"] == ""
+    assert a["kind"] == "oauth-pkce" and a["client_id"] == "4468525343462.12501077804258"  # Fused's app, public
     assert a["redirect"] == {"host": "localhost", "ports": [47823, 47824, 47825, 47826, 47827],
                              "path": "/callback"}
     assert p.tools["remote"] is None
     assert p.tools["native"] == os.path.isfile(os.path.join(p.dir, "tools.py"))
-    ok, reason = registry.availability(p, a)
+    assert registry.availability(p, a) == (True, None)  # one click: no BYO needed
+    blank = dict(a, client_id="")
+    ok, reason = registry.availability(p, blank)
     assert not ok and "manifest" in reason
     with open(os.path.join(p.dir, a["byo"]["manifest"]), encoding="utf-8") as f:
         m = json.load(f)
@@ -110,6 +112,7 @@ def test_slack_pack_and_manifest_agree():
 
 
 def test_slack_client_id_env_override(monkeypatch):
+    """The variable REPLACES the shipped id: a self-hoster's own app, not Fused's."""
     monkeypatch.setenv("FUSED_RENDER_CONNECT_SLACK_CLIENT_ID", "123.456")
     p = registry.get("slack")
     assert p.auth[0]["client_id"] == "123.456"
