@@ -181,8 +181,7 @@ from 223 to about 60.
 ### What the iOS app keeps, drops and changes
 
 Drop: `Discovery.swift` entirely, the "On this Wi-Fi" picker in
-`RootView.swift`, `NSBonjourServices` in `project.yml`, the `discovered`
-plumbing in `AppModel.swift`, `fetchCA` and PEM parsing in `TLSTrust.swift`,
+`RootView.swift`, the `discovered` plumbing in `AppModel.swift`, `fetchCA` and PEM parsing in `TLSTrust.swift`,
 the http `scheme` branch and legacy-record decoding.
 
 Change: QR parse reads `t` and `fp`. Stored record becomes
@@ -191,7 +190,8 @@ Keychain. `TLSTrust.accepts` becomes: take the leaf from the `SecTrust`,
 hash `SecCertificateCopyData`, compare with `fp`. `WebView` sets the cookie
 for the current host before each load and falls back to `lastIP` when the
 name does not resolve. Keep `NSLocalNetworkUsageDescription` (iOS prompts on
-first `.local` resolution or private-IP connection).
+first `.local` resolution or private-IP connection) and keep
+`NSBonjourServices` with one entry, used only by the permission probe in §7.
 
 Keep: `WebView.swift`, `ScannerView.swift`, the UA marker, `PinnedSession`
 (with the new check), the capture bridge, manifest sync and widgets.
@@ -241,3 +241,110 @@ cookie on a shared network would be remote code execution.
    test. Record the decision in `DECISIONS.md` (supersedes D871 to D873).
 4. iOS: delete `Discovery.swift` and the picker.
 5. Desktop UI: trim `Prefs.lan`, `settings/lan.tsx`, `RepoUpdatesDock.tsx`.
+6. iOS: the connectivity diagnosis and warning banner of §7 (independent of
+   the steps above; can ship with step 2).
+7. Desktop: the firewall warning of §7.4 in Preferences.
+
+## 7. Detecting "this Wi-Fi does not let the phone reach the computer"
+
+Requirement: when the phone cannot reach the computer, tell the user why, in
+particular when they have **not allowed Local Network access** for the app.
+There are three distinct causes with three different fixes, and the app can
+tell them apart.
+
+### 7.1 The causes
+
+| Cause | Symptom at the socket | Fix the user must do |
+|---|---|---|
+| **Local Network permission denied** (the iOS prompt was dismissed or turned off later in Settings, Privacy, Local Network) | `.local` names do not resolve; connections to private addresses fail at once with `EHOSTUNREACH`; a Bonjour browse reports `kDNSServiceErr_PolicyDenied` (-65570) | Settings, Fused Render, Local Network: on |
+| **Phone is not on a Wi-Fi network** (cellular, airplane mode, no network) | `NWPathMonitor` path is unsatisfied or not over `.wifi` | Join the computer's Wi-Fi |
+| **Wrong or isolated network** (different SSID, guest network with client isolation, corporate Wi-Fi filtering mDNS and peer traffic, the computer asleep or its firewall blocking) | Permission granted and path is Wi-Fi, but the name does not resolve and `lastIP` times out | Join the same Wi-Fi, or check the computer |
+
+iOS has no public "is Local Network allowed" API. The reliable signal is the
+first row's Bonjour error: start an `NWBrowser` for a service type listed in
+`NSBonjourServices`, and if the permission is denied its state moves to
+`.waiting(.dns(-65570))` within a few hundred milliseconds. That is why the
+plist keeps one `NSBonjourServices` entry (`_fusedrender._tcp`); nothing is
+ever advertised under it. The browse is also what triggers the system
+permission prompt the first time, so running it at first launch is the
+right moment to ask.
+
+### 7.2 The probe
+
+One function, run on app foreground, before every load, and whenever the
+WKWebView reports a navigation failure. About 120 Swift lines in a new
+`Reachability.swift` (replacing the deleted `Discovery.swift`):
+
+```swift
+enum LanState {
+    case ok(host: String)
+    case noWifi
+    case localNetworkDenied
+    case unreachable(host: String)   // permission fine, Wi-Fi fine, nobody answers
+}
+
+func diagnose(server: Server) async -> LanState {
+    // 1. Path: are we on Wi-Fi at all?
+    guard await currentPath().usesInterfaceType(.wifi) else { return .noWifi }
+
+    // 2. Permission: a 1.5 s Bonjour browse that only looks for the policy error.
+    let browser = NWBrowser(for: .bonjour(type: "_fusedrender._tcp", domain: nil), using: .tcp)
+    if await browser.waitsWithPolicyDenied(timeout: 1.5) { return .localNetworkDenied }
+
+    // 3. Reach: TLS connect to the stored name, then to lastIP, each 3 s,
+    //    accepting only a leaf whose fingerprint matches `fp`.
+    for host in [server.host, server.lastIP].compactMap({ $0 }) {
+        if await pinnedConnect(host: host, port: server.port, fp: server.fp, timeout: 3) {
+            return .ok(host: host)
+        }
+    }
+    return .unreachable(host: server.host)
+}
+```
+
+Two details matter:
+
+- Step 3 uses the pinned fingerprint, so a successful probe also confirms it
+  is the right computer, and the `.ok(host:)` result is the host the
+  WKWebView then loads. The probe and the fallback logic of §3 are the same
+  code.
+- A connection that fails with `EHOSTUNREACH` in under 200 ms while step 2
+  did not report the policy error is treated as `.localNetworkDenied` too.
+  Some iOS versions have returned that before the browser reports anything.
+
+### 7.3 The warning
+
+A banner at the top of `RootView` (above the web view, not inside the page,
+since the page may never load), one per state:
+
+| State | Copy | Action |
+|---|---|---|
+| `localNetworkDenied` | "Fused Render needs Local Network access to reach your computer. It is turned off for this app." | **Open Settings** → `UIApplication.openSettingsURLString` (lands on the app's own settings page, which has the Local Network switch) |
+| `noWifi` | "Connect this phone to the same Wi-Fi as your computer." | none |
+| `unreachable` | "Can't reach *Vas-MacBook* on this Wi-Fi. Make sure both are on the same network. Guest and hotel networks often keep devices from seeing each other. If the computer is asleep, wake it." | **Try again**, **Scan a new code** |
+
+The banner clears on the next `.ok`. The web view keeps whatever page it has
+(cached grid) rather than showing a blank error page. A navigation failure
+in WKWebView (`NSURLErrorCannotFindHost`, `CannotConnectToHost`,
+`NotConnectedToInternet`, `TimedOut`) triggers `diagnose` instead of showing
+WebKit's error, so the user always sees one of the three messages above.
+
+### 7.4 The computer's side of the same problem
+
+The most common "same Wi-Fi, still unreachable" cause that the phone cannot
+see is the **macOS firewall** blocking incoming connections to the python
+process. Preferences already shows the listener state; add one check there:
+
+- Read `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate` and
+  `--getblockall`. If the firewall is on and either "block all incoming" is
+  set or the running executable is not in the allow list
+  (`--listapps`), show: "macOS firewall may block phones from reaching this
+  computer. Allow incoming connections for Fused Render in System Settings,
+  Network, Firewall." Linux: skip (no uniform API; the doc copy covers it).
+- Keep the existing "no network address found" and "listener not running"
+  errors; they already answer "is the computer on a network at all".
+
+Not proposed: comparing SSIDs. Reading the SSID on iOS needs the
+Access Wi-Fi Information entitlement plus location permission, and on macOS
+needs location permission since Sonoma. The `.unreachable` message covers the
+wrong-network case well enough without it.
