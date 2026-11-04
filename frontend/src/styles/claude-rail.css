@@ -988,10 +988,21 @@ button.claude-rail-peek-scope.is-node:focus-visible {
 .breakout-card .breakout-error {
   padding: 4px 12px;
 }
+.breakout-card .breakout-title,
+.breakout-card .breakout-note {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* One line for the head: a long subagent description ellipsizes first, the
+   note (type · model · status) keeps more of its width and gives way after. */
 .breakout-card .breakout-title {
+  flex: 0 1 auto;
   font-weight: 600;
 }
 .breakout-card .breakout-note {
+  flex: 0 100 auto;
   color: var(--c-faint, var(--fg));
   opacity: 0.7;
 }
@@ -1015,11 +1026,21 @@ button.claude-rail-peek-scope.is-node:focus-visible {
   cursor: default;
 }
 
-/* The Agent peek card body (BreakoutCards `AgentPeekCard`): the subagent's
-   transcript, read-only, scrolling inside the card. */
-.agent-peek-body {
+/* The Agent peek card body (BreakoutCards `AgentPeekCard`): the subagent as a
+   read-only chat, its `.chat-logwrap` the one scroller. `.chat-root` lays the
+   chat out as a ROW (chat.css); this one holds a single column, so it stands
+   the axis up and pins the box to the card. */
+.chat-root.agent-peek-body {
   position: absolute;
   inset: 0;
-  overflow: auto;
-  padding: 8px 12px;
+  flex-direction: column;
+}
+/* The prompt bubble holds rendered markdown, whose blocks space themselves;
+   the chat bubble's `pre-wrap` is for typed words and would double the gaps. */
+.chat-root .agent-peek-prompt .bubble {
+  white-space: normal;
+}
+.agent-peek-empty {
+  padding: 12px;
+  opacity: 0.7;
 }

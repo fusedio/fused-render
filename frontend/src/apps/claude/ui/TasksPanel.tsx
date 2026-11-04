@@ -7,7 +7,7 @@
 // tooltip names the subagent type and worktree), model (agents), elapsed (live),
 // stop. The row itself is the toggle: a shell or a monitor opens its output
 // (asked of the live CLI with `task_output`), an agent opens its latest update —
-// or, when the host passes `onPeekAgent` (the breakout beta), the row opens the
+// or, when the host passes `onPeekAgent` (every chat outside an embed), the row opens the
 // subagent's live transcript in a floating card instead and is no toggle.
 //
 // The words are `protocol/tasks.ts`'s; this file only lays them out. The

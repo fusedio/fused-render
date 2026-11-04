@@ -7,6 +7,7 @@ import { act, create } from "react-test-renderer";
 import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@apps/claude/agent-peeks";
 import { closeBreakout, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
 import { AgentPeekCard, Card } from "./BreakoutCards";
+import { agentPeekTurns } from "@apps/claude/ui/AgentPeekLog";
 
 // Only the chat is stubbed (via the Card `mount` prop); the card chrome and drag logic are the real ones.
 const NoChat = () => null;
@@ -293,12 +294,12 @@ const peekReq = { sessionId: "s1", file: "/w", toolUseId: "tu1", title: "Explore
 const turnWith = (status: string, children?: unknown[]) =>
   [{ role: "assistant", key: "a", text: "", segments: [{ kind: "tool", id: "tu1", name: "Agent", status, ...(children ? { children } : {}) }] }] as never;
 
-function mountPeek(seam: (segs: unknown[], live: boolean) => null) {
+function mountPeek(seam: (seg: unknown) => null) {
   const id = openAgentPeek(peekReq);
   const peek = getAgentPeeks().find((p) => p.id === id)!;
   let r!: ReturnType<typeof create>;
   act(() => {
-    r = create(<AgentPeekCard peek={peek} index={0} renderSegments={seam as never} />, { createNodeMock: () => el });
+    r = create(<AgentPeekCard peek={peek} index={0} renderLog={seam as never} />, { createNodeMock: () => el });
   });
   peekRoots.push(r);
   return { r, peek };
@@ -314,15 +315,26 @@ test("the agent peek shows its title and subtitle, labelled Agent peek", () => {
   expect(allText(r.root.findByProps({ className: "agent-peek-empty" }) as never)).toBe("No transcript yet.");
 });
 
-test("the agent peek hands the segment's children to the renderer, live while running", () => {
-  const seen: { segs: unknown[]; live: boolean }[] = [];
+test("the agent peek hands the live Agent segment to the log", () => {
+  const seen: { status: string; children: unknown }[] = [];
   const kids = [{ kind: "text", text: "inner" }];
-  const { r } = mountPeek((segs, live) => (seen.push({ segs, live }), null));
+  const { r } = mountPeek((seg) => (seen.push(seg as never), null));
   act(() => publishPeekTurns("s1", turnWith("running", kids)));
-  expect(seen[seen.length - 1]).toEqual({ segs: kids, live: true });
+  expect(seen[seen.length - 1]).toMatchObject({ status: "running", children: kids });
   act(() => publishPeekTurns("s1", turnWith("ok", kids)));
-  expect(seen[seen.length - 1]).toEqual({ segs: kids, live: false });
+  expect(seen[seen.length - 1]).toMatchObject({ status: "ok", children: kids });
   expect(r.root.findAllByProps({ className: "agent-peek-empty" }).length).toBe(0);
+});
+
+test("a subagent reads as its prompt, then its rows as a reply — live while running", () => {
+  const kids = [{ kind: "text", text: "inner" }];
+  const seg = { kind: "tool", id: "tu1", name: "Agent", status: "running", input: { prompt: " Find it " }, children: kids };
+  expect(agentPeekTurns(seg as never)).toEqual<unknown[]>([
+    { role: "user", key: "agent-prompt", text: "Find it" },
+    { role: "assistant", key: "agent-reply", text: "", segments: kids, streaming: true },
+  ]);
+  const orphan = { ...seg, status: "ok", input: {}, orphan: true };
+  expect(agentPeekTurns(orphan as never)).toEqual<unknown[]>([{ role: "assistant", key: "agent-reply", text: "", segments: kids }]);
 });
 
 test("closing removes the agent peek", () => {

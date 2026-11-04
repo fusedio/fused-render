@@ -34,7 +34,7 @@ import {
 import { createPortal } from "react-dom";
 import { GitBranchPlus } from "lucide-react";
 
-import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
+import { IS_EMBED, confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
 import { CHAT_ACTIVITY_KEY } from "@platform/lib/tasksChanged";
 import {
@@ -5928,7 +5928,9 @@ function ChatBody(props: ChatBodyProps) {
                       open={tasksOpen}
                       onToggle={toggleTasksPanel}
                       parentModel={defaults.model}
-                      {...(breakoutOn && !props.breakout
+                      // The peek is drawn by the shell's overlay (App's
+                      // `BreakoutCards`), which an embed does not mount.
+                      {...(!props.breakout && !IS_EMBED
                         ? {
                             onPeekAgent: (t: TaskRecord) =>
                               void openAgentPeek({

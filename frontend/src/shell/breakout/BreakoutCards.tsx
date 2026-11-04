@@ -8,7 +8,7 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState, type Componen
 import { createPortal } from "react-dom";
 import { ChatMount } from "@apps/claude";
 import type { Turn } from "@apps/claude/protocol/controller-api";
-import type { Segment } from "@apps/claude/protocol/types";
+import type { ToolSegment } from "@apps/claude/protocol/types";
 import { PEEK_MAX_HEIGHT, PEEK_WIDTH } from "@shell/claude-rail/rail-peek-lib";
 import { closeAgentPeek, useAgentPeeks, useAgentSegment, type AgentPeek } from "@apps/claude/agent-peeks";
 import {
@@ -243,26 +243,26 @@ export function Card({
 
 // Lazy, like ChatMount: the transcript renderer (markdown stack and all) must
 // stay out of the shell's entry chunk.
-const SegmentView = lazy(() => import("@apps/claude/ui/SegmentView"));
-const nestedRenderer = (segs: Segment[], live: boolean): ReactNode => (
+const AgentPeekLog = lazy(() => import("@apps/claude/ui/AgentPeekLog"));
+const peekLog = (seg: ToolSegment): ReactNode => (
   <Suspense fallback={null}>
-    <SegmentView segments={segs} live={live} />
+    <AgentPeekLog seg={seg} />
   </Suspense>
 );
 
-/** A read-only floating view of one subagent's transcript, live. */
+/** A read-only chat of one subagent, live: the prompt it was given, then its
+ *  own rows as the reply. */
 export function AgentPeekCard({
   peek,
   index,
-  renderSegments = nestedRenderer,
+  renderLog = peekLog,
 }: {
   peek: AgentPeek;
   index: number;
   // Seam for tests to see what would be drawn without the real renderer.
-  renderSegments?: (segments: Segment[], live: boolean) => ReactNode;
+  renderLog?: (seg: ToolSegment) => ReactNode;
 }) {
   const seg = useAgentSegment(peek.sessionId, peek.toolUseId);
-  const kids = seg?.children;
   return (
     <FloatingCard
       index={index}
@@ -271,12 +271,8 @@ export function AgentPeekCard({
       note={peek.subtitle}
       onClose={() => closeAgentPeek(peek.id)}
     >
-      <div className="chat-root agent-peek-body">
-        {seg && kids && kids.length ? (
-          renderSegments(kids, seg.status === "running")
-        ) : (
-          <div className="agent-peek-empty">No transcript yet.</div>
-        )}
+      <div className="chat-root chat-peek agent-peek-body">
+        {seg ? renderLog(seg) : <div className="agent-peek-empty">No transcript yet.</div>}
       </div>
     </FloatingCard>
   );
