@@ -698,3 +698,45 @@ def test_a_send_that_stuck_keeps_its_token_spent(real_gate):
     agent_gate._file_owner(send, {"ok": True, "result": {"sent": True}}, body)
     assert real_gate.consume_claim("/w/alpha", token) is False
     assert real_gate.owner("/w/alpha")["turns"] == 1
+
+
+def test_a_breakout_never_waits_on_the_folder(gate, monkeypatch):
+    """A breakout is a side conversation: it neither claims the folder slot
+    nor waits on a task that holds it (start and later sends alike)."""
+    from fused_render import tasks_store
+    monkeypatch.setattr(tasks_store, "is_breakout", lambda key: True)
+    gate["manager"].own("/w/alpha", "TASK-007", session_id="sess-a", run_id="r-a")
+    assert agent_gate._folder_busy(_params())
+    assert agent_gate._folder_busy(_params(breakout="1")) == ""
+    assert agent_gate._folder_busy(_params(breakout="resume")) == ""
+    assert agent_gate._folder_busy(
+        _params(action="send", session_id="sess-b", run_id="r-b",
+                breakout="1")) == ""
+    # ...and it took nothing: the owner is still the original task.
+    assert gate["manager"].owner("/w/alpha")["task"] == "TASK-007"
+
+
+def test_an_unrecorded_breakout_resume_waits_and_is_filed(gate, monkeypatch):
+    from fused_render import tasks_store
+    monkeypatch.setattr(tasks_store, "is_breakout", lambda key: False)
+    gate["manager"].own("/w/alpha", "TASK-007", session_id="sess-a", run_id="r-a")
+    assert agent_gate._folder_busy(_params(breakout="resume", session_id="x"))
+
+
+def test_a_recorded_breakout_resume_is_not_filed_unrecorded_is(gate, monkeypatch):
+    from fused_render import tasks_store
+    result = {"result": {"run_id": "r-b", "session_id": "sess-b"}}
+    monkeypatch.setattr(tasks_store, "is_breakout", lambda key: True)
+    agent_gate._file_owner(
+        _params(breakout="resume", session_id="sess-b"), result)
+    assert gate["manager"].owner("/w/alpha") is None
+    monkeypatch.setattr(tasks_store, "is_breakout", lambda key: False)
+    agent_gate._file_owner(
+        _params(breakout="resume", session_id="sess-b"), result)
+    assert gate["manager"].owner("/w/alpha") is not None
+
+
+def test_a_breakout_start_never_becomes_the_folders_owner(gate):
+    result = {"result": {"run_id": "r-b", "session_id": "sess-b"}}
+    agent_gate._file_owner(_params(breakout="1"), result)
+    assert gate["manager"].owner("/w/alpha") is None

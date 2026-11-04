@@ -54,7 +54,7 @@ describe("the registry", () => {
     const seen = GROUPS.map((g) => order.indexOf(g.nav));
     expect([...seen].sort((a, b) => a - b)).toEqual(seen);
     expect(navSections(GROUPS).map((s) => [s.section.id, s.groups.map((g) => g.id)])).toEqual([
-      ["app", ["general", "integrations", "features"]],
+      ["app", ["general", "integrations", "connections", "features"]],
       ["agents", ["ai", "tasks", "claude-cli"]],
       ["apps", ["apps", "indexing", "lan"]],
       ["developer", ["advanced"]],

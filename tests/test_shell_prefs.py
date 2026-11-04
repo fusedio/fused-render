@@ -1656,6 +1656,21 @@ def test_task_recap_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monke
     assert prefs_mod.task_recap_titles_enabled() is False
 
 
+def test_breakout_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["breakout"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"breakout_enabled": True},
+                      headers=FUSED).json()
+    assert body["breakout"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["breakout_enabled"] is True
+    assert prefs_mod.breakout_enabled() is True
+    bad = client.put("/api/prefs", json={"breakout_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "breakout_enabled" in bad.json()["error"]
+
+
 def test_canvas_shot_slow_fallback_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
     """The slow in-canvas screenshot fallback (Settings › Canvas screenshots):
     same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""

@@ -34,6 +34,7 @@ export type GroupId =
   | "apps"
   | "indexing"
   | "lan"
+  | "connections"
   | "integrations"
   | "advanced";
 
@@ -70,6 +71,12 @@ export interface SettingsGroup {
 export const GROUPS: readonly SettingsGroup[] = [
   { id: "general", nav: "app", label: "General", blurb: "How the app looks, opens and stays up to date." },
   { id: "integrations", nav: "app", label: "Accounts", blurb: "Services this app signs in to." },
+  {
+    id: "connections",
+    nav: "app",
+    label: "Connections",
+    blurb: "Sign in to a service once and its tools work in your apps, bots and tasks. Tokens stay on this machine.",
+  },
   {
     id: "features",
     nav: "app",
@@ -361,6 +368,15 @@ const ENTRIES = [
     keywords: "approvals permission mode default auto plan ask accept edits",
   },
   {
+    id: "breakout",
+    group: "tasks",
+    section: "Running",
+    label: "Breakout side chats",
+    description: "Open a research-only side chat forked from any point of a conversation (a message older than the chat's last compaction starts from that summary). It reads and searches; it cannot run commands or edit files, except Markdown notes in the chat's handoff folder. Drafts come back into the composer.",
+    keywords: "breakout fork side chat research read-only",
+    badge: "Beta",
+  },
+  {
     id: "claude-max-sessions",
     group: "tasks",
     section: "Running",
@@ -567,6 +583,19 @@ const ENTRIES = [
     renderOnly: true,
   },
 
+
+  // ── Connections ──────────────────────────────────────────────────────────
+  // The group draws its own page (shell/Connections.tsx: a card per provider
+  // the server lists, which the registry cannot know ahead of time); this row
+  // is what search finds, a pointer into it.
+  {
+    id: "connections",
+    group: "connections",
+    section: "Services",
+    label: "Connections",
+    description: "Notion, GitHub, Slack and other services whose tools your apps, bots and tasks can use.",
+    keywords: "connect connection oauth mcp sign in login api key notion github slack service tools",
+  },
 
   // ── Accounts ─────────────────────────────────────────────────────────────
   {

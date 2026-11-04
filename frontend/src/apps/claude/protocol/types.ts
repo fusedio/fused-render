@@ -750,7 +750,15 @@ export interface ErrorOnly {
  * agrees with this one (`run-controller.ts` `noteSessionId` is a no-op the
  * second time). Having it HERE is what lets the url param, the state and the
  * running mark all happen at the send instead of one poll later. */
-export type StartResponse = { run_id: string; session_id?: string; error?: undefined } | ErrorOnly;
+export type StartResponse =
+  | {
+      run_id: string;
+      session_id?: string;
+      /** The chosen fork turn predates the chat's last compaction; the server forked at that compaction row instead. */
+      fork_clamped?: boolean;
+      error?: undefined;
+    }
+  | ErrorOnly;
 
 /** agent.py:2971-3038 — exactly one of the three. */
 export type SendResponse = { sent: true } | { respawn: true } | ErrorOnly;

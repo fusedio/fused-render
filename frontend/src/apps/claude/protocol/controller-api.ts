@@ -394,6 +394,13 @@ export interface ChatState {
    *  hand-built state predating the field still compiles; the controller
    *  always writes it (`null` when there is no fork). */
   fork?: ForkState | null;
+  /** Set once by a breakout/fork start whose response carried `fork_clamped`
+   *  (the server forked at the last compaction); never cleared for the life of
+   *  the controller. */
+  forkClamped?: boolean;
+  /** User sends made in breakout posture (0 otherwise). Lets a card find its
+   *  own turns from the end of the transcript after a history refresh. */
+  breakoutSends?: number;
   /** Monotonic; bumps on every state change so cheap memo keys work. */
   rev: number;
 }
@@ -695,6 +702,17 @@ export interface ChatController {
 export interface ControllerDeps {
   file: string | null;
   params: import("../params/store").ParamsStore;
+  /**
+   * BREAKOUT POSTURE: this controller drives a research-only side chat forked
+   * from the session in `params`. Its first send starts a forked run
+   * (`breakout: "1"`, at `breakoutAt` or at the tip), it never probes or
+   * attaches to the parent's live run, and every later start is
+   * `breakout: "resume"`. See server `agent._start`.
+   */
+  breakout?: boolean;
+  /** With `breakout`: the parent user message's uuid to fork at. Absent = the
+   *  tip of the conversation. */
+  breakoutAt?: string;
   /** For the working-line clock and tests. MONOTONIC as far as this file is
    *  concerned: every reader of it measures a DURATION (elapsed run time, a
    *  retry budget, a poll deadline), a test is free to hand it `() => 1_000`,
@@ -884,3 +902,6 @@ export interface ControllerDeps {
 }
 
 export type { HistoryTurn };
+
+/** A request to open a breakout; the type lives in platform (see there). */
+export type { BreakoutRequest } from "@platform/lib/breakouts";

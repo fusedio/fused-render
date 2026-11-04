@@ -350,6 +350,29 @@ describe("TasksPanel", () => {
       expect(fetched).toEqual([]);
     });
 
+    test("with onPeekAgent an agent row opens the peek, no inline note and no aria-expanded; without it the toggle stands", () => {
+      const peeked: string[] = [];
+      const a = rec({ id: "a1", kind: "agent", description: "Explorer", summary: "S", tool_use_id: "tu1" });
+      const shell = rec({ id: "sh", kind: "shell", description: "tail" });
+      const r = mount(<TasksPanel tasks={[a, shell]} runId={null} open onToggle={() => {}} onPeekAgent={(t) => void peeked.push(t.id)} />);
+      const row = byClass(r.root, "chat-task")[0]!;
+      expect(line(row).props["aria-expanded"]).toBeUndefined();
+      act(() => line(row).props.onClick());
+      act(() => press(row, "Enter"));
+      expect(peeked).toEqual(["a1", "a1"]);
+      expect(byClass(row, "chat-task-note").length).toBe(0);
+      // An agent with no tool_use_id has nothing to peek at: the old toggle.
+      const bare = rec({ id: "a2", kind: "agent", description: "Bare", summary: "B" });
+      const r2 = mount(<TasksPanel tasks={[bare]} runId={null} open onToggle={() => {}} onPeekAgent={() => void peeked.push("x")} />);
+      act(() => line(byClass(r2.root, "chat-task")[0]!).props.onClick());
+      expect(text(byClass(r2.root, "chat-task-note")[0]!)).toBe("B");
+      expect(peeked.length).toBe(2);
+      // No prop: today's toggle.
+      const r3 = mount(<TasksPanel tasks={[a]} runId={null} open onToggle={() => {}} />);
+      act(() => line(byClass(r3.root, "chat-task")[0]!).props.onClick());
+      expect(text(byClass(r3.root, "chat-task-note")[0]!)).toBe("S");
+    });
+
     test("an agent row still toggles its update with no runId", () => {
       const a = rec({ id: "a1", kind: "agent", description: "Explorer", summary: "done soon" });
       const r = mount(<TasksPanel tasks={[a]} runId={null} open onToggle={() => {}} />);

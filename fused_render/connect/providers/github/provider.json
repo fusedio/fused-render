@@ -1,0 +1,17 @@
+{
+  "name": "GitHub",
+  "_comment": "oauth-device ships with an empty client_id on purpose: Fused still has to register a GitHub OAuth App with device flow enabled. Until then FUSED_RENDER_CONNECT_GITHUB_CLIENT_ID fills it, and the card offers the gh CLI and a personal access token.",
+  "auth": [
+    {"kind": "cli", "command": ["gh", "auth", "token"], "identity_url": "https://api.github.com/user"},
+    {"kind": "oauth-device", "client_id": "",
+     "device_url": "https://github.com/login/device/code",
+     "token_url": "https://github.com/login/oauth/access_token",
+     "scope": "repo read:org read:user notifications",
+     "identity_url": "https://api.github.com/user"},
+    {"kind": "api-key", "label": "Personal access token",
+     "identity_url": "https://api.github.com/user",
+     "docs": "https://github.com/settings/tokens"}
+  ],
+  "tools": {"remote": "https://api.githubcopilot.com/mcp/"},
+  "privacy": "Sign-in and every call go straight from this computer to GitHub. With the GitHub CLI the token stays in the CLI's own store; otherwise it stays on this computer. Fused runs no server in this flow."
+}

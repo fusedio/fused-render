@@ -1606,6 +1606,21 @@ def test_set_mode_writes_control_request_and_host_json_without_a_turn(agent, tmp
     assert agent._set_mode("nope", "auto") == {"error": "no such run"}
 
 
+def test_set_mode_refuses_a_breakout_run(agent, tmp_path, send_env):
+    run_dir = _live_run(agent, tmp_path, backend="claude", mode="default")
+    meta_path = os.path.join(run_dir, "meta.json")
+    with open(meta_path) as fh:
+        meta = json.load(fh)
+    meta["breakout"] = True
+    with open(meta_path, "w") as fh:
+        json.dump(meta, fh)
+    assert agent._set_mode("run-1", "acceptEdits") == {
+        "error": "Breakout chats stay in Ask mode", "reason": "breakout_locked"}
+    assert _inbox_rows(run_dir) == []
+    with open(os.path.join(run_dir, "host.json")) as fh:
+        assert json.load(fh)["mode"] == "default"
+
+
 def test_set_mode_copilot_plan_refused_and_accept_edits_respawns(agent, tmp_path, send_env):
     _live_run(agent, tmp_path, backend="copilot", mode="default")
     assert agent._set_mode("run-1", "plan")["reason"] == "unsupported"

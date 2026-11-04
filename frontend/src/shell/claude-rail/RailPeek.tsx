@@ -107,6 +107,7 @@ import { pokeTasks } from "@shell/tasksPulse";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { shortTaskId } from "@platform/lib/task-id";
 import { ChatMount, draftHref } from "@apps/claude";
+import { breakoutOpener } from "@platform/lib/breakouts";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
@@ -1393,6 +1394,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               >
                 {t.session_id ? (
                   <ChatMount
+                    onBreakout={breakoutOpener()}
                     file={row?.target || t.target || t.project}
                     sessionId={t.session_id}
                     // The task's own settings, a seed (TaskPeek passes the same).

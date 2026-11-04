@@ -32,6 +32,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { GitBranchPlus } from "lucide-react";
 
 import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
@@ -44,12 +45,13 @@ import {
 } from "@platform/lib/drafts";
 import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
+import { COMPOSER_DRAFT_EVENT, type ComposerDraftDetail } from "@platform/lib/breakouts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
-import type { SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
-import type { PermissionMode } from "./protocol/types";
+import type { BreakoutRequest, SendOptions, StrandedLine, Turn, UserTurn } from "./protocol/controller-api";
+import type { PermissionMode, TaskRecord } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
@@ -165,13 +167,14 @@ import { WorktreeHintChip, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
-import { summarizeTasks, taskIndex } from "./protocol/tasks";
+import { agentModelLabel, statusLabel, summarizeTasks, taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
   queueFlagReady,
   useProjectQueueEnabled,
   useTaskRecapTitlesEnabled,
+  useBreakoutEnabled,
 } from "./feature-flag";
 import { WaitingCard, WaitingRow } from "./ui/Waiting";
 import { copyToTaskShots } from "./ui/SchedButton";
@@ -214,6 +217,7 @@ import {
   getClaudeSessionLiveness,
   type Task,
 } from "@platform/lib/api";
+import { hasAgentPeeks, openAgentPeek, publishPeekTurns, useAgentPeeks } from "./agent-peeks";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
 import PanelIcon from "@platform/ui/PanelIcon";
 import "./styles/ann.css";
@@ -309,6 +313,18 @@ export interface ClaudeChatProps {
    *  sidebar's SideCloseButton, same glyph, same place (the header's left
    *  end, on the seam the pane collapses toward). Absent: no button. */
   onHidePane?: () => void;
+  /** BREAKOUT POSTURE: this chat is a research-only side chat forked from the
+   *  session in `params` (see `ControllerDeps.breakout`). It never joins the
+   *  folder queue and never shows the fork notice. */
+  breakout?: boolean;
+  /** With `breakout`: the parent user message's uuid to fork at (absent = tip). */
+  breakoutAt?: string;
+  /** "Breakout from here" / the composer's Breakout button: hand the request
+   *  to the shell, which opens the card. Absent: no Breakout seats. */
+  onBreakout?: (req: BreakoutRequest) => void;
+  /** With `breakout`: the card's window onto this chat — its own session id
+   *  (minted by the first send) and transcript, for Send back. */
+  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number; running?: boolean; stop?: () => void }) => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -1093,6 +1109,9 @@ function ChatBody(props: ChatBodyProps) {
   // flag owns outright: the waiting rows, and the composer's own follow-up note,
   // which the flag takes away (see the Composer's `queueOn`).
   const queueOn = useProjectQueueEnabled();
+  // Breakout is an opt-in beta: off, neither the composer button nor the
+  // per-turn "Breakout from here" renders.
+  const breakoutOn = useBreakoutEnabled();
   /**
    * THE PAGE OUTBOX (ui/outbox.ts) — lines typed while the latch above was
    * shut.
@@ -1361,6 +1380,8 @@ function ChatBody(props: ChatBodyProps) {
       createChatController({
         file,
         params,
+        ...(props.breakout ? { breakout: true } : {}),
+        ...(props.breakout && props.breakoutAt ? { breakoutAt: props.breakoutAt } : {}),
         // The transcript restore takes its own road (owner E2E R1, F5):
         // `/api/claude-sessions/history`. See `fetchHistory`.
         history: (f, s) => fetchHistory(f, s),
@@ -1963,6 +1984,13 @@ function ChatBody(props: ChatBodyProps) {
 
   // ── the three pills ────────────────────────────────────────────────────────
   const defaults = useComposerDefaults(file, params, !!props.hostSeededSettings, state.backend);
+  // AGENT PEEK feed: a floating peek of one of this chat's subagents reads the
+  // Agent call's `children` out of these turns, so hand them over whenever they
+  // (or the set of open peeks) change. Free when no peek is open.
+  const peekCount = useAgentPeeks().length;
+  useEffect(() => {
+    if (state.sessionId && hasAgentPeeks(state.sessionId)) publishPeekTurns(state.sessionId, state.turns);
+  }, [state.turns, state.sessionId, peekCount]);
   // WHICH AGENT THIS CHAT IS ABOUT (docs/COPILOT_BACKEND.md D2/D18): the
   // conversation's own once the wire has said, else the pill's pick, else the
   // catalog's default — `useComposerDefaults` resolves exactly that. Every
@@ -2261,7 +2289,7 @@ function ChatBody(props: ChatBodyProps) {
         // screen by now: either way this is the moment the host may uncover us.
         markReady();
         if (runId) await controller.resumeRun(runId);
-        else if (sessionId) {
+        else if (sessionId && !props.breakout) {
           // NO `run` ON THE URL and a session that may well be busy: ask the
           // session itself. `openSession` above already started this watch, so
           // this covers the one path that skips it — a boot handed a
@@ -3136,7 +3164,7 @@ function ChatBody(props: ChatBodyProps) {
           // name the one on this pane's URL.
           const liveNow = controller.getState();
           const ownRunLive = followUp && liveNow.status !== "idle" && ownSession(liveNow.sessionId, params.get("session_id") || "");
-          if (queueEnabled() && !ownRunLive) {
+          if (queueEnabled() && !ownRunLive && !props.breakout) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
             // `follow_of` were asked a round trip apart could carry both — a
@@ -3723,6 +3751,57 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
+  /** SEND BACK lands here: a breakout card's summary arrives as a window event
+   *  addressed to this chat's session + folder, and goes through the same seat a
+   *  stranded line uses (appended to what the reader has typed, draft in step). */
+  useEffect(() => {
+    if (props.breakout) return;
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<ComposerDraftDetail>).detail;
+      if (!d || !d.text) return;
+      const sid = controller.getState().sessionId || params.get("session_id") || "";
+      if (!sid || d.sessionId !== sid || d.file !== file) return;
+      strandSeq.current += 1;
+      setStranded({ text: d.text, seq: strandSeq.current });
+      // Handled: the breakout must not also write the persisted draft.
+      e.preventDefault();
+    };
+    window.addEventListener(COMPOSER_DRAFT_EVENT, on);
+    return () => window.removeEventListener(COMPOSER_DRAFT_EVENT, on);
+  }, [props.breakout, controller, params, file]);
+
+  /** A breakout card reads this chat's session + transcript through
+   *  `onBreakoutState` (Send back builds its draft from it). */
+  const { onBreakoutState } = props;
+  useEffect(() => {
+    if (props.breakout && onBreakoutState) {
+      onBreakoutState({
+        sessionId: state.sessionId || "",
+        turns: state.turns,
+        forkClamped: !!state.forkClamped,
+        sends: state.breakoutSends ?? 0,
+        // Closing a card mid-run must end the run (it is the card's own research run).
+        running: state.status !== "idle",
+        stop: () => void controller.stopRun(),
+      });
+    }
+  }, [props.breakout, onBreakoutState, controller, state.sessionId, state.turns, state.forkClamped, state.breakoutSends, state.status]);
+
+  /** "Breakout from here" (Transcript `onBreakout`): hand the shell the chosen
+   *  message's uuid, resolved off the controller's turns exactly as the fork
+   *  does. Unlike the fork it is allowed while a run is active — the breakout
+   *  is its own run. */
+  const onBreakoutTurn = useCallback(
+    (turnKey: string) => {
+      const st = controller.getState();
+      const turn = st.turns.find((t) => t.key === turnKey);
+      const sid = st.sessionId || params.get("session_id") || "";
+      if (!props.onBreakout || !sid || !file || !turn || turn.role !== "user" || !turn.uuid) return;
+      props.onBreakout({ sessionId: sid, file, forkAt: turn.uuid, forkKey: turn.key });
+    },
+    [controller, params, file, props.onBreakout],
+  );
+
   /**
    * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the turn, then
    * the typed line goes FIRST, ahead of anything parked, and the outbox drains
@@ -4105,6 +4184,11 @@ function ChatBody(props: ChatBodyProps) {
       }
       switch (plan.do) {
         case "clear":
+          // A breakout has nowhere to go "back" to: its card is the only door.
+          if (props.breakout) {
+            notify({ title: "Breakout chats cannot be cleared; close the card instead", tone: "info" });
+            return false;
+          }
           // THE SAME DOOR AS `← Chats`: a new conversation in this folder.
           onBack();
           return true;
@@ -4127,7 +4211,7 @@ function ChatBody(props: ChatBodyProps) {
       }
     },
     [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk,
-     defaults.model],
+     defaults.model, props.breakout],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the
@@ -5415,6 +5499,21 @@ function ChatBody(props: ChatBodyProps) {
       )}
     </div>
   ) : null;
+  // BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open while a run
+  // is going too (the breakout is its own run). Placed by the strip, or as the
+  // merged head row's tail (that layout has no strip).
+  const breakoutBtn =
+    breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
+      <button
+        type="button"
+        className="bar-ctl bar-ctl-icon c-breakout"
+        title="Breakout: a research-only side chat from here"
+        aria-label="Breakout"
+        onClick={() => props.onBreakout?.({ sessionId: state.sessionId!, file })}
+      >
+        <GitBranchPlus size={14} aria-hidden="true" />
+      </button>
+    ) : null;
   const kebabEl = (
     <>
       {canvasShotSeat}
@@ -5564,6 +5663,9 @@ function ChatBody(props: ChatBodyProps) {
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
             {inChat && !mergedHeadRow ? backBtn : null}
+            {/* BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open
+                while a run is going too (the breakout is its own run). */}
+            {breakoutBtn}
             {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
                 `margin-left: auto` (T:255-262, chat.css), which is not the same
                 thing: a spacer is a flex ITEM, so it kept its 12px gap even
@@ -5663,7 +5765,12 @@ function ChatBody(props: ChatBodyProps) {
             {showHead ? (
               <Topbar
                 slim={peek}
-                {...(mergedHeadRow ? { lead: backBtn, tail: kebabEl, noProject: true } : {})}
+                {...(mergedHeadRow
+                  ? { lead: backBtn, tail: <>{breakoutBtn}{kebabEl}</>, noProject: true }
+                  : // The slim peek head has no strip or merged row: it seats the button itself.
+                    peek && breakoutBtn
+                    ? { tail: breakoutBtn }
+                    : {})}
                 {...(headerExtra ? { extra: headerExtra } : {})}
                 // The hint names where the work is; the menu would only repeat the
                 // original checkout's branch.
@@ -5726,6 +5833,7 @@ function ChatBody(props: ChatBodyProps) {
               sendNowKey={running ? newestQueuedKey : null}
               onSendNow={onSendQueuedNow}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
+              {...(chatBackend === "claude" && breakoutOn && props.onBreakout ? { onBreakout: onBreakoutTurn } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
@@ -5820,6 +5928,20 @@ function ChatBody(props: ChatBodyProps) {
                       open={tasksOpen}
                       onToggle={toggleTasksPanel}
                       parentModel={defaults.model}
+                      {...(breakoutOn && !props.breakout
+                        ? {
+                            onPeekAgent: (t: TaskRecord) =>
+                              void openAgentPeek({
+                                sessionId: state.sessionId ?? "",
+                                file: file ?? "",
+                                toolUseId: t.tool_use_id,
+                                title: t.description || "Agent",
+                                subtitle: [t.subagent_type, agentModelLabel(t, defaults.model), statusLabel(t.status)]
+                                  .filter(Boolean)
+                                  .join(" · "),
+                              }),
+                          }
+                        : {})}
                     />
                   ) : null
                 }
@@ -5855,7 +5977,7 @@ function ChatBody(props: ChatBodyProps) {
             />
             {/* FORK NOTICE: the next send starts a NEW session from the message
                 above; Cancel puts the hidden turns back. */}
-            {state.fork ? (
+            {state.fork && !props.breakout ? (
               <div className="fork-notice" role="status">
                 <span>Forking from an earlier message</span>
                 <button type="button" className="fork-notice-cancel" onClick={() => controller.cancelFork()}>

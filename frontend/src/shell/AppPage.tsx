@@ -153,6 +153,7 @@ import { SourcePanel } from "./contrib/SourcePanel";
 import { BlockedNotice, BlockedStrip } from "./contrib/BlockedStrip";
 import { CommunityLine, CommunityTab, communityBadge, communityLine } from "./contrib/CommunityTab";
 import { authorOf } from "./contrib/words";
+import { breakoutOpener } from "@platform/lib/breakouts";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -1197,6 +1198,7 @@ export default function AppPage({
           />
           <div className="app-page-claude-chat">
             <ChatMount
+              onBreakout={breakoutOpener()}
               // Remounted on a ring's door (`openChatHere`): the session is
               // read off the URL at boot.
               key={claudeSeq}

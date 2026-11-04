@@ -45,6 +45,7 @@ import {
   type PaneSideChoice,
   type PaneSideEntries,
 } from "@apps/explorer/listing/pane-side";
+import { breakoutOpener } from "@platform/lib/breakouts";
 
 export default function ListingPreviewPane({
   undecided = false,
@@ -173,6 +174,7 @@ export default function ListingPreviewPane({
           // `noFocus` is what stops the pane taking the keyboard off the
           // listing.
           <ChatMount
+            onBreakout={breakoutOpener()}
             file={folder}
             // Asked once (pane-modes.test pins that: one call).
             chatOnly={paneChatOnly(side)}
