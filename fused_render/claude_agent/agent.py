@@ -3938,8 +3938,16 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         hook_argv = [sys.executable, "-I",
                      os.path.join(HERE, "permission_server.py"),
                      "--breakout-hook=" + _breakout_handoff_dir(file)]
-        hook_cmd = (subprocess.list2cmdline(hook_argv) if os.name == "nt"
-                    else shlex.join(hook_argv))
+        # FAIL CLOSED: the CLI blocks only on exit 2, and a failure outside
+        # `main`'s own guard (a bad interpreter, an import error) exits with
+        # another non-zero code. The wrapper turns every non-zero exit into 2.
+        # The CLI's own hook timeout stays non-blocking; the deny list above
+        # carries every non-MCP build tool regardless.
+        if os.name == "nt":
+            hook_cmd = subprocess.list2cmdline(hook_argv) + " || exit 2"
+        else:
+            hook_cmd = shlex.join(
+                ["sh", "-c", shlex.join(hook_argv) + " || exit 2"])
         cmd += ["--settings", json.dumps({
             "permissions": {"deny": [
                 "Bash", "Edit", "MultiEdit", "NotebookEdit", "Agent", "Task",
@@ -5051,9 +5059,13 @@ def _start(file: str, message: str, session_id: str, model: str,
             return {"error": "no such breakout", "reason": "breakout_missing"}
         fork_at = ""
     elif breakout:
-        if backend != "claude" or session_id or fork_at:
+        if backend != "claude":
             return {"error": "breakout is only available for Claude chats",
                     "reason": "unsupported", "backend": backend}
+        if session_id or fork_at:
+            return {"error": "a breakout starts a fresh session; session_id "
+                             "and fork_at are not accepted",
+                    "reason": "breakout_fresh_only", "backend": backend}
     if fork_at:
         if not session_id or backend != "claude":
             return {"error": "fork is only available for Claude chats",

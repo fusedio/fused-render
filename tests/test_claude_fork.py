@@ -8,6 +8,7 @@ lives under `meta["forked_from"]`.
 """
 import importlib.util
 import json
+import shlex
 import os
 import re
 
@@ -270,6 +271,12 @@ def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
     assert hook["type"] == "command" and "onFailure" not in hook
     assert hook["timeout"] == 10
     assert "permission_server.py" in hook["command"]
+    # Any non-zero exit of the guard blocks: the CLI blocks only on exit 2.
+    if os.name == "nt":
+        assert hook["command"].endswith(" || exit 2")
+    else:
+        sh = shlex.split(hook["command"])
+        assert sh[:2] == ["sh", "-c"] and sh[2].endswith(" || exit 2")
     handoff = os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs")
     assert "--breakout-hook=" + handoff in hook["command"]
     plain = _argv(agent, tmp_path / "p")
@@ -339,9 +346,10 @@ def test_start_without_breakout_leaves_no_flag(agent, start):
 def test_start_breakout_refuses_a_session_or_fork_at(agent, start):
     for kw in ({"session_id": "OLD"}, {"session_id": "../x"}):
         out, _, _ = start("", breakout=True, **kw)
-        assert out["reason"] == "unsupported"
+        assert out["reason"] == "breakout_fresh_only"
+        assert "fresh session" in out["error"]
     out, _, _ = start("u2", session_id="", breakout=True)
-    assert out["reason"] == "unsupported"
+    assert out["reason"] == "breakout_fresh_only"
     assert not os.path.isdir(agent.RUNS) or not os.listdir(agent.RUNS)
 
 
