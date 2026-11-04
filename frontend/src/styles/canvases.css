@@ -333,14 +333,16 @@
 }
 
 /* The sidebar's Canvases section (shell/CurrentAppsSection.tsx, section="canvases"): Projects' rows
-   with a canvas glyph, and the environment after the name when both hold
-   clones. */
+   with a canvas glyph, and the environment at the row's right edge when both
+   hold clones. `margin-left: auto` pins it right even when a running/unread
+   dot takes the name's stretch away; the row's own gap is the minimum space
+   before it. */
 .canvas-row-glyph {
   cursor: default;
 }
 .canvas-row-env {
   flex: none;
-  margin-left: 6px;
+  margin-left: auto;
   font-size: 10px;
   line-height: 14px;
   padding: 0 5px;
