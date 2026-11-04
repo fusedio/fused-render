@@ -171,6 +171,24 @@ describe("the cards", () => {
     expect(buttons(s, "Connect")).toHaveLength(1); // the BYO form's, under Advanced
   });
 
+  test("a shipped Slack app keeps bring-your-own under Advanced", async () => {
+    // Fused's own Slack app makes the default button work; a user who would rather not sign in through it
+    // still finds the client-id form (the override: manager.login `client_id`) under Advanced, closed.
+    list = [{ ...slack, auth: [{ ...slack.auth[0], available: true, reason: null }] }];
+    const box = await mount();
+    const s = card(box, "slack");
+    expect(textOf(s)).toContain("Not connected");
+    expect(buttons(s, "Connect")).toHaveLength(2); // the card's own, and the BYO form's
+    expect(textOf(s)).toContain("Sign in with your own OAuth app");
+    const details = s.findAll((x) => x.type === "details")[0];
+    expect(details.props.open).toBeUndefined();
+    const byo = details.findAll((x) => x.type === Input)[0];
+    await act(async () => byo.props.onChange({ target: { value: "9.8" } }));
+    await act(async () => details.findAll((x) => x.type === "form")[0].props.onSubmit({ preventDefault() {} }));
+    await settle();
+    expect(calls.find((c) => c.method === "POST")?.body).toEqual({ kind: "oauth-pkce", client_id: "9.8" });
+  });
+
   test("a connected card's Disconnect posts logout", async () => {
     answers["POST /api/connect/notion/logout"] = { state: "disconnected", tools: 0 };
     const box = await mount();

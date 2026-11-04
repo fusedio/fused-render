@@ -125,7 +125,11 @@ function ProviderCard({
   // A key has nothing to open in a browser: when it is the default, its field
   // is on the card itself rather than behind a Connect that could not work.
   const primaryIsKey = primary?.kind === "api-key";
-  const others = p.auth.filter((a) => a !== primary);
+  // A bring-your-own app stays on offer under Advanced even once the default
+  // button works: a user who would rather not sign in through Fused's Slack
+  // app pastes the client id of one made from the same manifest, and the
+  // server uses that id for the flow (manager.login `client_id`).
+  const others = [...p.auth.filter((a) => a !== primary), ...(primary?.byo ? [primary] : [])];
   const again: LoginBody = againBody(p, st);
   const n = toolCount(st);
 
