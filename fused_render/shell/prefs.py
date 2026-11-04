@@ -501,6 +501,13 @@ def task_recap_titles_enabled() -> bool:
     return read_prefs().get("task_recap_titles_enabled") is True
 
 
+def breakout_enabled() -> bool:
+    """Whether Breakout (research-only side chats forked from a conversation)
+    is available (default off — opt-in beta). Off, no Breakout buttons render
+    and the agent refuses `breakout` starts. Only a stored `true` is on."""
+    return read_prefs().get("breakout_enabled") is True
+
+
 def canvas_shot_slow_fallback_enabled() -> bool:
     """Whether a canvas screenshot that the native still could not take
     (Screen Recording denied, the window behind another) may fall back to
@@ -1231,6 +1238,8 @@ def _prefs_response() -> dict:
         # Whether finished turns are recapped by haiku and the Tasks rows
         # titled by it (opt-in beta, `task_recap_titles_enabled`).
         "task_recap": {"enabled": task_recap_titles_enabled()},
+        # Breakout side chats (opt-in beta, `breakout_enabled`).
+        "breakout": {"enabled": breakout_enabled()},
         # The slow in-canvas screenshot fallback on a Mac
         # (`canvas_shot_slow_fallback_enabled`; off by default).
         "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
@@ -1572,6 +1581,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["task_recap_titles_enabled"] = value
             changed = True
+        if "breakout_enabled" in body:
+            value = body.get("breakout_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'breakout_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["breakout_enabled"] = value
+            changed = True
         if "canvas_shot_slow_fallback_enabled" in body:
             value = body.get("canvas_shot_slow_fallback_enabled")
             if not isinstance(value, bool):
@@ -1912,7 +1928,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
-                          "'task_recap_titles_enabled', "
+                          "'task_recap_titles_enabled', 'breakout_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
                           "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
                           "'task_summary_titles_enabled', "

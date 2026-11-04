@@ -8,6 +8,7 @@ import type { CanvasShot } from "./shots/canvas-shot";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ChatFramePlaceholder } from "./ChatPlaceholder";
 import type { ClaudeAsk } from "./ClaudeChat";
+import type { BreakoutRequest, Turn } from "./protocol/controller-api";
 import {
   createMemoryParamsStore,
   type ParamsSnapshot,
@@ -230,6 +231,15 @@ export interface ChatMountProps {
   canvasShot?: CanvasShot;
   /** The host pane's close button at the top row's left end (ClaudeChat). */
   onHidePane?: () => void;
+  /** BREAKOUT POSTURE (a shell breakout card): a research-only side chat forked
+   *  from `sessionId`. Seeds only `session_id` (never `run`) and forks at
+   *  `breakoutAt` on the first send (absent = the tip). See ClaudeChat. */
+  breakout?: boolean;
+  breakoutAt?: string;
+  /** Open a breakout from this chat (its message / composer Breakout seats). */
+  onBreakout?: (req: BreakoutRequest) => void;
+  /** With `breakout`: the chat's own session id + transcript, for Send back. */
+  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number; running?: boolean; stop?: () => void }) => void;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -321,6 +331,10 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.noAnnTools ? { noAnnTools: true } : {})}
         {...(props.canvasShot ? { canvasShot: props.canvasShot } : {})}
         {...(props.onHidePane ? { onHidePane: props.onHidePane } : {})}
+        {...(props.breakout ? { breakout: true } : {})}
+        {...(props.breakoutAt ? { breakoutAt: props.breakoutAt } : {})}
+        {...(props.onBreakout ? { onBreakout: props.onBreakout } : {})}
+        {...(props.onBreakoutState ? { onBreakoutState: props.onBreakoutState } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}

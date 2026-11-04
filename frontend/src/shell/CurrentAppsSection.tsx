@@ -336,6 +336,10 @@ function CurrentAppRow({
       >
         {app.name}
       </a>
+      {/* The env chip, then the dot after it: the pair is pushed to the
+          row's right edge (canvases.css), so every row's chip and dot sit in
+          one column whether or not the row is running. A "· N queued" count
+          is moved ahead of the pair by CSS order, so the dot stays last. */}
       {showEnv && app.canvas && isWorkbenchEnv(app.canvas.env) && (
         <span className="canvas-row-env" aria-hidden="true">
           {ENV_NAMES[app.canvas.env].tag}

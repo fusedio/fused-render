@@ -35,6 +35,7 @@ import {
   ReaderControl,
   ShareSheetControl,
   TaskRecapsControl,
+  BreakoutControl,
   TaskSummaryTitlesControl,
   ClaudeStrictMcpControl,
   ContribRemixControl,
@@ -48,6 +49,7 @@ import {
   SkippedFoldersControl,
 } from "./indexing";
 import { LanControl } from "./lan";
+import { ConnectionsPointer } from "../Connections";
 import { ClaudeCliMissing } from "./claude";
 import { FusedAccountControl, HuggingFaceControl, WorkbenchEnvControl } from "./accounts";
 import {
@@ -77,6 +79,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   engines: EnginesPointer,
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,
+  breakout: BreakoutControl,
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
   "claude-default-permission": ClaudeDefaultPermissionControl,
@@ -101,6 +104,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   reader: ReaderControl,
   "chromium-windows": ChromiumWindowsControl,
   lan: LanControl,
+  connections: ConnectionsPointer,
   "fused-account": FusedAccountControl,
   "workbench-env": WorkbenchEnvControl,
   huggingface: HuggingFaceControl,

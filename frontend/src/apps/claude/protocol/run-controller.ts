@@ -107,8 +107,9 @@ import type { Receipt } from "../shots/types";
 /** T:16377 — the poll cadence. No backoff, ever. */
 export const POLL_MS = 400;
 /** How often a finished turn's tasks panel asks the session host that is still
- *  running its background work (`watchHostTasks`, agent.py `_run_tasks`). */
-export const HOST_TASKS_MS = 5000;
+ *  running its background work (`watchHostTasks`, agent.py `_run_tasks`): 1 s,
+ *  so an ended job leaves the strip about a second later, like the CLI. */
+export const HOST_TASKS_MS = 1000;
 /** Failed `tasks` asks in a row before a host watch gives up. */
 export const HOST_TASKS_TRIES = 3;
 
@@ -294,6 +295,8 @@ function emptyState(file: string | null): ChatState {
     status: "idle",
     turns: [],
     fork: null,
+    forkClamped: false,
+    breakoutSends: 0,
     permissions: [],
     appState: [],
     canvasShot: [],
@@ -302,7 +305,9 @@ function emptyState(file: string | null): ChatState {
     trouble: null,
     permissionMode: defaultPermissionNow(),
     queued: [],
+    queuedKeys: [],
     inbox: [],
+    taken: [],
     historyLoading: false,
     adopting: false,
     transcript: null,
@@ -546,7 +551,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     handedBack: boolean;
   }[] = [];
   let queuedSeq = 0;
-  const publishQueued = () => emit({ queued: queued.map((q) => q.typed || q.wire) });
+  const publishQueued = () =>
+    emit({ queued: queued.map((q) => q.typed || q.wire), queuedKeys: queued.map((q) => q.bubble) });
   /** Every entry, gone, published once. The run is over: the CLI has either
    *  answered these or died with them, and neither is "queued". */
   const clearQueued = () => {
@@ -580,6 +586,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
     inboxSig = sig;
     emit({ inbox: rows });
   };
+  /**
+   * THE CLI TOOK THESE LINES (`PollResponse.inbox_taken`): a `command_lifecycle`
+   * `started`/`completed` receipt or the `isReplay` echo named the uuid. A
+   * `queued` entry is "queued for this turn" only until then — it used to stand
+   * until the run ended, so a line the CLI read three seconds after Enter still
+   * said "1 follow-up is queued" for the rest of the turn. Keyed by the page's
+   * own `client_uuid` (the inbox entry's uuid since the journal work).
+   */
+  const noteTaken = (ids: readonly string[] | null | undefined) => {
+    const list = Array.isArray(ids) ? ids.filter((u) => typeof u === "string" && u) : [];
+    if (!list.length) return;
+    const known = new Set(state.taken);
+    const fresh = list.filter((u) => !known.has(u));
+    if (fresh.length) emit({ taken: [...state.taken, ...fresh].slice(-128) });
+    const gone = new Set(list);
+    let moved = false;
+    for (let i = queued.length - 1; i >= 0; i--) {
+      const id = queued[i].opts.clientId;
+      if (id && gone.has(id)) {
+        queued.splice(i, 1);
+        moved = true;
+      }
+    }
+    if (moved) publishQueued();
+  };
   /** Nothing is held once the run is over: the CLI has answered its inbox or
    *  died with it, the same rule `clearQueued` states for the optimistic half. */
   const clearInbox = () => publishInbox([]);
@@ -612,8 +643,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * background Agent or a Monitor runs on after the reply, and its row stays
    * LIVE — its clock, its Stop, its Output (they address this run, which the
    * host still answers for) — until the host says the job is over
-   * (`watchHostTasks`), when it ends with its real status and leaves after the
-   * panel's 5 s grace. Only a host that is really gone downgrades.
+   * (`watchHostTasks`), when it ends with its real status and leaves the
+   * strip at once. Only a host that is really gone downgrades.
    */
   const endRunTasks = (runId: string | null) => {
     if (!runId || state.tasksRunId !== runId) return;
@@ -679,7 +710,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             return;
           }
           // The last job ended: its row now carries its real status and
-          // leaves after the panel's own 5 s grace (TasksPanel); the task row
+          // leaves the strip at once (TasksPanel lists active rows only); the task row
           // moves to Done on the Tasks page.
           if (!res.tasks_pending) return;
         }
@@ -722,7 +753,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // nothing live does not replace them (Bugbot 4307278676): history's walk
     // can name another run dir, or race the host's own liveness, and nulling
     // the owner here would kill the watch — the job's real end, the dead-host
-    // downgrade and the 5 s grace would never come. The watch ends by itself.
+    // downgrade and its leaving would never come. The watch ends by itself.
     if (!res.live_run && state.tasksRunId && hostWatched.startsWith(state.tasksRunId + "\u0000")) return;
     const owner = res.live_run || res.tasks_run || null;
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
@@ -1019,9 +1050,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * controller drops it (`dropOptimisticUser`, and `returnSend` for the roads
    * that refuse inside).
    */
-  const postOptimisticUser = (text: string): string => {
+  const postOptimisticUser = (text: string, pending?: UserTurn["pending"]): string => {
     if (disposed || !text) return "";
-    return addUser(text).key;
+    const key = addUser(text).key;
+    // THE TAG RIDES THE ROW, not a side list: the page outbox's bubble IS this
+    // turn, and `addUser`'s adoption rebuilds the turn without `pending` — which
+    // is exactly when the tag should go, because the run has the words.
+    if (pending) setOptimisticPending(key, pending);
+    return key;
   };
 
   const dropOptimisticUser = (key: string): void => {
@@ -1029,12 +1065,52 @@ export function createChatController(deps: ControllerDeps): ChatController {
     dropTurn(key);
   };
 
+  const setOptimisticPending = (key: string, pending: UserTurn["pending"] | undefined): void => {
+    if (!key || !state.turns.some((t) => t.key === key && t.role === "user")) return;
+    emit({
+      turns: state.turns.map((t) => {
+        if (t.key !== key || t.role !== "user") return t;
+        const { pending: _was, ...rest } = t;
+        return pending ? { ...rest, pending } : rest;
+      }),
+    });
+  };
+
+  /**
+   * BREAKOUT POSTURE (`deps.breakout`): this controller drives a research-only
+   * side chat forked from `deps.params`' session. `breakoutSpent` flips once
+   * the fork's `start` has landed; from then on `session_id` is the breakout's
+   * OWN session and every start is `breakout: "resume"` (same policy, no
+   * second fork).
+   */
+  let breakoutSpent = false;
+  /** User sends made in breakout posture. A history refresh swaps the `u:` keys
+   *  for uuid-keyed rows, so the card counts its own turns from the END by this. */
+  let breakoutSends = 0;
+  const breakoutMode = (): "" | "1" | "resume" =>
+    !deps.breakout ? "" : breakoutSpent ? "resume" : "1";
+
+  /** The card shows the parent up to the chosen message: park that turn and
+   *  everything after it the way `beginFork` does (the send then reads the
+   *  parked uuid as `fork_at`), without handing the words to the composer. */
+  const scopeBreakout = (): void => {
+    const uuid = deps.breakoutAt;
+    if (!deps.breakout || breakoutSpent || !uuid) return;
+    const at = state.turns.findIndex((t) => t.role === "user" && t.uuid === uuid);
+    const turn = state.turns[at];
+    if (at < 0 || !turn) return;
+    emit({
+      turns: state.turns.slice(0, at),
+      fork: { uuid, text: turn.text, hidden: state.turns.slice(at) },
+    });
+  };
+
   /** "Fork from here" — see `ChatController.beginFork`. */
   const beginFork = (turnKey: string): string | null => {
     if (disposed || sending || state.status !== "idle" || curBackend() !== "claude") return null;
     const at = state.turns.findIndex((t) => t.key === turnKey);
     const turn = state.turns[at];
-    if (at < 0 || !turn || turn.role !== "user" || !turn.uuid) return null;
+    if (at < 0 || !turn || turn.role !== "user" || !turn.uuid || turn.pending) return null;
     // A second fork while one is parked re-forks from what is still visible;
     // the newly hidden turns come earlier in the transcript than the ones
     // already parked, so they go first and cancelFork restores transcript order.
@@ -1235,6 +1311,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  ones booked at or after its own generation. A failed POST yields no id. */
   const bookings = new Set<Promise<{ sid: string; mark: number; id: string | null }>>();
   const scheduleComeback = (runId: string, error: string, quota: Quota): boolean => {
+    // A scheduled continuation is a plain run: it would drop the research-only policy.
+    if (deps.breakout) return false;
     if (scheduledRuns.has(runId)) return true;
     const sessionId = state.sessionId;
     if (!FILE || !sessionId) return false;
@@ -2002,6 +2080,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
         publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
+        noteTaken(poll.inbox_taken);
         // THE RUN'S BACKGROUND TASKS (SPEC T-5) — sticky per run, see `publishTasks`.
         // …BUT NOT OVER A JOB ANOTHER HOST STILL HOLDS (Akshil, 2026-10-19):
         // a follow-up can open a turn on a NEWER host of this session (the
@@ -2009,11 +2088,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // on. This run's empty list says nothing about that job, so the rows
         // stay, owned by their host (Stop/Output still reach it), and that
         // host stays watched through this turn, so its end still lands (and
-        // its ended row keeps the panel's 5 s grace, CodeRabbit).
+        // its ended row leaves the strip, CodeRabbit).
         {
           const rows = Array.isArray(poll.tasks) ? poll.tasks : [];
           const owner = state.tasksRunId;
-          if (!rows.length && owner && owner !== runId && stillShown(state.tasks, now())) {
+          if (!rows.length && owner && owner !== runId && stillShown(state.tasks)) {
             if (loopSeq === seat) watchHostTasks(owner, seat);
           } else if (rows.length || owner !== runId) publishTasks(rows, runId);
         }
@@ -2563,7 +2642,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // inside the first one's capture window made the first roll back a turn
       // the agent had already taken (`SendOptions.sendId`).
       ...(opts.sendId ? { sendId: opts.sendId } : {}),
+      ...(opts.clientId ? { clientId: opts.clientId } : {}),
     });
+  };
+  /** The server has this line (see `ChatControllerDeps.onSendDelivered`). */
+  const delivered = (opts: SendOptions): void => {
+    if (opts.clientId) deps.onSendDelivered?.(opts.clientId);
   };
 
   async function sendMessage(text: string, opts: SendOptions = {}): Promise<void> {
@@ -2642,7 +2726,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // A FORK starts a NEW session from the old one's transcript: never a
       // follow-up into the old live host (which, if any, keeps running).
       const forkAt = state.fork?.uuid || "";
-      if (sessionId && !forkAt) {
+      // A breakout's FIRST start forks the parent (at `forkAt`, or at the tip
+      // when empty): never a follow-up into the parent's live host, so no probe.
+      const bk = breakoutMode();
+      if (sessionId && !forkAt && bk !== "1") {
         // A session already live for this file absorbs this message into its own
         // held-open `claude` process (Task 6) instead of `start` spawning a
         // second, parallel one against the same session_id. A brand-new chat has
@@ -2672,10 +2759,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 model: curModel(),
                 effort: curEffort(),
                 permission_mode: opts.permission || curPermission(),
+                ...(bk ? { breakout: bk } : {}),
                 // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR
                 // #1194): proof this send is the one already counted, so the
                 // server gate only looks rather than claiming a second time.
                 ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+                ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
               },
             )) as SendResponse;
           } catch (err) {
@@ -2707,6 +2796,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
               message: outgoing,
               session_id: sessionId,
               ...(forkAt ? { fork_at: forkAt } : {}),
+              ...(bk ? { breakout: bk } : {}),
               backend: curBackend(),
               model: curModel(),
               effort: curEffort(),
@@ -2742,6 +2832,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
               // proof this send is the one already counted, so the server gate
               // only looks rather than claiming a second time.
               ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+              ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
             },
           )) as StartResponse;
         } catch (startErr) {
@@ -2755,7 +2846,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // probe — that start provably launched nothing.
           // A fork's `sessionId` is the OLD session, whose live host is not
           // this turn's run: no probe, the fork stays set for a resend.
-          if (!isTimeout(startErr) || forkAt) throw startErr;
+          if (!isTimeout(startErr) || forkAt || bk === "1") throw startErr;
           runId = await liveAfterStartTimeout(sessionId);
           if (!runId) throw startErr;
         }
@@ -2782,9 +2873,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
           const named = (res as { session_id?: string }).session_id;
           if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
           if (logGen === gen) noteBackend((res as { backend?: string }).backend);
+          if ((res as { fork_clamped?: boolean }).fork_clamped && logGen === gen) emit({ forkClamped: true });
         }
       }
       started = true;
+      delivered(opts);
+      if (bk === "1") breakoutSpent = true;
+      if (bk) {
+        breakoutSends += 1;
+        emit({ breakoutSends });
+      }
       // The fork has been spent: the new session exists. A failed start never
       // reaches here, so the fork stays set and the hand-back re-offers it.
       if (forkAt && logGen === gen && state.fork) emit({ fork: null });
@@ -2917,18 +3015,44 @@ export function createChatController(deps: ControllerDeps): ChatController {
       runId = activeRun;
     }
     if (!runId) {
-      // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`). This road has
-      // slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample room
-      // for a Back (or an `openOtherSession`) to land — and an unguarded
-      // handback posts the red trouble card and re-injects the text into
-      // whatever transcript is now current: the landing, or a different
-      // conversation entirely. A stale failure stays quiet; `newChat` has
-      // already cleared the queue and the bubble it would give back.
-      if (logGen === gen) {
-        giveBack();
-        addError("Could not send: no run to attach this message to.");
+      // A PARKED LINE OPENS A FRESH TURN INSTEAD (`SendOptions.orStart`): the
+      // run it was parked behind ended before the drain got here, and the
+      // words were typed to be said either way. Same bubble — `sendMessage`
+      // adopts the row this follow-up already adopted — and the queue entry
+      // goes, because the line is no longer waiting behind anything.
+      if (opts.orStart && logGen === gen && !disposed) {
+        // SERIALIZED (Bugbot 4122227219): two parked lines can sit here
+        // together — a follow-up into a live run opens the latch at once — and
+        // if both took this road the second would hit `sendMessage`'s `sending`
+        // gate and be REFUSED, the very "third message swallowed" this queue
+        // exists to end. So only the first opens the turn; a later one waits
+        // for that turn to have a run and follows it in, in order.
+        if (!sending) {
+          drop();
+          const { orStart: _o, ...rest } = opts;
+          await sendMessage(text, { ...rest, optimisticKey: bubble.key });
+          return;
+        }
+        for (let tries = 0; !runId && tries < FOLLOWUP_WAIT_TRIES; tries++) {
+          await sleep(FOLLOWUP_WAIT_MS);
+          runId = activeRun;
+        }
       }
-      return;
+      if (!runId) {
+        // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`, :1443). This road
+        // has slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample
+        // room for a Back (or an `openOtherSession`) to land — and an unguarded
+        // handback posts the red trouble card and re-injects the text into
+        // whatever transcript is now current: the landing, or a different
+        // conversation entirely. A stale failure stays quiet; `newChat` has
+        // already cleared the queue and the bubble it would give back
+        // (QA, PR #1061).
+        if (logGen === gen) {
+          giveBack();
+          addError("Could not send: no run to attach this message to.");
+        }
+        return;
+      }
     }
     try {
       const res = (await run(
@@ -2942,10 +3066,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
           model: curModel(),
           effort: curEffort(),
           permission_mode: opts.permission || curPermission(),
+          ...(deps.breakout ? { breakout: "resume" } : {}),
           // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
           // proof this send is the one already counted, so the server gate
           // only looks rather than claiming a second time.
           ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+          ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
         },
       )) as SendResponse;
       if (res && "respawn" in res && res.respawn) {
@@ -2962,6 +3088,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             ...hintParam,
             message: outgoing,
             session_id: sessionId,
+            ...(deps.breakout ? { breakout: "resume" } : {}),
             backend: curBackend(),
             model: curModel(),
             effort: curEffort(),
@@ -2972,6 +3099,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // proof this send is the one already counted, so the server gate
             // only looks rather than claiming a second time.
             ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+            ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
           },
         )) as StartResponse;
         const failed = (startedRes as { error?: string }).error;
@@ -2986,6 +3114,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // turn now in flight. Drop the entry (the bubble stays: it is that
         // turn's own bubble).
         drop();
+        delivered(opts);
         if (logGen === gen) {
           setRunParam(fresh);
           void pollLoop(fresh, gen, { prompt: spoken });
@@ -3011,6 +3140,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // fact: the inbox has the message, so a stop from here on cannot claim
       // the CLI never received it (`stopRun`).
       entry.landed = true;
+      delivered(opts);
       followupSeq++;
     } catch (err) {
       // A 504 MAY STILL LAND (`SEND_TIMEOUT_PROBES`), so it does not hand the
@@ -3032,6 +3162,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // news about a message the reader has already been given back.
         if (entry.handedBack) return;
         if (alive) {
+          delivered(opts);
           followupSeq++;
           return;
         }
@@ -3127,6 +3258,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         stranded.push({
           text: entry.typed || entry.wire,
           ...(entry.opts.sendId ? { sendId: entry.opts.sendId } : {}),
+          ...(entry.opts.clientId ? { clientId: entry.opts.clientId } : {}),
           ...(willReturn ? { returned: true } : {}),
         });
         // AND ITS PICTURES, but only for a send the inbox never confirmed. The
@@ -3518,6 +3650,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // at all — and `live_run: ""` publishes the empty list, because nothing is
     // held when nothing is running.
     if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);
+    noteTaken(res.inbox_taken);
     // THE SESSION'S LAST RUN'S TASKS (SPEC T-1/T-5): a reload shows the panel
     // it left. An empty answer about the run already drawn keeps the list —
     // the poll owns a live run's tasks.
@@ -3547,6 +3680,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (sending) return;
     sending = true;
     const seat = ++sendSeq;
+    // LEAVING A CONVERSATION DETACHES FROM ITS LIVE RUN (Bugbot, PR #2097):
+    // left attached, `status` stays "running" and a line typed in the arriving
+    // chat is routed as a follow-up into the OLD run's inbox. The run keeps
+    // going server-side; the arriving session's own live run, if any, is
+    // adopted below. Re-opening the SAME session leaves its run alone.
+    const leaving = sessionId !== state.sessionId;
+    if (leaving) {
+      logGen++;
+      activeRun = null;
+      activeSeat = 0;
+      activeTurnKey = null;
+    }
     const gen = logGen;
     permCards.clear();
     notedSkills.clear();
@@ -3573,6 +3718,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     backendSeeded = !!opts.backend;
     emit({
       sessionId,
+      ...(leaving ? { status: "idle" as const, runId: null } : {}),
       // The agent belongs to the conversation that is leaving. The ARRIVING
       // one's, when the opener knows it (the row it was opened from), is
       // named at once — so a restore that fails, or is slow, never shows the
@@ -3594,6 +3740,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       adopting: true,
       turns: [],
       fork: null,
+      forkClamped: false,
       // The meter belongs to the conversation that is leaving. Cleared with the
       // turns rather than left to the fetch, so the window between the two does
       // not show the last chat's fill under an empty log.
@@ -3625,7 +3772,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Transcript and cards together, gate down — the fetch below replaces it.
     restoredSid = sessionId;
     const cached = deps.historyCache?.get(FILE || "", sessionId);
-    if (cached) landHistory(cached, true);
+    if (cached) {
+      landHistory(cached, true);
+      scopeBreakout();
+    }
     try {
       const res = await fetchHistoryVia(sessionId);
       if (logGen !== gen || disposed) return;
@@ -3633,6 +3783,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (landDeleted(res)) return;
       deps.historyCache?.set(FILE || "", sessionId, res);
       landHistory(res, false);
+      scopeBreakout();
     } catch (err) {
       // A failed restore is not a trouble card in T either — it warns and leaves
       // an empty log (T:18057-18059).
@@ -3648,7 +3799,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // restored transcript and telling its host it is ready — neither of which
     // should wait on the answer. A `run` already on the URL is `resumeRun`'s
     // job and the `activeRun` guard inside makes the overlap harmless.
-    if (!deps.params.get("run")) void adoptLiveRun(sessionId);
+    // A breakout card shows the PARENT's transcript but is never the parent's
+    // run: adopting its live run would attach this card to it.
+    if (!deps.params.get("run") && !(deps.breakout && !breakoutSpent)) void adoptLiveRun(sessionId);
   }
 
   /**
@@ -4494,6 +4647,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
   async function refreshHistory(sessionId: string): Promise<void> {
     if (disposed || !sessionId) return;
     if (activeRun || sending) return;
+    // An unspent breakout card shows the parent's scoped transcript; the
+    // parent's own history must not overwrite it.
+    if (deps.breakout && !breakoutSpent) return;
     const gen = logGen;
     // WHAT THE LOG LOOKED LIKE WHEN THIS WAS ASKED (Bugbot 3977975835). A
     // scheduled or adopted repair that starts AND finishes inside the round
@@ -4636,6 +4792,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     sendFollowUp,
     postOptimisticUser,
     dropOptimisticUser,
+    setOptimisticPending,
     beginFork,
     cancelFork,
     stopRun,

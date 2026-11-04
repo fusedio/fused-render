@@ -649,11 +649,9 @@ export interface ToolbarFit {
  * 220px, and the TITLE is what gives — it ellipsises, which is what a title is
  * for. Everything else in the row is a mark or a control, and a mark that
  * ellipsises is a mark that lies. So when even a floored title will not fit,
- * two things leave, in this order:
+ * one thing leaves:
  *
- *   1. the project NAME — a fact, repeated on the row behind the panel, and the
- *      door beside it already says where the folder is;
- *   2. the Open door — an act, so it does not simply vanish: it reappears in
+ *   1. the Open door — an act, so it does not simply vanish: it reappears in
  *      the ⋮ (TaskPeek `menuItems`). A hidden control has to be somewhere.
  *
  * The panel-hide button, the chevrons, the status ring, the number and the ⋮
@@ -661,7 +659,6 @@ export interface ToolbarFit {
  * to its actions, is the one thing a narrow window must not do.
  */
 export const PEEK_HEAD_DROPS = [
-  ".task-side-peek-project",
   ".task-side-peek-open",
 ] as const;
 

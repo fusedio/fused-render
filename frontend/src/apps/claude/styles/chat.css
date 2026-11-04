@@ -33,7 +33,7 @@
   --c-panel: var(--bg-alt);
   --c-surface: var(--row-bg-hover);
   --c-surface-2: var(--row-bg-selected);
-  --c-bubble-user: var(--row-bg-selected);
+  --c-bubble-user: var(--row-bg-hover);
   --c-fg: var(--fg);
   --c-fg-strong: #ffffff;
   --c-dim: var(--fg-muted);
@@ -92,7 +92,7 @@
   --c-panel: var(--bg-alt);
   --c-surface: var(--row-bg-hover);
   --c-surface-2: var(--row-bg-selected);
-  --c-bubble-user: var(--row-bg-selected);
+  --c-bubble-user: var(--row-bg-hover);
   --c-fg: var(--fg);
   --c-fg-strong: #000000;
   --c-dim: var(--fg-muted);
@@ -491,8 +491,10 @@
 }
 /* Same 0.75 the four type tokens take, so the picture keeps its proportion to
    the words beside it. */
-.chat-root.chat-compact .annsum .annsum-pane img {
+.chat-root.chat-compact .annsum .annsum-pane {
   max-width: min(165px, 100%);
+}
+.chat-root.chat-compact .annsum .annsum-pane img {
   max-height: 105px;
 }
 /* PEEK keeps its composer and its transcript at full size — the head above is
@@ -742,6 +744,10 @@
 .chat-root .c-topbar-merged .c-back {
   padding: 2px 8px;
   line-height: 1.5;
+}
+.chat-root .c-topbar-merged .c-breakout {
+  flex: 0 0 auto;
+  align-self: center;
 }
 .chat-root .c-topbar-merged .task-side-peek-who {
   flex: 1 1 0;

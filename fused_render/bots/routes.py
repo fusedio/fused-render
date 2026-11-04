@@ -375,6 +375,8 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
         b.meta["terminal"] = terminal
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
+    if isinstance(body.get("connections"), list):
+        b.meta["connections"] = _apptools().clean_connections(body["connections"])
     if isinstance(body.get("allow_rules"), list):
         b.meta["allow_rules"] = _tools().clean_allow_rules(body["allow_rules"])
     if body.get("engine") in bm.ENGINES and not bm.is_super(b.meta):
@@ -842,6 +844,12 @@ def _settings(bid, body):
     elif isinstance(body.get("trusted_apps"), list):
         with b.lock:
             b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
+    if isinstance(body.get("connections_add"), list) or isinstance(body.get("connections_remove"), list):
+        # Connected services this bot may use (docs §2 `connections`; Settings › Connections). Additions and
+        # removals only, for the same reason as trusted_apps: a card answered "Always approve" ticks a service
+        # while the dialog is open. User-only: a bot's own `bot_settings` never carries this key.
+        with b.lock:
+            _apptools().set_connections(b.meta, add=body.get("connections_add") or [], remove=body.get("connections_remove") or [])
     if folders is not None:
         # The folders this bot may READ (docs §2). The dialog is the only writer, so the full list is taken as sent;
         # a bot's own `bot_settings` never carries this key (a bot granting folders to a bot is escalation).

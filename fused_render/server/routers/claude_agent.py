@@ -62,7 +62,7 @@ from fused_render import calls as shell_calls
 from fused_render import jobs as shell_jobs
 from fused_render import netlog
 from fused_render import claude_agent, claude_remote
-from fused_render import tasks_watch
+from fused_render import tasks_store, tasks_watch
 from fused_render._binding import ParamError, bind_params
 from fused_render.claude_agent import gate, pool
 from fused_render.executor import dumps_result
@@ -319,6 +319,23 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
     return await agent_dispatch(body, getattr(request.state, "fused_call", None))
 
 
+def _mark_breakout(params: dict, envelope: dict) -> None:
+    """File the session a breakout `start` just made in `breakouts.json`, so
+    the Tasks scan never lists it. Best-effort: a failed mark shows an extra
+    row, it must never fail the start."""
+    try:
+        if params.get("action") != "start" or \
+                str(params.get("breakout") or "") not in ("1", "resume"):
+            return
+        result = envelope.get("result") if isinstance(envelope, dict) else None
+        sid = str(result.get("session_id") or "") if isinstance(result, dict) \
+            and not result.get("error") else ""
+        if sid:
+            tasks_store.mark_breakout(sid)
+    except Exception:  # noqa: BLE001
+        logger.exception("claude agent: could not mark the breakout")
+
+
 async def agent_dispatch(body: dict, call: dict | None) -> Response:
     """Everything after the transport's guard: the POST route's body, shared
     with the `/api/claude/agent/ws` socket (whose guard is its origin check).
@@ -383,6 +400,7 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
         # as before — it is the folder's own session continuing.
         gate._file_owner(params, _envelope_of(fut), body,
                          late=(action == "start"))
+        _mark_breakout(params, _envelope_of(fut))
         git_status.invalidate_status_cache()
 
     def _on_cancel(fut):
@@ -429,6 +447,7 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
         # handler never ran, so it is filed now as the failure it is (the
         # placeholder dropped, a send's spent claim restored) with no `_late`.
         gate._file_owner(params, envelope, body)
+        _mark_breakout(params, envelope)
     if action == "cancel" and status == 200:
         # THE TASKS PAGE HEARS THE STOP NOW. Its own readers (the CLI's
         # registry row, the transcript tail) only notice a stop once the CLI

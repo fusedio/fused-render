@@ -404,10 +404,37 @@ class _CorsHandler(SimpleHTTPRequestHandler):
         pass
 
 
+class _RangeHandler(_CorsHandler):
+    served = {}
+
+    def do_GET(self):
+        header = self.headers.get("Range")
+        path = self.translate_path(self.path)
+        name = os.path.basename(path)
+        if not header or not os.path.isfile(path):
+            if os.path.isfile(path):
+                _RangeHandler.served[name] = _RangeHandler.served.get(name, 0) + os.path.getsize(path)
+            return super().do_GET()
+        size = os.path.getsize(path)
+        first, last = header.removeprefix("bytes=").split("-")
+        start = int(first) if first else max(0, size - int(last))
+        end = min(int(last), size - 1) if first and last else size - 1
+        with open(path, "rb") as f:
+            f.seek(start)
+            body = f.read(end - start + 1)
+        _RangeHandler.served[name] = _RangeHandler.served.get(name, 0) + len(body)
+        self.send_response(206)
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Expose-Headers", "Content-Range")
+        self.end_headers()
+        self.wfile.write(body)
+
+
 @pytest.fixture()
 def remote(data):
     """`data` over plain HTTP, standing in for a remote bucket."""
-    server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_CorsHandler, directory=str(data)))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_RangeHandler, directory=str(data)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_address[1]}"
     server.shutdown()
@@ -572,3 +599,81 @@ def test_without_the_in_browser_engine_python_lists_and_reads_each_layer(page, d
         f = facts[layer_id]
         assert f["status"] == "ready" and f["features"] == features, f
         assert "Python" in f["note"]
+
+
+
+@pytest.fixture()
+def bucket(data, remote):
+    rng = np.random.default_rng(4)
+    per, tiles = 2500, [(x, y) for x in range(4) for y in range(4)]
+    xs = np.concatenate([rng.uniform(10 + x / 2, 10.495 + x / 2, per) for x, _ in tiles])
+    ys = np.concatenate([rng.uniform(45 + y / 2, 45.495 + y / 2, per) for _, y in tiles])
+    frame = gpd.GeoDataFrame({"use": rng.choice(["res", "com", "ind"], xs.size),
+                              "height": rng.uniform(3, 80, xs.size).round(1),
+                              "uid": [f"{i:08d}-{rng.bytes(12).hex()}" for i in range(xs.size)]},
+                             geometry=[box(x, y, x + 1e-3, y + 1e-3) for x, y in zip(xs, ys)], crs=4326)
+    frame.to_parquet(data / "tiled.parquet", write_covering_bbox=True, row_group_size=per)
+    frame.drop(columns="uid").to_parquet(data / "unsorted.parquet")
+    _RangeHandler.served = {}
+    return remote, frame, data
+
+
+def test_a_big_remote_geoparquet_streams_only_the_row_groups_in_view(page, bucket):
+    url, frame, folder = bucket
+    p = page()
+    p.js("window.__map.jumpTo({center: [-100, 40], zoom: 9});")
+    p.js("fm.execute({op: 'add_layer', source: arg + '/tiled.parquet', id: 'tiled'});", url)
+    f = by_id(p.idle())["tiled"]
+    assert f["status"] == "ready" and f["loaded_as"] == "vector" and f["render_mode"] == "stream", f
+    assert f["features"] == len(frame) and f["row_groups"] == 16 and f["loaded_row_groups"] == 0
+    assert {"use", "height"} <= set(f["fields"]) and "uid" not in f["fields"]
+    west, south, east, north = f["bounds"]
+    assert 9.99 < west < 10.01 and 44.99 < south < 45.01 and 11.99 < east < 12.01 and 46.99 < north < 47.01
+    assert p.js("return window.__map.getLayersOrder().filter(id => /^s\\d+-tiled-cov-fill$/.test(id)).length;") == 1
+
+    p.js("window.__map.jumpTo({center: [10.25, 45.25], zoom: 12});")
+    p.page.wait_for_function("() => fusedMap.describeLayer('tiled').loaded_row_groups > 0", timeout=60000)
+    f = by_id(p.idle())["tiled"]
+    assert f["loaded_row_groups"] == 1 and f["loaded_features"] == 2500, f
+    assert 0 < _RangeHandler.served["tiled.parquet"] < 0.4 * (folder / "tiled.parquet").stat().st_size
+
+    p.js("fm.execute({op: 'update_layer', id: 'tiled', style: {color_by: 'use'}});")
+    p.page.wait_for_function("() => (fusedMap.describeLayer('tiled').legend || {}).type === 'cats'", timeout=30000)
+    assert {i["value"] for i in p.js("return fm.describeLayer('tiled').legend.items;")} == {"res", "com", "ind"}
+
+    inside = frame.cx[10.2:10.3, 45.2:45.3].iloc[0]
+    west, south, east, north = inside.geometry.bounds
+    _settled(p)
+    p.page.wait_for_function("() => window.__map.loaded() && window.__map.areTilesLoaded()", timeout=30000)
+    x, y = p.js("const pt = window.__map.project(arg); return [pt.x, pt.y];", [(west + east) / 2, (south + north) / 2])
+    p.page.mouse.click(x, y)
+    p.page.wait_for_function("uid => (document.querySelector('.maplibregl-popup') || {}).textContent?.includes(uid)",
+                             arg=inside["uid"], timeout=30000)
+    assert inside["use"] in p.page.locator(".maplibregl-popup").inner_text()
+
+    p.js("fm.execute({op: 'remove_layer', id: 'tiled'});")
+    p.idle()
+    assert p.js("return window.__map.getLayersOrder().filter(id => /^s\\d+-tiled-/.test(id));") == []
+    assert p.js("return Object.keys(window.__map.getStyle().sources).filter(id => /^s\\d+-tiled-/.test(id));") == []
+
+
+def test_a_view_across_the_antimeridian_loads_row_groups_on_both_sides(page, data, remote):
+    rng = np.random.default_rng(6)
+    xs = np.concatenate([rng.uniform(179.0, 179.9, 500), rng.uniform(-179.9, -179.0, 500)])
+    frame = gpd.GeoDataFrame({"n": np.arange(xs.size)}, crs=4326,
+                             geometry=[box(x, y, x + 1e-3, y + 1e-3) for x, y in zip(xs, rng.uniform(0, 1, xs.size))])
+    frame.to_parquet(data / "dateline.parquet", write_covering_bbox=True, row_group_size=500)
+    p = page()
+    p.js("window.__map.jumpTo({center: [180, 0.5], zoom: 7});")
+    p.js("fm.execute({op: 'add_layer', source: arg + '/dateline.parquet', id: 'dateline'});", remote)
+    f = by_id(p.idle())["dateline"]
+    assert f["render_mode"] == "stream" and f["row_groups"] == 2 and f["loaded_row_groups"] == 2, f
+
+
+def test_a_remote_geoparquet_without_row_group_bounds_is_tiled_as_before(page, bucket, cdn):
+    url, frame, _ = bucket
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/unsorted.parquet', id: 'flat'});", url)
+    f = by_id(p.idle())["flat"]
+    assert f["status"] == "ready" and f["loaded_as"] == "vector" and f["render_mode"] != "stream", f
+    assert f["features"] == len(frame)

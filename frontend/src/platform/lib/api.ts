@@ -1569,6 +1569,9 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
+  // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
+  // default). Optional like `queue`: absent reads as off.
+  breakout?: { enabled: boolean };
   // The slow in-canvas screenshot fallback on a Mac
   // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
   // Optional: absent (older server) reads as off.
@@ -2132,6 +2135,10 @@ export function putClaudeMaxConcurrentSessions(max: number): Promise<Prefs> {
 
 export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_recap_titles_enabled: enabled });
+}
+
+export function putBreakoutEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { breakout_enabled: enabled });
 }
 
 export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Prefs> {

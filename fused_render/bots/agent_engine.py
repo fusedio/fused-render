@@ -382,7 +382,7 @@ def _sections(bot, task: str) -> dict:
     declined = _call(bot.declined_offers, [])
     secs["OFFERS DECLINED"] = ("OFFERS DECLINED (the user turned these app offers down recently; do not offer them again): "
                                + ", ".join(sorted(declined))) if declined else ""
-    secs["APP TOOLS"] = _call(lambda: apptools.prompt_section(apptools.registry(), apptools.trusted_set(bot.meta)), "").strip()
+    secs["APP TOOLS"] = _call(lambda: apptools.prompt_section(apptools.registry(), apptools.trusted_set(bot.meta), apptools.connections_set(bot.meta)), "").strip()
     return secs
 
 
@@ -429,6 +429,9 @@ def first_message(bot, task: str, past=None, page: dict | None = None, conv: dic
     tr = apptools.clean_trusted_apps(m.get("trusted_apps"))
     if tr:
         appr += f" (trusted apps, never ask: {', '.join(tr)})"
+    cn = apptools.clean_connections(m.get("connections"))
+    appr += f" (connected services you may use: {', '.join(cn)}; any other asks on every call)" if cn \
+        else " (no connected service enabled for you yet: a call into one asks every time)"
     origin = channels.origin_label(bot)
     botmod = _botmod()
     ea_s = ""
@@ -1842,9 +1845,10 @@ def _act(bot, sess: Turn, name: str, args: dict, notes: list | None = None) -> d
     if why and tools.forever_match(bot, rule) and tools.effective_approval(bot) != "auto":
         bot.emit("note", f"Running without asking ({rule['label']}: approved forever).")
         pre.append(f"APPROVED by a standing rule the user set: {tools.describe(bot, name, args, obs)}")
-    elif why and (name in tools.ALWAYS_ASK or name == "terminal_run" or tools.effective_approval(bot) != "auto"):
+    elif why and (tools.must_ask(bot, name, args) or tools.effective_approval(bot) != "auto"):
         # terminal_run: "Never ask" does not cover it. Command output is untrusted text (issue and PR bodies), so
         # only an explicit allow rule skips the card, and tools.risk already returned "" for a rule-covered command.
+        # Nor does it cover a connected service this bot may not use yet (tools.must_ask): access is the user's yes.
         preview = tools.describe(bot, name, args, obs)
         if preview in sess.denied:
             # Seen live: haiku re-issued a denied click one step later ("the task

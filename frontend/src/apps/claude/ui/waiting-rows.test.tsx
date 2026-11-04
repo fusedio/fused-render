@@ -710,14 +710,18 @@ describe("admission, in the send window", () => {
   });
 });
 
-describe("a line typed into this chat's own running turn", () => {
-  it("is a held row from the outbox, with no waiting card and no footnote", () => {
+describe("a follow-up into this chat's own running turn", () => {
+  it("draws no row, no card and no footnote under the flag", () => {
+    // Three plain bubbles and a composer footnote counting them was the shipped
+    // state; then a chip counting them was the fix; and both were chrome for the
+    // ONE waiting state with nothing to act on — no entry to be behind, nothing
+    // to run next, nothing to delete, and a live host draining them in seconds.
     expect(CHAT).not.toContain("state.queued.length");
     expect(CHAT).not.toContain('kind="inbox"');
     expect(WAITING).not.toContain("follow-up");
-    expect(COMPOSER).not.toContain("follow-ups are queued for this turn.");
-    expect(COMPOSER).not.toContain("queueOn");
-    expect(CHAT).toContain("<HeldTurn");
+    // The composer's footnote is gone in both builds: the newest follow-up's
+    // bubble carries "(Ctrl+X to send now)" instead.
+    expect(COMPOSER).not.toContain("follow-ups are queued for this turn");
   });
 });
 
@@ -997,5 +1001,4 @@ describe("a follow-up the live run is still holding", () => {
     expect(inbox).toContain("padding: 0 20px 6px");
     expect(inbox).not.toContain("dashed");
   });
-
 });

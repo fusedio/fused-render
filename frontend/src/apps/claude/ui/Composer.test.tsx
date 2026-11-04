@@ -94,7 +94,14 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
     });
   const press = (
     key: string,
-    mods: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {},
+    mods: {
+      shiftKey?: boolean;
+      metaKey?: boolean;
+      ctrlKey?: boolean;
+      altKey?: boolean;
+      nativeEvent?: { isComposing: boolean };
+      currentTarget?: { selectionStart: number; selectionEnd: number };
+    } = {},
   ) => {
     let prevented = false;
     act(() => {
@@ -419,9 +426,10 @@ test("A BLOCK NEVER TAKES STOP: the button still ends a live turn (T:17193-17195
   expect(idle.sent).toEqual([]);
 });
 
-test("no follow-up footnote under the box: held lines are rows in the transcript", () => {
-  const c = mount({ status: "running" });
-  expect(c.root.findAllByProps({ className: "c-queued" })).toEqual([]);
+test("no follow-up count line under the box", () => {
+  const hint = (c: ReturnType<typeof mount>) =>
+    c.root.findAllByProps({ className: "c-queued" }).map((n) => n.props.children);
+  expect(hint(mount())).toEqual([]);
 });
 
 // ---- the programmatic send, and the latch around the send window ----------
@@ -2162,4 +2170,75 @@ test("a recalled slash command keeps the menu shut, so ↑/↓ stay history's (B
   // Typed by hand, the same line is a query and the menu opens as ever.
   c.type("/compact");
   expect(c.box().props["aria-expanded"]).toBe(true);
+});
+
+test("CTRL+X while live with text is send-now; a selection, IME, Alt/Shift/Cmd or no text leave it alone", () => {
+  const now: string[] = [];
+  const c = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
+  c.type("stop and do this");
+  expect(c.press("x", { ctrlKey: true })).toBe(true);
+  expect(now).toEqual(["stop and do this"]);
+  expect(c.box().props.value).toBe("");
+  // A selection: Ctrl+X still cuts (Win/Linux), nothing is sent.
+  c.type("cut me");
+  expect(
+    c.press("x", { ctrlKey: true, currentTarget: { selectionStart: 0, selectionEnd: 3 } }),
+  ).toBe(false);
+  // A caret with no selection is not a selection.
+  c.type("caret only");
+  expect(
+    c.press("X", { ctrlKey: true, currentTarget: { selectionStart: 2, selectionEnd: 2 } }),
+  ).toBe(true);
+  expect(now).toEqual(["stop and do this", "caret only"]);
+  // IME composition, other modifiers.
+  c.type("more");
+  expect(c.press("x", { ctrlKey: true, nativeEvent: { isComposing: true } })).toBe(false);
+  expect(c.press("x", { ctrlKey: true, shiftKey: true })).toBe(false);
+  expect(c.press("x", { ctrlKey: true, altKey: true })).toBe(false);
+  expect(c.press("x", { ctrlKey: true, metaKey: true })).toBe(false);
+  expect(now.length).toBe(2);
+  // No text: Ctrl+X is the browser's.
+  c.type("  ");
+  expect(c.press("x", { ctrlKey: true })).toBe(false);
+  expect(now.length).toBe(2);
+});
+
+test("CTRL+X while idle is a normal send, and Ctrl+Enter still sends now", () => {
+  const now: string[] = [];
+  const idle = mount({ onSendNow: (t: string) => now.push(t) });
+  idle.type("go");
+  expect(idle.press("x", { ctrlKey: true })).toBe(true);
+  expect(idle.sent.map((x) => x.text)).toEqual(["go"]);
+  expect(now).toEqual([]);
+  const live = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
+  live.type("again");
+  live.press("Enter", { ctrlKey: true });
+  expect(now).toEqual(["again"]);
+});
+
+test("there is no Ctrl+X hint line under the box; the send button still names the chord", () => {
+  const hint = (c: ReturnType<typeof mount>) =>
+    c.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("c-sendnow-hint"));
+  const title = (c: ReturnType<typeof mount>) => c.root.findByProps({ className: "c-send" }).props.title;
+  const live = mount({ status: "running", onSendNow: () => {} });
+  expect(title(live)).toBe("Stop this turn");
+  live.type("do this first");
+  expect(hint(live)).toHaveLength(0);
+  expect(title(live)).toBe("Send now (Ctrl+X)");
+  const idle = mount({ onSendNow: () => {} });
+  idle.type("go");
+  expect(hint(idle)).toHaveLength(0);
+  expect(title(idle)).toBe("Send");
+});
+
+test("Ctrl+X on an empty box sends the queued lines now, only while a run is live and one is queued", () => {
+  let calls = 0;
+  const live = mount({ status: "running", hasQueued: true, onSendQueuedNow: () => (calls += 1) });
+  expect(live.press("x", { ctrlKey: true })).toBe(true);
+  expect(calls).toBe(1);
+  const none = mount({ status: "running", hasQueued: false, onSendQueuedNow: () => (calls += 1) });
+  expect(none.press("x", { ctrlKey: true })).toBe(false);
+  const idle = mount({ hasQueued: true, onSendQueuedNow: () => (calls += 1) });
+  expect(idle.press("x", { ctrlKey: true })).toBe(false);
+  expect(calls).toBe(1);
 });

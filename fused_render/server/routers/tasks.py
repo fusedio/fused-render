@@ -3173,6 +3173,7 @@ def _collect() -> dict[str, dict]:
     # user deleted — is absent from every one of them and no view has to know
     # why.
     deleted = tasks_store.deleted_state()
+    breakouts = tasks_store.breakout_state()
     # THE KEY-KEYED FILING, for the rows that have no session to file on
     # (`tasks_store.ARCHIVED_FILE`): read once per pass like the tombstones,
     # stashed on the task so `_row` needs no new parameter. A task WITH a
@@ -3190,6 +3191,7 @@ def _collect() -> dict[str, dict]:
             favourites, key)
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
+            and not _breakout(task, breakouts)
             and not _bot_session(task) and not _merge_session(task)}
 
 
@@ -3293,6 +3295,13 @@ def _rekeyed_pendings(keys) -> dict[str, str]:
         if listing_key and listing_key != key:
             out[key] = listing_key
     return out
+
+
+def _breakout(task: dict, breakouts: dict) -> bool:
+    """Is this transcript a breakout — a side chat forked from another chat,
+    which keeps its transcript but is never a task (`tasks_store.BREAKOUTS_FILE`)?
+    Keyed by session, no revival: a breakout stays one."""
+    return isinstance(breakouts.get(str(task["session_id"])), dict)
 
 
 def _deleted(task: dict, deleted: dict) -> bool:

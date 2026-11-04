@@ -16,6 +16,9 @@ const {
   setPrefsDeadlineForTests,
   applyQueueFlagBroadcast,
   QUEUE_FLAG_BROADCAST_KEY,
+  useBreakoutEnabled,
+  publishBreakoutEnabled,
+  BREAKOUT_FLAG_BROADCAST_KEY,
 } = await import("./feature-flag");
 
 let calls = 0;
@@ -274,4 +277,73 @@ test("rereadFlags outranks the read it replaces — a late timeout cannot undo t
   await first;
   await new Promise((r) => setTimeout(r, 80));
   expect(queueEnabled()).toBe(true);
+});
+
+test("a prefs read with breakout.enabled turns the Breakout flag on; an absent field reads off", async () => {
+  async function breakoutProbe() {
+    const seen: boolean[] = [];
+    function Probe() {
+      seen.push(useBreakoutEnabled());
+      return null;
+    }
+    let r!: ReactTestRenderer;
+    await act(async () => {
+      r = create(<Probe />);
+    });
+    mounted.push(r);
+    await act(async () => {
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    return seen;
+  }
+  answer = async () => ({ breakout: { enabled: true } });
+  let seen = await breakoutProbe();
+  expect(seen[seen.length - 1]).toBe(true);
+
+  for (const r of mounted.splice(0)) act(() => r.unmount());
+  resetFlagsForTests();
+  answer = async () => ({});
+  seen = await breakoutProbe();
+  expect(seen[seen.length - 1]).toBe(false);
+});
+
+test("publishBreakoutEnabled writes the broadcast key", () => {
+  const store = new Map<string, string>();
+  const realLs = (globalThis as { localStorage?: unknown }).localStorage;
+  (globalThis as { localStorage: unknown }).localStorage = {
+    setItem: (k: string, v: string) => void store.set(k, v),
+    getItem: (k: string) => store.get(k) ?? null,
+  };
+  try {
+    publishBreakoutEnabled(true);
+    expect(JSON.parse(store.get(BREAKOUT_FLAG_BROADCAST_KEY)!).on).toBe(true);
+  } finally {
+    (globalThis as { localStorage: unknown }).localStorage = realLs;
+  }
+});
+
+test("a Breakout publish that lands while a prefs read is in flight is not overwritten by it", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  // The read departs now and answers late, with the value from BEFORE the toggle.
+  answer = async () => {
+    await gate;
+    return { breakout: { enabled: false }, queue: { enabled: true } };
+  };
+  const seen: boolean[] = [];
+  function Probe() {
+    seen.push(useBreakoutEnabled());
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  await act(async () => {
+    r = create(<Probe />);
+  });
+  mounted.push(r);
+  await act(async () => publishBreakoutEnabled(true));
+  await act(async () => {
+    release();
+    await new Promise((done) => setTimeout(done, 0));
+  });
+  expect(seen[seen.length - 1]).toBe(true);
 });

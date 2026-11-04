@@ -610,6 +610,7 @@ def _record_clean_exit() -> None:
 def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
                   close_duckdb=None,
                   stop_captures=None, stop_children=None,
+                  apply_update=None,
                   record_exit=None, fast: bool = False) -> list[str]:
     """Run the ordered quit teardown; returns the steps attempted, in order.
 
@@ -629,6 +630,19 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
       3. "duckdb" — close the reader's cached DuckDB connection while Python is
          healthy and the GIL is held. Anything still alive at
          `NSApplication.terminate:` destructs without the GIL and aborts.
+      3b. "update" — rename a staged in-app update into place
+         (update/mac.py `apply_staged`). HERE and nowhere else: the updater
+         only ever stages beside the bundle, because swapping the bundle
+         under a serving process broke every open window's next lazy chunk
+         load (see update/mac.py's docstring). After the server has drained
+         and the children are gone nothing but this process reads from the
+         bundle, and it is about to `os._exit`. Every quit surface funnels
+         through this ladder — the tray, ⌘Q, logout, and the update dialog's
+         Restart (`begin_relaunch`, which then respawns from the bundle this
+         rung just put in place) — so "quit with an update pending" and
+         "restart for the update" are the same rename. A teardown the
+         watchdog cuts off before this rung leaves the staged copy where it
+         is; the next boot reports it as ready to restart again.
       4. "exit-record" — record a `quit` event and release the crash file
          (`_record_clean_exit`, SPEC §50). Last, so a teardown that wedges on
          an earlier rung and gets cut off by the hard deadline leaves the
@@ -653,6 +667,8 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
             capture.stop_all()
     if stop_children is None:
         stop_children = _stop_children
+    if apply_update is None:
+        apply_update = _apply_staged_update
     if record_exit is None:
         # Late-bound through the module so tests can patch the one function.
         def record_exit():
@@ -673,7 +689,7 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
         except Exception:
             logger.warning("stopping the server on quit failed", exc_info=True)
     for name, step in (("children", stop_children), ("capture", stop_captures),
-                       ("duckdb", close_duckdb),
+                       ("duckdb", close_duckdb), ("update", apply_update),
                        ("exit-record", record_exit)):
         steps.append(name)
         try:
@@ -683,6 +699,20 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
     logger.info("quit teardown finished in %.1fs (steps: %s)",
                 time.monotonic() - started, ", ".join(steps))
     return steps
+
+
+def _apply_staged_update() -> None:
+    """The "update" rung's default: apply whatever update/mac.py staged
+    beside the bundle this process runs from. A no-op unpackaged (no bundle)
+    and when nothing newer is staged. Imported lazily — like every other
+    rung — and safe to: the bundle has not moved under this process, which
+    is the whole point of staging."""
+    bundle = bundle_path()
+    if bundle is None:
+        return
+    from fused_render.update import mac as mac_update
+
+    mac_update.apply_staged(bundle)
 
 
 def start_quit(server, *, terminate, server_thread=None, teardown=None,
@@ -1190,7 +1220,9 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
     staleness check for a different "am I the one who needs replacing" test:
     a Full Disk Access grant applies to the next process, so respawning the
     very same version is the whole point — but ONLY while THIS process still
-    lacks the grant. The same fresh-instance hazard applies here: the OS may
+    lacks the grant. (If an update happens to be staged, the quit's "update"
+    rung applies it on the way out like any other quit, and the successor is
+    the newer version; the grant reaches it all the same.) The same fresh-instance hazard applies here: the OS may
     launch a new instance just to deliver the link (a second click after the
     old pid died, or a cold start), and that instance already has the grant
     and reads fine — quitting it would re-run the pidfile race the version
