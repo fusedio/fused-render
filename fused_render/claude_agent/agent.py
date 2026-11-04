@@ -1246,13 +1246,15 @@ def _blocked_note(backend: str = "") -> str:
         "them. If the thing you need is approval for an action, call the "
         "tool that takes the action and let the permission prompt stop the "
         f"turn. Use `{ANSWERABLE_TOOL}` only when you truly cannot proceed "
-        "without the answer. If the user replies to a card with a question or "
-        "a request for information instead of a choice, answer it in plain "
-        "text first, in the same turn, then call "
-        f"`{ANSWERABLE_TOOL}` again with the choice that is still open: text "
-        "before a card does not end the turn. Do not end that plain-text "
-        "answer with a question, and do not repeat a choice they have "
-        "already made."
+        "without the answer. Pacing a conversation the user steers ('next?', "
+        "a quiz) is not that: end your reply with that question in plain "
+        "text, the one closing question allowed. If the "
+        "user replies to a card with a question or a request for information "
+        "instead of a choice, answer it in plain text first, in the same "
+        f"turn, then call `{ANSWERABLE_TOOL}` again with the choice that is "
+        "still open: text before a card does not end the turn. Do not end "
+        "that plain-text answer with a question, and do not repeat a choice "
+        "they have already made."
     )
 
 
@@ -7530,6 +7532,11 @@ def _is_text_delta(row) -> bool:
     return (ev.get("delta") or {}).get("type") == "text_delta"
 
 
+def _thinking_kind(row: dict, nested: bool) -> str:
+    mode = row.get("thinking_display") or row.get("thinkingDisplay")
+    return "update" if mode == "updates" and not nested else "thinking"
+
+
 def _thinking_delta_text(row) -> str:
     """The reasoning text of one streamed thinking chunk; "" for any other row
     AND for a chunk that carries no text.
@@ -7785,7 +7792,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                     # unfolded to nothing at all.
                     chunk = _thinking_delta_text(row)
                     if chunk:
-                        grow("thinking", chunk, ts=_row_ts(row))
+                        grow(_thinking_kind(row, _nested), chunk, ts=_row_ts(row))
             elif et == "message_stop":
                 # A tool-using turn is several assistant messages; without a
                 # break their texts concatenate mid-word ("orange.After").
@@ -7803,7 +7810,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                         continue
                     chunk = str(block.get("thinking") or "")
                     if chunk.strip():
-                        grow("thinking", chunk, ts=_row_ts(row))
+                        grow(_thinking_kind(row, _nested), chunk, ts=_row_ts(row))
             # Text blocks next, joined the way `_history` joins them, so a
             # restored turn's `text` and its segments say the same thing. Safe
             # against block order because a real message is text-then-tools.
@@ -7954,7 +7961,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
         # invariant the page depends on ("a thinking segment HAS a body"), so it
         # is enforced here rather than assumed. Text segments are NOT filtered:
         # an empty one is how the page knows the reply's tail is still coming.
-        if seg["kind"] == "thinking" and not seg["text"].strip():
+        if seg["kind"] in ("thinking", "update") and not seg["text"].strip():
             continue
         if seg["kind"] == "tool" and seg.get("id") in links:
             seg["task_id"] = links[seg["id"]]
