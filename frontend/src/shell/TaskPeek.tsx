@@ -129,7 +129,7 @@ import {
   usePeekAnchor,
   usePeekedKey,
 } from "./task-peek-store";
-import { openBreakout } from "@platform/lib/breakouts";
+import { breakoutOpener } from "@platform/lib/breakouts";
 
 /** How long an EMPTY task list is given to turn out to be a list that has not
  *  arrived yet, before a `?peek=` naming nothing is treated as naming nothing
@@ -1349,7 +1349,7 @@ export function TaskPeek({
               // cover the Cards wall and the explorer sidebar use — because a
               // remount restarts its wait.
               <ChatMount
-                onBreakout={openBreakout}
+                onBreakout={breakoutOpener()}
                 key={task.key}
                 file={task.target || task.project}
                 sessionId={task.session_id}

@@ -7,6 +7,7 @@
 // `task-peek-store`: pure rules at the top, a thin `useSyncExternalStore`
 // layer under them.
 import { useSyncExternalStore } from "react";
+import { IS_EMBED } from "./router";
 import { chatDraftKey, fetchChatDraft, saveChatDraft, type ChatDraft, type DraftAttachment } from "./drafts";
 
 /**
@@ -95,6 +96,13 @@ export function openBreakout(req: BreakoutRequest): string {
   };
   emit([...cards, card]);
   return card.id;
+}
+
+/** What a host passes as `onBreakout`: `openBreakout`, or nothing inside an
+ *  embedded document, where the shell mounts no `BreakoutCards` to draw the
+ *  card (so no Breakout seat should exist there). */
+export function breakoutOpener(embed: boolean = IS_EMBED): typeof openBreakout | undefined {
+  return embed ? undefined : openBreakout;
 }
 
 export function closeBreakout(id: string): void {

@@ -2,6 +2,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import {
+  breakoutOpener,
   buildHandoffDraft,
   closeBreakout,
   getBreakouts,
@@ -198,6 +199,13 @@ describe("buildHandoffDraft", () => {
   test("without a dir, any .claude/handoffs markdown counts; empty transcript is empty", () => {
     expect(buildHandoffDraft(turns)).toContain("Handoff file: /w/proj/.claude/handoffs/x.md");
     expect(buildHandoffDraft([])).toBe("");
+  });
+});
+
+describe("breakoutOpener", () => {
+  test("no opener inside an embedded document", () => {
+    expect(breakoutOpener(true)).toBeUndefined();
+    expect(breakoutOpener(false)).toBe(openBreakout);
   });
 });
 
