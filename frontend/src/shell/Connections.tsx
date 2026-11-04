@@ -15,6 +15,7 @@ import { Copy } from "lucide-react";
 import {
   againBody,
   cancelConnection,
+  CERT_NOTICE,
   CERT_WARNING,
   defaultAuth,
   kindLabel,
@@ -106,6 +107,8 @@ function ProviderCard({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Connect on a kind that warns (an https localhost redirect): the notice first, Continue starts the flow.
+  const [notice, setNotice] = useState(false);
 
   const act = async (fn: () => Promise<unknown>) => {
     if (busy) return;
@@ -185,7 +188,8 @@ function ProviderCard({
       status = primary ? "Not connected" : p.auth.find((a) => a.reason)?.reason || "Not available on this machine.";
       if (primary && !primaryIsKey) {
         control = (
-          <Button variant="accent" size="sm" disabled={busy} onClick={() => void login({ kind: primary.kind })}>
+          <Button variant="accent" size="sm" disabled={busy || notice}
+            onClick={() => (primary.cert_warning ? setNotice(true) : void login({ kind: primary.kind }))}>
             Connect
           </Button>
         );
@@ -205,6 +209,18 @@ function ProviderCard({
         {control && <div className="settings-row-control">{control}</div>}
         <div className="settings-row-extra">
           {st.state === "pending" && <PendingDetails provider={p} status={st} busy={busy} act={act} />}
+          {notice && st.state === "disconnected" && primary && (
+            <div className="flex flex-col gap-2" data-cert-notice="1">
+              <p className="settings-row-desc">{CERT_NOTICE}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="accent" size="sm" disabled={busy}
+                  onClick={() => { setNotice(false); void login({ kind: primary.kind }); }}>
+                  Continue to {p.name}
+                </Button>
+                <Button variant="outline" size="sm" disabled={busy} onClick={() => setNotice(false)}>Cancel</Button>
+              </div>
+            </div>
+          )}
           {st.state === "disconnected" && primaryIsKey && primary && (
             <KeyForm auth={primary} busy={busy} onSave={(value) => login({ kind: "api-key", value })} />
           )}

@@ -42,6 +42,8 @@ def _env(monkeypatch, tmp_path):
         PKCE,
         {"kind": "cli", "command": ["fakecli", "token"], "identity_url": "https://demo.example/me"},
         {"kind": "api-key", "label": "Token", "identity_url": "https://demo.example/me"}]})
+    _pack(root, "tlsdemo", {"name": "TlsDemo", "privacy": "p", "tools": {"remote": None}, "auth": [
+        dict(PKCE, redirect={"scheme": "https", "host": "localhost", "ports": None, "path": "/callback"})]})
     _pack(root, "nocid", {"name": "NoCid", "privacy": "p", "auth": [
         dict(PKCE, client_id=""),
         {"kind": "cli", "command": ["definitely-not-installed-xyz"], "identity_url": "https://demo.example/me"},
@@ -94,6 +96,9 @@ def test_list_and_availability(monkeypatch):
     assert [a["kind"] for a in demo["auth"]] == ["oauth-pkce", "cli", "api-key"]
     assert all(a["available"] for a in demo["auth"])
     assert demo["tools"] == {"remote": None, "native": False, "count": 0}
+    assert "cert_warning" not in demo["auth"][0]
+    # An https localhost redirect (Slack): the list says so, so the card can warn BEFORE Connect.
+    assert by["tlsdemo"]["auth"][0]["cert_warning"] is True and by["tlsdemo"]["auth"][0]["available"]
     assert demo["store"] == "file"
     nocid = {a["kind"]: a for a in by["nocid"]["auth"]}
     assert nocid["oauth-pkce"]["available"] is False

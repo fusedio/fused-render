@@ -11,6 +11,7 @@ import { Copy, ExternalLinkIcon } from "lucide-react";
 import {
   againBody,
   cancelConnection,
+  CERT_NOTICE,
   CERT_WARNING,
   defaultAuth,
   logoutConnection,
@@ -76,6 +77,7 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [notice, setNotice] = useState(false);  // Connect on an https-localhost kind: the notice first, then Continue
   const act = async (fn: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
@@ -117,7 +119,8 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
       status = primary ? "Not connected" : p.auth.find((a) => a.reason)?.reason || "Not available on this machine.";
       // A pasted key or a BYO client id needs a form: that lives on the Preferences page.
       control = primary && primary.kind !== "api-key"
-        ? <Button variant="outline" size="sm" disabled={busy} onClick={() => void act(() => onLogin({ kind: primary.kind }))}>Connect</Button>
+        ? <Button variant="outline" size="sm" disabled={busy || notice}
+            onClick={() => (primary.cert_warning ? setNotice(true) : void act(() => onLogin({ kind: primary.kind })))}>Connect</Button>
         : <Button variant="outline" size="sm" onClick={() => navigateUrl(PREFERENCES_CONNECTIONS_URL)}>Set up in Preferences</Button>;
   }
 
@@ -142,6 +145,15 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
             <Copy data-icon="inline-start" aria-hidden="true" />{copied ? "Copied" : "Copy"}
           </Button>
           {st.verification_uri ? <a className="text-xs underline" href={st.verification_uri} target="_blank" rel="noopener noreferrer">Enter it at {st.verification_uri}</a> : null}
+        </div>
+      ) : null}
+      {notice && st.state === "disconnected" && primary ? (
+        <div className="flex flex-col gap-2 pl-[30px]" data-cert-notice="1">
+          <p className="m-0 text-xs text-muted-foreground">{CERT_NOTICE}</p>
+          <div className="flex gap-2">
+            <Button size="sm" disabled={busy} onClick={() => { setNotice(false); void act(() => onLogin({ kind: primary.kind })); }}>Continue to {p.name}</Button>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => setNotice(false)}>Cancel</Button>
+          </div>
         </div>
       ) : null}
       {st.state === "pending" && st.cert_warning ? <p className="m-0 pl-[30px] text-xs text-muted-foreground">{CERT_WARNING}</p> : null}

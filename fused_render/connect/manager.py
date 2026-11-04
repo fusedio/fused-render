@@ -152,6 +152,8 @@ def _resolved(p, entry: dict) -> dict:
     out["available"] = bool(ok)
     if not ok:
         out["reason"] = reason
+    if kind == "oauth-pkce" and oauth.redirect_scheme(e.get("redirect")) == "https":
+        out["cert_warning"] = True  # the card tells the user before Connect: the browser will warn (connect/tls.py)
     return {"entry": e, "public": out}
 
 

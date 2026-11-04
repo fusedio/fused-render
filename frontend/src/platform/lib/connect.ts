@@ -29,6 +29,9 @@ export interface ConnectAuth {
   byo?: { manifest?: string; docs?: string } | null;
   /** api-key: where to make one. */
   docs?: string | null;
+  /** oauth-pkce with an https localhost redirect (Slack): the browser will warn about the listener's own
+   *  certificate — the card says so before Connect (CERT_NOTICE) and while pending (CERT_WARNING). */
+  cert_warning?: boolean;
 }
 
 export interface ConnectStatus {
@@ -108,6 +111,13 @@ export const kindLabel = (a: ConnectAuth) => a.label || KIND_LABELS[a.kind] || a
 /** The sentence under a pending card whose redirect is https on localhost: the
  *  listener's certificate is the app's own, so the browser warns once. Both
  *  ways on: click through, or paste the address the warning page sits on. */
+/** Shown when Connect is pressed on such a kind, before the flow starts; Continue starts it. */
+export const CERT_NOTICE =
+  "Slack only lets a distributed app return to an https address, so the sign-in comes back to https://localhost on " +
+  "this computer, where this app answers with its own certificate. Your browser will warn that the page is not " +
+  "secure: that is this app, not an attacker — choose Advanced › Proceed, or paste the address the warning page " +
+  "shows into this card. This is Slack's limitation, kept so that everything stays on your computer: no Fused " +
+  "server takes part in the sign-in.";
 export const CERT_WARNING =
   "Your browser will warn that the page is not secure: the sign-in lands on this app's own localhost certificate. " +
   "Choose Advanced › Proceed, or paste the address the warning page sits on here.";

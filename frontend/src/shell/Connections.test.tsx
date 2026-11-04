@@ -174,13 +174,31 @@ describe("the cards", () => {
   test("a shipped Slack app keeps bring-your-own under Advanced", async () => {
     // Fused's own Slack app makes the default button work; a user who would rather not sign in through it
     // still finds the client-id form (the override: manager.login `client_id`) under Advanced, closed.
-    list = [{ ...slack, auth: [{ ...slack.auth[0], available: true, reason: null }] }];
+    list = [{ ...slack, auth: [{ ...slack.auth[0], available: true, reason: null, cert_warning: true }] }];
     const box = await mount();
     const s = card(box, "slack");
     expect(textOf(s)).toContain("Not connected");
     expect(buttons(s, "Connect")).toHaveLength(2); // the card's own, and the BYO form's
+    // An https localhost redirect: Connect shows the notice first (no login yet); Continue starts the flow.
+    answers["POST /api/connect/slack/login"] = { state: "pending", kind: "oauth-pkce", url: "https://slack.com/x", cert_warning: true };
+    await click(buttons(s, "Connect")[0]);
+    expect(textOf(s)).toContain("Slack's limitation");
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    await click(buttons(s, "Cancel")[0]);
+    expect(textOf(s)).not.toContain("Slack's limitation");
+    await click(buttons(s, "Connect")[0]);
+    await click(buttons(s, "Continue to Slack")[0]);
+    await settle();
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ kind: "oauth-pkce" }]);
+    expect(textOf(s)).toContain("Waiting for you in the browser");
+    expect(textOf(s)).toContain("Advanced › Proceed");
+    calls.length = 0;
+    answers["GET /api/connect/slack"] = { state: "disconnected" };
+    list = [{ ...slack, auth: [{ ...slack.auth[0], available: true, reason: null, cert_warning: true }] }];
+    const box2 = await mount();
+    const s2 = card(box2, "slack");
     expect(textOf(s)).toContain("Sign in with your own OAuth app");
-    const details = s.findAll((x) => x.type === "details")[0];
+    const details = s2.findAll((x) => x.type === "details")[0];
     expect(details.props.open).toBeUndefined();
     const byo = details.findAll((x) => x.type === Input)[0];
     await act(async () => byo.props.onChange({ target: { value: "9.8" } }));
