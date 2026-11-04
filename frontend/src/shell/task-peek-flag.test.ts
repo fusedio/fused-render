@@ -304,7 +304,7 @@ describe("the peek header", () => {
     // still wear an outline (design.md, Polish batch 5).
     expect(PEEK_CSS).toContain(".task-side-peek-open {");
     expect(PEEK_CSS.slice(PEEK_CSS.indexOf(".task-side-peek-open {"))).toContain(
-      "border: 1px solid var(--border);",
+      "border: 0;",
     );
     expect(TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-act--page,"))).toContain(
       "border-color: var(--border);",

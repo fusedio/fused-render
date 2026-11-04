@@ -503,13 +503,10 @@ body.tasks-peek-dragging {
    back to the split. One skin, because they are the same kind of thing: a word
    you press, in a row that is otherwise glyph squares and ink.
 
-   AN OUTLINE AT REST (Akshil, 2026-09-14 — design.md, Polish batch 5). Without
-   one they were two runs of muted text sitting beside the project NAME, which
-   is a run of muted text that is not pressable; the only thing that said
-   otherwise was a hover wash, and a hover is not an affordance for a reader who
-   has not hovered yet. 1px of `--border` and the app's small-control radius
-   says "button" before the pointer arrives; the wash still says "this one"
-   after it does.
+   A GHOST BUTTON, NO OUTLINE. The header now holds only this one word-control
+   beside the ⋮, so it no longer needs an outline to tell itself apart from the
+   project label (which is gone from this header). It matches
+   `.task-side-peek-btn`: nothing at rest, a wash and full ink on hover.
 
    Sized off `.task-side-peek-btn`'s own height so they sit on the row's
    baseline with the ⋮ beside them rather than next to them. */
@@ -519,8 +516,8 @@ body.tasks-peek-dragging {
   align-items: center;
   gap: 4px;
   height: var(--peek-icon-w);
-  padding: 0 8px;
-  border: 1px solid var(--border);
+  padding: 0 6px;
+  border: 0;
   border-radius: 5px;
   background: transparent;
   font: inherit;
@@ -531,13 +528,11 @@ body.tasks-peek-dragging {
   cursor: pointer;
   transition:
     background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out);
+    color var(--dur-fast) var(--ease-out);
 }
 
 .task-side-peek-open:hover {
   background: var(--row-bg-hover);
-  border-color: var(--fg-muted);
   color: var(--fg);
 }
 
