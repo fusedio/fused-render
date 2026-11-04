@@ -271,8 +271,8 @@ def _run_cli(cmd: list[str], fresh: bool = False) -> str:
 
 def _run_cli_uncached(cmd: list[str]) -> str:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=CLI_TIMEOUT, check=False,
-                           stdin=subprocess.DEVNULL)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=CLI_TIMEOUT, check=False, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as e:
         raise NotConnected(f"`{cmd[0]}` could not run: {e.__class__.__name__}") from None
     tok = (r.stdout or "").strip().splitlines()
