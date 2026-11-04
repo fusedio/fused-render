@@ -5536,13 +5536,14 @@ describe("the working clock survives a reload (server stamp)", () => {
 
 describe("the page-minted client id rides the wire and comes back", () => {
   test("start and follow-up send carry client_uuid; delivery reports the id", async () => {
+    const SHOTS = "<pane-shot>\n[]\n</pane-shot>";
     const delivered: string[] = [];
     let controller!: ChatController;
     const agent = fakeAgent({
       start: () => ({ run_id: "r1" }),
       send: () => ({ sent: true as const }),
       poll: async (_f, n) => {
-        if (n === 0) await controller.sendFollowUp("more", { clientId: "id-follow" });
+        if (n === 0) await controller.sendFollowUp("more", { clientId: "id-follow", blocks: [SHOTS] });
         return poll({ done: n > 0 });
       },
     });
@@ -5558,9 +5559,11 @@ describe("the page-minted client id rides the wire and comes back", () => {
       hasPane: () => true,
       onSendDelivered: (id) => delivered.push(id),
     });
-    await controller.sendMessage("go", { clientId: "id-start" });
+    await controller.sendMessage("go", { clientId: "id-start", blocks: [SHOTS] });
     expect(agent.of("start")[0]!.fields.client_uuid).toBe("id-start");
     expect(agent.of("send")[0]!.fields.client_uuid).toBe("id-follow");
+    expect(agent.of("start")[0]!.fields.typed).toBe("go");
+    expect(agent.of("send")[0]!.fields.typed).toBe("more");
     expect(delivered).toEqual(["id-start", "id-follow"]);
     controller.dispose();
   });

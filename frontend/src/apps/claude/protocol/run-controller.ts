@@ -2770,6 +2770,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 // server gate only looks rather than claiming a second time.
                 ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
                 ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
+                // The words as typed, when the composed wire differs from them: the server keeps them for a Stop.
+                ...(text && text !== outgoing ? { typed: text } : {}),
               },
             )) as SendResponse;
           } catch (err) {
@@ -2838,6 +2840,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
               // only looks rather than claiming a second time.
               ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
               ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
+              // The words as typed, when the composed wire differs from them: the server keeps them for a Stop.
+              ...(text && text !== outgoing ? { typed: text } : {}),
             },
           )) as StartResponse;
         } catch (startErr) {
@@ -3077,6 +3081,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // only looks rather than claiming a second time.
           ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
           ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
+          // The words as typed, when the composed wire differs from them: the server keeps them for a Stop.
+          ...(text && text !== outgoing ? { typed: text } : {}),
         },
       )) as SendResponse;
       if (res && "respawn" in res && res.respawn) {
@@ -3105,6 +3111,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // only looks rather than claiming a second time.
             ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
             ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
+            // The words as typed, when the composed wire differs from them: the server keeps them for a Stop.
+            ...(text && text !== outgoing ? { typed: text } : {}),
           },
         )) as StartResponse;
         const failed = (startedRes as { error?: string }).error;
