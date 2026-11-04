@@ -51,7 +51,7 @@ import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
 import type { BreakoutRequest, SendOptions, StrandedLine, Turn, UserTurn } from "./protocol/controller-api";
-import type { PermissionMode } from "./protocol/types";
+import type { PermissionMode, TaskRecord } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
@@ -168,7 +168,7 @@ import { WorktreeHintChip, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
-import { summarizeTasks, taskIndex } from "./protocol/tasks";
+import { agentModelLabel, statusLabel, summarizeTasks, taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
@@ -217,6 +217,7 @@ import {
   rawUrl,
   type Task,
 } from "@platform/lib/api";
+import { hasAgentPeeks, openAgentPeek, publishPeekTurns, useAgentPeeks } from "@platform/lib/agent-peeks";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
 import PanelIcon from "@platform/ui/PanelIcon";
 import "./styles/ann.css";
@@ -1823,6 +1824,13 @@ function ChatBody(props: ChatBodyProps) {
 
   // ── the three pills ────────────────────────────────────────────────────────
   const defaults = useComposerDefaults(file, params, !!props.hostSeededSettings, state.backend);
+  // AGENT PEEK feed: a floating peek of one of this chat's subagents reads the
+  // Agent call's `children` out of these turns, so hand them over whenever they
+  // (or the set of open peeks) change. Free when no peek is open.
+  const peekCount = useAgentPeeks().length;
+  useEffect(() => {
+    if (state.sessionId && hasAgentPeeks(state.sessionId)) publishPeekTurns(state.sessionId, state.turns);
+  }, [state.turns, state.sessionId, peekCount]);
   // WHICH AGENT THIS CHAT IS ABOUT (docs/COPILOT_BACKEND.md D2/D18): the
   // conversation's own once the wire has said, else the pill's pick, else the
   // catalog's default — `useComposerDefaults` resolves exactly that. Every
@@ -5605,6 +5613,20 @@ function ChatBody(props: ChatBodyProps) {
                       open={tasksOpen}
                       onToggle={toggleTasksPanel}
                       parentModel={defaults.model}
+                      {...(breakoutOn && !props.breakout
+                        ? {
+                            onPeekAgent: (t: TaskRecord) =>
+                              void openAgentPeek({
+                                sessionId: state.sessionId ?? "",
+                                file: file ?? "",
+                                toolUseId: t.tool_use_id,
+                                title: t.description || "Agent",
+                                subtitle: [t.subagent_type, agentModelLabel(t, defaults.model), statusLabel(t.status)]
+                                  .filter(Boolean)
+                                  .join(" · "),
+                              }),
+                          }
+                        : {})}
                     />
                   ) : null
                 }
