@@ -47,8 +47,8 @@ describe("peekPlacement", () => {
   });
 
   it("shrinks to what a short, narrow row leaves", () => {
-    const row = { left: 0, top: 0, width: 400, height: 400 };
-    const rail = { left: 352, top: 0, width: 48, height: 400 };
+    const row = { left: 0, top: 0, width: 440, height: 400 };
+    const rail = { left: 392, top: 0, width: 48, height: 400 };
     const box = peekPlacement(ring(100), rail, row)!;
     expect(box.height).toBe(400 - 2 * PEEK_INSET);
     expect(box.width).toBe(rail.left - PEEK_GAP - PEEK_INSET);
@@ -60,8 +60,28 @@ describe("peekPlacement", () => {
     const rail = { left: 112, top: 0, width: 48, height: 400 };
     expect(peekPlacement(ring(100), rail, row)).toBeNull();
   });
+
+  it("answers null under the chat's floor: a card that would clip its chat is no card", () => {
+    // 336px of room: under PEEK_MIN_WIDTH, the chat column's 340px floor.
+    const row = { left: 0, top: 0, width: 400, height: 400 };
+    const rail = { left: 352, top: 0, width: 48, height: 400 };
+    expect(peekPlacement(ring(100), rail, row)).toBeNull();
+    expect(PEEK_MIN_WIDTH).toBeGreaterThanOrEqual(342);
+  });
 });
 
+
+describe("peekPlacement aligned on the ring's bottom (the favourite's card)", () => {
+  it("puts its bottom on the ring's bottom, and never below the row's inset", () => {
+    const r = ring(700);
+    const box = peekPlacement(r, RAIL, ROW, { width: 380, maxHeight: 520, align: "bottom" })!;
+    expect(box.width).toBe(380);
+    expect(box.height).toBe(520);
+    expect(box.top + box.height).toBe(r.top + r.height);
+    const high = peekPlacement(ring(42), RAIL, ROW, { maxHeight: 520, align: "bottom" })!;
+    expect(high.top).toBe(ROW.top + PEEK_INSET);
+  });
+});
 
 describe("peekPlacement with a wish (a pinned card's remembered size)", () => {
   it("takes the asked width and height, right edge still against the rail", () => {

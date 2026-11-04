@@ -43,6 +43,7 @@ import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { botsPulseTitle, botsRunningLabel, botsWaitingLabel, useBotsPulse } from "@platform/lib/botsPulse";
+import { marketplacePulseTitle, useMarketplacePulse } from "@platform/lib/marketplacePulse";
 import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
@@ -539,6 +540,21 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // same store.
   const marketplaceInNav = !bot;
   const marketplaceActive = pathname === "/marketplace" || pathname.startsWith("/marketplace/");
+  // THE COMMUNITY ROW SAYS WHAT THE INSTALLED PAGE'S "UPDATES" SECTION SAYS
+  // (owner, 2026-11-03: "notification dot in the community similar to bots
+  // and tasks"): a dot while an installed app has a reviewed release waiting,
+  // and a count chip beside the Beta tag when expanded. Read from
+  // platform/lib/marketplacePulse — the store's own catalog reads feed it, so
+  // an Update that lands clears it on the same read. Accent, the hue the
+  // Settings row's "update available" dot already wears: one state, one
+  // colour. Nothing is dismissed by a visit (see the store): the dot holds
+  // until the update is applied. WITH A DOT, THE ROW LANDS ON
+  // /marketplace/installed — the page the dot is about — instead of Discover.
+  const marketplacePulse = useMarketplacePulse(marketplaceInNav);
+  const marketplaceTip = marketplacePulseTitle(marketplacePulse);
+  const marketplaceHref = marketplacePulse.updates > 0 ? "/marketplace/installed" : "/marketplace";
+  const marketplaceDot =
+    marketplacePulse.updates > 0 ? <span className="sidebar-rail-dot is-update" title={marketplaceTip} /> : undefined;
   // THE FRONT DOOR: Home, or Bots under the Fused Bot flavor, which has no
   // Home page. Same answer as App.tsx's "/" redirect, so clicking the title
   // lands where "/" lands. Bots is always a row of its own on Render, right
@@ -960,10 +976,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       ? [
           {
             key: "marketplace",
-            label: "Community",
+            label: marketplaceTip ? `Community — ${marketplaceTip}` : "Community",
             icon: MARKETPLACE_ICON,
-            href: "/marketplace",
+            href: marketplaceHref,
             active: marketplaceActive,
+            badge: marketplaceDot,
           },
         ]
       : []),
@@ -1072,15 +1089,26 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           )}
           {marketplaceInNav && (
             <NavItem
-              href="/marketplace"
+              href={marketplaceHref}
               id="marketplace-link"
               label="Community"
               icon={MARKETPLACE_ICON}
               active={marketplaceActive}
+              extra={marketplaceDot}
+              title={marketplaceTip || undefined}
               trailing={
-                // Beta while the store is still settling — the same chip as
-                // the AI Models row above.
-                <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
+                <>
+                  {/* The updates count, in the chip the Tasks and Bots rows
+                      wear for theirs, before the Beta tag. */}
+                  {marketplacePulse.updates > 0 && (
+                    <span className="sidebar-count-chip" title={marketplaceTip}>
+                      {marketplacePulse.updates}
+                    </span>
+                  )}
+                  {/* Beta while the store is still settling — the same chip as
+                      the AI Models row above. */}
+                  <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
+                </>
               }
             />
           )}

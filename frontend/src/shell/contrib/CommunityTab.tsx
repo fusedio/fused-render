@@ -32,7 +32,9 @@ import {
   getListingDraft,
   ladderListing,
   oldIdNote,
+  ownsApp,
   plainMessage,
+  roleOf,
   runJob,
   runListingAction,
   useUnmountSignal,
@@ -41,6 +43,8 @@ import {
   type ContribAction,
   type LadderAnswer,
   type LadderState,
+  type RoleAnswer,
+  type UnknownReason,
 } from "@platform/lib/contrib";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { releaseDate } from "@platform/lib/format";
@@ -57,6 +61,7 @@ import { PUBLISH_ID, ListingNotes, useListing, type ListingKit } from "./Listing
 import { MergeReview } from "./MergeReview";
 import { ProposalsTab } from "./ProposalsTab";
 import { ActivityList, FileList, KitProgress, useSourcePanel, type SourcePanelKit } from "./SourcePanel";
+import { SignInSheet } from "./SignInSheet";
 import { simpleOn, simpleStatus } from "./SourceLine";
 import { QuietAction } from "./StatusStrip";
 import { authorOf, githubUrl, plural, possessive } from "./words";
@@ -105,7 +110,24 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
   const own = useLadder(given ? null : dir);
   const ladder = given ?? own;
   const l = ladder.data;
-  const mine = !!l?.ok && l.mine;
+  // Who the user is to this app (`roleOf`: the server's role, or the same
+  // answer derived from an older server's fields). The ladder decides the
+  // side; a copy's own read says which copy role, once it is in.
+  const who = roleOf(l);
+  const mine = !!l?.ok && ownsApp(who.role);
+  // While the copy's read is still pending, ITS answer outranks the
+  // ladder's: the ladder stops re-reading after a few tries, so its stale
+  // `checking` must not hide a newer `identity` / `no-record`.
+  const side: RoleAnswer = mine
+    ? who
+    : contrib.data
+      ? roleOf(contrib.data)
+      : (contrib.pendingRole ?? who);
+  // With every Community switch off nothing will settle an unknown owner
+  // (the org-role lookup is not queued, §19.2): no card, no door.
+  const switchedOn = !!l?.flags && (l.flags.sources || l.flags.marketplace);
+  const unknown: UnknownReason | null =
+    !mine && switchedOn && side.role === "unknown" ? side.reason : null;
   const refreshLadder = () => void ladder.refresh();
   // A Source-panel action (Publish now, Check now, Bring in) moves what the
   // listing compares against: re-read the listing too, not only the ladder,
@@ -159,7 +181,9 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
 
   // The ladder decides which side this is: wait for it (and, for a copy,
   // for the contrib read) rather than flash the wrong view.
-  if (!l || (!mine && !contrib.settled)) {
+  // An "unknown" with its reason is an answer too: say it rather than wait
+  // for a record that may never come.
+  if (!l || (!mine && !unknown && !contrib.settled)) {
     return (
       <div className={cn("contrib-community", `is-${variant}`)} aria-busy="true">
         <Skeleton className="h-[148px] w-full rounded-[12px]" />
@@ -203,7 +227,7 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
     <SimpleCopyView dir={dir} contrib={contrib} kit={kit} variant={variant} />
   ) : contrib.data ? (
     <CopyView dir={dir} contrib={contrib} kit={kit} variant={variant} />
-  ) : (
+  ) : unknown ? null : (
     <p className="contrib-community-empty">
       Nothing to show for {slug} yet. Once it is on GitHub or comes from someone else, where it stands shows up
       here.
@@ -212,6 +236,14 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
 
   return (
     <div className={cn("contrib-community", `is-${variant}`)}>
+      {unknown && (
+        <UnknownRoleView
+          reason={unknown}
+          retry={async () => {
+            await Promise.all([contrib.refresh(), ladder.refresh()]);
+          }}
+        />
+      )}
       {toggle}
       {body}
       {kit?.sheets}
@@ -916,6 +948,59 @@ function SimpleCopyView({
   );
 }
 
+// ---- nobody knows whose app this is yet ---------------------------------------
+
+/** Role "unknown": one sentence per reason and its door — Sign in (no GitHub
+ *  login known), Retry (still classifying), or install it again from the
+ *  Community (no record can be made for this copy — a re-read answers the
+ *  same, so no Retry). */
+function UnknownRoleView({ reason, retry }: { reason: UnknownReason; retry: () => Promise<void> }) {
+  const [signIn, setSignIn] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const onRetry = async () => {
+    setRetrying(true);
+    try {
+      await retry();
+    } finally {
+      setRetrying(false);
+    }
+  };
+  const sentence =
+    reason === "identity"
+      ? "Sign in to GitHub to see whose app this is."
+      : reason === "checking"
+        ? "Checking where this app came from…"
+        : "Fused can't tell where this copy came from. Install it again from the Community.";
+  return (
+    <section className="contrib-simple-status" aria-label="Whose app this is" data-reason={reason}>
+      <div className="contrib-simple-status-main">
+        <p className="contrib-simple-sentence">{sentence}</p>
+      </div>
+      <div className="contrib-rung-actions">
+        {reason === "identity" ? (
+          <Button size="sm" onClick={() => setSignIn(true)}>
+            Sign in
+          </Button>
+        ) : reason === "checking" ? (
+          <Button size="sm" onClick={() => void onRetry()} disabled={retrying}>
+            Retry
+          </Button>
+        ) : null}
+      </div>
+      {signIn && (
+        <SignInSheet
+          doing="see whose app this is"
+          onClose={() => setSignIn(false)}
+          onSignedIn={() => {
+            setSignIn(false);
+            void retry();
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
 // ---- a copy of someone else's app: the other side ----------------------------
 
 function CopyView({
@@ -1237,7 +1322,7 @@ export function communityLine(contrib: AppContribState, ladder: LadderAnswer | n
   if (waiting > 0) return `${plural(waiting, "proposal")} waiting for you`;
   const panel = c?.panel;
   if (panel?.sentence && !QUIET_PANEL_STATES.has(panel.state)) return panel.sentence;
-  if (ladder?.ok && ladder.mine && (ladder.rung ?? 1) >= 2 && ladder.github.unpushed > 0) {
+  if (ladder?.ok && ownsApp(roleOf(ladder).role) && (ladder.rung ?? 1) >= 2 && ladder.github.unpushed > 0) {
     return `${plural(ladder.github.unpushed, "edit")} not on GitHub yet`;
   }
   return null;
@@ -1268,8 +1353,8 @@ export function CommunityLine({
  *  unread event. */
 export function communityBadge(contrib: AppContribState, ladder: LadderAnswer | null): number | "dot" | null {
   const c = contrib.data;
-  const mine = !!ladder?.ok && ladder.mine;
-  if (mine || c?.copy.kind === "own") {
+  const mine = !!ladder?.ok && ownsApp(roleOf(ladder).role);
+  if (mine || (c ? ownsApp(roleOf(c).role) : false)) {
     const n = c?.flags.inbox ? (c.inbox?.count ?? 0) : 0;
     return n > 0 ? n : null;
   }

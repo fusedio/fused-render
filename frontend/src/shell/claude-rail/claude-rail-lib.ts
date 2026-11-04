@@ -178,6 +178,16 @@ export function railScope(
 /** The place's own name for the rail's words ("Chats on …", the + title):
  *  the selected node, else the canvas; a folder's or file's last path
  *  segment. */
+/** WHERE the rail stands, with the canvas's node narrowing left out: the
+ *  same canvas with a node selected is the same place (ClaudeRail lets a held
+ *  card go on a place CHANGE — a hop from one folder or file to the next —
+ *  and a node selection on the canvas is not one: the held chat rides into
+ *  the foot instead; owner, 2026-11-03). */
+export function placeRoot(place: RailPlace): string {
+  if (place.kind === "canvas") return `canvas:${place.env}:${place.name}`;
+  return place.kind === "folder" ? `folder:${trimSlash(place.dir)}` : `file:${place.file}`;
+}
+
 export function placeName(place: RailPlace): string {
   if (place.kind === "canvas") return place.file ? nodeName(place.file) : "this canvas";
   const path = trimSlash(place.kind === "folder" ? place.dir : place.file);
@@ -265,4 +275,16 @@ export function keepMarks(
     out.delete(key);
   }
   return out ?? marks;
+}
+
+/** THE FAVOURITES (owner, 2026-11-03): every starred, un-archived task, from
+ *  ANYWHERE — a favourite is not tied to the place the rail stands on, so
+ *  `onRail` is deliberately not asked. Newest movement first (`happened_at`),
+ *  ties by key so the foot never reshuffles between reads. The rows are the
+ *  GLOBAL pulse's; `full` hands each its listing row when it is held. */
+export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<string, Task>): RailRow[] {
+  return rows
+    .filter((t) => t.starred && t.status !== "archived")
+    .sort((a, b) => (b.happened_at ?? 0) - (a.happened_at ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .map((pulse) => ({ pulse, row: full.get(pulse.key) ?? null }));
 }

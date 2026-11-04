@@ -59,7 +59,9 @@ network on every page view, and a crashing build likewise) is served as-is
 unless `refresh=1`; a `refresh=1` within 60 s of the last attempt is served
 the cache too. A refresh that fails serves the old cache with `stale: true`
 and a warning; with no cache at all the answer is `{status: "error",
-message}`. Only GET /catalog (`get_snapshot`) — and the explicit Check
+message}`. Only GET /catalog (`get_snapshot`), the sidebar's GET /pulse
+(`get_snapshot(background=True)`, when a cache exists and something is
+installed) — and the explicit Check
 (`get_snapshot(force=True)`, the Installed page's "Check for a new release"
 and the engine's check action) — rebuild an OLD cache; assets, detail,
 install, installed and the engine's `market.row_for` (`cached_snapshot`)
@@ -658,7 +660,8 @@ _REBUILD_THREAD: threading.Thread | None = None
 
 def get_snapshot(refresh: bool = False, force: bool = False,
                  background: bool = False) -> tuple[dict | None, str | None]:
-    """The catalog snapshot for GET /catalog — the ONLY caller allowed to
+    """The catalog snapshot for GET /catalog (and the sidebar's GET /pulse,
+    `background=True` only) — the ONLY callers allowed to
     rebuild a cache because it is old: rebuilt when older than CACHE_TTL_S
     (with ``background``, the page's read, the old cache is answered at
     once and the rebuild runs on a thread — `_rebuild_in_background`), or
@@ -1330,6 +1333,38 @@ def installed_list() -> dict:
     fresh = _fresh(snap)
     out = []
     for slug, copy in sorted(installed_copies().items()):
+        if slug in apps:
+            out.append(app_entry(slug, apps[slug], copy))
+        else:
+            out.append(_local_entry(slug, copy, catalog_fresh=fresh))
+    return {"apps": out}
+
+
+def pulse() -> dict:
+    """GET /api/marketplace/pulse — the sidebar's reading of the Installed
+    page: the installed entries, from a catalog that is allowed to age out
+    and rebuild (``get_snapshot(background=True)``, the page's own read, so
+    the old cache is answered at once and the rebuild runs on a thread).
+    `installed_list` reads the cache as-is and never learns of a new
+    release; this one does, which is the whole point of a dot that must
+    light while nobody is looking at the store.
+
+    Never the CREATOR of a cache, only what lets one age out: with nothing
+    installed there is nothing to report and the catalog is not touched at
+    all; with no cache yet it answers from the copies alone (no build — a
+    failed build writes no cache, so building here would retry it every
+    tick from every window, each holding a worker thread for the Community's
+    timeout). The store page's own read builds the first cache."""
+    copies = installed_copies()
+    if not copies:
+        return {"apps": []}
+    snap = None
+    if _read_cache() is not None:
+        snap, _error = get_snapshot(refresh=False, background=True)
+    apps = (snap or {}).get("apps") or {}
+    fresh = _fresh(snap)
+    out = []
+    for slug, copy in sorted(copies.items()):
         if slug in apps:
             out.append(app_entry(slug, apps[slug], copy))
         else:

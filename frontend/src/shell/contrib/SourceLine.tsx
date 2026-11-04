@@ -16,7 +16,7 @@
 // link alone follows Contributing (`sources`).
 import type { ReactNode } from "react";
 import type { AppContrib, LadderAnswer } from "@platform/lib/contrib";
-import { ladderListing } from "@platform/lib/contrib";
+import { ladderListing, ownsApp, roleOf } from "@platform/lib/contrib";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { releaseDate } from "@platform/lib/format";
 import { notify } from "@platform/lib/notifications";
@@ -40,14 +40,14 @@ function RepoLink({ repo }: { repo: string }) {
  *  switch (`marketplace`, the store — Settings' "Community" row) on. Shared
  *  by the Share sheet, this line and the Community tab. */
 export function simpleOn(ladder: LadderAnswer | null | undefined): boolean {
-  return !!ladder?.ok && ladder.mine && !!ladder.flags?.marketplace;
+  return !!ladder?.ok && ownsApp(roleOf(ladder).role) && !!ladder.flags?.marketplace;
 }
 
 /** The one status sentence of Simple sharing for an own app, as parts joined
  *  by " · ". Null when the ladder is not an own app's. Exported for the
  *  Community tab's Simple view, which says the same thing. */
 export function simpleStatus(ladder: LadderAnswer | null | undefined): string[] | null {
-  if (!ladder?.ok || !ladder.mine || !ladder.github) return null;
+  if (!ladder?.ok || !ownsApp(roleOf(ladder).role) || !ladder.github) return null;
   const rung = ladder.rung ?? 1;
   if (rung < 2) return ["Only on this Mac"];
   const parts = ["Online"];
@@ -98,6 +98,7 @@ export function SourceLine({ contrib, ladder }: { contrib: AppContrib | null; la
   // alone (the server only answers for it then, §18.8).
   if (!contrib || (!contrib.flags.sources && contrib.copy.kind !== "marketplace")) return null;
   const { kind, repo, remix_of } = contrib.copy;
+  const { role } = roleOf(contrib);
   let body: ReactNode = null;
   if (kind === "marketplace") {
     const delisted = contrib.copy.listing_status === "delisted" || contrib.panel?.state === "delisted";
@@ -113,13 +114,13 @@ export function SourceLine({ contrib, ladder }: { contrib: AppContrib | null; la
         GitHub link · follows <RepoLink repo={repo} />
       </>
     );
-  } else if (kind === "own" && remix_of) {
+  } else if (role === "remixer" && remix_of) {
     body = (
       <>
         Remix of <RepoLink repo={remix_of} />
       </>
     );
-  } else if (kind === "own") {
+  } else if (ownsApp(role)) {
     body = "Your app";
   }
   if (!body) return null;

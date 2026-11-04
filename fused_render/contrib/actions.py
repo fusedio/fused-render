@@ -9,9 +9,11 @@ and only here (P1), a click on a button the state already moved past is a
 plain "not available", and the frontend never invents a button (§16.10).
 
 TWO HALVES. `facts(app_dir)` gathers what the decision reads — the kind
-(`classify.kind_of`), the record, the effective flags, the GitHub sign-in
-snapshot, `engine.status` (every kind: it carries the merge job),
-`ownsync.status` (an own app), `proposals.view`/`untracked` — all local: no
+(`classify.kind_of`, the only input a git decision reads — §16.0 P1), the
+app's role (`ladder.role_for`, §21: read side only, carried out to the
+page as `role`/`reason`, never branched on here), the record, the effective
+flags, the GitHub sign-in snapshot, `engine.status` (every kind: it carries
+the merge job), `ownsync.status` (an own app), `proposals.view`/`untracked` — all local: no
 call here waits on GitHub (the page's GET must never block on it). Every
 collaborator call is wrapped: a slice that fails reads as None, and a None
 slice still yields a panel ("unknown", with Check now — P6: no state
@@ -129,14 +131,32 @@ def _own_checked(app_dir: str) -> float | None:
     return at if isinstance(at, (int, float)) else None
 
 
-def facts(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dict:
+def _role(app_dir: str, flags: dict, market_ui: bool, role) -> dict:
+    """`{role, reason}` (§21) — the GET's own `ladder.role_for` answer when
+    it has one, else derived here the same way (local git + cached identity,
+    no network; the org-role lookup is queued only with a Community switch
+    on, as the ladder does). A failure reads as unknown/checking."""
+    if role is _UNSET:
+        role = _call("role", "ladder", "role_for", app_dir,
+                     ask=bool(flags.get("sources") or market_ui))
+    role = role if isinstance(role, dict) else {}
+    return {"role": role.get("role") or "unknown",
+            "reason": role.get("reason") if role.get("role") else "checking"}
+
+
+def facts(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET,
+          role=_UNSET) -> dict:
     """What `decide` reads, from local state only. `copy`/`proposal`/
-    `github` are the GET's own `engine.status`/`proposals.view`/sign-in
-    answers when it already has them (one pass over the repo per read)."""
+    `github`/`role` are the GET's own `engine.status`/`proposals.view`/
+    sign-in/`ladder.role_for` answers when it already has them (one pass
+    over the repo per read). `role`/`reason` ride along for the page (§21);
+    `decide` never reads them — the kind does."""
     from fused_render.contrib import refresh
 
     flags = _call("flags", "flags", "snapshot") or {}
-    out = {"app_dir": app_dir, "market_ui": bool(_call("market ui", "flags", "marketplace_ui")),
+    market_ui = bool(_call("market ui", "flags", "marketplace_ui"))
+    out = {"app_dir": app_dir, "market_ui": market_ui,
+           **_role(app_dir, flags, market_ui, role),
            "kind": None, "repo": None, "remix_of": None, "owner_checked": True,
            "original_update": False, "flags": flags,
            "github": (_safely("identity", refresh.github_identity) if github is _UNSET
@@ -781,9 +801,13 @@ def _own(f: dict, flags: dict) -> dict:
     return {"panel": panel, "actions": b.done()}
 
 
-def for_app(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dict:
-    """`{panel, actions}` for the app folder `app_dir` (§16.9). Local only."""
-    return decide(facts(app_dir, copy=copy, proposal=proposal, github=github))
+def for_app(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET,
+            role=_UNSET) -> dict:
+    """`{panel, actions, role, reason}` for the app folder `app_dir`
+    (§16.9; `role`/`reason` §21, copied from `facts`, not decided on).
+    Local only."""
+    f = facts(app_dir, copy=copy, proposal=proposal, github=github, role=role)
+    return {**decide(f), "role": f["role"], "reason": f["reason"]}
 
 
 def activity(app_dir: str) -> list:

@@ -64,6 +64,7 @@ import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
+import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
 import InstallLinkPage from "@shell/InstallLinkPage";
@@ -1375,6 +1376,10 @@ export default function App({ config }: { config: Config }) {
           duplicate work, never add coverage. */}
       {!IS_EMBED && <UpdateNotifier />}
       {!IS_EMBED && <RestartOverlay />}
+      {/* The open favourite's chat card, beside whichever page's Claude rail
+          is up (shell/claude-rail FavouritePeek): mounted once here so a hop
+          between pages never remounts it. */}
+      {!IS_EMBED && <FavouritePeek />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

@@ -7,7 +7,11 @@
 //     page's own word (CanvasWorkspace `sideOpenFromUrl`), and the explorer's
 //     for a shut companion column (`_side=off`) — so a reload and Back keep
 //     it, and a tab switch (`appPageUrl` carries the query) does not lose it.
-//     Absent means open. Re-read on every URL event, like the page's `_tab`.
+//     A SILENT URL asks the flag every Claude column shares
+//     (platform/lib/side-hidden; owner, 2026-11-03: "the collapsed and
+//     opened state of it should persist across views"): shut on the canvas
+//     page or in the explorer is shut here, and a Hide here is written back
+//     for them. Re-read on every URL event, like the page's `_tab`.
 //   - THE WIDTH IS THE EXPLORER SIDEBAR'S: the same chat sits in both columns
 //     (PreviewSidebar, the folder pane), so it opens at the share
 //     `defaultSideWidth` gives, clamps into the same floors (`MIN_W` for the
@@ -39,6 +43,7 @@ import { replaceSearch } from "@platform/lib/router";
 import { MIN_W, clampSideWidth, defaultSideWidth } from "@apps/explorer/lib/side-width";
 import { getSideWidth, setSideWidth, subscribeSideWidth } from "@apps/explorer/lib/side-store";
 import { startSideReopenPull } from "@apps/explorer/SideChrome";
+import { getSideHidden, setSideHidden } from "@platform/lib/side-hidden";
 import { RAIL_W } from "./claude-rail/ClaudeRail";
 
 /** The URL's word for a shut pane (`?side=off`); absent = open. */
@@ -49,8 +54,11 @@ export const SIDE_OFF = "off";
  *  the canvas page's own number. */
 const CLOSE_UNDER = 60;
 
-export function claudePaneOpenFromSearch(search: string): boolean {
-  return new URLSearchParams(search).get(SIDE_PARAM) !== SIDE_OFF;
+/** `hidden` is the shared flag's answer for a URL that says nothing
+ *  (`getSideHidden()`); the hook passes it, the pure tests pin the rule. */
+export function claudePaneOpenFromSearch(search: string, hidden = false): boolean {
+  if (new URLSearchParams(search).get(SIDE_PARAM) === SIDE_OFF) return false;
+  return !hidden;
 }
 
 /** The page's URL with the pane's state written (`side=off`, or no `side`). */
@@ -79,13 +87,15 @@ export function useAppPageClaudePane(splitRef: RefObject<HTMLElement | null>): A
   // OPEN OR SHUT: the URL's answer, re-read on every URL event (Back, a tab
   // switch that carried the param, a hop that dropped it).
   const urlVersion = useUrlVersion();
-  const [open, setOpen] = useState(() => claudePaneOpenFromSearch(location.search));
+  const [open, setOpen] = useState(() => claudePaneOpenFromSearch(location.search, getSideHidden()));
   useEffect(() => {
-    setOpen(claudePaneOpenFromSearch(location.search));
+    setOpen(claudePaneOpenFromSearch(location.search, getSideHidden()));
   }, [urlVersion]);
   // …and written back when the page changes it (`show`/`hide`/the drags), so
-  // a reload keeps it. In place: shutting a pane is not a navigation.
+  // a reload keeps it — to the URL, in place (shutting a pane is not a
+  // navigation), and to the shared flag, so the next page opens the same way.
   useEffect(() => {
+    setSideHidden(!open);
     const next = withClaudePaneParam(location.pathname + location.search + location.hash, open);
     if (next !== location.pathname + location.search + location.hash) replaceSearch(next);
   }, [open]);
@@ -222,6 +232,33 @@ export function chatDoorOnApp(href: string, dir: string): { params: Record<strin
   path = path.replace(/^\/explorer\/(view|embed)/, "").replace(/^\/(?=[A-Za-z]:)/, "");
   const base = dir.replace(/\/+$/, "");
   if (!(path === base || path.startsWith(base + "/"))) return null;
+  const params: Record<string, string> = {};
+  for (const k of ["session_id", "queued", "backend"]) {
+    const v = url.searchParams.get(k);
+    if (v) params[k] = v;
+  }
+  if (!params.session_id && !params.queued) return null;
+  return { params };
+}
+
+/**
+ * THE SAME QUESTION ON THE CANVAS PROJECT PAGE (CanvasPage `openChatHere`;
+ * owner, 2026-11-03: the pane and rail on the canvas page as on the app
+ * page). A canvas task's door is the EDITOR's URL (tasks-lib `taskHref` →
+ * canvasPagePath: `/canvases/<env>/<name>?session_id=`, with `node=` +
+ * `node_file=` for a node's chat). The canvas chat — no node named — opens
+ * in this page's own pane; a NODE's chat is the editor's to show (its right
+ * pane on that node), so that door answers null and navigates as it says.
+ */
+export function chatDoorOnCanvas(
+  href: string,
+  env: string,
+  name: string,
+): { params: Record<string, string> } | null {
+  const url = new URL(href, "http://x");
+  const m = /^\/canvases\/([a-z]+)\/([A-Za-z0-9_]+)$/.exec(url.pathname);
+  if (!m || m[1] !== env || m[2] !== name) return null;
+  if (url.searchParams.get("node") || url.searchParams.get("node_file")) return null;
   const params: Record<string, string> = {};
   for (const k of ["session_id", "queued", "backend"]) {
     const v = url.searchParams.get(k);

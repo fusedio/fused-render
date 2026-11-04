@@ -2,7 +2,7 @@
 // the two pure halves, so the word and its absence-means-open rule are pinned
 // without a DOM.
 import { describe, expect, it } from "bun:test";
-import { chatDoorOnApp, claudePaneOpenFromSearch, withClaudePaneParam } from "./useAppPageClaudePane";
+import { chatDoorOnApp, chatDoorOnCanvas, claudePaneOpenFromSearch, withClaudePaneParam } from "./useAppPageClaudePane";
 
 describe("the app page's Claude pane on the URL", () => {
   it("is open unless the URL says side=off — the canvas page's own word", () => {
@@ -11,6 +11,13 @@ describe("the app page's Claude pane on the URL", () => {
     expect(claudePaneOpenFromSearch("?side=off")).toBe(false);
     expect(claudePaneOpenFromSearch("?_tab=files&side=off&session_id=abc")).toBe(false);
     expect(claudePaneOpenFromSearch("?side=on")).toBe(true);
+  });
+
+  it("a silent URL defers to the shared hidden flag; side=off wins over an open flag", () => {
+    expect(claudePaneOpenFromSearch("", true)).toBe(false);
+    expect(claudePaneOpenFromSearch("?_tab=tasks", true)).toBe(false);
+    expect(claudePaneOpenFromSearch("?side=off", false)).toBe(false);
+    expect(claudePaneOpenFromSearch("?_tab=tasks", false)).toBe(true);
   });
 
   it("writes shut as side=off and open as no side param, leaving the rest of the query alone", () => {
@@ -52,5 +59,21 @@ describe("chatDoorOnApp: which ring doors open in this page's own pane", () => {
     expect(chatDoorOnApp("/explorer/view/Users/me/Fused/app/demo?_side=claude", DIR)).toBeNull();
     expect(chatDoorOnApp("/explorer/view/Users/me/%E0%A4%A?session_id=s", DIR)).toBeNull();
     expect(chatDoorOnApp("/canvases/unstable/x?session_id=s", DIR)).toBeNull();
+  });
+});
+
+describe("chatDoorOnCanvas: which ring doors open in the canvas project page's own pane", () => {
+  it("the canvas chat on this canvas, with a session or a queued entry", () => {
+    expect(chatDoorOnCanvas("/canvases/unstable/demo?session_id=s1", "unstable", "demo"))
+      .toEqual({ params: { session_id: "s1" } });
+    expect(chatDoorOnCanvas("/canvases/unstable/demo?queued=q9&backend=b", "unstable", "demo"))
+      .toEqual({ params: { queued: "q9", backend: "b" } });
+  });
+  it("not ours: a node's chat (the editor's), another canvas or env, no session, an explorer door", () => {
+    expect(chatDoorOnCanvas("/canvases/unstable/demo?node=hex&node_file=hex.py&session_id=s", "unstable", "demo")).toBeNull();
+    expect(chatDoorOnCanvas("/canvases/unstable/other?session_id=s", "unstable", "demo")).toBeNull();
+    expect(chatDoorOnCanvas("/canvases/prod/demo?session_id=s", "unstable", "demo")).toBeNull();
+    expect(chatDoorOnCanvas("/canvases/unstable/demo", "unstable", "demo")).toBeNull();
+    expect(chatDoorOnCanvas("/explorer/view/x/demo?session_id=s", "unstable", "demo")).toBeNull();
   });
 });

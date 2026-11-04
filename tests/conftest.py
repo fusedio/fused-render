@@ -847,6 +847,24 @@ def _no_startup_engine_warm(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_startup_marketplace_blocks(monkeypatch):
+    """Neutralize create_app's Marketplace block-list check (`_startup_marketplace_blocks`
+    -> `contrib.blocks.startup`), same leaked-thread hazard as the fixtures above.
+
+    It runs once per worker process (`blocks._started`), on a daemon thread
+    that calls `httpx.get` for the block list. Whatever test is running when
+    that thread gets there catches the request in its own patched `httpx.get`.
+    On CI that test was tests/test_hub_models.py, whose Hub fakes saw the
+    blocklist URL as their first call ("a guarded size lookup still reached the
+    Hub", `'limit=10' in '...marketplace_blocklist.json'`). No test asserts
+    the thread starts; the block-list tests call `refresh`/`enforce_all`
+    directly."""
+    from fused_render.contrib import blocks
+
+    monkeypatch.setattr(blocks, "startup", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _no_ai_idle_reaper_thread(monkeypatch):
     """`supervisor._start_resident` starts the AI idle-unload reaper thread
     (SPEC AI-13, D414) the moment any local model becomes resident; no test
