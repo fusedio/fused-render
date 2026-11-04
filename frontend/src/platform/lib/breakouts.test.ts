@@ -182,6 +182,19 @@ describe("buildHandoffDraft", () => {
     expect(buildHandoffDraft(w("/d/handoffs/a/b.md"), "/d/handoffs/")).toContain("Handoff file: /d/handoffs/a/b.md");
     expect(buildHandoffDraft(w("/d/other/a.md"), "/d/handoffs/")).not.toContain("Handoff file");
   });
+  test("a failed write is not the handoff file; an earlier good one still is", () => {
+    const seg = (path: string, status: string) => ({
+      role: "assistant" as const,
+      key: path,
+      text: "",
+      segments: [{ kind: "tool" as const, name: "Write", status, input: { file_path: path } }],
+    });
+    const base = [turns[0]!, turns[2]!];
+    const failedOnly = [...base, seg("/d/handoffs/bad.md", "error")];
+    expect(buildHandoffDraft(failedOnly, "/d/handoffs")).not.toContain("Handoff file");
+    const both = [...base, seg("/d/handoffs/good.md", "ok"), seg("/d/handoffs/bad.md", "error")];
+    expect(buildHandoffDraft(both, "/d/handoffs")).toContain("Handoff file: /d/handoffs/good.md");
+  });
   test("without a dir, any .claude/handoffs markdown counts; empty transcript is empty", () => {
     expect(buildHandoffDraft(turns)).toContain("Handoff file: /w/proj/.claude/handoffs/x.md");
     expect(buildHandoffDraft([])).toBe("");

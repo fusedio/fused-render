@@ -31,7 +31,7 @@ export type HandoffTurn =
       role: "assistant";
       key: string;
       text: string;
-      segments?: readonly { kind: string; name?: string; input?: Record<string, unknown> }[];
+      segments?: readonly { kind: string; name?: string; status?: string; input?: Record<string, unknown> }[];
     }
   | { role: string; key: string; text?: string };
 
@@ -159,6 +159,8 @@ function lastHandoffPath(turns: readonly HandoffTurn[], handoffDir?: string): st
     const segs = "segments" in t ? t.segments : undefined;
     for (const seg of segs ?? []) {
       if (seg.kind !== "tool" || !seg.name || !WRITE_TOOLS.has(seg.name)) continue;
+      // A refused or failed write left no file behind.
+      if (seg.status === "error") continue;
       const p = seg.input?.["file_path"];
       if (typeof p !== "string" || !p.endsWith(".md")) continue;
       const ok = handoffDir ? p.startsWith(handoffDir.replace(/\/+$/, "") + "/") : HANDOFF_ANY.test(p);
