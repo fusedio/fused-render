@@ -37,12 +37,6 @@
   font-size: 13px;
 }
 
-/* The disk baseline is on screen; the fresh listing is still in flight. */
-.canvases-refreshing {
-  opacity: 0.7;
-  font-style: italic;
-}
-
 .canvases-head-actions {
   margin-left: auto;
   display: flex;

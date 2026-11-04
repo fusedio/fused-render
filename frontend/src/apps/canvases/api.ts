@@ -297,15 +297,8 @@ export function loginOutcome(startedAt: number | null, now = Date.now()): string
   return "Sign-in was not completed — try again.";
 }
 
-/** The account's canvases. Without `fresh`, a server memory-cache miss answers
- *  from the on-disk baseline of the last listing in milliseconds, flagged
- *  `stale: true` — the caller then asks again with `fresh` for the real one
- *  (a ~3s control-plane round trip on a large account). */
-export const listCanvases = (env: WorkbenchEnv, fresh = false) =>
-  getJson<{ canvases: CanvasEntry[]; stale: boolean }>(
-    `/api/canvases/list?env=${env}${fresh ? "&fresh=1" : ""}`,
-    GUARD,
-  );
+export const listCanvases = (env: WorkbenchEnv) =>
+  getJson<{ canvases: CanvasEntry[] }>(`/api/canvases/list?env=${env}`, GUARD);
 
 /** Presigned preview URLs for the given collection ids, signed in parallel
  *  server-side. A missing or null entry just means "no preview" — the card
