@@ -171,3 +171,19 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 - T22a: `_set_mode` returns `{"error": "Breakout chats stay in Ask mode", "reason": "breakout_locked"}` for a run whose meta has `breakout: true`, before any control request or host.json write.
 - T21/T23: `breakout: "resume"` is trusted only for a session `tasks_store.is_breakout` records: `gate._breakout_label` (both gate sites) and `_start` (`_breakout_recorded`, a stdlib read of `$FUSED_RENDER_HOME|~/.fused-render` / `claude-sessions/breakouts.json`, answers `breakout_missing`).
 - T24: the router's task dicts do not carry run meta, so no guard was added; the agent.py comment now says `breakouts.json` is the guard and `meta["breakout"]` is a record for the peek and `_set_mode`.
+
+## Round 12 — review fixes (frontend)
+
+- T12/T15 own-turn boundary: `run-controller` keeps `breakoutSends` (bumped on every successful breakout start, first fork and each resume) and emits it on state; `ClaudeChat` forwards it as `sends` in `onBreakoutState`. `ownTurns(turns, sends)` slices from the `sends`-th user turn counted from the END, so it survives `refreshHistory` swapping `u:` keys for uuids. `Card.close` confirms when `sends > 0`.
+- T8/T9/T10 Send back: the composer-draft event is cancelable; `ClaudeChat` calls `preventDefault()` when it seated the text. Handled means no persisted write (the composer syncer owns the draft). Unhandled: `fetchChatDraft`, save `existing + "\n\n" + text` with attachments kept. `sendBackBreakout` is async, resolves boolean (false on unreadable draft or `{ok:false}`); the card stays open and shows a `.breakout-error` line (reuses `.claude-rail-peek-rename-error`). Seams: `save(key, text, attachments)`, `load(key)`.
+- T1/T3/T5 guards: `refreshHistory` returns early for an unspent breakout; `scheduleComeback` returns false in breakout posture; `/clear` in a breakout notifies "Breakout chats cannot be cleared; close the card instead" and refuses. No `/clear` boot test (no existing test drives slash commands).
+- T7: reopening a matched card moves it to the end (top of the stack) and emits once.
+- T11: `lastHandoffPath` skips tool segments with `status === "error"`.
+- T13: `breakoutOpener(embed = IS_EMBED)` in breakouts.ts; all 10 `onBreakout={openBreakout}` host sites use it, so embedded documents get no Breakout seats.
+- T14: the slim TaskPeek head (`peek` + `headerInPeek`) seats `breakoutBtn` through `Topbar`'s `tail`; the slim branch of Topbar now renders `tail` after `extra`.
+- T16: `onBreakoutState` also carries `running` and `stop`; closing a used card mid-run calls `stop()` after the confirm.
+- T17: the default card slot is clamped so the card's top/left stay on screen.
+- T6: `@media (hover: none)` keeps `.turn-breakout` visible on touch.
+- T18: settings description updated (compaction clamp, handoff-notes exception).
+- T2: `breakoutPublishedAt` stamp (Breakout only; shared `generation` untouched): `read()` skips `setBreakout` when a publish happened after it departed. `publishQueueEnabled`/recap have no equivalent, nothing mirrored.
+- NOT done: no browser pass; no `/clear` test; the cross-tab `storage` path still sets the flag without the stamp.
