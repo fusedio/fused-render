@@ -29,6 +29,10 @@ The five kinds:
   `client_id`, `client_registration`, `token_url` and `revoke_url` so refresh
   and revoke need no rediscovery.
 - `oauth-pkce`: `LoopbackFlow` from the auth entry; account from `identity_url`.
+  A bring-your-own client whose vendor also wants a `client_secret` (Google's
+  desktop clients; the entry says so with `byo.secret`) takes it as `login`'s
+  `value`; it is kept in the record beside the refresh token it unlocks, and
+  `token()` prefers the record's secret over the pack's.
 - `oauth-device`: `DeviceFlow`; status carries `verification_uri` and `user_code`.
 - `cli`: run the vendor CLI's `command`; only the kind and the account are
   stored, and `token()` asks the CLI again every time (the CLI owns the token, D402).
@@ -504,8 +508,12 @@ def _oauth_pkce(key: str, p, entry: dict, flow: _Flow) -> dict:
     ts = _run_loopback(flow, lf)
     _check_cancel(flow)
     account = _label(key, entry, ts.access)
+    # A pasted secret rides in the record (the keychain) so refresh and reconnect
+    # have it; one from the pack or the environment is re-read from there instead.
+    secret = entry.get("client_secret") if entry.get("_secret_pasted") else None
     return _token_record("oauth-pkce", ts, account=account, client_id=entry["client_id"],
-                         token_url=entry["token_url"], revoke_url=entry.get("revoke_url"))
+                         token_url=entry["token_url"], revoke_url=entry.get("revoke_url"),
+                         client_secret=secret)
 
 
 def _oauth_device(key: str, p, entry: dict, flow: _Flow) -> dict:
@@ -542,6 +550,16 @@ def _stored_client_id(key: str, kind: str | None) -> str | None:
     return None
 
 
+def _stored_client_secret(key: str, kind: str | None) -> str | None:
+    """The client secret a pasted (BYO) oauth-pkce record was made with, if any."""
+    if kind != "oauth-pkce":
+        return None
+    rec = store.get(key)
+    if rec and rec.get("kind") == kind and isinstance(rec.get("client_secret"), str):
+        return rec["client_secret"].strip() or None
+    return None
+
+
 def login(key: str, kind: str | None = None, client_id: str | None = None,
           value: str | None = None) -> dict:
     """Start a sign-in (or join the one in flight). Raises ValueError for a bad request."""
@@ -549,12 +567,21 @@ def login(key: str, kind: str | None = None, client_id: str | None = None,
     r = _entry_for(p, kind)
     entry, public = r["entry"], r["public"]
     kind = entry.get("kind")
+    pasted_secret = (value or "").strip() if kind == "oauth-pkce" else ""
     if client_id and client_id.strip():
         entry["client_id"] = client_id.strip()   # bring-your-own app
+        if pasted_secret:
+            entry["client_secret"] = pasted_secret
+            entry["_secret_pasted"] = True
+        elif (entry.get("byo") or {}).get("secret") and not entry.get("client_secret"):
+            raise ValueError(f"{p.name} needs the client secret with the client id")
     elif _stored_client_id(key, kind):
         # Reconnect / Try again send only the kind: a sign-in made with a pasted
         # (or environment) client id must not silently restart on the shipped app.
         entry["client_id"] = _stored_client_id(key, kind)
+        if _stored_client_secret(key, kind):
+            entry["client_secret"] = _stored_client_secret(key, kind)
+            entry["_secret_pasted"] = True
     elif not public["available"]:
         raise ValueError(public.get("reason") or f"{public['label']} is not available")
 
@@ -749,9 +776,9 @@ def token(key: str, force_refresh: bool = False) -> str:
             mark_reconnect(key)
             raise NotConnected(f"{key}'s sign-in expired and cannot be refreshed")
         extra = {"resource": rec["resource"]} if rec.get("resource") else None
-        secret = None
+        secret = rec.get("client_secret") or None   # a pasted (BYO) secret lives in the record
         p = registry.get(key)
-        if p is not None:
+        if p is not None and not secret:
             secret = next((a.get("client_secret") for a in p.auth
                            if isinstance(a, dict) and a.get("kind") == kind and a.get("client_secret")), None)
         try:

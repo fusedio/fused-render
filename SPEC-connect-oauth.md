@@ -318,6 +318,9 @@ preset's missing connection both open the card.
 | GitHub | `oauth-device` via `gh` (exists); the hosted MCP gets `gh auth token` as Bearer | PAT paste; BYO OAuth app | remote `api.githubcopilot.com/mcp` + `gh` starter | hosted server has no DCR; verify it accepts a `gh` token |
 | Slack | `oauth-pkce`, Fused app, 13 user scopes, PKCE on, public distribution, no team lock | `byo` from manifest | starter `slack` (slack-connect); `mcp.slack.com/mcp` as `remote` only if it accepts the PKCE app | |
 | Google | `oauth-pkce`, desktop client, minimal read-only scopes per feature | `api-key` service account (today) | starters `google-sheets-tabs`, `google-docs-tabs`, later Gmail/Calendar | publish the project; verification before any restricted scope |
+| Gmail | `oauth-pkce`, Google desktop client, `gmail.modify` + `email`; no client id shipped yet (`FUSED_RENDER_CONNECT_GMAIL_CLIENT_ID` / `_CLIENT_SECRET`) | `byo` id + secret from the Cloud Console | native `providers/gmail/tools.py` (search, read, thread, labels, send/reply, label, trash) | a card of its own: connecting mail grants nothing else |
+| Google Calendar | `oauth-pkce`, same client shape, `calendar.events` + `calendar.readonly` + `email` | `byo` id + secret | native `providers/google-calendar/tools.py` (calendars, events, create/update/delete) | own card, own consent |
+| Google Docs | `oauth-pkce`, same client shape, `documents` + `drive.metadata.readonly` + `email` | `byo` id + secret | native `providers/google-docs/tools.py` (search, read as text, create, append, replace) | own card, own consent; the service-account starters stay as they are |
 | Hugging Face | `oauth-device` via hf (exists, D402) | `HF_TOKEN` | none | same card UI, no code change |
 
 ## 8. Trust and open source
@@ -417,7 +420,7 @@ def validate(d: dict, where: str) -> None   # raises ValueError naming the field
 Auth kinds and their required fields:
 
 - `mcp-oauth`: `resource` (the MCP URL). Endpoints are discovered.
-- `oauth-pkce`: `client_id` (may be `""`, see availability), `authorize_url`, `token_url`, `redirect` `{host, ports|null, path}`, optional `scopes` (dict of query params, e.g. `{"user_scope": "..."}` or `{"scope": "..."}`), `identity_url`, `revoke_url`, `client_secret` (Google only), `extra_authorize` (dict), `byo` `{manifest, docs}`.
+- `oauth-pkce`: `client_id` (may be `""`, see availability), `authorize_url`, `token_url`, `redirect` `{host, ports|null, path}`, optional `scopes` (dict of query params, e.g. `{"user_scope": "..."}` or `{"scope": "..."}`), `identity_url`, `revoke_url`, `client_secret` (Google only; never in a shipped file: `FUSED_RENDER_CONNECT_<KEY>_CLIENT_SECRET` fills it at load, the way `_CLIENT_ID` fills the id), `extra_authorize` (dict), `byo` `{manifest?, docs?, secret?}` (`secret` labels a client-secret field the card shows beside the id, sent as `login`'s `value` and kept in the record for refresh).
 - `oauth-device`: `client_id`, `device_url`, `token_url`, `scope`, `identity_url`.
 - `cli`: `command` (argv list printing a token on stdout), `identity_url`. Available when the command runs and prints a non-empty token.
 - `api-key`: `label`, `identity_url`, optional `docs`.

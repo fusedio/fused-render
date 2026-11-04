@@ -34,6 +34,16 @@ sign-in). A `client_id` of `""` with no variable leaves the kind listed but
 Fused has registered its app with the vendor, without a placeholder id that
 would fail at the vendor's consent page instead of on the card.
 
+**Client secrets from the environment, the same way.** Google's desktop OAuth
+clients are public clients that still have to send a `client_secret` at the
+token endpoint (Google's own docs say it is not treated as a secret for an
+installed app; RFC 8252's locks are PKCE and the loopback redirect). A pack
+never ships one; `FUSED_RENDER_CONNECT_<KEY>_CLIENT_SECRET` fills
+`client_secret` on every `oauth-pkce` kind at load time, beside the id.
+Without the variable, the card's Advanced form takes the id and the secret
+together (`byo.secret`), and the manager keeps the pasted secret in the
+credential store next to the refresh token it unlocks.
+
 A JSON Schema file plus a validator package was considered and rejected: it
 adds a dependency to say what thirty lines of Python say, and its messages
 name a JSON pointer rather than the file and the field a pack author needs.
@@ -181,7 +191,10 @@ def validate(d: dict, where: str) -> None:
         if "byo" in a:
             b = a["byo"]
             if not isinstance(b, dict) or not all(isinstance(x, str) for x in b.values()):
-                bad(f"{at}.byo", "must be an object {manifest?, docs?} of strings")
+                bad(f"{at}.byo", "must be an object {manifest?, docs?, secret?} of strings")
+            for f in b:
+                if f not in ("manifest", "docs", "secret"):
+                    bad(f"{at}.byo.{f}", "unknown key (allowed: manifest, docs, secret)")
         if "client" in a and (not isinstance(a["client"], list) or not all(
                 x in ("cimd", "dcr", "prompt") for x in a["client"])):
             bad(f"{at}.client", "must be a list drawn from cimd, dcr, prompt")
@@ -227,6 +240,11 @@ def client_id_env(key: str) -> str:
     return "FUSED_RENDER_CONNECT_" + key.upper().replace("-", "_") + "_CLIENT_ID"
 
 
+def client_secret_env(key: str) -> str:
+    """The environment variable that fills `client_secret` on `key`'s oauth-pkce kinds."""
+    return "FUSED_RENDER_CONNECT_" + key.upper().replace("-", "_") + "_CLIENT_SECRET"
+
+
 def _load(pack_dir: str) -> Provider:
     key = os.path.basename(os.path.normpath(pack_dir))
     path = os.path.join(pack_dir, "provider.json")
@@ -240,11 +258,14 @@ def _load(pack_dir: str) -> Provider:
     d = _expand(_strip_private(raw))
     validate(d, path)
     env_id = (os.environ.get(client_id_env(key)) or "").strip()
+    env_secret = (os.environ.get(client_secret_env(key)) or "").strip()
     auth = []
     for a in d["auth"]:
         a = dict(a)
         if "client_id" in a and env_id:
             a["client_id"] = env_id  # the environment wins over the shipped id (a self-hoster's own app)
+        if a.get("kind") == "oauth-pkce" and env_secret:
+            a["client_secret"] = env_secret  # Google's desktop clients: the id's non-secret companion
         auth.append(a)
     icon = os.path.join(pack_dir, "icon.svg")
     tools = d.get("tools", {})
@@ -370,9 +391,15 @@ def availability(provider: Provider, entry: dict) -> tuple[bool, str | None]:
     """
     kind = entry.get("kind")
     if kind in ("oauth-pkce", "oauth-device") and not entry.get("client_id"):
-        if entry.get("byo"):
+        byo = entry.get("byo") or {}
+        if byo.get("manifest"):
             return False, (f"no client id: create your own app from the manifest, "
                            f"or set {client_id_env(provider.key)}")
+        if byo:
+            how = f"set {client_id_env(provider.key)}"
+            if byo.get("secret"):
+                how += f" and {client_secret_env(provider.key)}"
+            return False, f"no client id: create your own OAuth client under Advanced, or {how}"
         return False, f"no client id shipped yet: set {client_id_env(provider.key)}"
     if kind == "cli":
         exe = (entry.get("command") or [""])[0]

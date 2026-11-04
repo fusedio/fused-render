@@ -1,0 +1,17 @@
+{
+  "name": "Gmail",
+  "_comment": "client_id ships empty on purpose: Fused still has to publish a Google Cloud project with a Desktop OAuth client. Google's desktop clients are public clients that must still send their (non-secret, by Google's own docs) client_secret at the token endpoint, so a pack never ships one: FUSED_RENDER_CONNECT_GMAIL_CLIENT_ID and FUSED_RENDER_CONNECT_GMAIL_CLIENT_SECRET fill both at load, and Advanced on the card takes the id and secret of your own Desktop client (Google Cloud Console > APIs & Services > Credentials, with the Gmail API enabled). Three Google cards (Gmail, Calendar, Docs) on purpose: each asks for only its own scopes. The same Google client may serve all three.",
+  "auth": [
+    {"kind": "oauth-pkce", "client_id": "",
+     "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+     "token_url": "https://oauth2.googleapis.com/token",
+     "revoke_url": "https://oauth2.googleapis.com/revoke",
+     "identity_url": "https://www.googleapis.com/oauth2/v3/userinfo",
+     "scopes": {"scope": "https://www.googleapis.com/auth/gmail.modify email"},
+     "extra_authorize": {"access_type": "offline", "prompt": "consent"},
+     "redirect": {"host": "127.0.0.1", "ports": null, "path": "/callback"},
+     "byo": {"docs": "https://console.cloud.google.com/apis/credentials", "secret": "Client secret"}}
+  ],
+  "tools": {"remote": null},
+  "privacy": "Sign-in and every call go straight from this computer to Google. The token stays on this computer. Fused runs no server in this flow."
+}

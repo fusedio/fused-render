@@ -384,6 +384,7 @@ function OtherKind({
   onLogin: (body: LoginBody) => Promise<boolean>;
 }) {
   const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
   const head = <div className="font-medium text-[var(--fg)]">{kindLabel(a)}</div>;
 
   if (a.kind === "api-key") {
@@ -401,7 +402,13 @@ function OtherKind({
 
   // Bring your own OAuth app: the one kind whose "unavailable" (no built-in
   // client id) is exactly what the field fixes, so it is offered either way.
+  // A vendor whose public clients still want a client secret at the token
+  // endpoint (Google's desktop clients: `byo.secret` names the field) takes
+  // it beside the id; it rides as the login's `value` and the manager keeps
+  // it in the credential store next to the refresh token it unlocks.
   if (a.kind === "oauth-pkce" && a.byo) {
+    const secretLabel = a.byo.secret || null;
+    const ready = !!clientId.trim() && (!secretLabel || !!clientSecret.trim());
     return (
       <div className="flex flex-col gap-1.5" data-kind={a.kind}>
         {head}
@@ -410,8 +417,10 @@ function OtherKind({
           className="flex flex-wrap items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            const id = clientId.trim();
-            if (id) void onLogin({ kind: a.kind, client_id: id });
+            if (!ready) return;
+            const body: LoginBody = { kind: a.kind, client_id: clientId.trim() };
+            if (secretLabel) body.value = clientSecret.trim();
+            void onLogin(body);
           }}
         >
           <Input
@@ -423,13 +432,25 @@ function OtherKind({
             autoComplete="off"
             spellCheck={false}
           />
-          <Button type="submit" variant="outline" size="sm" disabled={busy || !clientId.trim()}>
+          {secretLabel && (
+            <Input
+              type="password"
+              value={clientSecret}
+              onChange={(e) => setClientSecret(e.target.value)}
+              placeholder={secretLabel}
+              aria-label={secretLabel}
+              className="min-w-0 flex-1 basis-48"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          )}
+          <Button type="submit" variant="outline" size="sm" disabled={busy || !ready}>
             Connect
           </Button>
         </form>
         {a.byo.docs && (
           <a className="settings-link self-start" href={a.byo.docs} target="_blank" rel="noopener noreferrer">
-            Create from manifest
+            {a.byo.manifest ? "Create from manifest" : "Create an OAuth client"}
           </a>
         )}
       </div>
