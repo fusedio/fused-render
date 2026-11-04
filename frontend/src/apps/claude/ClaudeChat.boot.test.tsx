@@ -8,7 +8,7 @@
 // walk over three awaits, and only a real mount/unmount can cross it.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
@@ -24,6 +24,8 @@ interface RunCall {
 }
 
 const runs: RunCall[] = [];
+let historyReads = 0;
+let historyTurns: unknown[] = [];
 /** Held back so a test can park the boot inside its detection wait: the
  *  agent's `defaults` read never answers. */
 let holdDetection = false;
@@ -88,6 +90,10 @@ function stubFetch(): void {
       scheduleReads++;
       return jsonRes({ entries: [] });
     }
+    if (url.startsWith("/api/claude-sessions/history")) {
+      historyReads++;
+      return jsonRes({ turns: historyTurns });
+    }
     if (url === "/api/prefs") return jsonRes({});
     if (url === "/api/claude/app-entry") return jsonRes({});
     if (url === "/api/claude/agent") {
@@ -109,6 +115,8 @@ function stubFetch(): void {
 
 beforeEach(() => {
   runs.length = 0;
+  historyReads = 0;
+  historyTurns = [];
   holdDetection = false;
   holdPaneStat = false;
   holdSessions = false;
@@ -709,6 +717,92 @@ test("a breakout boots empty: no history fetch, a chip for the selected messages
   const context = { block: "<breakout-context>\nThe user opened this side chat from 2 messages of their main chat.\n\nUser: q\n\nAssistant: a\n</breakout-context>", count: 2, title: "Parent" };
   const { r } = await mountChat({ breakout: true, breakoutContext: context });
   await settle(20);
-  expect(runs.filter((c) => c.action === "history")).toHaveLength(0);
+  expect(historyReads).toBe(0);
   expect(byClass(r, "annsum-breakout").length).toBe(1);
+});
+
+// BREAKOUT SELECTION: shift-click picks messages, a plain click opens the card.
+describe("breakout selection", () => {
+  const HISTORY = [
+    { role: "user", text: "first question", uuid: "u1" },
+    { role: "assistant", text: "first answer", uuid: "a1" },
+    { role: "user", text: "second question", uuid: "u2" },
+    { role: "assistant", text: "second answer", uuid: "a2" },
+  ];
+  async function mountParent() {
+    historyTurns = HISTORY;
+    const opened: { context: { block: string; count: number }; forkKey?: string }[] = [];
+    const m = await mountChat({
+      initialSessionId: "sess-abc12345",
+      onBreakout: (req: { context: { block: string; count: number }; forkKey?: string }) => void opened.push(req),
+    });
+    await settle(20);
+    await act(async () => publishBreakoutEnabled(true));
+    await settle(20);
+    return { ...m, opened };
+  }
+  const turnBtn = (r: ReturnType<typeof create>, i: number) => byClass(r, "turn-breakout")[i]!;
+  const click = (r: ReturnType<typeof create>, i: number, shiftKey = false) =>
+    act(() => turnBtn(r, i).props.onClick({ shiftKey }));
+
+  test("the button is on user and assistant turns", async () => {
+    const { r } = await mountParent();
+    expect(byClass(r, "turn-breakout").length).toBe(4);
+  });
+
+  test("shift-click selects the exchange and opens nothing; a second shift-click unselects it", async () => {
+    const { r, opened } = await mountParent();
+    click(r, 1, true);
+    expect(opened).toHaveLength(0);
+    expect(byClass(r, "is-breakout-selected").length).toBe(2);
+    click(r, 1, true);
+    expect(byClass(r, "is-breakout-selected").length).toBe(0);
+  });
+
+  test("a click opens with the pair; with a selection it opens the union and clears it", async () => {
+    const { r, opened } = await mountParent();
+    click(r, 3);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.context.count).toBe(2);
+    expect(opened[0]!.context.block).toContain("second question");
+    expect(opened[0]!.context.block).not.toContain("User: first question");
+    click(r, 0, true);
+    click(r, 3);
+    expect(opened).toHaveLength(2);
+    expect(opened[1]!.context.count).toBe(4);
+    expect(byClass(r, "is-breakout-selected").length).toBe(0);
+  });
+
+  test("Escape clears the selection", async () => {
+    // The DOM shim has no event dispatch: capture the chat's document keydown listeners.
+    const doc = document as unknown as { addEventListener: (t: string, fn: (e: unknown) => void) => void };
+    const prev = doc.addEventListener;
+    const keydown: ((e: unknown) => void)[] = [];
+    doc.addEventListener = (t, fn) => void (t === "keydown" && keydown.push(fn));
+    let m: Awaited<ReturnType<typeof mountParent>>;
+    try {
+      m = await mountParent();
+    } finally {
+      doc.addEventListener = prev;
+    }
+    click(m.r, 1, true);
+    expect(byClass(m.r, "is-breakout-selected").length).toBe(2);
+    await act(async () => {
+      for (const fn of keydown) fn({ key: "Escape", defaultPrevented: false, target: null, preventDefault() {} });
+    });
+    expect(byClass(m.r, "is-breakout-selected").length).toBe(0);
+  });
+
+  test("the composer button opens the selection, or the last exchange when nothing is selected", async () => {
+    const { r, opened } = await mountParent();
+    act(() => byClass(r, "c-breakout")[0]!.props.onClick());
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.context.block).toContain("second answer");
+    expect(opened[0]!.context.block).not.toContain("first answer");
+    click(r, 1, true);
+    act(() => byClass(r, "c-breakout")[0]!.props.onClick());
+    expect(opened).toHaveLength(2);
+    expect(opened[1]!.context.block).toContain("first answer");
+    expect(opened[1]!.context.block).not.toContain("second answer");
+  });
 });

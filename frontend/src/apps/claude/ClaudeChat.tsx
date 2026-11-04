@@ -2512,6 +2512,11 @@ function ChatBody(props: ChatBodyProps) {
       }
       annRef.current?.onEscape(ev);
       if (ev.defaultPrevented) return;
+      if (breakoutSelRef.current.size) {
+        setBreakoutSel(new Set());
+        ev.preventDefault();
+        return;
+      }
       // 4. nothing of the chat's own was open, so the press reaches the host —
       //    which is how TaskPeek closes. Never a stop: Escape has no claim on a
       //    run (T:15947-15978).
@@ -3861,10 +3866,29 @@ function ChatBody(props: ChatBodyProps) {
     },
     [controller, params, file, props.onBreakout],
   );
-  /** "Breakout from here" (Transcript `onBreakout`): the clicked message and
-   *  its pair. */
+  /** The turns shift-clicked for the next breakout. Escape clears it. */
+  const [breakoutSel, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
+  const breakoutSelRef = useRef(breakoutSel);
+  breakoutSelRef.current = breakoutSel;
+  /** "Breakout from here" (Transcript `onBreakout`). A shift-click toggles the
+   *  turn's exchange (it and its pair) in the selection and opens nothing; a
+   *  plain click opens a breakout from the selection plus that exchange, then
+   *  clears the selection. */
   const onBreakoutTurn = useCallback(
-    (turnKey: string) => openBreakoutFor(exchangeKeys(controller.getState().turns, turnKey)),
+    (turnKey: string, opts: { add: boolean }) => {
+      const pair = exchangeKeys(controller.getState().turns, turnKey);
+      if (opts.add) {
+        setBreakoutSel((sel) => {
+          const next = new Set(sel);
+          if (pair.every((k) => sel.has(k))) for (const k of pair) next.delete(k);
+          else for (const k of pair) next.add(k);
+          return next;
+        });
+        return;
+      }
+      openBreakoutFor([...new Set([...breakoutSelRef.current, ...pair])]);
+      setBreakoutSel(new Set());
+    },
     [controller, openBreakoutFor],
   );
 
@@ -5626,7 +5650,12 @@ function ChatBody(props: ChatBodyProps) {
   // BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open while a run
   // is going too (the breakout is its own run). Placed by the strip, or as the
   // merged head row's tail (that layout has no strip).
-  const openLastExchange = () => {
+  const openFromComposer = () => {
+    if (breakoutSel.size) {
+      openBreakoutFor([...breakoutSel]);
+      setBreakoutSel(new Set());
+      return;
+    }
     const turns = controller.getState().turns;
     for (let i = turns.length - 1; i >= 0; i--) {
       if (turns[i]!.role === "assistant") return openBreakoutFor(exchangeKeys(turns, turns[i]!.key));
@@ -5639,7 +5668,7 @@ function ChatBody(props: ChatBodyProps) {
         className="bar-ctl bar-ctl-icon c-breakout"
         title="Breakout: a research-only side chat from here"
         aria-label="Breakout"
-        onClick={openLastExchange}
+        onClick={openFromComposer}
       >
         <GitBranchPlus size={14} aria-hidden="true" />
       </button>
@@ -5963,7 +5992,9 @@ function ChatBody(props: ChatBodyProps) {
               sendNowKey={running ? newestQueuedKey : null}
               onSendNow={onSendQueuedNow}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
-              {...(chatBackend === "claude" && breakoutOn && props.onBreakout ? { onBreakout: onBreakoutTurn } : {})}
+              {...(chatBackend === "claude" && breakoutOn && props.onBreakout
+                ? { onBreakout: onBreakoutTurn, breakoutSel }
+                : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}

@@ -121,8 +121,10 @@ export interface TranscriptProps {
   onSendNow?: () => void;
   /** "Fork from here" on a user turn (`TurnProps.onFork`). */
   onFork?: (key: string) => void;
-  /** "Breakout from here" on a user turn (`TurnProps.onBreakout`). */
-  onBreakout?: (key: string) => void;
+  /** "Breakout from here" on a user or assistant turn (`TurnProps.onBreakout`). */
+  onBreakout?: (key: string, opts: { add: boolean }) => void;
+  /** The turn keys picked for the next breakout (`TurnProps.breakoutSelected`). */
+  breakoutSel?: ReadonlySet<string>;
   /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
   onOpenShot?: (shot: Viewable) => void;
   /** "preview" / "app" — the word a receipt's nouns use (`PaneState.paneNoun`). */
@@ -186,6 +188,7 @@ export const Transcript = memo(function Transcript({
   onSendNow,
   onFork,
   onBreakout,
+  breakoutSel,
   onOpenShot,
   paneNoun,
   what,
@@ -979,6 +982,7 @@ export const Transcript = memo(function Transcript({
                   {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}
                   {...(onBreakout ? { onBreakout } : {})}
+                  {...(breakoutSel?.has(turn.key) ? { breakoutSelected: true } : {})}
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
