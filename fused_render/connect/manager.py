@@ -338,7 +338,9 @@ def status(key: str) -> dict:
             n = tools.cached_count(key)
             if n is None:
                 tools.warm(key)
-            out["tools"] = n or 0
+            # None while the first tools/list is still in flight: the page keeps polling fast until the
+            # number lands (a count of 0 would read as "no tools" and sit there until the 30 s poll).
+            out["tools"] = n
     if flow is not None and not flow.done and not flow.cancelled:
         out.update(state="pending", kind=flow.kind)
         for k in ("url", "user_code", "verification_uri"):
@@ -359,7 +361,7 @@ def list() -> list[dict]:
     out = []
     for p in registry.providers():
         st = status(p.key)
-        count = st.pop("tools", 0)
+        count = st.pop("tools", 0)  # None = still listing (see status)
         out.append({
             "key": p.key, "name": p.name,
             "icon": f"/api/connect/{p.key}/icon" if p.icon else None,

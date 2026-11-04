@@ -12,10 +12,11 @@
 // reads the state and the account name. The one exception is a pasted API
 // key, which goes up once and is never read back.
 //
-// POLLING: once a second while any card is pending (a person is finishing a
-// browser round trip, and the page should flip the moment they do), else
-// every 30 s (a token can lapse, or another window can connect). Only the
-// pending cards are re-read on the fast cadence.
+// POLLING: once a second while any card is settling — pending (a person is
+// finishing a browser round trip, and the page should flip the moment they
+// do) or just connected with its tool count still being listed — else every
+// 30 s (a token can lapse, or another window can connect). Only the settling
+// cards are re-read on the fast cadence.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, postJson } from "./api";
 
@@ -83,9 +84,16 @@ export const pasteCallback = (key: string, url: string) =>
 export const FAST_POLL_MS = 1000;
 export const SLOW_POLL_MS = 30_000;
 
-/** How long until the next status read: fast while a sign-in is in flight. */
-export function pollDelay(states: readonly ConnectState[]): number {
-  return states.includes("pending") ? FAST_POLL_MS : SLOW_POLL_MS;
+/** A status worth re-reading every second: a sign-in in flight, or a fresh
+ *  connection whose tool count the server is still listing (`tools: null`). */
+export function settling(st: ConnectStatus): boolean {
+  return st.state === "pending" || (st.state === "connected" && toolCount(st) === null);
+}
+
+/** How long until the next status read: fast while any card is settling. */
+export function pollDelay(items: readonly (ConnectState | ConnectStatus)[]): number {
+  const fast = items.some((x) => (typeof x === "string" ? x === "pending" : settling(x)));
+  return fast ? FAST_POLL_MS : SLOW_POLL_MS;
 }
 
 /** The kind the card's main button uses: the first one the server says works. */
@@ -176,16 +184,14 @@ export function useConnections(): Connections {
   }, []);
 
   const stateOf = useCallback((p: ConnectProvider): ConnectStatus => statuses[p.key] ?? p, [statuses]);
-  const states = (rows ?? []).map((p) => stateOf(p).state);
-  const delay = pollDelay(states);
+  const delay = pollDelay((rows ?? []).map((p) => stateOf(p)));
 
   useEffect(() => {
     if (!rows || rows.length === 0) return;
     let alive = true;
     const t = window.setTimeout(() => {
       const now = rows.map((p) => ({ key: p.key, st: statusesRef.current[p.key] ?? p }));
-      const pending = now.filter((r) => r.st.state === "pending");
-      const keys = (delay === FAST_POLL_MS ? pending : now).map((r) => r.key);
+      const keys = (delay === FAST_POLL_MS ? now.filter((r) => settling(r.st)) : now).map((r) => r.key);
       void Promise.all(
         keys.map((k) =>
           getConnection(k)

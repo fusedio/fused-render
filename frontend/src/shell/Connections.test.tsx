@@ -126,6 +126,9 @@ describe("pure helpers", () => {
   test("polls fast only while a card is pending", () => {
     expect(pollDelay(["connected", "disconnected"])).toBe(SLOW_POLL_MS);
     expect(pollDelay(["connected", "pending"])).toBe(FAST_POLL_MS);
+    // Just connected, tool count still being listed (`tools: null`): fast too, until the number lands.
+    expect(pollDelay([{ state: "connected", tools: null }])).toBe(FAST_POLL_MS);
+    expect(pollDelay([{ state: "connected", tools: 0 }, { state: "disconnected", tools: null }])).toBe(SLOW_POLL_MS);
     expect(FAST_POLL_MS).toBe(1000);
     expect(SLOW_POLL_MS).toBe(30_000);
   });
@@ -292,9 +295,14 @@ describe("signing in", () => {
     expect(calls.filter((c) => c.url === "/api/connect/github" && c.method === "GET").length).toBeGreaterThanOrEqual(1);
     expect(opened).toHaveLength(1);
 
-    answers["GET /api/connect/github"] = { state: "connected", kind: "mcp-oauth", account: "octocat", tools: 1 };
+    // Landed, but the server is still listing its tools (`tools: null`): the card shows no count and the
+    // fast poll goes on for this card until the number arrives — no reload needed.
+    answers["GET /api/connect/github"] = { state: "connected", kind: "mcp-oauth", account: "octocat", tools: null };
     await act(async () => new Promise((r) => setTimeout(r, FAST_POLL_MS + 150)));
     expect(textOf(card(box, "github"))).toContain("Connected as octocat");
+    expect(textOf(card(box, "github"))).not.toContain("tool");
+    answers["GET /api/connect/github"] = { state: "connected", kind: "mcp-oauth", account: "octocat", tools: 1 };
+    await act(async () => new Promise((r) => setTimeout(r, FAST_POLL_MS + 150)));
     expect(textOf(card(box, "github"))).toContain("1 tool");
     // Only the pending card was re-read on the fast cadence.
     expect(calls.some((c) => c.url === "/api/connect/notion" && c.method === "GET")).toBe(false);
