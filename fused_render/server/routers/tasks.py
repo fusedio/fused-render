@@ -7990,8 +7990,13 @@ def api_task_favourite(patch: FavouritePatch,
     which is why the watcher is told about EVERY key whose record flipped and
     not only the one named; a star with `open` omitted opens its card too
     (`tasks_store.set_favourite`). With `on` omitted only `open` moves, and
-    only on a starred key — the card's close paths use this, so a stale
-    window can never re-star.
+    only on a starred key, so a stale window can never re-star.
+
+    THE CLIENT NO LONGER DRIVES `open` (2026-11-04): which favourite's card
+    is open is per browser window now (frontend platform/lib/last-chat
+    `useFavOpen`), so the shell sends the star alone and never reads
+    `starred_open` back. The `open` handling and the record stay for older
+    clients; the one-open-at-a-time rule is the window's now.
 
     Only a STARTED chat can be starred (a session-less row rekeys on dispatch,
     see `tasks_store.FAVOURITES_FILE`). An ARCHIVED task keeps or gets its

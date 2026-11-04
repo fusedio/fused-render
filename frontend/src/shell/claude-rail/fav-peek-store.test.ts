@@ -1,17 +1,24 @@
 // The shell's favourite card and the page's rails (fav-peek-store): a stack
 // of rails, the last one still mounted is the one the card stands beside;
 // a keyboard press's wish to focus the card waits for the card's key.
+import { installDomShim } from "@platform/lib/testDomShim";
+installDomShim();
 import { afterEach, describe, expect, it } from "bun:test";
+import { createElement } from "react";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import type { TaskPulseTask } from "@platform/lib/api";
+import { favOpen, setFavOpen } from "@platform/lib/last-chat";
 import {
   PENDING_FOCUS_MS,
   favPeekState,
   focusRail,
-  noteFavOpened,
-  onFavOpened,
+  railHere,
   registerRail,
   requestFavFocus,
   resetFavPeekStoreForTests,
   takeFavFocus,
+  takeQuietFocus,
+  useFavOpenRow,
   withdrawFavFocusOn,
 } from "./fav-peek-store";
 
@@ -145,18 +152,6 @@ describe("the pending focus, withdrawn when the reader moves on", () => {
   });
 });
 
-describe("an open answered open", () => {
-  it("is heard at once by every listener, with its key, until it unsubscribes", () => {
-    const heard: string[] = [];
-    const off = onFavOpened((k) => heard.push(k));
-    noteFavOpened("k1");
-    expect(heard).toEqual(["k1"]);
-    off();
-    noteFavOpened("k2");
-    expect(heard).toEqual(["k1"]);
-  });
-});
-
 describe("focusRail", () => {
   // A rail as focusRail reads it: rings by section, each with its key.
   type Ring = { section: "favs" | "chats"; key: string };
@@ -208,7 +203,23 @@ describe("focusRail", () => {
       { section: "chats", key: "y" },
     ]);
     focusRail(b.el, "k", "list", true);
-    expect(b.focused).toEqual(["chats:y"]);
+    // Never another chat's ring (owner, 2026-11-04: "a random task from
+    // above opens"): the unstarred chat has no list ring here — the rail.
+    expect(b.focused).toEqual(["rail"]);
+  });
+  it("a ring it focuses is marked quiet for that one focus (no hover card); the rail is not", () => {
+    const seen: boolean[] = [];
+    const { el } = fakeRail([{ section: "chats", key: "k" }]);
+    const ring = (el.querySelectorAll(".claude-rail-chat") as unknown as { focus: () => void }[])[0]!;
+    const plain = ring.focus;
+    ring.focus = () => {
+      plain();
+      seen.push(takeQuietFocus(ring));
+    };
+    focusRail(el, "k", "list", true);
+    expect(seen).toEqual([true]);
+    // Spent: a later, real focus is heard.
+    expect(takeQuietFocus(ring)).toBe(false);
   });
   it("no ring at all: the rail itself", () => {
     const { el, focused } = fakeRail([]);
@@ -216,3 +227,93 @@ describe("focusRail", () => {
     expect(focused).toEqual(["rail"]);
   });
 });
+
+describe("the page's canvas rides with its rail", () => {
+  it("railHere answers the registered getter, live, and nothing once the rail leaves", () => {
+    const a = rail("a");
+    let file: string | null = null;
+    const select = () => {};
+    const off = registerRail(a, () => ({ env: "prod", name: "c", file, select }));
+    expect(railHere(a)).toEqual({ env: "prod", name: "c", file: null, select });
+    file = "hex.py";
+    expect(railHere(a)?.file).toBe("hex.py");
+    off();
+    expect(railHere(a)).toBeNull();
+    // A rail with no canvas (a folder's), and no rail.
+    registerRail(rail("b"));
+    expect(railHere(rail("b"))).toBeNull();
+    expect(railHere(null)).toBeNull();
+  });
+});
+
+describe("useFavOpenRow (the open favourite's verdict)", () => {
+  const g = globalThis as { sessionStorage?: unknown };
+  function withStorage(fn: () => void) {
+    const had = Object.prototype.hasOwnProperty.call(g, "sessionStorage");
+    const prev = g.sessionStorage;
+    const store = new Map<string, string>();
+    g.sessionStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    };
+    try {
+      fn();
+    } finally {
+      act(() => setFavOpen(null));
+      if (had) g.sessionStorage = prev;
+      else delete g.sessionStorage;
+    }
+  }
+  const row = (over: Partial<TaskPulseTask>): TaskPulseTask =>
+    ({ key: "F", status: "done", starred: true, unread: 0, session_id: "s-F", ...over }) as TaskPulseTask;
+  function mount(rows: TaskPulseTask[]) {
+    const seen: (string | null)[] = [];
+    let current = rows;
+    function Probe({ rows: r }: { rows: TaskPulseTask[] }) {
+      seen.push(useFavOpenRow(true, r)?.key ?? null);
+      return null;
+    }
+    let r!: ReactTestRenderer;
+    act(() => {
+      r = create(createElement(Probe, { rows: current }));
+    });
+    return {
+      seen,
+      pulse(next: TaskPulseTask[]) {
+        current = next;
+        act(() => r.update(createElement(Probe, { rows: current })));
+      },
+      unmount: () => act(() => r.unmount()),
+    };
+  }
+
+  for (const [what, next] of [
+    ["an unstar", [row({ starred: false })]],
+    ["an erase (the row gone)", [row({ key: "other" })]],
+    ["an archive", [row({ status: "archived" })]],
+  ] as const) {
+    it(`${what} in the pulse closes the card and clears this window's key`, () => {
+      withStorage(() => {
+        act(() => setFavOpen("F"));
+        const m = mount([row({})]);
+        expect(m.seen[m.seen.length - 1]).toBe("F");
+        m.pulse([...next]);
+        expect(m.seen[m.seen.length - 1]).toBeNull();
+        expect(favOpen()).toBeNull();
+        m.unmount();
+      });
+    });
+  }
+
+  it("a star pressed a moment ago (the pulse not caught up) shows and keeps the key", () => {
+    withStorage(() => {
+      act(() => setFavOpen("F"));
+      const m = mount([row({ starred: false })]);
+      expect(m.seen[m.seen.length - 1]).toBe("F");
+      expect(favOpen()).toBe("F");
+      m.unmount();
+    });
+  });
+});
+

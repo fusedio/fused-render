@@ -16,9 +16,10 @@
 // one takes only itself off the stack.
 //
 // A KEYBOARD PRESS ON A FAVOURITE'S RING HANDS THE KEYBOARD TO ITS CARD
-// (`pendingFocus`): the press writes "open" and the card mounts on the
-// pulse, a round trip later. The rail leaves the key here; the card takes it
-// (`takeFavFocus`) once it stands on that key — however long that took, up to
+// (`pendingFocus`): the press opens the card in this window (platform/lib/
+// last-chat `setFavOpen`), and the card is drawn a frame or more later — its
+// chat's chunk may still be loading. The rail leaves the key here; the card
+// takes it (`takeFavFocus`) once it stands on that key — however long that took, up to
 // PENDING_FOCUS_MS, past which a stale wish must not steal the keyboard from
 // whatever the reader did since.
 //
@@ -28,8 +29,17 @@
 // marks the store dirty; a microtask later the live state is compared with
 // the last one the readers saw, and they hear of it only if something is
 // actually different.
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { FAV_MARK_MS, favOpenMark, favOpenStep, type Box, type FavOpenMark } from "./rail-peek-lib";
+//
+// THE PAGE'S OWN CANVAS rides with a rail (`registerRail`'s `here`): the
+// favourite's card has a where-chip too, and a chip naming a node of the
+// canvas the page stands on selects it in place, as the rail's own card's
+// does (claude-rail-lib `chipDoor`). Read at the press (`railHere`), never
+// held: the page's selection moves without the store hearing of it.
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { TaskPulseTask } from "@platform/lib/api";
+import { clearFavOpen, favOpenedAtMs, useFavOpen } from "@platform/lib/last-chat";
+import type { RailHere } from "./claude-rail-lib";
+import { FAV_SETTLE_MS, favOpenVerdict, type Box } from "./rail-peek-lib";
 
 export interface FavPeekState {
   rail: HTMLElement | null;
@@ -89,15 +99,28 @@ function settleRail(): void {
   if (live.rail !== top) mark({ ...live, rail: top });
 }
 
+/** Each rail's page canvas, as its rail answers it (header). */
+const heres = new WeakMap<HTMLElement, () => RailHere | null>();
+
 /** A rail mounted: it goes on top of the stack (header). The answer takes it
- *  off again — itself only, wherever it stands in the stack. */
-export function registerRail(el: HTMLElement): () => void {
+ *  off again — itself only, wherever it stands in the stack. `here`: the
+ *  page's canvas, where the page can select a node in place (header). */
+export function registerRail(el: HTMLElement, here?: () => RailHere | null): () => void {
   rails = [...rails.filter((r) => r !== el), el];
+  if (here) heres.set(el, here);
+  else heres.delete(el);
   settleRail();
   return () => {
     rails = rails.filter((r) => r !== el);
+    heres.delete(el);
     settleRail();
   };
+}
+
+/** The page canvas `rail` registered with (header), now; null for a rail
+ *  with none (a folder's, a file's) or no rail. */
+export function railHere(rail: HTMLElement | null): RailHere | null {
+  return (rail && heres.get(rail)?.()) ?? null;
 }
 
 /** Where the favourite's card stands (null while closed). */
@@ -112,23 +135,6 @@ export function requestFavFocus(key: string | null): void {
   pendingAt = key ? Date.now() : 0;
   if (live.pendingFocus === key) return;
   mark({ ...live, pendingFocus: key });
-}
-
-/** AN "OPEN" WRITE ANSWERED OPEN (ClaudeRail `openFavourite`): the card
- *  shut on that key by its × ahead of the pulse (FavouritePeek `closing`)
- *  shows again, though the pulse may never have seen it closed. Heard at
- *  once, outside the coalesced state: a signal, not a value. */
-const openSubs = new Set<(key: string) => void>();
-
-export function noteFavOpened(key: string): void {
-  for (const fn of [...openSubs]) fn(key);
-}
-
-export function onFavOpened(fn: (key: string) => void): () => void {
-  openSubs.add(fn);
-  return () => {
-    openSubs.delete(fn);
-  };
 }
 
 /** The card stands on `key`: true (and the wish spent) when a press asked
@@ -160,16 +166,29 @@ export function withdrawFavFocusOn(target: EventTarget | null, card: Element | n
   requestFavFocus(null);
 }
 
+/** A ring `focusRail` put the keyboard on: its focus is a hand-off, not a
+ *  reader arriving, so it opens no hover card (ClaudeRail's ring `onFocus`
+ *  asks `takeQuietFocus` once; owner, 2026-11-04: "when I unfavourite, a
+ *  random task from above opens"). */
+const quiet = new WeakSet<object>();
+
+/** True — and spent — when `el` took the keyboard from `focusRail`. */
+export function takeQuietFocus(el: object): boolean {
+  return quiet.delete(el);
+}
+
 /** WHERE THE KEYBOARD GOES WHEN A CARD SHUTS UNDER IT — never the body: the
  *  ring for `key`, looked for first in the section `section` names — the
  *  rail's favourites (`"foot"`: the favourite's card, and the rail's own card
  *  letting go of a chat that was just starred or opened as a favourite,
  *  whose ring now lives there) or its list (`"list"`: an unstarred
  *  favourite, whose foot ring is about to go) — then in the other one (the
- *  pulse may not have moved the ring yet); else the rail's first ring that
- *  is not `key`'s foot ring when that is going (`unstarred`); else the rail
- *  itself (made focusable for the purpose). Rings carry their key
- *  (ClaudeRail `data-task-key`). */
+ *  pulse may not have moved the ring yet), skipping `key`'s foot ring when
+ *  that is going (`unstarred`); else the rail itself (made focusable for the
+ *  purpose) — NEVER another chat's ring: on another folder the unstarred
+ *  chat has no list ring, and the rail's first ring is a stranger. The ring
+ *  is focused QUIETLY (`takeQuietFocus`): a hand-off opens no card. Rings
+ *  carry their key (ClaudeRail `data-task-key`). */
 export function focusRail(
   rail: HTMLElement | null,
   key: string | null,
@@ -190,19 +209,15 @@ export function focusRail(
       }
     }
   }
-  if (!target) {
-    for (const el of rail.querySelectorAll<HTMLElement>(".claude-rail-chat")) {
-      if (!goingFoot(el)) {
-        target = el;
-        break;
-      }
-    }
-  }
-  if (!target) {
+  if (target) quiet.add(target);
+  else {
     if (!rail.hasAttribute("tabindex")) rail.setAttribute("tabindex", "-1");
     target = rail;
   }
   target.focus({ preventScroll: true });
+  // Heard synchronously (focus events fire inside `focus()`); a focus that
+  // did not land leaves no mark for a later, real one to be muted by.
+  quiet.delete(target);
 }
 
 export function favPeekState(): FavPeekState {
@@ -230,40 +245,37 @@ export function resetFavPeekStoreForTests(): void {
   pendingAt = 0;
 }
 
-/** THE FAVOURITE OPENED AHEAD OF THE PULSE (rail-peek-lib `FavOpenMark`):
- *  the key a press (ClaudeRail's ring) or an "open" answer (FavouritePeek's
- *  card) put up, over the pulse's open favourite `pulseOpen` until the pulse
- *  agrees or moves elsewhere (`favOpenStep`). `live(key)`: the key is still
- *  a favourite the pulse lists. `key` is the mark's key, or null with none
- *  standing; `mark` sets one, `drop` takes it down (only if it is still on
- *  `key`, when given — a refused write must not drop a later press's). */
-export function useFavOpenMark(
-  pulseOpen: string | null,
-  live: (key: string) => boolean,
-): { key: string | null; mark: (key: string) => void; drop: (key?: string) => void } {
-  const [mark, setMark] = useState<FavOpenMark | null>(null);
-  const pulseRef = useRef(pulseOpen);
-  pulseRef.current = pulseOpen;
-  const alive = mark ? live(mark.key) : false;
+/** THIS WINDOW'S OPEN FAVOURITE, checked against the pulse's stars
+ *  (FavouritePeek; rail-peek-lib `favOpenVerdict`): the pulse row of the
+ *  open key while its card should show, else null — and the key CLEARED
+ *  once the verdict says close (an unstar, an erase or an archive, here or
+ *  in another window). `seenLive` is whether the pulse has said the key is a
+ *  live favourite since it was opened — once it has, its row turning
+ *  unstarred, archived or gone closes the card. A star pressed a moment ago
+ *  shows ahead of the pulse for FAV_SETTLE_MS at most (the open time is the
+ *  window's, platform/lib/last-chat `favOpenedAtMs`); the verdict is asked
+ *  again when that runs out. `on` false: nothing shows, nothing is cleared. */
+export function useFavOpenRow(on: boolean, rows: readonly TaskPulseTask[]): TaskPulseTask | null {
+  const openKey = useFavOpen();
+  const openRow = useMemo(() => (openKey ? rows.find((t) => t.key === openKey) : undefined), [openKey, rows]);
+  const seenLive = useRef<{ key: string | null; seen: boolean }>({ key: null, seen: false });
+  if (seenLive.current.key !== openKey) seenLive.current = { key: openKey, seen: false };
+  if (openRow?.starred && openRow.status !== "archived") seenLive.current.seen = true;
+  const [, setSettled] = useState(0);
   useEffect(() => {
-    if (!mark) return;
-    const next = favOpenStep(mark, pulseOpen, alive, Date.now());
-    if (next !== mark) {
-      setMark(next);
-      return;
-    }
-    // Waiting out a stale pulse: past FAV_MARK_MS the pulse wins anyway.
-    const id = window.setTimeout(
-      () => setMark((m) => (m === mark ? null : m)),
-      Math.max(0, mark.at + FAV_MARK_MS - Date.now()),
-    );
-    return () => window.clearTimeout(id);
-  }, [mark, pulseOpen, alive]);
-  const set = useCallback((key: string) => {
-    setMark((prev) => favOpenMark(key, pulseRef.current, prev, Date.now()));
-  }, []);
-  const drop = useCallback((key?: string) => {
-    setMark((m) => (m && (key === undefined || m.key === key) ? null : m));
-  }, []);
-  return { key: mark && alive ? mark.key : null, mark: set, drop };
+    const at = openKey ? favOpenedAtMs(openKey) : null;
+    if (at === null) return;
+    const ms = at + FAV_SETTLE_MS - Date.now();
+    if (ms <= 0) return;
+    const id = setTimeout(() => setSettled((n) => n + 1), ms + 20);
+    return () => clearTimeout(id);
+  }, [openKey]);
+  const verdict =
+    on && openKey
+      ? favOpenVerdict(openRow, rows.length > 0, seenLive.current.seen, favOpenedAtMs(openKey), Date.now())
+      : null;
+  useEffect(() => {
+    if (verdict === "close" && openKey) clearFavOpen(openKey);
+  }, [verdict, openKey]);
+  return verdict === "show" ? (openRow ?? null) : null;
 }
