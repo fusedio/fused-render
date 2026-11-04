@@ -1,10 +1,21 @@
 """Version of fused-render installed on disk, as opposed to the one running.
 
-A DMG install replaces the .app bundle in place while an old process keeps
-running its already-loaded code — so the bundle's Info.plist is the ground
-truth for "what would launch next time", and comparing it to the in-memory
-__version__ tells the shell to ask for an app restart (not a page refresh,
-which can't swap the server process).
+"Installed" here means WHAT WOULD LAUNCH NEXT TIME, and comparing it to the
+in-memory __version__ tells the shell to ask for an app restart (not a page
+refresh, which can't swap the server process). On macOS two things can make
+that differ from the running code:
+
+* A manual DMG drag (or `brew upgrade`) replaces the .app bundle in place
+  while the old process keeps running its already-loaded code — the
+  bundle's own Info.plist is the answer then.
+* The in-app updater (update/mac.py) STAGES its download as a hidden
+  sibling of the bundle (`staged_bundle_path`) and only renames it into
+  place on quit — the swap used to happen at install time, which moved the
+  bundle out from under every open window and child process: a lazily
+  imported route chunk asked for a hash that was no longer on disk ("This
+  page didn't load" on every release, 2026-11-03), and a lazy Python import
+  read new code into the old process. The staged sibling is what launches
+  next, so its version wins here whenever it is newer than the bundle's.
 
 Linux has no equivalent of Info.plist to read out of an AppImage — its swap
 (update/linux.py) instead writes a small stamp JSON next to the app's state
@@ -86,6 +97,65 @@ def _linux_installed_version(appimage: str | None) -> str | None:
     return stamp.get("version")
 
 
+# The hidden sibling update/mac.py stages a downloaded bundle under, next to
+# the installed bundle: `/Applications/.FusedRender-update.app` for
+# `/Applications/FusedRender.app` (`FusedBot-feature.app` ->
+# `.FusedBot-feature-update.app`). Derived from the bundle's own basename
+# rather than from a flavor constant so this module stays below `update/`
+# and so a Caskroom bundle reached through a symlink stages beside the REAL
+# bundle (callers pass the resolved path).
+_STAGED_SUFFIX = "-update.app"
+
+
+def staged_bundle_path(bundle: str) -> str:
+    """Where a downloaded update for `bundle` waits until the next quit."""
+    parent, name = os.path.split(bundle.rstrip(os.sep))
+    stem = name[:-4] if name.endswith(".app") else name
+    return os.path.join(parent, "." + stem + _STAGED_SUFFIX)
+
+
+def bundle_version(bundle: str) -> str | None:
+    """CFBundleShortVersionString of a .app bundle, None when unreadable."""
+    try:
+        with open(os.path.join(bundle, "Contents", "Info.plist"), "rb") as f:
+            return plistlib.load(f).get("CFBundleShortVersionString")
+    except (OSError, plistlib.InvalidFileException):
+        return None
+
+
+def staged_version(bundle: str) -> str | None:
+    """The version staged beside `bundle`, ONLY when it is newer than the
+    bundle itself; None otherwise. The "newer" test is the rule every
+    reader shares (this module, the update manager's `_disk_version`, and
+    the quit-time apply): a staged copy that is not newer — the user dragged
+    a newer DMG over the app while an older download sat staged — must never
+    win, or the quit would downgrade the app and the restart dialog would
+    relaunch into it."""
+    staged = staged_bundle_path(bundle)
+    if not os.path.isdir(staged):
+        return None
+    version = bundle_version(staged)
+    if version is None:
+        return None
+    # Fails CLOSED: an unreadable installed plist means "newer" cannot be
+    # answered, and a copy that cannot be shown newer is not applied (an
+    # unparseable version string lands here too). The boot sweep is the
+    # mirror of this: it removes a staged copy only when the installed
+    # version IS readable and the staged one is not newer — so an unreadable
+    # plist neither applies the copy nor throws it away (CodeRabbit, PR #2088).
+    current = bundle_version(bundle)
+    if current is None:
+        return None
+    from fused_render.update.common import is_newer  # leaf module, no cycle
+
+    try:
+        if not is_newer(version, current):
+            return None
+    except ValueError:
+        return None
+    return version
+
+
 def installed_version() -> str | None:
     # `sys.frozen == "macosx_app"` (py2app's own marker) is checked before
     # the platform test, not after: the unit tests fake a py2app bundle by
@@ -95,12 +165,15 @@ def installed_version() -> str | None:
     # it always has.
     if getattr(sys, "frozen", None) == "macosx_app":
         # sys.executable is …/Contents/MacOS/python (see fusedcli.setup_cli_hint).
-        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
-        try:
-            with open(os.path.join(contents, "Info.plist"), "rb") as f:
-                return plistlib.load(f).get("CFBundleShortVersionString")
-        except (OSError, plistlib.InvalidFileException):
-            return None
+        # realpath, not abspath: the staged sibling lives next to the REAL
+        # bundle (see `staged_bundle_path`), and a symlinked bundle's link
+        # would otherwise be looked beside.
+        contents = os.path.dirname(os.path.dirname(os.path.realpath(sys.executable)))
+        bundle = os.path.dirname(contents)
+        staged = staged_version(bundle)
+        if staged is not None:
+            return staged
+        return bundle_version(bundle)
     if sys.platform.startswith("linux"):
         from fused_render.supervisor._linux import startup
         appimage = startup.appimage_path()

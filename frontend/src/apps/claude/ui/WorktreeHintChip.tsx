@@ -35,6 +35,18 @@ export function visibleWorktreeHint(hint: WorktreeHint | null | undefined, tasks
   return (tasks ?? []).some((t) => t.isolation === "worktree" && isLive(t.status)) ? hint : null;
 }
 
+/** The hint the chip will actually draw: live, not the chat's own folder, not a
+ *  left worktree. The top bar asks it to hide the worktree menu meanwhile. */
+export function shownWorktreeHint(
+  hint: WorktreeHint | null | undefined,
+  tasks: TaskRecord[] | undefined,
+  currentPath?: string,
+): WorktreeHint | null {
+  const h = visibleWorktreeHint(hint, tasks);
+  if (!h || isSameFolder(h.path, currentPath) || h.via === "exit") return null;
+  return h;
+}
+
 const HOW: Record<WorktreeHint["via"], string> = {
   bash: "created with git worktree add",
   enter: "entered",

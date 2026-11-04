@@ -131,6 +131,14 @@
 // correlated by the frame's opaque `req`, as capture's is — never on the
 // snapshot chain (no order to keep). Stop in the widget is
 //   iframe → { type: "fused-embed-ai-abort", req }
+//   Native tools (D1460): the request may carry `tools` (AI SDK
+//   definitions); the relay then streams `turn` and `tool_call` frames,
+//   which this host posts as
+//   host → iframe { type: "fused-embed-ai-tool-call", req, id, name, input }
+//   and the frame answers with
+//   iframe → host { type: "fused-embed-ai-tool-result", req, id, content, isError }
+//   which this host POSTs to /api/ai/turns/<turn>/results (api.ts
+//   postAiToolResult), unblocking the CLI's bridge. One call at a time.
 // → the host aborts the fetch → the relay cancels the turn (Claude) or
 // kills the one-shot CLI (Copilot, Codex, Gemini). Every run is aborted
 // when the frame reloads or this page unmounts. The frame never reaches
@@ -207,7 +215,9 @@ import {
   getSyncState,
   getWhoami,
   applyBody,
+  postAiToolResult,
   streamAiText,
+  type AiToolDefinition,
   type AiStreamError,
   checkRemote,
   pullCanvas,
@@ -1707,8 +1717,18 @@ export default function CanvasWorkspace({
   // Not on the snapshot chain: requests are independent and the Claude
   // tier's own session lock serializes what must be serialized.
   const aiRunsRef = useRef<Map<string, AbortController>>(new Map());
+  // A tools run's turn id by the frame's `req` (D1460): the `turn` frame
+  // sets it, `fused-embed-ai-tool-result` posts under it, done clears it.
+  const aiTurnsRef = useRef<Map<string, string>>(new Map());
   const relayAi = useCallback(
-    async (req: string, modelId: string, systemPrompt: string, prompt: string, effort: string | undefined) => {
+    async (
+      req: string,
+      modelId: string,
+      systemPrompt: string,
+      prompt: string,
+      effort: string | undefined,
+      tools: AiToolDefinition[] | undefined,
+    ) => {
       const post = (msg: Record<string, unknown>) => {
         const frame = frameRef.current;
         const origin = baseOriginRef.current;
@@ -1741,9 +1761,22 @@ export default function CanvasWorkspace({
             // Only a level this model takes; the relay reports a dropped
             // one in `warnings[]`, this just saves the round trip.
             ...(effort && row.efforts.includes(effort) ? { effort } : {}),
+            ...(tools && tools.length ? { tools } : {}),
           },
           controller.signal,
           (text) => post({ type: "fused-embed-ai-chunk", req, text }),
+          (frame) => {
+            // A frame of a run this `req` has since replaced is stale: the
+            // replacement's `turn` id must not be overwritten or wiped.
+            if (aiRunsRef.current.get(req) !== controller) return;
+            if (frame.type === "turn") {
+              aiTurnsRef.current.set(req, frame.id);
+              return;
+            }
+            // One call the model made; the frame runs it and answers with
+            // `fused-embed-ai-tool-result`, which posts to the turn.
+            post({ type: "fused-embed-ai-tool-call", req, id: frame.id, name: frame.name, input: frame.input });
+          },
         );
         if (result.finishReason === "cancelled") {
           // The Activity row's ✕ (not the frame's Stop): the relay closes
@@ -1775,10 +1808,26 @@ export default function CanvasWorkspace({
           error: { type: err.type ?? "ai_error", message: err.message || "AI request failed" },
         });
       } finally {
-        if (aiRunsRef.current.get(req) === controller) aiRunsRef.current.delete(req);
+        // Owner-guarded like the controller: a replacement run under the
+        // same `req` may already hold the map's entries.
+        if (aiRunsRef.current.get(req) === controller) {
+          aiRunsRef.current.delete(req);
+          aiTurnsRef.current.delete(req);
+        }
       }
     },
     [sendAiModels],
+  );
+  const relayAiToolResult = useCallback(
+    (req: string, id: string, content: string, isError: boolean) => {
+      const turn = aiTurnsRef.current.get(req);
+      if (!turn) return; // the run ended (or never had tools): nothing waits
+      void postAiToolResult(turn, { id, content, isError }).catch(() => {
+        // The turn closed between the frame and this answer (Stop, a
+        // timeout): the bridge was already failed by the server.
+      });
+    },
+    [],
   );
   const abortAi = useCallback((req: string) => {
     const controller = aiRunsRef.current.get(req);
@@ -2042,8 +2091,9 @@ export default function CanvasWorkspace({
       if (type === "fused-embed-ai") {
         // From THE workbench frame only: it spends this Mac's agent logins.
         if (event.source !== frameRef.current?.contentWindow) return;
-        const { req, model, systemPrompt, prompt, effort } = (event.data ?? {}) as {
+        const { req, model, systemPrompt, prompt, effort, tools } = (event.data ?? {}) as {
           req?: unknown; model?: unknown; systemPrompt?: unknown; prompt?: unknown; effort?: unknown;
+          tools?: unknown;
         };
         if (typeof req !== "string" || !req || typeof model !== "string" || !model) return;
         if (typeof prompt !== "string" || !prompt.trim()) return;
@@ -2053,7 +2103,16 @@ export default function CanvasWorkspace({
           typeof systemPrompt === "string" ? systemPrompt : "",
           prompt,
           typeof effort === "string" && effort ? effort : undefined,
+          Array.isArray(tools) ? (tools as AiToolDefinition[]) : undefined,
         );
+      }
+      if (type === "fused-embed-ai-tool-result") {
+        if (event.source !== frameRef.current?.contentWindow) return;
+        const { req, id, content, isError } = (event.data ?? {}) as {
+          req?: unknown; id?: unknown; content?: unknown; isError?: unknown;
+        };
+        if (typeof req !== "string" || !req || typeof id !== "string" || !id) return;
+        relayAiToolResult(req, id, typeof content === "string" ? content : JSON.stringify(content ?? ""), !!isError);
       }
       if (type === "fused-embed-ai-abort") {
         if (event.source !== frameRef.current?.contentWindow) return;
@@ -2299,7 +2358,7 @@ export default function CanvasWorkspace({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, sendAiModels, relaySnapshot, relayBody, relayAi, abortAi, relayDelta, enqueueRelay, env, name, embedded, settleShot]);
+  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, sendAiModels, relaySnapshot, relayBody, relayAi, relayAiToolResult, abortAi, relayDelta, enqueueRelay, env, name, embedded, settleShot]);
 
   // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
   const workbenchUrl =

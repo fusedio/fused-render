@@ -76,15 +76,15 @@ function texts(root: ReactTestRenderer, className: string): string[] {
 
 test("a restored turn rebuilds every receipt row from its own wire (T:10903)", () => {
   const r = mount(<Receipts turn={turn} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
-  // The overview and pane captions are gone (the thumbnail says it); images,
-  // files and a refusal keep theirs, and the comments live in the bubble now.
+  // The overview, pane and image captions are gone (the thumbnail says it, and
+  // the name is its hover title); files and a refusal keep theirs, and the comments live in the bubble now.
   expect(texts(r, "annsum-txt")).toEqual([
-    "image attached: pasted.png",
     "file attached: rows.csv",
     "no image — could not be saved",
   ]);
   expect(els(r, "annsum-row annsum-note")).toHaveLength(0);
-  expect(JSON.stringify(r.toJSON())).not.toContain("annotated overview attached");
+  // The label is the picture's hover title now, not a caption row.
+  expect(JSON.stringify(r.toJSON())).toContain('"title":"annotated overview attached"');
   // Pictures are drawn; a file and a refusal are not (an <img> pointed at a .csv
   // is a broken-image glyph, which reads as a bug).
   expect(panes(r).length).toBe(3);

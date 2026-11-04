@@ -232,9 +232,6 @@ describe("the peek header", () => {
       // The identity block, in one element (TaskPeekWho.tsx) — its own three
       // marks are ordered below.
       "<TaskPeekWho",
-      // …and the right cluster reads project · Open · ⋮: the FACT, then the
-      // act, then the rest of the acts (design.md, Polish batch 4).
-      "<TaskPeekProject",
       "task-side-peek-open",
       'aria-label="More actions"',
     ].map(at);
@@ -302,12 +299,12 @@ describe("the peek header", () => {
     expect(CARDS).toContain('(peekOn ? " task-card-door--page" : "")');
     expect(CARDS).toContain("const ICON_FOLDER = (");
     expect(CARDS_CSS).toContain(".task-card-doors > .task-card-door--page {");
-    // …and all three doors wear an OUTLINE at rest (design.md, Polish batch 5).
-    // The wall's already did; the other two were bare words in a run of ink,
-    // with only a hover wash to say they could be pressed.
+    // …the peek's door is a quiet GHOST now (no outline at rest: the header
+    // holds only this one word-control beside the ⋮); the wall and List doors
+    // still wear an outline (design.md, Polish batch 5).
     expect(PEEK_CSS).toContain(".task-side-peek-open {");
     expect(PEEK_CSS.slice(PEEK_CSS.indexOf(".task-side-peek-open {"))).toContain(
-      "border: 1px solid var(--border);",
+      "border: 0;",
     );
     expect(TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-act--page,"))).toContain(
       "border-color: var(--border);",
@@ -435,14 +432,15 @@ describe("the peek header", () => {
   });
 
   it("stays ONE LINE at the pane minimum by folding, in a stated order", () => {
-    // The title ellipsises all the way down first; then the project name goes,
-    // then the door — and the door reappears in the ⋮, because a hidden control
-    // has to be somewhere (design.md, Header + list state v2).
-    expect(FIT).toContain('export const PEEK_HEAD_DROPS = [\n  ".task-side-peek-project",\n  ".task-side-peek-open",\n]');
-    expect(PEEK_CSS).toContain(
+    // The title ellipsises all the way down first; then the door folds — and
+    // reappears in the ⋮, because a hidden control has to be somewhere
+    // (design.md, Header + list state v2). The project name no longer lives in
+    // this header, so there is no project fit rule.
+    expect(FIT).toContain('export const PEEK_HEAD_DROPS = [\n  ".task-side-peek-open",\n]');
+    expect(PEEK_CSS).not.toContain(
       '.task-side-peek-head[data-fit]:not([data-fit="0"]) .task-side-peek-project',
     );
-    expect(PEEK_CSS).toContain('.task-side-peek-head[data-fit="2"] .task-side-peek-open');
+    expect(PEEK_CSS).toContain('.task-side-peek-head[data-fit="1"] .task-side-peek-open');
     expect(HEAD).toContain("headFit >= PEEK_HEAD_DROPS.length");
     // Nothing else ever folds: the way out of a panel and the way to its
     // actions are what a narrow window must never take away.
@@ -479,9 +477,10 @@ describe("the peek header", () => {
     // wash, because a label that lights up under the pointer promises a press.
     expect(WHO).toContain('<span className="task-side-peek-project"');
     expect(WHO).toContain('title={tildePath(task.project, home)}');
-    // …and the peek still hands its own home directory over, so the tooltip
-    // keeps its `~`.
-    expect(HEAD).toContain("<TaskPeekProject task={task} home={home} />");
+    // The peek header no longer shows the project or the agent at all (user,
+    // 2026-11-04: the header was crammed); the chat Topbar still does.
+    expect(HEAD).not.toContain("<TaskPeekProject");
+    expect(HEAD).not.toContain("<TaskPeekAgent");
     expect(PEEK_CSS).not.toContain(".task-side-peek-project:hover");
   });
 

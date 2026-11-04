@@ -8,7 +8,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import type { Task } from "@platform/lib/api";
 import type { WorktreeHint } from "../protocol/types";
 
-const { WorktreeHintChip, visibleWorktreeHint, isSameFolder } = await import("./WorktreeHintChip");
+const { WorktreeHintChip, visibleWorktreeHint, shownWorktreeHint, isSameFolder } = await import("./WorktreeHintChip");
 const { Topbar } = await import("./Topbar");
 
 const mounted: ReactTestRenderer[] = [];
@@ -86,6 +86,22 @@ describe("visibleWorktreeHint", () => {
   test("other hints do not depend on tasks", () => {
     expect(visibleWorktreeHint(bash, [])).toBe(bash);
     expect(visibleWorktreeHint(null, [])).toBe(null);
+  });
+});
+
+describe("shownWorktreeHint", () => {
+  const abs: WorktreeHint = { path: "/x/wt", branch: "feat/wt", via: "enter" };
+  const agent: WorktreeHint = { path: "/x/wt", branch: "", via: "agent", label: "x" };
+  const t = (status: string, isolation: string) => ({ id: "a", status, isolation }) as never;
+  test("a hint for another folder is shown", () => {
+    expect(shownWorktreeHint(abs, [], "/x/main")).toBe(abs);
+    expect(shownWorktreeHint(agent, [t("running", "worktree")], "/x/main")).toBe(agent);
+  });
+  test("null for the chat's own folder, a left worktree, or a dead agent", () => {
+    expect(shownWorktreeHint(abs, [], "/x/wt")).toBe(null);
+    expect(shownWorktreeHint({ ...abs, via: "exit" }, [], "/x/main")).toBe(null);
+    expect(shownWorktreeHint(agent, [t("completed", "worktree")], "/x/main")).toBe(null);
+    expect(shownWorktreeHint(null, [], "/x/main")).toBe(null);
   });
 });
 

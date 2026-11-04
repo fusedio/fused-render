@@ -72,7 +72,7 @@ import { useChatTemplates } from "./TaskCards";
 // The header's identity block — status ring, number, title, project — lives in
 // its own module because the native chat's top line draws the SAME block for the
 // task behind the conversation it is showing (see that file's note).
-import { TaskPeekAgent, TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
+import { TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
 import { agentLabel, agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
@@ -408,7 +408,6 @@ const ICON_OPEN_DOOR = (
 export function TaskPeek({
   tasks,
   loaded = false,
-  home = "",
   missing,
   onReload,
 }: {
@@ -1149,7 +1148,7 @@ export function TaskPeek({
             side is a fixed mark and a mark that ellipsises is a mark that lies.
 
             `data-fit` is measured, never a breakpoint (shell/row-fit.ts): at
-            the narrowest widths the project name goes, then the Open door —
+            the narrowest widths the Open door folds —
             and the door reappears in the ⋮ so the act is never unreachable. */}
         <header className="task-side-peek-head" ref={headRef} data-fit={headFit}>
           <div className="task-side-peek-acts">
@@ -1205,28 +1204,17 @@ export function TaskPeek({
           )}
           {task && (
             <div className="task-side-peek-marks">
-              {/* THE PROJECT IS A FACT, NOT A DOOR (Akshil, 2026-09-14 —
-                  design.md, Polish batch 4). It was a folder mark and a name
-                  wired to the folder's Explorer page, sitting an inch from a
-                  second door — with a folder glyph on it — that went somewhere
-                  else. Two doors, two folder pictures, one header: the reader
-                  had to learn which folder each one meant. So the name goes
-                  back to being what it is, the label of the project this task
-                  runs in, and the header keeps exactly ONE way out.
-
-                  The whole argument, and the markup, are in `TaskPeekWho.tsx`
-                  now — the chat's header draws this same chip. */}
-              <TaskPeekProject task={task} home={home} />
-              <TaskPeekAgent task={task} />
+              {/* The project and agent labels were dropped from the peek header to
+                  declutter it; the chat's own Topbar still shows them. */}
               {/* "↗ OPEN" — a WORD behind a MARK (design.md, Polish batches 4
                   and 5). The folder glyph it replaced was the page's one door
                   picture, which is a good rule everywhere except beside a
                   folder NAME, where it read as "open that folder" and did not;
                   the label says the act, and the external-link arrow in front
                   of it says the press leaves this page. The icon LEADS, the way
-                  every other icon-and-word control in this app is built, and
-                  the outline around the pair is what makes it read as a button
-                  rather than as more of the header's ink.
+                  every other icon-and-word control in this app is built. It is
+                  a quiet ghost button: no outline at rest, a wash and full ink
+                  on hover.
 
                   A real link with a real href, so ⌘-click opens a tab, exactly
                   like the row's own door. */}

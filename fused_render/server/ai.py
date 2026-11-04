@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -20,6 +21,7 @@ from fastapi.responses import (
 )
 
 from fused_render import claude_health, jobs
+from fused_render.claude_agent import ai_tools_server
 from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
 from fused_render.server.common import (
@@ -67,6 +69,8 @@ router = APIRouter()
 # works on every model including haiku (the default, which otherwise thinks
 # by default in stream-json mode). See _AiSession.configure.
 _AI_EFFORTS = ("low", "medium", "high", "xhigh")
+#: `--mcp-config` for a plain completion: no servers at all (see `_ai_cmd`).
+_NO_MCP_CONFIG = '{"mcpServers":{}}'
 _AI_DEFAULT_MODEL = "claude-haiku-5-5"
 # Callers may name a model by its short name ("opus"), the vocabulary every
 # model picker in the app speaks. This relay hands it to the CLI, which is
@@ -259,7 +263,8 @@ def _claude_bin() -> str | None:
     return None
 
 
-def _ai_cmd(bin_path: str, model: str, sp_file: str) -> list[str]:
+def _ai_cmd(bin_path: str, model: str, sp_file: str, mcp_config: str = _NO_MCP_CONFIG,
+            allowed_tools: str | None = None) -> list[str]:
     """The stream-json spawn command for the persistent completion process.
 
     --input-format stream-json is what makes the warm instance possible: the
@@ -276,7 +281,11 @@ def _ai_cmd(bin_path: str, model: str, sp_file: str) -> list[str]:
     dodges the OS argv size cap for the documented embed-JSON-aggregates
     pattern), the system prompt goes via --system-prompt-file (`sp_file`, our
     own tempdir path) at spawn and via the set_model control_request
-    afterwards, and the model is charset-validated (_AI_MODEL_RE)."""
+    afterwards, and the model is charset-validated (_AI_MODEL_RE).
+
+    `mcp_config` is the `--mcp-config` value (inline JSON or a file path;
+    `_NO_MCP_CONFIG` for a completion) and `allowed_tools` the
+    `--allowed-tools` pattern pre-approving a tools run's bridge, if any."""
     return [
         bin_path,
         "-p",
@@ -292,7 +301,17 @@ def _ai_cmd(bin_path: str, model: str, sp_file: str) -> list[str]:
         "--tools=",
         "--setting-sources=",
         "--no-session-persistence",
-    ]
+        # `--tools=` strips the BUILT-IN tools only: the user's claude.ai
+        # connectors (remote MCP servers the account carries) still attach
+        # after init, and a model with "Claude Docs" tools in front of it
+        # answers a tool-shaped prompt by calling them, or refuses because the
+        # tool it was asked for "is not available in this session" (probed
+        # 2.1.316, D1460). Strict mode with an explicit config is the one
+        # switch that empties the list — an empty one for a completion, the
+        # turn's own bridge for a tools run.
+        "--strict-mcp-config",
+        "--mcp-config", mcp_config,
+    ] + (["--allowed-tools", allowed_tools] if allowed_tools else [])
 
 
 async def _spawn_claude_stream(cmd: list[str], env: dict):
@@ -318,7 +337,10 @@ async def _spawn_claude_stream(cmd: list[str], env: dict):
     return await asyncio.create_subprocess_exec(*cmd, **kwargs)
 
 
-async def _ai_spawn(bin_path: str, model: str, system_prompt: str):
+async def _ai_spawn(bin_path: str, model: str, system_prompt: str,
+                    mcp_config: str = _NO_MCP_CONFIG,
+                    allowed_tools: str | None = None,
+                    env_extra: dict | None = None):
     """Write the system-prompt file, build the command and spawn the
     stream-json process; the sp file's path rides on the process object so
     _ai_reap can delete it when the process is reaped (the instance outlives
@@ -335,9 +357,9 @@ async def _ai_spawn(bin_path: str, model: str, system_prompt: str):
         sp_file.write(system_prompt)
         sp_file.close()
         proc = await _spawn_claude_stream(
-            _ai_cmd(bin_path, model, sp_file.name),
-            {k: v for k, v in os.environ.items()
-             if k not in STRIPPED_ENV_VARS})
+            _ai_cmd(bin_path, model, sp_file.name, mcp_config, allowed_tools),
+            {**{k: v for k, v in os.environ.items()
+                if k not in STRIPPED_ENV_VARS}, **(env_extra or {})})
     except BaseException:
         try:
             os.unlink(sp_file.name)
@@ -403,11 +425,19 @@ class _AiSession:
     gracefully: the control error triggers a respawn whose argv carries the
     requested config."""
 
-    def __init__(self):
+    def __init__(self, mcp_config: str = _NO_MCP_CONFIG,
+                 allowed_tools: str | None = None,
+                 env_extra: dict | None = None):
         self.lock = asyncio.Lock()
         self._proc = None
         self._ctrl_seq = 0
         self._spawn_task = None  # startup prewarm; ref so it isn't GC'd
+        # A tools run's instance (D1460) is built per turn with the turn's
+        # bridge in `--mcp-config`, pre-allowed, and MCP_TOOL_TIMEOUT in its
+        # env; the shared instance keeps the defaults (no servers).
+        self._mcp_config = mcp_config
+        self._allowed_tools = allowed_tools
+        self._env_extra = env_extra
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -417,7 +447,9 @@ class _AiSession:
             raise _AiProcFailure(
                 "claude binary not found on PATH; install Claude Code or "
                 f"set {_AI_BIN_ENV} to its location")
-        self._proc = await _ai_spawn(bin_path, model, system_prompt)
+        self._proc = await _ai_spawn(bin_path, model, system_prompt,
+                                     self._mcp_config, self._allowed_tools,
+                                     self._env_extra)
         return self._proc
 
     async def _discard(self) -> None:
@@ -586,6 +618,139 @@ class _AiSession:
 
 
 _AI_SESSION = _AiSession()
+
+
+#: A tool's name as the caller declares it and as the bridge serves it; the
+#: CLIs add their own server prefix (`mcp__fused_tools__<name>` on Claude).
+_TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_AI_TOOLS_MAX = 64
+
+
+def _tools_problem(tools) -> str | None:
+    """Why this `tools` list is unusable, or None."""
+    if not isinstance(tools, list) or not tools:
+        return "'tools' must be a non-empty list of {name, description, parameters}"
+    if len(tools) > _AI_TOOLS_MAX:
+        return f"'tools' may hold at most {_AI_TOOLS_MAX} tools"
+    seen = set()
+    for index, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            return f"'tools[{index}]' must be an object"
+        name = tool.get("name")
+        if not isinstance(name, str) or not _TOOL_NAME_RE.fullmatch(name):
+            return (f"'tools[{index}].name' must be 1-64 characters of "
+                    "letters, digits, _ or -")
+        if name in seen:
+            return f"'tools' names {name!r} twice"
+        seen.add(name)
+        if tool.get("description") is not None \
+                and not isinstance(tool["description"], str):
+            return f"'tools[{index}].description' must be a string"
+        if tool.get("parameters") is not None \
+                and not isinstance(tool["parameters"], dict):
+            return f"'tools[{index}].parameters' must be a JSON Schema object"
+    return None
+
+
+class _AiTurn:
+    """ONE tools run of `/api/ai` (D1460): the tools the caller declared and
+    the calls the model makes through the bridge, answered by the caller.
+
+    The bridge (`claude_agent/ai_tools_server.py`, spawned by the CLI)
+    reads `tools` off `GET /api/ai/turns/<id>/tools` and forwards each
+    `tools/call` to `POST .../call`, which lands in `call()` here: ONE
+    `tool_call` frame goes out on the turn's NDJSON stream and the call
+    parks until the caller's `POST .../results` resolves it. `lock`
+    serializes the calls — a model that issues parallel `tool_use` blocks
+    has them answered one after another, because the browser-side tool
+    loop holds one pending round at a time (D2 of the design). Closing the
+    turn fails every parked call, so a bridge whose stream went away hears
+    an error rather than hanging until its own timeout."""
+
+    def __init__(self, turn_id: str, tools: list, queue: "asyncio.Queue"):
+        self.id = turn_id
+        self.tools = tools
+        self.queue = queue
+        self.lock = asyncio.Lock()
+        self.pending: dict[str, asyncio.Future] = {}
+        self.closed = False
+
+    @classmethod
+    def new(cls, tools: list, queue: "asyncio.Queue") -> "_AiTurn":
+        """A turn with its id minted but NOT yet reachable by the bridge:
+        `register()` is called by the stream generator's first lines, so a
+        client that never iterates the response (dropped before the first
+        byte — the leak this file documents for Activity rows) leaves
+        nothing in `_AI_TURNS`."""
+        return cls("turn_" + uuid.uuid4().hex, tools, queue)
+
+    def register(self) -> None:
+        _AI_TURNS[self.id] = self
+
+    def close(self) -> None:
+        self.closed = True
+        _AI_TURNS.pop(self.id, None)
+        for fut in self.pending.values():
+            if not fut.done():
+                fut.set_result({"content": "the AI turn ended before this "
+                                           "tool was answered", "isError": True})
+        self.pending.clear()
+
+    async def call(self, name: str, tool_input: dict) -> dict:
+        """One tool call from the bridge: emit the frame, await the result."""
+        async with self.lock:
+            if self.closed:
+                return {"content": "the AI turn has ended", "isError": True}
+            call_id = "call_" + uuid.uuid4().hex[:12]
+            fut = asyncio.get_running_loop().create_future()
+            self.pending[call_id] = fut
+            self.queue.put_nowait({"type": "tool_call", "id": call_id,
+                                   "name": name, "input": tool_input})
+            try:
+                return await asyncio.wait_for(fut, _AI_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                return {"content": f"no result for tool {name!r} within "
+                                   f"{_AI_TIMEOUT_S:.0f}s", "isError": True}
+            finally:
+                self.pending.pop(call_id, None)
+
+    def resolve(self, call_id: str, content: str, is_error: bool) -> bool:
+        fut = self.pending.get(call_id)
+        if fut is None or fut.done():
+            return False
+        fut.set_result({"content": content, "isError": is_error})
+        return True
+
+
+_AI_TURNS: dict[str, _AiTurn] = {}
+
+
+def _tools_mcp_spec(turn: _AiTurn) -> dict | None:
+    """`{"command", "args", "env"}` of the bridge process for `turn`, the
+    shape every CLI's MCP config takes (`agent_oneshot.prepare` spells each
+    CLI's), or None when the server's origin is unpublished (nothing to
+    call back). `sys.executable`, matching how the app spawns every other
+    helper (the packaged .app's bundled python)."""
+    origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+    if not origin:
+        return None
+    return {
+        "command": sys.executable,
+        "args": [os.path.abspath(ai_tools_server.__file__)],
+        "env": {
+            "FUSED_RENDER_ORIGIN": origin,
+            "FUSED_AI_TURN": turn.id,
+            "FUSED_AI_TOOL_TIMEOUT": str(int(_AI_TIMEOUT_S)),
+            # UTF-8 stdio whatever the locale (permission_server's reason).
+            "PYTHONUTF8": "1",
+        },
+    }
+
+
+def _ndjson_frame(item) -> str:
+    """One NDJSON line: a text delta, or a frame the turn queued whole."""
+    frame = item if isinstance(item, dict) else {"type": "chunk", "text": item}
+    return json.dumps(frame) + "\n"
 
 
 #: Image types the Claude API accepts as a base64 `image` block, by file
@@ -763,7 +928,7 @@ _SAMPLING = {
 #: caller-facing option.
 _TEXT_OPTIONS = frozenset({
     "prompt", "provider", "model", "systemPrompt", "effort", "history", "raw",
-    "images", "temperature", "maxTokens", "topP", "thinking"})
+    "images", "temperature", "maxTokens", "topP", "thinking", "tools"})
 _TEXT_SERVER_OPTIONS = _TEXT_OPTIONS | {"stream", "base"}
 
 
@@ -1488,6 +1653,37 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         if problem:
             return _ai_error("bad_request", problem, status=400)
         body = {**body, "images": images}
+
+    tools = body.get("tools")
+    if tools is not None:
+        # Native tools (D1460): the model calls them through the turn's
+        # bridge and the CALLER runs them, so the run has to be a stream the
+        # caller is reading (the `tool_call` frames ride it) — and only the
+        # agent CLIs can call a tool at all.
+        problem = _tools_problem(tools)
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
+        if not stream:
+            return _ai_error(
+                "bad_request",
+                "'tools' needs 'stream': true — the tool calls arrive as frames "
+                "of the stream and their results are posted back while it runs",
+                status=400)
+        if history:
+            return _ai_error(
+                "bad_request",
+                "'tools' and 'history' do not combine: send the conversation as "
+                "the prompt (a transcript) and the tools beside it",
+                status=400)
+        if (provider in ("local", "apple")
+                or (provider is None and _is_local_model(model))):
+            # Only an agent CLI can call a tool (D1460): a resident local model
+            # and Apple's on-device model answer text, nothing else.
+            return _ai_error(
+                "bad_request",
+                "'tools' is not supported by the local and apple tiers: only the "
+                "agent CLIs (claude, copilot, codex, gemini) call tools",
+                status=400)
     # `raw` and `images` refuse each other, the same shape as `raw`/`history`
     # above and for the same underlying reason: `raw` means "no chat template
     # at all", and the image placeholder tokens a picture needs are inserted
@@ -1528,7 +1724,7 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         # dropped into `warnings[]`, `effort` rides where the CLI takes it.
         return await _agent_relay(provider, model, prompt, system_prompt, bool(stream),
                                   body, effort, thinking, history, raw, images,
-                                  warnings, page)
+                                  warnings, page, tools=tools)
     if provider == "apple":
         # Apple's on-device model (D700). Tunables it lacks are warnings, like
         # every tier: no top-p (the framework samples by temperature or by
@@ -1678,6 +1874,41 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             model, "ai_unavailable",
             "claude binary not found on PATH; install Claude Code or set "
             f"{_AI_BIN_ENV} to its location")
+
+    # A tools run (D1460) gets an instance OF ITS OWN: the bridge in its
+    # `--mcp-config` is this turn's (the roster is fixed at spawn, and it
+    # differs per request), pre-allowed so no permission prompt can stall a
+    # headless run, with MCP_TOOL_TIMEOUT raised to the relay's own wait so
+    # the CLI does not give up on a call the browser is still answering. The
+    # process is discarded when the turn ends; the shared instance and its
+    # /clear discipline serve every tool-less call exactly as before.
+    turn_queue: asyncio.Queue | None = None
+    turn: _AiTurn | None = None
+    turn_dir: str | None = None
+    turn_spec: dict | None = None
+    if tools:
+        turn_queue = asyncio.Queue()
+        turn = _AiTurn.new(tools, turn_queue)
+        turn_spec = _tools_mcp_spec(turn)
+        if turn_spec is None:
+            return _ai_failed(model, "ai_unavailable",
+                              "the server's origin is not published, so a tool "
+                              "bridge cannot call back")
+
+    def _open_turn() -> None:
+        """Register the turn, write its bridge config and build its own
+        instance — from INSIDE the stream generator, so nothing that needs
+        closing exists before the one `finally` that closes it runs."""
+        nonlocal session, turn_dir
+        turn.register()
+        turn_dir = tempfile.mkdtemp(prefix="fused_render_ai_tools_")
+        mcp_path = os.path.join(turn_dir, "mcp.json")
+        with open(mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {ai_tools_server.SERVER_NAME: turn_spec}}, fh)
+        session = _AiSession(
+            mcp_config=mcp_path,
+            allowed_tools=f"mcp__{ai_tools_server.SERVER_NAME}__*",
+            env_extra={"MCP_TOOL_TIMEOUT": str(int(_AI_TIMEOUT_S * 1000))})
 
     # Bottom-right activity notification (fused_render/jobs.py's registry —
     # see supervisor._report for the local-model twin of this write). Before
@@ -1961,23 +2192,32 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         # to run also being on the hook to close it.
         _open_remote_job()
         beat = _start_remote_beat()
-        queue: asyncio.Queue = asyncio.Queue()
-        task = asyncio.ensure_future(
-            run_once(on_delta=queue.put_nowait))
+        # The turn's `tool_call` frames ride the same queue as the deltas
+        # (`_ndjson_frame` tells them apart), so a call the bridge parks
+        # reaches the caller in order with the text around it.
+        queue: asyncio.Queue = turn_queue if turn_queue is not None else asyncio.Queue()
+        task = None
         try:
+            if turn is not None:
+                _open_turn()
+            task = asyncio.ensure_future(
+                run_once(on_delta=queue.put_nowait))
+            if turn is not None:
+                # First frame: the id the caller posts tool results under.
+                # Inside the try: a client gone after this frame still
+                # reaches the finally that closes the turn.
+                yield json.dumps({"type": "turn", "id": turn.id}) + "\n"
             while True:
                 get = asyncio.ensure_future(queue.get())
                 done, _ = await asyncio.wait(
                     {get, task}, return_when=asyncio.FIRST_COMPLETED)
                 if get in done:
-                    yield json.dumps(
-                        {"type": "chunk", "text": get.result()}) + "\n"
+                    yield _ndjson_frame(get.result())
                     continue
                 get.cancel()
                 # the process finished: flush any deltas that raced the result
                 while not queue.empty():
-                    yield json.dumps(
-                        {"type": "chunk", "text": queue.get_nowait()}) + "\n"
+                    yield _ndjson_frame(queue.get_nowait())
                 break
             try:
                 data = task.result()
@@ -2035,7 +2275,9 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             raise
         finally:
             await _stop_remote_beat(beat)
-            if not task.done():
+            if turn is not None:
+                turn.close()
+            if task is not None and not task.done():
                 # Client went away mid-stream: cancel AND await, so
                 # run_once's cancel branch (discard the now-mid-turn
                 # instance) actually runs before the generator is dropped.
@@ -2044,6 +2286,11 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+            if turn is not None and turn_dir:
+                # A per-turn instance is single-use: kill it, drop its
+                # bridge config. (`_discard` reaps and unlinks the sp file.)
+                await session._discard()
+                shutil.rmtree(turn_dir, ignore_errors=True)
             # Belt-and-suspenders, same reasoning as the non-streaming
             # branch's own finally: any exit that reached here without one of
             # the terminal reports above (mid-stream disconnect, an
@@ -2063,7 +2310,7 @@ _APPLE_ROW_DETAIL = "Apple on-device model…"
 
 async def _agent_relay(backend: str, model: str | None, prompt: str, system_prompt: str,
                        stream: bool, body: dict, effort, thinking, history, raw, images,
-                       warnings: list, page: str = ""):
+                       warnings: list, page: str = "", tools: list | None = None):
     """One completion from an agent CLI — Copilot, Codex or Gemini — as a
     `/api/ai` tier (D1433), via `agent_oneshot`.
 
@@ -2085,6 +2332,11 @@ async def _agent_relay(backend: str, model: str | None, prompt: str, system_prom
     answering a frame with `finishReason: "cancelled"` and no text.
     `usage` is null: the CLIs report no token counts in this mode (Gemini's
     `stats` ride `providerMetadata.gemini.stats` when present).
+
+    `tools` (D1460): the run gets a turn and the bridge as its one MCP
+    server (`agent_oneshot.prepare(tools_mcp=...)`); the turn's `tool_call`
+    frames are interleaved into the stream while the CLI runs, the text
+    still arriving as one chunk at the end.
     """
     from fused_render import agent_oneshot
     from fused_render.agent_backends import registry
@@ -2128,9 +2380,22 @@ async def _agent_relay(backend: str, model: str | None, prompt: str, system_prom
     # The relay's placeholder system prompt is not worth a line of the CLI's
     # context: the three prepend a system text to the user message.
     system = system_prompt if system_prompt != _AI_DEFAULT_SYSTEM_PROMPT else ""
+    turn_queue: asyncio.Queue = asyncio.Queue()
+    turn: _AiTurn | None = None
+    tools_mcp = None
+    if tools:
+        # Minted here (the CLI's config names the id) but registered only
+        # once the stream generator runs, like the Claude tier's turn.
+        turn = _AiTurn.new(tools, turn_queue)
+        tools_mcp = _tools_mcp_spec(turn)
+        if tools_mcp is None:
+            return _ai_failed(model or backend, "ai_unavailable",
+                              "the server's origin is not published, so a tool "
+                              "bridge cannot call back")
     try:
         spec = await asyncio.to_thread(
-            agent_oneshot.prepare, backend, model or "", system, prompt, effort)
+            agent_oneshot.prepare, backend, model or "", system, prompt, effort,
+            None, tools_mcp)
     except agent_oneshot.OneShotError as exc:
         return _ai_failed(model or backend, exc.type_, str(exc),
                           status=409 if exc.type_ == "ai_unavailable" else 502)
@@ -2201,9 +2466,27 @@ async def _agent_relay(backend: str, model: str | None, prompt: str, system_prom
 
     async def ndjson():
         reported = False
+        task = None
         try:
+            if turn is not None:
+                turn.register()
+                # First frame: the id the caller posts tool results under.
+                yield json.dumps({"type": "turn", "id": turn.id}) + "\n"
+            # The CLI's text arrives whole at the end; the turn's
+            # `tool_call` frames arrive while it runs, so the run is a task
+            # and the stream drains the turn's queue beside it.
+            task = asyncio.ensure_future(run())
+            while True:
+                get = asyncio.ensure_future(turn_queue.get())
+                done, _ = await asyncio.wait(
+                    {get, task}, return_when=asyncio.FIRST_COMPLETED)
+                if get in done:
+                    yield _ndjson_frame(get.result())
+                    continue
+                get.cancel()
+                break
             try:
-                text, finish = await run()
+                text, finish = task.result()
             except agent_oneshot.OneShotError as exc:
                 reported = True
                 ai_metrics.record_failure(model, exc.type_)
@@ -2217,6 +2500,14 @@ async def _agent_relay(backend: str, model: str | None, prompt: str, system_prom
                 yield json.dumps({"type": "chunk", "text": text}) + "\n"
             yield json.dumps({"type": "done", "ok": True, "result": frame(text, finish)}) + "\n"
         finally:
+            if turn is not None:
+                turn.close()
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             if not reported:
                 # The client went away (or a server bug) before an answer:
                 # the row must not stay "running" forever.
@@ -2579,6 +2870,69 @@ async def api_ai(request: Request, body: dict = Body(...),
     requester_label = unquote(x_fused_requester_label) if x_fused_requester_label else ""
     return await _ai_relay(body, session=session, page=page,
                            requester_id=requester_id, requester_label=requester_label)
+
+
+@router.get("/api/ai/turns/{turn_id}/tools")
+def api_ai_turn_tools(turn_id: str, x_fused: str | None = Header(default=None)):
+    """The bridge's `tools/list` (D1460): the tools the turn's caller
+    declared, as sent. 404 once the turn has ended."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    turn = _AI_TURNS.get(turn_id)
+    if turn is None:
+        return JSONResponse({"error": "no such AI turn"}, status_code=404)
+    return {"tools": turn.tools}
+
+
+@router.post("/api/ai/turns/{turn_id}/call")
+async def api_ai_turn_call(turn_id: str, body: dict = Body(...),
+                           x_fused: str | None = Header(default=None)):
+    """The bridge's `tools/call` (D1460): emits the `tool_call` frame on the
+    turn's stream and BLOCKS until the caller posts the result (or the
+    relay's timeout, or the turn ends — both answer an `isError` text the
+    model reads as a failed tool). Loopback only, like every `X-Fused`
+    route; the turn id is the bridge's credential."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    turn = _AI_TURNS.get(turn_id)
+    if turn is None:
+        return JSONResponse({"error": "no such AI turn"}, status_code=404)
+    name = body.get("name")
+    if not isinstance(name, str) or not name:
+        return JSONResponse({"error": "'name' must be a string"}, status_code=400)
+    tool_input = body.get("input")
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    return await turn.call(name, tool_input)
+
+
+@router.post("/api/ai/turns/{turn_id}/results")
+async def api_ai_turn_result(turn_id: str, body: dict = Body(...),
+                             x_fused: str | None = Header(default=None)):
+    """The caller's answer to one `tool_call` frame (D1460): `{id, content,
+    isError?}`. 404 for a turn that ended, 409 for a call the turn is not
+    waiting on (answered twice, or an id from another turn). `async` on
+    purpose, though it awaits nothing: a sync route runs on a worker
+    thread, and `Future.set_result` is not thread-safe."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    turn = _AI_TURNS.get(turn_id)
+    if turn is None:
+        return JSONResponse({"error": "no such AI turn"}, status_code=404)
+    call_id = body.get("id")
+    if not isinstance(call_id, str) or not call_id:
+        return JSONResponse({"error": "'id' must be the tool_call frame's id"},
+                            status_code=400)
+    content = body.get("content")
+    if not isinstance(content, str):
+        content = json.dumps(content) if content is not None else ""
+    if not turn.resolve(call_id, content, bool(body.get("isError"))):
+        return JSONResponse({"error": "the turn is not waiting on that call"},
+                            status_code=409)
+    return {"ok": True}
 
 
 @router.get("/api/ai/metrics")

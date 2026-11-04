@@ -164,7 +164,7 @@ import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
 import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
 import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
-import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
+import { WorktreeHintChip, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
@@ -4036,6 +4036,7 @@ function ChatBody(props: ChatBodyProps) {
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
+  const shownHint = shownWorktreeHint(state.worktreeHint, state.tasks, chatWorkdir(file, pane.noun) ?? undefined);
   const worktreeMenu = worktreeTarget && agentCaps.worktrees ? (
     <WorktreeMenu
       key={file as string}
@@ -5435,10 +5436,10 @@ function ChatBody(props: ChatBodyProps) {
                 slim={peek}
                 {...(mergedHeadRow ? { lead: backBtn, tail: <>{breakoutBtn}{kebabEl}</>, noProject: true } : {})}
                 {...(headerExtra ? { extra: headerExtra } : {})}
-                worktree={worktreeMenu}
-                worktreeHint={
-                  <WorktreeHintChip hint={visibleWorktreeHint(state.worktreeHint, state.tasks)} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
-                }
+                // The hint names where the work is; the menu would only repeat the
+                // original checkout's branch.
+                worktree={shownHint ? undefined : worktreeMenu}
+                worktreeHint={<WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />}
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
