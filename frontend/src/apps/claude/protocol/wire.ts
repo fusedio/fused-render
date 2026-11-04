@@ -20,6 +20,10 @@
 //
 // Pure TS: no DOM, no React.
 
+import { BREAKOUT_CTX_TAG, FILES_HEADING } from "@platform/lib/breakout-context";
+
+export { BREAKOUT_CTX_TAG, formatBreakoutContext } from "@platform/lib/breakout-context";
+
 /** T:4761 — the app-state block's tag. */
 export const APP_STATE_TAG = "live-app-state";
 /** T:4775 — the annotations block's tag. */
@@ -391,7 +395,7 @@ export function annotationsIn(text: string | null | undefined): AnnotationWire[]
  * pushed in front of the three that have a stated place. The sort is STABLE, so
  * two blocks of the same kind stay in the order their owner emitted them.
  */
-export const BLOCK_ORDER: readonly string[] = [APP_STATE_TAG, PANE_SHOT_TAG, ANN_TAG];
+export const BLOCK_ORDER: readonly string[] = [APP_STATE_TAG, PANE_SHOT_TAG, BREAKOUT_CTX_TAG, ANN_TAG];
 
 /** Which of `BLOCK_ORDER` a composed block opens with; `BLOCK_ORDER.length` for
  *  anything else, which is what puts it last.
@@ -444,6 +448,41 @@ export function stripPaneBlock(text: string | null | undefined): string {
   return (text || "").replace(re, "").trim();
 }
 
+/** The breakout-context block, removed from wherever it sits. */
+export function stripBreakoutBlock(text: string | null | undefined): string {
+  const re = new RegExp("<" + BREAKOUT_CTX_TAG + ">[\\s\\S]*?</" + BREAKOUT_CTX_TAG + ">\\s*", "g");
+  return (text || "").replace(re, "").trim();
+}
+
+/** The parent messages a breakout's first send carried: how many, the parent
+ *  chat's title when it was known, and the quoted messages as plain text. */
+export interface BreakoutContextWire {
+  count: number;
+  title?: string;
+  body: string;
+}
+
+/** Read the `<breakout-context>` block back out of a wire message. */
+export function breakoutContextIn(text: string | null | undefined): BreakoutContextWire | null {
+  const m = new RegExp("<" + BREAKOUT_CTX_TAG + ">([\\s\\S]*?)</" + BREAKOUT_CTX_TAG + ">").exec(text || "");
+  if (!m) return null;
+  const inner = m[1].trim();
+  const split = inner.indexOf("\n\n");
+  const head = split < 0 ? inner : inner.slice(0, split);
+  let body = split < 0 ? "" : inner.slice(split + 2);
+  const files = body.lastIndexOf("\n\n" + FILES_HEADING);
+  if (files >= 0) body = body.slice(0, files);
+  const count = /from (\d+) messages?/.exec(head);
+  const title = /titled ("(?:[^"\\]|\\.)*")/.exec(head);
+  let parsed: string | undefined;
+  try {
+    parsed = title ? (JSON.parse(title[1]) as string) : undefined;
+  } catch {
+    parsed = undefined;
+  }
+  return { count: count ? Number(count[1]) : 0, ...(parsed ? { title: parsed } : {}), body: body.trim() };
+}
+
 /** T:10608 `stripAnnBlock` — TWO shapes, forever: today's tagged block from
  *  anywhere, and the legacy prose + fenced json at position ZERO. */
 export function stripAnnBlock(text: string | null | undefined): string {
@@ -471,10 +510,11 @@ export function stripTerminalHintBlock(text: string | null | undefined): string 
 export function stripBlocks(text: string | null | undefined): string {
   const noState = stripAppStateBlock(stripTerminalHintBlock(text));
   const noPaneShot = stripPaneBlock(noState);
-  const bare = stripAnnBlock(noPaneShot);
+  const noContext = stripBreakoutBlock(noPaneShot);
+  const bare = stripAnnBlock(noContext);
   if (bare) return bare;
   const carried: string[] = [];
-  if (bare !== noPaneShot) carried.push(MARKER_ANN);
+  if (bare !== noContext) carried.push(MARKER_ANN);
   if (noPaneShot !== noState) {
     const views = paneShotIn(noState);
     // A session written before `kind` existed has none at all, which is exactly
@@ -495,6 +535,7 @@ export interface Inbound {
   appState?: string;
   paneShots?: PaneShotWire[];
   annotations?: AnnotationWire[];
+  breakoutContext?: BreakoutContextWire;
 }
 
 /** Read a wire message whole: what to show in the bubble plus everything a
@@ -508,5 +549,7 @@ export function parseInbound(text: string | null | undefined): Inbound {
   if (shots.length) out.paneShots = shots;
   const notes = annotationsIn(raw);
   if (notes.length) out.annotations = notes;
+  const ctx = breakoutContextIn(raw);
+  if (ctx) out.breakoutContext = ctx;
   return out;
 }

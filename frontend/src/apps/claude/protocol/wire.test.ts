@@ -7,6 +7,12 @@ import { describe, expect, test } from "bun:test";
 import {
   annotationsIn,
   APP_STATE_TAG,
+  blockRank,
+  BREAKOUT_CTX_TAG,
+  breakoutContextIn,
+  formatBreakoutContext,
+  stripBreakoutBlock,
+  composeBlocks,
   composeOutgoing,
   formatAnnotations,
   isMarkerOnly,
@@ -391,5 +397,46 @@ describe("the marker vocabulary is this module's, and nobody else's", () => {
   test("`markerWords` is the one door from wire to label", () => {
     expect(markerWords(MARKER_VIEW)).toBe("pane screenshot");
     expect(markerWords("just words")).toBe("just words");
+  });
+});
+
+describe("<breakout-context>", () => {
+  const block = formatBreakoutContext({
+    title: 'The "cache" chat',
+    firstPrompt: "How does it work?",
+    messages: [
+      { role: "user", text: "How does it work?\n\nSecond paragraph." },
+      { role: "assistant", text: "It keys on path." },
+    ],
+    files: ["/w/cache.py"],
+  });
+
+  test("round trips through parseInbound beside the typed words", () => {
+    const sent = composeOutgoing("and eviction?", [block]);
+    const inb = parseInbound(sent);
+    expect(inb.text).toBe("and eviction?");
+    expect(inb.breakoutContext?.count).toBe(2);
+    expect(inb.breakoutContext?.title).toBe('The "cache" chat');
+    expect(inb.breakoutContext?.body).toBe(
+      "User: How does it work?\n\nSecond paragraph.\n\nAssistant: It keys on path.",
+    );
+    expect(stripBlocks(sent)).toBe("and eviction?");
+    expect(stripBreakoutBlock(sent)).toBe("and eviction?");
+  });
+  test("a block with no title or files still parses", () => {
+    const bare = formatBreakoutContext({ messages: [{ role: "user", text: "hi" }], files: [] });
+    const got = breakoutContextIn(bare);
+    expect(got).toEqual({ count: 1, body: "User: hi" });
+  });
+  test("a wordless send carries no markers and an empty bubble", () => {
+    expect(stripBlocks(composeOutgoing("", [block]))).toBe("");
+    expect(parseInbound("plain").breakoutContext).toBeUndefined();
+  });
+  test("composes after the pictures and before the annotations", () => {
+    const notes = formatAnnotations([{ label: "A", tag: "button", content: "x" }], "file");
+    const [first, second, third] = composeBlocks([notes, block, appState]);
+    expect([first, second, third]).toEqual([appState, block, notes]);
+    expect(blockRank(block)).toBeLessThan(blockRank(notes));
+    expect(block.startsWith("<" + BREAKOUT_CTX_TAG + ">")).toBe(true);
   });
 });

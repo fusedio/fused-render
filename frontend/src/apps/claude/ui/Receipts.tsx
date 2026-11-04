@@ -8,12 +8,13 @@
 // the two sources differ in exactly one thing: a live send carries its
 // `Receipt[]` (blob thumbnails and all), a restored one rebuilds them from the
 // `<pane-shot>` block its `raw` still holds.
+import { ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import "../styles/transcript.css";
 
 import type { UserTurn } from "../protocol/controller-api";
-import { parseInbound } from "../protocol/wire";
+import { parseInbound, type BreakoutContextWire } from "../protocol/wire";
 import { probePruned, receiptsFromWire } from "../shots";
 import type { Receipt } from "../shots/types";
 import { ShotThumb } from "./AttachTray";
@@ -171,6 +172,29 @@ function ShotRow({
   );
 }
 
+/** "N messages from <title>", collapsed; the quoted messages behind a click.
+ *  Worn by a breakout's first turn, and above the composer until it is sent. */
+export function BreakoutContextChip({ context }: { context: BreakoutContextWire }) {
+  const [open, setOpen] = useState(false);
+  const label = `${context.count} message${context.count === 1 ? "" : "s"}${context.title ? ` from ${context.title}` : ""}`;
+  return (
+    <>
+      <div className="annsum-row">
+        <button
+          type="button"
+          className="annsum-lbl annsum-breakout"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <ChevronRight size="1em" className={open ? "annsum-breakout-open" : ""} />
+          {" " + label}
+        </button>
+      </div>
+      {open ? <div className="annsum-breakout-body">{context.body}</div> : null}
+    </>
+  );
+}
+
 export function Receipts({
   turn,
   paneNoun,
@@ -181,21 +205,23 @@ export function Receipts({
   // The turn's own receipts when it is one this page just sent; otherwise the
   // wire block it still carries. `raw` is read ONCE per turn object, and a
   // settled turn's object is carried across every poll (Turn is memoized).
-  const { receipts, notes } = useMemo(() => {
-    if (turn.attachments && turn.attachments.length) {
-      return { receipts: turn.attachments, notes: parseInbound(turn.raw).annotations ?? [] };
-    }
+  const { receipts, notes, context } = useMemo(() => {
     const wire = parseInbound(turn.raw);
-    return { receipts: receiptsFromWire(wire.paneShots), notes: wire.annotations ?? [] };
+    const context = wire.breakoutContext;
+    if (turn.attachments && turn.attachments.length) {
+      return { receipts: turn.attachments, notes: wire.annotations ?? [], context };
+    }
+    return { receipts: receiptsFromWire(wire.paneShots), notes: wire.annotations ?? [], context };
   }, [turn.attachments, turn.raw]);
 
   // Comments alone draw nothing here — they are in the bubble.
-  if (!receipts.length) return null;
+  if (!receipts.length && !context) return null;
   // A send with no comments never gets wired to the popup (T:11068-11077).
   const sent = notes.length && onShowSent ? () => onShowSent(turn) : undefined;
 
   return (
     <div className="annsum">
+      {context ? <BreakoutContextChip context={context} /> : null}
       {/* The overview first — it is the one picture every annotation row refers
           to — then the user's own attachments, then the labelled rows
           (T:16565-16572). The comments are in the bubble now, not rows here. */}

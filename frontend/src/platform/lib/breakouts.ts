@@ -8,7 +8,16 @@
 // layer under them.
 import { useSyncExternalStore } from "react";
 import { IS_EMBED } from "./router";
+import type { HandoffTurn } from "./breakout-context";
 import { chatDraftKey, fetchChatDraft, saveChatDraft, type ChatDraft, type DraftAttachment } from "./drafts";
+
+export {
+  BREAKOUT_CTX_TAG,
+  buildBreakoutContext,
+  exchangeKeys,
+  formatBreakoutContext,
+  type HandoffTurn,
+} from "./breakout-context";
 
 /**
  * A request to open a breakout (a research-only side chat forked from a chat),
@@ -23,18 +32,6 @@ export interface BreakoutRequest {
   /** Optional dedupe key for the card store (e.g. the turn key). */
   forkKey?: string;
 }
-
-/** The slice of a chat transcript `buildHandoffDraft` reads (the chat's `Turn`
- *  satisfies it structurally; platform cannot import the chat's own types). */
-export type HandoffTurn =
-  | { role: "user"; key: string; text: string }
-  | {
-      role: "assistant";
-      key: string;
-      text: string;
-      segments?: readonly { kind: string; name?: string; status?: string; input?: Record<string, unknown> }[];
-    }
-  | { role: string; key: string; text?: string };
 
 export interface BreakoutCard {
   id: string;
