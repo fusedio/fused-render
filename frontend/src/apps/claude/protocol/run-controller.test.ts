@@ -2476,6 +2476,45 @@ describe("stop (T:15901)", () => {
     expect(controller.getState().queued).toEqual([]);
   });
 
+  // The current CLI names a still-queued message by the uuid the page stamped
+  // on it, not by its words.
+  const stopWithStill = async (still: string[]) => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      cancel: () => ({ cancelled: "r1", still_queued: still }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("say hi", { clientId: "36422243-e3e0-4d9a-bd54-aad6c0de909b" });
+          await controller.stopRun();
+          return poll({ segments: [text("half a thought")] });
+        }
+        return poll({ done: true, error: "killed", segments: [text("half a thought")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    return made;
+  };
+
+  test("a still_queued uuid naming a queued follow-up hands back its typed text once", async () => {
+    const made = await stopWithStill(["36422243-e3e0-4d9a-bd54-aad6c0de909b"]);
+    expect(made.strandedLines.length).toBe(1);
+    expect(made.strandedLines[0].map((l) => l.text)).toEqual(["say hi"]);
+    expect(made.strandedLines[0][0].clientId).toBe("36422243-e3e0-4d9a-bd54-aad6c0de909b");
+  });
+
+  test("a still_queued uuid with no entry here is dropped, not handed back as a line", async () => {
+    const made = await stopWithStill(["36422243-e3e0-4d9a-bd54-aad6c0de909b", "11111111-2222-3333-4444-555555555555"]);
+    expect(made.stranded).toEqual([["say hi"]]);
+  });
+
+  test("an unmatched plain-text still_queued name is still handed back", async () => {
+    const made = await stopWithStill(["from another viewer"]);
+    expect(made.stranded).toEqual([["say hi", "from another viewer"]]);
+  });
+
   test("a stop that never reached the backend takes its claim back", async () => {
     let controller!: ChatController;
     const made = makeController({

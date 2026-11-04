@@ -105,6 +105,11 @@ import type { Receipt } from "../shots/types";
 // ---- constants (all with their T line) -------------------------------------
 
 /** T:16377 — the poll cadence. No backoff, ever. */
+/** A canonical uuid, the shape of every entry id the page and the server mint.
+ *  Narrower than the server's `_CLIENT_UUID_RE` on purpose: that one admits any
+ *  8+ character word ("continue"), which here would swallow a typed line. */
+const CLIENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export const POLL_MS = 400;
 /** How often a finished turn's tasks panel asks the session host that is still
  *  running its background work (`watchHostTasks`, agent.py `_run_tasks`): 1 s,
@@ -3242,7 +3247,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // what goes BACK to the box is the TYPED form, because that is the text
         // the user owns and would edit — handing back the composed wire payload
         // would put the app-state and attachment markers into their box.
-        const at = named.indexOf(entry.wire);
+        // A current CLI names a queued message by the id the page stamped on
+        // it (`client_uuid`), so the entry's id is matched as well as its words.
+        const idAt = entry.opts.clientId ? named.indexOf(entry.opts.clientId) : -1;
+        const at = idAt >= 0 ? idAt : named.indexOf(entry.wire);
         // EVERY entry comes back (owner E2E R1, F7). A landed follow-up the
         // CLI did not name used to keep its bubble and leave the queue hint
         // — a message the reader apparently sent, with no reply, forever: the
@@ -3293,8 +3301,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
       }
       // Anything the CLI named that this page has no entry for (a follow-up
       // from another viewer of the same session) is handed back verbatim
-      // rather than lost — there is no typed form to prefer.
-      for (const t of named) stranded.push({ text: t });
+      // rather than lost — there is no typed form to prefer. A name shaped
+      // like a client id is an id, not words: with no entry to read the text
+      // from there is nothing to hand back, and its id as a line would be
+      // sent to the agent as if the user had typed it.
+      for (const t of named) if (!CLIENT_ID_RE.test(t)) stranded.push({ text: t });
       // The turn is over for every entry, handed back or not — so the hint
       // under the box goes either way, in ONE publish.
       const cleared = queued.length > 0;
