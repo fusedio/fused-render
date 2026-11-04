@@ -336,6 +336,15 @@ function CurrentAppRow({
       >
         {app.name}
       </a>
+      {/* The env chip, then the dot after it: the pair is pushed to the
+          row's right edge (canvases.css), so every row's chip and dot sit in
+          one column whether or not the row is running. A "· N queued" count
+          is moved ahead of the pair by CSS order, so the dot stays last. */}
+      {showEnv && app.canvas && isWorkbenchEnv(app.canvas.env) && (
+        <span className="canvas-row-env" aria-hidden="true">
+          {ENV_NAMES[app.canvas.env].tag}
+        </span>
+      )}
       {/* The running dot sits AFTER the name (owner, 2026-08-27), so it never
           covers the app's icon: the glyph slot is identity, the dot is state. */}
       {app.running && (
@@ -366,16 +375,6 @@ function CurrentAppRow({
           Nothing at all at 0, so a machine with the queue off grows no ink. */}
       {app.queued > 0 && (
         <span className="current-app-queued">{"· " + queuedLabel(app.queued)}</span>
-      )}
-      {/* The env chip comes LAST in the flow and pushes itself to the row's
-          right edge (canvases.css), so every row's chip lines up in one column
-          whether or not the row carries a dot or a queue count — the running
-          and unread states take the name's stretch away, which used to drag
-          the chip left with them. */}
-      {showEnv && app.canvas && isWorkbenchEnv(app.canvas.env) && (
-        <span className="canvas-row-env" aria-hidden="true">
-          {ENV_NAMES[app.canvas.env].tag}
-        </span>
       )}
       <span className="bookmark-actions">
         <button

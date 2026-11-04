@@ -334,11 +334,24 @@
 
 /* The sidebar's Canvases section (shell/CurrentAppsSection.tsx, section="canvases"): Projects' rows
    with a canvas glyph, and the environment at the row's right edge when both
-   hold clones. `margin-left: auto` pins it right even when a running/unread
-   dot takes the name's stretch away; the row's own gap is the minimum space
-   before it. */
+   hold clones, with the running/unread dot after it. `margin-left: auto` pins
+   the chip right even when the dot takes the name's stretch away; the row's
+   own gap is the minimum space before it. The chip and the dot get order 1 so
+   a "· N queued" count (order 0) stays ahead of them and the dot stays last. */
 .canvas-row-glyph {
   cursor: default;
+}
+.canvas-row-env,
+.current-app-row:has(> .canvas-row-env) > :is(.current-app-running, .current-app-unread) {
+  order: 1;
+}
+.current-app-row:has(> .canvas-row-env) > :is(.current-app-running, .current-app-unread) {
+  margin-left: 0;
+}
+/* A row with no dot keeps the dot's slot (9px dot + the row's 7px gap) empty
+   behind its chip, so chips line up in one column down the list. */
+.current-app-row:not(:has(> .current-app-running, > .current-app-unread)) > .canvas-row-env {
+  margin-right: 16px;
 }
 .canvas-row-env {
   flex: none;
