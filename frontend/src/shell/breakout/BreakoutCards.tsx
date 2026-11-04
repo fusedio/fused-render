@@ -22,6 +22,9 @@ import {
 
 const OFFSET = 28;
 
+/** What a breakout chat reports up (`onBreakoutState`). */
+type BreakoutState = { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number };
+
 /** The shared floating-card chrome: the fixed box (draggable by the head row,
  *  clamped to the viewport, stacked by `index`), the head (title, note, spacer,
  *  `actions`, Close) and the body wrapper. Breakout and Agent peek both use it. */
@@ -152,28 +155,25 @@ export function Card({
   // Seam for tests to stub the chat without a process-wide mock.module.
   mount?: ComponentType<ComponentProps<typeof ChatMount>>;
 }) {
-  const state = useRef<{ sessionId: string; turns: readonly Turn[]; forkClamped?: boolean }>({ sessionId: "", turns: [] });
+  const state = useRef<BreakoutState>({ sessionId: "", turns: [] });
   const [canSend, setCanSend] = useState(false);
   const [clamped, setClamped] = useState(false);
-  const onState = useCallback((s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean }) => {
+  const onState = useCallback((s: BreakoutState) => {
     state.current = s;
     setClamped(!!s.forkClamped);
     // Only the breakout's own turns: the parent's restored history is not
     // something to send back to the parent.
-    setCanSend(ownTurns(s.turns).some((t) => t.role === "assistant" && !!t.text.trim()));
+    setCanSend(ownTurns(s.turns, s.sends ?? 0).some((t) => t.role === "assistant" && !!t.text.trim()));
   }, []);
 
   const close = () => {
-    // A live send's key is `u:<seq>` (controller-api UserTurn.key); restored
-    // parent turns carry history uuids, so only the breakout's own count.
-    const used = state.current.turns.some(
-      (t) => t.role === "user" && t.key.startsWith("u:"),
-    );
+    // `sends` counts this card's own sends; the parent's restored history is not a reason to confirm.
+    const used = (state.current.sends ?? 0) > 0;
     if (used && !window.confirm("Discard this breakout? The chat is not sent back.")) return;
     closeBreakout(card.id);
   };
   const sendBack = () => {
-    const text = buildHandoffDraft(ownTurns(state.current.turns));
+    const text = buildHandoffDraft(ownTurns(state.current.turns, state.current.sends ?? 0));
     if (!text) return;
     sendBackBreakout(card.id, text);
   };

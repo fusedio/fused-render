@@ -383,6 +383,9 @@ export interface ChatState {
    *  (the server forked at the last compaction); never cleared for the life of
    *  the controller. */
   forkClamped?: boolean;
+  /** User sends made in breakout posture (0 otherwise). Lets a card find its
+   *  own turns from the end of the transcript after a history refresh. */
+  breakoutSends?: number;
   /** Monotonic; bumps on every state change so cheap memo keys work. */
   rev: number;
 }

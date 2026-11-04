@@ -153,10 +153,15 @@ export function buildHandoffDraft(turns: readonly HandoffTurn[], handoffDir?: st
   return [last, file ? `Handoff file: ${file}` : ""].filter(Boolean).join("\n\n");
 }
 
-/** The breakout's own turns: from its first live user send (key `u:<seq>`,
- *  controller-api UserTurn.key) on. Everything before it is the parent
- *  transcript restored from history. Empty until the first send. */
-export function ownTurns<T extends HandoffTurn>(turns: readonly T[]): T[] {
-  const first = turns.findIndex((t) => t.role === "user" && t.key.startsWith("u:"));
-  return first < 0 ? [] : turns.slice(first);
+/** The breakout's own turns: from its `sends`-th user turn counted from the
+ *  END (a send count, not a key shape: a history refresh swaps the live `u:`
+ *  keys for uuid-keyed rows). Everything before is the parent transcript
+ *  restored from history. Empty until the first send. */
+export function ownTurns<T extends HandoffTurn>(turns: readonly T[], sends: number): T[] {
+  if (sends <= 0) return [];
+  let seen = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i]!.role === "user" && ++seen === sends) return turns.slice(i);
+  }
+  return [];
 }

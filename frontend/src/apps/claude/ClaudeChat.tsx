@@ -324,7 +324,7 @@ export interface ClaudeChatProps {
   onBreakout?: (req: BreakoutRequest) => void;
   /** With `breakout`: the card's window onto this chat — its own session id
    *  (minted by the first send) and transcript, for Send back. */
-  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean }) => void;
+  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number }) => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -3518,9 +3518,9 @@ function ChatBody(props: ChatBodyProps) {
   const { onBreakoutState } = props;
   useEffect(() => {
     if (props.breakout && onBreakoutState) {
-      onBreakoutState({ sessionId: state.sessionId || "", turns: state.turns, forkClamped: !!state.forkClamped });
+      onBreakoutState({ sessionId: state.sessionId || "", turns: state.turns, forkClamped: !!state.forkClamped, sends: state.breakoutSends ?? 0 });
     }
-  }, [props.breakout, onBreakoutState, state.sessionId, state.turns, state.forkClamped]);
+  }, [props.breakout, onBreakoutState, state.sessionId, state.turns, state.forkClamped, state.breakoutSends]);
 
   /** "Breakout from here" (Transcript `onBreakout`): hand the shell the chosen
    *  message's uuid, resolved off the controller's turns exactly as the fork

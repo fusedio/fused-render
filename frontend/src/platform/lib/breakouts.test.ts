@@ -135,17 +135,29 @@ describe("ownTurns", () => {
     { role: "user", key: "h-1", text: "parent q" },
     { role: "assistant", key: "h-2", text: "parent answer" },
   ];
-  test("parent-only history has no own turns, so no draft", () => {
-    expect(ownTurns(parent)).toEqual([]);
-    expect(buildHandoffDraft(ownTurns(parent))).toBe("");
+  test("no sends means no own turns, so no draft", () => {
+    expect(ownTurns(parent, 0)).toEqual([]);
+    expect(buildHandoffDraft(ownTurns(parent, 0))).toBe("");
   });
-  test("keeps only turns from the first live user send", () => {
+  test("slices from the sends-th user turn counted from the end", () => {
     const all = [
       ...parent,
       { role: "user", key: "u:1", text: "side q" },
       { role: "assistant", key: "h-3", text: "side answer" },
     ];
-    expect(ownTurns(all).map((t) => t.key)).toEqual(["u:1", "h-3"]);
-    expect(buildHandoffDraft(ownTurns(all))).toBe("side answer");
+    expect(ownTurns(all, 1).map((t) => t.key)).toEqual(["u:1", "h-3"]);
+    expect(buildHandoffDraft(ownTurns(all, 1))).toBe("side answer");
+  });
+  test("survives a history refresh: every row is uuid-keyed", () => {
+    const refreshed = [
+      ...parent,
+      { role: "user", key: "uuid-a", text: "side q1" },
+      { role: "assistant", key: "uuid-b", text: "side a1" },
+      { role: "user", key: "uuid-c", text: "side q2" },
+      { role: "assistant", key: "uuid-d", text: "side a2" },
+    ];
+    expect(ownTurns(refreshed, 1).map((t) => t.key)).toEqual(["uuid-c", "uuid-d"]);
+    expect(ownTurns(refreshed, 2).map((t) => t.key)).toEqual(["uuid-a", "uuid-b", "uuid-c", "uuid-d"]);
+    expect(ownTurns(refreshed, 9)).toEqual([]);
   });
 });

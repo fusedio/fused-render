@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { act, create } from "react-test-renderer";
 
 import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@platform/lib/agent-peeks";
+import { closeBreakout, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
 import { AgentPeekCard, Card } from "./BreakoutCards";
 
 // Only the chat is stubbed (via the Card `mount` prop); the card chrome and drag logic are the real ones.
@@ -84,6 +85,76 @@ test("the note says when the fork was clamped to the last compaction", () => {
   expect(note.props.title).toContain("last compaction");
   const plain = mount().r.root.findByProps({ className: "breakout-note" });
   expect(plain.children.join("")).toBe("research only");
+});
+
+// A mount that reports a fixed breakout state once.
+const reporting = (s: unknown) => () => {
+  const P = (props: { onBreakoutState?: (s: never) => void }) => {
+    useEffect(() => {
+      props.onBreakoutState?.(s as never);
+    }, [props]);
+    return null;
+  };
+  return P as never;
+};
+const closeBtn = (r: ReturnType<typeof create>) =>
+  r.root.findAllByType("button").find((b) => (b.children as string[]).join("") === "Close")!;
+
+test("close confirms when the card has sends, even after a refresh swapped the u: keys", () => {
+  resetBreakouts();
+  const id = openBreakout({ sessionId: "s1", file: "/w/proj" });
+  const refreshed = {
+    sessionId: "brk",
+    sends: 1,
+    turns: [
+      { role: "user", key: "uuid-1", text: "q" },
+      { role: "assistant", key: "uuid-2", text: "a" },
+    ],
+  };
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<Card card={getBreakouts()[0]!} index={0} mount={reporting(refreshed)()} />, { createNodeMock: () => el });
+  });
+  const w = window as unknown as Record<string, unknown>;
+  const prev = w["confirm"];
+  const asked: string[] = [];
+  w["confirm"] = (m: string) => (asked.push(m), false);
+  try {
+    act(() => closeBtn(r).props.onClick());
+    expect(asked).toHaveLength(1);
+    expect(getBreakouts()).toHaveLength(1);
+    w["confirm"] = () => true;
+    act(() => closeBtn(r).props.onClick());
+    expect(getBreakouts()).toHaveLength(0);
+  } finally {
+    w["confirm"] = prev;
+    closeBreakout(id);
+    act(() => r.unmount());
+  }
+});
+
+test("close does not confirm for an unused card", () => {
+  resetBreakouts();
+  openBreakout({ sessionId: "s1", file: "/w/proj" });
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(
+      <Card card={getBreakouts()[0]!} index={0} mount={reporting({ sessionId: "", sends: 0, turns: [{ role: "user", key: "h-1", text: "parent" }] })()} />,
+      { createNodeMock: () => el },
+    );
+  });
+  const w = window as unknown as Record<string, unknown>;
+  const prev = w["confirm"];
+  w["confirm"] = () => {
+    throw new Error("must not confirm");
+  };
+  try {
+    act(() => closeBtn(r).props.onClick());
+    expect(getBreakouts()).toHaveLength(0);
+  } finally {
+    w["confirm"] = prev;
+    act(() => r.unmount());
+  }
 });
 
 test("dragging the head switches the card from right/bottom to left/top", () => {

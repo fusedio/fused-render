@@ -249,6 +249,25 @@ describe("breakout posture", () => {
     expect("fork_at" in starts[1]!).toBe(false);
   });
 
+  test("breakoutSends counts every send in breakout posture", async () => {
+    const r = await opened(
+      { ...started, live_host: () => ({ run_id: "" }) },
+      "claude",
+      { breakout: true, breakoutAt: "u2" },
+    );
+    expect(r.controller.getState().breakoutSends).toBe(0);
+    await r.controller.sendMessage("one");
+    expect(r.controller.getState().breakoutSends).toBe(1);
+    await r.controller.sendMessage("two");
+    expect(r.controller.getState().breakoutSends).toBe(2);
+  });
+
+  test("a plain chat never counts breakout sends", async () => {
+    const r = await opened({ start: () => ({ run_id: "r", session_id: "old" }), poll: () => donePoll("old") });
+    await r.controller.sendMessage("x");
+    expect(r.controller.getState().breakoutSends).toBe(0);
+  });
+
   test("a failed first start leaves the breakout unspent", async () => {
     let n = 0;
     const r = await opened(

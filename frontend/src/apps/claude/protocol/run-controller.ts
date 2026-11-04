@@ -296,6 +296,7 @@ function emptyState(file: string | null): ChatState {
     turns: [],
     fork: null,
     forkClamped: false,
+    breakoutSends: 0,
     permissions: [],
     appState: [],
     canvasShot: [],
@@ -1039,6 +1040,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * second fork).
    */
   let breakoutSpent = false;
+  /** User sends made in breakout posture. A history refresh swaps the `u:` keys
+   *  for uuid-keyed rows, so the card counts its own turns from the END by this. */
+  let breakoutSends = 0;
   const breakoutMode = (): "" | "1" | "resume" =>
     !deps.breakout ? "" : breakoutSpent ? "resume" : "1";
 
@@ -2820,6 +2824,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       }
       started = true;
       if (bk === "1") breakoutSpent = true;
+      if (bk) {
+        breakoutSends += 1;
+        emit({ breakoutSends });
+      }
       // The fork has been spent: the new session exists. A failed start never
       // reaches here, so the fork stays set and the hand-back re-offers it.
       if (forkAt && logGen === gen && state.fork) emit({ fork: null });
