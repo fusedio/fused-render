@@ -21,7 +21,7 @@ status poll never waits behind a vendor round-trip. Cancel sets a flag and
 cancels the driver, which unblocks `result()`; a token that arrives after a
 cancel is dropped, never stored.
 
-The five kinds:
+The six kinds:
 
 - `mcp-oauth`: `discovery.discover(resource)` -> `choose_client` (pre-registered,
   CIMD, DCR) -> `oauth.LoopbackFlow` with `resource` on both legs -> account =
@@ -34,6 +34,12 @@ The five kinds:
   stored, and `token()` asks the CLI again every time (the CLI owns the token, D402).
 - `api-key`: synchronous; the pasted value is probed against `identity_url`
   and stored only if the vendor accepts it.
+- `local-app`: an app on this Mac (Notes, Calendar) through `osascript`
+  (`applescript.Probe`, on a flow thread like the browser kinds): the sign-in
+  is one read against the app, which makes macOS ask the user once whether
+  Fused may control it. The record keeps the kind, the app and an account
+  label; `token()` is `""` (there is nothing to send). A call the app refuses
+  later (`AutomationDenied`) marks the provider `reconnect`.
 
 **Refresh is lazy and serialized per key**: a token within 60 s of expiry is
 refreshed by the call that finds it so, under a per-key lock, because refresh
@@ -70,7 +76,7 @@ URL_WAIT = 20.0
 CALLBACK_WAIT = 20.0
 FLOW_TIMEOUT = 600.0
 
-KINDS = ("mcp-oauth", "oauth-pkce", "oauth-device", "cli", "api-key")
+KINDS = ("mcp-oauth", "oauth-pkce", "oauth-device", "cli", "api-key", "local-app")
 _TOKEN_KINDS = ("mcp-oauth", "oauth-pkce", "oauth-device")
 _LABELS = {
     "mcp-oauth": "Sign in with {name}",
@@ -78,6 +84,7 @@ _LABELS = {
     "oauth-device": "Sign in with a code",
     "cli": "Use the {name} command-line sign-in",
     "api-key": "Paste a token",
+    "local-app": "Use {name} on this Mac",
 }
 
 
@@ -527,7 +534,25 @@ def _oauth_device(key: str, p, entry: dict, flow: _Flow) -> dict:
                          token_url=entry["token_url"], revoke_url=entry.get("revoke_url"))
 
 
-_RUNNERS = {"mcp-oauth": _mcp_oauth, "oauth-pkce": _oauth_pkce, "oauth-device": _oauth_device}
+def _local_app(key: str, p, entry: dict, flow: _Flow) -> dict:
+    from fused_render.connect import applescript
+    probe = applescript.Probe(entry["app"], entry.get("account") or "")
+    flow.handle = probe
+    _check_cancel(flow)
+    probe.start()
+    # No URL to open: the card polls until the probe (and the macOS prompt it
+    # may be waiting on) comes back. `ready` is set by `_finish`.
+    try:
+        info = probe.result(timeout=applescript.PROBE_TIMEOUT)
+    except applescript.AutomationError as e:
+        raise ValueError(str(e)) from None
+    _check_cancel(flow)
+    account = (info.get("account") or "").strip() or None
+    return {"kind": "local-app", "app": entry["app"], "account": account}
+
+
+_RUNNERS = {"mcp-oauth": _mcp_oauth, "oauth-pkce": _oauth_pkce, "oauth-device": _oauth_device,
+            "local-app": _local_app}
 
 
 def _stored_client_id(key: str, kind: str | None) -> str | None:
@@ -733,6 +758,11 @@ def token(key: str, force_refresh: bool = False) -> str:
             mark_reconnect(key)
             raise NotConnected(f"{key}'s token was refused")
         return rec["access"]
+    if kind == "local-app":
+        if force_refresh:   # the app refused this process (-1743): the grant was withdrawn
+            mark_reconnect(key)
+            raise NotConnected(f"{key} may no longer be controlled by Fused")
+        return ""
     exp = rec.get("expires_at")
     due = force_refresh or (exp is not None and float(exp) - time.time() < REFRESH_MARGIN)
     if not due:

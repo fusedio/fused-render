@@ -48,6 +48,8 @@ def _env(monkeypatch, tmp_path):
         dict(PKCE, client_id=""),
         {"kind": "cli", "command": ["definitely-not-installed-xyz"], "identity_url": "https://demo.example/me"},
         {"kind": "api-key", "label": "Token", "identity_url": "https://demo.example/me"}]})
+    _pack(root, "localdemo", {"name": "LocalDemo", "privacy": "p", "tools": {"remote": None}, "auth": [
+        {"kind": "local-app", "app": "Notes", "account": "app.defaultAccount().name()"}]})
     bindir = tmp_path / "bin"
     bindir.mkdir()
     cli = bindir / "fakecli"
@@ -372,3 +374,99 @@ def test_slack_identity_is_user_at_team(monkeypatch):
         return httpx.Response(200, json={"ok": True, "user": "ana", "team": "acme"})
     monkeypatch.setattr(manager, "_http", lambda: httpx.Client(transport=httpx.MockTransport(h)))
     assert manager._identity("https://slack.com/api/auth.test", "xoxp") == "ana@acme"
+
+
+# -- local-app: an app on this Mac ------------------------------------------------
+
+class FakeProbe:
+    """Stands in for applescript.Probe: `outcome` is the dict to return, an exception
+    to raise, or None to block until cancelled (the macOS prompt left open)."""
+    outcome = {"name": "Notes", "account": "iCloud"}
+    made = []
+
+    def __init__(self, app, account_js=""):
+        self.app, self.account_js = app, account_js
+        self.gate = threading.Event()
+        FakeProbe.made.append(self)
+
+    def start(self):
+        pass
+
+    def result(self, timeout=0):
+        if FakeProbe.outcome is None:
+            self.gate.wait(timeout)
+            raise manager.oauth.FlowCancelled() if self.gate.is_set() else TimeoutError()
+        if isinstance(FakeProbe.outcome, Exception):
+            raise FakeProbe.outcome
+        return dict(FakeProbe.outcome)
+
+    def cancel(self):
+        self.gate.set()
+
+
+@pytest.fixture()
+def mac(monkeypatch):
+    from fused_render.connect import applescript
+    monkeypatch.setattr(applescript, "Probe", FakeProbe)
+    monkeypatch.setattr(applescript, "available", lambda platform=None: (True, None))
+    FakeProbe.outcome = {"name": "Notes", "account": "iCloud"}
+    FakeProbe.made = []
+    return applescript
+
+
+def _wait(key, states, timeout=5.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        st = manager.status(key)
+        if st["state"] in states:
+            return st
+        time.sleep(0.02)
+    return manager.status(key)
+
+
+def test_local_app_lists_as_available_only_on_a_mac(monkeypatch):
+    from fused_render.connect import applescript
+    monkeypatch.setattr(applescript.sys, "platform", "linux")
+    row = {p["key"]: p for p in manager.list()}["localdemo"]
+    assert row["auth"] == [{"kind": "local-app", "label": "Use LocalDemo on this Mac", "available": False,
+                            "reason": "LocalDemo works only on a Mac: it talks to the app installed there"}]
+    assert row["tools"] == {"remote": None, "native": False, "count": 0}
+    with pytest.raises(ValueError, match="only on a Mac"):
+        manager.login("localdemo")
+
+
+def test_local_app_connect_is_the_consent_probe_and_stores_no_credential(mac):
+    st = manager.login("localdemo")
+    assert st["state"] == "connected" and st["kind"] == "local-app" and st["account"] == "iCloud"
+    assert FakeProbe.made[0].app == "Notes" and FakeProbe.made[0].account_js == "app.defaultAccount().name()"
+    assert store.get("localdemo") == {"kind": "local-app", "app": "Notes", "account": "iCloud"}
+    assert manager.token("localdemo") == ""          # nothing to send: the app holds the account
+    # The app refusing a call later (-1743) is the one "refresh": it marks Reconnect.
+    with pytest.raises(manager.NotConnected):
+        manager.token("localdemo", force_refresh=True)
+    assert manager.status("localdemo")["state"] == "reconnect"
+    out = manager.logout("localdemo")
+    assert out["state"] == "disconnected" and out["revoked"] is None and store.get("localdemo") is None
+
+
+def test_local_app_denied_is_a_sentence_on_the_card(mac):
+    FakeProbe.outcome = mac.AutomationDenied("macOS has not let Fused control Notes. Open System Settings > "
+                                             "Privacy & Security > Automation, turn on Notes under Fused, then Reconnect.")
+    st = manager.login("localdemo")
+    assert st["state"] == "error" and "Privacy & Security > Automation" in st["error"]
+    assert store.get("localdemo") is None
+    FakeProbe.outcome = {"name": "Notes", "account": ""}
+    st = manager.login("localdemo", kind="local-app")   # Try again
+    assert st["state"] == "connected" and st["account"] is None
+
+
+def test_local_app_waits_on_the_prompt_then_cancel(mac, monkeypatch):
+    monkeypatch.setattr(manager, "URL_WAIT", 0.05)
+    FakeProbe.outcome = None
+    st = manager.login("localdemo")
+    assert st["state"] == "pending" and st["kind"] == "local-app" and "url" not in st
+    assert manager.login("localdemo")["joined"] is True
+    st = manager.cancel("localdemo")
+    st = _wait("localdemo", ("disconnected",))
+    assert st["state"] == "disconnected" and "error" not in st
+    assert store.get("localdemo") is None

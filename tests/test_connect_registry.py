@@ -11,6 +11,7 @@ from fused_render.connect import registry
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKE_PACKS = os.path.join(REPO, "tests", "_fake_provider")
 FIRST_WAVE = ("github", "notion", "slack")
+APPLE = ("apple-notes", "apple-calendar")
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +55,25 @@ def test_notion_is_mcp_oauth_against_its_hosted_server():
     assert [a["kind"] for a in p.auth] == ["mcp-oauth"]
     assert p.auth[0]["resource"] == "https://mcp.notion.com/mcp"
     assert p.tools == {"remote": "https://mcp.notion.com/mcp", "native": False}
+
+
+@pytest.mark.parametrize("key, app", [("apple-notes", "Notes"), ("apple-calendar", "Calendar")])
+def test_apple_packs_are_local_apps_with_native_tools(key, app, monkeypatch):
+    """No sign-in: the app on this Mac holds the account. The pack is a `local-app`
+    entry naming the app, its tools are native (tools.py), and the card is only
+    offered on a Mac with `osascript`."""
+    from fused_render.connect import applescript
+    p = registry.get(key)
+    assert [a["kind"] for a in p.auth] == ["local-app"]
+    assert p.auth[0]["app"] == app and p.auth[0]["account"]
+    assert p.tools == {"remote": None, "native": True}
+    assert "Automation" in p.privacy
+    monkeypatch.setattr(applescript.sys, "platform", "linux")
+    ok, reason = registry.availability(p, p.auth[0])
+    assert not ok and reason == f"{p.name} works only on a Mac: it talks to the app installed there"
+    monkeypatch.setattr(applescript.sys, "platform", "darwin")
+    monkeypatch.setattr(applescript.shutil, "which", lambda exe: "/usr/bin/" + exe)
+    assert registry.availability(p, p.auth[0]) == (True, None)
 
 
 def test_github_auth_order_and_comment_dropped():
@@ -157,6 +177,10 @@ def _good():
     (lambda d: d.update(auth=[{"kind": "cli", "command": "gh auth token",
                                "identity_url": "https://a/u"}]), "auth[0].command"),
     (lambda d: d.update(auth=[{"kind": "mcp-oauth"}]), "auth[0].resource"),
+    (lambda d: d.update(auth=[{"kind": "local-app"}]), "auth[0].app"),
+    (lambda d: d.update(auth=[{"kind": "local-app", "app": ""}]), "auth[0].app"),
+    (lambda d: d.update(auth=[{"kind": "local-app", "app": "Notes", "account": 3}]), "auth[0].account"),
+    (lambda d: d.update(auth=[{"kind": "local-app", "app": "Notes", "probe": "x"}]), "auth[0].probe"),
     (lambda d: d["auth"][0].update(identity_method="PUT"), "auth[0].identity_method"),
 ])
 def test_validate_names_the_file_and_the_field(mutate, field):

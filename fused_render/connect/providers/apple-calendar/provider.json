@@ -1,0 +1,9 @@
+{
+  "name": "Apple Calendar",
+  "_comment": "No sign-in: Calendar.app on this Mac already holds every account it syncs (iCloud, Google, Exchange...). Connect runs one read against Calendar, which makes macOS ask once whether Fused may control it (Automation consent); the record stores the kind and the calendar names, never a credential. Off a Mac the card says so and offers nothing.",
+  "auth": [
+    {"kind": "local-app", "app": "Calendar", "account": "app.calendars.name().join(', ')"}
+  ],
+  "tools": {"remote": null},
+  "privacy": "Everything happens on this Mac: Fused talks to the Calendar app itself, the way Shortcuts does. No sign-in, no token, nothing leaves the computer. macOS asks once whether to allow it (System Settings > Privacy & Security > Automation)."
+}

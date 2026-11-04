@@ -17,6 +17,8 @@ from fused_render.connect import manager, oauth, store, tools
 
 REMOTE = "https://demo.example/mcp"
 SLACK_TOOLS = os.path.join(os.path.dirname(tools.__file__), "providers", "slack", "tools.py")
+NOTES_TOOLS = os.path.join(os.path.dirname(tools.__file__), "providers", "apple-notes", "tools.py")
+CALENDAR_TOOLS = os.path.join(os.path.dirname(tools.__file__), "providers", "apple-calendar", "tools.py")
 
 NATIVE = '''
 from fused_render.connect.tools import ToolError
@@ -58,6 +60,10 @@ def _env(monkeypatch, tmp_path):
         "auth": [{"kind": "api-key", "label": "Token", "identity_url": "https://slack.com/api/auth.test"}],
         "tools": {"remote": None}, "privacy": "test"})
     shutil.copy(SLACK_TOOLS, slack / "tools.py")
+    for key, app, src in (("apple-notes", "Notes", NOTES_TOOLS), ("apple-calendar", "Calendar", CALENDAR_TOOLS)):
+        d = _pack(root, key, {"name": "Apple " + app, "auth": [{"kind": "local-app", "app": app}],
+                              "tools": {"remote": None}, "privacy": "test"})
+        shutil.copy(src, d / "tools.py")
     for d in (tools._cache, tools._clients, tools._native, manager._flows):
         d.clear()
     manager._reconnect.clear()
@@ -369,3 +375,110 @@ def test_slack_error_becomes_tool_error(slack):
     assert out["text"].startswith("slack: channel_not_found")
     out = tools.call_tool("slack", "slack_send_message", {"channel": "C0123456"})
     assert out["text"] == "slack: missing argument: text"
+
+
+# -- native Apple tools: Notes.app and Calendar.app through osascript ---------------
+
+class Osa:
+    """Stands in for applescript.run_jxa: records (app, request) and answers `reply`
+    (a dict, or an exception to raise)."""
+
+    def __init__(self):
+        self.calls = []
+        self.reply = {"ok": True}
+
+    def __call__(self, script, args=(), app="", timeout=0):
+        assert "function run(argv)" in script and len(args) == 1
+        self.calls.append((app, json.loads(args[0])))
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return dict(self.reply)
+
+
+@pytest.fixture()
+def osa(monkeypatch):
+    from fused_render.connect import applescript
+    fake = Osa()
+    monkeypatch.setattr(applescript, "run_jxa", fake)
+    store.put("apple-notes", {"kind": "local-app", "app": "Notes", "account": "iCloud"})
+    store.put("apple-calendar", {"kind": "local-app", "app": "Calendar", "account": "Home, Work"})
+    return fake
+
+
+def test_apple_tools_listed_with_flags(osa):
+    notes = {s.name: s for s in tools.list_tools("apple-notes")}
+    assert set(notes) == {"notes_folders", "notes_search", "notes_read", "notes_recent", "notes_create", "notes_append"}
+    assert all(notes[n].read_only for n in ("notes_folders", "notes_search", "notes_read", "notes_recent"))
+    assert notes["notes_create"].read_only is False and notes["notes_create"].destructive is False
+    assert notes["notes_append"].read_only is False and notes["notes_append"].destructive is False
+    cal = {s.name: s for s in tools.list_tools("apple-calendar")}
+    assert set(cal) == {"calendar_list", "calendar_events", "calendar_search", "calendar_event", "calendar_create_event"}
+    assert all(cal[n].read_only for n in ("calendar_list", "calendar_events", "calendar_search", "calendar_event"))
+    assert cal["calendar_create_event"].read_only is False and cal["calendar_create_event"].destructive is False
+    assert cal["calendar_search"].input_schema["properties"]["days"]["default"] == 30
+
+
+def test_notes_requests_are_argv_json_with_clamped_numbers(osa):
+    osa.reply = {"query": "milk", "count": 1, "notes": [{"id": "x-coredata://1/ICNote/p7", "title": "Milk"}]}
+    out = tools.call_tool("apple-notes", "notes_search", {"query": "milk", "limit": 999, "in_body": 1, "bogus": 2})
+    assert out["ok"] is True and json.loads(out["text"])["notes"][0]["title"] == "Milk"
+    app, req = osa.calls[-1]
+    assert app == "Notes"
+    assert req == {"action": "search", "query": "milk", "folder": "", "id": "", "title": "", "body": "", "text": "",
+                   "in_body": True, "days": 7, "limit": 100}
+    tools.call_tool("apple-notes", "notes_recent", {"days": "x", "folder": "Work"})
+    assert osa.calls[-1][1]["days"] == 7 and osa.calls[-1][1]["folder"] == "Work"
+    tools.call_tool("apple-notes", "notes_append", {"id": "x-coredata://1/ICNote/p7", "text": "- eggs"})
+    assert osa.calls[-1][1]["action"] == "append" and osa.calls[-1][1]["text"] == "- eggs"
+    tools.call_tool("apple-notes", "notes_create", {"body": "just a body"})
+    assert osa.calls[-1][1]["action"] == "create"
+
+
+def test_notes_argument_checks_happen_before_osascript(osa):
+    n = len(osa.calls)
+    assert tools.call_tool("apple-notes", "notes_search", {"query": " "})["text"] == "apple-notes: missing argument: query"
+    assert tools.call_tool("apple-notes", "notes_read", {})["text"] == "apple-notes: pass an id or a title"
+    assert tools.call_tool("apple-notes", "notes_create", {})["text"] == "apple-notes: pass a title or a body"
+    assert tools.call_tool("apple-notes", "notes_append", {"title": "Milk"})["text"] == "apple-notes: missing argument: text"
+    assert tools.call_tool("apple-notes", "notes_nope", {})["error"] == "unknown_tool"
+    assert len(osa.calls) == n
+
+
+def test_calendar_requests_and_date_checks(osa):
+    osa.reply = {"count": 0, "events": []}
+    tools.call_tool("apple-calendar", "calendar_events", {"from": "2026-11-04", "days": 2, "calendar": "Work"})
+    app, req = osa.calls[-1]
+    assert app == "Calendar" and req["action"] == "events" and req["from"] == "2026-11-04" and req["days"] == 2
+    tools.call_tool("apple-calendar", "calendar_search", {"query": "dentist"})
+    assert osa.calls[-1][1]["days"] == 30 and osa.calls[-1][1]["query"] == "dentist"
+    tools.call_tool("apple-calendar", "calendar_create_event",
+                    {"summary": "Standup", "start": "2026-11-05 09:00", "end": "2026-11-05T09:30:00", "all_day": 0})
+    req = osa.calls[-1][1]
+    assert req["action"] == "create" and req["start"] == "2026-11-05T09:00" and req["end"] == "2026-11-05T09:30:00"
+    assert req["all_day"] is False
+    n = len(osa.calls)
+    out = tools.call_tool("apple-calendar", "calendar_create_event", {"summary": "x", "start": "next tuesday"})
+    assert out["ok"] is False and "not an ISO date" in out["text"]
+    assert tools.call_tool("apple-calendar", "calendar_event", {})["text"] == "apple-calendar: missing argument: uid"
+    assert tools.call_tool("apple-calendar", "calendar_create_event", {"start": "2026-11-05"})["text"] \
+        == "apple-calendar: missing argument: summary"
+    assert len(osa.calls) == n
+
+
+def test_apple_script_errors_become_tool_errors(osa):
+    from fused_render.connect import applescript
+    osa.reply = applescript.AutomationError("no folder named Nope")
+    out = tools.call_tool("apple-notes", "notes_folders", {})
+    assert out["ok"] is False and out["text"] == "apple-notes: no folder named Nope"
+
+
+def test_apple_denied_marks_reconnect_and_says_where_to_allow(osa):
+    """-1743 twice (the retry re-asks the app) is a withdrawn Automation grant: the card
+    says Reconnect and the message names System Settings, not a token."""
+    from fused_render.connect import applescript
+    osa.reply = applescript.AutomationDenied("macOS has not let Fused control Notes.")
+    out = tools.call_tool("apple-notes", "notes_folders", {})
+    assert out["ok"] is False and out["error"] == "reconnect"
+    assert "control Notes" in out["text"] and "Privacy & Security > Automation" in out["text"]
+    assert manager.needs_reconnect("apple-notes")
+    assert tools.list_tools("apple-notes") == []

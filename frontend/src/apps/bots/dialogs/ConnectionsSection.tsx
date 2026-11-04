@@ -14,6 +14,7 @@ import {
   CERT_WARNING,
   defaultAuth,
   logoutConnection,
+  pendingLabel,
   toolCount,
   useConnections,
   type ConnectProvider,
@@ -110,7 +111,7 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin,
   let control: ReactNode = null;
   switch (st.state) {
     case "pending":
-      status = "Waiting for you in the browser…";
+      status = pendingLabel(st);
       control = <Button variant="outline" size="sm" disabled={busy} onClick={() => void act(() => cancelConnection(p.key))}>Cancel</Button>;
       break;
     case "connected":

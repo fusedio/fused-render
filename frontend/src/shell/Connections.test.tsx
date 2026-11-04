@@ -62,6 +62,19 @@ const slack: ConnectProvider = {
   store: "keychain",
 };
 
+// An app on this Mac (Apple Notes): no browser, no token; off a Mac the server lists
+// its one kind as unavailable with the reason, and the card is just that sentence.
+const notes: ConnectProvider = {
+  key: "apple-notes",
+  name: "Apple Notes",
+  icon: "/api/connect/apple-notes/icon",
+  privacy: "Everything happens on this Mac.",
+  auth: [{ kind: "local-app", label: "Use Apple Notes on this Mac", available: false, reason: "Apple Notes works only on a Mac: it talks to the app installed there" }],
+  state: "disconnected",
+  tools: { remote: null, native: true, count: 0 },
+  store: "keychain",
+};
+
 type Call = { method: string; url: string; body: unknown; headers: Record<string, string> };
 let calls: Call[] = [];
 let list: ConnectProvider[] = [];
@@ -183,6 +196,31 @@ describe("the cards", () => {
     expect(textOf(s)).toContain("No Slack app is configured");
     expect(s.findAll((x) => x.props.className === "settings-row-control")).toHaveLength(0);
     expect(buttons(s, "Connect")).toHaveLength(1); // the BYO form's, under Advanced
+  });
+
+  test("an app on this Mac: the reason off a Mac, the macOS prompt while pending, no paste fallback", async () => {
+    list = [notes];
+    const box = await mount();
+    const n = card(box, "apple-notes");
+    expect(textOf(n)).toContain("works only on a Mac");
+    expect(buttons(n, "Connect")).toHaveLength(0);
+    expect(textOf(n)).not.toContain("Advanced"); // its one kind is the default; nothing else to offer
+    await act(async () => box.unmount());
+    mounted = [];
+
+    list = [{ ...notes, auth: [{ ...notes.auth[0], available: true, reason: null }] }];
+    // The consent probe is still waiting on macOS's "allow Fused to control Notes?" prompt: no URL, no tab.
+    answers["POST /api/connect/apple-notes/login"] = { state: "pending", kind: "local-app", tools: 0 };
+    answers["GET /api/connect/apple-notes"] = { state: "pending", kind: "local-app", tools: 0 };
+    const box2 = await mount();
+    const n2 = card(box2, "apple-notes");
+    expect(buttons(n2, "Connect")).toHaveLength(1);
+    await click(buttons(n2, "Connect")[0]);
+    expect(calls.find((c) => c.method === "POST")?.body).toEqual({ kind: "local-app" });
+    expect(opened).toHaveLength(0);
+    expect(textOf(n2)).toContain("Waiting for macOS to allow access");
+    expect(textOf(n2)).not.toContain("Browser on another machine");
+    expect(buttons(n2, "Cancel")).toHaveLength(1);
   });
 
   test("a shipped Slack app keeps bring-your-own under Advanced", async () => {
