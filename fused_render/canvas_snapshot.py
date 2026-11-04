@@ -571,8 +571,14 @@ def _dump_toml(data: dict) -> str:
 
 
 def _write_atomic(path: str, text: str) -> None:
+    """Write `text` byte-for-byte as UTF-8. `newline=""` turns off text-mode
+    newline translation: without it Windows writes every "\\n" as "\\r\\n",
+    the file no longer reads back as the text the workbench sent, and the
+    body channel ping-pongs (disk -> delta carrying CRLF -> the frame
+    normalises to LF -> body post -> CRLF on disk again) several times a
+    second, forever."""
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
         fh.write(text)
     os.replace(tmp, path)
 
@@ -941,7 +947,8 @@ def apply_snapshot(
             continue
         fpath = os.path.join(clone_dir, file)
         current = _read_bytes(fpath)
-        if current is not None and current.decode("utf-8", "replace") == text:
+        if current is not None and normalize_newlines(
+                current.decode("utf-8", "replace")) == normalize_newlines(text):
             continue
         if current is not None:
             trash(file)
@@ -1089,10 +1096,21 @@ def body_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+def normalize_newlines(text: str) -> str:
+    """CRLF / lone CR -> LF: the form the workbench editor holds a source in."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def read_body(path: str) -> str | None:
-    """A source file as the body channel reads it (None when missing)."""
+    """A source file as the body channel reads it (None when missing).
+
+    Line endings are normalised to LF. The workbench editor holds (and posts
+    back) LF text, so a file a Windows editor or git `autocrlf` saved with
+    CRLF would otherwise differ from the frame's copy on every line: each
+    delta would carry it, each body post would rewrite it, and the two ends
+    would never agree on its hash."""
     data = _read_bytes(path)
-    return None if data is None else data.decode("utf-8", "replace")
+    return None if data is None else normalize_newlines(data.decode("utf-8", "replace"))
 
 
 def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None) -> dict:
