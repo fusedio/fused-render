@@ -2,14 +2,15 @@
 //
 // A strip between the transcript and the composer (`.chat-tasks`), there
 // whenever the run on screen has tasks, COLLAPSED by default to one line
-// ("1 agent · 2 shells running · 1 failed"). Opened, one row per task: kind
-// icon, description (its tooltip names the subagent type and worktree), status
-// pill, elapsed (live while running), and for a shell or a monitor an "Output"
-// button that asks the live CLI for it (`task_output`).
+// ("1 agent · 2 shells running · 1 failed"). Opened, one row per RUNNING (or
+// paused) task, finished ones are not listed: kind icon, description (its
+// tooltip names the subagent type and worktree), model (agents), elapsed (live),
+// stop. The row itself is the toggle: a shell or a monitor opens its output
+// (asked of the live CLI with `task_output`), an agent opens its latest update.
 //
 // The words are `protocol/tasks.ts`'s; this file only lays them out. The
 // open/closed bit is the host's (`ClaudeChat`), because `/tasks` toggles it.
-import { Bot, ChevronRight, CircleDot, GitBranch, Radio, Square, Terminal, X } from "lucide-react";
+import { Bot, ChevronRight, CircleDot, GitBranch, Radio, Square, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { cn } from "@platform/lib/utils";
@@ -23,9 +24,7 @@ import {
   isLive,
   kindLabel,
   sortTasks,
-  statusLabel,
   summarizeTasks,
-  TASK_ENDED_GRACE_MS,
 } from "../protocol/tasks";
 import type { ErrorOnly, TaskKind, TaskOutputResponse, TaskRecord, TaskStopResponse } from "../protocol/types";
 import { CollapsiblePre } from "./CollapsiblePre";
@@ -68,8 +67,7 @@ function writeTasksOpen(open: boolean): void {
 
 /** The panel's open bit: a GLOBAL preference, remembered across runs, sessions,
  *  new chats, panes and reloads (localStorage, synced live to other panes and
- *  tabs). Remembered "open" never carries an EMPTY "No agents or shells in this
- *  run." strip into a later run or chat: with no tasks it shows only when the
+ *  tabs). Remembered "open" never carries an EMPTY "Nothing running." strip into a later run or chat: with no tasks it shows only when the
  *  user opened it (head click or `/tasks`) in this very `scope`
  *  (`tasksPanelScope`). Derived, so no effect races. */
 export function useTasksOpen(scope: string, hasTasks: boolean): [boolean, () => void] {
@@ -98,16 +96,6 @@ export function useTasksOpen(scope: string, hasTasks: boolean): [boolean, () => 
   return [open, toggle];
 }
 
-export { TASK_ENDED_GRACE_MS };
-
-/** When (ms epoch) an ended, non-failed row leaves the list; `null` for a row
- *  that never auto-hides (live, paused, failed). No `ended_at` = long ended. */
-function hideAfterMs(t: TaskRecord): number | null {
-  if (isActive(t.status) || t.status === "failed") return null;
-  const end = Number(t.ended_at) || 0;
-  return end ? end * 1000 + TASK_ENDED_GRACE_MS : -Infinity;
-}
-
 export type FetchTaskOutput = (runId: string, taskId: string) => Promise<TaskOutputResponse | ErrorOnly>;
 
 export type StopTask = (runId: string, taskId: string) => Promise<TaskStopResponse | ErrorOnly>;
@@ -121,10 +109,10 @@ export interface TasksPanelProps {
   /** `ChatState.tasks` — any order; the panel sorts (live first). */
   tasks: readonly TaskRecord[];
   /** `ChatState.tasksRunId` — the run `task_output` is asked of. `null` hides
-   *  the Output buttons: nothing live to ask. */
+   *  the rows' output toggle: nothing live to ask. */
   runId: string | null;
   /** The conversation on screen. History-only sessions all have a null runId,
-   *  so the panel's per-session state (dismissed rows, Show finished, stop
+   *  so the panel's per-session state (open rows, stop
    *  errors) resets on this as well. */
   sessionId?: string | null;
   /** Expanded. The host owns it (`/tasks` toggles it). */
@@ -166,19 +154,14 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
   // Answers for a run that is no longer the panel's are dropped on arrival.
   const runRef = useRef(runId);
   runRef.current = runId;
-  const [showEnded, setShowEnded] = useState(false);
-  // Rows the user dismissed (client-side only), per run; they count toward
-  // "Show N finished". Stop requests in flight and their refusals, by task.
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+  // Stop requests in flight and their refusals, by task.
   const [stopping, setStopping] = useState<Record<string, { phase: "pending" } | { phase: "error"; message: string }>>({});
-  // Failed rows whose error line the user opened to its full text.
-  const [errOpen, setErrOpen] = useState<ReadonlySet<string>>(new Set());
+  // Agent rows the user opened to their latest update.
+  const [updOpen, setUpdOpen] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => {
     setOutputs({});
-    setShowEnded(false);
-    setDismissed(new Set());
     setStopping({});
-    setErrOpen(new Set());
+    setUpdOpen(new Set());
   }, [runId, sessionId]);
 
   // THE ELAPSED CLOCK TICKS ONLY WHILE SOMETHING IS LIVE AND THE ROWS SHOW: a
@@ -191,20 +174,7 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
     return () => window.clearInterval(timer);
   }, [open, anyLive]);
 
-  // FINISHED ROWS LEAVE ON TIME, LIVE TASK OR NOT: one timeout for the next
-  // row's hide moment, re-armed whenever it changes.
   const nowMs = now();
-  let nextHide = Infinity;
-  for (const t of tasks) {
-    const at = hideAfterMs(t);
-    if (at != null && at >= nowMs && at - nowMs < nextHide) nextHide = at - nowMs;
-  }
-  const hideDelay = open && !showEnded && Number.isFinite(nextHide) ? nextHide + 1 : null;
-  useEffect(() => {
-    if (hideDelay == null) return;
-    const timer = window.setTimeout(() => tick((n) => n + 1), hideDelay);
-    return () => window.clearTimeout(timer);
-  }, [hideDelay]);
 
   const toggleOutput = useCallback(
     (taskId: string) => {
@@ -258,31 +228,16 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
       (err: unknown) => land(err instanceof Error ? err.message : String(err)),
     );
   };
-  const toggleErr = (taskId: string) =>
-    setErrOpen((s) => {
+  const toggleUpdate = (taskId: string) =>
+    setUpdOpen((s) => {
       const next = new Set(s);
       if (!next.delete(taskId)) next.add(taskId);
       return next;
     });
-  const dismiss = (taskId: string) => setDismissed((s) => new Set(s).add(taskId));
 
   const summary = summarizeTasks(tasks);
   if (!open && !summary) return null;
-  const sorted = sortTasks(tasks);
-  const rows = showEnded
-    ? sorted
-    : sorted.filter((t) => {
-        if (dismissed.has(t.id)) return false;
-        const at = hideAfterMs(t);
-        return at == null || nowMs <= at;
-      });
-  const hiddenCount = sorted.length - rows.length;
-  const finishedToggle =
-    hiddenCount > 0 || showEnded ? (
-      <button type="button" className="chat-tasks-more" onClick={() => setShowEnded((v) => !v)}>
-        {showEnded ? "Hide finished" : `Show ${hiddenCount} finished`}
-      </button>
-    ) : null;
+  const rows = sortTasks(tasks).filter((t) => isActive(t.status));
 
   return (
     <section className={cn("chat-tasks", open && "is-open")} aria-label="Agents & shells">
@@ -298,9 +253,31 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
               const out = outputs[t.id];
               const elapsed = elapsedLabel(t, nowMs);
               const modelLabel = t.kind === "agent" ? agentModelLabel(t, parentModel) : "";
+              const isAgent = t.kind === "agent";
+              const canOut = hasOutput(t) && !!runId;
+              const toggles = canOut || isAgent;
+              const expanded = canOut ? !!out : updOpen.has(t.id);
+              const toggle = () => (canOut ? toggleOutput(t.id) : toggleUpdate(t.id));
               return (
-                <li key={t.id} className={cn("chat-task", "is-" + t.kind, isLive(t.status) ? "is-live" : t.status === "paused" ? "is-paused" : "is-ended", t.status === "failed" && "is-failed")}>
-                  <div className="chat-task-line">
+                <li key={t.id} className={cn("chat-task", "is-" + t.kind, isLive(t.status) ? "is-live" : "is-paused")}>
+                  <div
+                    className="chat-task-line"
+                    {...(toggles
+                      ? {
+                          role: "button",
+                          tabIndex: 0,
+                          "aria-expanded": expanded,
+                          onClick: toggle,
+                          onKeyDown: (ev: React.KeyboardEvent) => {
+                            if (ev.target !== ev.currentTarget) return;
+                            if (ev.key === "Enter" || ev.key === " ") {
+                              ev.preventDefault();
+                              toggle();
+                            }
+                          },
+                        }
+                      : {})}
+                  >
                     <span className="chat-task-kind" title={kindLabel(t.kind)}>
                       <KindIcon kind={t.kind} />
                     </span>
@@ -311,19 +288,7 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
                       <GitBranch className="chat-task-wt" size={12} aria-label="in a worktree" />
                     ) : null}
                     {modelLabel ? <span className="chat-task-model">{modelLabel}</span> : null}
-                    <span className={"chat-task-status is-" + t.status}>{statusLabel(t.status)}</span>
                     {elapsed ? <span className="chat-task-time">{elapsed}</span> : null}
-                    {hasOutput(t) && runId ? (
-                      <button
-                        type="button"
-                        className="chat-task-out-btn"
-                        aria-expanded={!!out && out.phase !== "loading"}
-                        disabled={out?.phase === "loading"}
-                        onClick={() => toggleOutput(t.id)}
-                      >
-                        {out?.phase === "loading" ? "Loading…" : out ? "Hide output" : "Output"}
-                      </button>
-                    ) : null}
                     {isLive(t.status) && runId ? (
                       <button
                         type="button"
@@ -331,47 +296,26 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
                         aria-label="Stop task"
                         title="Stop"
                         disabled={stopping[t.id]?.phase === "pending"}
-                        onClick={() => stop(t.id)}
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          stop(t.id);
+                        }}
                       >
                         <Square size={12} aria-hidden="true" />
                       </button>
                     ) : null}
-                    {!isActive(t.status) ? (
-                      <button
-                        type="button"
-                        className="chat-task-icon-btn"
-                        aria-label="Dismiss"
-                        title="Dismiss"
-                        onClick={() => dismiss(t.id)}
-                      >
-                        <X size={12} aria-hidden="true" />
-                      </button>
-                    ) : null}
                   </div>
-                  {t.error ? (
-                    <div
-                      className={cn("chat-task-error", "is-toggle", !errOpen.has(t.id) && "is-clamped")}
-                      title={t.error}
-                      role="button"
-                      tabIndex={0}
-                      aria-expanded={errOpen.has(t.id)}
-                      onClick={() => toggleErr(t.id)}
-                      onKeyDown={(ev) => {
-                        if (ev.key === "Enter" || ev.key === " ") {
-                          ev.preventDefault();
-                          toggleErr(t.id);
-                        }
-                      }}
-                    >
-                      {t.error}
-                    </div>
-                  ) : null}
                   {stopping[t.id]?.phase === "error" ? (
                     <div className="chat-task-error is-clamped" title={(stopping[t.id] as { message: string }).message}>
                       {(stopping[t.id] as { message: string }).message}
                     </div>
                   ) : null}
-                  {out?.phase === "shown" ? (
+                  {isAgent && !canOut && updOpen.has(t.id) ? (
+                    <div className="chat-task-note">{t.summary || "No update yet."}</div>
+                  ) : null}
+                  {out?.phase === "loading" ? (
+                    <div className="chat-task-note">Loading…</div>
+                  ) : out?.phase === "shown" ? (
                     <div className="chat-task-out">
                       {out.truncated ? <div className="chat-task-note">Showing the last 64 KB.</div> : null}
                       {out.text ? (
@@ -386,13 +330,9 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
                 </li>
               );
             })}
-            {finishedToggle ? <li className="chat-tasks-more-row">{finishedToggle}</li> : null}
           </ul>
         ) : (
-          <div className="chat-tasks-empty">
-            {hiddenCount ? "Nothing running." : "No agents or shells in this run."}
-            {finishedToggle ? <div className="chat-tasks-more-row">{finishedToggle}</div> : null}
-          </div>
+          <div className="chat-tasks-empty">Nothing running.</div>
         )}
         </>
       ) : null}

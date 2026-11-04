@@ -66,33 +66,14 @@
   padding: 5px 0;
   border-top: 1px solid var(--c-border);
 }
-.chat-root .chat-task.is-ended:not(.is-failed) {
-  opacity: 0.5;
-}
-.chat-root .chat-tasks-more {
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--c-dim);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.chat-root .chat-tasks-more-row {
-  display: block;
-  margin: 4px 0 0;
-  padding: 0;
-  list-style: none;
+.chat-root .chat-task.is-paused .chat-task-desc {
+  color: var(--c-faint);
 }
 .chat-root .chat-task-model {
   flex-shrink: 0;
   color: var(--c-dim);
   font-size: 11px;
   white-space: nowrap;
-}
-.chat-root .chat-tasks-more:hover {
-  text-decoration: underline;
 }
 .chat-root .chat-task:first-child {
   border-top: 0;
@@ -102,6 +83,19 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+.chat-root .chat-task-line[role="button"] {
+  margin: -2px -6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.chat-root .chat-task-line[role="button"]:hover {
+  background: var(--c-surface);
+}
+.chat-root .chat-task-line[role="button"]:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 1px;
 }
 .chat-root .chat-task-kind {
   display: inline-flex;
@@ -119,7 +113,6 @@
   white-space: nowrap;
   color: var(--c-fg);
 }
-.chat-root .chat-task-status,
 .chat-root .chip-task-status {
   flex-shrink: 0;
   padding: 0 7px;
@@ -129,18 +122,14 @@
   font-size: 11px;
   line-height: 17px;
 }
-.chat-root .chat-task-status.is-running,
-.chat-root .chat-task-status.is-pending,
 .chat-root .chip-task-status.is-running,
 .chat-root .chip-task-status.is-pending {
   color: var(--c-accent-text);
   border-color: color-mix(in srgb, var(--c-accent) 40%, var(--c-border));
 }
-.chat-root .chat-task-status.is-completed,
 .chat-root .chip-task-status.is-completed {
   color: var(--c-ok);
 }
-.chat-root .chat-task-status.is-failed,
 .chat-root .chip-task-status.is-failed {
   color: var(--c-error);
   border-color: color-mix(in srgb, var(--c-error) 40%, var(--c-border));
@@ -153,23 +142,6 @@
   flex-shrink: 0;
   color: var(--c-dim);
   font-variant-numeric: tabular-nums;
-}
-.chat-root .chat-task-out-btn {
-  flex-shrink: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  color: var(--c-accent-text);
-  cursor: pointer;
-}
-.chat-root .chat-task-out-btn:hover {
-  text-decoration: underline;
-}
-.chat-root .chat-task-out-btn:disabled {
-  color: var(--c-dim);
-  cursor: default;
-  text-decoration: none;
 }
 .chat-root .chat-task-icon-btn {
   flex-shrink: 0;
@@ -188,11 +160,6 @@
 .chat-root .chat-task-icon-btn:disabled {
   opacity: 0.5;
   cursor: default;
-}
-.chat-root .chat-task-error.is-toggle {
-  cursor: pointer;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 .chat-root .chat-task-error,
 .chat-root .chat-task-note,
@@ -282,12 +249,10 @@
 
 /* `unknown`: the owning run died while the task was active — no outcome was
    reported, so it reads as neither done nor failed, just over. */
-.chat-root .chat-task-status.is-unknown,
 .chat-root .chip-task-status.is-unknown {
   color: var(--c-faint);
   border-style: dashed;
 }
-.chat-root .chat-task-status.is-paused,
 .chat-root .chip-task-status.is-paused {
   color: var(--c-dim);
   border-style: dashed;
