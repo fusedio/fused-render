@@ -309,3 +309,28 @@ def test_still_queued_text_ignores_loose_words(tmp_path):
     from fused_render.claude_agent import agent
 
     assert agent._still_queued_text(str(tmp_path), ["continue", "go on please"]) == {}
+
+
+def test_typed_words_are_one_file_per_uuid_and_never_a_shared_map(tmp_path):
+    from fused_render.claude_agent import agent
+
+    a, b = "aaaaaaaa-2222-3333-4444-555555555555", "bbbbbbbb-2222-3333-4444-555555555555"
+    _entry(tmp_path, "one", a)
+    _entry(tmp_path, "two", b)
+    folder = tmp_path / "inbox_typed"
+    assert sorted(p.name for p in folder.iterdir()) == [a, b]
+    assert not (tmp_path / "inbox_typed.json").exists()
+    assert (folder / a).read_text(encoding="utf-8") == "one"
+
+
+def test_explicit_typed_words_win_over_the_composed_message(tmp_path):
+    """The page sends its own words next to the composed wire (app-state and
+    attachment markers); `send` and `start` both take them."""
+    from fused_render.claude_agent import agent
+
+    for fn in (agent._send, agent._start, agent.main):
+        assert "typed" in inspect.signature(fn).parameters
+    uid = "cccccccc-2222-3333-4444-555555555555"
+    agent._write_inbox_entry(str(tmp_path), "<live-app-state>x</live-app-state>\nhello", uid,
+                             typed="hello")
+    assert agent._still_queued_text(str(tmp_path), [uid]) == {uid: "hello"}
