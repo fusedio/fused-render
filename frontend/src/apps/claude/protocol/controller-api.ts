@@ -304,6 +304,10 @@ export interface ChatState {
    * between runs: a run that has ended has drained or died with its inbox.
    */
   inbox: InboxMessage[];
+  /** The uuids the CLI has taken off its queue (`PollResponse.inbox_taken`),
+   *  kept for the run: what retires a `queued` entry and what a reload's dedupe
+   *  counts as known. */
+  taken: string[];
   historyLoading: boolean;
   /**
    * A RESTORE IS NOT FINISHED UNTIL ADOPTION HAS SPOKEN. True from the first

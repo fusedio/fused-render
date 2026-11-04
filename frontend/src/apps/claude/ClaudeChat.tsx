@@ -3544,6 +3544,10 @@ function ChatBody(props: ChatBodyProps) {
       if (u) known.add(u);
     }
     for (const m of state.inbox) if (m.uuid) known.add(m.uuid);
+    // An id seen ONLY as a CLI receipt (`command_lifecycle`, the `isReplay`
+    // echo) is known too: the turn row can carry another uuid, and a landed
+    // line must not be sent again.
+    for (const u of state.taken ?? []) known.add(u);
     const { resend, drop } = splitPending(stored, known);
     if (drop.length) {
       const keep = loadPending(sid).filter((l) => !drop.some((d) => d.id === l.id));
@@ -3557,7 +3561,7 @@ function ChatBody(props: ChatBodyProps) {
     for (const l of resend) {
       dispatchSend(l.text, { clientId: l.id }, controller.getState().status !== "idle");
     }
-  }, [state.sessionId, state.historyLoading, state.adopting, state.turns, state.inbox, controller, dispatchSend, journalAdd]);
+  }, [state.sessionId, state.historyLoading, state.adopting, state.turns, state.inbox, state.taken, controller, dispatchSend, journalAdd]);
   /**
    * PARKED PICTURES GO BACK TO THE TRAY when the outbox is emptied by a
    * navigation (Bugbot 4121249270): Back and Open session used to drop the

@@ -6966,6 +6966,25 @@ def _inbox_waiting(run_dir: str) -> list:
     return waiting
 
 
+_INBOX_TAKEN_MAX = 64
+
+
+def _inbox_taken(run_dir: str) -> list:
+    """The uuids of the stdin lines the CLI has TAKEN, newest last, from the
+    same index the inbox walk settles entries with: a `command_lifecycle`
+    `started`/`completed` receipt or an `isReplay` echo row naming the uuid.
+    The page keys its own queue off these (the follow-up it sent is no longer
+    "queued for this turn" the moment its uuid is here) and its reload dedupe
+    counts them as known. Capped: only the recent tail can matter."""
+    echoes, _whole = _echo_texts(run_dir)
+    seen: dict = {}
+    for uid, _key in echoes:
+        if uid:
+            seen.pop(uid, None)
+            seen[uid] = None
+    return list(seen)[-_INBOX_TAKEN_MAX:]
+
+
 def _retry_info(row: dict):
     """One `api_retry` row as the page's view of it, or None if unreadable.
 
@@ -10165,6 +10184,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # reload mid-turn drew nothing at all for them before this existed
             # (see `_inbox_waiting`). Empty on every poll of an idle chat.
             "inbox": _inbox_waiting(run_dir) if inbox else [],
+            "inbox_taken": _inbox_taken(run_dir) if inbox else [],
             "segments": [] if echo_pending
             else _poll_segments(parsed, run_dir, app_reads, bg_tasks),
             # THE TASK REGISTRY (SPEC T-1): every record this run has seen,
@@ -12023,7 +12043,8 @@ def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
             # the run got round to answering it. Same rows `_poll` returns,
             # through the same `_inbox_waiting`, so the first poll after this
             # replays them identically (Akshil, 2026-09-12).
-            "inbox": _inbox_waiting(run_dir) if inbox else []}
+            "inbox": _inbox_waiting(run_dir) if inbox else [],
+            "inbox_taken": _inbox_taken(run_dir) if inbox else []}
 
 
 

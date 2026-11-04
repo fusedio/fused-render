@@ -110,6 +110,7 @@ function state(over: Partial<ChatState> = {}): ChatState {
     permissionMode: "prompt",
     queued: [],
     inbox: [],
+    taken: [],
     historyLoading: false,
     adopting: false,
     transcript: null,

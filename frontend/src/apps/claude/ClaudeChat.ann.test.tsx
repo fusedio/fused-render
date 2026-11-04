@@ -29,6 +29,7 @@ installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 import { dropSharedPrefsRead } from "@platform/lib/api";
+import { sharedHistoryCache } from "./protocol/history";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
 const { NAV_LOCKED_REASON } = await import("./ann");
@@ -60,6 +61,9 @@ let audioSource: Record<string, unknown> = { audio: { available: true, reason: n
 let holdStart: Promise<void> | null = null;
 let holdSend: Promise<void> | null = null;
 let pollLive = false;
+/** The poll names every `send` the chat has made in `inbox_taken` — the CLI's
+ *  `command_lifecycle started` / `isReplay` echo for the page's own uuid. */
+let pollTaken = false;
 /** A `cancel` was posted: a `pollLive` run answers its next poll `done` —
  *  unless `stickyLive`, a stop that takes a while to land. */
 let cancelled = false;
@@ -153,7 +157,19 @@ function stubFetch(): void {
         // drain into it as a follow-up and a stop can land before the host
         // confirms it.
         if (pollLive && (!cancelled || stickyLive)) {
-          return jsonRes({ done: false, session_id: "s1", text: "" });
+          return jsonRes({
+            done: false,
+            session_id: "s1",
+            text: "",
+            ...(pollTaken
+              ? {
+                  inbox_taken: runs
+                    .filter((c) => c.action === "send")
+                    .map((c) => c.params.client_uuid)
+                    .filter(Boolean),
+                }
+              : {}),
+          });
         }
         return jsonRes({ done: true, session_id: "s1", text: "ok" });
       }
@@ -266,6 +282,8 @@ beforeEach(() => {
   // A shared prefs GET pinned by an earlier file's never-settling fetch stub
   // would starve the flag read this chat's send waits on.
   dropSharedPrefsRead();
+  // The page-wide history cache would replay one case's `inbox_taken` into the next.
+  sharedHistoryCache.clear();
   runs.length = 0;
   startError = "";
   appEntry = "/w/p/index.html";
@@ -276,6 +294,7 @@ beforeEach(() => {
   holdStart = null;
   holdSend = null;
   pollLive = false;
+  pollTaken = false;
   failSend = false;
   holdSendNth = null;
   sendCount = 0;
@@ -1930,6 +1949,28 @@ test("a REFUSED admission leaves the round exactly where the reader left it", as
 
 const PENDING_KEY = "claude.outbox:s1";
 
+test("flag OFF: once the CLI has taken a mid-turn line the composer stops saying it is queued", async () => {
+  pollLive = true;
+  prefsBody = {};
+  const rig = await mountChat();
+  await act(async () => publishProjectQueueEnabled(false));
+  await typeInBox(rig.r, "first message");
+  await act(async () => {
+    rig.r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  await typeInBox(rig.r, "since worktree is not in main");
+  await pressEnterInBox(rig.r);
+  await settle(40);
+  const queuedHint = () =>
+    byClass(rig.r, "c-queued").filter((n) => JSON.stringify(n.children).includes("queued for this turn"));
+  expect(queuedHint()).toHaveLength(1);
+  // The CLI's receipt for the page's uuid arrives with the next poll.
+  pollTaken = true;
+  await settle(1500);
+  expect(queuedHint()).toHaveLength(0);
+});
+
 for (const flagOn of [false, true]) {
   const tag = flagOn ? "flag ON" : "flag OFF";
 
@@ -2068,6 +2109,27 @@ for (const flagOn of [false, true]) {
     const into = [...sends(), ...started()].filter((c) => String(c.params.message).includes("lost mid-turn"));
     expect(into).toHaveLength(1);
     expect(into[0]!.params.client_uuid).toBe("0f8c1c52-aaaa-4bbb-8ccc-123456789abc");
+  });
+
+  test(`${tag}: a reload does not re-send a line the CLI took, seen only as a receipt`, async () => {
+    const id = "0f8c1c52-aaaa-4bbb-8ccc-123456789abc";
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id, text: "taken line" }]));
+    // The turn rows carry other uuids and the inbox no longer lists it: the
+    // only trace is the CLI's receipt.
+    historyBody = {
+      turns: [{ role: "user", text: "earlier", uuid: "u0" }],
+      live_run: "r1",
+      inbox: [],
+      inbox_taken: [id],
+    };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(300);
+    expect(started()).toHaveLength(0);
+    expect(sends()).toHaveLength(0);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
   });
 }
 

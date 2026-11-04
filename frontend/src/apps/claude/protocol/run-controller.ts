@@ -303,6 +303,7 @@ function emptyState(file: string | null): ChatState {
     permissionMode: defaultPermissionNow(),
     queued: [],
     inbox: [],
+    taken: [],
     historyLoading: false,
     adopting: false,
     transcript: null,
@@ -579,6 +580,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (sig === inboxSig) return;
     inboxSig = sig;
     emit({ inbox: rows });
+  };
+  /**
+   * THE CLI TOOK THESE LINES (`PollResponse.inbox_taken`): a `command_lifecycle`
+   * `started`/`completed` receipt or the `isReplay` echo named the uuid. A
+   * `queued` entry is "queued for this turn" only until then — it used to stand
+   * until the run ended, so a line the CLI read three seconds after Enter still
+   * said "1 follow-up is queued" for the rest of the turn. Keyed by the page's
+   * own `client_uuid` (the inbox entry's uuid since the journal work).
+   */
+  const noteTaken = (ids: readonly string[] | null | undefined) => {
+    const list = Array.isArray(ids) ? ids.filter((u) => typeof u === "string" && u) : [];
+    if (!list.length) return;
+    const known = new Set(state.taken);
+    const fresh = list.filter((u) => !known.has(u));
+    if (fresh.length) emit({ taken: [...state.taken, ...fresh].slice(-128) });
+    const gone = new Set(list);
+    let moved = false;
+    for (let i = queued.length - 1; i >= 0; i--) {
+      const id = queued[i].opts.clientId;
+      if (id && gone.has(id)) {
+        queued.splice(i, 1);
+        moved = true;
+      }
+    }
+    if (moved) publishQueued();
   };
   /** Nothing is held once the run is over: the CLI has answered its inbox or
    *  died with it, the same rule `clearQueued` states for the optimistic half. */
@@ -2018,6 +2044,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
         publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
+        noteTaken(poll.inbox_taken);
         // THE RUN'S BACKGROUND TASKS (SPEC T-5) — sticky per run, see `publishTasks`.
         // …BUT NOT OVER A JOB ANOTHER HOST STILL HOLDS (Akshil, 2026-10-19):
         // a follow-up can open a turn on a NEWER host of this session (the
@@ -3574,6 +3601,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // at all — and `live_run: ""` publishes the empty list, because nothing is
     // held when nothing is running.
     if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);
+    noteTaken(res.inbox_taken);
     // THE SESSION'S LAST RUN'S TASKS (SPEC T-1/T-5): a reload shows the panel
     // it left. An empty answer about the run already drawn keeps the list —
     // the poll owns a live run's tasks.

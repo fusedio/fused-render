@@ -671,6 +671,10 @@ export interface PollResponse {
    * which is the same as an empty one: the optimistic bubbles are all there is.
    */
   inbox?: InboxMessage[];
+  /** The uuids of the stdin lines the CLI has TAKEN (a `command_lifecycle`
+   *  `started`/`completed` receipt or the `isReplay` echo), newest last. Absent
+   *  on an older agent.py. */
+  inbox_taken?: string[];
   /** True on a window that held an `init` or `commands_changed` row: the
    *  slash-command list may have moved, so the page re-fetches `commands`
    *  once (SPEC C-2). Absent on an older agent.py. */
@@ -930,6 +934,10 @@ export interface HistoryResponse {
    * nothing is held when nothing is running.
    */
   inbox?: InboxMessage[];
+  /** The uuids of the stdin lines the CLI has TAKEN (a `command_lifecycle`
+   *  `started`/`completed` receipt or the `isReplay` echo), newest last. Absent
+   *  on an older agent.py. */
+  inbox_taken?: string[];
   /**
    * HOW FULL THE MODEL'S CONTEXT WINDOW IS, off the LATEST USABLE assistant
    * record's `message.usage` (agent.py `_context_usage` / `_usage_row`).

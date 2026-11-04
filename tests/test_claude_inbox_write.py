@@ -742,3 +742,30 @@ def test_an_unusable_page_uuid_falls_back_to_a_server_one(agent, tmp_path):
     agent._write_inbox_entry(str(run_dir), "a", "../../etc/passwd")
     (uid,) = [r["uuid"] for r in agent._inbox_waiting(str(run_dir))]
     assert uid and "/" not in uid and uid != "../../etc/passwd"
+
+
+def test_the_poll_reports_the_uuids_the_cli_took(agent, tmp_path):
+    """`command_lifecycle` receipts and the `isReplay` echo, in the shape the
+    CLI really wrote them (trimmed from a live run), reach the page as
+    `inbox_taken` — keyed by uuid, `queued` alone is not taking."""
+    run_dir = _run_dir(tmp_path)
+    (a, ua), (b, ub) = _entries(agent, run_dir, "since worktree is not in main", "later")
+    rows = [
+        {"type": "command_lifecycle", "command_uuid": ua, "state": "queued"},
+    ]
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    assert agent._poll("run")["inbox_taken"] == []
+    rows = [
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "text", "text": "since worktree is not in main"}]},
+         "parent_tool_use_id": None, "uuid": ua, "isReplay": True},
+        {"type": "command_lifecycle", "command_uuid": ua, "state": "started"},
+    ]
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    polled = agent._poll("run")
+    assert ua in polled["inbox_taken"] and ub not in polled["inbox_taken"]
+    assert [r["id"] for r in polled["inbox"]] == [b]

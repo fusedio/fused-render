@@ -995,6 +995,55 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(controller.getState().queued).toEqual([]);
   });
 
+  // THE LIVE CASE (run 20261104-130202-870854): the CLI emitted command_lifecycle
+  // queued, then (after the next tool result) the isReplay user echo and
+  // command_lifecycle started for the page's uuid — 3 s after Enter — and the
+  // composer still said "1 follow-up is queued" 35 s later. The server reports
+  // those uuids as `inbox_taken`; the entry leaves on them, keyed by uuid.
+  test("a follow-up the CLI took leaves the queue at once, keyed by its uuid", async () => {
+    const UUID = "00ed356b-e46f-4447-8456-58ba48aa6450";
+    let controller!: ChatController;
+    const seen: { queued: string[]; taken: string[] | undefined }[] = [];
+    const snap = () => {
+      const st = controller.getState();
+      seen.push({ queued: st.queued, taken: st.taken });
+    };
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("since worktree is not in main", { clientId: UUID });
+          snap();
+          return poll({ segments: [text("working")] });
+        }
+        if (n === 1) {
+          // `command_lifecycle queued` only: not taken yet.
+          snap();
+          return poll({ segments: [text("working")] });
+        }
+        if (n === 2) {
+          // The replay echo + `started` landed.
+          return poll({ segments: [text("working")], inbox_taken: [UUID] } as never);
+        }
+        snap();
+        return poll({ done: true, segments: [text("working")], inbox_taken: [UUID] } as never);
+      },
+    });
+    controller = made.controller;
+    // The run ends on the poll after the snapshot, so the retirement cannot be
+    // the run-end clear.
+    await controller.sendMessage("go");
+    expect(seen.length).toBe(3);
+    expect(seen[0].queued).toEqual(["since worktree is not in main"]);
+    expect(seen[1].queued).toEqual(["since worktree is not in main"]);
+    // Snapshotted while the run is still live (poll 3, before it answers done).
+    expect(seen[2].queued).toEqual([]);
+    expect(seen[2].taken).toContain(UUID);
+    // The user's bubble is still drawn (it is the transcript's own row now).
+    expect(users(controller).some((u) => u.text === "since worktree is not in main")).toBe(true);
+  });
+
   test("two follow-ups are both counted, and identical text does not collapse", async () => {
     let controller!: ChatController;
     let mid: string[] = [];
