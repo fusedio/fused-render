@@ -3860,7 +3860,7 @@ function ChatBody(props: ChatBodyProps) {
       props.onBreakout({
         sessionId: sid,
         file,
-        context: { ...context, ...(breakoutTitle.current ? { title: breakoutTitle.current } : {}) },
+        context,
         forkKey: [...keys].sort().join("|"),
       });
     },
@@ -3871,7 +3871,7 @@ function ChatBody(props: ChatBodyProps) {
   const breakoutSelRef = useRef(breakoutSel);
   breakoutSelRef.current = breakoutSel;
   /** "Breakout from here" (Transcript `onBreakout`). A shift-click toggles the
-   *  turn's exchange (it and its pair) in the selection and opens nothing; a
+   *  turn's whole exchange (the prompt and every answer to it) in the selection and opens nothing; a
    *  plain click opens a breakout from the selection plus that exchange, then
    *  clears the selection. */
   const onBreakoutTurn = useCallback(

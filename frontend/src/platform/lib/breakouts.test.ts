@@ -220,12 +220,15 @@ describe("exchangeKeys", () => {
     { role: "assistant", key: "a2", text: "r2" },
     { role: "assistant", key: "a3", text: "r3" },
   ] as const;
-  test("a user turn pairs with the answer, an assistant turn with its prompt", () => {
+  test("any turn of an exchange selects the prompt and every answer to it", () => {
     expect(exchangeKeys(turns, "u1")).toEqual(["u1", "a1"]);
-    expect(exchangeKeys(turns, "a2")).toEqual(["u2", "a2"]);
+    for (const k of ["u2", "a2", "a3"]) expect(exchangeKeys(turns, k)).toEqual(["u2", "a2", "a3"]);
+  });
+  test("assistant turns before any prompt are an exchange of their own", () => {
+    const lead = [{ role: "assistant", key: "x1", text: "a" }, { role: "assistant", key: "x2", text: "b" }, ...turns] as const;
+    expect(exchangeKeys(lead, "x2")).toEqual(["x1", "x2"]);
   });
   test("an assistant turn with no prompt before it, or an unknown key, stands alone", () => {
-    expect(exchangeKeys(turns, "a3")).toEqual(["u2", "a3"]);
     expect(exchangeKeys([turns[1]!], "a1")).toEqual(["a1"]);
     expect(exchangeKeys(turns, "nope")).toEqual([]);
   });
@@ -273,6 +276,8 @@ describe("buildBreakoutContext", () => {
     const withTitle = buildBreakoutContext(turns, ["u2", "a2"], "Cache chat").block;
     expect(withTitle).toContain('"Cache chat"');
     expect(withTitle).toContain('"How does the cache work?"');
+    expect(buildBreakoutContext(turns, ["u2", "a2"], "Cache chat").title).toBe("Cache chat");
+    expect("title" in buildBreakoutContext(turns, ["u2", "a2"])).toBe(false);
     const bare = buildBreakoutContext(turns, ["u2", "a2"], undefined).block;
     expect(bare).not.toContain("titled");
     expect(bare).toContain('"How does the cache work?"');

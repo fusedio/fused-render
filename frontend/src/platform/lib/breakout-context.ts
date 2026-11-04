@@ -79,7 +79,7 @@ export function buildBreakoutContext(
   turns: readonly HandoffTurn[],
   keys: readonly string[],
   title?: string,
-): { block: string; count: number } {
+): { block: string; count: number; title?: string } {
   const picked = new Set(keys);
   const chosen = turns.filter(
     (t): t is HandoffTurn & { role: "user" | "assistant" } =>
@@ -111,22 +111,23 @@ export function buildBreakoutContext(
     messages: kept.map((t) => ({ role: t.role, text: cut(t.text!.trim(), MESSAGE_CHARS) })),
     files,
   });
-  return { block, count: kept.length };
+  return { block, count: kept.length, ...(title ? { title } : {}) };
 }
 
-/** The clicked turn plus its pair: the user prompt an assistant turn answered,
- *  or the first answer to a user prompt. Transcript order; `[]` for an unknown
- *  key. */
+/** The exchange the clicked turn belongs to: a user prompt plus every
+ *  assistant turn up to the next prompt. Transcript order; `[]` for an unknown
+ *  key. Assistant turns before any prompt form an exchange of their own. */
 export function exchangeKeys(turns: readonly HandoffTurn[], key: string): string[] {
   const i = turns.findIndex((t) => t.key === key);
   if (i < 0) return [];
-  const here = turns[i]!;
-  if (here.role === "user") {
-    const answer = turns.slice(i + 1).find((t) => t.role === "assistant" || t.role === "user");
-    return answer?.role === "assistant" ? [key, answer.key] : [key];
-  }
-  for (let j = i - 1; j >= 0; j--) {
-    if (turns[j]!.role === "user") return [turns[j]!.key, key];
-  }
-  return [key];
+  let start = i;
+  while (start > 0 && turns[start]!.role !== "user") start--;
+  if (turns[start]!.role !== "user") start = 0;
+  let end = start + 1;
+  while (end < turns.length && turns[end]!.role !== "user") end++;
+  const keys = turns
+    .slice(start, end)
+    .filter((t) => t.role === "user" || t.role === "assistant")
+    .map((t) => t.key);
+  return keys.includes(key) ? keys : [key];
 }
