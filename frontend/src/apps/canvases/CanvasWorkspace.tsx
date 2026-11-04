@@ -51,6 +51,15 @@
 //   parent → { type: "fused-embed-delete-rejected", reason }  the host did
 //            not delete (a name that is not this canvas's, or the delete
 //            failed): the frame is still on the canvas and toasts it.
+//   iframe → { type: "fused-embed-open-canvas", id, name }  a canvas the
+//            frame just created on the server (a zip upload) for the host to
+//            open: cloned, its sync started, and this window moved to it —
+//            the frame never moves itself to a canvas this host did not
+//            frame (its snapshots would land in THIS canvas's clone, and a
+//            delete of it be refused as "not this window's"). Only sent to a
+//            host whose token message said `caps: [..., "open"]`.
+//   parent → { type: "fused-embed-open-rejected", reason }  the host could
+//            not open it (clone or sync failed): the frame stays and toasts.
 //   iframe → { type: "fused-embed-open-side" } | { type: "fused-embed-close-side" }
 //            the workbench's right-edge chips (its own right pane never shows
 //            embedded): open or shut the right pane here. Accepted only from
@@ -188,6 +197,8 @@ import {
   applySnapshot,
   catalogPath,
   canvasProjectPath,
+  canvasWorkspacePath,
+  cloneCanvas,
   fixWithClaude,
   deleteCanvas,
   getDelta,
@@ -1377,10 +1388,11 @@ export default function CanvasWorkspace({
         {
           type: "fused-embed-auth-token",
           accessToken: access_token,
-          // What this host speaks beyond v3: the body channel and the AI
-          // gateway (see the module doc). The frame shows its editors only
-          // when it hears "body", and routes its inline AI here on "ai".
-          caps: ["body", "ai"],
+          // What this host speaks beyond v3: the body channel, the AI
+          // gateway and open-canvas (see the module doc). The frame shows
+          // its editors only when it hears "body", routes its inline AI here
+          // on "ai", and hands an uploaded canvas here on "open".
+          caps: ["body", "ai", "open"],
           ...(publicOrigin ? { publicOrigin } : {}),
         },
         origin, // exact origin — this message carries a credential
@@ -2239,6 +2251,37 @@ export default function CanvasWorkspace({
           })
           .catch((e) => {
             setError(`Delete canvas failed: ${(e as Error).message}`);
+            reject((e as Error).message);
+          });
+        return;
+      }
+      if (type === "fused-embed-open-canvas") {
+        // A canvas the frame created on the server (a zip upload; header):
+        // clone it, arm its sync and move this window to it. The editor
+        // frame's own window only. Another process owning the clone is no
+        // reason to stay here: the workspace shows who owns it (as the list
+        // page's own open does).
+        if (embedded) return;
+        if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+        const target = event.data?.name;
+        if (typeof target !== "string" || !target) return;
+        const reject = (reason: string) => {
+          const origin = baseOriginRef.current;
+          if (!origin) return;
+          frameRef.current?.contentWindow?.postMessage(
+            { type: "fused-embed-open-rejected", reason },
+            origin,
+          );
+        };
+        void cloneCanvas(env, target)
+          .then(() => startSync(env, target).catch((e) => {
+            if (!(e instanceof CanvasOwnedError)) throw e;
+          }))
+          .then(() => {
+            navigateUrl(canvasWorkspacePath(env, target));
+          })
+          .catch((e) => {
+            setError(`Open canvas failed: ${(e as Error).message}`);
             reject((e as Error).message);
           });
         return;
