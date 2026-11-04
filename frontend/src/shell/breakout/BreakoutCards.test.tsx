@@ -1,10 +1,11 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { useEffect } from "react";
 import { act, create } from "react-test-renderer";
 
-import { Card } from "./BreakoutCards";
+import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@platform/lib/agent-peeks";
+import { AgentPeekCard, Card } from "./BreakoutCards";
 
 // Only the chat is stubbed (via the Card `mount` prop); the card chrome and drag logic are the real ones.
 const NoChat = () => null;
@@ -118,4 +119,55 @@ test("a pointerdown on a button does not start a drag", () => {
   const s = m.cardDiv().props.style;
   expect(s.right).toBe(16);
   expect(s.left).toBeUndefined();
+});
+
+// ---- Agent peek ------------------------------------------------------------
+const peekRoots: ReturnType<typeof create>[] = [];
+afterEach(() => {
+  for (const r of peekRoots.splice(0)) act(() => r.unmount());
+  resetAgentPeeks();
+});
+
+const peekReq = { sessionId: "s1", file: "/w", toolUseId: "tu1", title: "Explore repo", subtitle: "Explore · opus · running" };
+const turnWith = (status: string, children?: unknown[]) =>
+  [{ role: "assistant", key: "a", text: "", segments: [{ kind: "tool", id: "tu1", name: "Agent", status, ...(children ? { children } : {}) }] }] as never;
+
+function mountPeek(seam: (segs: unknown[], live: boolean) => null) {
+  const id = openAgentPeek(peekReq);
+  const peek = getAgentPeeks().find((p) => p.id === id)!;
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<AgentPeekCard peek={peek} index={0} renderSegments={seam as never} />, { createNodeMock: () => el });
+  });
+  peekRoots.push(r);
+  return { r, peek };
+}
+const allText = (n: { children: unknown[] }): string =>
+  n.children.map((c) => (typeof c === "string" ? c : allText(c as never))).join("");
+
+test("the agent peek shows its title and subtitle, labelled Agent peek", () => {
+  const { r } = mountPeek(() => null);
+  expect(r.root.findByProps({ role: "dialog" }).props["aria-label"]).toBe("Agent peek");
+  expect(allText(r.root.findByProps({ className: "breakout-title" }) as never)).toBe("Explore repo");
+  expect(allText(r.root.findByProps({ className: "breakout-note" }) as never)).toBe("Explore · opus · running");
+  expect(allText(r.root.findByProps({ className: "agent-peek-empty" }) as never)).toBe("No transcript yet.");
+});
+
+test("the agent peek hands the segment's children to the renderer, live while running", () => {
+  const seen: { segs: unknown[]; live: boolean }[] = [];
+  const kids = [{ kind: "text", text: "inner" }];
+  const { r } = mountPeek((segs, live) => (seen.push({ segs, live }), null));
+  act(() => publishPeekTurns("s1", turnWith("running", kids)));
+  expect(seen[seen.length - 1]).toEqual({ segs: kids, live: true });
+  act(() => publishPeekTurns("s1", turnWith("ok", kids)));
+  expect(seen[seen.length - 1]).toEqual({ segs: kids, live: false });
+  expect(r.root.findAllByProps({ className: "agent-peek-empty" }).length).toBe(0);
+});
+
+test("closing removes the agent peek", () => {
+  const { r, peek } = mountPeek(() => null);
+  const close = r.root.findAllByType("button").find((b) => allText(b as never) === "Close")!;
+  act(() => close.props.onClick());
+  expect(getAgentPeeks().some((p) => p.id === peek.id)).toBe(false);
+  closeAgentPeek(peek.id);
 });

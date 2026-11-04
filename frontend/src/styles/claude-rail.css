@@ -885,3 +885,12 @@ button.claude-rail-peek-scope.is-node:focus-visible {
   opacity: 0.45;
   cursor: default;
 }
+
+/* The Agent peek card body (BreakoutCards `AgentPeekCard`): the subagent's
+   transcript, read-only, scrolling inside the card. */
+.agent-peek-body {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 8px 12px;
+}
