@@ -30,10 +30,12 @@ export function Card({
   // Seam for tests to stub the chat without a process-wide mock.module.
   mount?: ComponentType<ComponentProps<typeof ChatMount>>;
 }) {
-  const state = useRef<{ sessionId: string; turns: readonly Turn[] }>({ sessionId: "", turns: [] });
+  const state = useRef<{ sessionId: string; turns: readonly Turn[]; forkClamped?: boolean }>({ sessionId: "", turns: [] });
   const [canSend, setCanSend] = useState(false);
-  const onState = useCallback((s: { sessionId: string; turns: readonly Turn[] }) => {
+  const [clamped, setClamped] = useState(false);
+  const onState = useCallback((s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean }) => {
     state.current = s;
+    setClamped(!!s.forkClamped);
     // Only the breakout's own turns: the parent's restored history is not
     // something to send back to the parent.
     setCanSend(ownTurns(s.turns).some((t) => t.role === "assistant" && !!t.text.trim()));
@@ -136,7 +138,17 @@ export function Card({
         >
           <div className="claude-rail-peek-row">
             <span className="breakout-title">Breakout</span>
-            <span className="breakout-note">research only</span>
+            <span
+              className="breakout-note"
+              {...(clamped
+                ? {
+                    title:
+                      "The turn you chose is older than this chat's last compaction, so the breakout starts from the compaction summary instead.",
+                  }
+                : {})}
+            >
+              {clamped ? "research only · forked at the last compaction" : "research only"}
+            </span>
             <span className="breakout-spacer" />
             <button
               type="button"

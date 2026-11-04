@@ -294,6 +294,7 @@ function emptyState(file: string | null): ChatState {
     status: "idle",
     turns: [],
     fork: null,
+    forkClamped: false,
     permissions: [],
     appState: [],
     canvasShot: [],
@@ -2813,6 +2814,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           const named = (res as { session_id?: string }).session_id;
           if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
           if (logGen === gen) noteBackend((res as { backend?: string }).backend);
+          if ((res as { fork_clamped?: boolean }).fork_clamped && logGen === gen) emit({ forkClamped: true });
         }
       }
       started = true;
@@ -3628,6 +3630,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       adopting: true,
       turns: [],
       fork: null,
+      forkClamped: false,
       // The meter belongs to the conversation that is leaving. Cleared with the
       // turns rather than left to the fetch, so the window between the two does
       // not show the last chat's fill under an empty log.

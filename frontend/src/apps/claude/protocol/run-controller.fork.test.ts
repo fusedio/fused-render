@@ -142,6 +142,26 @@ describe("sendMessage with a fork", () => {
     expect(s.turns.some((t) => t.role === "user" && t.text === "second")).toBe(false);
   });
 
+  test("a start answering fork_clamped sets state.forkClamped", async () => {
+    const r = await opened({
+      start: () => ({ run_id: "r2", session_id: "new-sid", backend: "claude", fork_clamped: true }),
+      poll: () => donePoll("new-sid"),
+    });
+    r.controller.beginFork(keyOf(r, "second"));
+    await r.controller.sendMessage("edited second");
+    expect(r.controller.getState().forkClamped).toBe(true);
+  });
+
+  test("forkClamped stays falsy when the start does not carry the flag", async () => {
+    const r = await opened({
+      start: () => ({ run_id: "r2", session_id: "new-sid", backend: "claude" }),
+      poll: () => donePoll("new-sid"),
+    });
+    r.controller.beginFork(keyOf(r, "second"));
+    await r.controller.sendMessage("edited second");
+    expect(r.controller.getState().forkClamped).toBeFalsy();
+  });
+
   test("a refused start keeps the fork set", async () => {
     const r = await opened({
       start: () => ({ error: "message not found in this conversation" }),

@@ -1,6 +1,7 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { useEffect } from "react";
 import { act, create } from "react-test-renderer";
 
 import { Card } from "./BreakoutCards";
@@ -64,6 +65,24 @@ const ev = (x: number, y: number, target: unknown = {}) => ({
   pointerId: 1,
   target,
   currentTarget: { setPointerCapture() {}, releasePointerCapture() {} },
+});
+
+test("the note says when the fork was clamped to the last compaction", () => {
+  const Clamped = (props: { onBreakoutState?: (s: { sessionId: string; turns: []; forkClamped?: boolean }) => void }) => {
+    useEffect(() => {
+      props.onBreakoutState?.({ sessionId: "s", turns: [], forkClamped: true });
+    }, [props]);
+    return null;
+  };
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<Card card={card} index={0} mount={Clamped as never} />, { createNodeMock: () => el });
+  });
+  const note = r.root.findByProps({ className: "breakout-note" });
+  expect(note.children.join("")).toContain("forked at the last compaction");
+  expect(note.props.title).toContain("last compaction");
+  const plain = mount().r.root.findByProps({ className: "breakout-note" });
+  expect(plain.children.join("")).toBe("research only");
 });
 
 test("dragging the head switches the card from right/bottom to left/top", () => {
