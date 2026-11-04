@@ -147,3 +147,6 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 - Clamp: `_fork_point` now returns `(point, clamped)`; a prompt before the last compaction row yields `(summary_row_uuid, True)`. `_start` records `meta["fork_clamped"]` and answers `fork_clamped: true` (only when clamped).
 - Flag path: `fork_clamped` in the start response -> `state.forkClamped` (run-controller, set once, never cleared) -> `onBreakoutState` payload -> card note "research only · forked at the last compaction" with an explanatory title.
 - Boundary: a prompt AT the compaction summary row itself clamps to that row (`<=`, not `<`); its own parentUuid is pre-compaction and unresolvable.
+
+### Fix round 8
+- Decision changed: every chat surface gets the Breakout button (composer + per-turn), user request 2026-11-04. `onBreakout={openBreakout}` now also on CanvasPage, TaskCards (2 mounts) and RailPeek, superseding the Task 4 note "Not on TaskCards/RailPeek". Still not wired in BreakoutCards (a breakout never nests).

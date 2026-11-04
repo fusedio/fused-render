@@ -83,6 +83,7 @@ import {
 import { CanvasWorkspace } from "@apps/canvases";
 import { CanvasGlyph } from "@apps/canvases/glyph";
 import { ChatMount } from "@apps/claude";
+import { openBreakout } from "@platform/lib/breakouts";
 import { ClaudeRail } from "./claude-rail/ClaudeRail";
 import { chatDoorOnApp, chatDoorOnCanvas, useAppPageClaudePane } from "./useAppPageClaudePane";
 
@@ -464,6 +465,7 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
           <div className="app-page-claude-chat">
             {dir ? (
               <ChatMount
+                onBreakout={openBreakout}
                 // Remounted on a ring's door (`openChatHere`): the session is
                 // read off the URL at boot.
                 key={claudeSeq}
