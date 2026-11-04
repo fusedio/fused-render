@@ -31,6 +31,12 @@ function textual(element) {
   return TEXT_LOGICAL.has(logical) || TEXT_CONVERTED.has(element.converted_type);
 }
 
+function displayable(child) {
+  return child.children.length
+    ? child.children.some(displayable)
+    : PRIMITIVE.has(child.element.type) || textual(child.element);
+}
+
 function describe(metadata, budget) {
   const top = parquetSchema(metadata).children;
   let geo = null;
@@ -46,9 +52,9 @@ function describe(metadata, budget) {
   if (encoding !== "WKB") return { problem: `geometry encoded as ${encoding || "unknown"}, not WKB` };
   if (!crsIsLonLat("crs" in column ? column.crs : logical.crs)) return { problem: "geometry is in a projected CRS" };
 
-  const columns = top
-    .filter(child => !child.children.length && child !== geometry)
-    .filter(child => PRIMITIVE.has(child.element.type) || textual(child.element))
+  const attributes = top.filter(child => child !== geometry && displayable(child));
+  const columns = attributes
+    .filter(child => !child.children.length)
     .map(child => child.element.name);
 
   let paths = null;
@@ -107,7 +113,7 @@ function describe(metadata, budget) {
   }
   return {
     geometryName, fields, rowGroups, extent,
-    extraFields: columns.filter(name => !fields.includes(name)),
+    extraFields: attributes.map(child => child.element.name).filter(name => !fields.includes(name)),
     geometryTypes: Array.isArray(column.geometry_types) ? column.geometry_types : [],
     rows: Number(metadata.num_rows),
   };
