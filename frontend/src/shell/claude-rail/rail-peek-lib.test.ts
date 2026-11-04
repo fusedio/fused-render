@@ -18,7 +18,11 @@ import {
   PEEK_WIDTH,
   PeekIntent,
   STAR_MARK_MS,
+  FAV_MARK_MS,
+  bottomClear,
   dragResize,
+  favOpenMark,
+  favOpenStep,
   keepAlive,
   openFavouriteFlow,
   peekPlacement,
@@ -155,6 +159,94 @@ describe("dragResize", () => {
     expect(dragResize("tl", start, -5000, 0, narrow).left).toBe(narrow.left + PEEK_INSET);
     const bl = dragResize("bl", start, 0, 5000, ROW);
     expect(bl.top + bl.height).toBe(ROW.top + ROW.height - PEEK_INSET);
+  });
+});
+
+describe("dragResize, the edges", () => {
+  const start = { left: 924, top: 200, width: 420, height: 500 };
+  const right = start.left + start.width;
+  const bottom = start.top + start.height;
+  it("left: the width alone — grows left, shrinks right, the right edge and the height fixed", () => {
+    expect(dragResize("l", start, -100, 77, ROW)).toEqual({ left: 824, top: 200, width: 520, height: 500 });
+    expect(dragResize("l", start, 40, -77, ROW)).toEqual({ left: 964, top: 200, width: 380, height: 500 });
+  });
+  it("left: clamps at the minimum, the reading column and the row's inset", () => {
+    expect(dragResize("l", start, 5000, 0, ROW).width).toBe(PEEK_MIN_WIDTH);
+    expect(dragResize("l", start, -5000, 0, ROW)).toEqual({ left: right - PEEK_MAX_WIDTH, top: 200, width: PEEK_MAX_WIDTH, height: 500 });
+    const narrow = { left: 900, top: 40, width: 500, height: 900 };
+    expect(dragResize("l", start, -5000, 0, narrow).left).toBe(narrow.left + PEEK_INSET);
+  });
+  it("top: the height alone, growing up — the bottom, the left and the width fixed", () => {
+    expect(dragResize("t", start, -90, -60, ROW)).toEqual({ left: 924, top: 140, width: 420, height: 560 });
+    expect(dragResize("t", start, 90, 60, ROW)).toEqual({ left: 924, top: 260, width: 420, height: 440 });
+  });
+  it("top: clamps at the row's top and at the minimum height", () => {
+    const up = dragResize("t", start, 0, -5000, ROW);
+    expect(up.top).toBe(ROW.top + PEEK_INSET);
+    expect(up.top + up.height).toBe(bottom);
+    const down = dragResize("t", start, 0, 5000, ROW);
+    expect(down.height).toBe(PEEK_MIN_HEIGHT);
+    expect(down.top + down.height).toBe(bottom);
+  });
+  it("bottom: the height alone, growing down — the top, the left and the width fixed", () => {
+    expect(dragResize("b", start, -90, 60, ROW)).toEqual({ left: 924, top: 200, width: 420, height: 560 });
+    expect(dragResize("b", start, 90, -60, ROW)).toEqual({ left: 924, top: 200, width: 420, height: 440 });
+  });
+  it("bottom: clamps at the row's bottom, at the minimum, and at a floor short of it", () => {
+    const down = dragResize("b", start, 0, 5000, ROW);
+    expect(down.top + down.height).toBe(ROW.top + ROW.height - PEEK_INSET);
+    expect(dragResize("b", start, 0, -5000, ROW).height).toBe(PEEK_MIN_HEIGHT);
+    // The favourite's card below: the floor is its top less the gap.
+    const floored = dragResize("b", start, 0, 5000, ROW, 760);
+    expect(floored).toEqual({ left: 924, top: 200, width: 420, height: 560 });
+    // …and the bottom-left corner honours it too.
+    expect(dragResize("bl", start, -50, 5000, ROW, 760).height).toBe(560);
+    // A floor past the row's own changes nothing.
+    expect(dragResize("b", start, 0, 5000, ROW, 99_999)).toEqual(down);
+  });
+});
+
+describe("bottomClear", () => {
+  const fav = { left: 964, top: 600, width: 380, height: 332 };
+  it("a card standing above the favourite's stops where placeClear would end it: a gap and the inset over its top", () => {
+    expect(bottomClear({ left: 924, top: 100, width: 420, height: 400 }, fav)).toBe(600 - PEEK_GAP - PEEK_INSET);
+    // …the same bottom placeClear gives a card above the favourite's.
+    const placed = placeClear(ring(48), RAIL, { left: 0, top: 0, width: 1400, height: 900 }, fav, PEEK_MAX_HEIGHT)!;
+    expect(placed.top + placed.height).toBeLessThanOrEqual(600 - PEEK_GAP - PEEK_INSET);
+  });
+  it("none beside it, over it, or with no favourite's card", () => {
+    expect(bottomClear({ left: 400, top: 100, width: 420, height: 800 }, fav)).toBeUndefined();
+    expect(bottomClear({ left: 924, top: 100, width: 420, height: 800 }, fav)).toBeUndefined();
+    expect(bottomClear({ left: 924, top: 100, width: 420, height: 400 }, null)).toBeUndefined();
+  });
+});
+
+describe("favOpenStep", () => {
+  const T0 = 1_000_000;
+  it("holds the pressed key over a pulse still saying what it said at the press", () => {
+    const m = favOpenMark("B", null, null, T0);
+    expect(favOpenStep(m, null, true, T0 + 100)).toBe(m);
+  });
+  it("lets go once the pulse agrees", () => {
+    const m = favOpenMark("B", "A", null, T0);
+    expect(favOpenStep(m, "B", true, T0 + 100)).toBeNull();
+  });
+  it("follows the pulse when it names a key the mark is not waiting out (another window won)", () => {
+    const m = favOpenMark("B", null, null, T0);
+    expect(favOpenStep(m, "C", true, T0 + 100)).toBeNull();
+  });
+  it("a quick A-then-B waits out a pulse still saying A", () => {
+    const a = favOpenMark("A", null, null, T0);
+    const b = favOpenMark("B", null, a, T0 + 50);
+    expect(b.stale).toEqual([null, "A"]);
+    expect(favOpenStep(b, "A", true, T0 + 200)).toBe(b);
+    expect(favOpenStep(b, "B", true, T0 + 300)).toBeNull();
+  });
+  it("lets go when the key is no longer a live favourite, or past FAV_MARK_MS", () => {
+    const m = favOpenMark("B", null, null, T0);
+    expect(favOpenStep(m, null, false, T0 + 100)).toBeNull();
+    expect(favOpenStep(m, null, true, T0 + FAV_MARK_MS - 1)).toBe(m);
+    expect(favOpenStep(m, null, true, T0 + FAV_MARK_MS)).toBeNull();
   });
 });
 

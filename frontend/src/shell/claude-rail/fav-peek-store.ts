@@ -28,8 +28,8 @@
 // marks the store dirty; a microtask later the live state is compared with
 // the last one the readers saw, and they hear of it only if something is
 // actually different.
-import { useSyncExternalStore } from "react";
-import type { Box } from "./rail-peek-lib";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { FAV_MARK_MS, favOpenMark, favOpenStep, type Box, type FavOpenMark } from "./rail-peek-lib";
 
 export interface FavPeekState {
   rail: HTMLElement | null;
@@ -141,12 +141,15 @@ export function takeFavFocus(key: string): boolean {
 }
 
 /** WHERE THE KEYBOARD GOES WHEN A CARD SHUTS UNDER IT — never the body: the
- *  ring for `key` in the rail's favourites (`"foot"`, the favourite's card)
- *  or its list (`"list"`, the rail's own card, and an unstarred favourite,
- *  whose foot ring is about to go), else the rail's first ring that is not
- *  `key`'s foot ring when that is going (`unstarred`), else the rail itself
- *  (made focusable for the purpose). Rings carry their key (ClaudeRail
- *  `data-task-key`). */
+ *  ring for `key`, looked for first in the section `section` names — the
+ *  rail's favourites (`"foot"`: the favourite's card, and the rail's own card
+ *  letting go of a chat that was just starred or opened as a favourite,
+ *  whose ring now lives there) or its list (`"list"`: an unstarred
+ *  favourite, whose foot ring is about to go) — then in the other one (the
+ *  pulse may not have moved the ring yet); else the rail's first ring that
+ *  is not `key`'s foot ring when that is going (`unstarred`); else the rail
+ *  itself (made focusable for the purpose). Rings carry their key
+ *  (ClaudeRail `data-task-key`). */
 export function focusRail(
   rail: HTMLElement | null,
   key: string | null,
@@ -154,14 +157,16 @@ export function focusRail(
   unstarred = false,
 ): void {
   if (!rail || rail.isConnected === false) return;
-  const scope = section === "foot" ? ".claude-rail-favs" : ".claude-rail-chats";
+  const scopes = section === "foot" ? [".claude-rail-favs", ".claude-rail-chats"] : [".claude-rail-chats", ".claude-rail-favs"];
   const goingFoot = (el: HTMLElement) => unstarred && el.dataset.taskKey === key && !!el.closest(".claude-rail-favs");
   let target: HTMLElement | null = null;
   if (key) {
-    for (const el of rail.querySelectorAll<HTMLElement>(`${scope} .claude-rail-chat[data-task-key]`)) {
-      if (el.dataset.taskKey === key && !goingFoot(el)) {
-        target = el;
-        break;
+    search: for (const scope of scopes) {
+      for (const el of rail.querySelectorAll<HTMLElement>(`${scope} .claude-rail-chat[data-task-key]`)) {
+        if (el.dataset.taskKey === key && !goingFoot(el)) {
+          target = el;
+          break search;
+        }
       }
     }
   }
@@ -203,4 +208,42 @@ export function resetFavPeekStoreForTests(): void {
   dirty = false;
   rails = [];
   pendingAt = 0;
+}
+
+/** THE FAVOURITE OPENED AHEAD OF THE PULSE (rail-peek-lib `FavOpenMark`):
+ *  the key a press (ClaudeRail's ring) or an "open" answer (FavouritePeek's
+ *  card) put up, over the pulse's open favourite `pulseOpen` until the pulse
+ *  agrees or moves elsewhere (`favOpenStep`). `live(key)`: the key is still
+ *  a favourite the pulse lists. `key` is the mark's key, or null with none
+ *  standing; `mark` sets one, `drop` takes it down (only if it is still on
+ *  `key`, when given — a refused write must not drop a later press's). */
+export function useFavOpenMark(
+  pulseOpen: string | null,
+  live: (key: string) => boolean,
+): { key: string | null; mark: (key: string) => void; drop: (key?: string) => void } {
+  const [mark, setMark] = useState<FavOpenMark | null>(null);
+  const pulseRef = useRef(pulseOpen);
+  pulseRef.current = pulseOpen;
+  const alive = mark ? live(mark.key) : false;
+  useEffect(() => {
+    if (!mark) return;
+    const next = favOpenStep(mark, pulseOpen, alive, Date.now());
+    if (next !== mark) {
+      setMark(next);
+      return;
+    }
+    // Waiting out a stale pulse: past FAV_MARK_MS the pulse wins anyway.
+    const id = window.setTimeout(
+      () => setMark((m) => (m === mark ? null : m)),
+      Math.max(0, mark.at + FAV_MARK_MS - Date.now()),
+    );
+    return () => window.clearTimeout(id);
+  }, [mark, pulseOpen, alive]);
+  const set = useCallback((key: string) => {
+    setMark((prev) => favOpenMark(key, pulseRef.current, prev, Date.now()));
+  }, []);
+  const drop = useCallback((key?: string) => {
+    setMark((m) => (m && (key === undefined || m.key === key) ? null : m));
+  }, []);
+  return { key: mark && alive ? mark.key : null, mark: set, drop };
 }

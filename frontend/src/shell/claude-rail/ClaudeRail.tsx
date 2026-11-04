@@ -199,7 +199,7 @@ import {
 import { CanvasGlyph } from "@apps/canvases/glyph";
 import { PeekIntent, keepAlive, openFavouriteFlow, railOnStarred, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
-import { focusRail, noteFavOpened, registerRail, requestFavFocus, useFavPeekState } from "./fav-peek-store";
+import { focusRail, noteFavOpened, registerRail, requestFavFocus, useFavOpenMark, useFavPeekState } from "./fav-peek-store";
 import { FAV_PEEK_ID } from "./FavouritePeek";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
@@ -640,6 +640,19 @@ export function ClaudeRail({
     () => (favsOn ? (rows.find((t) => t.starred_open && t.status !== "archived")?.key ?? null) : null),
     [favsOn, rows],
   );
+  // THE PRESSED RING SAYS OPEN AT ONCE (owner, 2026-11-04: the press "looks
+  // like nothing happened" with the pulse seconds behind on a loaded Mac): a
+  // favourite ring's press marks it open here, ahead of the write's answer
+  // and the pulse; a refused write takes the mark down, and the pulse takes
+  // over once it agrees (fav-peek-store `useFavOpenMark`). Only the ring's
+  // own `is-open` / `aria-expanded` read it — the chat's hand-over (`letGo`)
+  // waits for the server.
+  const liveFav = useCallback(
+    (key: string) => rows.some((t) => t.key === key && t.starred && t.status !== "archived"),
+    [rows],
+  );
+  const favPress = useFavOpenMark(openFavKey, liveFav);
+  const shownFavKey = favsOn ? (favPress.key ?? openFavKey) : null;
   // THE FAVOURITE'S CARD IS THE SHELL'S (FavouritePeek, mounted once above
   // every page): this rail only registers itself (fav-peek-store) so that
   // card can stand at its foot, and keeps its own card clear of that one
@@ -673,7 +686,9 @@ export function ClaudeRail({
         setHeld(false);
         // Muted for the ring's focus when the keyboard goes back to it.
         intent.dismiss(had);
-        if (had) focusRail(railRef.current, key, "list");
+        // The chat is a favourite now (starred, or its card opened): its
+        // ring is in the favourites section, not the list (Bugbot on #2100).
+        if (had) focusRail(railRef.current, key, "foot");
       }
       setKept((k) => (k.includes(key) ? k.filter((x) => x !== key) : k));
     },
@@ -722,6 +737,7 @@ export function ClaudeRail({
           pokeTasks();
         },
         fail: (message) => {
+          favPress.drop(t.key);
           if (keyboard) requestFavFocus(null);
           notify({ title: message, tone: "error" });
         },
@@ -734,7 +750,7 @@ export function ClaudeRail({
             : openChatRef.current(href),
       });
     },
-    [letGo],
+    [letGo, favPress.drop],
   );
   // JSON, not a joined string: a key is free to contain any delimiter.
   const seatKeys = JSON.stringify(seats.map((s) => s.pulse.key));
@@ -1206,7 +1222,7 @@ export function ClaudeRail({
                     (peeked && pinned ? " is-pinned" : "") +
                     (peeked && held && !favsOn ? " is-held" : "") +
                     (foot ? " is-fav" : "") +
-                    (foot && openFavKey === t.key ? " is-open" : "") +
+                    (foot && shownFavKey === t.key ? " is-open" : "") +
                     (lastMark !== null && lastChatId(t) === lastMark ? " is-last" : "")
                   }
                   aria-label={`${label} — ${words}`}
@@ -1233,8 +1249,8 @@ export function ClaudeRail({
                           // A favourite's ring opens the shell's card
                           // (FavouritePeek), a dialog of its own.
                           "aria-haspopup": "dialog" as const,
-                          "aria-expanded": openFavKey === t.key,
-                          ...(openFavKey === t.key ? { "aria-controls": FAV_PEEK_ID } : {}),
+                          "aria-expanded": shownFavKey === t.key,
+                          ...(shownFavKey === t.key ? { "aria-controls": FAV_PEEK_ID } : {}),
                         }
                       : {})}
                   {...(peekOn && !favRing
@@ -1265,6 +1281,7 @@ export function ClaudeRail({
                       // keyboard once it stands (fav-peek-store); a pointer
                       // press takes nothing.
                       if (e.detail === 0) requestFavFocus(t.key);
+                      favPress.mark(t.key);
                       openFavourite(t, href, e.detail === 0);
                       return;
                     }

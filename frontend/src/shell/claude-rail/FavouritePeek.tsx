@@ -28,6 +28,14 @@
 // nothing) hides it until the window or the rail changes shape, or the next
 // rail stands.
 //
+// A RING'S PRESS SHOWS AT ONCE (owner, 2026-11-04: "click on the pin
+// doesn't open it and switch it" — on a loaded Mac the pulse carrying
+// `starred_open` is seconds behind): the server's "open" answer
+// (fav-peek-store `onFavOpened`) puts the card up on that key, or switches
+// it there, without waiting for the pulse; the pulse takes over once it
+// agrees, or once it names a favourite another window opened since
+// (`useFavOpenMark`).
+//
 // THE × HIDES AT ONCE (`closing`): the record's "closed" is a write and a
 // pulse away; the card goes on the press and comes back only if the write
 // is refused. An UNSTAR here shuts the card the same way and writes nothing
@@ -51,18 +59,20 @@ import { navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import { pokeTasks, readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
 import { RailPeek } from "./RailPeek";
-import { focusRail, onFavOpened, publishFavBox, takeFavFocus, useFavPeekState } from "./fav-peek-store";
+import { focusRail, onFavOpened, publishFavBox, takeFavFocus, useFavOpenMark, useFavPeekState } from "./fav-peek-store";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import type { RailPlace, RailRow } from "./claude-rail-lib";
-import { errorWords, type PeekWish } from "./rail-peek-lib";
+import { FAV_HEIGHT, FAV_WIDTH, errorWords, type PeekWish } from "./rail-peek-lib";
 
 export const FAV_PEEK_ID = "claude-rail-fav-peek";
 
 /** A bit under the list card's 420×640 (owner: "by default the size of
- *  that preview could be a bit smaller"); the bottom on the rail's. */
-const FAV_SIZE: PeekWish = { width: 380, maxHeight: 520, align: "bottom" };
+ *  that preview could be a bit smaller"); the bottom on the rail's. The
+ *  reader's drag from its top and left edges replaces the width and height
+ *  (RailPeek `resizeKey`, ui-layout `canvasRailFav`). */
+const FAV_SIZE: PeekWish = { width: FAV_WIDTH, maxHeight: FAV_HEIGHT, align: "bottom" };
 
 /** The place the card says the chat is on: the row's own canvas, else its
  *  project folder — this card belongs to no page. */
@@ -117,7 +127,20 @@ export function FavouritePeek() {
       ro?.disconnect();
     };
   }, [rail]);
-  const open = useMemo(() => rows.find((t) => t.starred_open && t.status !== "archived") ?? null, [rows]);
+  // THE PRESSED FAVOURITE SHOWS AT ONCE (header): the server's "open"
+  // answer to a ring press (`onFavOpened`) stands over the pulse's
+  // `starred_open` until the pulse agrees, or says another window moved it
+  // since (fav-peek-store `useFavOpenMark`). A refused write never marks.
+  const pulseOpen = useMemo(() => rows.find((t) => t.starred_open && t.status !== "archived") ?? null, [rows]);
+  const liveFav = useCallback(
+    (key: string) => rows.some((t) => t.key === key && t.starred && t.status !== "archived"),
+    [rows],
+  );
+  const opened = useFavOpenMark(pulseOpen?.key ?? null, liveFav);
+  const open = useMemo(
+    () => (opened.key ? (rows.find((t) => t.key === opened.key) ?? pulseOpen) : pulseOpen),
+    [opened.key, rows, pulseOpen],
+  );
   const seat = useMemo((): RailRow | null => {
     if (!open) return null;
     return { pulse: open, row: listing?.find((t) => t.key === open.key) ?? null };
@@ -131,7 +154,15 @@ export function FavouritePeek() {
   }, [closing, openKey]);
   // …or once an "open" on that key is answered open: × then the same ring
   // again before the pulse ever said closed leaves `openKey` unchanged.
-  useEffect(() => onFavOpened((key) => setClosing((c) => (c === key ? null : c))), []);
+  const markOpened = opened.mark;
+  useEffect(
+    () =>
+      onFavOpened((key) => {
+        markOpened(key);
+        setClosing((c) => (c === key ? null : c));
+      }),
+    [markOpened],
+  );
   const shown = on && seat && rail && !noRoom && closing !== seat.pulse.key ? seat : null;
   // The pane (or the Open door) on this very session (header): no chat here.
   useUrlVersion();
@@ -239,6 +270,7 @@ export function FavouritePeek() {
       railEl={rail}
       place={place}
       size={FAV_SIZE}
+      resizeKey="canvasRailFav"
       onBox={publishFavBox}
       onReload={refreshListing}
       onPointerEnter={noop}

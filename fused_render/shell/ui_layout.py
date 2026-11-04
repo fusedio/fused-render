@@ -41,6 +41,8 @@ MAX_RECENT_PATHS = 8
 # The canvas rail's pinned preview card, as dragged (RailPeek's corner grips).
 RAIL_PEEK_MIN = 120
 RAIL_PEEK_MAX = 10000
+# The rail cards whose dragged size the document keeps.
+RAIL_CARD_KEYS = ("canvasRailPeek", "canvasRailFav")
 _IDENT_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 
@@ -134,15 +136,19 @@ def _clean(doc) -> dict:
     if "rememberLastFolder" in doc:
         _check(isinstance(doc["rememberLastFolder"], bool))
         out["rememberLastFolder"] = doc["rememberLastFolder"]
-    if "canvasRailPeek" in doc:
-        rp = doc["canvasRailPeek"]
+    # The rail's pinned card (`canvasRailPeek`) and the favourite's card
+    # (`canvasRailFav`): the size the reader dragged each to, same shape.
+    for card in RAIL_CARD_KEYS:
+        if card not in doc:
+            continue
+        rp = doc[card]
         _check(isinstance(rp, dict))
         size: dict = {}
         for key in ("width", "height"):
             v = rp.get(key)
             _check(_is_int(v) and RAIL_PEEK_MIN <= v <= RAIL_PEEK_MAX)
             size[key] = v
-        out["canvasRailPeek"] = size
+        out[card] = size
     return out
 
 
@@ -173,11 +179,13 @@ def put_ui_layout(layout=Body(default=None), x_fused: str | None = Header(defaul
     except _Invalid:
         return JSONResponse({"error": "invalid layout"}, status_code=400)
     # A document from an OLDER bundle (another window, the desktop app before
-    # its relaunch) says nothing of `canvasRailPeek`; the whole-document PUT
-    # must not drop the size a newer one saved (CodeRabbit on #2062).
-    if "canvasRailPeek" not in clean:
+    # its relaunch) says nothing of `canvasRailPeek` / `canvasRailFav`; the whole-document
+    # PUT must not drop the size a newer one saved (CodeRabbit on #2062).
+    missing = [card for card in RAIL_CARD_KEYS if card not in clean]
+    if missing:
         stored = read_layout()
-        if stored and "canvasRailPeek" in stored:
-            clean["canvasRailPeek"] = stored["canvasRailPeek"]
+        for card in missing:
+            if stored and card in stored:
+                clean[card] = stored[card]
     storage.write_json(_path(), clean)
     return {"ok": True}

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import {
   PENDING_FOCUS_MS,
   favPeekState,
+  focusRail,
   noteFavOpened,
   onFavOpened,
   registerRail,
@@ -102,5 +103,65 @@ describe("an open answered open", () => {
     off();
     noteFavOpened("k2");
     expect(heard).toEqual(["k1"]);
+  });
+});
+
+describe("focusRail", () => {
+  // A rail as focusRail reads it: rings by section, each with its key.
+  type Ring = { section: "favs" | "chats"; key: string };
+  const fakeRail = (rings: Ring[]) => {
+    const focused: string[] = [];
+    const els = rings.map((r) => ({
+      dataset: { taskKey: r.key },
+      closest: (sel: string) => (sel === `.claude-rail-${r.section}` ? {} : null),
+      focus: () => focused.push(`${r.section}:${r.key}`),
+      section: r.section,
+    }));
+    const el = {
+      isConnected: true,
+      querySelectorAll: (sel: string) => {
+        const m = /^\.claude-rail-(favs|chats) /.exec(sel);
+        return m ? els.filter((e) => e.section === m[1]) : els;
+      },
+      hasAttribute: () => true,
+      setAttribute: () => {},
+      focus: () => focused.push("rail"),
+    } as unknown as HTMLElement;
+    return { el, focused };
+  };
+  it("a chat that just became a favourite: its ring in the favourites section, not the list's first", () => {
+    const { el, focused } = fakeRail([
+      { section: "chats", key: "x" },
+      { section: "favs", key: "k" },
+    ]);
+    focusRail(el, "k", "foot");
+    expect(focused).toEqual(["favs:k"]);
+  });
+  it("the pulse has not moved the ring yet: the list's ring for the key", () => {
+    const { el, focused } = fakeRail([
+      { section: "chats", key: "x" },
+      { section: "chats", key: "k" },
+    ]);
+    focusRail(el, "k", "foot");
+    expect(focused).toEqual(["chats:k"]);
+  });
+  it("the list first when asked, and an unstarred foot ring is skipped for the first other ring", () => {
+    const a = fakeRail([
+      { section: "favs", key: "k" },
+      { section: "chats", key: "k" },
+    ]);
+    focusRail(a.el, "k", "list");
+    expect(a.focused).toEqual(["chats:k"]);
+    const b = fakeRail([
+      { section: "favs", key: "k" },
+      { section: "chats", key: "y" },
+    ]);
+    focusRail(b.el, "k", "list", true);
+    expect(b.focused).toEqual(["chats:y"]);
+  });
+  it("no ring at all: the rail itself", () => {
+    const { el, focused } = fakeRail([]);
+    focusRail(el, "k", "foot");
+    expect(focused).toEqual(["rail"]);
   });
 });

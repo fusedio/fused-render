@@ -314,7 +314,7 @@
   -webkit-user-select: none;
 }
 /* THE GRIPS (RailPeek, owner 2026-11-02): the pinned card's two LEFT
-   corners — the right edge stands against the rail — as 12px hit areas
+   corners (and its edges, below) — the right edge stands against the rail — as 12px hit areas
    (8px of them over the card's rounded corner, clear of the pin seat), with
    the corner's resize cursor. Quiet until the pointer rests on the corner
    (owner, 2026-11-02: "show it when we hover over the corner … when we drag
@@ -367,6 +367,58 @@
 }
 .claude-rail-peek-grip.is-active::after {
   color: var(--accent);
+}
+/* THE EDGE GRIPS (owner, 2026-11-04: "resize … from edges as well: left,
+   top and bottom"): 6px hit strips centred on the card's border, short of
+   the corners (whose 12px grips sit over the strips' ends and win). The
+   same quiet trace as the corners — a 2px line along the edge, the ink's
+   tone on hover, the accent while the drag is on. */
+.claude-rail-peek-grip.is-l,
+.claude-rail-peek-grip.is-t,
+.claude-rail-peek-grip.is-b {
+  z-index: 2;
+}
+.claude-rail-peek-grip.is-l {
+  left: -3px;
+  top: 8px;
+  bottom: 8px;
+  width: 6px;
+  height: auto;
+  cursor: ew-resize;
+}
+.claude-rail-peek-grip.is-t,
+.claude-rail-peek-grip.is-b {
+  left: 8px;
+  right: 8px;
+  width: auto;
+  height: 6px;
+  cursor: ns-resize;
+}
+.claude-rail-peek-grip.is-t {
+  top: -3px;
+}
+.claude-rail-peek-grip.is-b {
+  bottom: -3px;
+}
+.claude-rail-peek-grip.is-l::after,
+.claude-rail-peek-grip.is-t::after,
+.claude-rail-peek-grip.is-b::after {
+  border: 0;
+  background: currentColor;
+  border-radius: 1px;
+}
+.claude-rail-peek-grip.is-l::after {
+  left: 2px;
+  top: 0;
+  width: 2px;
+  height: 100%;
+}
+.claude-rail-peek-grip.is-t::after,
+.claude-rail-peek-grip.is-b::after {
+  left: 0;
+  top: 2px;
+  width: 100%;
+  height: 2px;
 }
 .claude-rail-peek-card {
   flex: 1 1 auto;

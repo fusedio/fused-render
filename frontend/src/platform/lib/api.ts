@@ -2161,6 +2161,9 @@ export interface UiLayoutDoc {
   /** The size the reader dragged the canvas rail's PINNED preview card to
    *  (RailPeek's corner grips); a hover card ignores it. */
   canvasRailPeek?: { width: number; height: number };
+  /** …and the favourite's card (FavouritePeek), dragged from its top and
+   *  left edges; unset = its default 380×520. */
+  canvasRailFav?: { width: number; height: number };
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {

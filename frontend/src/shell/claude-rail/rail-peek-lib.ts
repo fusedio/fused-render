@@ -29,7 +29,8 @@
 //     rests on it is still hovered.
 //   - HOW BIG IT IS (`peekPlacement`, `dragResize`): 420×640 for a hover; a
 //     PINNED card takes the size the reader last dragged it to from its left
-//     corners (RailPeek, ui-layout `canvasRailPeek`), both clamped to the
+//     corners or its left, top and bottom edges (RailPeek, ui-layout
+//     `canvasRailPeek`; the favourite's card its own, `canvasRailFav`), both clamped to the
 //     row, the width also to the chat's reading column (`PEEK_MAX_WIDTH`).
 //     The drag itself moves the box as the pointer does; when it ends the
 //     card is placed again — top level with the ring — at its new size.
@@ -64,7 +65,7 @@ export const PEEK_WIDTH = 420;
 /** The card's height cap; shorter rows shrink it. */
 export const PEEK_MAX_HEIGHT = 640;
 /** A pinned card can be dragged no smaller than this (RailPeek's corner
- *  grips), and `peekPlacement` draws no card in a row with less room: the
+ *  and edge grips), and `peekPlacement` draws no card in a row with less room: the
  *  chat column's own floor is 340px (apps/claude/styles/chat.css `.c-chat`
  *  `min-width`, measured off legacy), under which the transcript and the
  *  composer stop shrinking and the card CLIPS them at its edge — the head's
@@ -80,6 +81,10 @@ export const PEEK_MIN_HEIGHT = 240;
  *  `.c-composer-chat`), so a card past 720 + its two 1px borders only adds
  *  gutters. The height has no such cap: the row's is the limit. */
 export const PEEK_MAX_WIDTH = 722;
+/** The favourite's card (FavouritePeek) until the reader drags it: a bit
+ *  under the list card's. */
+export const FAV_WIDTH = 380;
+export const FAV_HEIGHT = 520;
 /** …and for a seat with no conversation (a draft, a scheduled task): what it
  *  is, its words and its door need no transcript's worth of card. */
 export const PEEK_PLAIN_HEIGHT = 250;
@@ -155,31 +160,56 @@ export function placeClear(anchor: Box, rail: Box, row: Box, avoid: Box | null, 
   return peekPlacement(anchor, rail, row, wish);
 }
 
-/** The box a corner drag asks for: `corner` is which of the card's LEFT
- *  corners is held (the right edge stands against the rail), `start` the box
+/** Which grip a resize drag holds: one of the card's LEFT corners (`tl`,
+ *  `bl`), or one of its edges — the LEFT (`l`, the width alone), the TOP
+ *  (`t`, the height, growing up) or the BOTTOM (`b`, the height, growing
+ *  down). The right edge stands against the rail: no grip there. */
+export type ResizeEdge = "tl" | "bl" | "l" | "t" | "b";
+
+/** The box a resize drag asks for: `edge` is the grip held, `start` the box
  *  when the pointer went down, `dx`/`dy` how far it has moved since. The
- *  width and height are clamped to the minimums and to the row: a top-left
- *  drag keeps the bottom edge where it was, a bottom-left drag the top. */
-export function dragResize(corner: "tl" | "bl", start: Box, dx: number, dy: number, bounds: Box): Box {
+ *  width and height are clamped to the minimums and to the row: a drag that
+ *  holds the top (`tl`, `t`) keeps the bottom edge where it was, one that
+ *  holds the bottom (`bl`, `b`) the top, and one that holds no left (`t`,
+ *  `b`) the width. `maxBottom` (viewport y) is a floor the bottom may not
+ *  pass short of the row's own — the favourite's card's top, for the rail's
+ *  card standing above it (RailPeek `avoid`). */
+export function dragResize(edge: ResizeEdge, start: Box, dx: number, dy: number, bounds: Box, maxBottom?: number): Box {
   // The row wins over the minimums: a row with less room than PEEK_MIN_*
   // (peekPlacement accepts down to 120) must not be pushed past its inset.
   const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
   const right = start.left + start.width;
   const maxWidth = Math.min(PEEK_MAX_WIDTH, right - (bounds.left + PEEK_INSET));
-  const width = clamp(start.width - dx, PEEK_MIN_WIDTH, maxWidth);
+  const width = edge === "t" || edge === "b" ? start.width : clamp(start.width - dx, PEEK_MIN_WIDTH, maxWidth);
   const minTop = bounds.top + PEEK_INSET;
-  const maxBottom = bounds.top + bounds.height - PEEK_INSET;
+  const floor = Math.min(bounds.top + bounds.height - PEEK_INSET, maxBottom ?? Infinity);
   let top: number;
   let height: number;
-  if (corner === "tl") {
+  if (edge === "tl" || edge === "t") {
     const bottom = start.top + start.height;
     height = clamp(start.height - dy, PEEK_MIN_HEIGHT, bottom - minTop);
     top = bottom - height;
+  } else if (edge === "bl" || edge === "b") {
+    height = clamp(start.height + dy, PEEK_MIN_HEIGHT, floor - start.top);
+    top = start.top;
   } else {
-    height = clamp(start.height + dy, PEEK_MIN_HEIGHT, maxBottom - start.top);
+    height = start.height;
     top = start.top;
   }
   return { left: Math.round(right - width), top: Math.round(top), width, height };
+}
+
+/** The bottom the rail's card may be dragged down to with the favourite's
+ *  card up (`avoid`): where `placeClear` would let it end when it stands
+ *  above the favourite (its first choice — the two share the rail's column):
+ *  a gap and the inset over the favourite's top, so the release does not
+ *  pull it back up; none when it stands beside it or (the last resort) over
+ *  it. */
+export function bottomClear(box: Box, avoid: Box | null): number | undefined {
+  if (!avoid) return undefined;
+  const sideBySide = box.left >= avoid.left + avoid.width || box.left + box.width <= avoid.left;
+  if (sideBySide || box.top + box.height > avoid.top) return undefined;
+  return avoid.top - PEEK_GAP - PEEK_INSET;
 }
 
 export interface Point {
@@ -637,4 +667,51 @@ export async function openFavouriteFlow(
   deps.fail(message);
   deps.fallback();
   return false;
+}
+
+// ---- THE FAVOURITE'S OPEN, AHEAD OF THE PULSE ---------------------------------
+
+/** A FAVOURITE'S RING PRESS SHOWS AT ONCE (owner, 2026-11-04: "click on the
+ *  pin doesn't open it and switch it" — on a loaded Mac the pulse that says
+ *  `starred_open` is seconds behind the press). The key the reader opened,
+ *  held over the pulse's open favourite until the pulse agrees (ClaudeRail's
+ *  ring `is-open`, from the press; FavouritePeek's card, from the server's
+ *  "open" answer). `stale` is every open key the pulse may still say
+ *  because it left the server BEFORE this write landed — what it said when
+ *  the mark was set, and the keys earlier marks were waiting out (a quick
+ *  A-then-B: a pulse saying A is late, not a verdict). A pulse naming
+ *  anything else answered after the write: another window (or this one's ×)
+ *  moved the record, and the pulse is the truth. */
+export interface FavOpenMark {
+  key: string;
+  stale: readonly (string | null)[];
+  /** When it was set (ms): past FAV_MARK_MS a pulse that never moved off a
+   *  stale answer wins anyway — a write undone elsewhere back to the same
+   *  record must not hold the mark for good. */
+  at: number;
+}
+
+/** How long a mark may wait out a stale pulse. Past an 8 s pulse stall. */
+export const FAV_MARK_MS = 15_000;
+
+/** The mark a press (or an "open" answer) on `key` sets, the pulse saying
+ *  `pulseOpen` now and `prev` the mark it replaces. */
+export function favOpenMark(key: string, pulseOpen: string | null, prev: FavOpenMark | null, now: number): FavOpenMark {
+  const stale: (string | null)[] = [];
+  for (const k of [pulseOpen, ...(prev ? [prev.key, ...prev.stale] : [])]) {
+    if (!stale.includes(k)) stale.push(k);
+  }
+  return { key, stale: stale.slice(0, 4), at: now };
+}
+
+/** The mark after the pulse says `pulseOpen` (null: no favourite open):
+ *  null once the pulse agrees, once the pulse names a key this mark is not
+ *  waiting out (header), once the key is no longer a live favourite
+ *  (`live`: unstarred, archived, gone), or past FAV_MARK_MS; else the same
+ *  mark. */
+export function favOpenStep(mark: FavOpenMark, pulseOpen: string | null, live: boolean, now: number): FavOpenMark | null {
+  if (!live || pulseOpen === mark.key) return null;
+  if (!mark.stale.includes(pulseOpen)) return null;
+  if (now - mark.at >= FAV_MARK_MS) return null;
+  return mark;
 }
