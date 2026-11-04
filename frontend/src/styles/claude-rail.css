@@ -1004,8 +1004,8 @@ a.claude-rail-peek-scope:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* One line for the head: a long subagent description ellipsizes first, the
-   note (type · model · status) keeps more of its width and gives way after. */
+/* One line for the head: the title is a short label and the note (a breakout's
+   state, a subagent's description) is the one that ellipsizes. */
 .breakout-card .breakout-title {
   flex: 0 1 auto;
   font-weight: 600;
@@ -1044,10 +1044,31 @@ a.claude-rail-peek-scope:focus-visible {
   inset: 0;
   flex-direction: column;
 }
-/* The prompt bubble holds rendered markdown, whose blocks space themselves;
-   the chat bubble's `pre-wrap` is for typed words and would double the gaps. */
-.chat-root .agent-peek-prompt .bubble {
-  white-space: normal;
+/* The prompt: reading-type prose under a muted label, clamped to four lines
+   until its `show more` opens it, and set off from the reply by the
+   transcript's hairline. */
+.chat-root .agent-peek-prompt {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--c-border);
+}
+.chat-root .agent-peek-label {
+  margin-bottom: 4px;
+  font-size: var(--c-fs-meta);
+  color: var(--c-faint);
+}
+.chat-root .agent-peek-prompt-text.is-clamped {
+  max-height: calc(4 * var(--c-fs-read) * var(--c-lh-read));
+  overflow: hidden;
+}
+/* The trigger and the folded work sit on the column's left edge, not in a
+   paragraph's corner. */
+.chat-root .agent-peek-prompt .run-trigger:not([aria-expanded="true"]),
+.chat-root .agent-peek-work .run-trigger:not([aria-expanded="true"]) {
+  padding-left: 0;
+}
+.chat-root .agent-peek-work {
+  margin-bottom: 12px;
 }
 .agent-peek-empty {
   padding: 12px;
