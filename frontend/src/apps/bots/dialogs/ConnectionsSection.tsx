@@ -11,7 +11,6 @@ import { Copy, ExternalLinkIcon } from "lucide-react";
 import {
   againBody,
   cancelConnection,
-  CERT_NOTICE,
   CERT_WARNING,
   defaultAuth,
   logoutConnection,
@@ -23,6 +22,7 @@ import {
 } from "@platform/lib/connect";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { navigateUrl } from "@platform/lib/router";
+import { ConnectCertNotice } from "@platform/ui/ConnectCertNotice";
 import { ConnectIcon } from "@platform/ui/ConnectIcon";
 import { Button } from "@platform/shadcn/ui/button";
 import { Switch } from "@platform/shadcn/ui/switch";
@@ -77,7 +77,7 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [notice, setNotice] = useState(false);  // Connect on an https-localhost kind: the notice first, then Continue
+  const [notice, setNotice] = useState(false);  // Connect on an https-localhost kind: the modal first, its Continue starts it
   const act = async (fn: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
@@ -147,14 +147,9 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
           {st.verification_uri ? <a className="text-xs underline" href={st.verification_uri} target="_blank" rel="noopener noreferrer">Enter it at {st.verification_uri}</a> : null}
         </div>
       ) : null}
-      {notice && st.state === "disconnected" && primary ? (
-        <div className="flex flex-col gap-2 pl-[30px]" data-cert-notice="1">
-          <p className="m-0 text-xs text-muted-foreground">{CERT_NOTICE}</p>
-          <div className="flex gap-2">
-            <Button size="sm" disabled={busy} onClick={() => { setNotice(false); void act(() => onLogin({ kind: primary.kind })); }}>Continue to {p.name}</Button>
-            <Button variant="outline" size="sm" disabled={busy} onClick={() => setNotice(false)}>Cancel</Button>
-          </div>
-        </div>
+      {primary ? (
+        <ConnectCertNotice open={notice && st.state === "disconnected"} name={p.name} busy={busy}
+          onContinue={() => { setNotice(false); void act(() => onLogin({ kind: primary.kind })); }} onCancel={() => setNotice(false)} />
       ) : null}
       {st.state === "pending" && st.cert_warning ? <p className="m-0 pl-[30px] text-xs text-muted-foreground">{CERT_WARNING}</p> : null}
       {st.state === "pending" && st.url ? (

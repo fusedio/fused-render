@@ -15,7 +15,6 @@ import { Copy } from "lucide-react";
 import {
   againBody,
   cancelConnection,
-  CERT_NOTICE,
   CERT_WARNING,
   defaultAuth,
   kindLabel,
@@ -29,6 +28,7 @@ import {
   type LoginBody,
 } from "@platform/lib/connect";
 import { copyToClipboard } from "@platform/lib/clipboard";
+import { ConnectCertNotice } from "@platform/ui/ConnectCertNotice";
 import { ConnectIcon } from "@platform/ui/ConnectIcon";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -107,7 +107,7 @@ function ProviderCard({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Connect on a kind that warns (an https localhost redirect): the notice first, Continue starts the flow.
+  // Connect on a kind that warns (an https localhost redirect): the modal first, its Continue starts the flow.
   const [notice, setNotice] = useState(false);
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -209,17 +209,9 @@ function ProviderCard({
         {control && <div className="settings-row-control">{control}</div>}
         <div className="settings-row-extra">
           {st.state === "pending" && <PendingDetails provider={p} status={st} busy={busy} act={act} />}
-          {notice && st.state === "disconnected" && primary && (
-            <div className="flex flex-col gap-2" data-cert-notice="1">
-              <p className="settings-row-desc">{CERT_NOTICE}</p>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="accent" size="sm" disabled={busy}
-                  onClick={() => { setNotice(false); void login({ kind: primary.kind }); }}>
-                  Continue to {p.name}
-                </Button>
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => setNotice(false)}>Cancel</Button>
-              </div>
-            </div>
+          {primary && (
+            <ConnectCertNotice open={notice && st.state === "disconnected"} name={p.name} busy={busy}
+              onContinue={() => { setNotice(false); void login({ kind: primary.kind }); }} onCancel={() => setNotice(false)} />
           )}
           {st.state === "disconnected" && primaryIsKey && primary && (
             <KeyForm auth={primary} busy={busy} onSave={(value) => login({ kind: "api-key", value })} />

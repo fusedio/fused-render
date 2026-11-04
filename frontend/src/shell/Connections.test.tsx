@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { Button } from "@platform/shadcn/ui/button";
+import { ConnectCertNotice } from "@platform/ui/ConnectCertNotice";
 import { Input } from "@platform/shadcn/ui/input";
 import Connections, {
   defaultAuth,
@@ -182,12 +183,16 @@ describe("the cards", () => {
     // An https localhost redirect: Connect shows the notice first (no login yet); Continue starts the flow.
     answers["POST /api/connect/slack/login"] = { state: "pending", kind: "oauth-pkce", url: "https://slack.com/x", cert_warning: true };
     await click(buttons(s, "Connect")[0]);
-    expect(textOf(s)).toContain("Slack's limitation");
+    // The modal (platform/ui/ConnectCertNotice) is a portal the test renderer cannot read; the card's wiring is
+    // what this checks: open after Connect with no login sent, closed by Cancel, Continue sends the login.
+    const notice = () => s.findAll((x) => x.type === ConnectCertNotice)[0];
+    expect(notice().props.open).toBe(true);
     expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
-    await click(buttons(s, "Cancel")[0]);
-    expect(textOf(s)).not.toContain("Slack's limitation");
+    await act(async () => notice().props.onCancel());
+    expect(notice().props.open).toBe(false);
     await click(buttons(s, "Connect")[0]);
-    await click(buttons(s, "Continue to Slack")[0]);
+    expect(notice().props.open).toBe(true);
+    await act(async () => notice().props.onContinue());
     await settle();
     expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ kind: "oauth-pkce" }]);
     expect(textOf(s)).toContain("Waiting for you in the browser");
