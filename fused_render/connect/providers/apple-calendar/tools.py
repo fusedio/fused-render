@@ -25,6 +25,7 @@ the card Reconnect and the message says where in System Settings to allow it.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import re
 
@@ -34,6 +35,7 @@ from fused_render.connect.tools import ToolAuthError, ToolError
 APP = "Calendar"
 MAX_DAYS = 366
 _DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
 
 # One JXA program: `calendar(p)` takes the request object and returns the result object.
 JXA = r"""
@@ -60,11 +62,13 @@ function calendar(p) {
     return r; };
   const cals = () => { const all = app.calendars(); if (!p.calendar) return all;
     const hit = all.filter(c => c.name() === p.calendar); return hit; };
+  const MAX_DAYS = p.max_days || 366;
   const limit = Math.max(1, Math.min(p.limit || 50, 500));
   const byStart = (a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
   const window = () => {
     const from = when(p.from) || new Date(), to = when(p.to) || new Date(from.getTime() + (p.days || 7) * 86400000);
     if (to <= from) return { error: "`to` must be after `from`" };
+    if (to - from > MAX_DAYS * 86400000) return { error: "window longer than " + MAX_DAYS + " days; narrow `from` and `to`" };
     const out = [];
     for (const cal of cals()) {
       const name = cal.name();
@@ -102,7 +106,10 @@ function calendar(p) {
       if (!start) { out = { error: "start is not a date: " + p.start }; break; }
       if (end <= start) { out = { error: "end must be after start" }; break; }
       let cal = null;
-      if (p.calendar) { const hit = cals(); if (!hit.length) { out = { error: "no calendar named " + p.calendar }; break; } cal = hit[0]; }
+      if (p.calendar) { const hit = cals(); if (!hit.length) { out = { error: "no calendar named " + p.calendar }; break; }
+        // Two accounts can each have a "Work": a write must not guess which.
+        if (hit.length > 1) { out = { error: hit.length + " calendars are named " + p.calendar + " (in different accounts); give one a unique name in Calendar" }; break; }
+        cal = hit[0]; }
       else { const all = app.calendars(); cal = all.find(c => { try { return c.writable(); } catch (x) { return true; } }) || all[0];
         if (!cal) { out = { error: "Calendar has no calendars; add an account in the app first" }; break; } }
       const props = { summary: p.summary, startDate: start, endDate: end, alldayEvent: !!p.all_day };
@@ -186,11 +193,30 @@ def _int(v, default: int, lo: int, hi: int) -> int:
 
 def _date(v) -> str:
     """A date argument as the script takes it: ISO, or a bare date. Anything else is refused here
-    rather than by `new Date`, whose parse of free text is a guess."""
+    rather than by `new Date`, whose parse of free text is a guess, and a date that does not
+    exist (2026-02-30) is refused too: JXA's `new Date(y, m, d)` would roll it into March."""
     s = str(v or "").strip()
-    if s and not (_DATE_ONLY.match(s) or re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", s)):
+    if not s:
+        return s
+    if not (_DATE_ONLY.match(s) or _DATE_TIME.match(s)):
         raise ToolError(f"not an ISO date or date-time: {s!r}")
-    return s.replace(" ", "T", 1) if " " in s else s
+    s = s.replace(" ", "T", 1) if " " in s else s
+    try:
+        datetime.datetime.fromisoformat(s)
+    except ValueError:
+        raise ToolError(f"not a real date: {s!r}") from None
+    return s
+
+
+def _bool(v, name: str) -> bool:
+    """A JSON boolean, or the words a model types for one; never `bool("false")`."""
+    if isinstance(v, bool) or v is None:
+        return bool(v)
+    if isinstance(v, (int, float)) and v in (0, 1):
+        return bool(v)
+    if isinstance(v, str) and v.strip().lower() in ("", "true", "false", "yes", "no", "1", "0"):
+        return v.strip().lower() in ("true", "yes", "1")
+    raise ToolError(f"{name} must be true or false, got {v!r}")
 
 
 def call(ctx, name: str, args: dict):
@@ -205,8 +231,12 @@ def call(ctx, name: str, args: dict):
     req = {"action": action, "calendar": str(a.get("calendar") or ""), "query": str(a.get("query") or ""),
            "uid": str(a.get("uid") or ""), "summary": str(a.get("summary") or "").strip(),
            "location": str(a.get("location") or ""), "description": str(a.get("description") or ""),
-           "all_day": bool(a.get("all_day")),
+           "all_day": _bool(a.get("all_day"), "all_day"), "max_days": MAX_DAYS,
            "from": _date(a.get("from")), "to": _date(a.get("to")),
            "start": _date(a.get("start")), "end": _date(a.get("end")),
            "days": _int(a.get("days"), days_default, 1, MAX_DAYS), "limit": _int(a.get("limit"), 50, 1, 500)}
+    if req["from"] and req["to"]:
+        span = datetime.datetime.fromisoformat(req["to"]) - datetime.datetime.fromisoformat(req["from"])
+        if span.days > MAX_DAYS:
+            raise ToolError(f"window longer than {MAX_DAYS} days; narrow `from` and `to`")
     return _run(req)

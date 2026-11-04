@@ -5,5 +5,5 @@
     {"kind": "local-app", "app": "Notes", "account": "app.defaultAccount().name()"}
   ],
   "tools": {"remote": null},
-  "privacy": "Everything happens on this Mac: Fused talks to the Notes app itself, the way Shortcuts does. No sign-in, no token, nothing leaves the computer. macOS asks once whether to allow it (System Settings > Privacy & Security > Automation)."
+  "privacy": "Fused talks to the Notes app on this Mac, the way Shortcuts does: no sign-in, no token, and Fused sends nothing anywhere. A note in a synced account (iCloud) syncs through Notes to your other devices as usual. macOS asks once whether to allow it (System Settings > Privacy & Security > Automation)."
 }

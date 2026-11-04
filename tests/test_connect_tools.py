@@ -465,6 +465,32 @@ def test_calendar_requests_and_date_checks(osa):
     assert len(osa.calls) == n
 
 
+def test_notes_ambiguous_append_is_a_failed_call_that_names_the_candidates(osa):
+    osa.reply = {"error": "2 notes match title Milk; pass the id of one",
+                 "candidates": [{"id": "x-coredata://1/ICNote/p7", "title": "Milk"}, {"id": "x-coredata://1/ICNote/p9", "title": "Milk"}]}
+    out = tools.call_tool("apple-notes", "notes_append", {"title": "Milk", "text": "- eggs"})
+    assert out["ok"] is False and out["is_error"] is True
+    assert "2 notes match" in out["text"] and "x-coredata://1/ICNote/p9" in out["text"]
+
+
+def test_calendar_flags_dates_and_windows_are_checked_before_osascript(osa):
+    osa.reply = {"ok": True}
+    tools.call_tool("apple-calendar", "calendar_create_event", {"summary": "x", "start": "2026-11-05", "all_day": "false"})
+    assert osa.calls[-1][1]["all_day"] is False
+    tools.call_tool("apple-calendar", "calendar_create_event", {"summary": "x", "start": "2026-11-05", "all_day": "yes"})
+    assert osa.calls[-1][1]["all_day"] is True
+    n = len(osa.calls)
+    out = tools.call_tool("apple-calendar", "calendar_create_event", {"summary": "x", "start": "2026-11-05", "all_day": "maybe"})
+    assert out["ok"] is False and "all_day must be true or false" in out["text"]
+    out = tools.call_tool("apple-calendar", "calendar_create_event", {"summary": "x", "start": "2026-02-30"})
+    assert out["ok"] is False and "not a real date" in out["text"]       # JXA would roll it into March
+    out = tools.call_tool("apple-calendar", "calendar_events", {"from": "2000-01-01", "to": "2026-01-01"})
+    assert out["ok"] is False and "window longer than 366 days" in out["text"]
+    assert len(osa.calls) == n
+    tools.call_tool("apple-calendar", "calendar_events", {"from": "2026-01-01", "to": "2026-12-31"})
+    assert osa.calls[-1][1]["max_days"] == 366
+
+
 def test_apple_script_errors_become_tool_errors(osa):
     from fused_render.connect import applescript
     osa.reply = applescript.AutomationError("no folder named Nope")

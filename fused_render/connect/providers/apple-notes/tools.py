@@ -54,6 +54,8 @@ function notes(p) {
     if (!m.length) return { error: "no note title contains " + p.title };
     return { error: m.length + " notes match title " + p.title + "; pass the id of one", candidates: m.slice(0, 5).map(n => row(n, false)) }; };
   const sortDesc = (a, b) => (b.modified > a.modified ? 1 : b.modified < a.modified ? -1 : 0);
+  // A read scoped to a folder name covers every folder of that name (one per account); null = every note.
+  const inFolders = (folders, pick) => folders ? folders.flatMap(f => pick(f.notes)) : pick(app.notes);
   const limit = Math.max(1, Math.min(p.limit || 20, 100));
   let out;
   switch (p.action) {
@@ -63,11 +65,10 @@ function notes(p) {
       break; }
     case "search": {
       const q = p.query || "";
-      let src = p.folder ? app.folders.whose({ name: p.folder })() : null;
+      const src = p.folder ? app.folders.whose({ name: p.folder })() : null;
       if (p.folder && !src.length) { out = { error: "no folder named " + p.folder }; break; }
-      const scope = src ? src[0].notes : app.notes;
       const cond = p.in_body ? { _or: [{ name: { _contains: q } }, { plaintext: { _contains: q } }] } : { name: { _contains: q } };
-      const hits = scope.whose(cond)();
+      const hits = inFolders(src, s => s.whose(cond)());
       const rows = hits.map(n => row(n, false)).sort(sortDesc);
       out = { query: q, in_body: !!p.in_body, folder: p.folder || "", count: rows.length, notes: rows.slice(0, limit) };
       break; }
@@ -76,15 +77,18 @@ function notes(p) {
       out = { note: row(n, true) }; break; }
     case "recent": {
       const days = Math.max(1, p.days || 7), since = new Date(Date.now() - days * 86400000);
-      let scope = app.notes;
-      if (p.folder) { const f = app.folders.whose({ name: p.folder })(); if (!f.length) { out = { error: "no folder named " + p.folder }; break; } scope = f[0].notes; }
-      const hits = scope.whose({ modificationDate: { _greaterThan: since } })();
+      const src = p.folder ? app.folders.whose({ name: p.folder })() : null;
+      if (p.folder && !src.length) { out = { error: "no folder named " + p.folder }; break; }
+      const hits = inFolders(src, s => s.whose({ modificationDate: { _greaterThan: since } })());
       const rows = hits.map(n => row(n, false)).sort(sortDesc);
       out = { days, folder: p.folder || "", count: rows.length, notes: rows.slice(0, limit) }; break; }
     case "create": {
       const html = "<div><h1>" + esc(p.title || String(p.body || "").split(/\r?\n/)[0] || "Note") + "</h1></div>" + (p.body ? divs(p.body) : "");
       let folder = null;
-      if (p.folder) { const f = app.folders.whose({ name: p.folder })(); if (!f.length) { out = { error: "no folder named " + p.folder }; break; } folder = f[0]; }
+      if (p.folder) { const f = app.folders.whose({ name: p.folder })(); if (!f.length) { out = { error: "no folder named " + p.folder }; break; }
+        // Two accounts can each have a "Work": a write must not guess which.
+        if (f.length > 1) { out = { error: f.length + " folders are named " + p.folder + " (in different accounts); give one a unique name in Notes" }; break; }
+        folder = f[0]; }
       else folder = app.defaultAccount().defaultFolder();
       const n = app.Note({ body: html }); folder.notes.push(n);
       out = { ok: true, note: row(n, false) }; break; }
@@ -146,11 +150,16 @@ _PARAMS = {t["name"]: set(t["input_schema"]["properties"]) for t in TOOLS}
 
 def _run(req: dict) -> dict:
     try:
-        return applescript.run_jxa(JXA, [json.dumps(req)], app=APP)
+        out = applescript.run_jxa(JXA, [json.dumps(req)], app=APP)
     except applescript.AutomationDenied as e:
         raise ToolAuthError(str(e)) from None
     except applescript.AutomationError as e:
         raise ToolError(str(e)) from None
+    if out.get("error"):
+        # An error with company (append on an ambiguous title: `candidates`) is still a
+        # failed call: `ok: false`, with the candidates kept in the text for the caller.
+        raise ToolError(json.dumps(out, ensure_ascii=False, default=str))
+    return out
 
 
 def call(ctx, name: str, args: dict):
