@@ -19,83 +19,84 @@
 // its ring — the one place it is always found. Over the page's own header
 // bars (z-index, claude-rail.css), so its × is always reachable.
 //
-// WHICH favourite is the server's (`starred_open`, one at a time): the ×
-// here writes it closed, a favourite ring's press on any rail writes it open
-// (ClaudeRail `openFavourite`). Nothing else closes it — not an outside
-// press, not Escape, not a place change. The Open door opens the pane; the
-// card stays the recorded open favourite (RailPeek `onDismiss("door")`) and
-// is back when the rail is. A rail with no room for it (a window shrunk to
-// nothing) hides it until the window, the rail or the row it stands in
-// changes shape, or the next rail stands.
+// WHICH favourite is THIS WINDOW'S (owner, 2026-11-04: "if I have multiple
+// windows open, the open favourite shouldn't sync; the list items (stars) do
+// sync"): platform/lib/last-chat `useFavOpen`, sessionStorage — a favourite
+// ring's press in this window opens it (ClaudeRail `openFavourite`), a star
+// pressed on in this window's rail card opens it (`railOnStarred`), the ×
+// here closes it. Nothing is written to the server for any of them: the
+// server's `starred_open` is kept for older clients and followed by no card.
+// Local state is instant — no pulse to wait for, no other window to lose to.
+// The STARS stay the server's: an unstar, an erase or an archive of the open
+// chat, in any window, closes it here once the pulse says so (rail-peek-lib
+// `favOpenVerdict`); an archived favourite never shows a card. Nothing else
+// closes it — not an outside press, not Escape, not a place change. The Open
+// door opens the pane; the card stays this window's open favourite (RailPeek
+// `onDismiss("door")`) and is back when the rail is. A rail with no room for
+// it (a window shrunk to nothing) hides it until the window, the rail or the
+// row it stands in changes shape, or the next rail stands.
 //
-// A RING'S PRESS SHOWS AT ONCE (owner, 2026-11-04: "click on the pin
-// doesn't open it and switch it" — on a loaded Mac the pulse carrying
-// `starred_open` is seconds behind): the server's "open" answer
-// (fav-peek-store `onFavOpened`) puts the card up on that key, or switches
-// it there, without waiting for the pulse; the pulse takes over once it
-// agrees, or once it names a favourite another window opened since
-// (`useFavOpenMark`).
-//
-// THE × HIDES AT ONCE (`closing`): the record's "closed" is a write and a
-// pulse away; the card goes on the press and comes back only if the write
-// is refused. An UNSTAR here shuts the card the same way and writes nothing
-// more — the server dropped the record with the star (RailPeek
-// `dismissOnUnstar`).
+// AN UNSTAR HERE shuts the card at once (RailPeek `dismissOnUnstar`).
 //
 // THE KEYBOARD IS NEVER LEFT ON THE BODY: a card that shuts or hides with
 // the focus inside it hands it to the rail — the favourite's foot ring, else
 // the rail's first ring, else the rail (fav-peek-store `focusRail`). And a
 // keyboard press on a favourite's ring lands on this card's × once it
-// stands (fav-peek-store `pendingFocus`), however long the write and the
-// pulse took.
+// stands (fav-peek-store `pendingFocus`), however long it took to draw.
 //
 // ONE CHAT, ONE COMPOSER: while the page's URL names this favourite's
 // session (the pane open on it, the Open door taken) — or the Tasks side
 // peek shows it (platform/lib/peek-session) — that one holds the
-// chat — the card unmounts its own and says where it is, the record and the
-// card's place kept, and mounts it again when the URL moves on.
+// chat — the card unmounts its own and says where it is, the window's open
+// key kept, and mounts it again when the URL moves on.
+//
+// ITS WHERE-CHIP is the same door as the rail card's (RailPeek, claude-rail-
+// lib `chipDoor`): the chat's own canvas, node, folder or file — and on the
+// canvas page, a node of THAT canvas is selected in place, the page's canvas
+// read off the rail this card stands beside (fav-peek-store `railHere`).
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { setTaskFavourite, type Task, type TaskPulseTask } from "@platform/lib/api";
+import { type Task, type TaskPulseTask } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { notify } from "@platform/lib/notifications";
-import { pokeTasks, readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
+import { readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
+import { clearFavOpen } from "@platform/lib/last-chat";
 import { RailPeek } from "./RailPeek";
 import {
   focusRail,
-  onFavOpened,
   publishFavBox,
+  railHere,
   takeFavFocus,
-  useFavOpenMark,
+  useFavOpenRow,
   useFavPeekState,
   withdrawFavFocusOn,
 } from "./fav-peek-store";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
-import type { RailPlace, RailRow } from "./claude-rail-lib";
-import { FAV_HEIGHT, FAV_WIDTH, errorWords, favChatElsewhere, favCloseHolds, rowOf, type PeekWish } from "./rail-peek-lib";
+import { ownPlace, type RailPlace, type RailRow } from "./claude-rail-lib";
+import {
+  FAV_HEIGHT,
+  FAV_WIDTH,
+  favChatElsewhere,
+  rowOf,
+  type PeekWish,
+} from "./rail-peek-lib";
 import { usePeekSession } from "@platform/lib/peek-session";
 
 export const FAV_PEEK_ID = "claude-rail-fav-peek";
 
 /** A bit under the list card's 420×640 (owner: "by default the size of
  *  that preview could be a bit smaller"); the bottom on the rail's. The
- *  reader's drag from its top and left edges replaces the width and height
- *  (RailPeek `resizeKey`, ui-layout `canvasRailFav`). */
-/** How long a × (or unstar) hides the card ahead of a pulse that never
- *  says closed (`closing`). */
-const CLOSING_MS = 10_000;
-
+ *  reader's drag from its left, top and bottom edges and its left corners
+ *  replaces the width and height (RailPeek `resizeKey`, ui-layout
+ *  `canvasRailFav`); a bottom drag keeps the top, and on release the card
+ *  stands on the rail's bottom again at its new height. */
 const FAV_SIZE: PeekWish = { width: FAV_WIDTH, maxHeight: FAV_HEIGHT, align: "bottom" };
 
 /** The place the card says the chat is on: the row's own canvas, else its
- *  project folder — this card belongs to no page. */
+ *  project folder (claude-rail-lib `ownPlace`) — this card belongs to no
+ *  page. The listing's canvas stands in while the pulse row lacks one. */
 function placeOf(t: TaskPulseTask, row: Task | null): RailPlace {
-  const canvas = t.canvas ?? row?.canvas ?? null;
-  if (canvas) {
-    return { kind: "canvas", env: canvas.env, name: canvas.name, dir: t.project || null, file: canvas.file || null };
-  }
-  return { kind: "folder", dir: t.project || "", word: "Folder" };
+  return ownPlace({ ...t, canvas: t.canvas ?? row?.canvas ?? null });
 }
 
 const noop = () => {};
@@ -147,69 +148,15 @@ export function FavouritePeek() {
       ro?.disconnect();
     };
   }, [rail]);
-  // THE PRESSED FAVOURITE SHOWS AT ONCE (header): the server's "open"
-  // answer to a ring press (`onFavOpened`) stands over the pulse's
-  // `starred_open` until the pulse agrees, or says another window moved it
-  // since (fav-peek-store `useFavOpenMark`). A refused write never marks.
-  const pulseOpen = useMemo(() => rows.find((t) => t.starred_open && t.status !== "archived") ?? null, [rows]);
-  const liveFav = useCallback(
-    (key: string) => rows.some((t) => t.key === key && t.starred && t.status !== "archived"),
-    [rows],
-  );
-  const opened = useFavOpenMark(pulseOpen?.key ?? null, liveFav);
-  const open = useMemo(
-    () => (opened.key ? (rows.find((t) => t.key === opened.key) ?? pulseOpen) : pulseOpen),
-    [opened.key, rows, pulseOpen],
-  );
+  // THIS WINDOW'S OPEN FAVOURITE (header), checked against the pulse's
+  // stars — closed (the key cleared) once an unstar, an erase or an archive
+  // reaches the pulse (fav-peek-store `useFavOpenRow`).
+  const open = useFavOpenRow(on, rows);
   const seat = useMemo((): RailRow | null => {
     if (!open) return null;
     return { pulse: open, row: listing?.find((t) => t.key === open.key) ?? null };
   }, [open, listing]);
-  // Shut by the × or an unstar, ahead of the pulse (header): the key it was
-  // shut on, dropped once the record moves on.
-  const [closing, setClosing] = useState<string | null>(null);
-  const openKey = open?.key ?? null;
-  useEffect(() => {
-    if (closing && closing !== openKey) setClosing(null);
-  }, [closing, openKey]);
-  // …or once a pulse read AFTER the close write landed (`closeLanded`; any
-  // rows other than the ones in hand then) says that key OPEN: a real
-  // reopen — another window's, say, landing behind this one's close, whether
-  // or not a pulse here ever said closed between them — and it shows
-  // (rail-peek-lib `favCloseHolds`; CodeRabbit, PR #2100). CLOSING_MS is
-  // the backstop for a pulse that never comes.
-  const [closeLanded, setCloseLanded] = useState<string | null>(null);
-  const landedRows = useRef<object | null>(null);
-  useEffect(() => {
-    if (!closing || closeLanded !== closing) {
-      landedRows.current = null;
-      return;
-    }
-    if (landedRows.current === null) {
-      landedRows.current = rows;
-      return;
-    }
-    const saysOpen = rows.some((t) => t.key === closing && t.starred_open);
-    if (!favCloseHolds(landedRows.current, rows, saysOpen)) setClosing(null);
-  }, [closing, closeLanded, rows]);
-  useEffect(() => {
-    if (!closing) return;
-    const id = window.setTimeout(() => setClosing((c) => (c === closing ? null : c)), CLOSING_MS);
-    return () => window.clearTimeout(id);
-  }, [closing]);
-  // …or once an "open" on that key is answered open: × then the same ring
-  // again before the pulse ever said closed leaves `openKey` unchanged.
-  const markOpened = opened.mark;
-  const dropOpened = opened.drop;
-  useEffect(
-    () =>
-      onFavOpened((key) => {
-        markOpened(key);
-        setClosing((c) => (c === key ? null : c));
-      }),
-    [markOpened],
-  );
-  const shown = on && seat && rail && !noRoom && closing !== seat.pulse.key ? seat : null;
+  const shown = on && seat && rail && !noRoom ? seat : null;
   // The pane (or the Open door) on this very session (header), or the Tasks
   // side peek showing it: no chat here.
   useUrlVersion();
@@ -288,34 +235,19 @@ export function FavouritePeek() {
   // The rail itself is the anchor: with `align: "bottom"` the card's bottom
   // lands on the rail's, clamped inside the row — the bottom right, always.
   const anchorOf = useCallback(() => rail, [rail]);
+  // The page's canvas, off the rail this card stands beside (header).
+  const here = useCallback(() => railHere(rail), [rail]);
   const place = useMemo(() => (seat ? placeOf(seat.pulse, seat.row) : null), [seat]);
-  // The × (RailPeek `onDismiss`): the card goes now, the record says closed;
-  // the pulse then takes `open` away. A refused write brings the card back.
+  // The × (RailPeek `onDismiss`), and an unstar here: this window's card
+  // closes, nothing is written (header).
   const close = useCallback(
     (why?: "door" | "unstar") => {
-      // The Open door is not a close: the pane takes over, the record stands.
+      // The Open door is not a close: the pane takes over, the card stays open.
       if (why === "door" || !open) return;
-      const key = open.key;
-      setClosing(key);
-      landedRows.current = null;
-      setCloseLanded(null);
-      // A press's mark on this key must not hold the card up past `closing`.
-      dropOpened(key);
-      // An unstar dropped the record with the star: nothing more to write.
-      if (why === "unstar") {
-        unstarred.current = key;
-        setCloseLanded(key);
-        return;
-      }
-      setTaskFavourite(key, null, false).then(() => {
-        setCloseLanded(key);
-        pokeTasks();
-      }, (err: unknown) => {
-        setClosing((c) => (c === key ? null : c));
-        notify({ title: errorWords(err, "The favourite could not be closed"), tone: "error" });
-      });
+      if (why === "unstar") unstarred.current = open.key;
+      clearFavOpen(open.key);
     },
-    [open, dropOpened],
+    [open],
   );
   useEffect(() => () => publishFavBox(null), []);
   if (!on || !seat || !place) return null;
@@ -341,6 +273,7 @@ export function FavouritePeek() {
       bodyNote={elsewhere === "peek" ? "Open in the Tasks peek" : elsewhere ? "Open in the Claude panel" : null}
       onNoRoom={() => setNoRoom(true)}
       onOpenChat={(href) => navigateUrl(href)}
+      here={here}
       onPin={noop}
       held
       onHeld={noop}

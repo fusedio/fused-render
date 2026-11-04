@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import {
+  clearFavOpen,
+  favOpen,
+  favOpenedAtMs,
+  onFavOpenStorage,
+  setFavOpen,
+  subscribeFavOpen,
   lastChat,
   lastChatId,
   lastFav,
@@ -120,6 +126,92 @@ describe("last-chat", () => {
       expect(lastChat()).toBe("l");
       offC();
       offF();
+    } finally {
+      if (had) g.sessionStorage = prev;
+      else delete g.sessionStorage;
+    }
+  });
+
+  it("the open favourite: a press sets it, the × clears it, per window, on its own key", () => {
+    const g = globalThis as { sessionStorage?: unknown };
+    const had = Object.prototype.hasOwnProperty.call(g, "sessionStorage");
+    const prev = g.sessionStorage;
+    const store = new Map<string, string>();
+    const fake = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    };
+    g.sessionStorage = fake;
+    try {
+      let calls = 0;
+      const off = subscribeFavOpen(() => calls++);
+      setFavOpen("A");
+      expect(favOpen()).toBe("A");
+      expect(store.get("fused-render:fav-open")).toBe("A");
+      expect(favOpenedAtMs("A")).not.toBeNull();
+      expect(favOpenedAtMs("B")).toBeNull();
+      // The list's last mark is untouched.
+      expect(store.has("fused-render:last-chat")).toBe(false);
+      // A verdict about another chat closes nothing.
+      clearFavOpen("B");
+      expect(favOpen()).toBe("A");
+      clearFavOpen("A");
+      expect(favOpen()).toBeNull();
+      expect(store.has("fused-render:fav-open")).toBe(false);
+      expect(favOpenedAtMs("A")).toBeNull();
+      expect(calls).toBe(2);
+      // The node chat's frame (same window) wrote it: adopted.
+      store.set("fused-render:fav-open", "C");
+      onFavOpenStorage({ key: "fused-render:last-fav", storageArea: fake as unknown as Storage });
+      expect(favOpen()).toBeNull();
+      onFavOpenStorage({ key: "fused-render:fav-open", storageArea: fake as unknown as Storage });
+      expect(favOpen()).toBe("C");
+      // …and a frame's clear too.
+      store.delete("fused-render:fav-open");
+      onFavOpenStorage({ key: "fused-render:fav-open", storageArea: fake as unknown as Storage });
+      expect(favOpen()).toBeNull();
+      off();
+    } finally {
+      if (had) g.sessionStorage = prev;
+      else delete g.sessionStorage;
+    }
+  });
+
+  it("the open time rides beside the key in storage: another document of the window reads it", () => {
+    const g = globalThis as { sessionStorage?: unknown };
+    const had = Object.prototype.hasOwnProperty.call(g, "sessionStorage");
+    const prev = g.sessionStorage;
+    const store = new Map<string, string>();
+    const fake = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    };
+    g.sessionStorage = fake;
+    try {
+      const off = subscribeFavOpen(() => {});
+      setFavOpen("A");
+      const at = favOpenedAtMs("A");
+      expect(at).not.toBeNull();
+      expect(JSON.parse(store.get("fused-render:fav-open-at")!)).toEqual({ key: "A", at });
+      // The node chat's frame opened "N" (its own module copy wrote both
+      // keys): this document adopts the key AND its open time.
+      store.set("fused-render:fav-open-at", JSON.stringify({ key: "N", at: 1234 }));
+      store.set("fused-render:fav-open", "N");
+      onFavOpenStorage({ key: "fused-render:fav-open", storageArea: fake as unknown as Storage });
+      expect(favOpen()).toBe("N");
+      expect(favOpenedAtMs("N")).toBe(1234);
+      expect(favOpenedAtMs("A")).toBeNull();
+      // A frame's clear takes the time with it.
+      store.delete("fused-render:fav-open-at");
+      store.delete("fused-render:fav-open");
+      onFavOpenStorage({ key: "fused-render:fav-open", storageArea: fake as unknown as Storage });
+      expect(favOpenedAtMs("N")).toBeNull();
+      // A garbled value is no time at all.
+      store.set("fused-render:fav-open-at", "{oops");
+      expect(favOpenedAtMs("N")).toBeNull();
+      off();
     } finally {
       if (had) g.sessionStorage = prev;
       else delete g.sessionStorage;

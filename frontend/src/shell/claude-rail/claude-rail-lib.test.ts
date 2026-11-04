@@ -7,6 +7,9 @@ import { describe, expect, it } from "bun:test";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { sortForList } from "@shell/tasks-lib";
 import {
+  activeRing,
+  chipDoor,
+  chipPlace,
   dotCleared,
   favSeats,
   keepMarks,
@@ -17,7 +20,9 @@ import {
   railRows,
   railScope,
   readMark,
+  ringMarks,
   type RailPlace,
+  type RingMarkInput,
 } from "./claude-rail-lib";
 
 
@@ -333,3 +338,190 @@ describe("listSeats (one ring per chat)", () => {
     expect(favSeats(all, new Map()).map((s) => s.pulse.key)).toEqual(["fav2"]);
   });
 });
+
+describe("activeRing (one active ring per section)", () => {
+  it("the open favourite wins over the section's last press", () => {
+    expect(activeRing(["A", "B", "C"], ["B", "C"])).toBe("B");
+  });
+  it("no open favourite: the last press", () => {
+    expect(activeRing(["A", "B", "C"], [null, "C"])).toBe("C");
+  });
+  it("a want that is not in the section is skipped", () => {
+    expect(activeRing(["A", "B"], ["Z", undefined, "A"])).toBe("A");
+    expect(activeRing(["A", "B"], ["Z", null])).toBeNull();
+    expect(activeRing([], ["A"])).toBeNull();
+  });
+});
+
+describe("activeRing with a pinned favourite", () => {
+  it("a pinned key that is a favourite marks nothing in the list; the list's next want wins", () => {
+    // The rail's card pinned over a favourite's hover (a press inside it):
+    // the list asks for the pinned key first, but it is not one of the list's.
+    const list = ["A", "B"];
+    const favs = ["F", "G"];
+    expect(activeRing(list, ["F", "B", null])).toBe("B");
+    expect(activeRing(list, ["F", null, null])).toBeNull();
+    // …and the favourites' section goes by its own wants (open card, then
+    // its last press), never by the list's pin.
+    expect(activeRing(favs, [null, "G"])).toBe("G");
+  });
+});
+
+describe("ringMarks (what each ring wears, per section)", () => {
+  const base: Omit<RingMarkInput, "key" | "foot" | "isLast" | "sessionHere"> = {
+    favsOn: true,
+    peekOn: true,
+    peekKey: null,
+    pinned: false,
+    held: false,
+    openFavKey: null,
+    activeList: null,
+    activeFav: null,
+  };
+  /** Every ring of both sections, as ClaudeRail draws them. */
+  function rail(o: {
+    list: string[];
+    favs: string[];
+    lastList?: string;
+    lastFav?: string;
+    session?: string;
+    peekKey?: string | null;
+    pinned?: boolean;
+    held?: boolean;
+    openFavKey?: string | null;
+  }) {
+    const openFavKey = o.openFavKey ?? null;
+    const activeList = activeRing(o.list, [o.pinned ? o.peekKey : null, o.lastList, o.session]);
+    const activeFav = activeRing(o.favs, [openFavKey, o.lastFav]);
+    const ring = (key: string, foot: boolean) => ({
+      key,
+      foot,
+      ...ringMarks({
+        ...base,
+        key,
+        foot,
+        peekKey: o.peekKey ?? null,
+        pinned: !!o.pinned,
+        held: !!o.held,
+        openFavKey,
+        sessionHere: key === o.session,
+        isLast: key === (foot ? o.lastFav : o.lastList),
+        activeList,
+        activeFav,
+      }),
+    });
+    return [...o.list.map((k) => ring(k, false)), ...o.favs.map((k) => ring(k, true))];
+  }
+  const count = (rings: ReturnType<typeof rail>, foot: boolean, cls: string) =>
+    rings.filter((r) => r.foot === foot && r.classes.includes(cls)).length;
+  const marked = (rings: ReturnType<typeof rail>, foot: boolean) =>
+    rings.filter((r) => r.foot === foot && r.classes.some((c) => c === "active" || c === "is-last" || c === "is-open"));
+
+  it("one active ring per section with favourites on", () => {
+    const rings = rail({
+      list: ["A", "B", "C"],
+      favs: ["F", "G"],
+      lastList: "B",
+      session: "C",
+      lastFav: "G",
+      openFavKey: "F",
+    });
+    // The list: its last press wins over the URL's session — one mark.
+    expect(marked(rings, false).map((r) => r.key)).toEqual(["B"]);
+    expect(count(rings, false, "is-last")).toBe(1);
+    expect(count(rings, false, "active")).toBe(0);
+    // The favourites: the open card's ring, `is-open`, and no `is-last` beside it.
+    expect(marked(rings, true).map((r) => r.key)).toEqual(["F"]);
+    expect(count(rings, true, "is-open")).toBe(1);
+    expect(count(rings, true, "is-last")).toBe(0);
+  });
+
+  it("no favourite open: the section's last press is its one mark", () => {
+    const rings = rail({ list: ["A"], favs: ["F", "G"], lastFav: "G", session: "A" });
+    expect(marked(rings, true).map((r) => r.key)).toEqual(["G"]);
+    expect(marked(rings, false).map((r) => r.key)).toEqual(["A"]);
+  });
+
+  it("the open favourite's ring opens no hover card; every other ring does", () => {
+    const rings = rail({ list: ["A"], favs: ["F", "G"], openFavKey: "F" });
+    expect(rings.find((r) => r.key === "F")!.hovers).toBe(false);
+    expect(rings.find((r) => r.key === "G")!.hovers).toBe(true);
+    expect(rings.find((r) => r.key === "A")!.hovers).toBe(true);
+  });
+
+  it("a star pressed a moment ago: its ring still in the list opens no hover card either", () => {
+    // `railOpenFav` counts the just-opened key while the pulse lags.
+    const rings = rail({ list: ["A", "S"], favs: ["F"], openFavKey: "S" });
+    const s = rings.find((r) => r.key === "S")!;
+    expect(s.hovers).toBe(false);
+    expect(s.favRing).toBe(true);
+    // It is not the foot's ring: no `is-open`, no `is-fav`.
+    expect(s.classes).not.toContain("is-open");
+    expect(s.classes).not.toContain("is-fav");
+  });
+
+  it("no persistent wash on a favourite: a pinned or held rail card over it leaves `.peeked` only", () => {
+    const pinned = rail({ list: ["A"], favs: ["F"], peekKey: "F", pinned: true, held: true });
+    expect(pinned.find((r) => r.key === "F")!.classes).toEqual(["peeked", "is-fav"]);
+    // The list's pinned ring keeps its firmer wash.
+    const listPinned = rail({ list: ["A"], favs: ["F"], peekKey: "A", pinned: true });
+    expect(listPinned.find((r) => r.key === "A")!.classes).toContain("is-pinned");
+  });
+
+  it("favourites off: every mark as before, the held accent included", () => {
+    const off = (key: string, o: Partial<RingMarkInput>) =>
+      ringMarks({ ...base, favsOn: false, key, foot: false, sessionHere: false, isLast: false, ...o }).classes;
+    expect(off("A", { sessionHere: true, isLast: true })).toEqual(["active", "is-last"]);
+    expect(off("A", { peekKey: "A", pinned: true, held: true })).toEqual(["peeked", "is-pinned", "is-held"]);
+  });
+});
+
+describe("chipPlace / chipDoor (the where-chip's door)", () => {
+  const OTHER = "/home/me/canvases/other";
+  it("a row on the rail's place is read against it; one from elsewhere against its own", () => {
+    const here = pulse(task({ key: "a", canvas: { env: "unstable", name: "demo", file: "hex.py" } }));
+    expect(chipPlace(here, PLACE)).toBe(PLACE);
+    const there = pulse(
+      task({ key: "b", project: OTHER, target: `${OTHER}/map.py`, canvas: { env: "prod", name: "other", file: "map.py" } }),
+    );
+    expect(chipPlace(there, PLACE)).toEqual({ kind: "canvas", env: "prod", name: "other", dir: OTHER });
+    const folder = pulse(task({ key: "c", canvas: null, project: "/apps/x", target: "/apps/x/main.py" }));
+    expect(chipPlace(folder, PLACE)).toEqual({ kind: "folder", dir: "/apps/x", word: "Folder" });
+  });
+
+  it("a node on another canvas (or no canvas page) navigates to that canvas with the node selected", () => {
+    const at: RailPlace = { kind: "canvas", env: "prod", name: "other", dir: OTHER };
+    const door = chipDoor({ kind: "node", name: "map", file: "map.py" }, at, { env: "unstable", name: "demo", file: null });
+    expect(door.select).toBeUndefined();
+    expect(door.href).toBe("/canvases/prod/other?node=map&node_file=map.py");
+    expect(door.title).toBe("Open map on other");
+    expect(chipDoor({ kind: "whole", word: "Canvas" }, at, null).href).toBe("/canvases/prod/other");
+  });
+
+  it("on this canvas's page the chip selects in place (the node, or the canvas as a whole)", () => {
+    const here = { env: "unstable" as const, name: "demo", file: "hex.py" };
+    const node = chipDoor({ kind: "node", name: "grid", file: "grid.py" }, PLACE, here);
+    expect(node.select).toEqual({ udfName: "grid", current: false });
+    expect(node.href).toBe("/canvases/unstable/demo?node=grid&node_file=grid.py");
+    expect(chipDoor({ kind: "node", name: "hex", file: "hex.py" }, PLACE, here).select).toEqual({
+      udfName: "hex",
+      current: true,
+    });
+    expect(chipDoor({ kind: "whole", word: "Canvas" }, PLACE, here).select).toEqual({ udfName: null, current: false });
+    expect(chipDoor({ kind: "whole", word: "Canvas" }, PLACE, { ...here, file: null }).select!.current).toBe(true);
+  });
+
+  it("a folder chip opens the explorer folder page; a file chip its file page", () => {
+    const app: RailPlace = { kind: "folder", dir: "/apps/x/", word: "App" };
+    const whole = chipDoor({ kind: "whole", word: "App" }, app, null);
+    expect(whole.href).toBe("/explorer/view/apps/x");
+    expect(whole.isDir).toBe(true);
+    expect(whole.title).toBe("Open /apps/x");
+    const file = chipDoor({ kind: "file", name: "src/a.py", file: "/apps/x/src/a.py" }, app, null);
+    expect(file.href).toBe("/explorer/view/apps/x/src/a.py");
+    expect(file.isDir).toBeUndefined();
+    const onFile = chipDoor({ kind: "whole", word: "File" }, { kind: "file", file: "/apps/x/b.py" }, null);
+    expect(onFile.href).toBe("/explorer/view/apps/x/b.py");
+  });
+});
+

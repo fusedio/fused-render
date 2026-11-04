@@ -18,18 +18,16 @@ import {
   PEEK_WIDTH,
   PeekIntent,
   STAR_MARK_MS,
-  FAV_MARK_MS,
+  FAV_SETTLE_MS,
   bottomClear,
   dragResize,
-  favOpenMark,
   favChatElsewhere,
-  favCloseHolds,
-  favOpenStep,
+  favOpenVerdict,
   keepAlive,
-  openFavouriteFlow,
   peekPlacement,
   placeClear,
   railOnStarred,
+  railOpenFav,
   starMarkStep,
   starOutcome,
   type Box,
@@ -221,35 +219,6 @@ describe("bottomClear", () => {
     expect(bottomClear({ left: 400, top: 100, width: 420, height: 800 }, fav)).toBeUndefined();
     expect(bottomClear({ left: 924, top: 100, width: 420, height: 800 }, fav)).toBeUndefined();
     expect(bottomClear({ left: 924, top: 100, width: 420, height: 400 }, null)).toBeUndefined();
-  });
-});
-
-describe("favOpenStep", () => {
-  const T0 = 1_000_000;
-  it("holds the pressed key over a pulse still saying what it said at the press", () => {
-    const m = favOpenMark("B", null, null, T0);
-    expect(favOpenStep(m, null, true, T0 + 100)).toBe(m);
-  });
-  it("lets go once the pulse agrees", () => {
-    const m = favOpenMark("B", "A", null, T0);
-    expect(favOpenStep(m, "B", true, T0 + 100)).toBeNull();
-  });
-  it("follows the pulse when it names a key the mark is not waiting out (another window won)", () => {
-    const m = favOpenMark("B", null, null, T0);
-    expect(favOpenStep(m, "C", true, T0 + 100)).toBeNull();
-  });
-  it("a quick A-then-B waits out a pulse still saying A", () => {
-    const a = favOpenMark("A", null, null, T0);
-    const b = favOpenMark("B", null, a, T0 + 50);
-    expect(b.stale).toEqual([null, "A"]);
-    expect(favOpenStep(b, "A", true, T0 + 200)).toBe(b);
-    expect(favOpenStep(b, "B", true, T0 + 300)).toBeNull();
-  });
-  it("lets go when the key is no longer a live favourite, or past FAV_MARK_MS", () => {
-    const m = favOpenMark("B", null, null, T0);
-    expect(favOpenStep(m, null, false, T0 + 100)).toBeNull();
-    expect(favOpenStep(m, null, true, T0 + FAV_MARK_MS - 1)).toBe(m);
-    expect(favOpenStep(m, null, true, T0 + FAV_MARK_MS)).toBeNull();
   });
 });
 
@@ -787,6 +756,19 @@ describe("railOnStarred (onStarred wiring)", () => {
     railOnStarred(() => true, (k) => gone.push(k))("k1", true);
     expect(gone).toEqual(["k1"]);
   });
+  it("…and opens its favourite's card in this window, after the let-go", () => {
+    const log: string[] = [];
+    railOnStarred(
+      () => true,
+      (k) => log.push(`letGo:${k}`),
+      (k) => log.push(`open:${k}`),
+    )("k1", true);
+    expect(log).toEqual(["letGo:k1", "open:k1"]);
+    const off: string[] = [];
+    railOnStarred(() => true, () => {}, (k) => off.push(k))("k1", false);
+    railOnStarred(() => false, () => {}, (k) => off.push(k))("k1", true);
+    expect(off).toEqual([]);
+  });
   it("an unstar, or favourites off, lets go of nothing", () => {
     const gone: string[] = [];
     railOnStarred(() => true, (k) => gone.push(k))("k1", false);
@@ -800,56 +782,6 @@ describe("railOnStarred (onStarred wiring)", () => {
     on = true;
     cb("k1", true);
     expect(gone).toEqual(["k1"]);
-  });
-});
-
-// ---- A favourite's ring pressed (openFavouriteFlow) -------------------------
-
-describe("openFavouriteFlow", () => {
-  const run = (post: () => Promise<{ starred: boolean; open: boolean }>) => {
-    const log: string[] = [];
-    const done = openFavouriteFlow("k1", {
-      post: async (key) => {
-        log.push(`post:${key}`);
-        return post();
-      },
-      letGo: (key) => log.push(`letGo:${key}`),
-      fallback: () => log.push("press"),
-      fail: (m) => log.push(`fail:${m}`),
-    });
-    return { log, done };
-  };
-
-  it("writes FIRST and lets go only once the server says open", async () => {
-    const { log, done } = run(async () => ({ starred: true, open: true }));
-    // Nothing is let go before the answer.
-    expect(log).toEqual(["post:k1"]);
-    expect(await done).toBe(true);
-    expect(log).toEqual(["post:k1", "letGo:k1"]);
-  });
-
-  it("a refused write (409, 404, offline) says so once and falls back to the ring's press", async () => {
-    const { log, done } = run(async () => {
-      throw new Error("Task is archived");
-    });
-    expect(await done).toBe(false);
-    expect(log).toEqual(["post:k1", "fail:Task is archived", "press"]);
-  });
-
-  it("says the server's own detail, not the transport's bare HTTP status", async () => {
-    const { log, done } = run(async () => {
-      throw Object.assign(new Error("HTTP 409"), { status: 409, body: { detail: "archived: reopen refused" } });
-    });
-    await done;
-    expect(log).toContain("fail:archived: reopen refused");
-  });
-
-  it("an answer that is not open — unstarred elsewhere — falls back too, never lets go", async () => {
-    const { log, done } = run(async () => ({ starred: false, open: false }));
-    expect(await done).toBe(false);
-    expect(log.filter((l) => l.startsWith("letGo"))).toEqual([]);
-    expect(log.filter((l) => l.startsWith("fail:"))).toHaveLength(1);
-    expect(log[log.length - 1]).toBe("press");
   });
 });
 
@@ -872,19 +804,26 @@ describe("rowOf", () => {
   });
 });
 
-describe("favCloseHolds", () => {
-  const landed = [{ key: "A" }];
-  it("holds until the close write landed", () => {
-    expect(favCloseHolds(null, [{ key: "A" }], true)).toBe(true);
+describe("favOpenVerdict", () => {
+  const T0 = 1_000_000;
+  const row = (starred: boolean, status = "done") => ({ starred, status });
+  it("a starred row shows; an archived one never does", () => {
+    expect(favOpenVerdict(row(true), true, false, null, T0)).toBe("show");
+    expect(favOpenVerdict(row(true, "archived"), true, true, T0, T0)).toBe("close");
   });
-  it("holds on the rows in hand when it landed, even saying open", () => {
-    expect(favCloseHolds(landed, landed, true)).toBe(true);
+  it("unstarred (or erased) after the pulse said it live: closes, however fresh the press", () => {
+    expect(favOpenVerdict(row(false), true, true, T0, T0 + 10)).toBe("close");
+    expect(favOpenVerdict(undefined, true, true, null, T0)).toBe("close");
   });
-  it("a later pulse saying the key open is a reopen elsewhere: shows", () => {
-    expect(favCloseHolds(landed, [{ key: "A" }], true)).toBe(false);
+  it("a star just pressed here shows ahead of the pulse — until FAV_SETTLE_MS", () => {
+    expect(favOpenVerdict(row(false), true, false, T0, T0 + 100)).toBe("show");
+    expect(favOpenVerdict(undefined, true, false, T0, T0 + 100)).toBe("wait");
+    expect(favOpenVerdict(row(false), true, false, T0, T0 + FAV_SETTLE_MS)).toBe("close");
   });
-  it("a later pulse saying it closed holds", () => {
-    expect(favCloseHolds(landed, [{ key: "A" }], false)).toBe(true);
+  it("a stored key (a reload) waits for the first pulse, then follows it", () => {
+    expect(favOpenVerdict(undefined, false, false, null, T0)).toBe("wait");
+    expect(favOpenVerdict(row(false), true, false, null, T0)).toBe("close");
+    expect(favOpenVerdict(undefined, true, false, null, T0)).toBe("close");
   });
 });
 
@@ -905,3 +844,20 @@ describe("favChatElsewhere", () => {
     expect(favChatElsewhere({ key: "k2", session_id: null }, null, null)).toBeNull();
   });
 });
+
+describe("railOpenFav (the open favourite as the rail counts it)", () => {
+  const T0 = 1_000_000;
+  const favs = new Set(["F"]);
+  it("a key in the favourites counts, whenever it was opened", () => {
+    expect(railOpenFav("F", favs, null, T0)).toBe("F");
+  });
+  it("a key just opened here counts while the pulse lags, for FAV_SETTLE_MS", () => {
+    expect(railOpenFav("S", favs, T0, T0 + 1000)).toBe("S");
+    expect(railOpenFav("S", favs, T0, T0 + FAV_SETTLE_MS)).toBeNull();
+  });
+  it("a key nobody here just opened, and no key, count nothing", () => {
+    expect(railOpenFav("S", favs, null, T0)).toBeNull();
+    expect(railOpenFav(null, favs, T0, T0)).toBeNull();
+  });
+});
+

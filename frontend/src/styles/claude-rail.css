@@ -169,7 +169,8 @@
 /* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): the rail's last
    section, under the git seats and a tight hairline of its own. The ring
    whose card is up (`.is-open`, the shell's FavouritePeek) wears the pinned
-   wash.
+   wash — and is the section's ONE active ring: no other favourite wears
+   `.is-last`, `.is-pinned` or `.active` meanwhile (ClaudeRail `activeRing`).
    A SHORT RAIL WITH MANY STARS: the list above gives up its rings first —
    this block's shrink is a token beside the list's, so the flex algorithm
    takes the list down to nothing before it touches this — and then this
@@ -338,8 +339,10 @@
    the corner's resize cursor. Quiet until the pointer rests on the corner
    (owner, 2026-11-02: "show it when we hover over the corner … when we drag
    the corner it changes color to accent"): a short L in the ink's tone
-   traces the corner under the pointer, and turns to the accent while the
-   drag is on. Children of the fixed box, not of the card
+   traces the corner under the pointer, and stays in that tone while the
+   drag is on — NO ACCENT while resizing (owner, 2026-11-04: "when resizing
+   we show accent border colour — let's not do that"): the cursor and the
+   ink's trace are the whole feedback. Children of the fixed box, not of the card
    (the card clips its overflow), above the head and the chat. */
 .claude-rail-peek-grip {
   position: absolute;
@@ -384,14 +387,11 @@
 .claude-rail-peek-grip.is-active::after {
   opacity: 1;
 }
-.claude-rail-peek-grip.is-active::after {
-  color: var(--accent);
-}
 /* THE EDGE GRIPS (owner, 2026-11-04: "resize … from edges as well: left,
    top and bottom"): 6px hit strips centred on the card's border, short of
    the corners (whose 12px grips sit over the strips' ends and win). The
    same quiet trace as the corners — a 2px line along the edge, the ink's
-   tone on hover, the accent while the drag is on. */
+   tone on hover and while the drag is on (no accent). */
 .claude-rail-peek-grip.is-l,
 .claude-rail-peek-grip.is-t,
 .claude-rail-peek-grip.is-b {
@@ -594,8 +594,10 @@
 }
 /* THE PULSE SEAT: "2 ▭ 3m ago" as muted words (no chip), and the archive
    button standing over the words' right end, shown on hover or focus — the
-   List row's hover-revealed actions (owner, 2026-11-02: "only on hover over
-   that area, like we did in card view"). The button carries the card's
+   List row's hover-revealed actions. Revealed by a hover ANYWHERE over the
+   card's head, both rows (owner, 2026-11-04: "when we hover over the top bar
+   we should show the archive icon, instead of only when hovering the time
+   part"), or by the keyboard on it. The button carries the card's
    background so it covers the age it stands on. A seat with no words
    (`is-bare`) shows the button at rest. */
 .claude-rail-peek-pulse {
@@ -646,7 +648,7 @@
   background: linear-gradient(to right, transparent, var(--bg) 42%);
   transition: opacity 0.12s ease;
 }
-.claude-rail-peek-pulse:hover .claude-rail-peek-archive,
+.claude-rail-peek-head:hover .claude-rail-peek-pulse .claude-rail-peek-archive,
 .claude-rail-peek-pulse:focus-within .claude-rail-peek-archive,
 .claude-rail-peek-pulse.is-bare .claude-rail-peek-archive {
   opacity: 1;
@@ -656,7 +658,8 @@
   color: var(--fg);
   background: linear-gradient(to right, transparent, var(--bg) 42%);
 }
-.claude-rail-peek-pulse .claude-rail-peek-archive:disabled {
+/* Under the head (four classes' weight): above the head-hover reveal. */
+.claude-rail-peek-head .claude-rail-peek-pulse .claude-rail-peek-archive:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -760,28 +763,33 @@
   color: var(--fg);
   background: rgba(var(--tint), 0.06);
 }
-/* The node chip is a button (it selects the node in the workbench): the
-   same chip, with a button's UA styles reset and a hover wash like the
-   head's other seats. */
-button.claude-rail-peek-scope.is-node {
-  margin: 0;
-  font-family: inherit;
+/* The where-chip is a LINK (RailPeek; owner, 2026-11-04: "click on the tag
+   — we should go to the page/node, wherever we have"): the same chip, no
+   underline, and a hover wash like the head's other seats. The chip naming
+   the page's own selection is `aria-disabled` and stays still. */
+a.claude-rail-peek-scope,
+a.claude-rail-peek-scope:hover {
+  text-decoration: none;
+}
+a.claude-rail-peek-scope {
+  display: inline-block;
   cursor: pointer;
   transition:
     background-color 0.12s ease,
     border-color 0.12s ease;
 }
-button.claude-rail-peek-scope.is-node[aria-disabled="true"] {
+a.claude-rail-peek-scope[aria-disabled="true"] {
   cursor: default;
 }
-button.claude-rail-peek-scope.is-node:not([aria-disabled="true"]):hover {
+a.claude-rail-peek-scope:not([aria-disabled="true"]):hover {
+  color: var(--fg);
   background: rgba(var(--tint), 0.14);
   border-color: rgba(var(--tint), 0.35);
 }
-button.claude-rail-peek-scope.is-node:not([aria-disabled="true"]):active {
+a.claude-rail-peek-scope:not([aria-disabled="true"]):active {
   background: rgba(var(--tint), 0.2);
 }
-button.claude-rail-peek-scope.is-node:focus-visible {
+a.claude-rail-peek-scope:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

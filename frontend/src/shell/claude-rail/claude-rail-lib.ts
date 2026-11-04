@@ -42,7 +42,8 @@
 // its place under the running ones, not the rail's head.
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { isDraftTask, sortForList, taskColumn } from "@shell/tasks-lib";
-import type { WorkbenchEnv } from "@apps/canvases/api";
+import { canvasPagePath, type WorkbenchEnv } from "@apps/canvases/api";
+import { urlForFsPath } from "@platform/lib/router";
 
 /** One rail seat: the pulse row (live status) and, once the listing holds it,
  *  the full row the caption is built from. */
@@ -107,11 +108,9 @@ function inFolder(t: Pick<TaskPulseTask, "target" | "project">, dir: string): bo
 export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
   if (!t.session_id && !place.sessionless) return false;
   if (taskColumn(t) === "archived") return false;
-  if (place.kind === "folder") return inFolder(t, place.dir);
-  if (place.kind === "file") return (t.target || "") === place.file;
+  if (!inPlace(t, place)) return false;
+  if (place.kind !== "canvas" || !place.file) return true;
   const named = !!t.canvas && t.canvas.env === place.env && t.canvas.name === place.name;
-  if (!named && !(place.dir !== null && t.project === place.dir)) return false;
-  if (!place.file) return true;
   // A row the server stamped names its node; one that predates `task.canvas`
   // is matched by its target, the node's file under the clone. BY NAME, not
   // by file: the page's selected file is guessed from the workbench's echo,
@@ -123,6 +122,86 @@ export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
   const base = trimSlash(place.dir) + "/";
   const rest = (t.target || "").startsWith(base) ? t.target!.slice(base.length) : "";
   return !!rest && !rest.includes("/") && nodeName(rest) === want;
+}
+
+/** Is the row in this place at all — the place's ROOT: the folder (or under
+ *  it), the file, the canvas (by its stamp, or by its clone as project). The
+ *  node narrowing, the session and the archive are `onRail`'s, not this. */
+export function inPlace(t: Pick<TaskPulseTask, "canvas" | "target" | "project">, place: RailPlace): boolean {
+  if (place.kind === "folder") return inFolder(t, place.dir);
+  if (place.kind === "file") return (t.target || "") === place.file;
+  const named = !!t.canvas && t.canvas.env === place.env && t.canvas.name === place.name;
+  return named || (place.dir !== null && t.project === place.dir);
+}
+
+/** The place a row lives in on its own, wherever the rail stands: its canvas
+ *  when the server stamped one, else its project folder, else its target
+ *  file. (The shell's favourite card, which belongs to no page, and a
+ *  favourite's hover card on a rail somewhere else.) */
+export function ownPlace(t: Pick<TaskPulseTask, "canvas" | "target" | "project">): RailPlace {
+  if (t.canvas) return { kind: "canvas", env: t.canvas.env, name: t.canvas.name, dir: t.project || null };
+  if (t.project) return { kind: "folder", dir: t.project, word: "Folder" };
+  return { kind: "file", file: t.target || "" };
+}
+
+/** THE PLACE A CARD'S WHERE-CHIP NAMES (RailPeek's head): the rail's own
+ *  place when the row is in it, else the row's own (`ownPlace`) — a
+ *  favourite from another canvas or folder, hovered on this rail, says where
+ *  IT lives, not where the rail stands. */
+export function chipPlace(t: Pick<TaskPulseTask, "canvas" | "target" | "project">, place: RailPlace): RailPlace {
+  return inPlace(t, place) ? place : ownPlace(t);
+}
+
+/** The canvas the PAGE stands on, when the page can select a node in place
+ *  (the canvas page's rail: CanvasWorkspace `selectFromRail`): its env and
+ *  name, the node selected now (its file, or null), and the select itself
+ *  (null: the canvas as a whole). */
+export interface RailHere {
+  env: WorkbenchEnv;
+  name: string;
+  file: string | null;
+  select: (udfName: string | null) => void;
+}
+
+/** WHERE THE WHERE-CHIP GOES (owner, 2026-11-04: "click on the tag — we
+ *  should go to the page/node, wherever we have"): the place's own page —
+ *  the canvas page (with the node selected when the chip names one, the
+ *  Tasks door's `canvasPagePath`), the explorer's folder page, its file page.
+ *  `href` is always that page (a modified click opens it in a tab); `select`
+ *  is set only when the chip's canvas IS the page's (`here`): the page
+ *  selects the node in the workbench instead of navigating (`current`: it
+ *  already is the selection, nothing to do). */
+export interface ChipDoor {
+  href: string;
+  /** The navigation hint for a folder (router `navigateUrl` `isDir`). */
+  isDir?: boolean;
+  title: string;
+  select?: { udfName: string | null; current: boolean };
+}
+
+export function chipDoor(
+  scope: RailScope,
+  at: RailPlace,
+  here: Pick<RailHere, "env" | "name" | "file"> | null,
+): ChipDoor {
+  if (at.kind === "canvas") {
+    const file = scope.kind === "node" ? scope.file : undefined;
+    const href = canvasPagePath(at.env, at.name, file ? { file } : undefined);
+    const title = scope.kind === "node" ? `Open ${scope.name} on ${at.name}` : `Open the canvas ${at.name}`;
+    if (!here || here.env !== at.env || here.name !== at.name) return { href, title };
+    const udfName = scope.kind === "node" ? scope.name : null;
+    const now = here.file ? nodeName(here.file) : null;
+    const current = udfName === now;
+    return {
+      href,
+      title: current ? (udfName ? `On ${udfName}, selected` : `On the canvas ${at.name}`) : title,
+      select: { udfName, current },
+    };
+  }
+  if (scope.kind === "file") return { href: urlForFsPath(scope.file), title: `Open ${scope.file}` };
+  if (at.kind === "file") return { href: urlForFsPath(at.file), title: `Open ${at.file}` };
+  const dir = trimSlash(at.dir);
+  return { href: urlForFsPath(dir), isDir: true, title: `Open ${dir}` };
 }
 
 /** A node file's name as the workbench names the node: the file's stem
@@ -299,4 +378,76 @@ export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<strin
 export function listSeats(seats: RailRow[], favsOn: boolean): RailRow[] {
   if (!favsOn || !seats.some((s) => s.pulse.starred)) return seats;
   return seats.filter((s) => !s.pulse.starred);
+}
+
+/** WHICH RING OF A SECTION WEARS THE ACTIVE WASH (owner, 2026-11-04: "in one
+ *  section at a time only one item should be active"): the first of
+ *  `wants`, in order, that is one of the section's `keys` — or none. The
+ *  favourites ask for their open card's ring, then their last-pressed ring;
+ *  the list for the ring its pinned card shows, then its last-pressed ring,
+ *  then the session the page's URL names (ClaudeRail). */
+export function activeRing(keys: readonly string[], wants: readonly (string | null | undefined)[]): string | null {
+  for (const w of wants) if (w && keys.includes(w)) return w;
+  return null;
+}
+
+/** WHAT ONE RING WEARS, AND WHETHER IT OPENS THE RAIL'S HOVER CARD
+ *  (ClaudeRail `ringOf`), pure so the per-section rules are provable:
+ *   - `.active` (the URL's session) and `.is-last` (the section's last
+ *     press) only on the section's ONE active ring (`activeRing`) while the
+ *     favourites are on; off, every mark as before (flag-off parity);
+ *   - `.is-open` on the favourites' ring whose card is open in this window,
+ *     which then wears no `.is-last` beside it;
+ *   - `.peeked` while the rail's card shows the ring's chat — a hover's
+ *     wash, transient — but the PERSISTENT washes never on a favourite: a
+ *     favourite's press opens the favourite's own card and never pins this
+ *     rail's (`is-pinned`), and the held accent is the favourites-off rail's
+ *     alone (`is-held`). A press INSIDE the rail's card over a favourite's
+ *     ring may still hold that card (typing in it); its ring keeps
+ *     `.peeked` only;
+ *   - THE OPEN FAVOURITE'S RING OPENS NO HOVER CARD (`hovers` false), in
+ *     whichever section it stands: the foot's ring of the open favourite,
+ *     and — for a moment after a star pressed in the rail's card, before
+ *     the pulse moves it to the foot — its ring still in the list (rail-peek-
+ *     lib `railOpenFav`). Its hover is its caption; two cards on one chat
+ *     would be two composers on one draft. */
+export interface RingMarkInput {
+  key: string;
+  /** In the favourites section. */
+  foot: boolean;
+  favsOn: boolean;
+  peekOn: boolean;
+  /** The chat the rail's card shows, and whether a press pinned it. */
+  peekKey: string | null;
+  pinned: boolean;
+  /** The favourites-off pin's hold. */
+  held: boolean;
+  /** This window's open favourite as the rail counts it (`railOpenFav`). */
+  openFavKey: string | null;
+  /** The ring's session is the one the page's URL names. */
+  sessionHere: boolean;
+  /** The ring is its section's last press. */
+  isLast: boolean;
+  activeList: string | null;
+  activeFav: string | null;
+}
+
+export function ringMarks(o: RingMarkInput): { classes: string[]; hovers: boolean; favRing: boolean } {
+  const peeked = o.peekOn && o.peekKey === o.key;
+  const favRing = o.favsOn && o.openFavKey === o.key;
+  const one = o.favsOn;
+  const fav = o.foot || favRing;
+  const classes: string[] = [];
+  if (o.sessionHere && (!one || (!o.foot && o.activeList === o.key))) classes.push("active");
+  if (peeked) classes.push("peeked");
+  if (peeked && o.pinned && !fav) classes.push("is-pinned");
+  if (peeked && o.held && !o.favsOn) classes.push("is-held");
+  if (o.foot) classes.push("is-fav");
+  if (o.foot && o.openFavKey === o.key) classes.push("is-open");
+  if (
+    o.isLast &&
+    (!one || (o.foot ? o.activeFav === o.key && o.openFavKey !== o.key : o.activeList === o.key))
+  )
+    classes.push("is-last");
+  return { classes, hovers: o.peekOn && !favRing, favRing };
 }
