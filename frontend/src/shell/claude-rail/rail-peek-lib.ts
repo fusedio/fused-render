@@ -716,6 +716,31 @@ export function favOpenStep(mark: FavOpenMark, pulseOpen: string | null, live: b
   return mark;
 }
 
+/** Whether a × (`closing`) still hides the favourite's card. `landed`: the
+ *  pulse rows in hand when the close write landed (null: not landed yet).
+ *  A pulse read AFTER that (other rows) that still says the key open is a
+ *  reopen — another window's, landing behind this one's close — so the card
+ *  shows (CodeRabbit, PR #2100). Anything else holds. */
+export function favCloseHolds(landed: object | null, rows: object, saysOpen: boolean): boolean {
+  return !(saysOpen && landed !== null && rows !== landed);
+}
+
+/** Where the favourite's chat already is, so its card keeps none of its own
+ *  (one chat, one composer): `"pane"` when the page's URL names its session
+ *  (the Claude pane, the Open door), `"peek"` when the Tasks side peek shows
+ *  it (platform/lib/peek-session), else null. */
+export function favChatElsewhere(
+  fav: { key: string; session_id?: string | null } | null,
+  urlSession: string | null,
+  peekSession: string | null,
+): "pane" | "peek" | null {
+  if (!fav) return null;
+  const names = (sid: string | null) => !!sid && (sid === fav.session_id || sid === fav.key);
+  if (names(urlSession)) return "pane";
+  if (names(peekSession)) return "peek";
+  return null;
+}
+
 /** THE ROW THE RAIL STANDS IN — the box the card is placed against and
  *  watched for resizes: the rail's nearest ancestor that HAS a box. The
  *  explorer's file view portals the rail into `.stat-side-slot`, which is

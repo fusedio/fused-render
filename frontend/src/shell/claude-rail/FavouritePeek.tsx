@@ -50,7 +50,8 @@
 // pulse took.
 //
 // ONE CHAT, ONE COMPOSER: while the page's URL names this favourite's
-// session (the pane open on it, the Open door taken), the pane holds the
+// session (the pane open on it, the Open door taken) — or the Tasks side
+// peek shows it (platform/lib/peek-session) — that one holds the
 // chat — the card unmounts its own and says where it is, the record and the
 // card's place kept, and mounts it again when the URL moves on.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -72,7 +73,8 @@ import { useUrlVersion } from "@platform/lib/hooks";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import type { RailPlace, RailRow } from "./claude-rail-lib";
-import { FAV_HEIGHT, FAV_WIDTH, errorWords, rowOf, type PeekWish } from "./rail-peek-lib";
+import { FAV_HEIGHT, FAV_WIDTH, errorWords, favChatElsewhere, favCloseHolds, rowOf, type PeekWish } from "./rail-peek-lib";
+import { usePeekSession } from "@platform/lib/peek-session";
 
 export const FAV_PEEK_ID = "claude-rail-fav-peek";
 
@@ -80,6 +82,10 @@ export const FAV_PEEK_ID = "claude-rail-fav-peek";
  *  that preview could be a bit smaller"); the bottom on the rail's. The
  *  reader's drag from its top and left edges replaces the width and height
  *  (RailPeek `resizeKey`, ui-layout `canvasRailFav`). */
+/** How long a × (or unstar) hides the card ahead of a pulse that never
+ *  says closed (`closing`). */
+const CLOSING_MS = 10_000;
+
 const FAV_SIZE: PeekWish = { width: FAV_WIDTH, maxHeight: FAV_HEIGHT, align: "bottom" };
 
 /** The place the card says the chat is on: the row's own canvas, else its
@@ -166,9 +172,35 @@ export function FavouritePeek() {
   useEffect(() => {
     if (closing && closing !== openKey) setClosing(null);
   }, [closing, openKey]);
+  // …or once a pulse read AFTER the close write landed (`closeLanded`; any
+  // rows other than the ones in hand then) says that key OPEN: a real
+  // reopen — another window's, say, landing behind this one's close, whether
+  // or not a pulse here ever said closed between them — and it shows
+  // (rail-peek-lib `favCloseHolds`; CodeRabbit, PR #2100). CLOSING_MS is
+  // the backstop for a pulse that never comes.
+  const [closeLanded, setCloseLanded] = useState<string | null>(null);
+  const landedRows = useRef<object | null>(null);
+  useEffect(() => {
+    if (!closing || closeLanded !== closing) {
+      landedRows.current = null;
+      return;
+    }
+    if (landedRows.current === null) {
+      landedRows.current = rows;
+      return;
+    }
+    const saysOpen = rows.some((t) => t.key === closing && t.starred_open);
+    if (!favCloseHolds(landedRows.current, rows, saysOpen)) setClosing(null);
+  }, [closing, closeLanded, rows]);
+  useEffect(() => {
+    if (!closing) return;
+    const id = window.setTimeout(() => setClosing((c) => (c === closing ? null : c)), CLOSING_MS);
+    return () => window.clearTimeout(id);
+  }, [closing]);
   // …or once an "open" on that key is answered open: × then the same ring
   // again before the pulse ever said closed leaves `openKey` unchanged.
   const markOpened = opened.mark;
+  const dropOpened = opened.drop;
   useEffect(
     () =>
       onFavOpened((key) => {
@@ -178,10 +210,11 @@ export function FavouritePeek() {
     [markOpened],
   );
   const shown = on && seat && rail && !noRoom && closing !== seat.pulse.key ? seat : null;
-  // The pane (or the Open door) on this very session (header): no chat here.
+  // The pane (or the Open door) on this very session (header), or the Tasks
+  // side peek showing it: no chat here.
   useUrlVersion();
-  const sid = urlSession();
-  const elsewhere = !!seat && !!sid && (sid === seat.pulse.session_id || sid === seat.pulse.key);
+  const peekSid = usePeekSession();
+  const elsewhere = favChatElsewhere(seat?.pulse ?? null, urlSession(), peekSid);
   const kept = useMemo(() => (seat && !elsewhere ? [seat] : []), [seat, elsewhere]);
 
   // FOCUS NEVER FALLS TO THE BODY (header). Whether the keyboard was last
@@ -264,17 +297,25 @@ export function FavouritePeek() {
       if (why === "door" || !open) return;
       const key = open.key;
       setClosing(key);
+      landedRows.current = null;
+      setCloseLanded(null);
+      // A press's mark on this key must not hold the card up past `closing`.
+      dropOpened(key);
       // An unstar dropped the record with the star: nothing more to write.
       if (why === "unstar") {
         unstarred.current = key;
+        setCloseLanded(key);
         return;
       }
-      setTaskFavourite(key, null, false).then(pokeTasks, (err: unknown) => {
+      setTaskFavourite(key, null, false).then(() => {
+        setCloseLanded(key);
+        pokeTasks();
+      }, (err: unknown) => {
         setClosing((c) => (c === key ? null : c));
         notify({ title: errorWords(err, "The favourite could not be closed"), tone: "error" });
       });
     },
-    [open],
+    [open, dropOpened],
   );
   useEffect(() => () => publishFavBox(null), []);
   if (!on || !seat || !place) return null;
@@ -297,7 +338,7 @@ export function FavouritePeek() {
       onHold={noop}
       onDismiss={close}
       dismissOnUnstar
-      bodyNote={elsewhere ? "Open in the Claude panel" : null}
+      bodyNote={elsewhere === "peek" ? "Open in the Tasks peek" : elsewhere ? "Open in the Claude panel" : null}
       onNoRoom={() => setNoRoom(true)}
       onOpenChat={(href) => navigateUrl(href)}
       onPin={noop}

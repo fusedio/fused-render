@@ -133,6 +133,27 @@ test("the prefs PUT helper is what announces: its answer reaches every listener"
   await settlesTo(seen, false);
 });
 
+test("an OLDER revision heard after a newer one is ignored (late PUT answer)", async () => {
+  answer = async () => BOTH_ON;
+  const seen = await probe();
+  const otherTab = new BroadcastChannel("fused-render:prefs");
+  try {
+    otherTab.postMessage({ prefs: { revision: 20, task_favourites: { enabled: false } } });
+    await settlesTo(seen, false);
+    // Answered first, heard last: the switch stays as the newer write left it.
+    otherTab.postMessage({ prefs: { revision: 10, task_favourites: { enabled: true } } });
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 50));
+    });
+    expect(seen[seen.length - 1]).toBe(false);
+    // A newer one still lands.
+    otherTab.postMessage({ prefs: { revision: 30, task_favourites: { enabled: true } } });
+    await settlesTo(seen, true);
+  } finally {
+    otherTab.close();
+  }
+});
+
 test("a posted payload WITHOUT the field is not an answer about it", async () => {
   answer = async () => BOTH_ON;
   const seen = await probe();

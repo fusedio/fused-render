@@ -173,19 +173,23 @@
    A SHORT RAIL WITH MANY STARS: the list above gives up its rings first —
    this block's shrink is a token beside the list's, so the flex algorithm
    takes the list down to nothing before it touches this — and then this
-   block shrinks too, down to a floor of three rings (`--rail-favs`, set
-   inline: fewer when there are fewer) and SCROLLS inside the rail, its
-   scrollbar hidden like the sidebar's own scrolling middle
-   (.sidebar-rail-scroll). Every favourite stays reachable; none draws under
-   the status bar. The 2px padding inside the clip is the rings' wash room,
-   as on `.claude-rail-chats`. */
+   block shrinks too and SCROLLS inside the rail, its scrollbar hidden like
+   the sidebar's own scrolling middle (.sidebar-rail-scroll). Its floor is
+   whatever the fixed seats (the +, the foot, the Git section) leave — three
+   rings or more on any rail that has them to give, since nothing else
+   shrinks after the list — and NEVER a hard `min-height`: a floor taller
+   than the leftover pushed the block's tail under the items' clip, where
+   its last rings could not be scrolled to (CodeRabbit, PR #2100). Every
+   favourite stays reachable; none draws under the status bar. The 2px
+   padding inside the clip is the rings' wash room, as on
+   `.claude-rail-chats`. */
 .claude-rail-favs {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
   flex: 0 0.001 auto;
-  min-height: calc(var(--rail-favs, 3) * 32px - 4px);
+  min-height: 0;
   width: 100%;
   overflow-x: hidden;
   overflow-y: auto;

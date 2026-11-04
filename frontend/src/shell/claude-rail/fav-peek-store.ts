@@ -141,9 +141,10 @@ export function takeFavFocus(key: string): boolean {
 }
 
 /** THE READER MOVED ON (CodeRabbit, PR #2100): a pending wish is withdrawn
- *  when the keyboard lands on a control that is neither inside `card` nor
- *  the ring that asked (its `data-task-key`) — a × taking the keyboard back
- *  seconds later would undo where the reader went meanwhile. The body (the
+ *  when the keyboard lands on a control that is neither inside `card`, nor
+ *  the ring that asked (its `data-task-key`), nor the rail itself (where
+ *  `focusRail` parks the keyboard) — a × taking the keyboard back seconds
+ *  later would undo where the reader went meanwhile. The body (the
  *  removed-ring case: focus fell to nowhere) and a non-element target
  *  withdraw nothing. */
 export function withdrawFavFocusOn(target: EventTarget | null, card: Element | null): void {
@@ -152,6 +153,7 @@ export function withdrawFavFocusOn(target: EventTarget | null, card: Element | n
   const el = target as Element;
   if (typeof el.closest !== "function") return;
   if (el.tagName === "BODY" || el.tagName === "HTML") return;
+  if (el === live.rail || rails.includes(el as HTMLElement)) return;
   if (card?.contains(el)) return;
   const ring = el.closest<HTMLElement>(".claude-rail-chat[data-task-key]");
   if (ring?.dataset.taskKey === key) return;

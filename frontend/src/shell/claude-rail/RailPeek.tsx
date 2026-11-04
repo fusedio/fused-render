@@ -929,8 +929,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
 
   // THE STAR (header): the server stores it, the pulse brings it back to
   // every rail. A plain star (`setTaskFavourite` with `open` omitted) opens
-  // the favourite's card only when no other favourite is open — else it is
-  // recorded closed. UNSTARRING shuts the card only under `dismissOnUnstar`
+  // the favourite's card and closes whichever was open — a star you just
+  // pressed is a card you want to see. UNSTARRING shuts the card only under `dismissOnUnstar`
   // (the favourite's card host, FavouritePeek) — its ring leaves the foot,
   // and a card with no ring to stand beside lets go — and only if the card
   // is still on that chat when the call returns.

@@ -149,7 +149,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -1522,9 +1521,6 @@ export function ClaudeRail({
               className="claude-rail-favs"
               role="list"
               aria-label="Favourite chats"
-              // Its floor: up to three rings stay in view however short the
-              // rail (claude-rail.css `.claude-rail-favs`).
-              style={{ "--rail-favs": Math.min(3, favs.length) } as CSSProperties}
             >
               {favs.map((seat) => ringOf(seat, true))}
             </div>

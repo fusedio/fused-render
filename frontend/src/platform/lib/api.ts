@@ -1513,6 +1513,9 @@ export interface ContribPrefs {
 }
 
 export interface Prefs {
+  /** Grows with every prefs write (server `_REVISION`): of two PUT answers
+   *  heard out of order on the prefs channel, the larger one wins. */
+  revision?: number;
   engine: EnginePrefs;
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
@@ -1960,9 +1963,25 @@ export function getPrefsShared(): Promise<Prefs> {
 const PREFS_CHANNEL = "fused-render:prefs";
 let prefsListen: BroadcastChannel | null = null;
 const prefsElsewhere = new Set<(p: Prefs) => void>();
+// The newest `revision` this page has seen — its own PUT answers and the
+// channel's. A slow PUT answered BEFORE a later one but heard after it would
+// otherwise put the older switch back here (CodeRabbit, PR #2100).
+let prefsRevision = -Infinity;
+
+/** Note `p`'s revision; false = it is older than one already seen, so not
+ *  an answer any more. A payload without one (an old server) always lands. */
+function prefsFresh(p: Prefs): boolean {
+  const rev = p.revision;
+  if (typeof rev !== "number") return true;
+  if (rev < prefsRevision) return false;
+  prefsRevision = rev;
+  return true;
+}
 
 function announcePrefs(next: Prefs) {
   if (typeof BroadcastChannel !== "function" || !next || typeof next !== "object") return;
+  // Already superseded here: every other page has heard the newer one too.
+  if (!prefsFresh(next)) return;
   try {
     // Posted on a throwaway channel: a post is queued for every other channel
     // at once, so closing straight after loses nothing — and nothing here is
@@ -1996,7 +2015,7 @@ export function onPrefsWrittenElsewhere(handler: (p: Prefs) => void): () => void
     (ch as unknown as { unref?: () => void }).unref?.();
     ch.onmessage = (ev: MessageEvent) => {
       const p = (ev.data as { prefs?: Prefs } | null)?.prefs;
-      if (!p || typeof p !== "object") return;
+      if (!p || typeof p !== "object" || !prefsFresh(p)) return;
       for (const h of prefsElsewhere) h(p);
     };
   }
@@ -2013,6 +2032,7 @@ export function resetPrefsChannelForTests(): void {
   prefsElsewhere.clear();
   prefsListen?.close();
   prefsListen = null;
+  prefsRevision = -Infinity;
 }
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {

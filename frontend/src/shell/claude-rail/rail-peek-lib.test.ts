@@ -22,6 +22,8 @@ import {
   bottomClear,
   dragResize,
   favOpenMark,
+  favChatElsewhere,
+  favCloseHolds,
   favOpenStep,
   keepAlive,
   openFavouriteFlow,
@@ -867,5 +869,39 @@ describe("rowOf", () => {
     } finally {
       (globalThis as { getComputedStyle: unknown }).getComputedStyle = real;
     }
+  });
+});
+
+describe("favCloseHolds", () => {
+  const landed = [{ key: "A" }];
+  it("holds until the close write landed", () => {
+    expect(favCloseHolds(null, [{ key: "A" }], true)).toBe(true);
+  });
+  it("holds on the rows in hand when it landed, even saying open", () => {
+    expect(favCloseHolds(landed, landed, true)).toBe(true);
+  });
+  it("a later pulse saying the key open is a reopen elsewhere: shows", () => {
+    expect(favCloseHolds(landed, [{ key: "A" }], true)).toBe(false);
+  });
+  it("a later pulse saying it closed holds", () => {
+    expect(favCloseHolds(landed, [{ key: "A" }], false)).toBe(true);
+  });
+});
+
+describe("favChatElsewhere", () => {
+  const fav = { key: "k1", session_id: "s1" };
+  it("the URL on its session: the pane has it", () => {
+    expect(favChatElsewhere(fav, "s1", null)).toBe("pane");
+    expect(favChatElsewhere(fav, "k1", "s1")).toBe("pane");
+  });
+  it("the Tasks side peek on its session: the peek has it", () => {
+    expect(favChatElsewhere(fav, null, "s1")).toBe("peek");
+    expect(favChatElsewhere(fav, "other", "s1")).toBe("peek");
+  });
+  it("another session, or none: the card keeps its chat", () => {
+    expect(favChatElsewhere(fav, "s2", "s3")).toBeNull();
+    expect(favChatElsewhere(fav, null, null)).toBeNull();
+    expect(favChatElsewhere(null, "s1", "s1")).toBeNull();
+    expect(favChatElsewhere({ key: "k2", session_id: null }, null, null)).toBeNull();
   });
 });

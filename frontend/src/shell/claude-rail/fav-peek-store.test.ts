@@ -130,6 +130,14 @@ describe("the pending focus, withdrawn when the reader moves on", () => {
     expect(takeFavFocus("k1")).toBe(true);
   });
 
+  it("the rail itself (where focusRail parks the keyboard) keeps it", () => {
+    const r = Object.assign(target("NAV"), { isConnected: true }) as unknown as HTMLElement;
+    registerRail(r);
+    requestFavFocus("k1");
+    withdrawFavFocusOn(r, card());
+    expect(takeFavFocus("k1")).toBe(true);
+  });
+
   it("with no wish pending, nothing happens", async () => {
     withdrawFavFocusOn(target("INPUT"), null);
     await settle();
