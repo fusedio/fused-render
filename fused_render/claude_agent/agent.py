@@ -6165,6 +6165,11 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
         meta = {}
     if not isinstance(meta, dict):
         meta = {}
+    if meta.get("breakout") is True:
+        # A breakout is pinned to Ask mode (_argv forces `default`): a mode
+        # switch here would loosen the read-only policy's approval path.
+        return {"error": "Breakout chats stay in Ask mode",
+                "reason": "breakout_locked"}
     backend = _meta_backend(host if host.get("backend") in BACKENDS else meta)
     # `host.json`'s "mode" is the CLI-wire form (_start's `cli_mode`, e.g.
     # "acceptEdits"), the same shape `--permission-mode` takes and
