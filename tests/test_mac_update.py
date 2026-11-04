@@ -1633,12 +1633,17 @@ def test_a_later_install_replaces_the_staged_copy(monkeypatch, tmp_path):
     import shutil
     shutil.rmtree(tmp_path / "mount")
     monkeypatch.setattr(manager, "_verify_app_version", lambda app, version: None)
-    _stage_through_fakes(monkeypatch, manager, tmp_path)
+    removed = _stage_through_fakes(monkeypatch, manager, tmp_path)
 
     assert (bundle / "Contents" / "marker").read_text() == "the running bundle"
     assert _old_bundles(tmp_path) == []
     assert not (tmp_path / ".FusedRender-update.app" / "Contents" / "marker").exists()
     assert manager._disk_version() == "9.9.9"  # the fake image is always 9.9.9
+    # The older copy was moved aside and deleted THERE — never rmtree'd under
+    # the staged name, which a concurrent quit's apply reads (bugbot, PR #2088).
+    assert str(tmp_path / ".FusedRender-update.app") not in removed
+    assert str(tmp_path / ".FusedRender-update.app.superseded") in removed
+    assert not (tmp_path / ".FusedRender-update.app.superseded").exists()
 
 
 def test_apply_renames_the_staged_copy_into_place_and_parks_the_old_bundle(
@@ -1725,15 +1730,19 @@ def test_a_staged_copy_that_is_newer_survives_the_boot_sweep(tmp_path):
 
 
 def test_the_boot_sweep_removes_a_half_written_copy(tmp_path):
-    """A process that died mid-ditto leaves the `.partial` copy; it is never
-    a candidate for anything and goes on the next boot."""
+    """A process that died mid-ditto leaves the `.partial` copy, one that
+    died mid-supersede the `.superseded` one; neither is a candidate for
+    anything and both go on the next boot."""
     bundle = tmp_path / "FusedRender.app"
     _plist(bundle, "0.4.10")
     partial = tmp_path / ".FusedRender-update.app.partial"
     _plist(partial, "9.9.9")
+    superseded = tmp_path / ".FusedRender-update.app.superseded"
+    _plist(superseded, "9.9.8")
     assert mac.staged_version(str(bundle)) is None
     assert mac.discard_stale_staged(str(bundle)) is True
     assert not partial.exists()
+    assert not superseded.exists()
 
 
 def test_a_staged_python_that_will_not_spawn_is_never_staged(monkeypatch, tmp_path):

@@ -236,6 +236,14 @@ def _partial_path(staged: str) -> str:
     return staged + ".partial"
 
 
+def _superseded_path(staged: str) -> str:
+    """Where `_install_dmg` moves an OLDER staged copy before deleting it.
+    Same reason as `_partial_path`: the staged name is only ever renamed
+    to or from, never deleted in place — an rmtree takes seconds on 13k
+    files, and a quit landing inside it would apply the torn remainder."""
+    return staged + ".superseded"
+
+
 def discard_stale_staged(bundle: str) -> bool:
     """Remove what no quit should ever apply: a staged sibling that is NOT
     newer than `bundle` — the apply already happened (a crash between the
@@ -246,14 +254,15 @@ def discard_stale_staged(bundle: str) -> bool:
     real = os.path.realpath(bundle)
     staged = installed.staged_bundle_path(real)
     removed = False
-    partial = _partial_path(staged)
-    if os.path.isdir(partial):
+    for leftover in (_partial_path(staged), _superseded_path(staged)):
+        if not os.path.isdir(leftover):
+            continue
         try:
-            shutil.rmtree(partial)
-            logger.info("update: removed half-written staged copy %s", partial)
+            shutil.rmtree(leftover)
+            logger.info("update: removed leftover staged copy %s", leftover)
             removed = True
         except OSError:
-            logger.warning("update: could not remove %s", partial, exc_info=True)
+            logger.warning("update: could not remove %s", leftover, exc_info=True)
     if not os.path.isdir(staged) or installed.staged_version(real) is not None:
         return removed
     try:
@@ -638,12 +647,21 @@ class UpdateManager(_base.UpdateManager):
             # A copy already staged (an earlier download the user has not
             # restarted for) is superseded by this one: the manifest moved
             # on, so the next quit should apply the newest, not the first.
-            # Removed only now, with the replacement complete and probed —
-            # a quit landing between here and the rename applies nothing,
-            # which beats applying the older one.
+            # Moved aside only now, with the replacement complete and
+            # probed, and by RENAME, never deleted where it stands: the quit
+            # teardown's `apply_staged` can run on another thread at any
+            # moment, and an rmtree of 13k files leaves the staged name
+            # pointing at a torn bundle for seconds (bugbot, PR #2088). A
+            # quit landing between the two renames applies nothing, which
+            # beats applying either the older copy or half of it.
+            superseded = _superseded_path(staged)
+            if os.path.exists(superseded):
+                shutil.rmtree(superseded)
             if os.path.exists(staged):
-                shutil.rmtree(staged)
+                os.rename(staged, superseded)
             os.rename(swap_in, staged)
+            if os.path.exists(superseded):
+                shutil.rmtree(superseded, ignore_errors=True)
             # That is the install: the copy waits here, next to the bundle,
             # until `apply_staged` renames it into place on quit. Nothing on
             # disk that this process, its windows or its children read has
