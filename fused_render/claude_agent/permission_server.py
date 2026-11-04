@@ -90,6 +90,10 @@ SERVER_NAME = "fused_approvals"
 TOOL_NAME = "approve"
 APP_STATE_TOOL = "app_state"
 CANVAS_SHOT_TOOL = "canvas_screenshot"
+TERMINAL_LIST_TOOL = "terminal_list"
+TERMINAL_READ_TOOL = "terminal_read"
+TERMINAL_SEND_TOOL = "terminal_send"
+TERMINAL_TOOLS = (TERMINAL_LIST_TOOL, TERMINAL_READ_TOOL, TERMINAL_SEND_TOOL)
 
 # How long a request may sit unanswered before it denies itself. The chat frame
 # can die (mode switch, reload) while a card is on screen; without a ceiling the
@@ -780,19 +784,35 @@ def _chat_allows(tool_name, tool_input) -> bool:
 _BREAKOUT_EDIT_TOOLS = {"Write": "file_path", "Edit": "file_path",
                         "MultiEdit": "file_path",
                         "NotebookEdit": "notebook_path"}
+# Built-ins a breakout never runs: the shell, and everything that plans or
+# builds (subagents, todo lists, plan mode, workflows, skills).
+_BREAKOUT_BUILD_TOOLS = frozenset({
+    "Bash", "Agent", "Task", "TodoWrite", "ExitPlanMode", "EnterPlanMode",
+    "Workflow", "Skill"})
+# The only MCP tools a breakout may call: our own server's read-only ones.
+# Every other `mcp__<server>__<tool>` is refused; a name heuristic (`get_*`)
+# would be a guess about side effects.
+_BREAKOUT_READ_MCP = frozenset(
+    "mcp__%s__%s" % (SERVER_NAME, t)
+    for t in (TOOL_NAME, APP_STATE_TOOL, CANVAS_SHOT_TOOL,
+              TERMINAL_LIST_TOOL, TERMINAL_READ_TOOL))
 
 
 def _breakout_policy(tool_name, tool_input, handoff_dir=None):
-    """The read-only rule of a breakout chat, as a permission result, or None
-    when the call is none of its business (reads, web, MCP, skills: the normal
-    flow). Edits and every Bash call are refused outright, with no card; the
+    """The read-only, talk-only rule of a breakout chat, as a permission
+    result, or None when the call is none of its business (reads, web: the
+    normal flow). Edits, the shell, subagents, todo/plan tools, skills and every
+    MCP tool but our own read-only ones are refused outright, with no card; the
     one exception is a `.md` file whose realpath is inside the handoff dir, so a
     path that climbs out (`..`) or leaves through a symlink is refused."""
     handoff_dir = BREAKOUT_HANDOFF_DIR if handoff_dir is None else handoff_dir
     if not handoff_dir:
         return None
     key = _BREAKOUT_EDIT_TOOLS.get(tool_name)
-    if tool_name != "Bash" and key is None:
+    refused_mcp = (isinstance(tool_name, str) and tool_name.startswith("mcp__")
+                   and tool_name not in _BREAKOUT_READ_MCP)
+    if key is None and tool_name not in _BREAKOUT_BUILD_TOOLS \
+            and not refused_mcp:
         return None
     # Only Write may land a handoff note: Edit/MultiEdit/NotebookEdit are
     # hard-denied by the CLI settings, and refused here too (defense in depth).
@@ -809,7 +829,8 @@ def _breakout_policy(tool_name, tool_input, handoff_dir=None):
                 return {"behavior": "allow", "updatedInput": tool_input,
                         "decisionClassification": "user_temporary"}
     return {"behavior": "deny",
-            "message": "Breakout chats are research-only; edits and shell are "
+            "message": "Breakout chats are research-only; edits, shell, "
+                       "subagents, plan tools, skills and write tools are "
                        "refused. Markdown under %s is the one exception."
                        % handoff_dir,
             "decisionClassification": "user_reject"}
@@ -958,10 +979,6 @@ def _handle_canvas_shot(args: dict) -> dict:
 # (never inherited ambiently — see `_write_mcp_config`). No origin: the tools
 # are not offered, because a tool that can never answer is worse than none.
 
-TERMINAL_LIST_TOOL = "terminal_list"
-TERMINAL_READ_TOOL = "terminal_read"
-TERMINAL_SEND_TOOL = "terminal_send"
-TERMINAL_TOOLS = (TERMINAL_LIST_TOOL, TERMINAL_READ_TOOL, TERMINAL_SEND_TOOL)
 _TERMINAL_TIMEOUT = 15.0
 
 
@@ -1263,7 +1280,9 @@ def _breakout_hook(handoff_dir: str) -> int:
     """PreToolUse hook mode: runs BEFORE the CLI's permission system, so a user
     allow rule for Write cannot bypass the handoff path limit. Exit 2 (reason on
     stderr) blocks the call; exit 0 with no output lets the normal flow go on.
-    Anything unreadable fails closed."""
+    Anything unreadable fails closed, and `main` turns any other failure into
+    exit 2 too. The one non-blocking case is the CLI's own hook timeout; the
+    deny list in the settings carries every non-MCP build tool regardless."""
     try:
         data = json.loads(sys.stdin.read())
         tool_name = data["tool_name"]
@@ -1285,7 +1304,12 @@ def _breakout_hook(handoff_dir: str) -> int:
 
 def main() -> int:
     if BREAKOUT_HOOK_DIR is not None:
-        return _breakout_hook(BREAKOUT_HOOK_DIR)
+        try:
+            return _breakout_hook(BREAKOUT_HOOK_DIR)
+        except Exception as exc:
+            sys.stderr.write("Breakout guard: %s: %s; refusing.\n"
+                             % (type(exc).__name__, exc))
+            return 2
     # Before the first read of stdin, which is what fixes the encoding: a
     # TextIOWrapper cannot be reconfigured once it has read anything.
     _utf8_stdio()

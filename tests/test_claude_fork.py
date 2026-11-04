@@ -255,7 +255,9 @@ def test_argv_breakout_hard_denies_shell_and_edit_tools(agent, tmp_path):
     argv = _argv(agent, tmp_path, breakout=True)
     assert argv.count("--settings") == 1
     deny = json.loads(argv[argv.index("--settings") + 1])["permissions"]["deny"]
-    assert sorted(deny) == ["Bash", "Edit", "MultiEdit", "NotebookEdit"]
+    assert sorted(deny) == sorted([
+        "Bash", "Edit", "MultiEdit", "NotebookEdit", "Agent", "Task",
+        "TodoWrite", "ExitPlanMode", "EnterPlanMode", "Workflow", "Skill"])
     assert "Write" not in deny
 
 
@@ -263,9 +265,9 @@ def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
     argv = _argv(agent, tmp_path, breakout=True)
     settings = json.loads(argv[argv.index("--settings") + 1])
     (entry,) = settings["hooks"]["PreToolUse"]
-    assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit"
+    assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit|mcp__.*"
     (hook,) = entry["hooks"]
-    assert hook["type"] == "command" and hook["onFailure"] == "block"
+    assert hook["type"] == "command" and "onFailure" not in hook
     assert hook["timeout"] == 10
     assert "permission_server.py" in hook["command"]
     handoff = os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs")
@@ -298,6 +300,8 @@ def test_breakout_prompt_names_the_handoff_dir(agent):
     text = agent._appended_prompt("/tmp/f", False, breakout=True)
     assert "breakout" in text.lower()
     assert os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs") in text
+    assert "do not plan" in text.lower() and "send back" in text.lower()
+    assert "forked" not in text
 
 
 def test_argv_breakout_is_a_fresh_session(agent, tmp_path):

@@ -3931,20 +3931,24 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # rules beat allow rules, so refuse these tools in the CLI itself. Write
         # needs the handoff .md exception, which a deny rule cannot express (and
         # an allow rule cannot carve out of a deny), and a user `Write` allow rule
-        # would also run before the bridge. So a PreToolUse hook enforces the
-        # path limit: it runs before the permission system and exit 2 blocks the
-        # call. The bridge's `_breakout_policy` stays as defense in depth.
+        # would also run before the bridge, as would a user MCP allow rule. So a
+        # PreToolUse hook enforces the path limit and the MCP allowlist: it runs
+        # before the permission system and exit 2 blocks the call. The
+        # bridge's `_breakout_policy` stays as defense in depth.
         hook_argv = [sys.executable, "-I",
                      os.path.join(HERE, "permission_server.py"),
                      "--breakout-hook=" + _breakout_handoff_dir(file)]
         hook_cmd = (subprocess.list2cmdline(hook_argv) if os.name == "nt"
                     else shlex.join(hook_argv))
         cmd += ["--settings", json.dumps({
-            "permissions": {"deny": ["Bash", "Edit", "MultiEdit", "NotebookEdit"]},
+            "permissions": {"deny": [
+                "Bash", "Edit", "MultiEdit", "NotebookEdit", "Agent", "Task",
+                "TodoWrite", "ExitPlanMode", "EnterPlanMode", "Workflow",
+                "Skill"]},
             "hooks": {"PreToolUse": [{
-                "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit|mcp__.*",
                 "hooks": [{"type": "command", "command": hook_cmd,
-                           "timeout": 10, "onFailure": "block"}]}]}})]
+                           "timeout": 10}]}]}})]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id and resume_at and new_session_id:
@@ -3991,11 +3995,14 @@ def _breakout_handoff_dir(file: str) -> str:
 
 def _breakout_note(file: str) -> str:
     return (
-        " This conversation is a BREAKOUT: a research-only side chat forked "
-        "from the user's main chat. Edits and shell commands are refused by "
-        "policy here (Write, Edit, NotebookEdit and every Bash call), so do "
-        "not try them; skills, MCP tools, Read, Grep, Glob and web access "
-        "work normally. You may write a markdown handoff file (.md only) "
+        " This conversation is a BREAKOUT: a research-only side chat about the "
+        "messages attached to its first message. Answer the user's questions "
+        "about them. Do not plan, implement, write todo lists or start "
+        "subagents; if the user asks you to build something, tell them to use "
+        "Send back and continue in the main chat. Edits, shell commands, "
+        "skills and write tools are refused by policy here, so do not try "
+        "them; Read, Grep, Glob and web access work normally. You may write a "
+        "markdown handoff file (.md only) "
         f"under exactly `{_breakout_handoff_dir(file)}`. The user will send a "
         "summary of this conversation back to the main chat, so end with a "
         "short, self-contained answer.")
