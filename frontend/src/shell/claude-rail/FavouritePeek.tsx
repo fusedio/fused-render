@@ -39,16 +39,19 @@
 // AN UNSTAR HERE shuts the card at once (RailPeek `dismissOnUnstar`).
 //
 // THE KEYBOARD IS NEVER LEFT ON THE BODY: a card that shuts or hides with
-// the focus inside it hands it to the rail — the favourite's foot ring, else
-// the rail's first ring, else the rail (fav-peek-store `focusRail`). And a
+// the focus inside it hands it to the rail — the chat's own ring, else the
+// rail itself, never another chat's ring, and quietly: a hand-off opens no
+// hover card (fav-peek-store `focusRail`). And a
 // keyboard press on a favourite's ring lands on this card's × once it
 // stands (fav-peek-store `pendingFocus`), however long it took to draw.
 //
-// ONE CHAT, ONE COMPOSER: while the page's URL names this favourite's
-// session (the pane open on it, the Open door taken) — or the Tasks side
-// peek shows it (platform/lib/peek-session) — that one holds the
-// chat — the card unmounts its own and says where it is, the window's open
-// key kept, and mounts it again when the URL moves on.
+// ONE CHAT, ONE COMPOSER: while another composer on the page is MOUNTED on
+// this favourite's session — a pane chat open on it (the Open door taken),
+// or the Tasks side peek showing it; each says so itself
+// (platform/lib/peek-session) — that one holds the chat: the card unmounts
+// its own and says where it is, the window's open key kept, and mounts it
+// again when that one goes. A URL still naming the session with the pane
+// shut is not a composer: the card keeps its chat (owner, 2026-11-04).
 //
 // ITS WHERE-CHIP is the same door as the rail card's (RailPeek, claude-rail-
 // lib `chipDoor`): the chat's own canvas, node, folder or file — and on the
@@ -69,7 +72,6 @@ import {
   useFavPeekState,
   withdrawFavFocusOn,
 } from "./fav-peek-store";
-import { useUrlVersion } from "@platform/lib/hooks";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ownPlace, type RailPlace, type RailRow } from "./claude-rail-lib";
@@ -80,7 +82,7 @@ import {
   rowOf,
   type PeekWish,
 } from "./rail-peek-lib";
-import { usePeekSession } from "@platform/lib/peek-session";
+import { usePaneSessions, usePeekSession } from "@platform/lib/peek-session";
 
 export const FAV_PEEK_ID = "claude-rail-fav-peek";
 
@@ -100,15 +102,6 @@ function placeOf(t: TaskPulseTask, row: Task | null): RailPlace {
 }
 
 const noop = () => {};
-
-/** The session the page's URL names (`session_id`), or null. */
-function urlSession(): string | null {
-  try {
-    return new URLSearchParams(location.search).get("session_id");
-  } catch {
-    return null;
-  }
-}
 
 export function FavouritePeek() {
   const peekOn = useCanvasRailPeek();
@@ -157,11 +150,12 @@ export function FavouritePeek() {
     return { pulse: open, row: listing?.find((t) => t.key === open.key) ?? null };
   }, [open, listing]);
   const shown = on && seat && rail && !noRoom ? seat : null;
-  // The pane (or the Open door) on this very session (header), or the Tasks
-  // side peek showing it: no chat here.
-  useUrlVersion();
+  // A mounted pane chat on this very session (header), or the Tasks side
+  // peek showing it: no chat here. Never the URL alone — a shut pane leaves
+  // `session_id` in it and shows nothing.
+  const paneSids = usePaneSessions();
   const peekSid = usePeekSession();
-  const elsewhere = favChatElsewhere(seat?.pulse ?? null, urlSession(), peekSid);
+  const elsewhere = favChatElsewhere(seat?.pulse ?? null, paneSids, peekSid);
   const kept = useMemo(() => (seat && !elsewhere ? [seat] : []), [seat, elsewhere]);
 
   // FOCUS NEVER FALLS TO THE BODY (header). Whether the keyboard was last
@@ -192,7 +186,7 @@ export function FavouritePeek() {
   const shownKey = shown?.pulse.key ?? null;
   const lastShown = useRef<string | null>(null);
   // Shut by an unstar: its foot ring goes with the next pulse, so the
-  // keyboard goes to its ring back in the list, else the rail's first ring.
+  // keyboard goes to its ring back in the list, else the rail itself.
   const unstarred = useRef<string | null>(null);
   useLayoutEffect(() => {
     const was = lastShown.current;

@@ -204,6 +204,24 @@ export function chipDoor(
   return { href: urlForFsPath(dir), isDir: true, title: `Open ${dir}` };
 }
 
+/** WHAT THE WHERE-CHIP SAYS (RailPeek's head, both cards): a node or a file
+ *  under the folder by its name; the whole of a folder or a file by the
+ *  folder's or the file's own NAME (owner, 2026-11-04: not the bare word
+ *  "Folder" — "insta-edit-pro"), the full path in its title (`chipDoor`).
+ *  A page that names its place itself keeps its word (the app page's
+ *  "App"), and so does the canvas ("Canvas"). */
+export function chipLabel(scope: RailScope, at: RailPlace): string {
+  if (scope.kind !== "whole") return scope.name;
+  if (at.kind === "file") return lastSegment(at.file) || scope.word;
+  if (at.kind === "folder" && (!at.word || at.word === "Folder")) return lastSegment(at.dir) || scope.word;
+  return scope.word;
+}
+
+function lastSegment(path: string): string {
+  const p = trimSlash(path);
+  return p.slice(p.lastIndexOf("/") + 1);
+}
+
 /** A node file's name as the workbench names the node: the file's stem
  *  (`hex.py` → `hex`, `widget_5.json` → `widget_5`). */
 export function nodeName(file: string): string {

@@ -9,6 +9,7 @@ import { sortForList } from "@shell/tasks-lib";
 import {
   activeRing,
   chipDoor,
+  chipLabel,
   chipPlace,
   dotCleared,
   favSeats,
@@ -509,6 +510,22 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     });
     expect(chipDoor({ kind: "whole", word: "Canvas" }, PLACE, here).select).toEqual({ udfName: null, current: false });
     expect(chipDoor({ kind: "whole", word: "Canvas" }, PLACE, { ...here, file: null }).select!.current).toBe(true);
+  });
+
+  it("chipLabel: a folder or a file by its own name, never the bare word; a page's own word stays", () => {
+    const folder: RailPlace = { kind: "folder", dir: "/Users/me/Fused/app/insta-edit-pro/", word: "Folder" };
+    expect(chipLabel({ kind: "whole", word: "Folder" }, folder)).toBe("insta-edit-pro");
+    expect(chipLabel({ kind: "whole", word: "Folder" }, { kind: "folder", dir: "/x/y" })).toBe("y");
+    expect(chipLabel({ kind: "file", name: "src/a.py", file: "/x/y/src/a.py" }, folder)).toBe("src/a.py");
+    expect(chipLabel({ kind: "whole", word: "File" }, { kind: "file", file: "/x/y/notes.md" })).toBe("notes.md");
+    expect(chipLabel({ kind: "whole", word: "App" }, { kind: "folder", dir: "/x/y", word: "App" })).toBe("App");
+    expect(chipLabel({ kind: "whole", word: "Canvas" }, PLACE)).toBe("Canvas");
+    expect(chipLabel({ kind: "node", name: "hex", file: "hex.py" }, PLACE)).toBe("hex");
+    // …and the door under the name is the folder's page, its path the title.
+    const door = chipDoor({ kind: "whole", word: "Folder" }, folder, null);
+    expect(door.href).toBe("/explorer/view/Users/me/Fused/app/insta-edit-pro");
+    expect(door.isDir).toBe(true);
+    expect(door.title).toBe("Open /Users/me/Fused/app/insta-edit-pro");
   });
 
   it("a folder chip opens the explorer folder page; a file chip its file page", () => {

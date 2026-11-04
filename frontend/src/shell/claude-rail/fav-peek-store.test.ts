@@ -17,6 +17,7 @@ import {
   requestFavFocus,
   resetFavPeekStoreForTests,
   takeFavFocus,
+  takeQuietFocus,
   useFavOpenRow,
   withdrawFavFocusOn,
 } from "./fav-peek-store";
@@ -202,7 +203,23 @@ describe("focusRail", () => {
       { section: "chats", key: "y" },
     ]);
     focusRail(b.el, "k", "list", true);
-    expect(b.focused).toEqual(["chats:y"]);
+    // Never another chat's ring (owner, 2026-11-04: "a random task from
+    // above opens"): the unstarred chat has no list ring here — the rail.
+    expect(b.focused).toEqual(["rail"]);
+  });
+  it("a ring it focuses is marked quiet for that one focus (no hover card); the rail is not", () => {
+    const seen: boolean[] = [];
+    const { el } = fakeRail([{ section: "chats", key: "k" }]);
+    const ring = (el.querySelectorAll(".claude-rail-chat") as unknown as { focus: () => void }[])[0]!;
+    const plain = ring.focus;
+    ring.focus = () => {
+      plain();
+      seen.push(takeQuietFocus(ring));
+    };
+    focusRail(el, "k", "list", true);
+    expect(seen).toEqual([true]);
+    // Spent: a later, real focus is heard.
+    expect(takeQuietFocus(ring)).toBe(false);
   });
   it("no ring at all: the rail itself", () => {
     const { el, focused } = fakeRail([]);

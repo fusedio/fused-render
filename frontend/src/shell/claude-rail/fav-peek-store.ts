@@ -166,16 +166,29 @@ export function withdrawFavFocusOn(target: EventTarget | null, card: Element | n
   requestFavFocus(null);
 }
 
+/** A ring `focusRail` put the keyboard on: its focus is a hand-off, not a
+ *  reader arriving, so it opens no hover card (ClaudeRail's ring `onFocus`
+ *  asks `takeQuietFocus` once; owner, 2026-11-04: "when I unfavourite, a
+ *  random task from above opens"). */
+const quiet = new WeakSet<object>();
+
+/** True — and spent — when `el` took the keyboard from `focusRail`. */
+export function takeQuietFocus(el: object): boolean {
+  return quiet.delete(el);
+}
+
 /** WHERE THE KEYBOARD GOES WHEN A CARD SHUTS UNDER IT — never the body: the
  *  ring for `key`, looked for first in the section `section` names — the
  *  rail's favourites (`"foot"`: the favourite's card, and the rail's own card
  *  letting go of a chat that was just starred or opened as a favourite,
  *  whose ring now lives there) or its list (`"list"`: an unstarred
  *  favourite, whose foot ring is about to go) — then in the other one (the
- *  pulse may not have moved the ring yet); else the rail's first ring that
- *  is not `key`'s foot ring when that is going (`unstarred`); else the rail
- *  itself (made focusable for the purpose). Rings carry their key
- *  (ClaudeRail `data-task-key`). */
+ *  pulse may not have moved the ring yet), skipping `key`'s foot ring when
+ *  that is going (`unstarred`); else the rail itself (made focusable for the
+ *  purpose) — NEVER another chat's ring: on another folder the unstarred
+ *  chat has no list ring, and the rail's first ring is a stranger. The ring
+ *  is focused QUIETLY (`takeQuietFocus`): a hand-off opens no card. Rings
+ *  carry their key (ClaudeRail `data-task-key`). */
 export function focusRail(
   rail: HTMLElement | null,
   key: string | null,
@@ -196,19 +209,15 @@ export function focusRail(
       }
     }
   }
-  if (!target) {
-    for (const el of rail.querySelectorAll<HTMLElement>(".claude-rail-chat")) {
-      if (!goingFoot(el)) {
-        target = el;
-        break;
-      }
-    }
-  }
-  if (!target) {
+  if (target) quiet.add(target);
+  else {
     if (!rail.hasAttribute("tabindex")) rail.setAttribute("tabindex", "-1");
     target = rail;
   }
   target.focus({ preventScroll: true });
+  // Heard synchronously (focus events fire inside `focus()`); a focus that
+  // did not land leaves no mark for a later, real one to be muted by.
+  quiet.delete(target);
 }
 
 export function favPeekState(): FavPeekState {

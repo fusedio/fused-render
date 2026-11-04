@@ -165,6 +165,7 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type FocusEvent as ReactFocusEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { GitBranch, GitCommitHorizontal, Plus, RefreshCw } from "lucide-react";
@@ -223,7 +224,7 @@ import {
 import { CanvasGlyph } from "@apps/canvases/glyph";
 import { FAV_SETTLE_MS, PeekIntent, keepAlive, railOnStarred, railOpenFav, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
-import { focusRail, registerRail, requestFavFocus, useFavPeekState } from "./fav-peek-store";
+import { focusRail, registerRail, requestFavFocus, takeQuietFocus, useFavPeekState } from "./fav-peek-store";
 import { FAV_PEEK_ID } from "./FavouritePeek";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
@@ -723,6 +724,9 @@ export function ClaudeRail({
       const seat = seatsRef.current.find((s) => s.pulse.key === key);
       const sid = seat?.pulse.session_id;
       if (sid) peekDraftSyncer(chatDraftKey(sid, seat.row?.target || seat.pulse.target || seat.pulse.project))?.flushNow();
+      // A hover (or the press's own focus) still waiting to open this card
+      // on the chat: dropped, or it opens a beat after the favourite's.
+      intent.forget(key);
       if (intent.current === key) {
         const had = !!document.getElementById(PEEK_ID)?.contains(document.activeElement);
         setHeld(false);
@@ -1042,6 +1046,19 @@ export function ClaudeRail({
   // moved; the first real move clears it (`enterRing` below).
   const stillAt = useRef<{ x: number; y: number } | null>(null);
   const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  // …AND ANY RESHAPE OF THE RINGS under a pointer resting on the rail: a
+  // favourite unstarred (its foot ring goes, the one above slides down into
+  // its place), a chat starred, a pulse's new row. The ring that slid under
+  // the unmoved pointer is not a hover (owner, 2026-11-04: "when I
+  // unfavourite, a random task from above opens"). In the layout phase: the
+  // engine's enter comes after the paint.
+  const ringOrder = JSON.stringify([seats.map((x) => x.pulse.key), favs.map((x) => x.pulse.key)]);
+  const ringsWere = useRef(ringOrder);
+  useLayoutEffect(() => {
+    if (ringsWere.current === ringOrder) return;
+    ringsWere.current = ringOrder;
+    if (lastPointer.current) stillAt.current = lastPointer.current;
+  }, [ringOrder]);
   const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>) => {
     const at = stillAt.current;
     if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
@@ -1317,7 +1334,13 @@ export function ClaudeRail({
                           ? {}
                           : {
                               onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(t.key, e),
-                              onFocus: () => intent.enterRing(t.key, "focus"),
+                              // A focus HANDED here (a card shutting
+                              // under the keyboard, fav-peek-store
+                              // `focusRail`) opens no card.
+                              onFocus: (e: ReactFocusEvent<HTMLAnchorElement>) =>
+                                takeQuietFocus(e.currentTarget)
+                                  ? intent.quietFocus(t.key)
+                                  : intent.enterRing(t.key, "focus"),
                             }),
                         onPointerLeave: () => intent.leaveRing("pointer"),
                         onBlur: () => intent.leaveRing("focus"),
@@ -1380,6 +1403,10 @@ export function ClaudeRail({
       aria-label="Claude"
       onPointerMove={(e) => {
         lastPointer.current = { x: e.clientX, y: e.clientY };
+      }}
+      // Off the rail, no resting place on it (`ringsMoved`).
+      onPointerLeave={() => {
+        lastPointer.current = null;
       }}
     >
       {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the

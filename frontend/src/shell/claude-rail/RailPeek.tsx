@@ -142,7 +142,7 @@ import {
   type CardTitle,
 } from "@shell/tasks-lib";
 import { navigateUrl } from "@platform/lib/router";
-import { chipDoor, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { chipDoor, chipLabel, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -1246,7 +1246,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 // the echo (claude-rail-lib `onRail`).
                 const door = chipDoor(head.scope, head.at, here?.() ?? null);
                 const current = !!door.select?.current;
-                const label = head.scope.kind === "whole" ? head.scope.word : head.scope.name;
+                const label = chipLabel(head.scope, head.at);
                 return (
                   <a
                     href={door.href}

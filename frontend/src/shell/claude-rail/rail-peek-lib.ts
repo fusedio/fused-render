@@ -484,6 +484,23 @@ export class PeekIntent {
     else this.scheduleClose();
   }
 
+  /** The keyboard was HANDED to ring `key` (fav-peek-store `focusRail`, a
+   *  card shutting under it): it rests there, muted like Escape's return —
+   *  no card opens until the pointer arrives or the focus moves on. */
+  quietFocus(key: string): void {
+    this.focusKey = key;
+    this.muteFocus = true;
+    if (this.pendingKey === key) this.cancelOpen();
+  }
+
+  /** Chat `key` went elsewhere (the favourite's card took it): a hover or a
+   *  focus still waiting to open it here is dropped — else this card opens
+   *  on the same chat a beat after the favourite's (two composers, one
+   *  draft). A card already showing it is the caller's to dismiss. */
+  forget(key: string): void {
+    if (this.pendingKey === key) this.cancelOpen();
+  }
+
   /** Show `key` now, no wait — the keyboard's way in (ArrowLeft on a ring).
    *  `pin`: the card stays up until dismissed (`press`). */
   showNow(key: string, pin = false): void {
@@ -702,17 +719,19 @@ export function railOpenFav(
 }
 
 /** Where the favourite's chat already is, so its card keeps none of its own
- *  (one chat, one composer): `"pane"` when the page's URL names its session
- *  (the Claude pane, the Open door), `"peek"` when the Tasks side peek shows
- *  it (platform/lib/peek-session), else null. */
+ *  (one chat, one composer): `"pane"` when a mounted pane chat says it shows
+ *  its session (`paneSessions`, platform/lib/peek-session — the Claude pane
+ *  open on it, the explorer's sidebar), `"peek"` when the Tasks side peek
+ *  shows it, else null. ONLY a mounted composer counts: a URL still naming
+ *  the session with the pane shut shows it nowhere, and the card keeps it. */
 export function favChatElsewhere(
   fav: { key: string; session_id?: string | null } | null,
-  urlSession: string | null,
+  paneSessions: readonly string[],
   peekSession: string | null,
 ): "pane" | "peek" | null {
   if (!fav) return null;
   const names = (sid: string | null) => !!sid && (sid === fav.session_id || sid === fav.key);
-  if (names(urlSession)) return "pane";
+  if (paneSessions.some(names)) return "pane";
   if (names(peekSession)) return "peek";
   return null;
 }

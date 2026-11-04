@@ -469,6 +469,37 @@ describe("PeekIntent", () => {
     expect(shown).toEqual(["a", null, "a"]);
   });
 
+  it("a focus HANDED to a ring (a card shutting under the keyboard) opens nothing; Tab on, or the pointer, does", () => {
+    const { clock, shown, warmed, intent } = rig();
+    intent.quietFocus("a");
+    clock.tick(10_000);
+    expect(shown).toEqual([]);
+    expect(warmed).toEqual([]);
+    intent.leaveRing("focus");
+    intent.enterRing("b", "focus");
+    clock.tick(PEEK_OPEN_MS);
+    expect(shown).toEqual(["b"]);
+    const r = rig();
+    r.intent.quietFocus("a");
+    r.intent.enterRing("a", "pointer");
+    r.clock.tick(PEEK_OPEN_MS);
+    expect(r.shown).toEqual(["a"]);
+  });
+
+  it("forget: a hover or focus still waiting on a chat the favourite's card took never opens it", () => {
+    const { clock, shown, intent } = rig();
+    // The press's own focus on the ring, then the press opens the favourite.
+    intent.enterRing("a", "focus");
+    intent.forget("a");
+    clock.tick(10_000);
+    expect(shown).toEqual([]);
+    // Another ring's pending open is not touched.
+    intent.enterRing("b");
+    intent.forget("a");
+    clock.tick(PEEK_OPEN_MS);
+    expect(shown).toEqual(["b"]);
+  });
+
   it("the pointer leaving a pending ring while focus rests on another cancels that open", () => {
     const { clock, shown, intent } = rig();
     intent.enterRing("a", "focus");
@@ -829,19 +860,21 @@ describe("favOpenVerdict", () => {
 
 describe("favChatElsewhere", () => {
   const fav = { key: "k1", session_id: "s1" };
-  it("the URL on its session: the pane has it", () => {
-    expect(favChatElsewhere(fav, "s1", null)).toBe("pane");
-    expect(favChatElsewhere(fav, "k1", "s1")).toBe("pane");
+  it("a mounted pane chat on its session: the pane has it", () => {
+    expect(favChatElsewhere(fav, ["s1"], null)).toBe("pane");
+    expect(favChatElsewhere(fav, ["s0", "k1"], "s1")).toBe("pane");
   });
   it("the Tasks side peek on its session: the peek has it", () => {
-    expect(favChatElsewhere(fav, null, "s1")).toBe("peek");
-    expect(favChatElsewhere(fav, "other", "s1")).toBe("peek");
+    expect(favChatElsewhere(fav, [], "s1")).toBe("peek");
+    expect(favChatElsewhere(fav, ["other"], "s1")).toBe("peek");
   });
-  it("another session, or none: the card keeps its chat", () => {
-    expect(favChatElsewhere(fav, "s2", "s3")).toBeNull();
-    expect(favChatElsewhere(fav, null, null)).toBeNull();
-    expect(favChatElsewhere(null, "s1", "s1")).toBeNull();
-    expect(favChatElsewhere({ key: "k2", session_id: null }, null, null)).toBeNull();
+  it("no mounted composer on it — the URL naming it with the pane shut is not one: the card keeps its chat", () => {
+    // FavouritePeek no longer reads the URL: a shut pane mounts no chat, so
+    // nothing announces the session the URL still names.
+    expect(favChatElsewhere(fav, [], null)).toBeNull();
+    expect(favChatElsewhere(fav, ["s2"], "s3")).toBeNull();
+    expect(favChatElsewhere(null, ["s1"], "s1")).toBeNull();
+    expect(favChatElsewhere({ key: "k2", session_id: null }, [], null)).toBeNull();
   });
 });
 
