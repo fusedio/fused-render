@@ -2142,9 +2142,51 @@ for (const flagOn of [false, true]) {
       (c) => String(c.params.message).includes("keep going") && c !== sends()[0],
     );
     expect(again).toHaveLength(1);
-    expect(again[0]!.params.client_uuid).toBe(uuid);
+    // A FRESH id: the first one was acked, so the server knows its uuid.
+    expect(again[0]!.params.client_uuid).toBeTruthy();
+    expect(again[0]!.params.client_uuid).not.toBe(uuid);
     expect(hints(r)).not.toContain("not sent · click to edit");
     expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
+  });
+
+  test(`${tag}: send-now line is journalled while the stop settles (a reload then re-sends it), and dropped once acked`, async () => {
+    const { r } = await liveChat();
+    stickyLive = true;
+    await typeInBox(r, "Z");
+    await pressCtrlEnterInBox(r);
+    await settle(150);
+    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
+    expect(stored.map((l) => l.text)).toEqual(["Z"]);
+    stickyLive = false;
+    await settle(1500);
+    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("Z"));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.params.client_uuid).toBe(stored[0]!.id);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: empty-box Ctrl+X re-send of an acked follow-up is journalled under a fresh id until it acks`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    const first = sends()[0]!.params.client_uuid;
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+    cancelStill = [String(sends()[0]!.params.message)];
+    stickyLive = true;
+    await ctrlX(r);
+    await settle(100);
+    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
+    expect(stored.map((l) => l.text)).toEqual(["keep going"]);
+    expect(stored[0]!.id).not.toBe(first);
+    stickyLive = false;
+    await settle(1500);
+    const again = [...sends(), ...started()].filter(
+      (c) => String(c.params.message).includes("keep going") && c !== sends()[0],
+    );
+    expect(again).toHaveLength(1);
+    expect(again[0]!.params.client_uuid).toBe(stored[0]!.id);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
   });
 
   test(`${tag}: once the CLI has taken a live follow-up its hint is gone`, async () => {

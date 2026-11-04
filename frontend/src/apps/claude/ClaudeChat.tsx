@@ -1311,7 +1311,16 @@ function ChatBody(props: ChatBodyProps) {
           const own = line.returned && line.sendId ? parkedBySendId.current.get(line.sendId) : null;
           const bubble = c.postOptimisticUser(line.text, "queued");
           const base = own ?? { opts: {}, bubble: "", taken: NO_TAKEN };
-          const opts = { ...base.opts, ...(line.clientId ? { clientId: line.clientId } : {}) };
+          // A FRESH ID unless the old one is still journalled (a line that went
+          // back unsent): an acked line's id is spent — its uuid is known to the
+          // server, so a reload would treat the re-send as delivered (Bugbot,
+          // PR #2097). The new id is journalled until THIS send acks.
+          let clientId = line.clientId && journal.current.has(line.clientId) ? line.clientId : "";
+          if (!clientId) {
+            clientId = newClientId();
+            journalAdd(clientId, line.text);
+          }
+          const opts = { ...base.opts, clientId };
           const id = `o${++outboxSeq.current}`;
           entries.push({ id, text: line.text, payload: { ...base, opts, bubble, entryId: id } });
           if (own && line.sendId) postedForSend.current.add(line.sendId);
@@ -1338,7 +1347,7 @@ function ChatBody(props: ChatBodyProps) {
       }
       if (entries.length) setOutbox(pushFrontAll(outboxRef.current, entries));
     },
-    [setOutbox, postNotSent, journalDrop],
+    [setOutbox, postNotSent, journalDrop, journalAdd],
   );
 
   // One collapse policy per MOUNT, not per module: six compact mounts on the
@@ -3731,8 +3740,19 @@ function ChatBody(props: ChatBodyProps) {
       // its own pictures is the tray this line's (Bugbot, PR #1323).
       const took = trayTakenRef.current;
       const entryId = `o${++outboxSeq.current}`;
+      // JOURNALLED FROM THE MOMENT IT EXISTS (Bugbot, PR #2097): `dispatchSend`
+      // journals only direct sends, so a send-now line parked here for the stop
+      // to settle would vanish on a reload in that window. Dropped on every
+      // path a parked line's id already is (ack, Stop, pull-back).
+      const clientId = text ? newClientId() : "";
+      if (clientId) journalAdd(clientId, text);
       const payload: OutboxPayload = {
-        opts: { model: defaults.model, effort: defaults.effort, permission: defaults.permission },
+        opts: {
+          model: defaults.model,
+          effort: defaults.effort,
+          permission: defaults.permission,
+          ...(clientId ? { clientId } : {}),
+        },
         bubble,
         entryId,
         taken: took ? takeAttachments() : NO_TAKEN,
@@ -3792,6 +3812,7 @@ function ChatBody(props: ChatBodyProps) {
       defaults.model,
       defaults.effort,
       defaults.permission,
+      journalAdd,
     ],
   );
 
