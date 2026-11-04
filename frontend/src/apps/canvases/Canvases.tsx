@@ -127,6 +127,9 @@ function formatModified(mtime: number): string {
 export default function Canvases() {
   const [status, setStatus] = useState<CanvasesStatus | null>(null);
   const [canvases, setCanvases] = useState<CanvasEntry[] | null>(null);
+  // True while the list on screen is the disk baseline and the fresh one is
+  // still on its way.
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // canvas being opened
   const [loggingIn, setLoggingIn] = useState(false);
@@ -164,6 +167,8 @@ export default function Canvases() {
   // Bumped on every environment change: a listing or preview batch that
   // departed under the old env must not land in the new env's page.
   const envGenRef = useRef(0);
+  // Sequence of listing requests within an env generation: see `refresh`.
+  const listSeqRef = useRef(0);
   // The ~/.fused/settings.toml editor. It opens by itself the first time a
   // status says custom is picked and unconfigured (a dropdown pick or a
   // `?env=custom` load alike); a dismissal is remembered until the pick
@@ -254,12 +259,35 @@ export default function Canvases() {
           setError(null);
           return;
         }
-        const { canvases } = await listCanvases(env);
-        if (gen !== envGenRef.current) return;
+        // Two refreshes for the SAME env can overlap (a settings save, a
+        // credentials change): the env generation does not move, so the
+        // older one's answers — above all its slow fresh one — must not land
+        // over the newer one's. Only the latest sequence writes.
+        const seq = ++listSeqRef.current;
+        const { canvases, stale } = await listCanvases(env);
+        if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
         setCanvases(canvases);
         // Deliberately NOT awaited: the cards render on the line above, and
         // the thumbs pop in when the signing batch lands.
         void fillPreviews(env, canvases);
+        if (stale) {
+          // The baseline painted; now the real list (stale-while-revalidate,
+          // like the workbench home). Same generation check: an env switch
+          // while this was out must not write the old env's list.
+          setRefreshing(true);
+          try {
+            const second = await listCanvases(env, true);
+            if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
+            setCanvases(second.canvases);
+            void fillPreviews(env, second.canvases);
+          } finally {
+            // Only the refresh that is still current may clear the hint: a
+            // newer one may have set it for its own fresh request.
+            if (gen === envGenRef.current && seq === listSeqRef.current) {
+              setRefreshing(false);
+            }
+          }
+        }
       }
       setError(null);
     } catch (e) {
@@ -286,6 +314,7 @@ export default function Canvases() {
     setPicked(next);
     replaceSearch(catalogPath(next));
     setCanvases(null);
+    setRefreshing(false);
     // Collection ids and signed URLs belong to the environment they came from.
     setPreviews({});
     previewsAskedRef.current = new Set();
@@ -426,6 +455,9 @@ export default function Canvases() {
         return;
       }
       setCanvases(null);
+      // A fresh listing still in flight for the old account must not leave
+      // its hint on the signed-out page.
+      setRefreshing(false);
       // Signed URLs belong to the account that just signed out.
       setPreviews({});
       previewsAskedRef.current = new Set();
@@ -670,6 +702,9 @@ export default function Canvases() {
         <p className="canvases-sub">
           Develop workbench canvases locally: pick a canvas, edit its files with
           Claude Code, and every save is pushed back to the hosted workbench.
+          <span className="canvases-refreshing" role="status">
+            {refreshing ? " Refreshing the list…" : ""}
+          </span>
         </p>
         {error && <ErrorBanner>{error}</ErrorBanner>}
         {status && !status.cli_found && (
