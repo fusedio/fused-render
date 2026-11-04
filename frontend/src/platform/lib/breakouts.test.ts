@@ -9,6 +9,7 @@ import {
   ownTurns,
   resetBreakouts,
   sendBackBreakout,
+  subscribeBreakouts,
 } from "./breakouts";
 
 // The shim's window is inert; route its event methods through a real target for this suite only,
@@ -53,6 +54,18 @@ describe("breakout store", () => {
     const b = openBreakout({ ...req, forkKey: "k2" });
     expect(b).toBe(a);
     expect(getBreakouts()).toHaveLength(1);
+  });
+  test("reopening raises the existing card to the end of the list", () => {
+    const a = openBreakout({ ...req, forkKey: "k2" });
+    const b = openBreakout({ ...req, forkAt: "u3", forkKey: "k3" });
+    let ticks = 0;
+    const off = subscribeBreakouts(() => ticks++);
+    expect(openBreakout({ ...req, forkKey: "k2" })).toBe(a);
+    expect(getBreakouts().map((c) => c.id)).toEqual([b, a]);
+    expect(ticks).toBe(1);
+    openBreakout({ ...req, forkKey: "k2" }); // already on top: no churn
+    expect(ticks).toBe(1);
+    off();
   });
   test("close removes", () => {
     const a = openBreakout(req);

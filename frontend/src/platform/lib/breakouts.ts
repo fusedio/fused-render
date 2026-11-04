@@ -72,13 +72,18 @@ export const useBreakouts = (): readonly BreakoutCard[] =>
   useSyncExternalStore(subscribeBreakouts, getBreakouts, getBreakouts);
 
 /** Open a card for `req` and return its id. The same message of the same
- *  parent answers with the card already open rather than a second one. */
+ *  parent answers with the card already open (raised to the top)
+ *  rather than a second one. */
 export function openBreakout(req: BreakoutRequest): string {
   if (req.forkKey) {
     const same = cards.find(
       (c) => c.parentSessionId === req.sessionId && c.file === req.file && c.forkKey === req.forkKey,
     );
-    if (same) return same.id;
+    if (same) {
+      // Raise it: the list order is the stacking order, so the last card is on top.
+      if (cards[cards.length - 1] !== same) emit([...cards.filter((c) => c !== same), same]);
+      return same.id;
+    }
   }
   seq += 1;
   const card: BreakoutCard = {
