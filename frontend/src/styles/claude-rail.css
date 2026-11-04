@@ -23,6 +23,18 @@
 .claude-rail .sidebar-rail-items {
   width: 100%;
 }
+.claude-rail.has-favs .sidebar-rail-items {
+  /* NOTHING DRAWS PAST THE RAIL'S FOOT (under the status bar): the list
+     clips to the rings that fit and the favourites scroll (below), so this
+     only bites on a window too short for the favourites' floor. Horizontal
+     room is the rail's full 48px, which every ring's wash keeps inside; the
+     last ring's 3px focus outline gets 3px of the rail's foot padding,
+     inside the clip and taken back by the margin. Only with favourites
+     drawn: the flag-off rail is left as it was. */
+  overflow: hidden;
+  padding-bottom: 3px;
+  margin-bottom: -3px;
+}
 .claude-rail-item {
   position: relative;
 }
@@ -155,16 +167,54 @@
   border-top: 1px solid var(--rail-sep);
 }
 /* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): the rail's last
-   section, under the git seats and a tight hairline of its own. Every
-   favourite draws — the list above gives up rings first (`.claude-rail-chats`,
-   basis 0). The ring whose card is up (`.is-open`, the shell's FavouritePeek)
-   wears the pinned wash. */
+   section, under the git seats and a tight hairline of its own. The ring
+   whose card is up (`.is-open`, the shell's FavouritePeek) wears the pinned
+   wash.
+   A SHORT RAIL WITH MANY STARS: the list above gives up its rings first —
+   this block's shrink is a token beside the list's, so the flex algorithm
+   takes the list down to nothing before it touches this — and then this
+   block shrinks too and SCROLLS inside the rail, its scrollbar hidden like
+   the sidebar's own scrolling middle (.sidebar-rail-scroll). ITS FLOOR is
+   three rings (fewer stars: all of them — ClaudeRail sets `--fav-floor`),
+   and the Git section gives way BEFORE it (below: it shrinks and clips),
+   so on a short rail the floor still fits above the items' clip and every
+   favourite can be scrolled to (CodeRabbit, PR #2100). None draws under
+   the status bar. The 2px padding inside the clip is the rings' wash room,
+   as on `.claude-rail-chats`; a ring is 28px plus the 4px gap. */
 .claude-rail-favs {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  flex: 0 0 auto;
+  flex: 0 0.001 auto;
+  min-height: calc(var(--fav-floor, 3) * 32px);
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 2px 0;
+  margin: -2px 0;
+}
+.claude-rail-favs::-webkit-scrollbar {
+  display: none;
+}
+/* …and the Git section is what gives way to that floor: with favourites
+   drawn it shrinks and clips its last seats, rather than the favourites
+   falling under the clip. Its shrink is a token beside the favourites'
+   own, so it gives nothing until they stand on their floor (`min-height`
+   freezes them there, and the flex algorithm hands the rest to this). The
+   3px inside the clip is the seats' focus-outline room. */
+.claude-rail.has-favs .claude-rail-git {
+  flex: 0 0.000001 auto;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  padding: 3px 0;
+  margin: -3px 0;
+}
+.claude-rail.has-favs .claude-rail-git > * {
+  flex-shrink: 0;
 }
 .claude-rail .sidebar-rail-sep.is-tight {
   margin: 6px 0;
@@ -179,13 +229,19 @@
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
 }
-/* The favourite's card (FavouritePeek `#claude-rail-fav-peek`): ABOVE
-   EVERYTHING for now (owner, 2026-11-04: "the z-index should be above
-   everything" — the first cut sat under the page's header bars and its ×
-   could not be reached). Over the rail's own card (45), the modals, the
-   notifications. */
+/* The favourite's card (FavouritePeek `#claude-rail-fav-peek`): ONE ABOVE
+   THE RAIL'S OWN CARD (45) and its bridge (44), so where the two must
+   overlap (a window too small to keep them apart, RailPeek `avoid`) the
+   favourite's × stays reachable. No page bar stands higher: the app page's,
+   the explorer's and the canvas page's headers are plain flow or single
+   digits (measured live at 45, 2026-11-04 — nothing over the card). And
+   NOT above everything (it was 100000): its own ⋮ menu and the chat's
+   pickers (shadcn positioners, z 1200), the erase dialog (the Modal
+   chassis, 1000), shadcn dialogs (50), the notifications (2000) and the
+   hint panel (9000) all portal to the body and must draw over it — at
+   100000 the card's own menu opened under the card. */
 #claude-rail-fav-peek {
-  z-index: 100000;
+  z-index: 46;
 }
 .claude-rail-favs > .claude-rail-seat,
 .claude-rail-held > .claude-rail-seat {
@@ -277,7 +333,7 @@
   -webkit-user-select: none;
 }
 /* THE GRIPS (RailPeek, owner 2026-11-02): the pinned card's two LEFT
-   corners — the right edge stands against the rail — as 12px hit areas
+   corners (and its edges, below) — the right edge stands against the rail — as 12px hit areas
    (8px of them over the card's rounded corner, clear of the pin seat), with
    the corner's resize cursor. Quiet until the pointer rests on the corner
    (owner, 2026-11-02: "show it when we hover over the corner … when we drag
@@ -330,6 +386,58 @@
 }
 .claude-rail-peek-grip.is-active::after {
   color: var(--accent);
+}
+/* THE EDGE GRIPS (owner, 2026-11-04: "resize … from edges as well: left,
+   top and bottom"): 6px hit strips centred on the card's border, short of
+   the corners (whose 12px grips sit over the strips' ends and win). The
+   same quiet trace as the corners — a 2px line along the edge, the ink's
+   tone on hover, the accent while the drag is on. */
+.claude-rail-peek-grip.is-l,
+.claude-rail-peek-grip.is-t,
+.claude-rail-peek-grip.is-b {
+  z-index: 2;
+}
+.claude-rail-peek-grip.is-l {
+  left: -3px;
+  top: 8px;
+  bottom: 8px;
+  width: 6px;
+  height: auto;
+  cursor: ew-resize;
+}
+.claude-rail-peek-grip.is-t,
+.claude-rail-peek-grip.is-b {
+  left: 8px;
+  right: 8px;
+  width: auto;
+  height: 6px;
+  cursor: ns-resize;
+}
+.claude-rail-peek-grip.is-t {
+  top: -3px;
+}
+.claude-rail-peek-grip.is-b {
+  bottom: -3px;
+}
+.claude-rail-peek-grip.is-l::after,
+.claude-rail-peek-grip.is-t::after,
+.claude-rail-peek-grip.is-b::after {
+  border: 0;
+  background: currentColor;
+  border-radius: 1px;
+}
+.claude-rail-peek-grip.is-l::after {
+  left: 2px;
+  top: 0;
+  width: 2px;
+  height: 100%;
+}
+.claude-rail-peek-grip.is-t::after,
+.claude-rail-peek-grip.is-b::after {
+  left: 0;
+  top: 2px;
+  width: 100%;
+  height: 2px;
 }
 .claude-rail-peek-card {
   flex: 1 1 auto;
@@ -477,9 +585,12 @@
   text-overflow: ellipsis;
 }
 /* The × and the star (RailPeek, 2026-11-03): both are `.claude-rail-peek-btn`;
-   a favourite's star is filled in the accent. */
-.claude-rail-peek-btn.claude-rail-peek-star.is-on {
-  color: var(--accent);
+   a favourite's star is filled, and stays in the muted grey (owner, 2026-11-04:
+   "the star when active should be greyed out") — the fill alone says starred,
+   no accent. Hover keeps the fill but never brightens it. */
+.claude-rail-peek-btn.claude-rail-peek-star.is-on,
+.claude-rail-peek-btn.claude-rail-peek-star.is-on:hover {
+  color: var(--fg-muted);
 }
 /* THE PULSE SEAT: "2 ▭ 3m ago" as muted words (no chip), and the archive
    button standing over the words' right end, shown on hover or focus — the
@@ -594,6 +705,21 @@
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
+}
+/* THE CHAT IS ELSEWHERE (RailPeek `bodyNote`; FavouritePeek while the pane
+   shows the same session): the card keeps its place and head, and says
+   where its chat went, centred in the muted ink of an empty state. */
+.claude-rail-peek-note {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-align: center;
 }
 .claude-rail-peek-chat {
   position: absolute;

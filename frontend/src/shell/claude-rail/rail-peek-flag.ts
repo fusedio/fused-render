@@ -10,7 +10,7 @@
 // default, so a rail never grows a card the reader turned off because a GET
 // was still out.
 import { useEffect, useState } from "react";
-import { dropSharedPrefsRead, getPrefsShared, type Prefs } from "@platform/lib/api";
+import { dropSharedPrefsRead, getPrefsShared, onPrefsWrittenElsewhere, type Prefs } from "@platform/lib/api";
 
 let answer: boolean | null = null;
 let reading: Promise<void> | null = null;
@@ -50,6 +50,13 @@ export function publishCanvasRailPeek(next: Prefs["canvas_rail_peek"]) {
   reading = Promise.resolve();
   set(fromPrefs(next));
 }
+
+// ANOTHER TAB'S PUT (2026-11-04): the prefs channel carries every written
+// payload; one that names this switch lands like a publish, so the rail here
+// follows a Settings page open elsewhere without a reload.
+onPrefsWrittenElsewhere((p) => {
+  if (p.canvas_rail_peek !== undefined) publishCanvasRailPeek(p.canvas_rail_peek);
+});
 
 /** Subscribe. The first reader triggers the one read; later ones reuse it. */
 export function useCanvasRailPeek(): boolean {

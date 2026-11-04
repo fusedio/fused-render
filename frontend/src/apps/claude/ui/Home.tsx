@@ -57,7 +57,7 @@ export function Home({
     snapInvalidation,
   );
 
-  // THE FAVOURITES (owner, 2026-11-03): global, under the lists (`Lists`).
+  // THE FAVOURITES (owner, 2026-11-03): global, above the lists (`Lists`).
   const favourites = useFavouriteTasks();
 
   return (

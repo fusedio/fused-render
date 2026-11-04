@@ -129,6 +129,7 @@ import {
   usePeekAnchor,
   usePeekedKey,
 } from "./task-peek-store";
+import { publishPeekSession } from "@platform/lib/peek-session";
 import { breakoutOpener } from "@platform/lib/breakouts";
 
 /** How long an EMPTY task list is given to turn out to be a list that has not
@@ -526,6 +527,13 @@ export function TaskPeek({
   const template = task ? templates[task.target || task.project] : undefined;
   const chatHere = !!(task && task.session_id && template && !gone);
   const resolving = !chatHere && !gone && !!task?.session_id && template === undefined;
+  // The favourite's card (FavouritePeek) keeps no chat of its own on the
+  // session this panel's chat is on — one draft, one composer.
+  const peekSid = key !== null && chatHere ? (task?.session_id ?? null) : null;
+  useEffect(() => {
+    publishPeekSession(peekSid);
+    return () => publishPeekSession(null);
+  }, [peekSid]);
 
   // ---- the app preview -------------------------------------------------------
   // THE APP THIS TASK IS ABOUT, if its folder is one (shell/peek-preview.ts:

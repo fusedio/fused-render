@@ -1,5 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { lastChat, lastChatId, onLastChatStorage, setLastChat, subscribeLastChat } from "./last-chat";
+import {
+  lastChat,
+  lastChatId,
+  lastFav,
+  onLastChatStorage,
+  onLastFavStorage,
+  setLastChat,
+  setLastFav,
+  subscribeLastChat,
+  subscribeLastFav,
+} from "./last-chat";
 
 describe("last-chat", () => {
   it("names a row by project and task number, not by key", () => {
@@ -62,6 +72,55 @@ describe("last-chat", () => {
     } finally {
       // Put back exactly what was there (never delete a global another
       // suite installed).
+      if (had) g.sessionStorage = prev;
+      else delete g.sessionStorage;
+    }
+  });
+
+  it("the favourites keep their own mark: a press in one never moves the other", () => {
+    let chats = 0;
+    let favs = 0;
+    const offC = subscribeLastChat(() => chats++);
+    const offF = subscribeLastFav(() => favs++);
+    setLastChat("list-1");
+    setLastFav("fav-1");
+    expect(lastChat()).toBe("list-1");
+    expect(lastFav()).toBe("fav-1");
+    setLastChat("list-2");
+    expect(lastFav()).toBe("fav-1");
+    setLastFav("fav-2");
+    expect(lastChat()).toBe("list-2");
+    // Each store tells only its own readers.
+    expect(chats).toBe(2);
+    expect(favs).toBe(2);
+    offC();
+    offF();
+  });
+
+  it("each mark syncs on its own storage key", () => {
+    const g = globalThis as { sessionStorage?: unknown };
+    const had = Object.prototype.hasOwnProperty.call(g, "sessionStorage");
+    const prev = g.sessionStorage;
+    const store = new Map<string, string>();
+    const fake = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+    g.sessionStorage = fake;
+    try {
+      const offC = subscribeLastChat(() => {});
+      const offF = subscribeLastFav(() => {});
+      setLastChat("l");
+      setLastFav("f");
+      expect(store.get("fused-render:last-chat")).toBe("l");
+      expect(store.get("fused-render:last-fav")).toBe("f");
+      store.set("fused-render:last-fav", "f-remote");
+      // The list's listener ignores the favourites' key, and back.
+      onLastChatStorage({ key: "fused-render:last-fav", storageArea: fake as unknown as Storage });
+      expect(lastChat()).toBe("l");
+      onLastFavStorage({ key: "fused-render:last-fav", storageArea: fake as unknown as Storage });
+      expect(lastFav()).toBe("f-remote");
+      expect(lastChat()).toBe("l");
+      offC();
+      offF();
+    } finally {
       if (had) g.sessionStorage = prev;
       else delete g.sessionStorage;
     }

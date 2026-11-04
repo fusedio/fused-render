@@ -1475,7 +1475,7 @@ def test_a_star_is_recorded_open_by_default_and_keeps_its_first_stamp(state_dir)
 
 def test_at_most_one_favourite_is_open_at_a_time(state_dir):
     tasks_store.set_favourite("a", True, now=1.0)
-    out = tasks_store.set_favourite("b", True, now=2.0)
+    out = tasks_store.set_favourite("b", True, open=True, now=2.0)
     assert sorted(out["changed"]) == ["a", "b"], "both flipped, both reported"
     state = tasks_store.favourites_state()
     assert tasks_store.favourite_of(state, "a") == (True, False)
@@ -1504,10 +1504,134 @@ def test_a_corrupt_favourite_record_reads_tolerantly(state_dir):
     assert tasks_store.favourite_of(state, "odd") == (True, False)
     assert tasks_store.favourite_of(state, "missing") == (False, False)
     # And opening another closes the good one without tripping on the bad ones.
-    out = tasks_store.set_favourite("new", True, now=5.0)
+    out = tasks_store.set_favourite("new", True, open=True, now=5.0)
     assert out["changed"] == ["new", "ok"]
     (state_dir / "favourites.json").write_text("not json")
     assert tasks_store.favourites_state() == {}
+
+
+def test_a_plain_star_opens_its_card_and_closes_the_other(state_dir):
+    """`open` not given: a star you just pressed is a card you want to see —
+    it opens, and the favourite that was open closes."""
+    tasks_store.set_favourite("a", True, now=1.0)
+    out = tasks_store.set_favourite("b", True, now=2.0)
+    assert out == {"starred": True, "open": True, "changed": ["b", "a"]}
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, False)
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+    # Re-starring the open one keeps it open and moves nothing.
+    assert tasks_store.set_favourite("b", True) == {"starred": True, "open": True, "changed": []}
+    # Starring with `open=False` is the way to mark without opening.
+    out = tasks_store.set_favourite("c", True, open=False, now=3.0)
+    assert out["open"] is False and out["changed"] == ["c"]
+    assert tasks_store.favourite_of(tasks_store.favourites_state(), "b") == (True, True)
+
+
+def test_an_explicit_open_star_closes_the_others(state_dir):
+    tasks_store.set_favourite("a", True, now=1.0)
+    out = tasks_store.set_favourite("b", True, open=True, now=2.0)
+    assert out["open"] is True and sorted(out["changed"]) == ["a", "b"]
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, False)
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+
+
+def test_force_closed_records_the_star_closed_whatever_was_asked(state_dir):
+    tasks_store.set_favourite("a", True, now=1.0)
+    out = tasks_store.set_favourite("b", True, open=True, force_closed=True)
+    assert out == {"starred": True, "open": False, "changed": ["b"]}
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, True), "others untouched"
+    assert tasks_store.favourite_of(state, "b") == (True, False)
+
+
+def test_a_corrupt_favourites_file_is_moved_aside_not_overwritten(state_dir):
+    bad = "{\"a\": {\"at\": 1, \"open\": tru"
+    (state_dir / "favourites.json").write_text(bad)
+    assert tasks_store.favourites_state() == {}, "reads as empty"
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == [], \
+        "a read never moves it"
+    out = tasks_store.set_favourite("b", True, now=2.0)
+    assert out["starred"] is True
+    aside = list(state_dir.glob("favourites.json.corrupt-*"))
+    assert len(aside) == 1
+    assert aside[0].read_text() == bad, "the old bytes are kept"
+    assert json.loads((state_dir / "favourites.json").read_text()) == {
+        "b": {"at": 2.0, "open": True}}
+    # Once: the fresh file parses, so the next write moves nothing.
+    tasks_store.set_favourite("c", True, now=3.0)
+    assert len(list(state_dir.glob("favourites.json.corrupt-*"))) == 1
+
+
+def test_a_non_dict_favourites_file_counts_as_corrupt(state_dir):
+    (state_dir / "favourites.json").write_text("[1, 2]")
+    tasks_store.set_favourite("a", True, now=1.0)
+    aside = list(state_dir.glob("favourites.json.corrupt-*"))
+    assert len(aside) == 1 and aside[0].read_text() == "[1, 2]"
+
+
+def test_a_corrupt_file_with_nothing_to_write_is_left_alone(state_dir):
+    (state_dir / "favourites.json").write_text("not json")
+    out = tasks_store.set_favourite("a", False)
+    assert out["changed"] == []
+    assert (state_dir / "favourites.json").read_text() == "not json"
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == []
+
+
+def test_a_failed_read_refuses_the_write_and_moves_nothing(state_dir,
+                                                         monkeypatch):
+    """A PermissionError (EMFILE, EIO) reading the store is not a corrupt
+    file: `_update` raises, the file is untouched, nothing is set aside —
+    and a plain read still answers {}."""
+    good = json.dumps({"a": {"at": 1.0, "open": True}})
+    path = state_dir / "favourites.json"
+    path.write_text(good)
+    real_open = open
+
+    def flaky_open(file, mode="r", *a, **k):
+        if str(file) == str(path) and "r" in mode and "+" not in mode:
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, mode, *a, **k)
+
+    with monkeypatch.context() as m:
+        m.setattr(tasks_store, "open", flaky_open, raising=False)
+        with pytest.raises(PermissionError):
+            tasks_store.set_favourite("b", True, now=2.0)
+        assert tasks_store.favourites_state() == {}
+    assert path.read_text() == good
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == []
+    assert not (state_dir / "favourites.json.tmp").exists()
+
+
+def test_a_corrupt_file_that_cannot_be_set_aside_is_not_overwritten(
+        state_dir, monkeypatch):
+    """The set-aside's `os.replace` failing refuses the write: the corrupt
+    bytes stay under the live name, nothing is set aside, no tmp is left."""
+    bad = "{\"a\": {\"at\": 1, \"open\": tru"
+    path = state_dir / "favourites.json"
+    path.write_text(bad)
+    real_replace = os.replace
+
+    def refusing_replace(src, dst, *a, **k):
+        if ".corrupt-" in str(dst):
+            raise PermissionError(13, "Permission denied", str(dst))
+        return real_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(tasks_store.os, "replace", refusing_replace)
+    with pytest.raises(OSError):
+        tasks_store.set_favourite("b", True, now=2.0)
+    assert path.read_text() == bad
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == []
+    assert not (state_dir / "favourites.json.tmp").exists()
+
+
+def test_an_empty_favourites_file_is_empty_not_corrupt(state_dir):
+    (state_dir / "favourites.json").write_text("")
+    assert tasks_store.favourites_state() == {}
+    tasks_store.set_favourite("a", True, now=1.0)
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == []
+    assert json.loads((state_dir / "favourites.json").read_text()) == {
+        "a": {"at": 1.0, "open": True}}
 
 
 def test_an_update_only_call_on_an_unstarred_key_is_a_no_op(state_dir):

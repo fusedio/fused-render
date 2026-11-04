@@ -29,7 +29,8 @@
 //     rests on it is still hovered.
 //   - HOW BIG IT IS (`peekPlacement`, `dragResize`): 420×640 for a hover; a
 //     PINNED card takes the size the reader last dragged it to from its left
-//     corners (RailPeek, ui-layout `canvasRailPeek`), both clamped to the
+//     corners or its left, top and bottom edges (RailPeek, ui-layout
+//     `canvasRailPeek`; the favourite's card its own, `canvasRailFav`), both clamped to the
 //     row, the width also to the chat's reading column (`PEEK_MAX_WIDTH`).
 //     The drag itself moves the box as the pointer does; when it ends the
 //     card is placed again — top level with the ring — at its new size.
@@ -64,7 +65,7 @@ export const PEEK_WIDTH = 420;
 /** The card's height cap; shorter rows shrink it. */
 export const PEEK_MAX_HEIGHT = 640;
 /** A pinned card can be dragged no smaller than this (RailPeek's corner
- *  grips), and `peekPlacement` draws no card in a row with less room: the
+ *  and edge grips), and `peekPlacement` draws no card in a row with less room: the
  *  chat column's own floor is 340px (apps/claude/styles/chat.css `.c-chat`
  *  `min-width`, measured off legacy), under which the transcript and the
  *  composer stop shrinking and the card CLIPS them at its edge — the head's
@@ -80,6 +81,10 @@ export const PEEK_MIN_HEIGHT = 240;
  *  `.c-composer-chat`), so a card past 720 + its two 1px borders only adds
  *  gutters. The height has no such cap: the row's is the limit. */
 export const PEEK_MAX_WIDTH = 722;
+/** The favourite's card (FavouritePeek) until the reader drags it: a bit
+ *  under the list card's. */
+export const FAV_WIDTH = 380;
+export const FAV_HEIGHT = 520;
 /** …and for a seat with no conversation (a draft, a scheduled task): what it
  *  is, its words and its door need no transcript's worth of card. */
 export const PEEK_PLAIN_HEIGHT = 250;
@@ -130,31 +135,81 @@ export function peekPlacement(anchor: Box, rail: Box, bounds: Box, wish: number 
   return { left: Math.round(left), top: Math.round(top), width: Math.round(width), height: Math.round(height) };
 }
 
-/** The box a corner drag asks for: `corner` is which of the card's LEFT
- *  corners is held (the right edge stands against the rail), `start` the box
+/** WHERE THE RAIL'S CARD STANDS WITH THE FAVOURITE'S CARD UP (`avoid`, its
+ *  box; FavouritePeek): the two must not cover each other. In order:
+ *    1. ABOVE IT — the row ends a gap over the favourite's top — when that
+ *       leaves a usable card (PEEK_MIN_HEIGHT);
+ *    2. BESIDE IT, TO ITS LEFT — the favourite's left edge stands in for the
+ *       rail's, the top level with the ring as always — when the row leaves
+ *       a card at least PEEK_MIN_WIDTH wide there (a window under ~880px
+ *       tall, the common laptop);
+ *    3. OVER IT, the last resort — the plain placement, the favourite's card
+ *       on top (claude-rail.css z-index) — rather than "no room" and every
+ *       ring press opening the pane.
+ *  With no favourite's card up, or one wholly below the row, the plain
+ *  placement. */
+export function placeClear(anchor: Box, rail: Box, row: Box, avoid: Box | null, wish: number | PeekWish): Box | null {
+  if (avoid && avoid.top < row.top + row.height) {
+    const above = avoid.top - PEEK_GAP - row.top;
+    if (above >= PEEK_MIN_HEIGHT + 2 * PEEK_INSET) {
+      return peekPlacement(anchor, rail, { left: row.left, top: row.top, width: row.width, height: above }, wish);
+    }
+    const beside = peekPlacement(anchor, { ...rail, left: avoid.left }, row, wish);
+    if (beside) return beside;
+  }
+  return peekPlacement(anchor, rail, row, wish);
+}
+
+/** Which grip a resize drag holds: one of the card's LEFT corners (`tl`,
+ *  `bl`), or one of its edges — the LEFT (`l`, the width alone), the TOP
+ *  (`t`, the height, growing up) or the BOTTOM (`b`, the height, growing
+ *  down). The right edge stands against the rail: no grip there. */
+export type ResizeEdge = "tl" | "bl" | "l" | "t" | "b";
+
+/** The box a resize drag asks for: `edge` is the grip held, `start` the box
  *  when the pointer went down, `dx`/`dy` how far it has moved since. The
- *  width and height are clamped to the minimums and to the row: a top-left
- *  drag keeps the bottom edge where it was, a bottom-left drag the top. */
-export function dragResize(corner: "tl" | "bl", start: Box, dx: number, dy: number, bounds: Box): Box {
+ *  width and height are clamped to the minimums and to the row: a drag that
+ *  holds the top (`tl`, `t`) keeps the bottom edge where it was, one that
+ *  holds the bottom (`bl`, `b`) the top, and one that holds no left (`t`,
+ *  `b`) the width. `maxBottom` (viewport y) is a floor the bottom may not
+ *  pass short of the row's own — the favourite's card's top, for the rail's
+ *  card standing above it (RailPeek `avoid`). */
+export function dragResize(edge: ResizeEdge, start: Box, dx: number, dy: number, bounds: Box, maxBottom?: number): Box {
   // The row wins over the minimums: a row with less room than PEEK_MIN_*
   // (peekPlacement accepts down to 120) must not be pushed past its inset.
   const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
   const right = start.left + start.width;
   const maxWidth = Math.min(PEEK_MAX_WIDTH, right - (bounds.left + PEEK_INSET));
-  const width = clamp(start.width - dx, PEEK_MIN_WIDTH, maxWidth);
+  const width = edge === "t" || edge === "b" ? start.width : clamp(start.width - dx, PEEK_MIN_WIDTH, maxWidth);
   const minTop = bounds.top + PEEK_INSET;
-  const maxBottom = bounds.top + bounds.height - PEEK_INSET;
+  const floor = Math.min(bounds.top + bounds.height - PEEK_INSET, maxBottom ?? Infinity);
   let top: number;
   let height: number;
-  if (corner === "tl") {
+  if (edge === "tl" || edge === "t") {
     const bottom = start.top + start.height;
     height = clamp(start.height - dy, PEEK_MIN_HEIGHT, bottom - minTop);
     top = bottom - height;
+  } else if (edge === "bl" || edge === "b") {
+    height = clamp(start.height + dy, PEEK_MIN_HEIGHT, floor - start.top);
+    top = start.top;
   } else {
-    height = clamp(start.height + dy, PEEK_MIN_HEIGHT, maxBottom - start.top);
+    height = start.height;
     top = start.top;
   }
   return { left: Math.round(right - width), top: Math.round(top), width, height };
+}
+
+/** The bottom the rail's card may be dragged down to with the favourite's
+ *  card up (`avoid`): where `placeClear` would let it end when it stands
+ *  above the favourite (its first choice — the two share the rail's column):
+ *  a gap and the inset over the favourite's top, so the release does not
+ *  pull it back up; none when it stands beside it or (the last resort) over
+ *  it. */
+export function bottomClear(box: Box, avoid: Box | null): number | undefined {
+  if (!avoid) return undefined;
+  const sideBySide = box.left >= avoid.left + avoid.width || box.left + box.width <= avoid.left;
+  if (sideBySide || box.top + box.height > avoid.top) return undefined;
+  return avoid.top - PEEK_GAP - PEEK_INSET;
 }
 
 export interface Point {
@@ -514,4 +569,187 @@ export class PeekIntent {
     if (this.closeTimer) this.timers.clear(this.closeTimer);
     this.closeTimer = 0;
   }
+}
+
+// ---- THE STAR'S ANSWER ------------------------------------------------------
+
+/** THE STAR SHOWS THE ANSWER AT ONCE (RailPeek `starMark`): the server's
+ *  answer for one key, held over the pulse's `starred` until the pulse
+ *  agrees — or until it has had its chance to. `pulse` is the pulse row the
+ *  mark last saw for its key, `seen` how many DISTINCT pulse rows have come
+ *  since it was set: the first may have left before the write landed, the
+ *  second cannot have — so a pulse that still disagrees then is not lagging,
+ *  another window flipped the star, and the pulse is the truth. */
+export interface StarMark {
+  key: string;
+  on: boolean;
+  pulse: TaskPulseTask;
+  seen: number;
+  /** Which press set it (RailPeek's timeout fallback is per press). */
+  seq: number;
+}
+
+/** How long a mark may stand at most, pulses or none (a pulse loop that
+ *  stalls must not hold a star the server no longer agrees with). */
+export const STAR_MARK_MS = 6000;
+
+/** The mark after the pulse row `t` for its key (undefined: the row left):
+ *  null when the pulse agrees, the row is gone, or this is the second
+ *  distinct pulse row since the mark was set (header); the same mark for the
+ *  same row; else the mark with this row counted. */
+export function starMarkStep(mark: StarMark, t: TaskPulseTask | undefined): StarMark | null {
+  if (!t || !!t.starred === mark.on) return null;
+  if (t === mark.pulse) return mark;
+  if (mark.seen >= 1) return null;
+  return { ...mark, pulse: t, seen: mark.seen + 1 };
+}
+
+/** What a card does once the server has answered its star (RailPeek
+ *  `toggleStar`): the rail hears it (`onStarred`), and an UNSTAR shuts the
+ *  card only where the card is the favourite's own (`dismissOnUnstar`,
+ *  FavouritePeek) and still on that chat — the rail's card lets go on the
+ *  star itself (`railOnStarred`) and never shows a starred chat, so an
+ *  unstar is never its to act on. */
+export function starOutcome(starred: boolean, key: string, shownKey: string | null, dismissOnUnstar: boolean): { dismiss: boolean } {
+  return { dismiss: !starred && dismissOnUnstar && shownKey === key };
+}
+
+/** The rail's side of a star (ClaudeRail `onStarred`): with favourites on,
+ *  a starred chat leaves the list and lives on its ring in the favourites
+ *  section — no duplicate — so the rail's own card lets go of it AT ONCE, on
+ *  EVERY star, whether the server recorded the favourite's card open or
+ *  closed (another favourite open). When it did open, letting go now also
+ *  lands before the pulse that mounts the favourite's composer, so one draft
+ *  never has two composers. */
+export function railOnStarred(favsOn: () => boolean, letGo: (key: string) => void): (key: string, on: boolean) => void {
+  return (key, on) => {
+    if (on && favsOn()) letGo(key);
+  };
+}
+
+/** The words a refused favourite write says: the server's own `detail` (a
+ *  FastAPI refusal, which the shared fetch helpers' message reads as a bare
+ *  "HTTP 409"), else the error's message, else `fallback`. */
+export function errorWords(e: unknown, fallback: string): string {
+  const body = (e as { body?: unknown } | null)?.body;
+  const detail = body && typeof body === "object" ? (body as { detail?: unknown }).detail : undefined;
+  if (typeof detail === "string" && detail) return detail;
+  const message = (e as Error | null)?.message;
+  return message || fallback;
+}
+
+/** A FAVOURITE'S RING PRESSED (ClaudeRail `openFavourite`): the open write
+ *  first; the rail's card lets go of the chat only when the server says the
+ *  favourite's card is open on it. A refused write (archived, gone, the
+ *  network) or an answer that is not "open" — another window unstarred it —
+ *  says so once and falls back to the ring's ordinary press, so the chat
+ *  never vanishes into a card that will not come. */
+export async function openFavouriteFlow(
+  key: string,
+  deps: {
+    post: (key: string) => Promise<{ starred: boolean; open: boolean }>;
+    letGo: (key: string) => void;
+    fallback: () => void;
+    fail: (message: string) => void;
+  },
+): Promise<boolean> {
+  let message: string;
+  try {
+    const res = await deps.post(key);
+    if (res.open === true) {
+      deps.letGo(key);
+      return true;
+    }
+    message = res.starred ? "The favourite could not be opened" : "This chat is not a favourite any more";
+  } catch (e) {
+    message = errorWords(e, "The favourite could not be opened");
+  }
+  deps.fail(message);
+  deps.fallback();
+  return false;
+}
+
+// ---- THE FAVOURITE'S OPEN, AHEAD OF THE PULSE ---------------------------------
+
+/** A FAVOURITE'S RING PRESS SHOWS AT ONCE (owner, 2026-11-04: "click on the
+ *  pin doesn't open it and switch it" — on a loaded Mac the pulse that says
+ *  `starred_open` is seconds behind the press). The key the reader opened,
+ *  held over the pulse's open favourite until the pulse agrees (ClaudeRail's
+ *  ring `is-open`, from the press; FavouritePeek's card, from the server's
+ *  "open" answer). `stale` is every open key the pulse may still say
+ *  because it left the server BEFORE this write landed — what it said when
+ *  the mark was set, and the keys earlier marks were waiting out (a quick
+ *  A-then-B: a pulse saying A is late, not a verdict). A pulse naming
+ *  anything else answered after the write: another window (or this one's ×)
+ *  moved the record, and the pulse is the truth. */
+export interface FavOpenMark {
+  key: string;
+  stale: readonly (string | null)[];
+  /** When it was set (ms): past FAV_MARK_MS a pulse that never moved off a
+   *  stale answer wins anyway — a write undone elsewhere back to the same
+   *  record must not hold the mark for good. */
+  at: number;
+}
+
+/** How long a mark may wait out a stale pulse. Past an 8 s pulse stall. */
+export const FAV_MARK_MS = 15_000;
+
+/** The mark a press (or an "open" answer) on `key` sets, the pulse saying
+ *  `pulseOpen` now and `prev` the mark it replaces. */
+export function favOpenMark(key: string, pulseOpen: string | null, prev: FavOpenMark | null, now: number): FavOpenMark {
+  const stale: (string | null)[] = [];
+  for (const k of [pulseOpen, ...(prev ? [prev.key, ...prev.stale] : [])]) {
+    if (!stale.includes(k)) stale.push(k);
+  }
+  return { key, stale: stale.slice(0, 4), at: now };
+}
+
+/** The mark after the pulse says `pulseOpen` (null: no favourite open):
+ *  null once the pulse agrees, once the pulse names a key this mark is not
+ *  waiting out (header), once the key is no longer a live favourite
+ *  (`live`: unstarred, archived, gone), or past FAV_MARK_MS; else the same
+ *  mark. */
+export function favOpenStep(mark: FavOpenMark, pulseOpen: string | null, live: boolean, now: number): FavOpenMark | null {
+  if (!live || pulseOpen === mark.key) return null;
+  if (!mark.stale.includes(pulseOpen)) return null;
+  if (now - mark.at >= FAV_MARK_MS) return null;
+  return mark;
+}
+
+/** Whether a × (`closing`) still hides the favourite's card. `landed`: the
+ *  pulse rows in hand when the close write landed (null: not landed yet).
+ *  A pulse read AFTER that (other rows) that still says the key open is a
+ *  reopen — another window's, landing behind this one's close — so the card
+ *  shows (CodeRabbit, PR #2100). Anything else holds. */
+export function favCloseHolds(landed: object | null, rows: object, saysOpen: boolean): boolean {
+  return !(saysOpen && landed !== null && rows !== landed);
+}
+
+/** Where the favourite's chat already is, so its card keeps none of its own
+ *  (one chat, one composer): `"pane"` when the page's URL names its session
+ *  (the Claude pane, the Open door), `"peek"` when the Tasks side peek shows
+ *  it (platform/lib/peek-session), else null. */
+export function favChatElsewhere(
+  fav: { key: string; session_id?: string | null } | null,
+  urlSession: string | null,
+  peekSession: string | null,
+): "pane" | "peek" | null {
+  if (!fav) return null;
+  const names = (sid: string | null) => !!sid && (sid === fav.session_id || sid === fav.key);
+  if (names(urlSession)) return "pane";
+  if (names(peekSession)) return "peek";
+  return null;
+}
+
+/** THE ROW THE RAIL STANDS IN — the box the card is placed against and
+ *  watched for resizes: the rail's nearest ancestor that HAS a box. The
+ *  explorer's file view portals the rail into `.stat-side-slot`, which is
+ *  `display: contents` (explorer.css) and so measures as nothing; the row
+ *  there is the split behind it. Shared by RailPeek (placement) and
+ *  FavouritePeek (its no-room reset: a sidebar folding widens the row, not
+ *  the 48px rail). */
+export function rowOf(rail: HTMLElement | null): HTMLElement | null {
+  let el = rail?.parentElement ?? null;
+  while (el && getComputedStyle(el).display === "contents") el = el.parentElement;
+  return el;
 }

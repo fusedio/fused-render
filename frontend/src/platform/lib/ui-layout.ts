@@ -149,12 +149,15 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
     out.recentPaths = paths.slice(0, RECENT_PATHS_MAX);
   }
   if (typeof src.rememberLastFolder === "boolean") out.rememberLastFolder = src.rememberLastFolder;
-  const rp = src.canvasRailPeek;
-  if (isObj(rp) && isNum(rp.width) && isNum(rp.height)) {
-    out.canvasRailPeek = {
-      width: clampInt(rp.width, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
-      height: clampInt(rp.height, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
-    };
+  // The rail's pinned card and the favourite's card: one shape.
+  for (const card of ["canvasRailPeek", "canvasRailFav"] as const) {
+    const rp = src[card];
+    if (isObj(rp) && isNum(rp.width) && isNum(rp.height)) {
+      out[card] = {
+        width: clampInt(rp.width, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
+        height: clampInt(rp.height, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
+      };
+    }
   }
   return out;
 }

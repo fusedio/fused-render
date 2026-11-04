@@ -82,6 +82,7 @@ import logging
 import os
 import re
 import threading
+import time
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
@@ -154,12 +155,24 @@ def write_generation() -> int:
     return _WRITE_GENERATION
 
 
+#: The payload's `revision`: wall-clock nanoseconds, bumped past the last one
+#: on every write, so it only ever grows — across a restart too, which the
+#: in-process generation above does not. A window that hears two prefs PUTs
+#: answered out of order (api.ts `onPrefsWrittenElsewhere`) keeps the newer.
+_REVISION = time.time_ns()
+
+
+def revision() -> int:
+    return _REVISION
+
+
 def _store(prefs: dict) -> None:
-    global _WRITE_GENERATION
+    global _WRITE_GENERATION, _REVISION
     try:
         storage.write_json(_path(), prefs)
     finally:
         _WRITE_GENERATION += 1
+        _REVISION = max(time.time_ns(), _REVISION + 1)
 
 
 def read_prefs() -> dict:
@@ -1154,6 +1167,9 @@ def _unavailable_features() -> dict:
 
 def _prefs_response() -> dict:
     return {
+        # Read FIRST: everything below is read after it, so the payload is at
+        # least as new as the revision it carries (see `_REVISION`).
+        "revision": revision(),
         # Features this device lacks, with the reason (see `_unavailable_features`).
         "unavailable": _unavailable_features(),
         "engine": engine_state(),

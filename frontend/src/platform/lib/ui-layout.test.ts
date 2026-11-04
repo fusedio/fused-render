@@ -24,3 +24,13 @@ describe("sanitizeUiLayout canvasRailPeek", () => {
     expect(sanitizeUiLayout({ v: 1, canvasRailPeek: { width: NaN, height: 720 } }).canvasRailPeek).toBeUndefined();
   });
 });
+
+describe("sanitizeUiLayout canvasRailFav", () => {
+  it("keeps the favourite's card size in the same shape, clamped", () => {
+    expect(sanitizeUiLayout({ v: 1, canvasRailFav: { width: 400.4, height: 99999 } }).canvasRailFav).toEqual({
+      width: 400,
+      height: 10000,
+    });
+    expect(sanitizeUiLayout({ v: 1, canvasRailFav: { width: 400 } }).canvasRailFav).toBeUndefined();
+  });
+});
