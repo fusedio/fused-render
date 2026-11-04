@@ -667,11 +667,18 @@ def _creds_sig(env: str | None = None) -> tuple | None:
     return (st.st_mtime_ns, st.st_size)
 
 
-def _cli_cache_clear() -> None:
+def _cli_cache_clear(keep_listing: bool = False) -> None:
+    """Drop the memory cache, and (by default) the on-disk listing baselines
+    with it — see `_listing_cache_write`. `keep_listing` is for mutations the
+    page does not act on right away (a push: only `updated_at` moves), where
+    serving the baseline for one more visit beats blocking on the control
+    plane every time a canvas was saved."""
     global _cli_cache_gen
     with _CLI_CACHE_LOCK:
         _cli_cache.clear()
         _cli_cache_gen += 1
+    if not keep_listing:
+        _listing_cache_clear()
 
 
 def _fresh(result):
@@ -1615,20 +1622,126 @@ def _iso_epoch(value) -> float | None:
         return None
 
 
-def _list_entries(env: str):
+# -- listing disk cache (stale-while-revalidate) ---------------------------------
+#
+# The control plane's lite listing costs ~1s fixed (connect + TLS + auth) plus
+# ~17ms per canvas, so a 90-canvas account waits ~3s on every visit once the
+# 45s memory cache lapsed. The hosted workbench hides the same cost with a
+# persisted baseline served instantly while a refresh runs; this is that for
+# the catalog: the last successful listing per env lives on disk, the page
+# gets it in milliseconds flagged `stale`, and asks again with `fresh=1` for
+# the real one (which goes through `_cached_cli`'s single flight, so two tabs
+# share one control-plane hit).
+#
+# Keyed by env, NOT by credentials signature: `_creds_sig` changes on every
+# silent token refresh, which would wipe the baseline for no reason. Identity
+# changes (login, logout, settings edits) and list mutations the page acts on
+# right away (create, delete) drop the files through `_cli_cache_clear`
+# instead; a push keeps them — only `updated_at` goes briefly stale.
+
+_LISTING_CACHE_VERSION = 1
+# A baseline older than this is dropped rather than flashed in: the fresh call
+# follows anyway, and a weeks-old list popping up first reads as a bug.
+_LISTING_CACHE_MAX_AGE_S = 7 * 24 * 3600.0
+
+
+def _listing_cache_dir() -> str:
+    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    # Not under `canvases/`: that is a clone root (`canvases_root`), and a
+    # record file next to canvas folders would be an odd neighbour.
+    return os.path.join(base, "cache")
+
+
+def _listing_cache_path(env: str) -> str:
+    return os.path.join(_listing_cache_dir(), f"canvases-listing-{env}.json")
+
+
+def _listing_cache_write(env: str, entries: list) -> None:
+    """Best effort: a cache that cannot be written is a cache that misses."""
+    path = _listing_cache_path(env)
+    record = {
+        "version": _LISTING_CACHE_VERSION,
+        "env": env,
+        # The custom env can be retargeted through settings.toml; a listing
+        # from the previous deployment must not stand in for the new one.
+        "base_url": workbench_base_url(env),
+        "saved_at": time.time(),
+        "entries": entries,
+    }
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _listing_cache_read(env: str) -> list | None:
+    """The stored listing for `env`, or None when absent, malformed, from
+    another deployment, or past `_LISTING_CACHE_MAX_AGE_S`."""
+    try:
+        with open(_listing_cache_path(env), encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("version") != _LISTING_CACHE_VERSION:
+        return None
+    if record.get("env") != env or record.get("base_url") != workbench_base_url(env):
+        return None
+    saved_at = record.get("saved_at")
+    if not isinstance(saved_at, (int, float)) or time.time() - saved_at > _LISTING_CACHE_MAX_AGE_S:
+        return None
+    entries = record.get("entries")
+    if not isinstance(entries, list):
+        return None
+    if not all(isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"] for e in entries):
+        return None
+    return entries
+
+
+def _listing_cache_clear() -> None:
+    """Drop every env's baseline: prod and unstable share one credentials
+    store, so a sign-out of one is a sign-out of both."""
+    for env in WORKBENCH_ENV_CHOICES:
+        try:
+            os.remove(_listing_cache_path(env))
+        except OSError:
+            pass
+
+
+def _list_entries(env: str, allow_stale: bool = False):
     """`_list_entries_uncached` behind the CLI result cache (see `_cached_cli`):
-    `(entries, error)`, errors never cached."""
+    `(entries, error, stale)`, errors never cached.
+
+    `allow_stale`: on a memory miss, hand back the disk baseline (stale=True)
+    instead of calling the control plane; the caller is expected to ask again
+    without it."""
 
     def compute():
         entries, err = _list_entries_uncached(env)
         if err is not None:
             return _err_of(err)
+        _listing_cache_write(env, entries)
         return ("ok", entries)
 
+    if allow_stale:
+        key = ("list", env, _creds_sig(env))
+        with _CLI_CACHE_LOCK:
+            hit = _cli_cache.get(key)
+            fresh = hit is not None and hit[0] > time.monotonic()
+        if not fresh:
+            stale = _listing_cache_read(env)
+            if stale is not None:
+                return stale, None, True
     result = _cached_cli("list", env, compute)
     if result[0] == "err":
-        return None, _error(result[1], result[2])
-    return result[1], None
+        return None, _error(result[1], result[2]), False
+    return result[1], None, False
 
 
 def _list_entries_uncached(env: str):
@@ -1738,10 +1851,16 @@ def _list_entries_uncached(env: str):
 
 
 @router.get("/api/canvases/list")
-def api_canvases_list(env: str = "", x_fused: str | None = Header(default=None)):
+def api_canvases_list(
+    env: str = "", fresh: int = 0, x_fused: str | None = Header(default=None)
+):
     # EXECUTES a control-plane call — guarded like whoami. `env` picks the
     # account listed AND the folder `cloned` is judged against: a prod clone
     # of `alpha` says nothing about unstable's `alpha`.
+    #
+    # Without `fresh`, a memory miss answers from the disk baseline flagged
+    # `stale: true` (see `_list_entries`); the page then asks again with
+    # `fresh=1` and swaps the real list in when it lands.
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -1750,7 +1869,7 @@ def api_canvases_list(env: str = "", x_fused: str | None = Header(default=None))
         return bad
     if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
-    canvases, err = _list_entries(env)
+    canvases, err, stale = _list_entries(env, allow_stale=not fresh)
     if err is not None:
         return err
     cloned = set()
@@ -1786,7 +1905,7 @@ def api_canvases_list(env: str = "", x_fused: str | None = Header(default=None))
                         mtime = st.st_mtime
         canvas["n_udfs"] = n_udfs
         canvas["mtime"] = mtime
-    return {"canvases": canvases}
+    return {"canvases": canvases, "stale": stale}
 
 
 @router.post("/api/canvases/previews")
@@ -3618,8 +3737,10 @@ class _SyncManager:
         # lock is not held across it.
         after = self._probe_remote()
         # A push changes the account's canvas list (updated_at): drop cached
-        # list answers. Module-level, called with no lock held.
-        _cli_cache_clear()
+        # list answers. Module-level, called with no lock held. The disk
+        # baseline stays: auto-push fires on every save, and wiping it here
+        # would make the catalog block on the control plane every time.
+        _cli_cache_clear(keep_listing=True)
         with self._op_lock:
             self.last_push_at = time.time()
             self.last_error = None
