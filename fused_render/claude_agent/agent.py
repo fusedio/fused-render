@@ -4607,6 +4607,9 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
                 env["COPILOT_GITHUB_TOKEN"] = token
         return env
     env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
+    # `claude -p` runs as the sdk-cli entrypoint, where the CLI keeps the
+    # Artifact tools off unless this is truthy. An explicit value wins.
+    env.setdefault("CLAUDE_CODE_ARTIFACT", "1")
     # Mirror this chat's Bash-tool commands into a log the drawer's "Claude" tab
     # reads (D1327). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
     # statusline) through the prefix; the wrapper is transparent for all but

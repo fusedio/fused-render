@@ -2021,6 +2021,48 @@ def test_codex_spawn_env(agent, home, tmp_path, monkeypatch):
     assert agent._spawn_env()["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "1"
 
 
+def test_claude_child_env_enables_the_artifact_tools(agent, monkeypatch):
+    """`claude -p` runs as the sdk-cli entrypoint, where the CLI keeps the
+    Artifact tools off unless CLAUDE_CODE_ARTIFACT is truthy."""
+    monkeypatch.delenv("CLAUDE_CODE_ARTIFACT", raising=False)
+    assert agent._spawn_env("chat")["CLAUDE_CODE_ARTIFACT"] == "1"
+
+
+def test_an_explicit_artifact_opt_out_is_kept(agent, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_ARTIFACT", "0")
+    assert agent._spawn_env("chat")["CLAUDE_CODE_ARTIFACT"] == "0"
+
+
+@pytest.mark.parametrize("backend", ["codex", "gemini", "copilot"])
+def test_other_engines_do_not_get_the_artifact_flag(agent, monkeypatch, backend):
+    monkeypatch.setenv("CLAUDE_CODE_ARTIFACT", "1")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(agent, "_gh_bin", lambda path: "")
+    monkeypatch.setattr(agent, "_gh_token", lambda gh, env=None: "")
+    assert "CLAUDE_CODE_ARTIFACT" not in agent._spawn_env("chat", backend=backend)
+
+
+def test_claude_child_env_enables_the_artifact_tools(agent, monkeypatch):
+    """`claude -p` runs as the sdk-cli entrypoint, where the CLI keeps the
+    Artifact tools off unless CLAUDE_CODE_ARTIFACT is truthy."""
+    monkeypatch.delenv("CLAUDE_CODE_ARTIFACT", raising=False)
+    assert agent._spawn_env("chat")["CLAUDE_CODE_ARTIFACT"] == "1"
+
+
+def test_an_explicit_artifact_opt_out_is_kept(agent, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_ARTIFACT", "0")
+    assert agent._spawn_env("chat")["CLAUDE_CODE_ARTIFACT"] == "0"
+
+
+@pytest.mark.parametrize("backend", ["codex", "gemini", "copilot"])
+def test_other_engines_do_not_get_the_artifact_flag(agent, monkeypatch, backend):
+    monkeypatch.setenv("CLAUDE_CODE_ARTIFACT", "1")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(agent, "_gh_bin", lambda path: "")
+    monkeypatch.setattr(agent, "_gh_token", lambda gh, env=None: "")
+    assert "CLAUDE_CODE_ARTIFACT" not in agent._spawn_env("chat", backend=backend)
+
+
 def test_the_codex_host_file_is_picked_by_backend(agent):
     assert agent._HOST_FILES["codex"] == os.path.join(agent.HERE, "codex_host.py")
     assert set(agent._HOST_FILES) == set(agent.BACKENDS)
