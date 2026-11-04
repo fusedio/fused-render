@@ -164,9 +164,6 @@ class OneShot:
     #: Facts `parse` learned beside the text (Gemini's `stats`), for the
     #: relay's result frame.
     extra: dict = field(default_factory=dict)
-    #: Working directory for the spawn, or None for the server's own. Only a
-    #: tools run sets it (Gemini reads `.gemini/settings.json` from the cwd).
-    cwd: Optional[str] = None
 
 
 def gemini_policy_path(home_dir: Optional[str] = None) -> str:
@@ -274,9 +271,12 @@ def prepare(backend: str, model: str, system: str, prompt: str,
     Copilot `--additional-mcp-config` + `--allow-tool`/`--available-tools`
     naming the server (verified 1.0.102); Codex `-c mcp_servers.<name>.*`
     overrides (ASSUMED from Codex's config reference, no binary on the
-    build machine); Gemini a per-run cwd holding `.gemini/settings.json`
-    with the server plus a policy that allows its tools and denies the rest
-    (ASSUMED likewise). The run stays sandboxed, session-free and
+    build machine); Gemini a per-run SYSTEM settings file naming the server
+    (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, merged over the user's own, so the
+    credential store stays where it is) plus a policy that allows its tools
+    and denies the rest (ASSUMED likewise). No `cwd=` anywhere: the spawn
+    rule at the top of this file (posix_spawn, never fork) holds for a
+    tools run too. The run stays sandboxed, session-free and
     instruction-free exactly as before."""
     if backend not in BACKENDS:
         raise ValueError(f"not a one-shot backend: {backend!r}")
@@ -431,31 +431,35 @@ def _prepare_gemini(agent, model: str, effort: Optional[str], common: dict,
     records is removed by the `session_id` the reply named."""
     run_dir = None
     policy = gemini_policy_path()
+    env = agent._spawn_env(backend="gemini")
     if tools_mcp is not None:
-        # ASSUMED (no binary on the build machine): Gemini takes MCP servers
-        # from the cwd's `.gemini/settings.json` and gates tools by policy,
-        # so a tools run gets a cwd of its own holding the server and a
-        # policy that allows that server's tools and denies everything else
+        # ASSUMED (no binary on the build machine): Gemini merges a SYSTEM
+        # settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) over the user's,
+        # so a tools run names the server there — never under the user's own
+        # config dir, never through a cwd (the spawn rule) — and gates tools
+        # by a policy that allows that server's and denies everything else
         # (`--allowed-mcp-server-names` narrows the roster the same way).
+        # Priorities stay <= 999: 1000 is "tier overflow" on 0.65.0 (the
+        # recap policy's note above).
         name = _mcp_server_name()
         run_dir = tempfile.mkdtemp(prefix="fused-gemini-tools-")
-        os.makedirs(os.path.join(run_dir, ".gemini"), exist_ok=True)
-        with open(os.path.join(run_dir, ".gemini", "settings.json"), "w",
-                  encoding="utf-8") as fh:
+        settings = os.path.join(run_dir, "settings.json")
+        with open(settings, "w", encoding="utf-8") as fh:
             json.dump({"mcpServers": {name: {
                 "command": tools_mcp["command"], "args": list(tools_mcp["args"]),
                 "env": dict(tools_mcp.get("env") or {})}}}, fh)
+        env = {**env, "GEMINI_CLI_SYSTEM_SETTINGS_PATH": settings}
         policy = os.path.join(run_dir, "policy.toml")
         with open(policy, "w", encoding="utf-8") as fh:
             fh.write("# fused-render: an /api/ai tools run (agent_oneshot.py).\n"
                      "[[rule]]\n"
                      f'toolName = "{name}__*"\n'
                      'decision = "allow"\n'
-                     "priority = 1000\n"
+                     "priority = 999\n"
                      "[[rule]]\n"
                      'toolName = "*"\n'
                      'decision = "deny"\n'
-                     "priority = 999\n")
+                     "priority = 998\n")
     argv = [_bin(agent, "gemini"), "-p", GEMINI_POINTER, "-o", "json",
             "--approval-mode", "default", "--skip-trust",
             "--policy", policy,
@@ -511,10 +515,10 @@ def _prepare_gemini(agent, model: str, effort: Optional[str], common: dict,
             except OSError:
                 pass
 
-    spec = OneShot(argv=argv, env=agent._spawn_env(backend="gemini"),
+    spec = OneShot(argv=argv, env=env,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                    parse=parse, cleanup=cleanup, effort_dropped=dropped,
-                   extra=found, cwd=run_dir, **common)
+                   extra=found, **common)
     return spec
 
 
@@ -570,7 +574,7 @@ async def run_async(spec: OneShot, timeout: float,
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.argv, env=spec.env, stdin=asyncio.subprocess.PIPE,
-                stdout=spec.stdout, stderr=spec.stderr, cwd=spec.cwd,
+                stdout=spec.stdout, stderr=spec.stderr,
                 **ASYNC_SUBPROCESS_KWARGS)
         except OSError as exc:
             raise OneShotError("ai_unavailable",

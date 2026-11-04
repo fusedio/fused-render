@@ -42,7 +42,6 @@ def test_copilot_tools_replace_the_no_tools_switch_with_the_bridge():
         # MCPs, nothing to ask, the same temp cwd.
         for flag in ("--no-custom-instructions", "--disable-builtin-mcps", "--no-ask-user"):
             assert flag in spec.argv and flag in plain.argv
-        assert spec.cwd is None
     finally:
         plain.cleanup()
         spec.cleanup()
@@ -62,27 +61,34 @@ def test_codex_tools_are_config_overrides():
         spec.cleanup()
 
 
-def test_gemini_tools_get_a_cwd_with_settings_and_an_allowing_policy():
+def test_gemini_tools_ride_a_system_settings_file_and_an_allowing_policy():
     spec = agent_oneshot.prepare("gemini", "auto", "sys", "p", agent=_Agent(), tools_mcp=_MCP)
     try:
         name = agent_oneshot._mcp_server_name()
-        assert spec.cwd and os.path.isdir(spec.cwd)
-        with open(os.path.join(spec.cwd, ".gemini", "settings.json"), encoding="utf-8") as fh:
+        # No cwd (the spawn rule: posix_spawn, never fork), nothing under the
+        # user's own Gemini home: the server rides a SYSTEM settings file.
+        assert not hasattr(spec, "cwd")
+        settings = spec.env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"]
+        with open(settings, encoding="utf-8") as fh:
             assert json.load(fh)["mcpServers"][name]["command"] == "/py"
         policy = spec.argv[spec.argv.index("--policy") + 1]
-        assert policy.startswith(spec.cwd)
+        assert os.path.dirname(policy) == os.path.dirname(settings)
         text = open(policy, encoding="utf-8").read()
         assert f'toolName = "{name}__*"' in text and 'decision = "allow"' in text
         assert 'toolName = "*"' in text and 'decision = "deny"' in text
+        # Gemini refuses priority 1000 ("tier overflow"); the allow outranks
+        # the deny below the ceiling.
+        assert "priority = 999" in text and "priority = 998" in text
+        assert "1000" not in text
         assert spec.argv[spec.argv.index("--allowed-mcp-server-names") + 1] == name
-        run_dir = spec.cwd
+        run_dir = os.path.dirname(settings)
     finally:
         spec.cleanup()
-    assert not os.path.exists(run_dir)  # cleanup removes the run's cwd
-    # Without tools: the shared deny-all policy, the server's cwd.
+    assert not os.path.exists(run_dir)  # cleanup removes the run's files
+    # Without tools: the shared deny-all policy, the user's own settings.
     plain = agent_oneshot.prepare("gemini", "auto", "sys", "p", agent=_Agent())
     try:
-        assert plain.cwd is None
+        assert "GEMINI_CLI_SYSTEM_SETTINGS_PATH" not in plain.env
         assert plain.argv[plain.argv.index("--policy") + 1] == agent_oneshot.gemini_policy_path()
         assert "--allowed-mcp-server-names" not in plain.argv
     finally:

@@ -1811,3 +1811,16 @@ def test_relay_mcp_config_is_empty_and_strict_for_a_plain_completion(monkeypatch
     assert _flag(argv, "--mcp-config") == _server_ai._NO_MCP_CONFIG
     assert "--allowed-tools" not in argv
     assert "MCP_TOOL_TIMEOUT" not in env
+
+
+def test_relay_tools_turn_never_iterated_leaves_no_turn(monkeypatch):
+    # A client that drops before the first byte never runs the generator —
+    # so the turn must not exist yet: no registry entry, no bridge config
+    # dir, no spawn (the leak this file documents for Activity rows).
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    resp = asyncio.run(_server_ai._ai_relay(
+        {"prompt": "x", "stream": True, "tools": _TOOLS}))
+    assert resp.status_code == 200
+    assert _server_ai._AI_TURNS == {}
+    assert fake.calls == []

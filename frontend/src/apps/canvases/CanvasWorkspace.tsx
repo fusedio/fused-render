@@ -1737,6 +1737,9 @@ export default function CanvasWorkspace({
           controller.signal,
           (text) => post({ type: "fused-embed-ai-chunk", req, text }),
           (frame) => {
+            // A frame of a run this `req` has since replaced is stale: the
+            // replacement's `turn` id must not be overwritten or wiped.
+            if (aiRunsRef.current.get(req) !== controller) return;
             if (frame.type === "turn") {
               aiTurnsRef.current.set(req, frame.id);
               return;
@@ -1776,8 +1779,12 @@ export default function CanvasWorkspace({
           error: { type: err.type ?? "ai_error", message: err.message || "AI request failed" },
         });
       } finally {
-        if (aiRunsRef.current.get(req) === controller) aiRunsRef.current.delete(req);
-        aiTurnsRef.current.delete(req);
+        // Owner-guarded like the controller: a replacement run under the
+        // same `req` may already hold the map's entries.
+        if (aiRunsRef.current.get(req) === controller) {
+          aiRunsRef.current.delete(req);
+          aiTurnsRef.current.delete(req);
+        }
       }
     },
     [sendAiModels],

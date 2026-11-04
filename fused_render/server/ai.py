@@ -676,10 +676,16 @@ class _AiTurn:
         self.closed = False
 
     @classmethod
-    def open(cls, tools: list, queue: "asyncio.Queue") -> "_AiTurn":
-        turn = cls("turn_" + uuid.uuid4().hex, tools, queue)
-        _AI_TURNS[turn.id] = turn
-        return turn
+    def new(cls, tools: list, queue: "asyncio.Queue") -> "_AiTurn":
+        """A turn with its id minted but NOT yet reachable by the bridge:
+        `register()` is called by the stream generator's first lines, so a
+        client that never iterates the response (dropped before the first
+        byte — the leak this file documents for Activity rows) leaves
+        nothing in `_AI_TURNS`."""
+        return cls("turn_" + uuid.uuid4().hex, tools, queue)
+
+    def register(self) -> None:
+        _AI_TURNS[self.id] = self
 
     def close(self) -> None:
         self.closed = True
@@ -1879,19 +1885,26 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
     turn_queue: asyncio.Queue | None = None
     turn: _AiTurn | None = None
     turn_dir: str | None = None
+    turn_spec: dict | None = None
     if tools:
         turn_queue = asyncio.Queue()
-        turn = _AiTurn.open(tools, turn_queue)
-        spec = _tools_mcp_spec(turn)
-        if spec is None:
-            turn.close()
+        turn = _AiTurn.new(tools, turn_queue)
+        turn_spec = _tools_mcp_spec(turn)
+        if turn_spec is None:
             return _ai_failed(model, "ai_unavailable",
                               "the server's origin is not published, so a tool "
                               "bridge cannot call back")
+
+    def _open_turn() -> None:
+        """Register the turn, write its bridge config and build its own
+        instance — from INSIDE the stream generator, so nothing that needs
+        closing exists before the one `finally` that closes it runs."""
+        nonlocal session, turn_dir
+        turn.register()
         turn_dir = tempfile.mkdtemp(prefix="fused_render_ai_tools_")
         mcp_path = os.path.join(turn_dir, "mcp.json")
         with open(mcp_path, "w", encoding="utf-8") as fh:
-            json.dump({"mcpServers": {ai_tools_server.SERVER_NAME: spec}}, fh)
+            json.dump({"mcpServers": {ai_tools_server.SERVER_NAME: turn_spec}}, fh)
         session = _AiSession(
             mcp_config=mcp_path,
             allowed_tools=f"mcp__{ai_tools_server.SERVER_NAME}__*",
@@ -2183,9 +2196,12 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         # (`_ndjson_frame` tells them apart), so a call the bridge parks
         # reaches the caller in order with the text around it.
         queue: asyncio.Queue = turn_queue if turn_queue is not None else asyncio.Queue()
-        task = asyncio.ensure_future(
-            run_once(on_delta=queue.put_nowait))
+        task = None
         try:
+            if turn is not None:
+                _open_turn()
+            task = asyncio.ensure_future(
+                run_once(on_delta=queue.put_nowait))
             if turn is not None:
                 # First frame: the id the caller posts tool results under.
                 # Inside the try: a client gone after this frame still
@@ -2261,7 +2277,7 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             await _stop_remote_beat(beat)
             if turn is not None:
                 turn.close()
-            if not task.done():
+            if task is not None and not task.done():
                 # Client went away mid-stream: cancel AND await, so
                 # run_once's cancel branch (discard the now-mid-turn
                 # instance) actually runs before the generator is dropped.
@@ -2270,12 +2286,11 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
-            if turn is not None:
+            if turn is not None and turn_dir:
                 # A per-turn instance is single-use: kill it, drop its
                 # bridge config. (`_discard` reaps and unlinks the sp file.)
                 await session._discard()
-                if turn_dir:
-                    shutil.rmtree(turn_dir, ignore_errors=True)
+                shutil.rmtree(turn_dir, ignore_errors=True)
             # Belt-and-suspenders, same reasoning as the non-streaming
             # branch's own finally: any exit that reached here without one of
             # the terminal reports above (mid-stream disconnect, an
@@ -2369,10 +2384,11 @@ async def _agent_relay(backend: str, model: str | None, prompt: str, system_prom
     turn: _AiTurn | None = None
     tools_mcp = None
     if tools:
-        turn = _AiTurn.open(tools, turn_queue)
+        # Minted here (the CLI's config names the id) but registered only
+        # once the stream generator runs, like the Claude tier's turn.
+        turn = _AiTurn.new(tools, turn_queue)
         tools_mcp = _tools_mcp_spec(turn)
         if tools_mcp is None:
-            turn.close()
             return _ai_failed(model or backend, "ai_unavailable",
                               "the server's origin is not published, so a tool "
                               "bridge cannot call back")
@@ -2381,8 +2397,6 @@ async def _agent_relay(backend: str, model: str | None, prompt: str, system_prom
             agent_oneshot.prepare, backend, model or "", system, prompt, effort,
             None, tools_mcp)
     except agent_oneshot.OneShotError as exc:
-        if turn is not None:
-            turn.close()
         return _ai_failed(model or backend, exc.type_, str(exc),
                           status=409 if exc.type_ == "ai_unavailable" else 502)
     model = spec.model
@@ -2447,9 +2461,6 @@ async def _agent_relay(backend: str, model: str | None, prompt: str, system_prom
             tick(state="error", done=None, total=None, message=str(exc))
             return _ai_failed(model, exc.type_, str(exc),
                               status=504 if exc.type_ == "timeout" else 502)
-        finally:
-            if turn is not None:  # unreachable (tools need stream); belt and braces
-                turn.close()
         settle(text, finish)
         return JSONResponse({"ok": True, "result": frame(text, finish)})
 
@@ -2458,6 +2469,7 @@ async def _agent_relay(backend: str, model: str | None, prompt: str, system_prom
         task = None
         try:
             if turn is not None:
+                turn.register()
                 # First frame: the id the caller posts tool results under.
                 yield json.dumps({"type": "turn", "id": turn.id}) + "\n"
             # The CLI's text arrives whole at the end; the turn's
