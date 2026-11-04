@@ -41,6 +41,18 @@ def _queue_target(params: dict) -> str:
     return project_queue.queue_key(target) or ""
 
 
+def _breakout_label(params: dict) -> str:
+    """The `breakout` param, trusted. `"1"` is a fresh fork. `"resume"` only
+    counts for a session the breakout store records: a client may not skip the
+    folder gate by naming an ordinary task's session."""
+    label = str(params.get("breakout") or "")
+    if label == "resume":
+        from fused_render import tasks_store
+        if not tasks_store.is_breakout(str(params.get("session_id") or "")):
+            return ""
+    return label
+
+
 def _file_owner(params: dict, result: dict, body: dict | None = None,
                 late: bool = False) -> None:
     """Record who owns the folder the moment a `start` or a `send` actually
@@ -78,7 +90,7 @@ def _file_owner(params: dict, result: dict, body: dict | None = None,
         action = str(params.get("action") or "")
         if action not in ("start", "send"):
             return
-        if str(params.get("breakout") or "") in ("1", "resume"):
+        if _breakout_label(params) in ("1", "resume"):
             # Never the folder's owner (see `_folder_busy`).
             return
         key = _queue_target(params)
@@ -252,7 +264,7 @@ def _folder_busy(params: dict, body: dict | None = None) -> str:
         action = str(params.get("action") or "")
         if action not in ("start", "send"):
             return ""
-        if str(params.get("breakout") or "") in ("1", "resume"):
+        if _breakout_label(params) in ("1", "resume"):
             # A breakout is a side conversation, not a task: it never claims
             # the folder slot and never waits on whoever holds it.
             return ""
