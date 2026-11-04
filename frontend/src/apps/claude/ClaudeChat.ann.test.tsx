@@ -2166,6 +2166,27 @@ for (const flagOn of [false, true]) {
     expect(into[0]!.params.client_uuid).toBe("0f8c1c52-aaaa-4bbb-8ccc-123456789abc");
   });
 
+  test(`${tag}: a reload before a new chat's session id arrives still re-sends the line, exactly once`, async () => {
+    // A line sent while the chat had a run but no session id was kept under the
+    // run (`claude.outbox:run:<id>`); the reload boots from `run` alone.
+    const id = "0f8c1c52-aaaa-4bbb-8ccc-123456789abc";
+    storeCells.set("claude.outbox:run:r1", JSON.stringify([{ id, text: "sent before the session" }]));
+    historyBody = { turns: [{ role: "user", text: "earlier", uuid: "u0" }], live_run: "r1", inbox: [] };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ run: "r1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    // The follow-up road waits up to 3 s for the run to be live.
+    await settle(3600);
+    const into = [...sends(), ...started()].filter((c) => String(c.params.message).includes("sent before the session"));
+    expect(into).toHaveLength(1);
+    expect(into[0]!.params.client_uuid).toBe(id);
+    await settle(400);
+    expect([...sends(), ...started()].filter((c) => String(c.params.message).includes("sent before the session"))).toHaveLength(1);
+    // The run's copy is gone; the line is now owned by the session's journal / server.
+    expect(storeCells.get("claude.outbox:run:r1")).toBeUndefined();
+  });
+
   test(`${tag}: a reload does not re-send a line the CLI took, seen only as a receipt`, async () => {
     const id = "0f8c1c52-aaaa-4bbb-8ccc-123456789abc";
     storeCells.set(PENDING_KEY, JSON.stringify([{ id, text: "taken line" }]));

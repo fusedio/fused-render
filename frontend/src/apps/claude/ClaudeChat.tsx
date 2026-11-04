@@ -1140,29 +1140,49 @@ function ChatBody(props: ChatBodyProps) {
     () => controllerRef.current?.getState().sessionId || params.get("session_id") || "",
     [params],
   );
-  const journalFlush = useCallback((sid: string) => {
-    if (!sid) return;
-    const lines: PendingLine[] = [];
-    for (const [id, e] of journal.current) if (e.sid === sid) lines.push({ id, text: e.text });
-    savePending(sid, lines);
-  }, []);
+  /**
+   * WHERE A LINE IS KEPT BEFORE ITS SESSION HAS AN ID: under the run this chat
+   * started (`run` in the URL, which a reload boots from) — `run:<id>`. A brand-new
+   * chat has no session id until the CLI's first rows land, and the journal
+   * keyed by session alone lost any line sent in that window on a reload. It is
+   * rekeyed to the session id the moment one exists (the effect below), the way
+   * the held-line storage follows the first session id.
+   */
+  const journalRunKey = useCallback(() => {
+    const run = controllerRef.current?.getState().runId || params.get("run") || "";
+    return run ? "run:" + run : "";
+  }, [params]);
+  const journalOwner = useCallback(
+    (e: { sid: string }) => e.sid || journalRunKey(),
+    [journalRunKey],
+  );
+  const journalFlush = useCallback(
+    (owner: string) => {
+      if (!owner) return;
+      const lines: PendingLine[] = [];
+      for (const [id, e] of journal.current) if (journalOwner(e) === owner) lines.push({ id, text: e.text });
+      savePending(owner, lines);
+    },
+    [journalOwner],
+  );
   const journalAdd = useCallback(
     (id: string, text: string) => {
       if (!id || !text) return;
-      const sid = journalSid();
-      journal.current.set(id, { text, sid });
-      journalFlush(sid);
+      const entry = { text, sid: journalSid() };
+      journal.current.set(id, entry);
+      journalFlush(journalOwner(entry));
     },
-    [journalSid, journalFlush],
+    [journalSid, journalFlush, journalOwner],
   );
   const journalDrop = useCallback(
     (id: string) => {
       const e = journal.current.get(id);
       if (!e) return;
+      const owner = journalOwner(e);
       journal.current.delete(id);
-      journalFlush(e.sid);
+      journalFlush(owner);
     },
-    [journalFlush],
+    [journalFlush, journalOwner],
   );
   /** The drain, as a ref: `releaseSend` is declared before `dispatchSend` (a
    *  dep of the drain) and has to call it without a hook cycle. */
@@ -3529,10 +3549,18 @@ function ChatBody(props: ChatBodyProps) {
     if (state.status === "idle" || state.status === "running") drainRef.current();
   }, [state.status]);
   // A SESSION ID THAT ARRIVES AFTER THE LINE WAS SENT (a brand-new chat's first
-  // turn): the lines journalled without one are written under it now.
+  // turn): the lines kept under the run (`run:<id>`) or in memory only are
+  // written under the session now, and the run's copy goes. A run id that
+  // arrives first moves the in-memory lines onto its key.
   useEffect(() => {
     const sid = state.sessionId;
-    if (!sid) return;
+    const runKey = journalRunKey();
+    if (!sid) {
+      // ONLY WHEN THIS PAGE HOLDS LINES FOR IT: a reloaded page has an empty
+      // journal, and flushing would wipe the lines the reload exists to re-send.
+      if (runKey && [...journal.current.values()].some((e) => journalOwner(e) === runKey)) journalFlush(runKey);
+      return;
+    }
     let changed = false;
     for (const e of journal.current.values()) {
       if (!e.sid) {
@@ -3540,8 +3568,11 @@ function ChatBody(props: ChatBodyProps) {
         changed = true;
       }
     }
-    if (changed) journalFlush(sid);
-  }, [state.sessionId, journalFlush]);
+    if (changed) {
+      journalFlush(sid);
+      if (runKey) journalFlush(runKey);
+    }
+  }, [state.sessionId, state.runId, journalFlush, journalRunKey, journalOwner]);
   /**
    * A RELOAD'S UNACKNOWLEDGED LINES ARE SENT AGAIN, ONCE (ui/outbox.ts, the
    * pending journal). When this page restored a session from the URL and its
@@ -3559,7 +3590,18 @@ function ChatBody(props: ChatBodyProps) {
     if (!sid || !bootDispatched.current || state.historyLoading || state.adopting) return;
     if (reconciledFor.current === sid) return;
     reconciledFor.current = sid;
-    const stored = loadPending(sid).filter((l) => !journal.current.has(l.id));
+    // THE RUN'S KEY TOO: a line a brand-new chat sent before its session had an
+    // id was kept under `run:<id>` (`journalRunKey`); this is the first moment a
+    // reload knows the session, so both lists are read and the run's goes.
+    const runKey = journalRunKey();
+    const fromRun = runKey ? loadPending(runKey) : [];
+    if (runKey) savePending(runKey, []);
+    const seenIds = new Set<string>();
+    const stored = [...loadPending(sid), ...fromRun].filter((l) => {
+      if (journal.current.has(l.id) || seenIds.has(l.id)) return false;
+      seenIds.add(l.id);
+      return true;
+    });
     if (!stored.length) return;
     const known = new Set<string>();
     for (const t of state.turns) {
