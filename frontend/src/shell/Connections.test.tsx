@@ -149,7 +149,10 @@ describe("the cards", () => {
     expect(t).toContain("Notion's MCP server sees what its tools touch.");
     expect(t).toContain("Stored in a private file in your Fused folder (no keychain on this OS)");
     expect(buttons(n, "Disconnect")).toHaveLength(1);
-    expect(n.findAll((x) => x.type === "img")[0].props.src).toBe("/api/connect/notion/icon");
+    // The mark is a CSS mask over the text colour (platform/ui/ConnectIcon), never an <img>: the packs' SVGs draw
+    // with currentColor, which an <img> would render black in the dark theme.
+    expect(n.findAll((x) => x.type === "img")).toHaveLength(0);
+    expect(n.findAll((x) => x.type === "span" && typeof x.props.style?.maskImage === "string")[0].props.style.maskImage).toBe('url("/api/connect/notion/icon")');
 
     const g = card(box, "github");
     expect(textOf(g)).toContain("Not connected");

@@ -15,7 +15,6 @@ import { Copy } from "lucide-react";
 import {
   againBody,
   cancelConnection,
-  connectPath,
   defaultAuth,
   kindLabel,
   logoutConnection,
@@ -28,6 +27,7 @@ import {
   type LoginBody,
 } from "@platform/lib/connect";
 import { copyToClipboard } from "@platform/lib/clipboard";
+import { ConnectIcon } from "@platform/ui/ConnectIcon";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { Button } from "@platform/shadcn/ui/button";
@@ -91,27 +91,6 @@ export function ConnectionsPointer() {
 }
 
 // ── One provider ───────────────────────────────────────────────────────────
-
-function ProviderIcon({ provider }: { provider: ConnectProvider }) {
-  if (provider.icon) {
-    return (
-      <img
-        src={connectPath(provider.key, "/icon")}
-        alt=""
-        aria-hidden="true"
-        className="size-5 shrink-0 rounded object-contain"
-      />
-    );
-  }
-  return (
-    <span
-      aria-hidden="true"
-      className="grid size-5 shrink-0 place-items-center rounded bg-muted text-[11px] font-semibold uppercase"
-    >
-      {(provider.name || provider.key).slice(0, 1)}
-    </span>
-  );
-}
 
 function ProviderCard({
   provider: p,
@@ -213,7 +192,7 @@ function ProviderCard({
       <div className="settings-row">
         <div className="settings-row-main">
           <div className="settings-row-label">
-            <ProviderIcon provider={p} />
+            <ConnectIcon provider={p} />
             <span>{p.name}</span>
           </div>
           <div className="settings-row-status">{status}</div>

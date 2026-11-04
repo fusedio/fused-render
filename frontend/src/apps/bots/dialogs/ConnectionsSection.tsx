@@ -11,7 +11,6 @@ import { Copy, ExternalLinkIcon } from "lucide-react";
 import {
   againBody,
   cancelConnection,
-  connectPath,
   defaultAuth,
   logoutConnection,
   toolCount,
@@ -22,6 +21,7 @@ import {
 } from "@platform/lib/connect";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { navigateUrl } from "@platform/lib/router";
+import { ConnectIcon } from "@platform/ui/ConnectIcon";
 import { Button } from "@platform/shadcn/ui/button";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { normApp } from "../lib/botform";
@@ -123,9 +123,7 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5 text-sm" data-provider={p.key} data-on={on ? "1" : undefined}>
       <div className="flex items-center gap-2.5">
-        {p.icon
-          ? <img src={connectPath(p.key, "/icon")} alt="" aria-hidden="true" className="size-5 shrink-0 rounded object-contain" />
-          : <span aria-hidden="true" className="grid size-5 shrink-0 place-items-center rounded bg-muted text-[11px] font-semibold uppercase">{(p.name || p.key).slice(0, 1)}</span>}
+        <ConnectIcon provider={p} />
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="font-medium">{p.name}</span>
           <span className="truncate text-xs text-muted-foreground">{status}</span>
