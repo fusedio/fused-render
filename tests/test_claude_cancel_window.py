@@ -269,17 +269,43 @@ def test_a_stop_runs_while_the_poll_pool_is_saturated():
             f.result(timeout=10)
 
 
-def test_still_queued_uuid_names_come_back_as_their_words(tmp_path):
-    """A current CLI names a dropped message by the uuid stamped on its inbox
-    entry; `_cancel` answers with the words, and leaves other names alone."""
+def _entry(run_dir, text, uid, hint="\n\n<terminal-hint>x</terminal-hint>"):
     from fused_render.claude_agent import agent
 
-    done = tmp_path / "inbox" / "done"
-    done.mkdir(parents=True)
+    agent._write_inbox_entry(str(run_dir), text + hint, uid, typed=text)
+
+
+def test_still_queued_text_resolves_uuids_to_typed_words_without_the_hint(tmp_path):
+    """The CLI's names stay as named; `still_queued_text` maps each canonical
+    uuid to the words the user typed, not the composed turn."""
+    from fused_render.claude_agent import agent
+
     uid = "36422243-e3e0-4d9a-bd54-aad6c0de909b"
-    (done / "0001.json").write_text(json.dumps({
-        "type": "user", "uuid": uid,
-        "message": {"role": "user", "content": [{"type": "text", "text": "say hi"}]}}))
     other = "11111111-2222-3333-4444-555555555555"
-    out = agent._still_queued_as_text(str(tmp_path), [uid, other, "plain words"])
-    assert out == ["say hi", other, "plain words"]
+    _entry(tmp_path, "say hi", uid)
+    out = agent._still_queued_text(str(tmp_path), [uid, other, "plain words"])
+    assert out == {uid: "say hi"}
+
+
+def test_still_queued_text_keeps_two_same_words_entries_apart(tmp_path):
+    from fused_render.claude_agent import agent
+
+    a, b = "aaaaaaaa-2222-3333-4444-555555555555", "bbbbbbbb-2222-3333-4444-555555555555"
+    _entry(tmp_path, "again", a)
+    _entry(tmp_path, "again", b)
+    assert agent._still_queued_text(str(tmp_path), [a, b]) == {a: "again", b: "again"}
+
+
+def test_still_queued_text_resolves_beyond_sixteen_entries(tmp_path):
+    from fused_render.claude_agent import agent
+
+    ids = ["%08x-2222-3333-4444-555555555555" % i for i in range(1, 31)]
+    for n, uid in enumerate(ids):
+        _entry(tmp_path, "msg %d" % n, uid)
+    assert agent._still_queued_text(str(tmp_path), [ids[0]]) == {ids[0]: "msg 0"}
+
+
+def test_still_queued_text_ignores_loose_words(tmp_path):
+    from fused_render.claude_agent import agent
+
+    assert agent._still_queued_text(str(tmp_path), ["continue", "go on please"]) == {}

@@ -3300,12 +3300,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (i >= 0) queued.splice(i, 1);
       }
       // Anything the CLI named that this page has no entry for (a follow-up
-      // from another viewer of the same session) is handed back verbatim
-      // rather than lost — there is no typed form to prefer. A name shaped
-      // like a client id is an id, not words: with no entry to read the text
-      // from there is nothing to hand back, and its id as a line would be
-      // sent to the agent as if the user had typed it.
-      for (const t of named) if (!CLIENT_ID_RE.test(t)) stranded.push({ text: t });
+      // from another viewer of the same session) is handed back rather than
+      // lost. A name shaped like a client id is an id, not words: the server's
+      // `still_queued_text` carries the words it stands for, and with none the
+      // id is dropped, since as a line it would be sent to the agent as if the
+      // user had typed it.
+      const idText = result?.still_queued_text ?? {};
+      for (const t of named) {
+        if (!CLIENT_ID_RE.test(t)) stranded.push({ text: t });
+        else if (idText[t]) stranded.push({ text: idText[t] });
+      }
       // The turn is over for every entry, handed back or not — so the hint
       // under the box goes either way, in ONE publish.
       const cleared = queued.length > 0;

@@ -4737,6 +4737,40 @@ def _inbox_time_record(run_dir: str, entry_uuid: str) -> None:
         pass
 
 
+_INBOX_TYPED = "inbox_typed.json"
+_INBOX_TYPED_KEEP = 200
+
+
+def _inbox_typed_read(run_dir: str) -> dict:
+    try:
+        with open(os.path.join(run_dir, _INBOX_TYPED), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _inbox_typed_record(run_dir: str, entry_uuid: str, typed: str) -> None:
+    """Remember the words the user sent with each entry, keyed by its uuid (last
+    `_INBOX_TYPED_KEEP` kept). The entry on the wire is the COMPOSED turn
+    (`_compose_turn`: terminal hint appended, or slash-command machinery
+    peeled), so a Stop answering a uuid name reads the words from here. A side
+    file rather than an extra key on the row, which goes to the CLI verbatim.
+    Best effort: a failed write only loses the hand-back text."""
+    typed_by_uuid = _inbox_typed_read(run_dir)
+    typed_by_uuid[entry_uuid] = typed
+    while len(typed_by_uuid) > _INBOX_TYPED_KEEP:
+        del typed_by_uuid[next(iter(typed_by_uuid))]
+    path = os.path.join(run_dir, _INBOX_TYPED)
+    tmp = path + ".tmp"
+    try:
+        with _private_open(tmp) as f:
+            f.write(json.dumps(typed_by_uuid))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def _turn_opening_time(run_dir: str, cursor: int, echo_pending: bool) -> float:
     """Epoch seconds the CURRENT turn's opening user message was written, or 0.
 
@@ -4780,7 +4814,8 @@ def _turn_opening_time(run_dir: str, cursor: int, echo_pending: bool) -> float:
 _CLIENT_UUID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 
-def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "") -> None:
+def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "",
+                       typed: str = "") -> None:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
     `_send` (every follow-up) write from.
@@ -4800,6 +4835,8 @@ def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "") -> Non
     Identity, never text: two "go on"s are two ids."""
     entry_uuid = client_uuid if _CLIENT_UUID_RE.match(client_uuid or "") else str(uuid.uuid4())
     _inbox_time_record(run_dir, entry_uuid)
+    if typed:
+        _inbox_typed_record(run_dir, entry_uuid, typed)
     _write_inbox_row(run_dir, {"type": "user", "uuid": entry_uuid, "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
@@ -5209,7 +5246,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (a later follow-up) writes the exact same shape into the exact same
     # directory, and the host does not know or care which one started the
     # session versus which one rode in on the CLI's own queue mid-turn.
-    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid)
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid,
+                       typed=message)
 
     # The session host owns the CLI's stdin pipe for the life of the session
     # — see session_host.py's own module docstring for the fork-safety and
@@ -6437,7 +6475,8 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     if client_uuid and any(r.get("uuid") == client_uuid
                            for r in _inbox_waiting(run_dir)):
         return {"sent": True}
-    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid)
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid,
+                       typed=message)
     return {"sent": True}
 
 
@@ -6826,26 +6865,22 @@ def _inbox_entry(path: str, name: str) -> dict | None:
             "uuid": str(row.get("uuid") or "")}
 
 
-def _still_queued_as_text(run_dir: str, names: list) -> list:
-    """The CLI's `still_queued` names with every entry uuid put back into the
-    words it stands for. A current CLI names a dropped message by the `uuid`
-    `_write_inbox_entry` stamped on it, and a caller handed a bare uuid has
-    nothing to show or re-send. The words come from the drained entries in
-    `inbox/done/`; a name that is no uuid of ours (an older CLI names the
-    words themselves) and a uuid no drained entry carries pass through."""
-    if not any(isinstance(n, str) and _CLIENT_UUID_RE.match(n) for n in names):
-        return names
-    done = os.path.join(_inbox_dir(run_dir), "done")
-    try:
-        files = sorted(n for n in os.listdir(done) if n.endswith(".json"))
-    except OSError:
-        return names
-    by_uuid = {}
-    for name in files[-_DRAINED_WALK_MAX:]:
-        entry = _inbox_entry(os.path.join(done, name), name)
-        if entry and entry["uuid"]:
-            by_uuid[entry["uuid"]] = entry["text"]
-    return [by_uuid.get(n, n) if isinstance(n, str) else n for n in names]
+_CANONICAL_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _still_queued_text(run_dir: str, names: list) -> dict:
+    """`{uuid: typed words}` for every canonical-uuid name in `names` that a
+    written entry can account for. A current CLI names a dropped message by the
+    `uuid` `_write_inbox_entry` stamped on it, and a caller handed a bare uuid
+    has nothing to show or re-send. The words are the user's own, as
+    `_inbox_typed_record` kept them (no terminal-hint block, no peeled
+    machinery); `still_queued` itself is left exactly as the CLI named it."""
+    wanted = {n for n in names if isinstance(n, str) and _CANONICAL_UUID_RE.match(n)}
+    if not wanted:
+        return {}
+    typed = _inbox_typed_read(run_dir)
+    return {n: typed[n] for n in wanted if isinstance(typed.get(n), str) and typed[n]}
 
 
 def _drained_unechoed(run_dir: str) -> list:
@@ -12349,7 +12384,7 @@ def _interrupt_turn(run_dir: str, stranded: list, queued: bool) -> dict | None:
     # duplicate here would paste the same text into the composer
     # twice, which is worse than a dropped edge case.
     still = []
-    cli_named = _still_queued_as_text(run_dir, list(response.get("still_queued") or []))
+    cli_named = list(response.get("still_queued") or [])
     for item in cli_named + list(stranded):
         if item and item not in still:
             still.append(item)
@@ -12363,7 +12398,8 @@ def _interrupt_turn(run_dir: str, stranded: list, queued: bool) -> dict | None:
     # way a named remainder does.
     if still or queued:
         _kill_tree(run_dir)
-    return {"cancelled": run_id, "still_queued": still}
+    return {"cancelled": run_id, "still_queued": still,
+            "still_queued_text": _still_queued_text(run_dir, still)}
 
 
 #: The deferred half of a Stop pressed before the run's first turn opened —

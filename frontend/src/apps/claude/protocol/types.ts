@@ -785,6 +785,9 @@ export type AppStateResponse = { answered: string } | { error: string; retry: bo
 export interface CancelResponse {
   cancelled: string;
   still_queued?: unknown[];
+  /** `{uuid: typed words}` for the uuid names in `still_queued` the server can
+   *  account for; a uuid it cannot is absent. */
+  still_queued_text?: Record<string, string>;
 }
 
 /** agent.py:2759-2802 / 2902-2927 — "" when none. */

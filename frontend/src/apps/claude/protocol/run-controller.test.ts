@@ -2478,12 +2478,12 @@ describe("stop (T:15901)", () => {
 
   // The current CLI names a still-queued message by the uuid the page stamped
   // on it, not by its words.
-  const stopWithStill = async (still: string[]) => {
+  const stopWithStill = async (still: string[], stillText?: Record<string, string>) => {
     let controller!: ChatController;
     const made = makeController({
       start: () => ({ run_id: "r1" }),
       send: () => ({ sent: true as const }),
-      cancel: () => ({ cancelled: "r1", still_queued: still }),
+      cancel: () => ({ cancelled: "r1", still_queued: still, ...(stillText ? { still_queued_text: stillText } : {}) }),
       poll: async (_f, n) => {
         if (n === 0) {
           await controller.sendFollowUp("say hi", { clientId: "36422243-e3e0-4d9a-bd54-aad6c0de909b" });
@@ -2503,6 +2503,21 @@ describe("stop (T:15901)", () => {
     expect(made.strandedLines.length).toBe(1);
     expect(made.strandedLines[0].map((l) => l.text)).toEqual(["say hi"]);
     expect(made.strandedLines[0][0].clientId).toBe("36422243-e3e0-4d9a-bd54-aad6c0de909b");
+  });
+
+  test("a uuid name whose words the CLI never saw verbatim still hands back one typed line", async () => {
+    // The wire the CLI holds is the composed turn (terminal hint appended), so
+    // the words do not match; the entry's id does.
+    const id = "36422243-e3e0-4d9a-bd54-aad6c0de909b";
+    const made = await stopWithStill([id, "say hi\n\n<terminal-hint>x</terminal-hint>"], { [id]: "say hi" });
+    expect(made.stranded[0].filter((t) => t === "say hi")).toEqual(["say hi"]);
+    expect(made.stranded[0].some((t) => t === id)).toBe(false);
+  });
+
+  test("a leftover uuid with still_queued_text is handed back as those words", async () => {
+    const other = "11111111-2222-3333-4444-555555555555";
+    const made = await stopWithStill(["36422243-e3e0-4d9a-bd54-aad6c0de909b", other], { [other]: "from elsewhere" });
+    expect(made.stranded).toEqual([["say hi", "from elsewhere"]]);
   });
 
   test("a still_queued uuid with no entry here is dropped, not handed back as a line", async () => {
