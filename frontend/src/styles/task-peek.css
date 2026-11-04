@@ -482,13 +482,8 @@ body.tasks-peek-dragging {
   flex: 0 0 auto;
 }
 
-/* THE PROJECT, AND IT IS A FACT (Akshil, 2026-09-14 — design.md, Polish batch
-   4). It was a folder mark and a name, wired to the folder's Explorer page, one
-   inch from a second door that also wore a folder and went somewhere else. Two
-   doors an inch apart cannot be told apart by their pictures, so the quieter of
-   the two stops being a door: the name is the label of the project this task
-   runs in, muted, with the full path in its tooltip — and the header keeps
-   exactly one way out, which says its act in words.
+/* The chat Topbar's project label (the peek header no longer draws it): a
+   fact, not a door — muted, full path in its tooltip.
 
    No padding, no radius, no hover: nothing here is pressable, and a label that
    lights up under the pointer is a label promising a press. */
@@ -508,13 +503,10 @@ body.tasks-peek-dragging {
    back to the split. One skin, because they are the same kind of thing: a word
    you press, in a row that is otherwise glyph squares and ink.
 
-   AN OUTLINE AT REST (Akshil, 2026-09-14 — design.md, Polish batch 5). Without
-   one they were two runs of muted text sitting beside the project NAME, which
-   is a run of muted text that is not pressable; the only thing that said
-   otherwise was a hover wash, and a hover is not an affordance for a reader who
-   has not hovered yet. 1px of `--border` and the app's small-control radius
-   says "button" before the pointer arrives; the wash still says "this one"
-   after it does.
+   A GHOST BUTTON, NO OUTLINE. The header now holds only this one word-control
+   beside the ⋮, so it no longer needs an outline to tell itself apart from the
+   project label (which is gone from this header). It matches
+   `.task-side-peek-btn`: nothing at rest, a wash and full ink on hover.
 
    Sized off `.task-side-peek-btn`'s own height so they sit on the row's
    baseline with the ⋮ beside them rather than next to them. */
@@ -524,8 +516,8 @@ body.tasks-peek-dragging {
   align-items: center;
   gap: 4px;
   height: var(--peek-icon-w);
-  padding: 0 8px;
-  border: 1px solid var(--border);
+  padding: 0 6px;
+  border: 0;
   border-radius: 5px;
   background: transparent;
   font: inherit;
@@ -536,13 +528,11 @@ body.tasks-peek-dragging {
   cursor: pointer;
   transition:
     background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out);
+    color var(--dur-fast) var(--ease-out);
 }
 
 .task-side-peek-open:hover {
   background: var(--row-bg-hover);
-  border-color: var(--fg-muted);
   color: var(--fg);
 }
 
@@ -577,17 +567,13 @@ body.tasks-peek-dragging {
 
 /* THE HEADER FOLDS BEFORE IT CLIPS, exactly as the page toolbar does
    (shell/row-fit.ts `PEEK_HEAD_DROPS`): the title ellipsises all the way down
-   first, and only when even a floored title will not fit does the project name
-   go, and then the Open door — which reappears in the ⋮, because a hidden
-   control has to be somewhere. Measured, never a breakpoint.
+   first, and only when even a floored title will not fit does the Open door
+   fold — it reappears in the ⋮, because a hidden control has to be somewhere.
+   Measured, never a breakpoint.
 
    Nothing else is ever hidden: the way OUT of a panel and the way to its
    actions are what a narrow window must never take away. */
-.task-side-peek-head[data-fit]:not([data-fit="0"]) .task-side-peek-project {
-  display: none;
-}
-
-.task-side-peek-head[data-fit="2"] .task-side-peek-open {
+.task-side-peek-head[data-fit="1"] .task-side-peek-open {
   display: none;
 }
 
