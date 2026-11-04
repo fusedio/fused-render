@@ -5,6 +5,7 @@ const MAX_VALUES = 200000;
 const VALUE_BATCH = 3;
 const HEAVY_BYTES_PER_ROW = 8;
 const MAX_GROUP_RAW_BYTES = 128 << 20;
+const MAX_GROUP_ROWS = 2000000;
 const BOX = ["xmin", "ymin", "xmax", "ymax"];
 const files = new Map();
 const reads = new Map();
@@ -115,7 +116,7 @@ function describe(metadata, budget) {
   }
   const groups = rowGroups.filter(g => g.rows > 0);
   if (!groups.length || !groups.every(g => isLonLatBox(g.bbox))) return { problem: "its row groups carry no longitude/latitude bounding boxes" };
-  if (groups.some(g => g.raw > MAX_GROUP_RAW_BYTES)) return { problem: "a row group is too large to draw at once" };
+  if (groups.some(g => g.raw > MAX_GROUP_RAW_BYTES || g.rows > MAX_GROUP_ROWS)) return { problem: "a row group is too large to draw at once" };
   const boxes = groups.map(g => g.bbox);
   const extent = boxes.reduce((e, b) => [Math.min(e[0], b[0]), Math.min(e[1], b[1]), Math.max(e[2], b[2]), Math.max(e[3], b[3])],
                               [Infinity, Infinity, -Infinity, -Infinity]);
