@@ -7,7 +7,8 @@ import { act, create } from "react-test-renderer";
 import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@apps/claude/agent-peeks";
 import { closeBreakout, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
 import { AgentPeekCard, Card } from "./BreakoutCards";
-import { agentPeekTurns } from "@apps/claude/ui/AgentPeekLog";
+import AgentPeekLog, { agentPeekTurns, agentPeekWork } from "@apps/claude/ui/AgentPeekLog";
+import { RunTrigger } from "@apps/claude/ui/RunTrigger";
 
 // Only the chat is stubbed (via the Card `mount` prop); the card chrome and drag logic are the real ones.
 const NoChat = () => null;
@@ -309,11 +310,14 @@ function mountPeek(seam: (seg: unknown) => null) {
 const allText = (n: { children: unknown[] }): string =>
   n.children.map((c) => (typeof c === "string" ? c : allText(c as never))).join("");
 
-test("the agent peek shows its title and subtitle, labelled Agent peek", () => {
+test("the agent peek head is a short label, the description as its note, the facts on hover", () => {
   const { r } = mountPeek(() => null);
   expect(r.root.findByProps({ role: "dialog" }).props["aria-label"]).toBe("Agent peek");
-  expect(allText(r.root.findByProps({ className: "breakout-title" }) as never)).toBe("Explore repo");
-  expect(allText(r.root.findByProps({ className: "breakout-note" }) as never)).toBe("Explore · opus · running");
+  expect(allText(r.root.findByProps({ className: "breakout-title" }) as never)).toBe("Agent");
+  const note = r.root.findByProps({ className: "breakout-note" });
+  expect(allText(note as never)).toBe("Explore repo");
+  expect(note.props["data-hint"]).toBe("Explore repo — Explore · opus · running");
+  expect(note.props.title).toBeUndefined();
   expect(allText(r.root.findByProps({ className: "agent-peek-empty" }) as never)).toBe("No transcript yet.");
 });
 
@@ -337,6 +341,61 @@ test("a subagent reads as its prompt, then its rows as a reply — live while ru
   ]);
   const orphan = { ...seg, status: "ok", input: {}, orphan: true };
   expect(agentPeekTurns(orphan as never)).toEqual<unknown[]>([{ role: "assistant", key: "agent-reply", text: "", segments: kids }]);
+});
+
+const tool = (status: string) => ({ kind: "tool", id: "t", name: "Read", status });
+const text = (t: string) => ({ kind: "text", text: t });
+
+test("a subagent's reply keeps the closing text; the prose and calls before it fold into the work", () => {
+  const kids = [text("Let me look."), tool("ok"), text("Now the config."), tool("ok"), text("Found it."), text("In a.ts.")];
+  const seg = { kind: "tool", id: "tu1", name: "Agent", status: "ok", input: { prompt: "Find it" }, children: kids };
+  expect(agentPeekWork(seg as never)).toEqual<unknown>(kids.slice(0, 4));
+  const [, reply] = agentPeekTurns(seg as never);
+  expect((reply as { segments: unknown[] }).segments).toEqual<unknown>(kids.slice(4));
+});
+
+test("a subagent still on a call keeps that call visible with the text after it", () => {
+  const kids = [text("Let me look."), tool("ok"), text("Running it."), tool("running")];
+  const seg = { kind: "tool", id: "tu1", name: "Agent", status: "running", children: kids };
+  expect(agentPeekWork(seg as never)).toEqual<unknown>(kids.slice(0, 3));
+  const [reply] = agentPeekTurns(seg as never);
+  expect((reply as { segments: unknown[] }).segments).toEqual<unknown>(kids.slice(3));
+});
+
+test("a parallel batch of running calls all stay in the answer", () => {
+  const kids = [text("Reading."), tool("ok"), text("Both at once."), tool("running"), tool("running"), tool("ok")];
+  const seg = { kind: "tool", id: "tu1", name: "Agent", status: "running", children: kids };
+  expect(agentPeekWork(seg as never)).toEqual<unknown>(kids.slice(0, 3));
+  const [reply] = agentPeekTurns(seg as never);
+  expect((reply as { segments: unknown[] }).segments).toEqual<unknown>(kids.slice(3));
+});
+
+test("a subagent with no calls folds nothing; one that is only calls folds them all", () => {
+  const prose = [text("a"), text("b")];
+  expect(agentPeekWork({ kind: "tool", status: "ok", children: prose } as never)).toEqual<unknown>([]);
+  const calls = [tool("ok"), tool("ok")];
+  const seg = { kind: "tool", status: "ok", children: calls };
+  expect(agentPeekWork(seg as never)).toEqual<unknown>(calls);
+  const [reply] = agentPeekTurns(seg as never);
+  expect((reply as { segments: unknown[] }).segments).toEqual([]);
+});
+
+test("opening the work or prompt fold releases the peek's tail-follow", () => {
+  const long = "word ".repeat(200);
+  const kids = [text("Looking."), tool("ok"), text("Done.")];
+  const mk = (n: number) =>
+    ({ kind: "tool", id: "tu1", name: "Agent", status: "running", input: { prompt: long }, children: [...kids, ...Array(n).fill(text("more"))] }) as never;
+  const port = { scrollTop: 0, scrollHeight: 1000, clientHeight: 100 };
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<AgentPeekLog seg={mk(0)} />, { createNodeMock: (el) => (el.props.className === "chat-logwrap" ? port : null) });
+  });
+  expect(port.scrollTop).toBe(1000);
+  const open = r.root.findAllByType(RunTrigger)[0]!;
+  act(() => open.props.onToggle());
+  port.scrollTop = 0;
+  act(() => r.update(<AgentPeekLog seg={mk(1)} />));
+  expect(port.scrollTop).toBe(0);
 });
 
 test("closing removes the agent peek", () => {

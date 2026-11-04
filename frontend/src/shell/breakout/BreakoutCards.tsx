@@ -33,6 +33,8 @@ export function FloatingCard({
   label,
   title,
   note,
+  noteTitle,
+  noteHint,
   actions,
   error,
   onClose,
@@ -42,6 +44,9 @@ export function FloatingCard({
   label: string;
   title: string;
   note: string;
+  noteTitle?: string;
+  /** The note's full text and facts, on the app's instant tooltip (`data-hint`). */
+  noteHint?: string;
   actions?: ReactNode;
   /** A one-line failure shown under the head. */
   error?: string;
@@ -136,7 +141,13 @@ export function FloatingCard({
         >
           <div className="claude-rail-peek-row">
             <span className="breakout-title">{title}</span>
-            <span className="breakout-note">{note}</span>
+            <span
+              className="breakout-note"
+              {...(noteTitle ? { title: noteTitle } : {})}
+              {...(noteHint ? { "data-hint": noteHint } : {})}
+            >
+              {note}
+            </span>
             <span className="breakout-spacer" />
             {actions}
             <button type="button" className="breakout-btn" onClick={onClose}>
@@ -251,8 +262,9 @@ export function AgentPeekCard({
     <FloatingCard
       index={index}
       label="Agent peek"
-      title={peek.title}
-      note={peek.subtitle}
+      title="Agent"
+      note={peek.title}
+      noteHint={`${peek.title} — ${peek.subtitle}`}
       onClose={() => closeAgentPeek(peek.id)}
     >
       <div className="chat-root chat-peek agent-peek-body">
