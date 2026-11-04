@@ -454,6 +454,10 @@ def test_breakout_resume_host_runs_in_the_breakouts_own_session(
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", stub_cli)
     monkeypatch.setattr(agent, "_backend_for_session",
                         lambda sid, wd, hint="": "claude")
+    # Breakout is off by default (`breakout_enabled` pref), and a resume is
+    # only honoured for a session the server recorded as a breakout.
+    monkeypatch.setattr(agent, "_breakout_pref", lambda: True)
+    monkeypatch.setattr(agent, "_breakout_recorded", lambda sid: sid == "BRK")
     res = agent._start(target, "m1", "BRK", "", "", has_pane=False,
                        breakout=True, breakout_resume=True)
     assert "run_id" in res, res
