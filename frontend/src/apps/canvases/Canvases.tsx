@@ -167,6 +167,8 @@ export default function Canvases() {
   // Bumped on every environment change: a listing or preview batch that
   // departed under the old env must not land in the new env's page.
   const envGenRef = useRef(0);
+  // Sequence of listing requests within an env generation: see `refresh`.
+  const listSeqRef = useRef(0);
   // The ~/.fused/settings.toml editor. It opens by itself the first time a
   // status says custom is picked and unconfigured (a dropdown pick or a
   // `?env=custom` load alike); a dismissal is remembered until the pick
@@ -257,8 +259,13 @@ export default function Canvases() {
           setError(null);
           return;
         }
+        // Two refreshes for the SAME env can overlap (a settings save, a
+        // credentials change): the env generation does not move, so the
+        // older one's answers — above all its slow fresh one — must not land
+        // over the newer one's. Only the latest sequence writes.
+        const seq = ++listSeqRef.current;
         const { canvases, stale } = await listCanvases(env);
-        if (gen !== envGenRef.current) return;
+        if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
         setCanvases(canvases);
         // Deliberately NOT awaited: the cards render on the line above, and
         // the thumbs pop in when the signing batch lands.
@@ -270,11 +277,15 @@ export default function Canvases() {
           setRefreshing(true);
           try {
             const second = await listCanvases(env, true);
-            if (gen !== envGenRef.current) return;
+            if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
             setCanvases(second.canvases);
             void fillPreviews(env, second.canvases);
           } finally {
-            if (gen === envGenRef.current) setRefreshing(false);
+            // Only the refresh that is still current may clear the hint: a
+            // newer one may have set it for its own fresh request.
+            if (gen === envGenRef.current && seq === listSeqRef.current) {
+              setRefreshing(false);
+            }
           }
         }
       }
