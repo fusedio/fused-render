@@ -76,6 +76,8 @@ let holdSendNth: number | null = null;
 let sendCount = 0;
 /** What `cancel` reports in `still_queued` (wire texts the CLI never read). */
 let cancelStill: string[] = [];
+/** Holds the `cancel` answer until released: the run can go idle first. */
+let holdCancel: Promise<void> | null = null;
 /** What `/api/claude-sessions/history` answers (a reload's restore). */
 let historyBody: Record<string, unknown> = { turns: [], live_run: "" };
 /**
@@ -188,7 +190,9 @@ function stubFetch(): void {
       }
       if (action === "cancel") {
         cancelled = true;
-        return jsonRes({ cancelled: "r1", still_queued: cancelStill });
+        const answer = { cancelled: "r1", still_queued: cancelStill };
+        if (holdCancel) return holdCancel.then(() => jsonRes(answer));
+        return jsonRes(answer);
       }
       return jsonRes({});
     }
@@ -302,6 +306,7 @@ beforeEach(() => {
   holdSendNth = null;
   sendCount = 0;
   cancelStill = [];
+  holdCancel = null;
   cancelled = false;
   stickyLive = false;
   prefsBody = {};
@@ -1718,6 +1723,16 @@ function sentOut(): string[] {
     .map((c) => String(c.params.message ?? ""));
 }
 
+/** Ctrl+X with words in the box: send now. */
+function pressCtrlXInBox(r: Chat): Promise<void> {
+  return act(async () => {
+    r.root
+      .findByType("textarea")
+      .props.onKeyDown({ key: "x", ctrlKey: true, shiftKey: false, preventDefault() {} });
+  });
+}
+
+/** Ctrl+Enter with words in the box: hold until the session is done. */
 function pressCtrlEnterInBox(r: Chat): Promise<void> {
   return act(async () => {
     r.root
@@ -1727,7 +1742,7 @@ function pressCtrlEnterInBox(r: Chat): Promise<void> {
 }
 
 test("Stop during a send-now's wait wins: the line stays not-sent and nothing is sent", async () => {
-  // Bugbot 4122407431: the Ctrl+Enter line sits in the outbox so a Stop can
+  // Bugbot 4122407431: the Ctrl+X line sits in the outbox so a Stop can
   // retag it, but `onSendNow` used to lift it out and dispatch it once the run
   // settled anyway — a "not sent" bubble that sent. Now a stop wins.
   pollLive = true;
@@ -1739,7 +1754,7 @@ test("Stop during a send-now's wait wins: the line stays not-sent and nothing is
   });
   await settle(60);
   await typeInBox(r, "Z");
-  await pressCtrlEnterInBox(r);
+  await pressCtrlXInBox(r);
   await settle(150);
   // The chord's interrupt went out; the run is slow to settle.
   expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
@@ -2065,11 +2080,11 @@ for (const flagOn of [false, true]) {
 
   test(`${tag}: Ctrl+X on an empty box with a queued line is taken and never leaves it not-sent; a plain Stop after still does`, async () => {
     const { r } = await liveChat();
-    // A Ctrl+Enter line waits in the outbox while the run is slow to settle:
+    // A Ctrl+X line waits in the outbox while the run is slow to settle:
     // a queued bubble exists, so the empty-box chord is armed.
     stickyLive = true;
     await typeInBox(r, "Z");
-    await pressCtrlEnterInBox(r);
+    await pressCtrlXInBox(r);
     await settle(150);
     expect(byClass(r, "is-pending")).toHaveLength(1);
     // The run is live: the newest queued bubble's tag IS the hint, no "queued".
@@ -2153,7 +2168,7 @@ for (const flagOn of [false, true]) {
     const { r } = await liveChat();
     stickyLive = true;
     await typeInBox(r, "Z");
-    await pressCtrlEnterInBox(r);
+    await pressCtrlXInBox(r);
     await settle(150);
     const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
     expect(stored.map((l) => l.text)).toEqual(["Z"]);
@@ -2187,6 +2202,81 @@ for (const flagOn of [false, true]) {
     expect(again).toHaveLength(1);
     expect(again[0]!.params.client_uuid).toBe(stored[0]!.id);
     expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: empty-box Ctrl+X whose run went idle BEFORE the cancel answered still sends the line, with no further trigger`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    cancelStill = [String(sends()[0]!.params.message)];
+    let release: () => void = () => {};
+    holdCancel = new Promise<void>((res) => {
+      release = res;
+    });
+    await ctrlX(r);
+    // The poll sees the cancel at once and the run goes idle while the answer
+    // is still out.
+    await settle(1200);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
+    await act(async () => release());
+    await settle(1500);
+    const again = [...sends(), ...started()].filter(
+      (c) => String(c.params.message).includes("keep going") && c !== sends()[0],
+    );
+    expect(again).toHaveLength(1);
+    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
+  });
+
+  test(`${tag}: Enter while the run is stopping waits for the stop to settle and is sent once after it, never into the dying run`, async () => {
+    const { r } = await liveChat();
+    stickyLive = true;
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(150);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
+    await typeInBox(r, "after");
+    await pressEnterInBox(r);
+    await settle(150);
+    expect(sends()).toHaveLength(0);
+    expect(byClass(r, "is-pending")).toHaveLength(1);
+    stickyLive = false;
+    await settle(1500);
+    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("after"));
+    expect(out).toHaveLength(1);
+  });
+
+  test(`${tag}: empty-box Ctrl+X re-send of an UNACKED follow-up stays journalled under a fresh id`, async () => {
+    const { r } = await liveChat();
+    holdSend = new Promise<void>(() => {});
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    const first = sends()[0]!.params.client_uuid;
+    cancelStill = [String(sends()[0]!.params.message)];
+    stickyLive = true;
+    await ctrlX(r);
+    await settle(150);
+    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
+    expect(stored.map((l) => l.text)).toEqual(["keep going"]);
+    expect(stored[0]!.id).not.toBe(first);
+  });
+
+  test(`${tag}: empty-box Ctrl+X during a send-now's wait leaves the send-now line to go, not "not sent"`, async () => {
+    const { r } = await liveChat();
+    stickyLive = true;
+    await typeInBox(r, "Z");
+    await pressCtrlXInBox(r);
+    await settle(150);
+    expect(byClass(r, "is-pending")).toHaveLength(1);
+    await ctrlX(r);
+    await settle(100);
+    stickyLive = false;
+    await settle(1500);
+    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("Z"));
+    expect(out).toHaveLength(1);
+    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
   });
 
   test(`${tag}: once the CLI has taken a live follow-up its hint is gone`, async () => {
