@@ -252,6 +252,15 @@
 /* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
    of a pinned chat that is not the selected node's, above the canvas glyph
    and under the hairline, so it reads as "pinned, outside this list". */
+/* A favourite's ring over a pinned card (ClaudeRail `pointerQuiet`): an
+   empty hint over the link's whole hit box (its `::after`), so the pointer's
+   rest — which swaps the card there — draws no caption, while the link's own
+   caption still answers a Tab. */
+.claude-rail-chat-shield {
+  position: absolute;
+  inset: -2px -9px;
+  z-index: 1;
+}
 .claude-rail-held {
   display: flex;
   justify-content: center;
@@ -766,7 +775,13 @@
    select (`.is-door`, claude-rail-lib `chipDoor`). A chip naming the place
    the page already stands on is a plain-text span — the outline alone, the
    muted ink, the default cursor. The door: no underline, ink, the fill, and
-   a firmer wash on hover. */
+   a firmer wash on hover.
+   FAVOURITES OFF (favourites-flag; the card without `.favs-on`): the chip as
+   it was — always a link, the ink and the fill on a node's chip alone. */
+.claude-rail-peek:not(.favs-on) .claude-rail-peek-scope.is-node {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
 a.claude-rail-peek-scope.is-door,
 a.claude-rail-peek-scope.is-door:hover {
   text-decoration: none;
@@ -774,17 +789,25 @@ a.claude-rail-peek-scope.is-door:hover {
 a.claude-rail-peek-scope.is-door {
   display: inline-block;
   cursor: pointer;
-  color: var(--fg);
-  background: rgba(var(--tint), 0.06);
   transition:
     background-color 0.12s ease,
     border-color 0.12s ease;
 }
-a.claude-rail-peek-scope.is-door:hover {
+.claude-rail-peek.favs-on a.claude-rail-peek-scope.is-door {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
+/* Favourites off: a chip naming the page's own place is a link that goes
+   nowhere (`aria-disabled`, claude-rail-lib `chipDoor` `current`) — the
+   default cursor, no hover or press wash. */
+a.claude-rail-peek-scope.is-door[aria-disabled="true"] {
+  cursor: default;
+}
+.claude-rail-peek a.claude-rail-peek-scope.is-door:not([aria-disabled="true"]):hover {
   background: rgba(var(--tint), 0.14);
   border-color: rgba(var(--tint), 0.35);
 }
-a.claude-rail-peek-scope.is-door:active {
+.claude-rail-peek a.claude-rail-peek-scope.is-door:not([aria-disabled="true"]):active {
   background: rgba(var(--tint), 0.2);
 }
 a.claude-rail-peek-scope:focus-visible {

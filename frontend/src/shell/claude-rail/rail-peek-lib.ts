@@ -316,6 +316,9 @@ export class PeekIntent {
   private coneTimer = 0;
   /** The card holds the keyboard focus. */
   private held = false;
+  /** The owner typed in the card since its focus arrived (`typed`): a
+   *  favourite's hover must not swap the card out from under the words. */
+  private typing = false;
   /** A pointer is down inside the card (a text selection, a scrollbar drag)
    *  — it may leave the card mid-gesture and must not close it. */
   private pressing = false;
@@ -366,8 +369,11 @@ export class PeekIntent {
       if (this.muteFocus) return;
     }
     // A pinned card: a hover (or a Tab) on another ring moves nothing — that
-    // ring's press does (header) — bar a favourite's ring under the pointer.
-    const swapPinned = this.pinned && via === "pointer" && overPin;
+    // ring's press does (header) — bar a favourite's ring under the pointer,
+    // and never while the owner is typing in the card or pressing inside it
+    // (`typing`, not `held`: a ring's press puts the focus in the composer
+    // by itself, and that card still swaps on a favourite's hover).
+    const swapPinned = this.pinned && via === "pointer" && overPin && !this.typing && !this.pressing;
     if (this.pinned && !swapPinned) return;
     this.cancelClose();
     if (this.shown === key) {
@@ -439,6 +445,7 @@ export class PeekIntent {
       // The card's composer may have held the focus; its unmount fires no
       // blur in every engine, so the hold is dropped here.
       this.held = false;
+      this.typing = false;
       this.pressing = false;
       this.setPinned(false);
       this.set(null);
@@ -493,8 +500,17 @@ export class PeekIntent {
    *  never closes on a pointer leave. */
   hold(on: boolean): void {
     this.held = on;
+    if (!on) this.typing = false;
     if (on) this.cancelClose();
     else this.scheduleClose();
+  }
+
+  /** The owner typed in the card (an input inside it): until its focus goes,
+   *  no favourite's hover swaps it (`enterRing`), and a swap already waiting
+   *  on its dwell is dropped — a pinned card only ever waits on that. */
+  typed(): void {
+    this.typing = true;
+    if (this.pinned && this.pendingKey !== null) this.cancelOpen();
   }
 
   /** The keyboard was HANDED to ring `key` (fav-peek-store `focusRail`, a
@@ -542,6 +558,7 @@ export class PeekIntent {
     this.cancelClose();
     this.leaveCone(false);
     this.held = false;
+    this.typing = false;
     this.pressing = false;
     this.setPinned(false);
     // The card goes pointer-events: none under the pointer; no leave fires.
@@ -566,6 +583,7 @@ export class PeekIntent {
   private set(key: string | null): void {
     if (this.shown === key) return;
     this.shown = key;
+    this.typing = false;
     this.sink.show(key);
   }
 
@@ -666,22 +684,47 @@ export function railOnStarred(
 
 /** The rail's side of a WHERE-CHIP LEAVING THE PAGE (ClaudeRail
  *  `onChipLeave`): the rail's card, showing a live favourite's chat (a hover
- *  on its ring), hands it to the favourite's card in this window before the
- *  hop — `letGo` first (the draft flushed, one composer per draft), then
- *  `open` (the per-window open key, sessionStorage: it survives the hop).
- *  Anything else (favourites off, a list chat, a favourite with no session)
- *  just goes. */
+ *  on its ring), hands it to the favourite's card in this window as the hop
+ *  goes (`onHop`: only once the router's leave guard let it) — `letGo` first
+ *  (the draft flushed, one composer per draft), then `open` (the per-window
+ *  open key, sessionStorage: it survives the hop), told whether the press
+ *  was the keyboard's (the favourite's card then takes the focus on arrival,
+ *  as a ring's keyboard press does). Anything else (favourites off, a list
+ *  chat, a favourite with no session) just goes. */
 export function railOnChipLeave(
   favsOn: () => boolean,
   liveFav: (key: string) => boolean,
   letGo: (key: string) => void,
-  open: (key: string) => void,
-): (key: string) => void {
-  return (key) => {
+  open: (key: string, keyboard: boolean) => void,
+): (key: string, keyboard?: boolean) => void {
+  return (key, keyboard = false) => {
     if (!favsOn() || !liveFav(key)) return;
     letGo(key);
-    open(key);
+    open(key, keyboard);
   };
+}
+
+/** What `onHop` listens on (the window). */
+export interface HopTarget {
+  addEventListener(type: string, fn: () => void): void;
+  removeEventListener(type: string, fn: () => void): void;
+}
+
+/** THE HOP, ONLY WHEN IT HAPPENS: `go` starts a navigation the router's
+ *  leave guard may refuse (router `guarded`: a question first, the push only
+ *  on a yes). `then` runs once the hop is real — on the router's navigate
+ *  `event`, dispatched right after the push and before the page repaints —
+ *  so a refused hop hands nothing over (the card stays, no favourite card
+ *  opens on the page that stayed). Heard once: a refused hop's listener
+ *  answers the next navigation, which runs `then` only when it landed where
+ *  this one was going (`arrived`). */
+export function onHop(win: HopTarget, event: string, arrived: () => boolean, then: () => void, go: () => void): void {
+  const heard = () => {
+    win.removeEventListener(event, heard);
+    if (arrived()) then();
+  };
+  win.addEventListener(event, heard);
+  go();
 }
 
 /** The words a refused favourite write says: the server's own `detail` (a

@@ -9,6 +9,7 @@ import { sortForList } from "@shell/tasks-lib";
 import {
   activeRing,
   chipDoor,
+  chipPath,
   chipLabel,
   chipPlace,
   dotCleared,
@@ -466,9 +467,11 @@ describe("ringMarks (what each ring wears, per section)", () => {
     expect(s.classes).not.toContain("is-fav");
   });
 
-  it("no persistent wash on a favourite: a pinned or held rail card over it leaves `.peeked` only", () => {
+  it("a hover swapped the pinned card onto a favourite: its ring wears the pin; the open favourite's never does", () => {
     const pinned = rail({ list: ["A"], favs: ["F"], peekKey: "F", pinned: true, held: true });
-    expect(pinned.find((r) => r.key === "F")!.classes).toEqual(["peeked", "is-fav"]);
+    expect(pinned.find((r) => r.key === "F")!.classes).toEqual(["peeked", "is-pinned", "is-fav"]);
+    const open = rail({ list: ["A", "S"], favs: ["F"], peekKey: "S", pinned: true, openFavKey: "S" });
+    expect(open.find((r) => r.key === "S")!.classes).not.toContain("is-pinned");
     // The list's pinned ring keeps its firmer wash.
     const listPinned = rail({ list: ["A"], favs: ["F"], peekKey: "A", pinned: true });
     expect(listPinned.find((r) => r.key === "A")!.classes).toContain("is-pinned");
@@ -477,17 +480,41 @@ describe("ringMarks (what each ring wears, per section)", () => {
   it("a list card pinned, no favourite open: favourite rings hover over the pin; list rings stay caption-only", () => {
     const rings = rail({ list: ["A", "B"], favs: ["F", "G"], peekKey: "A", pinned: true, held: true });
     const by = (k: string) => rings.find((r) => r.key === k)!;
-    // The favourites swap the pinned card (the pin moves with the hover).
+    // The favourites swap the pinned card (the pin moves with the hover) —
+    // under the POINTER, which hears no caption (`pointerQuiet`); a Tab onto
+    // one swaps nothing, so the focus keeps the caption (`titleOnly`).
     for (const k of ["F", "G"]) {
       expect(by(k).hovers).toBe(true);
       expect(by(k).overPin).toBe(true);
-      expect(by(k).titleOnly).toBe(false);
+      expect(by(k).titleOnly).toBe(true);
+      expect(by(k).pointerQuiet).toBe(true);
     }
+    // Nothing pinned: a favourite's hover is its card, for both.
+    const free = rail({ list: ["A"], favs: ["F"] }).find((r) => r.key === "F")!;
+    expect([free.titleOnly, free.pointerQuiet]).toEqual([false, false]);
     // Another list ring: "click only" — its hover is its caption.
     expect(by("B").overPin).toBe(false);
     expect(by("B").titleOnly).toBe(true);
     // The pinned ring itself is no caption-only ring.
     expect(by("A").titleOnly).toBe(false);
+    expect(by("A").pointerQuiet).toBe(false);
+  });
+
+  it("the card held on an outsider (clipped out of the list): no favourite ring swaps it away", () => {
+    const r = ringMarks({
+      ...base,
+      key: "F",
+      foot: true,
+      sessionHere: false,
+      isLast: false,
+      peekKey: "X",
+      pinned: true,
+      held: true,
+      heldOutsider: true,
+    });
+    expect(r.overPin).toBe(false);
+    expect(r.pointerQuiet).toBe(false);
+    expect(r.titleOnly).toBe(true);
   });
 
   it("a list card pinned AND a favourite card open: favourite rings stay caption-only", () => {
@@ -513,6 +540,7 @@ describe("ringMarks (what each ring wears, per section)", () => {
     });
     expect(r.overPin).toBe(false);
     expect(r.titleOnly).toBe(true);
+    expect(r.pointerQuiet).toBe(false);
   });
 
   it("favourites off: every mark as before, the held accent included", () => {
@@ -587,6 +615,39 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     expect(chipDoor(hex, other, here, placeRoot(PLACE))?.select).toBeUndefined();
     // A folder chip seen from a canvas page: a door.
     expect(chipDoor(whole, app, here, placeRoot(PLACE))?.isDir).toBe(true);
+  });
+
+  it("chipPath: the plain chip's title is the full place, no verb", () => {
+    const app: RailPlace = { kind: "folder", dir: "/apps/x/", word: "App" };
+    expect(chipPath({ kind: "whole", word: "App" }, app)).toBe("/apps/x");
+    expect(chipPath({ kind: "file", name: "src/a.py", file: "/apps/x/src/a.py" }, app)).toBe("/apps/x/src/a.py");
+    expect(chipPath({ kind: "whole", word: "File" }, { kind: "file", file: "/apps/x/b.py" })).toBe("/apps/x/b.py");
+    expect(chipPath({ kind: "whole", word: "Canvas" }, PLACE)).toBe("demo");
+    expect(chipPath({ kind: "node", name: "hex", file: "hex.py" }, PLACE)).toBe("hex on demo");
+  });
+
+  it("favourites off: never null — every chip stays the door it was, on its own place too", () => {
+    const app: RailPlace = { kind: "folder", dir: "/apps/x/", word: "App" };
+    const whole = { kind: "whole", word: "App" } as const;
+    expect(chipDoor(whole, app, null, placeRoot(app), false)).toEqual({
+      href: "/explorer/view/apps/x",
+      isDir: true,
+      title: "Open /apps/x",
+      current: true,
+    });
+    expect(chipDoor(whole, { kind: "folder", dir: "/apps/y" }, null, placeRoot(app), false)?.current).toBeUndefined();
+    const sub = { kind: "file", name: "src/a.py", file: "/apps/x/src/a.py" } as const;
+    expect(chipDoor(sub, app, null, "file:/apps/x/src/a.py", false)?.href).toBe("/explorer/view/apps/x/src/a.py");
+    const onFile: RailPlace = { kind: "file", file: "/apps/x/b.py" };
+    expect(chipDoor({ kind: "whole", word: "File" }, onFile, null, placeRoot(onFile), false)?.title).toBe(
+      "Open /apps/x/b.py",
+    );
+    const canvas = { kind: "whole", word: "Canvas" } as const;
+    expect(chipDoor(canvas, PLACE, null, placeRoot(PLACE), false)).toMatchObject({ href: "/canvases/unstable/demo", current: true });
+    const here = { env: "unstable" as const, name: "demo", file: "hex.py" };
+    const hex = { kind: "node", name: "hex", file: "hex.py" } as const;
+    expect(chipDoor(hex, PLACE, here, placeRoot(PLACE), false)).toMatchObject({ select: { udfName: "hex" }, current: true });
+    expect(chipDoor(canvas, PLACE, { ...here, file: null }, placeRoot(PLACE), false)?.select).toEqual({ udfName: null });
   });
 
   it("chipLabel: a folder or a file by its own name, never the bare word; a page's own word stays", () => {

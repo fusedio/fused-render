@@ -27,6 +27,7 @@ import {
   peekPlacement,
   placeClear,
   railOnChipLeave,
+  onHop,
   railOnStarred,
   railOpenFav,
   starMarkStep,
@@ -668,6 +669,49 @@ describe("PeekIntent", () => {
       expect(shown).toEqual(["a"]);
     });
 
+    it("pinned: an `overPin` rest never swaps while the owner types in the card or a press is down in it", () => {
+      const { clock, shown, warmed, intent } = rig();
+      intent.press("a");
+      intent.leaveRing();
+      intent.hold(true);
+      intent.typed();
+      intent.enterRing("f", "pointer", true);
+      clock.tick(10_000);
+      intent.leaveRing();
+      intent.pressStart();
+      intent.enterRing("g", "pointer", true);
+      clock.tick(10_000);
+      intent.leaveRing();
+      intent.pressEnd();
+      expect(shown).toEqual(["a"]);
+      expect(warmed).toEqual(["a"]);
+      expect(intent.isPinned).toBe(true);
+      // A swap already waiting on its dwell is dropped by a keystroke…
+      intent.hold(false);
+      intent.hold(true);
+      intent.enterRing("f", "pointer", true);
+      clock.tick(PEEK_OPEN_MS / 2);
+      intent.typed();
+      clock.tick(10_000);
+      expect(shown).toEqual(["a"]);
+      // …and, the focus gone, the hover swaps again.
+      intent.leaveRing();
+      intent.hold(false);
+      intent.enterRing("f", "pointer", true);
+      clock.tick(PEEK_OPEN_MS);
+      expect(shown).toEqual(["a", "f"]);
+    });
+
+    it("pinned: a focus in the card with no words typed (a ring's press) still lets a favourite's hover swap it", () => {
+      const { clock, shown, intent } = rig();
+      intent.press("a");
+      intent.hold(true);
+      intent.leaveRing();
+      intent.enterRing("f", "pointer", true);
+      clock.tick(PEEK_OPEN_MS);
+      expect(shown).toEqual(["a", "f"]);
+    });
+
     it("tells the sink when it pins and unpins", () => {
       const clock = new Clock();
       const pins: boolean[] = [];
@@ -816,10 +860,11 @@ describe("railOnChipLeave (a favourite's chat leaving by the rail card's where-c
       () => true,
       (k) => k === "f",
       (k) => calls.push("letGo:" + k),
-      (k) => calls.push("open:" + k),
+      (k, kbd) => calls.push(`open:${k}:${kbd}`),
     );
     leave("f");
-    expect(calls).toEqual(["letGo:f", "open:f"]);
+    leave("f", true);
+    expect(calls).toEqual(["letGo:f", "open:f:false", "letGo:f", "open:f:true"]);
   });
 
   it("a list chat, or favourites off: nothing — the chip just goes", () => {
@@ -828,6 +873,60 @@ describe("railOnChipLeave (a favourite's chat leaving by the rail card's where-c
     railOnChipLeave(() => true, (k) => k === "f", sink, sink)("a");
     railOnChipLeave(() => false, () => true, sink, sink)("f");
     expect(calls).toEqual([]);
+  });
+});
+
+describe("onHop (the chip's hand-over waits for the router's yes)", () => {
+  class Win {
+    fns = new Map<string, Set<() => void>>();
+    addEventListener(t: string, fn: () => void) {
+      if (!this.fns.has(t)) this.fns.set(t, new Set());
+      this.fns.get(t)!.add(fn);
+    }
+    removeEventListener(t: string, fn: () => void) {
+      this.fns.get(t)?.delete(fn);
+    }
+    fire(t: string) {
+      for (const fn of [...(this.fns.get(t) ?? [])]) fn();
+    }
+    count(t: string) {
+      return this.fns.get(t)?.size ?? 0;
+    }
+  }
+
+  it("no guard: the push is heard in the same tick — the hand-over runs before `go` returns", () => {
+    const win = new Win();
+    const log: string[] = [];
+    let at = "/a";
+    onHop(win, "nav", () => at === "/b", () => log.push("hand"), () => {
+      at = "/b";
+      win.fire("nav");
+      log.push("pushed");
+    });
+    expect(log).toEqual(["hand", "pushed"]);
+    expect(win.count("nav")).toBe(0);
+  });
+
+  it("a guard that says no: nothing is handed over, and a later unrelated hop runs nothing either", () => {
+    const win = new Win();
+    const log: string[] = [];
+    let at = "/a";
+    onHop(win, "nav", () => at === "/b", () => log.push("hand"), () => {});
+    expect(log).toEqual([]);
+    at = "/c";
+    win.fire("nav");
+    expect(log).toEqual([]);
+    expect(win.count("nav")).toBe(0);
+  });
+
+  it("a guard that says yes later: the hand-over runs at the push", () => {
+    const win = new Win();
+    const log: string[] = [];
+    let at = "/a";
+    onHop(win, "nav", () => at === "/b", () => log.push("hand"), () => {});
+    at = "/b";
+    win.fire("nav");
+    expect(log).toEqual(["hand"]);
   });
 });
 

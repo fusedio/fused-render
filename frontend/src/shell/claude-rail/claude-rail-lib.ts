@@ -176,13 +176,20 @@ export interface RailHere {
  *  the page already stands on — the same folder or file (`pageRoot`, the
  *  page's `placeRoot`), the same canvas with that node (or, for the whole
  *  canvas, no node) already selected. RailPeek draws that chip as plain
- *  text: no fill, no link, no `Open …` title. */
+ *  text: no fill, no link, no `Open …` title.
+ *
+ *  FAVOURITES OFF (`favsOn` false, favourites-flag): never null — the chip is
+ *  always the link it was before favourites; on the page's own place it is
+ *  marked `current` instead. */
 export interface ChipDoor {
   href: string;
   /** The navigation hint for a folder (router `navigateUrl` `isDir`). */
   isDir?: boolean;
   title: string;
   select?: { udfName: string | null };
+  /** Favourites off only: the chip names the page's own place — a link
+   *  marked `aria-disabled` whose press goes nowhere (as before favourites). */
+  current?: boolean;
 }
 
 export function chipDoor(
@@ -190,7 +197,11 @@ export function chipDoor(
   at: RailPlace,
   here: Pick<RailHere, "env" | "name" | "file"> | null,
   pageRoot: string | null = null,
+  favsOn = true,
 ): ChipDoor | null {
+  // Favourites off: the page's own place is still a door, marked `current`
+  // (RailPeek: `aria-disabled`, no hover) — the chip as it was before them.
+  const nowhere = (door: ChipDoor): ChipDoor | null => (favsOn ? null : { ...door, current: true });
   if (at.kind === "canvas") {
     const file = scope.kind === "node" ? scope.file : undefined;
     const href = canvasPagePath(at.env, at.name, file ? { file } : undefined);
@@ -198,27 +209,40 @@ export function chipDoor(
     if (!here || here.env !== at.env || here.name !== at.name) {
       // The whole canvas, named on its own page with no way to select in
       // place: nowhere to go.
-      return scope.kind === "whole" && pageRoot === placeRoot(at) ? null : { href, title };
+      return scope.kind === "whole" && pageRoot === placeRoot(at) ? nowhere({ href, title }) : { href, title };
     }
     const udfName = scope.kind === "node" ? scope.name : null;
     const now = here.file ? nodeName(here.file) : null;
     // Already the selection: nothing to do.
-    if (udfName === now) return null;
+    if (udfName === now) return nowhere({ href, title, select: { udfName } });
     return { href, title, select: { udfName } };
   }
   if (scope.kind === "file") {
-    return `file:${scope.file}` === pageRoot ? null : { href: urlForFsPath(scope.file), title: `Open ${scope.file}` };
+    const door = { href: urlForFsPath(scope.file), title: `Open ${scope.file}` };
+    return `file:${scope.file}` === pageRoot ? nowhere(door) : door;
   }
-  if (placeRoot(at) === pageRoot) return null;
-  if (at.kind === "file") return { href: urlForFsPath(at.file), title: `Open ${at.file}` };
-  const dir = trimSlash(at.dir);
-  return { href: urlForFsPath(dir), isDir: true, title: `Open ${dir}` };
+  const door: ChipDoor =
+    at.kind === "file"
+      ? { href: urlForFsPath(at.file), title: `Open ${at.file}` }
+      : { href: urlForFsPath(trimSlash(at.dir)), isDir: true, title: `Open ${trimSlash(at.dir)}` };
+  return placeRoot(at) === pageRoot ? nowhere(door) : door;
+}
+
+/** THE FULL PLACE A WHERE-CHIP NAMES, as words: the plain-text chip's
+ *  `title` (RailPeek, a chip that goes nowhere) — the door's `Open …` caption
+ *  without the verb. */
+export function chipPath(scope: RailScope, at: RailPlace): string {
+  if (scope.kind === "file") return scope.file;
+  if (at.kind === "canvas") return scope.kind === "node" ? `${scope.name} on ${at.name}` : at.name;
+  if (at.kind === "file") return at.file;
+  return trimSlash(at.dir);
 }
 
 /** WHAT THE WHERE-CHIP SAYS (RailPeek's head, both cards): a node or a file
  *  under the folder by its name; the whole of a folder or a file by the
  *  folder's or the file's own NAME (owner, 2026-11-04: not the bare word
- *  "Folder" — "insta-edit-pro"), the full path in its title (`chipDoor`).
+ *  "Folder" — "insta-edit-pro"), the full path in its caption (RailPeek:
+ *  the door's `Open …` title, or the plain chip's own `title`).
  *  A page that names its place itself keeps its word (the app page's
  *  "App"), and so does the canvas ("Canvas"). */
 export function chipLabel(scope: RailScope, at: RailPlace): string {
@@ -468,6 +492,10 @@ export interface RingMarkInput {
   isLast: boolean;
   activeList: string | null;
   activeFav: string | null;
+  /** The rail's card is HELD on a chat clipped out of the list (ClaudeRail
+   *  `heldExtra`): its ring stands only while the card shows it, so no hover
+   *  may swap it away (`overPin` is off). */
+  heldOutsider?: boolean;
 }
 
 export function ringMarks(o: RingMarkInput): {
@@ -476,6 +504,7 @@ export function ringMarks(o: RingMarkInput): {
   favRing: boolean;
   overPin: boolean;
   titleOnly: boolean;
+  pointerQuiet: boolean;
 } {
   const peeked = o.peekOn && o.peekKey === o.key;
   const favRing = o.favsOn && o.openFavKey === o.key;
@@ -484,7 +513,9 @@ export function ringMarks(o: RingMarkInput): {
   const classes: string[] = [];
   if (o.sessionHere && (!one || (!o.foot && o.activeList === o.key))) classes.push("active");
   if (peeked) classes.push("peeked");
-  if (peeked && o.pinned && !fav) classes.push("is-pinned");
+  // A favourite's ring wears the pin too once a hover swapped the pinned
+  // card onto it (`overPin`) — never the open favourite's (`favRing`).
+  if (peeked && o.pinned && !favRing) classes.push("is-pinned");
   if (peeked && o.held && !o.favsOn) classes.push("is-held");
   if (o.foot) classes.push("is-fav");
   if (o.foot && o.openFavKey === o.key) classes.push("is-open");
@@ -499,12 +530,15 @@ export function ringMarks(o: RingMarkInput): {
   const hovers = o.peekOn && !silenced;
   // A favourite's ring hovers over a PINNED card too (header): the card
   // swaps to it and the pin moves with it.
-  const overPin = hovers && o.favsOn && o.foot;
+  const overPin = hovers && o.favsOn && o.foot && !o.heldOutsider;
   // The caption alone: the ring's hover shows no card — another ring while a
-  // card is pinned (bar `overPin`), the open favourite's ring, a silenced one.
-  const titleOnly =
-    (o.peekOn && o.pinned && o.peekKey !== null && o.peekKey !== o.key && !overPin) ||
-    favRing ||
-    (o.peekOn && !hovers);
-  return { classes, hovers, favRing, overPin, titleOnly };
+  // card is pinned, the open favourite's ring, a silenced one.
+  const pinnedElsewhere = o.peekOn && o.pinned && o.peekKey !== null && o.peekKey !== o.key;
+  const titleOnly = pinnedElsewhere || favRing || (o.peekOn && !hovers);
+  // …but a POINTER on an `overPin` ring over a pinned card swaps the card
+  // there: the caption is for the keyboard's focus only (a Tab never swaps a
+  // pinned card), and the pointer's hover stays quiet — the card is its
+  // caption (ClaudeRail's shield over the ring).
+  const pointerQuiet = pinnedElsewhere && overPin;
+  return { classes, hovers, favRing, overPin, titleOnly, pointerQuiet };
 }

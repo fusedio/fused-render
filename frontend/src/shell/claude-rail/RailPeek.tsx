@@ -141,8 +141,8 @@ import {
   taskWhen,
   type CardTitle,
 } from "@shell/tasks-lib";
-import { navigateUrl } from "@platform/lib/router";
-import { chipDoor, chipLabel, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
+import { chipDoor, chipLabel, chipPath, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -155,6 +155,7 @@ import {
   dragResize,
   errorWords,
   inSafeCone,
+  onHop,
   placeClear,
   rowOf,
   starMarkStep,
@@ -314,6 +315,10 @@ export interface RailPeekProps {
   onPressInside: () => void;
   /** The card took (`true`) or lost (`false`) the keyboard focus. */
   onHold: (on: boolean) => void;
+  /** The owner typed in the card (an `input` inside it, the composer's
+   *  words): the rail's pinned card then never swaps on a favourite's
+   *  hover (rail-peek-lib `PeekIntent.typed`). */
+  onTyped?: () => void;
   /** Escape inside the card, or its close button — or the Open door
    *  (`"door"`), or an unstar that shuts the card (`"unstar"`,
    *  `dismissOnUnstar`): a host that records "closed" on the × keeps the
@@ -335,13 +340,15 @@ export interface RailPeekProps {
   /** WHERE THE PAGE STANDS (claude-rail-lib `placeRoot`): the rail's own
    *  place for its card, the place of the rail the favourite's card stands
    *  beside (fav-peek-store `page`). A where-chip naming it goes nowhere and
-   *  is plain text (`chipDoor`). */
+   *  is plain text (`chipDoor`) — favourites on only. */
   pageRoot?: string | null;
-  /** The where-chip is about to NAVIGATE away from this page with chat `key`
-   *  in the card (not a select in place, not a modified press): the rail's
-   *  card hands a favourite's chat to the favourite's card first, so it
-   *  goes with the reader (ClaudeRail `onChipLeave`). */
-  onChipLeave?: (key: string) => void;
+  /** The where-chip NAVIGATED away from this page with chat `key` in the
+   *  card (not a select in place, not a modified press), heard at the push —
+   *  only once the router's leave guard let it (rail-peek-lib `onHop`): the
+   *  rail's card hands a favourite's chat to the favourite's card, so it goes
+   *  with the reader (ClaudeRail `onChipLeave`). `keyboard`: the press was
+   *  the keyboard's. */
+  onChipLeave?: (key: string, keyboard: boolean) => void;
   /** The chip was pressed: pin the shown card (a keyboard press has no
    *  pointer-down to do it, `onPressInside`), and see the keyboard into its
    *  composer once that has mounted (ClaudeRail `focusComposerSoon`). */
@@ -443,6 +450,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onCone,
     onPressInside,
     onHold,
+    onTyped,
     onDismiss,
     onNoRoom,
     onOpenChat,
@@ -1129,6 +1137,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         "claude-rail-peek" +
         (visible ? " is-on" : "") +
         (held && !favsOn ? " is-held" : "") +
+        (favsOn ? " favs-on" : "") +
         (resizing ? " is-resizing" : "") +
         (view && !view.pulse.session_id ? " is-plain" : "")
       }
@@ -1146,6 +1155,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       onPointerDownCapture={onPressInsideCapture}
       onFocusCapture={onFocusCapture}
       onBlurCapture={onBlurCapture}
+      onInputCapture={onTyped}
     >
       {gripsOn &&
         // THE GRIPS (header): the card's two left corners and its left, top
@@ -1256,31 +1266,53 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 // something"): a chip naming the place the page already
                 // stands on — this folder, this file, this canvas with that
                 // node already selected — goes nowhere (`chipDoor` null) and
-                // is plain text: no fill, no link, no title.
+                // is plain text: no fill, no link, its full place in the
+                // title. FAVOURITES OFF (favourites-flag): the chip as it was
+                // — always a door, the fill on a node's chip only (the CSS
+                // reads the card's `favs-on`).
                 // Names, not files: the page's selected file is a guess from
                 // the echo (claude-rail-lib `onRail`).
-                const door = chipDoor(head.scope, head.at, here?.() ?? null, pageRoot ?? null);
+                const door = chipDoor(head.scope, head.at, here?.() ?? null, pageRoot ?? null, favsOn);
                 const label = chipLabel(head.scope, head.at);
                 const cls =
                   "claude-rail-peek-scope" +
                   (head.scope.kind === "node" ? " is-node" : head.scope.kind === "file" ? " is-file" : "");
-                if (!door) return <span className={cls}>{label}</span>;
+                if (!door) return <span className={cls} title={chipPath(head.scope, head.at)}>{label}</span>;
                 return (
                   <a
                     href={door.href}
                     className={cls + " is-door"}
                     title={door.title}
+                    // Favourites off: the page's own place, a link that goes
+                    // nowhere (as before favourites; `chipDoor` `current`).
+                    aria-disabled={door.current || undefined}
                     onClick={(e) => {
                       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                       e.preventDefault();
                       // Read again at the press: the page's selection may
                       // have moved since this render.
                       const pick = here?.() ?? null;
-                      const now = chipDoor(head.scope, head.at, pick, pageRoot ?? null);
+                      const now = chipDoor(head.scope, head.at, pick, pageRoot ?? null, favsOn);
                       if (!now) return;
+                      if (now.current && (!now.select || !pick)) return;
                       if (!now.select || !pick) {
-                        onChipLeave?.(head.t.key);
-                        navigateUrl(now.href, now.isDir === undefined ? undefined : { isDir: now.isDir });
+                        const key = head.t.key;
+                        const keyboard = e.detail === 0;
+                        const go = () => navigateUrl(now.href, now.isDir === undefined ? undefined : { isDir: now.isDir });
+                        if (!onChipLeave) {
+                          go();
+                          return;
+                        }
+                        // The hand-over runs at the push, never on a hop the
+                        // leave guard refused (rail-peek-lib `onHop`).
+                        const want = new URL(rewriteLegacyUrl(now.href), location.href);
+                        onHop(
+                          window,
+                          NAV_EVENT,
+                          () => location.pathname === want.pathname && location.search === want.search,
+                          () => onChipLeave(key, keyboard),
+                          go,
+                        );
                         return;
                       }
                       onPin();
