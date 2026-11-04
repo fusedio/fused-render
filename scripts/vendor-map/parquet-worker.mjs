@@ -1,8 +1,9 @@
-import { asyncBufferFromUrl, parquetMetadataAsync, parquetReadObjects, parquetSchema } from "hyparquet";
+import { asyncBufferFromUrl, parquetMetadataAsync, parquetRead, parquetReadObjects, parquetSchema } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
 
 const MAX_VALUES = 200000;
 const VALUE_BATCH = 3;
+const FEATURES_PER_CHUNK = 20000;
 const HEAVY_BYTES_PER_ROW = 8;
 const MAX_GROUP_RAW_BYTES = 128 << 20;
 const MAX_GROUP_ROWS = 2000000;
@@ -197,35 +198,47 @@ function read({ key, index }) {
   return reading(key, index, async entry => {
     const { summary } = entry, group = summary.rowGroups[index];
     const rows = await readGroup(entry, group, [summary.geometryName, ...summary.fields]);
-    const features = [];
+    const encoder = new TextEncoder();
+    const parts = [encoder.encode('{"type":"FeatureCollection","features":[')];
     const types = new Set();
+    let batch = [];
+    let count = 0;
+    const flush = () => {
+      if (batch.length) parts.push(encoder.encode((parts.length > 1 ? "," : "") + batch.join(",")));
+      batch = [];
+    };
     rows.forEach((row, k) => {
       const geometry = row[summary.geometryName];
       if (!geometry || !geometry.type) return;
       types.add(geometry.type);
-      features.push({ type: "Feature", id: group.start + k, geometry, properties: properties(row, summary.fields) });
+      batch.push(JSON.stringify({ type: "Feature", id: group.start + k, geometry, properties: properties(row, summary.fields) }));
+      count += 1;
+      if (batch.length === FEATURES_PER_CHUNK) flush();
     });
-    const bytes = new TextEncoder().encode(JSON.stringify({ type: "FeatureCollection", features }));
-    return { buffer: bytes.buffer, count: features.length, types: [...types] };
+    flush();
+    parts.push(encoder.encode("]}"));
+    const blob = new Blob(parts, { type: "application/json" });
+    return { blob, size: blob.size, count, types: [...types] };
   });
 }
 
 function values({ key, indexes, field }) {
-  return reading(key, `values-${++nextRead}`, async entry => {
-    if (!entry.summary.fields.includes(field)) return [];
+  return reading(key, `values-${++nextRead}`, async ({ metadata, summary, file }) => {
+    if (!summary.fields.includes(field)) return [];
     const out = [];
-    for (let k = 0; k < indexes.length && out.length < MAX_VALUES; k += VALUE_BATCH) {
-      const slice = indexes.slice(k, k + VALUE_BATCH);
-      const share = Math.ceil((MAX_VALUES - out.length) / slice.length);
-      const batch = slice.map(index => {
-        const group = entry.summary.rowGroups[index];
-        return readGroup(entry, { ...group, rows: Math.min(group.rows, share) }, [field]);
-      });
-      for (const row of (await Promise.all(batch)).flat()) {
-        const value = plainValue(row[field]);
+    const collect = ({ columnData }) => {
+      for (const raw of columnData) {
+        if (out.length >= MAX_VALUES) return;
+        const value = plainValue(raw);
         if (value !== undefined) out.push(value);
-        if (out.length >= MAX_VALUES) break;
       }
+    };
+    for (let k = 0; k < indexes.length && out.length < MAX_VALUES; k += VALUE_BATCH) {
+      await Promise.all(indexes.slice(k, k + VALUE_BATCH).map(index => {
+        const group = summary.rowGroups[index];
+        return parquetRead({ file, metadata, columns: [field], compressors, onChunk: collect,
+                             rowStart: group.start, rowEnd: group.start + group.rows });
+      }));
     }
     return out;
   });
@@ -258,7 +271,7 @@ self.onmessage = async ({ data }) => {
   const { id, op, ...args } = data;
   try {
     const result = await OPS[op](args);
-    self.postMessage({ id, ok: true, result }, result && result.buffer instanceof ArrayBuffer ? [result.buffer] : []);
+    self.postMessage({ id, ok: true, result });
   } catch (error) {
     self.postMessage({ id, ok: false, error: error && error.message || String(error) });
   }

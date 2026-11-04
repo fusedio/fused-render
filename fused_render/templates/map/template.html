@@ -1396,7 +1396,7 @@ const streamed = {
   styleGroup(layer, r, i, paint) {
     const id = `${r.handle}-g${i}`;
     for (const kind of STREAM_KINDS) if (map.getLayer(`${id}-${kind}`)) setPaint(`${id}-${kind}`, paint[kind], layer.visible);
-    const label = `${id}-label`, field = layer.style.label_field;
+    const label = `${id}-label`, field = r.info.fields.includes(layer.style.label_field) ? layer.style.label_field : null;
     if (!field) { if (map.getLayer(label)) map.removeLayer(label); return; }
     if (!map.getLayer(label)) map.addLayer({ id: label, type: "symbol", source: id, layout: { "text-size": 12 } }, `${r.handle}-top`);
     map.setLayoutProperty(label, "text-field", ["to-string", ["get", field]]);
@@ -1447,10 +1447,10 @@ const streamed = {
       aborted = !out;
       if (aborted || s.closed || r.disposed) return;
       const id = `${r.handle}-g${g.index}`, category = geometryCategory(out.types);
-      const url = URL.createObjectURL(new Blob([out.buffer], { type: "application/json" }));
+      const url = URL.createObjectURL(out.blob);
       map.addSource(id, { type: "geojson", data: url });
       map.getSource(id).once("data", () => URL.revokeObjectURL(url));
-      s.loaded.set(g.index, { url, count: out.count, bytes: out.buffer.byteLength, used: Date.now() });
+      s.loaded.set(g.index, { url, count: out.count, bytes: out.size, used: Date.now() });
       s.failed.delete(g.index);
       r.info.geometryType = widerCategory(r.info.geometryType, category);
       for (const kind of this.kinds(category)) map.addLayer({ id: `${id}-${kind}`, type: kind, source: id, filter: STREAM_FILTER[kind] }, `${r.handle}-top`);

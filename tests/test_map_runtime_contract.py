@@ -263,7 +263,7 @@ def test_a_big_geoparquet_is_read_by_row_group_in_a_worker_the_build_makes():
     assert '"hyparquet":' in package and '"hyparquet-compressors":' in package
 
 
-def _geoparquet(path: Path, crs=None, encoding="WKB") -> list:
+def _geoparquet(path: Path, crs=None, encoding="WKB"):
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
 
@@ -293,7 +293,7 @@ def _geoparquet(path: Path, crs=None, encoding="WKB") -> list:
     geo = {"version": "1.0.0", "primary_column": "geometry", "columns": {"geometry": column}}
     table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode()})
     pq.write_table(table, path, row_group_size=500)
-    return ids
+    return table
 
 
 def _worker(path: Path, ops: list, ranges: bool = True) -> tuple:
@@ -320,9 +320,8 @@ import(pathToFileURL(bundle).href).then(async () => {
     const reply = sent.pop();
     if (!reply.ok) { out.push({ error: reply.error }); continue; }
     if (op.op === "open") key = reply.result.key;
-    const result = reply.result && reply.result.buffer
-      ? { ...reply.result, buffer: JSON.parse(new TextDecoder().decode(reply.result.buffer)) } : reply.result;
-    out.push(result);
+    const { blob, ...rest } = reply.result && reply.result.blob ? reply.result : { blob: null };
+    out.push(blob ? { ...rest, geojson: JSON.parse(await blob.text()) } : reply.result);
   }
   console.log(JSON.stringify({ out, wholeGets }));
 }).catch(error => { console.error(error); process.exit(1); });
@@ -338,21 +337,23 @@ def _open(name: str) -> dict:
 
 def test_the_worker_indexes_row_groups_by_their_bbox_and_reads_one_at_a_time(tmp_path):
     path = tmp_path / "buildings.parquet"
-    ids = _geoparquet(path)
-    (opened, group, attributes), _ = _worker(path, [_open("buildings.parquet"), {"op": "read", "index": 3},
-                                                    {"op": "row", "row": 1501}])
+    table = _geoparquet(path)
+    (opened, group, attributes, classes), _ = _worker(path, [
+        _open("buildings.parquet"), {"op": "read", "index": 3}, {"op": "row", "row": 1501},
+        {"op": "values", "indexes": [0, 1], "field": "class"}])
     assert opened["rows"] == 2000 and len(opened["rowGroups"]) == 4 and opened["geometryName"] == "geometry"
     assert opened["fields"] == ["class", "height"] and opened["extraFields"] == ["id", "names"]
     boxes = [g["bbox"] for g in opened["rowGroups"]]
     assert all(10 <= b[0] < b[2] <= 12.01 and 40 <= b[1] < b[3] <= 42.01 for b in boxes)
     assert boxes[0][2] < 11 and boxes[3][0] > 11 and boxes[3][1] > 41
     assert opened["extent"][0] >= 10 and opened["extent"][3] <= 42.01
-    features = group["buffer"]["features"]
-    assert group["count"] == 500 == len(features) and group["types"] == ["Polygon"]
+    features = group["geojson"]["features"]
+    assert group["count"] == 500 == len(features) and group["types"] == ["Polygon"] and group["size"] > 0
     assert features[1]["id"] == 1501 and set(features[1]["properties"]) <= {"class", "height"}
     x, y = features[1]["geometry"]["coordinates"][0][0]
     assert 11 <= x <= 12 and 41 <= y <= 42
-    assert attributes == {"id": ids[1501], "names": '{"primary":"building 1501"}'}
+    assert attributes == {"id": table["id"][1501].as_py(), "names": '{"primary":"building 1501"}'}
+    assert classes == [c for c in table["class"].to_pylist()[:1000] if c is not None]
 
 
 def test_a_server_that_ignores_ranges_is_read_once_not_once_per_row_group(tmp_path):
