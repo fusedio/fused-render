@@ -130,6 +130,31 @@ export function peekPlacement(anchor: Box, rail: Box, bounds: Box, wish: number 
   return { left: Math.round(left), top: Math.round(top), width: Math.round(width), height: Math.round(height) };
 }
 
+/** WHERE THE RAIL'S CARD STANDS WITH THE FAVOURITE'S CARD UP (`avoid`, its
+ *  box; FavouritePeek): the two must not cover each other. In order:
+ *    1. ABOVE IT — the row ends a gap over the favourite's top — when that
+ *       leaves a usable card (PEEK_MIN_HEIGHT);
+ *    2. BESIDE IT, TO ITS LEFT — the favourite's left edge stands in for the
+ *       rail's, the top level with the ring as always — when the row leaves
+ *       a card at least PEEK_MIN_WIDTH wide there (a window under ~880px
+ *       tall, the common laptop);
+ *    3. OVER IT, the last resort — the plain placement, the favourite's card
+ *       on top (claude-rail.css z-index) — rather than "no room" and every
+ *       ring press opening the pane.
+ *  With no favourite's card up, or one wholly below the row, the plain
+ *  placement. */
+export function placeClear(anchor: Box, rail: Box, row: Box, avoid: Box | null, wish: number | PeekWish): Box | null {
+  if (avoid && avoid.top < row.top + row.height) {
+    const above = avoid.top - PEEK_GAP - row.top;
+    if (above >= PEEK_MIN_HEIGHT + 2 * PEEK_INSET) {
+      return peekPlacement(anchor, rail, { left: row.left, top: row.top, width: row.width, height: above }, wish);
+    }
+    const beside = peekPlacement(anchor, { ...rail, left: avoid.left }, row, wish);
+    if (beside) return beside;
+  }
+  return peekPlacement(anchor, rail, row, wish);
+}
+
 /** The box a corner drag asks for: `corner` is which of the card's LEFT
  *  corners is held (the right edge stands against the rail), `start` the box
  *  when the pointer went down, `dx`/`dy` how far it has moved since. The
@@ -514,4 +539,102 @@ export class PeekIntent {
     if (this.closeTimer) this.timers.clear(this.closeTimer);
     this.closeTimer = 0;
   }
+}
+
+// ---- THE STAR'S ANSWER ------------------------------------------------------
+
+/** THE STAR SHOWS THE ANSWER AT ONCE (RailPeek `starMark`): the server's
+ *  answer for one key, held over the pulse's `starred` until the pulse
+ *  agrees — or until it has had its chance to. `pulse` is the pulse row the
+ *  mark last saw for its key, `seen` how many DISTINCT pulse rows have come
+ *  since it was set: the first may have left before the write landed, the
+ *  second cannot have — so a pulse that still disagrees then is not lagging,
+ *  another window flipped the star, and the pulse is the truth. */
+export interface StarMark {
+  key: string;
+  on: boolean;
+  pulse: TaskPulseTask;
+  seen: number;
+  /** Which press set it (RailPeek's timeout fallback is per press). */
+  seq: number;
+}
+
+/** How long a mark may stand at most, pulses or none (a pulse loop that
+ *  stalls must not hold a star the server no longer agrees with). */
+export const STAR_MARK_MS = 6000;
+
+/** The mark after the pulse row `t` for its key (undefined: the row left):
+ *  null when the pulse agrees, the row is gone, or this is the second
+ *  distinct pulse row since the mark was set (header); the same mark for the
+ *  same row; else the mark with this row counted. */
+export function starMarkStep(mark: StarMark, t: TaskPulseTask | undefined): StarMark | null {
+  if (!t || !!t.starred === mark.on) return null;
+  if (t === mark.pulse) return mark;
+  if (mark.seen >= 1) return null;
+  return { ...mark, pulse: t, seen: mark.seen + 1 };
+}
+
+/** What a card does once the server has answered its star (RailPeek
+ *  `toggleStar`): the rail hears it (`onStarred`), and an UNSTAR shuts the
+ *  card only where the card is the favourite's own (`dismissOnUnstar`,
+ *  FavouritePeek) and still on that chat — the rail's card lets go on the
+ *  star itself (`railOnStarred`) and never shows a starred chat, so an
+ *  unstar is never its to act on. */
+export function starOutcome(starred: boolean, key: string, shownKey: string | null, dismissOnUnstar: boolean): { dismiss: boolean } {
+  return { dismiss: !starred && dismissOnUnstar && shownKey === key };
+}
+
+/** The rail's side of a star (ClaudeRail `onStarred`): with favourites on,
+ *  a starred chat leaves the list and lives on its ring in the favourites
+ *  section — no duplicate — so the rail's own card lets go of it AT ONCE, on
+ *  EVERY star, whether the server recorded the favourite's card open or
+ *  closed (another favourite open). When it did open, letting go now also
+ *  lands before the pulse that mounts the favourite's composer, so one draft
+ *  never has two composers. */
+export function railOnStarred(favsOn: () => boolean, letGo: (key: string) => void): (key: string, on: boolean) => void {
+  return (key, on) => {
+    if (on && favsOn()) letGo(key);
+  };
+}
+
+/** The words a refused favourite write says: the server's own `detail` (a
+ *  FastAPI refusal, which the shared fetch helpers' message reads as a bare
+ *  "HTTP 409"), else the error's message, else `fallback`. */
+export function errorWords(e: unknown, fallback: string): string {
+  const body = (e as { body?: unknown } | null)?.body;
+  const detail = body && typeof body === "object" ? (body as { detail?: unknown }).detail : undefined;
+  if (typeof detail === "string" && detail) return detail;
+  const message = (e as Error | null)?.message;
+  return message || fallback;
+}
+
+/** A FAVOURITE'S RING PRESSED (ClaudeRail `openFavourite`): the open write
+ *  first; the rail's card lets go of the chat only when the server says the
+ *  favourite's card is open on it. A refused write (archived, gone, the
+ *  network) or an answer that is not "open" — another window unstarred it —
+ *  says so once and falls back to the ring's ordinary press, so the chat
+ *  never vanishes into a card that will not come. */
+export async function openFavouriteFlow(
+  key: string,
+  deps: {
+    post: (key: string) => Promise<{ starred: boolean; open: boolean }>;
+    letGo: (key: string) => void;
+    fallback: () => void;
+    fail: (message: string) => void;
+  },
+): Promise<boolean> {
+  let message: string;
+  try {
+    const res = await deps.post(key);
+    if (res.open === true) {
+      deps.letGo(key);
+      return true;
+    }
+    message = res.starred ? "The favourite could not be opened" : "This chat is not a favourite any more";
+  } catch (e) {
+    message = errorWords(e, "The favourite could not be opened");
+  }
+  deps.fail(message);
+  deps.fallback();
+  return false;
 }

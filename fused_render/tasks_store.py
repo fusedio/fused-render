@@ -127,17 +127,21 @@ from __future__ import annotations
 import contextlib
 import glob
 import json
+import logging
 import math
 import os
 import re
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from fused_render import _platform
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.agent_backends import roots
+
+logger = logging.getLogger(__name__)
 
 # Claude Code's projects dir, read at import (CLAUDE_CONFIG_DIR wins where
 # set — `agent_roots.claude_dir`). Kept module-level under its old name
@@ -234,16 +238,76 @@ def message_number(message_id: str) -> int:
 # ------------------------------------------------------------------ the files
 
 
+def _read_state(filename: str) -> tuple[dict, bool]:
+    """`(data, corrupt)` for one store in STATE_DIR. Missing or EMPTY (0 bytes)
+    is `({}, False)` — nothing saved yet. A file that is there but does not
+    read as a json dict is `({}, True)`: the caller that is about to WRITE must
+    not mistake it for an empty store (`_update` moves it aside first). A read
+    that FAILS (any OSError but FileNotFoundError) raises: a store that could
+    not be read is neither empty nor corrupt."""
+    path = os.path.join(STATE_DIR, filename)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return {}, False
+    except ValueError:
+        # Undecodable bytes (UnicodeDecodeError): corrupt, not unreadable.
+        return {}, True
+    # Any other OSError (PermissionError, EMFILE, EIO) is the read failing,
+    # not the file being bad: it propagates, so `_update` refuses the write
+    # rather than set aside a good store and rewrite it with one entry.
+    if not text.strip():
+        return {}, False
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}, True
+    if not isinstance(data, dict):
+        return {}, True
+    return data, False
+
+
 def load_state(filename: str) -> dict:
     """A json dict from STATE_DIR, or {} — missing/corrupt is not an error.
     Same helper, same posture, as claude_sessions._load_state; duplicated here
-    rather than imported so this module keeps its no-server-imports rule."""
+    rather than imported so this module keeps its no-server-imports rule.
+    Reading never touches a corrupt file; only `_update`, about to write over
+    it, moves it aside. A read that fails (PermissionError, EMFILE, EIO)
+    answers {} here too — a listing must not fall over — but `_update`
+    refuses to write on one."""
     try:
-        with open(os.path.join(STATE_DIR, filename), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+        return _read_state(filename)[0]
+    except OSError as e:
+        logger.warning("tasks_store: could not read %s (%s); reading it as empty",
+                       filename, e)
         return {}
+
+
+def _set_aside_corrupt(filename: str) -> str | None:
+    """Move a store that exists but does not parse to
+    `<filename>.corrupt-<unix ts>` beside it, and log it. Called under the
+    store's lock by `_update` just before it writes fresh, so a bad file costs
+    the reads in between — never the bytes (2026-11-04: a parse error used to
+    read as {} and the next star overwrote every other one). Once per bad
+    file: after the move the live name is gone or freshly written. Answers the
+    new path, or None when the move itself failed (the write then goes ahead
+    over it, as it always did, rather than refusing the gesture)."""
+    path = os.path.join(STATE_DIR, filename)
+    base = f"{path}.corrupt-{int(time.time())}"
+    aside, n = base, 0
+    while os.path.exists(aside):
+        n += 1
+        aside = f"{base}-{n}"
+    try:
+        os.replace(path, aside)
+    except OSError as e:
+        logger.warning("tasks_store: %s does not parse and could not be moved "
+                       "aside (%s); overwriting it", path, e)
+        return None
+    logger.warning("tasks_store: %s did not parse; moved it to %s and started "
+                   "a fresh one", path, aside)
+    return aside
 
 
 def _open_lockfile(path: str):
@@ -297,12 +361,22 @@ def _update(filename: str, mutate):
     marking different messages read is not exotic (the app runs several windows
     against one server, and FastAPI serves sync routes from a threadpool), and
     without the read inside the lock the second writer would persist a snapshot
-    taken before the first one's change and drop it."""
+    taken before the first one's change and drop it.
+
+    A store that exists but does not parse reads as `{}` to `mutate`, but is
+    moved aside (`<filename>.corrupt-<ts>`) before the write lands — never
+    silently overwritten. An empty file is just empty. A read that FAILS
+    (`_read_state` raises) refuses the write: the OSError propagates and the
+    file is left as it was."""
     path = os.path.join(STATE_DIR, filename)
     with locked(filename):
-        data = load_state(filename)
+        data, corrupt = _read_state(filename)
         result, changed = mutate(data)
         if changed:
+            # A file that is there but does not parse is NOT an empty store:
+            # it is set aside, not written over (`_set_aside_corrupt`).
+            if corrupt:
+                _set_aside_corrupt(filename)
             # Atomic: unlocked readers (`load_state` in a listing) must never
             # see a half-written file and read it as `{}`. A tmp file beside
             # it, then `os.replace`.
@@ -1040,7 +1114,9 @@ def clear_archived(key: str) -> bool:
 # is, and for the same reason: it is a fact about a task that no transcript can
 # carry. `open` is whether the favourite sits expanded in the rail, and AT MOST
 # ONE does — `set_favourite` closes every other record when one opens, under the
-# same lock, so two windows cannot leave two expanded cards behind.
+# same lock, so two windows cannot leave two expanded cards behind. A plain star
+# (no `open` asked) opens its card only onto an empty rail; with another card
+# open it is recorded closed.
 #
 # ONLY A STARTED CHAT can be starred (the route refuses a key with no
 # session): a `pending:` key rekeys on dispatch (`_apply_rekey`) and a record
@@ -1052,7 +1128,8 @@ FAVOURITES_FILE = "favourites.json"
 
 def favourites_state() -> dict:
     """The favourites, as saved. Missing/corrupt reads as {} — nothing starred —
-    so a bad file costs a star, never a row."""
+    so a bad file costs a star, never a row (and the next write moves the bad
+    file aside rather than over it: `_update`)."""
     return load_state(FAVOURITES_FILE)
 
 
@@ -1067,13 +1144,28 @@ def favourite_of(state: dict, key: str) -> tuple[bool, bool]:
 
 
 def set_favourite(key: str, on: bool | None, open: bool | None = None,
-                  now: float | None = None) -> dict:
-    """Star or unstar one task key. `on=True` creates the record (an existing
-    one keeps its original `at`) and sets `open` — to `open` when given, else
-    True: a star you just pressed is a card you want to see. Opening one closes
-    every other. `on=False` deletes the record. `on=None` touches ONLY `open`,
-    and only on a key that is starred — the card's × and its swaps say
-    "closed" without ever re-starring a task another window just unstarred.
+                  now: float | None = None,
+                  force_closed: bool | Callable[[], bool] = False) -> dict:
+    """Star or unstar one task key.
+
+    `on=True` creates the record (an existing one keeps its original `at`) and
+    sets `open`. Given explicitly, `open=True` opens this card and closes every
+    other; `open=False` records it closed. NOT given, the star opens its card
+    ONLY when no other favourite is open — a star pressed on some card must
+    never silently swap out the card the reader already has open (Akshil,
+    2026-11-04); with one open, the new star is recorded closed and nothing
+    else moves.
+
+    `on=False` deletes the record. `on=None` touches ONLY `open`, and only on a
+    key that is starred — the card's × and its swaps say "closed" without ever
+    re-starring a task another window just unstarred.
+
+    `force_closed` records `open` False whatever was asked: an archived task
+    keeps or gets its star, never an open card (`archive_task`). The route
+    passes a CALLABLE (is the task archived?), asked inside `mutate` — under
+    the favourites lock — so an archive filed after the route's own checks
+    still lands closed: either it filed before this check, or its own close
+    (`archive_task`, same lock) comes after this write.
 
     Answers `{"starred", "open", "changed"}`; `changed` lists every key whose
     record flipped, so the caller can wake the watcher for each."""
@@ -1091,7 +1183,16 @@ def set_favourite(key: str, on: bool | None, open: bool | None = None,
         before = state.get(key)
         if on is None and not isinstance(before, dict):
             return ({"starred": False, "open": False, "changed": changed}, False)
-        want_open = True if open is None else bool(open)
+        if force_closed() if callable(force_closed) else force_closed:
+            want_open = False
+        elif open is not None:
+            want_open = bool(open)
+        else:
+            # `on=True`, `open` not given (`on=None` always carries `open`):
+            # open only onto an empty rail.
+            want_open = not any(
+                other != key and isinstance(rec, dict) and rec.get("open") is True
+                for other, rec in state.items())
         at = stamp
         if isinstance(before, dict):
             try:

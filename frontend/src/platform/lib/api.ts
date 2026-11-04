@@ -287,8 +287,13 @@ export async function mutateJson<T>(
 
 const putJson = <T>(url: string, body: unknown) => {
   // See getPrefsShared: a write orphans the shared pre-write read.
-  if (url === "/api/prefs") prefsInFlight = null;
-  return mutateJson<T>("PUT", url, body);
+  if (url !== "/api/prefs") return mutateJson<T>("PUT", url, body);
+  prefsInFlight = null;
+  // …and the answer is told to every OTHER tab and window (announcePrefs).
+  return mutateJson<T>("PUT", url, body).then((next) => {
+    announcePrefs(next as unknown as Prefs);
+    return next;
+  });
 };
 export const postJson = <T>(
   url: string,
@@ -1941,6 +1946,62 @@ export function getPrefsShared(): Promise<Prefs> {
   };
   p.then(clear, clear);
   return p;
+}
+
+// PREFS WRITTEN IN ANOTHER TAB OR WINDOW. A flag module caches its one read and
+// moves only on this page's own publish (or a re-read on focus, prefs-reread),
+// so a switch flipped in a second tab left the first one's star, section and
+// card up until a reload. Every successful prefs PUT posts the payload the
+// server answered with on one BroadcastChannel; a module that wants it applies
+// it as its own publish. The writing page hears its own post too (a fresh
+// channel per post) — the same value its Settings row already published, so a
+// no-op. No BroadcastChannel (an old WebView) and the focus re-read is all
+// there is.
+const PREFS_CHANNEL = "fused-render:prefs";
+let prefsListen: BroadcastChannel | null = null;
+const prefsElsewhere = new Set<(p: Prefs) => void>();
+
+function announcePrefs(next: Prefs) {
+  if (typeof BroadcastChannel !== "function" || !next || typeof next !== "object") return;
+  try {
+    // Posted on a throwaway channel: a post is queued for every other channel
+    // at once, so closing straight after loses nothing — and nothing here is
+    // left open to hold a test process alive.
+    const ch = new BroadcastChannel(PREFS_CHANNEL);
+    ch.postMessage({ prefs: next });
+    ch.close();
+  } catch {
+    // Unclonable or refused: the focus re-read still catches the other tab up.
+  }
+}
+
+/** Follow prefs PUTs made by OTHER tabs and windows: `handler` gets the full
+ *  payload the server answered that PUT with. Returns the unsubscribe. */
+export function onPrefsWrittenElsewhere(handler: (p: Prefs) => void): () => void {
+  prefsElsewhere.add(handler);
+  if (!prefsListen && typeof BroadcastChannel === "function") {
+    prefsListen = new BroadcastChannel(PREFS_CHANNEL);
+    // Never the thing that keeps a (bun) process alive.
+    (prefsListen as unknown as { unref?: () => void }).unref?.();
+    prefsListen.onmessage = (ev: MessageEvent) => {
+      const p = (ev.data as { prefs?: Prefs } | null)?.prefs;
+      if (!p || typeof p !== "object") return;
+      for (const h of prefsElsewhere) h(p);
+    };
+  }
+  return () => {
+    prefsElsewhere.delete(handler);
+  };
+}
+
+/** Tests only: drop every prefs-channel handler and close the listening
+ *  channel, so one suite's posts never land in another's module state (a
+ *  flag module's import-time handler). A module that follows the channel
+ *  again subscribes again. */
+export function resetPrefsChannelForTests(): void {
+  prefsElsewhere.clear();
+  prefsListen?.close();
+  prefsListen = null;
 }
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {

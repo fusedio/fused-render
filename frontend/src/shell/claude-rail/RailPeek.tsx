@@ -73,10 +73,12 @@
 // rail and pane lists the same ones). Starred, the star is filled in the
 // accent. A favourite's card is the one that may stay open between visits:
 // the server records which favourite is open (`starred_open`), so the ×
-// on a starred card writes "closed" too, and unstarring while the card is
-// up shuts it (the ring moves out of the foot, the card would have nothing to
-// stand beside). The rail reopens the recorded one on its own (ClaudeRail
-// header).
+// on a starred card writes "closed" too, and unstarring the favourite's own
+// card shuts it (`dismissOnUnstar`: the server drops its record, the ring
+// leaves the foot). The rail's card never shows a starred chat: a star
+// lets it go (`onStarred`) and the list leaves the chat out (ClaudeRail
+// header, 2026-11-04). The rail reopens the recorded one on its own
+// (ClaudeRail header).
 //
 // ACCESSIBILITY: the card is a non-modal `dialog` named for its chat; the ring
 // that opened it says `aria-expanded` and `aria-controls` (ClaudeRail). The
@@ -127,18 +129,22 @@ import {
 import { nodeName, railScope, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
-  PEEK_INSET,
   PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
   PEEK_PLAIN_HEIGHT,
   PEEK_WIDTH,
+  STAR_MARK_MS,
   dragResize,
+  errorWords,
   inSafeCone,
-  peekPlacement,
+  placeClear,
+  starMarkStep,
+  starOutcome,
   statusWords,
   type Box,
   type PeekWish,
+  type StarMark,
 } from "./rail-peek-lib";
 
 /** The size the reader last dragged a pinned card to (ui-layout
@@ -288,9 +294,11 @@ export interface RailPeekProps {
   /** The card took (`true`) or lost (`false`) the keyboard focus. */
   onHold: (on: boolean) => void;
   /** Escape inside the card, or its close button — or the Open door
-   *  (`door: true`): a host that records "closed" on the × keeps the record
-   *  through the door (FavouritePeek). */
-  onDismiss: (door?: boolean) => void;
+   *  (`"door"`), or an unstar that shuts the card (`"unstar"`,
+   *  `dismissOnUnstar`): a host that records "closed" on the × keeps the
+   *  record through the door, and writes nothing for an unstar, which
+   *  dropped the record already (FavouritePeek). */
+  onDismiss: (why?: "door" | "unstar") => void;
   /** The row left no room for a card (rail-peek-lib `peekPlacement` null —
    *  a window under ~140px tall or ~170px wide): the host drops the show so
    *  the ring is not left saying `aria-expanded` for a card that never drew. */
@@ -318,9 +326,18 @@ export interface RailPeekProps {
    *  FavouritePeek): the card takes this wish for every seat instead of the
    *  default / stored sizes, and never grows on a pin. */
   size?: PeekWish;
-  /** The card keeps above this viewport y (the favourite's card stands
-   *  below the list's card; the two must not cover each other). */
-  bottomLimit?: number | null;
+  /** Another card's box to keep clear of (the favourite's card, at the
+   *  rail's foot; rail-peek-lib `placeClear`: above it, else to its left,
+   *  else over it as the last resort). */
+  avoid?: Box | null;
+  /** An UNSTAR shuts this card (the favourite's own card: its record is
+   *  gone). The rail's card leaves it false — it lets go on the star
+   *  itself (`onStarred`), so an unstar never reaches it. */
+  dismissOnUnstar?: boolean;
+  /** Said in the body instead of the chat while the shown seat's chat is not
+   *  mounted here (`kept` leaves it out — FavouritePeek, while the pane or
+   *  the Open door shows the same session: one chat, one composer). */
+  bodyNote?: string | null;
   /** Where the card stands now, or null while it is closed — for a host
    *  that places another card around it. */
   onBox?: (box: Box | null) => void;
@@ -395,7 +412,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onHeld,
     onStarred,
     size,
-    bottomLimit = null,
+    avoid = null,
+    dismissOnUnstar = false,
+    bodyNote = null,
     onBox,
     pinned,
   },
@@ -490,16 +509,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (!anchor || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
-    const r = row.getBoundingClientRect();
-    // Above the other card (`bottomLimit`): the row ends where it begins —
-    // unless that leaves less than a usable card (a short window): then the
-    // two overlap, the favourite's card on top, rather than this one
-    // reading "no room" and every ring press opening the pane.
-    const bounds: Box =
-      bottomLimit !== null && bottomLimit < r.top + r.height && bottomLimit - r.top >= PEEK_MIN_HEIGHT + 2 * PEEK_INSET
-        ? { left: r.left, top: r.top, width: r.width, height: bottomLimit - r.top }
-        : r;
-    return peekPlacement(anchor.getBoundingClientRect(), rail, bounds, wishFor(key));
+    // Clear of the other card (`avoid`): above it, else beside it, else —
+    // a window too small for either — over it (rail-peek-lib `placeClear`).
+    return placeClear(anchor.getBoundingClientRect(), rail, row.getBoundingClientRect(), avoid, wishFor(key));
   };
   // THE CORNER DRAG (header). `resizing` names the held grip while a drag is
   // on: the card drops its glide transitions and the placement effects stand
@@ -865,38 +877,55 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   };
 
   // THE STAR (header): the server stores it, the pulse brings it back to
-  // every rail. Starring opens the card on the server (`setTaskFavourite`
-  // with `open` omitted); UNSTARRING shuts it — the ring leaves the foot, and
-  // a card with no ring to stand beside lets go — but only if the card is
-  // still on that chat when the call returns.
+  // every rail. A plain star (`setTaskFavourite` with `open` omitted) opens
+  // the favourite's card only when no other favourite is open — else it is
+  // recorded closed. UNSTARRING shuts the card only under `dismissOnUnstar`
+  // (the favourite's card host, FavouritePeek) — its ring leaves the foot,
+  // and a card with no ring to stand beside lets go — and only if the card
+  // is still on that chat when the call returns.
   // THE STAR SHOWS THE ANSWER AT ONCE (`starMark`): the pulse that carries
   // `starred` back is a poll away — seconds on a busy Mac — and a star that
   // stays hollow after its press reads as a dead button. The server's answer
-  // is kept per key until the pulse agrees; the rail is told too
-  // (`onStarred`), so its own rules (the close write) know before the pulse.
+  // is kept per key until the pulse agrees — or has had its chance to: the
+  // SECOND distinct pulse row after the press, or STAR_MARK_MS, ends it
+  // whatever it says (another window may have flipped the star meanwhile;
+  // rail-peek-lib `starMarkStep`). The rail is told too (`onStarred`), so its
+  // own rules (letting go of a chat the favourite's card takes) run before
+  // the pulse.
   const favsOn = useTaskFavourites();
-  const [starMark, setStarMark] = useState<{ key: string; on: boolean } | null>(null);
+  const [starMark, setStarMark] = useState<StarMark | null>(null);
+  const starSeq = useRef(0);
   const starOf = (t: RailRow["pulse"]): boolean =>
     starMark && starMark.key === t.key ? starMark.on : !!t.starred;
   useEffect(() => {
     if (!starMark) return;
-    const t = kept.find((s) => s.pulse.key === starMark.key)?.pulse;
-    if (!t || !!t.starred === starMark.on) setStarMark(null);
-  }, [kept, starMark]);
+    // The shown seat too: a card drawn without its chat (`bodyNote`) keeps
+    // nothing in `kept`.
+    const t = (kept.find((s) => s.pulse.key === starMark.key) ?? (view?.pulse.key === starMark.key ? view : null))?.pulse;
+    const next = starMarkStep(starMark, t);
+    if (next !== starMark) setStarMark(next);
+  }, [kept, view, starMark]);
+  const starMarkSeq = starMark?.seq ?? 0;
+  useEffect(() => {
+    if (!starMarkSeq) return;
+    const id = window.setTimeout(() => setStarMark((m) => (m && m.seq === starMarkSeq ? null : m)), STAR_MARK_MS);
+    return () => window.clearTimeout(id);
+  }, [starMarkSeq]);
   const toggleStar = async (t: RailRow["pulse"]) => {
     const on = !starOf(t);
     let res: Awaited<ReturnType<typeof setTaskFavourite>>;
     try {
       res = await setTaskFavourite(t.key, on);
     } catch (e) {
-      notify({ title: (e as Error).message, tone: "error" });
+      notify({ title: errorWords(e, "The star could not be saved"), tone: "error" });
       return;
     }
-    setStarMark({ key: t.key, on: res.starred });
+    starSeq.current += 1;
+    setStarMark({ key: t.key, on: res.starred, pulse: t, seen: 0, seq: starSeq.current });
     onStarred?.(t.key, res.starred);
-    if (!res.starred && shownKeyRef.current === t.key) {
+    if (starOutcome(res.starred, t.key, shownKeyRef.current, dismissOnUnstar).dismiss) {
       onHeld(false);
-      onDismiss();
+      onDismiss("unstar");
     }
     onReload();
     pokeTasks();
@@ -1267,7 +1296,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // hop that keeps the rail mounted (a node switch) must
                     // not leave it up.
                     onHeld(false);
-                    onDismiss(true);
+                    onDismiss("door");
                   }}
                 >
                   Open
@@ -1383,6 +1412,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           </div>
         )}
         <div className="claude-rail-peek-body">
+          {bodyNote && view?.pulse.session_id && !kept.some((s) => s.pulse.key === viewKey) && (
+            <p className="claude-rail-peek-note">{bodyNote}</p>
+          )}
           {kept.map((seat) => {
             const { pulse: t, row } = seat;
             const facts = seatFacts(seat, where);

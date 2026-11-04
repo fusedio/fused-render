@@ -19,7 +19,7 @@ import {
   TabsTrigger,
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
-import { lastChatId, setLastChat, useLastChat } from "@platform/lib/last-chat";
+import { lastChatId, setLastChat, setLastFav, useLastChat, useLastFav } from "@platform/lib/last-chat";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
 import { isDraftTask, taskHref, taskListKeys, upcomingEditEntry } from "@shell/tasks-lib";
 import { useProjectQueueEnabled } from "../feature-flag";
@@ -104,7 +104,11 @@ export interface ListsProps {
   /**
    * THE FAVOURITES (owner, 2026-11-03): every starred task, from ANYWHERE —
    * not narrowed to this pane like `recent` (`useFavouriteTasks`) — drawn as a
-   * block of their own under the tabs, in the same rows with the same presses.
+   * block of their own ABOVE the lists (Recent, its tabs), in the same rows
+   * with the same presses. A favourite is drawn THERE ONLY: Recent leaves it
+   * out (owner, 2026-11-04: "let's not have duplicate entries"), and has it
+   * back once it is unstarred. Absent or empty (the favourites switch off)
+   * leaves Recent as it was.
    * Absent or empty draws nothing: no heading, no empty state.
    */
   favourites?: Task[];
@@ -121,6 +125,16 @@ export function Lists({
   disabled,
   favourites,
 }: ListsProps) {
+  // RECENT WITHOUT ITS FAVOURITES (`favourites`' note): one row per chat on
+  // the pane, the favourite's in the block above. By the favourites' own
+  // keys — the block's rows are the ones Recent gives way to, so a chat is
+  // never in neither. With no favourites (the switch off) Recent is the
+  // array it was handed.
+  const recentRows = useMemo(() => {
+    if (!recent || !favourites || favourites.length === 0) return recent;
+    const starred = new Set(favourites.map((t) => t.key));
+    return recent.some((t) => starred.has(t.key)) ? recent.filter((t) => !starred.has(t.key)) : recent;
+  }, [recent, favourites]);
   /**
    * Which list is showing is the BLOCK's state rather than the page's: leaving
    * for a chat and coming back keeps the tab you were on (T:18260-18265). This
@@ -171,7 +185,7 @@ export function Lists({
   // how a list stays off the tab bar.
   const snapsOn = useAgent().caps.snapshots;
   const counts: ListCounts = {
-    recent: recent === null ? null : recent.length,
+    recent: recentRows === null ? null : recentRows.length,
     artifacts: artifacts === null ? null : artifacts.length,
     snaps: snapsOn ? snapCount : 0,
     snapsFailed: snapsOn && snapsFailed,
@@ -209,7 +223,7 @@ export function Lists({
    * not. With the queue off every key is `task.key`, exactly as before.
    */
   const queueOn = useProjectQueueEnabled();
-  const rowKeys = useMemo(() => taskListKeys(recent ?? [], queueOn), [recent, queueOn]);
+  const rowKeys = useMemo(() => taskListKeys(recentRows ?? [], queueOn), [recentRows, queueOn]);
   const favKeys = useMemo(() => taskListKeys(favourites ?? [], queueOn), [favourites, queueOn]);
 
   /** Up/Down walk the rows and Enter opens — a keyboard's copy of the pointer's
@@ -375,16 +389,22 @@ export function Lists({
   // THE CHAT LAST PICKED (owner, 2026-11-02: "last selected stuff should be
   // in expanded claude sidebar view as well"): the canvas rail's `.is-last`
   // ring, as this list's row — one store for both (platform/lib/last-chat),
-  // and any row's press here moves it, as a ring's press does there.
+  // and any row's press here moves it, as a ring's press does there. THE
+  // FAVOURITES KEEP THEIR OWN (owner, 2026-11-04: "last select of fav is diff
+  // from last selected of the list"): the rail's favourites section's mark,
+  // as the Favourites block's row (`useLastFav`); a press in one block moves
+  // only its own, and both show at once.
   const last = useLastChat();
-  const pick = (task: Task) => {
+  const lastFav = useLastFav();
+  const pick = (task: Task, fav = false) => {
     const at = pressFor(task);
     if (!at.onPress) return at;
     const press = at.onPress;
     return {
       ...at,
       onPress: () => {
-        setLastChat(lastChatId(task));
+        if (fav) setLastFav(lastChatId(task));
+        else setLastChat(lastChatId(task));
         press();
       },
     };
@@ -392,7 +412,7 @@ export function Lists({
 
   const recentPanel = (
     <div ref={listRef} onKeyDown={onRowKeys}>
-      {recent === null ? (
+      {recentRows === null ? (
         <RecentSkeleton />
       ) : (
         // The Tasks page's own frame around the Tasks page's own rows: the
@@ -400,7 +420,7 @@ export function Lists({
         // off it (styles/tasks.css), and without it the rows read as a column
         // of floating lines rather than as one list.
         <div className="tasks-list-frame">
-          {recent.map((task, ix) => (
+          {recentRows.map((task, ix) => (
             <TaskRowItem
               key={rowKeys[ix]}
               task={task}
@@ -421,9 +441,12 @@ export function Lists({
     </div>
   );
 
-  // THE FAVOURITES BLOCK, under the lists (header of `favourites`): the
-  // heading is the section heading the untabbed lists wear (`.c-head`), the
-  // rows are Recent's own — same frame, same `pick`, same reload.
+  // THE FAVOURITES BLOCK, at the TOP of the lists (header of `favourites`):
+  // drawn after Recent it sat thousands of pixels down a long pane (QA
+  // 2026-11-04: y≈4185 under 100 recent rows), which is no place for the
+  // chats the reader asked to keep at hand. The heading is the section
+  // heading the untabbed lists wear (`.c-head`), the rows are Recent's own —
+  // same frame, same `pick`, same reload.
   const favPanel =
     favourites && favourites.length > 0 ? (
       <div className="c-lists c-favs">
@@ -437,8 +460,8 @@ export function Lists({
                 <TaskRowItem
                   key={favKeys[ix]}
                   task={task}
-                  {...pick(task)}
-                  selected={last !== null && lastChatId(task) === last}
+                  {...pick(task, true)}
+                  selected={lastFav !== null && lastChatId(task) === lastFav}
                   onQueued={noteQueueClaim}
                   onReload={reloadRecentTasks}
                 />
@@ -450,8 +473,8 @@ export function Lists({
     ) : null;
   const withFavs = (lists: React.ReactElement) => (
     <>
-      {lists}
       {favPanel}
+      {lists}
     </>
   );
 

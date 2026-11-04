@@ -10,6 +10,7 @@ import {
   dotCleared,
   favSeats,
   keepMarks,
+  listSeats,
   onRail,
   placeName,
   placeRoot,
@@ -296,5 +297,39 @@ describe("favSeats", () => {
     const b = pulse(task({ key: "b", happened_at: 5 }), { starred: true });
     const a = pulse(task({ key: "a", happened_at: 5 }), { starred: true });
     expect(favSeats([b, a], new Map()).map((s) => s.pulse.key)).toEqual(["a", "b"]);
+  });
+});
+
+describe("listSeats (one ring per chat)", () => {
+  const rows = [
+    pulse(task({ key: "a", happened_at: 300 })),
+    pulse(task({ key: "fav", happened_at: 200 }), { starred: true }),
+    pulse(task({ key: "b", happened_at: 100 })),
+  ];
+  it("with the favourites on, a starred chat leaves the list for the favourites section", () => {
+    const list = listSeats(railRows(rows, new Map(), PLACE), true);
+    const favs = favSeats(rows, new Map());
+    expect(list.map((s) => s.pulse.key)).toEqual(["a", "b"]);
+    expect(favs.map((s) => s.pulse.key)).toEqual(["fav"]);
+    // Exactly one of the two holds each chat.
+    const both = [...list, ...favs].map((s) => s.pulse.key).sort();
+    expect(both).toEqual(["a", "b", "fav"]);
+  });
+  it("with the favourites off, the list is untouched (the same array)", () => {
+    const seats = railRows(rows, new Map(), PLACE);
+    expect(listSeats(seats, false)).toBe(seats);
+    expect(seats.map((s) => s.pulse.key)).toContain("fav");
+  });
+  it("nothing starred: the same array back", () => {
+    const seats = railRows([rows[0]!, rows[2]!], new Map(), PLACE);
+    expect(listSeats(seats, true)).toBe(seats);
+  });
+  it("a node narrows the list, never the favourites", () => {
+    const NODE: RailPlace = { ...PLACE, file: "n.py" };
+    const onNode = pulse(task({ key: "n", target: `${DIR}/n.py` }));
+    const starredElsewhere = pulse(task({ key: "fav2", target: `${DIR}/other.py` }), { starred: true });
+    const all = [onNode, starredElsewhere];
+    expect(listSeats(railRows(all, new Map(), NODE), true).map((s) => s.pulse.key)).toEqual(["n"]);
+    expect(favSeats(all, new Map()).map((s) => s.pulse.key)).toEqual(["fav2"]);
   });
 });

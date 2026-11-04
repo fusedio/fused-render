@@ -288,3 +288,15 @@ export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<strin
     .sort((a, b) => (b.happened_at ?? 0) - (a.happened_at ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     .map((pulse) => ({ pulse, row: full.get(pulse.key) ?? null }));
 }
+
+/** THE LIST WITHOUT ITS FAVOURITES (owner, 2026-11-04: "when I fav one task,
+ *  let's not show it in the list above, let's not have duplicate entries"):
+ *  with the favourites on, a starred chat's ONE ring is in the favourites
+ *  section (`favSeats`), so the place's list leaves it out — the same
+ *  `starred` word `favSeats` reads, off the same pulse rows, so a chat is in
+ *  exactly one of the two. Off, the list is untouched (a starred ring is a
+ *  ring like any other). Returns the same array when nothing is starred. */
+export function listSeats(seats: RailRow[], favsOn: boolean): RailRow[] {
+  if (!favsOn || !seats.some((s) => s.pulse.starred)) return seats;
+  return seats.filter((s) => !s.pulse.starred);
+}

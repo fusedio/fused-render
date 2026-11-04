@@ -17,11 +17,20 @@ import {
   PEEK_WARM_MS,
   PEEK_WIDTH,
   PeekIntent,
+  STAR_MARK_MS,
   dragResize,
   keepAlive,
+  openFavouriteFlow,
   peekPlacement,
+  placeClear,
+  railOnStarred,
+  starMarkStep,
+  starOutcome,
+  type Box,
+  type StarMark,
   type Timers,
 } from "./rail-peek-lib";
+import type { TaskPulseTask } from "@platform/lib/api";
 
 const ROW = { left: 0, top: 40, width: 1400, height: 900 };
 const RAIL = { left: 1352, top: 40, width: 48, height: 900 };
@@ -581,5 +590,170 @@ describe("PeekIntent", () => {
       clock.tick(PEEK_CLOSE_MS);
       expect(shown).toEqual(["a", null, "b", null]);
     });
+  });
+});
+
+// ---- The favourite's card beside the rail's (placeClear) -------------------
+
+describe("placeClear", () => {
+  // The favourite's card: 380 wide, its bottom on the rail's foot.
+  const fav = (top: number): Box => ({ left: RAIL.left - PEEK_GAP - 380, top, width: 380, height: ROW.top + ROW.height - PEEK_INSET - top });
+  const hit = (a: Box, b: Box) =>
+    a.left < b.left + b.width && b.left < a.left + a.width && a.top < b.top + b.height && b.top < a.top + a.height;
+
+  it("is the plain placement with no favourite's card up", () => {
+    expect(placeClear(ring(60), RAIL, ROW, null, PEEK_MAX_HEIGHT)).toEqual(peekPlacement(ring(60), RAIL, ROW));
+  });
+
+  it("stands above the favourite's card when the room there holds a usable card", () => {
+    const avoid = fav(500);
+    const box = placeClear(ring(60), RAIL, ROW, avoid, PEEK_MAX_HEIGHT)!;
+    expect(box.left + box.width).toBe(RAIL.left - PEEK_GAP);
+    expect(box.top + box.height).toBeLessThanOrEqual(avoid.top - PEEK_GAP);
+    expect(hit(box, avoid)).toBe(false);
+  });
+
+  it("stands to the favourite's LEFT, level with its ring, when the room above is under a card (a ~700px window)", () => {
+    const row = { left: 0, top: 40, width: 1400, height: 640 };
+    const rail = { ...RAIL, height: 640 };
+    const avoid: Box = { left: RAIL.left - PEEK_GAP - 380, top: 160, width: 380, height: 512 };
+    const box = placeClear(ring(80), rail, row, avoid, PEEK_MAX_HEIGHT)!;
+    expect(box.left + box.width).toBe(avoid.left - PEEK_GAP);
+    expect(box.width).toBe(PEEK_WIDTH);
+    // The usual ring alignment: level with the ring, pushed up only as far as
+    // the row's bottom needs (a 640 card in a 640 row).
+    expect(box.top).toBe(row.top + PEEK_INSET);
+    expect(placeClear(ring(80), rail, row, avoid, 400)!.top).toBe(80);
+    expect(hit(box, avoid)).toBe(false);
+  });
+
+  it("overlaps only as the last resort: no room above, none to the left", () => {
+    const row = { left: 600, top: 40, width: 800, height: 500 };
+    const avoid: Box = { left: RAIL.left - PEEK_GAP - 380, top: 100, width: 380, height: 432 };
+    const box = placeClear(ring(60), RAIL, row, avoid, PEEK_MAX_HEIGHT)!;
+    expect(box).toEqual(peekPlacement(ring(60), RAIL, row)!);
+  });
+});
+
+// ---- The star (starMarkStep, starOutcome, railOnStarred) --------------------
+
+const pulseRow = (starred: boolean, key = "k1"): TaskPulseTask => ({ key, starred }) as unknown as TaskPulseTask;
+
+describe("starMarkStep", () => {
+  const set = (on: boolean, at: TaskPulseTask): StarMark => ({ key: at.key, on, pulse: at, seen: 0, seq: 1 });
+
+  it("ends when the pulse agrees, and when the row leaves", () => {
+    const mark = set(true, pulseRow(false));
+    expect(starMarkStep(mark, pulseRow(true))).toBeNull();
+    expect(starMarkStep(mark, undefined)).toBeNull();
+  });
+
+  it("holds over the row it was set on and over ONE disagreeing pulse (it may have left before the write)", () => {
+    const at = pulseRow(false);
+    const mark = set(true, at);
+    expect(starMarkStep(mark, at)).toBe(mark);
+    const first = pulseRow(false);
+    const next = starMarkStep(mark, first)!;
+    expect(next).not.toBeNull();
+    expect(next.on).toBe(true);
+    expect(next.seen).toBe(1);
+    // The same row again is no new pulse.
+    expect(starMarkStep(next, first)).toBe(next);
+  });
+
+  it("ends on the SECOND distinct disagreeing pulse: another window flipped the star, the pulse is the truth", () => {
+    const mark = set(true, pulseRow(false));
+    const after1 = starMarkStep(mark, pulseRow(false))!;
+    expect(starMarkStep(after1, pulseRow(false))).toBeNull();
+  });
+
+  it("has a clock of its own for a pulse that never comes", () => {
+    expect(STAR_MARK_MS).toBe(6000);
+  });
+});
+
+describe("starOutcome (dismissOnUnstar)", () => {
+  it("an unstar shuts only the favourite's own card, and only while it is on that chat", () => {
+    expect(starOutcome(false, "k1", "k1", true).dismiss).toBe(true);
+    expect(starOutcome(false, "k1", "k2", true).dismiss).toBe(false);
+  });
+  it("the rail's card is never shut by an unstar (it let go on the star)", () => {
+    expect(starOutcome(false, "k1", "k1", false).dismiss).toBe(false);
+  });
+  it("a star never shuts a card here (the rail lets go through onStarred)", () => {
+    expect(starOutcome(true, "k1", "k1", true).dismiss).toBe(false);
+    expect(starOutcome(true, "k1", "k1", false).dismiss).toBe(false);
+  });
+});
+
+describe("railOnStarred (onStarred wiring)", () => {
+  it("a star pressed on lets the rail's card go of that chat at once, favourites on", () => {
+    const gone: string[] = [];
+    railOnStarred(() => true, (k) => gone.push(k))("k1", true);
+    expect(gone).toEqual(["k1"]);
+  });
+  it("an unstar, or favourites off, lets go of nothing", () => {
+    const gone: string[] = [];
+    railOnStarred(() => true, (k) => gone.push(k))("k1", false);
+    railOnStarred(() => false, (k) => gone.push(k))("k1", true);
+    expect(gone).toEqual([]);
+  });
+  it("reads the switch at the answer, not at the wiring", () => {
+    let on = false;
+    const gone: string[] = [];
+    const cb = railOnStarred(() => on, (k) => gone.push(k));
+    on = true;
+    cb("k1", true);
+    expect(gone).toEqual(["k1"]);
+  });
+});
+
+// ---- A favourite's ring pressed (openFavouriteFlow) -------------------------
+
+describe("openFavouriteFlow", () => {
+  const run = (post: () => Promise<{ starred: boolean; open: boolean }>) => {
+    const log: string[] = [];
+    const done = openFavouriteFlow("k1", {
+      post: async (key) => {
+        log.push(`post:${key}`);
+        return post();
+      },
+      letGo: (key) => log.push(`letGo:${key}`),
+      fallback: () => log.push("press"),
+      fail: (m) => log.push(`fail:${m}`),
+    });
+    return { log, done };
+  };
+
+  it("writes FIRST and lets go only once the server says open", async () => {
+    const { log, done } = run(async () => ({ starred: true, open: true }));
+    // Nothing is let go before the answer.
+    expect(log).toEqual(["post:k1"]);
+    expect(await done).toBe(true);
+    expect(log).toEqual(["post:k1", "letGo:k1"]);
+  });
+
+  it("a refused write (409, 404, offline) says so once and falls back to the ring's press", async () => {
+    const { log, done } = run(async () => {
+      throw new Error("Task is archived");
+    });
+    expect(await done).toBe(false);
+    expect(log).toEqual(["post:k1", "fail:Task is archived", "press"]);
+  });
+
+  it("says the server's own detail, not the transport's bare HTTP status", async () => {
+    const { log, done } = run(async () => {
+      throw Object.assign(new Error("HTTP 409"), { status: 409, body: { detail: "archived: reopen refused" } });
+    });
+    await done;
+    expect(log).toContain("fail:archived: reopen refused");
+  });
+
+  it("an answer that is not open — unstarred elsewhere — falls back too, never lets go", async () => {
+    const { log, done } = run(async () => ({ starred: false, open: false }));
+    expect(await done).toBe(false);
+    expect(log.filter((l) => l.startsWith("letGo"))).toEqual([]);
+    expect(log.filter((l) => l.startsWith("fail:"))).toHaveLength(1);
+    expect(log[log.length - 1]).toBe("press");
   });
 });

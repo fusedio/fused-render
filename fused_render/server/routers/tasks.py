@@ -38,7 +38,8 @@ this file is written around:
   (cancel the work, archive the session), which is why it is a verb here rather
   than a triage write the client composes. See the archiving section at the end.
 * ``POST /api/tasks/favourite`` — star or unstar one task (the rail card's star),
-  and say whether its card is open; at most one favourite is open at a time.
+  and say whether its card is open; at most one favourite is open at a time,
+  and a plain star opens its card only when no other is open.
   See `api_task_favourite`.
 * ``POST /api/tasks/unarchive`` — take that filing back, and nothing else: the
   work archiving cancelled stays cancelled, no run starts, and the task lands in
@@ -7957,14 +7958,21 @@ def api_task_favourite(patch: FavouritePatch,
 
     `on` is the state asked for, not a toggle, so a double click or a second
     window cannot invert it. `open` says whether the favourite's card is the
-    expanded one (default True on a star); opening one closes every other, which
-    is why the watcher is told about EVERY key whose record flipped and not only
-    the one named. With `on` omitted only `open` moves, and only on a starred
-    key — the card's close paths use this, so a stale window can never re-star.
+    expanded one. An explicit `open: true` opens it and closes every other,
+    which is why the watcher is told about EVERY key whose record flipped and
+    not only the one named; a star with `open` omitted opens its card only
+    when no other favourite is open, and is otherwise recorded closed
+    (`tasks_store.set_favourite`). With `on` omitted only `open` moves, and
+    only on a starred key — the card's close paths use this, so a stale
+    window can never re-star.
+
     Only a STARTED chat can be starred (a session-less row rekeys on dispatch,
-    see `tasks_store.FAVOURITES_FILE`); unstarring never 404s, so an orphan
-    record (its row erased) can still be dropped. Answers the record as it
-    now stands.
+    see `tasks_store.FAVOURITES_FILE`). An ARCHIVED task keeps or gets its
+    star but never an open card: a star on one is recorded closed, and an
+    open-only write on one is a 409, and one on a starred orphan (its row
+    erased) a 404. Unstarring and closing touch the store alone — no task
+    build — so they never 404 and an orphan record can still be dropped.
+    Answers the record as it now stands.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -7974,24 +7982,51 @@ def api_task_favourite(patch: FavouritePatch,
         raise HTTPException(status_code=400, detail="missing task key")
     if patch.on is None and patch.open is None:
         raise HTTPException(status_code=400, detail="nothing to set: give 'on' or 'open'")
-    if patch.on is not False:
+
+    def _archived() -> bool:
+        row = _task_rows(only=frozenset({key}))
+        return bool(row) and row[0].get("status") == "archived"
+
+    # Asked by the store under the favourites lock (`set_favourite`), not
+    # read here: an archive filed between this route's checks and the write
+    # would otherwise leave an archived task with an open card.
+    force_closed = None
+    if patch.on is True:
         task = _collect().get(key)
         if task is None:
             raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
         # STARTED = a transcript on disk (`path`), not a session name alone:
         # a scheduled message that names a session it has not begun is a
         # session-keyed row with nothing to show in a card.
-        if patch.on and not (task.get("session_id") and task.get("path")):
+        if not (task.get("session_id") and task.get("path")):
             raise HTTPException(status_code=400,
                                 detail="only a started chat can be a favourite")
+        # Handed in as the check itself, so the store records the star
+        # closed under its own lock whatever `open` asked.
+        force_closed = _archived
+    elif patch.on is None and patch.open:
+        # Cheap first: an open-only write on a key that is not starred is a
+        # no-op in the store, so it needs no task build to answer.
+        starred, _open = tasks_store.favourite_of(
+            tasks_store.favourites_state(), key)
+        if not starred:
+            return {"ok": True, "key": key, "starred": False, "open": False}
+        # A starred ORPHAN (its row erased) has no card to open — and
+        # opening it would close the real open favourite: a 404.
+        row = _task_rows(only=frozenset({key}))
+        if not row:
+            raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
         # An archived favourite keeps its star but never an open card
-        # (`archive_task`); an open-only write must not put one back.
-        if patch.on is None and patch.open:
-            row = _task_rows(only=frozenset({key}))
-            if row and row[0].get("status") == "archived":
-                raise HTTPException(status_code=409,
-                                    detail="an archived favourite has no open card")
-    result = tasks_store.set_favourite(key, patch.on, patch.open)
+        # (`archive_task`); an open-only write must not put one back — nor
+        # one filed after this check (`force_closed`, under the lock).
+        if row[0].get("status") == "archived":
+            raise HTTPException(status_code=409,
+                                detail="an archived favourite has no open card")
+        force_closed = _archived
+    # `on=False` (unstar) and `on=None, open=False` (close) only ever remove
+    # or close a record: the store alone answers them.
+    result = tasks_store.set_favourite(key, patch.on, patch.open,
+                                       force_closed=force_closed or False)
     tasks_watch.notify(set(result["changed"]) | {key})
     return {"ok": True, "key": key, "starred": result["starred"],
             "open": result["open"]}

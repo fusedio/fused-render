@@ -1,6 +1,6 @@
 // THE FAVOURITES, for the landing's Favourites block (owner, 2026-11-03: the
-// star on the rail's card makes a chat a favourite; the pane lists them under
-// Recent chats). Server-side and GLOBAL — a favourite is not about the pane's
+// star on the rail's card makes a chat a favourite; the pane lists them at the
+// top of its lists, above Recent chats). Server-side and GLOBAL — a favourite is not about the pane's
 // own file, so unlike `useRecentTasks` nothing here is narrowed to a pane: the
 // rows are the whole listing's starred ones, in the Tasks page's own order
 // (`sortForList`), archived ones left out as the rail's foot leaves them out
@@ -17,7 +17,9 @@ import { readListing, subscribeListing } from "@shell/tasksPulse";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 
 export function useFavouriteTasks(): Task[] {
-  // Behind the favourites switch (favourites-flag): off, no block.
+  // Behind the favourites switch AND its parent, the rail's preview card
+  // (favourites-flag answers both): the star lives on that card, so with it
+  // off a listed favourite could never be unstarred. Off, no block.
   const on = useTaskFavourites();
   const [listing, setListing] = useState<Task[] | null>(() => readListing());
   useEffect(

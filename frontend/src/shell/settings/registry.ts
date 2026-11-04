@@ -523,7 +523,7 @@ const ENTRIES = [
     group: "features",
     section: "Sidebar",
     label: "Favourite chats",
-    description: "A star on the rail's preview card keeps a chat in a Favourites section at the foot of every Claude rail, and its own smaller card open at the bottom right on every page with a rail — close it with its ×, reopen it from its ring. The Claude panel lists favourites under Recent chats.",
+    description: "A star on the rail's preview card keeps a chat in a Favourites section at the foot of every Claude rail, and its own smaller card open at the bottom right on every page with a rail — close it with its ×, reopen it from its ring. The Claude panel lists favourites above Recent chats.",
     keywords: "favourite favorite star pin keep chat rail card bottom",
     renderOnly: true,
     child: true,
