@@ -137,15 +137,22 @@ def staged_version(bundle: str) -> str | None:
     version = bundle_version(staged)
     if version is None:
         return None
+    # Fails CLOSED: an unreadable installed plist means "newer" cannot be
+    # answered, and a copy that cannot be shown newer is not applied (an
+    # unparseable version string lands here too). The boot sweep is the
+    # mirror of this: it removes a staged copy only when the installed
+    # version IS readable and the staged one is not newer — so an unreadable
+    # plist neither applies the copy nor throws it away (CodeRabbit, PR #2088).
     current = bundle_version(bundle)
-    if current is not None:
-        from fused_render.update.common import is_newer  # leaf module, no cycle
+    if current is None:
+        return None
+    from fused_render.update.common import is_newer  # leaf module, no cycle
 
-        try:
-            if not is_newer(version, current):
-                return None
-        except ValueError:
+    try:
+        if not is_newer(version, current):
             return None
+    except ValueError:
+        return None
     return version
 
 

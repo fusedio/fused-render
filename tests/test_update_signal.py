@@ -103,3 +103,15 @@ def test_a_staged_update_that_is_not_newer_is_ignored(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", "macosx_app", raising=False)
     monkeypatch.setattr(sys, "executable", executable)
     assert installed_version() == "9.9.9"
+
+
+def test_a_staged_update_needs_a_readable_installed_version(monkeypatch, tmp_path):
+    """Fails closed: with no installed version to compare against, the
+    staged copy is not reported as next (and the quit does not apply it)."""
+    executable = _fake_bundle(tmp_path, "9.9.9")
+    _stage_beside(executable, "9.9.10")
+    contents = os.path.dirname(os.path.dirname(executable))
+    os.remove(os.path.join(contents, "Info.plist"))
+    monkeypatch.setattr(sys, "frozen", "macosx_app", raising=False)
+    monkeypatch.setattr(sys, "executable", executable)
+    assert installed_version() is None

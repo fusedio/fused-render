@@ -939,12 +939,20 @@ def _reset_jobs():
     jobs.reset()
 
 
+def _plist(bundle, version):
+    import plistlib
+
+    (bundle / "Contents").mkdir(parents=True, exist_ok=True)
+    with open(bundle / "Contents" / "Info.plist", "wb") as f:
+        plistlib.dump({"CFBundleShortVersionString": version}, f)
+
+
 def _dmg_manager(monkeypatch, tmp_path, *, available="9.9.9", current="0.4.10"):
     """A dmg-method manager whose bundle, updates dir and disk check are all
     inside tmp_path — so `_install_dmg` can be run for real without touching
     the developer's own /Applications install or ~/Library."""
     bundle = tmp_path / "FusedRender.app"
-    bundle.mkdir()
+    _plist(bundle, current)  # a readable installed version: staging fails closed without one
     updates = tmp_path / "updates"
     updates.mkdir()
     manager = mac.UpdateManager(bundle=str(bundle), method="dmg")
@@ -1581,14 +1589,6 @@ def _stage_through_fakes(monkeypatch, manager, tmp_path, *, spawn_refusal=None):
     return removed
 
 
-def _plist(bundle, version):
-    import plistlib
-
-    (bundle / "Contents").mkdir(parents=True, exist_ok=True)
-    with open(bundle / "Contents" / "Info.plist", "wb") as f:
-        plistlib.dump({"CFBundleShortVersionString": version}, f)
-
-
 def test_an_install_stages_beside_the_bundle_and_moves_nothing(monkeypatch, tmp_path):
     """The install's whole effect on disk is the hidden staged sibling. The
     running bundle is not renamed, not deleted, not rewritten: every window
@@ -1598,7 +1598,7 @@ def test_an_install_stages_beside_the_bundle_and_moves_nothing(monkeypatch, tmp_
     rmtree of any kind is aimed at it."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     bundle = tmp_path / "FusedRender.app"
-    (bundle / "Contents").mkdir()
+    (bundle / "Contents").mkdir(exist_ok=True)
     (bundle / "Contents" / "marker").write_text("the running bundle")
 
     removed = _stage_through_fakes(monkeypatch, manager, tmp_path)
@@ -1620,7 +1620,7 @@ def test_a_later_install_replaces_the_staged_copy(monkeypatch, tmp_path):
     newest, and still nothing moved."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     bundle = tmp_path / "FusedRender.app"
-    (bundle / "Contents").mkdir()
+    (bundle / "Contents").mkdir(exist_ok=True)
     (bundle / "Contents" / "marker").write_text("the running bundle")
     _stage_through_fakes(monkeypatch, manager, tmp_path)
     assert manager.status()["state"] == "installed"
@@ -1654,7 +1654,7 @@ def test_apply_renames_the_staged_copy_into_place_and_parks_the_old_bundle(
     and nothing is left staged."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     bundle = tmp_path / "FusedRender.app"
-    (bundle / "Contents").mkdir()
+    (bundle / "Contents").mkdir(exist_ok=True)
     (bundle / "Contents" / "marker").write_text("the running bundle")
     _stage_through_fakes(monkeypatch, manager, tmp_path)
 
@@ -1689,6 +1689,7 @@ def test_a_failed_second_rename_rolls_the_bundle_back(monkeypatch, tmp_path):
         return real_rename(src, dst)
 
     monkeypatch.setattr(mac.os, "rename", failing_rename)
+    monkeypatch.setattr(mac, "_swap_paths", lambda a, b: False)  # the volume has no exchange
 
     assert mac.apply_staged(str(bundle)) is None
 
@@ -1696,6 +1697,130 @@ def test_a_failed_second_rename_rolls_the_bundle_back(monkeypatch, tmp_path):
     assert _old_bundles(tmp_path) == []  # renamed back, nothing left behind
     assert staged.is_dir()
     assert mac.staged_version(str(bundle)) == "9.9.9"
+
+
+def test_when_the_rollback_fails_too_the_staged_copy_is_promoted(monkeypatch, tmp_path):
+    """Two-rename fallback, worst case: the promote failed AND the park cannot
+    be undone. Leaving no app at all is the one outcome that is never
+    acceptable, so the staged copy is tried into the empty path once more
+    (CodeRabbit, PR #2088)."""
+    bundle = tmp_path / "FusedRender.app"
+    _plist(bundle, "0.4.10")
+    staged = tmp_path / ".FusedRender-update.app"
+    _plist(staged, "9.9.9")
+    real_rename = os.rename
+    attempts = {"promote": 0}
+
+    def flaky_rename(src, dst):
+        if src.endswith(".FusedRender-update.app"):
+            attempts["promote"] += 1
+            if attempts["promote"] == 1:
+                raise OSError("simulated: first promote failed")
+            return real_rename(src, dst)
+        if "-old-" in src:
+            raise OSError("simulated: rollback failed")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(mac.os, "rename", flaky_rename)
+    monkeypatch.setattr(mac, "_swap_paths", lambda a, b: False)
+
+    assert mac.apply_staged(str(bundle)) == "9.9.9"
+    from fused_render import installed
+    assert installed.bundle_version(str(bundle)) == "9.9.9"
+    assert len(_old_bundles(tmp_path)) == 1
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="renameatx_np is macOS-only")
+def test_the_apply_is_one_atomic_exchange_on_macos(monkeypatch, tmp_path):
+    """Where the volume allows it the bundle and the staged copy trade names
+    in ONE call: `os.rename` is never asked to move the bundle itself, so
+    there is no instant with nothing at the app's path for the quit
+    watchdog's `os._exit` to land in (CodeRabbit, PR #2088)."""
+    bundle = tmp_path / "FusedRender.app"
+    _plist(bundle, "0.4.10")
+    (bundle / "Contents" / "marker").write_text("the running bundle")
+    staged = tmp_path / ".FusedRender-update.app"
+    _plist(staged, "9.9.9")
+    renamed = []
+    real_rename = os.rename
+
+    def recording_rename(src, dst):
+        renamed.append((src, dst))
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(mac.os, "rename", recording_rename)
+
+    assert mac.apply_staged(str(bundle)) == "9.9.9"
+
+    assert all(src != str(bundle) for src, _ in renamed), renamed
+    from fused_render import installed
+    assert installed.bundle_version(str(bundle)) == "9.9.9"
+    olds = _old_bundles(tmp_path)
+    assert len(olds) == 1
+    assert (tmp_path / olds[0] / "Contents" / "marker").read_text() == "the running bundle"
+    assert not staged.exists()
+
+
+def test_an_external_install_that_outran_the_staged_copy_is_kept(monkeypatch, tmp_path):
+    """A DMG drag or brew landing between the newer-check and the exchange
+    leaves a bundle NEWER than the staged copy: the apply notices after the
+    swap and puts it straight back (CodeRabbit, PR #2088)."""
+    bundle = tmp_path / "FusedRender.app"
+    _plist(bundle, "9.9.10")
+    (bundle / "Contents" / "marker").write_text("dragged in by hand")
+    staged = tmp_path / ".FusedRender-update.app"
+    _plist(staged, "9.9.9")
+    # The check passed a moment ago, before the drag landed.
+    monkeypatch.setattr(mac.installed, "staged_version", lambda real: "9.9.9")
+
+    assert mac.apply_staged(str(bundle)) is None
+
+    assert (bundle / "Contents" / "marker").read_text() == "dragged in by hand"
+    assert _old_bundles(tmp_path) == []
+    assert staged.is_dir()
+
+
+def test_an_apply_that_cannot_move_anything_discards_the_staged_copy(
+        monkeypatch, tmp_path):
+    """A parent the process cannot rename in refuses the next quit the same
+    way, and `installed_version()` would otherwise keep raising a restart
+    card whose restart changes nothing: the copy goes, the next check
+    offers the update again and that install's writability check says why
+    (CodeRabbit, PR #2088)."""
+    import errno
+
+    bundle = tmp_path / "FusedRender.app"
+    _plist(bundle, "0.4.10")
+    staged = tmp_path / ".FusedRender-update.app"
+    _plist(staged, "9.9.9")
+
+    def refused(a, b):
+        raise OSError(errno.EPERM, "Operation not permitted", a, None, b)
+
+    monkeypatch.setattr(mac, "_swap_paths", refused)
+
+    assert mac.apply_staged(str(bundle)) is None
+    from fused_render import installed
+    assert installed.bundle_version(str(bundle)) == "0.4.10"
+    assert not staged.exists()
+    assert installed.installed_version is not None
+
+
+def test_an_unreadable_installed_plist_neither_applies_nor_sweeps(monkeypatch, tmp_path):
+    """"Newer" cannot be answered without the installed version: the apply
+    fails closed (nothing moves) and the boot sweep keeps the copy rather
+    than judging it (CodeRabbit, PR #2088)."""
+    bundle = tmp_path / "FusedRender.app"
+    (bundle / "Contents").mkdir(parents=True)
+    (bundle / "Contents" / "marker").write_text("unreadable")
+    staged = tmp_path / ".FusedRender-update.app"
+    _plist(staged, "9.9.9")
+
+    assert mac.staged_version(str(bundle)) is None
+    assert mac.apply_staged(str(bundle)) is None
+    assert (bundle / "Contents" / "marker").read_text() == "unreadable"
+    assert mac.discard_stale_staged(str(bundle)) is False
+    assert staged.is_dir()
 
 
 def test_a_staged_copy_that_is_not_newer_is_never_applied(monkeypatch, tmp_path):
@@ -1729,6 +1854,50 @@ def test_a_staged_copy_that_is_newer_survives_the_boot_sweep(tmp_path):
     assert staged.is_dir()
 
 
+def test_a_failed_publish_gives_the_older_staged_copy_its_name_back(
+        monkeypatch, tmp_path):
+    """Between "older copy moved to `.superseded`" and "new copy renamed to
+    the staged name" the only complete copy has the wrong name; when the
+    second rename fails it goes back, so a quit can still apply SOMETHING
+    (CodeRabbit, PR #2088)."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    bundle = tmp_path / "FusedRender.app"
+    _stage_through_fakes(monkeypatch, manager, tmp_path)
+    staged = tmp_path / ".FusedRender-update.app"
+    (staged / "Contents" / "marker").write_text("first")
+
+    newer = dict(manager._latest, version="9.9.10")
+    monkeypatch.setattr(common, "fetch_manifest", lambda url, **kwargs: dict(newer))
+    manager.check(force=True)
+    import shutil
+    shutil.rmtree(tmp_path / "mount")
+    monkeypatch.setattr(manager, "_verify_app_version", lambda app, version: None)
+    real_rename = os.rename
+
+    def failing_publish(src, dst):
+        if src.endswith(".partial") and dst == str(staged):
+            raise OSError("simulated: publish rename failed")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(mac.os, "rename", failing_publish)
+    _stage_through_fakes(monkeypatch, manager, tmp_path)
+
+    assert manager.status()["state"] == "error"
+    assert (staged / "Contents" / "marker").read_text() == "first"
+    assert not (tmp_path / ".FusedRender-update.app.superseded").exists()
+    assert mac.staged_version(str(bundle)) == "9.9.9"
+
+
+def test_the_boot_sweep_restores_a_copy_left_under_the_superseded_name(tmp_path):
+    bundle = tmp_path / "FusedRender.app"
+    _plist(bundle, "0.4.10")
+    superseded = tmp_path / ".FusedRender-update.app.superseded"
+    _plist(superseded, "9.9.9")
+    assert mac.discard_stale_staged(str(bundle)) is False
+    assert not superseded.exists()
+    assert mac.staged_version(str(bundle)) == "9.9.9"
+
+
 def test_the_boot_sweep_removes_a_half_written_copy(tmp_path):
     """A process that died mid-ditto leaves the `.partial` copy, one that
     died mid-supersede the `.superseded` one; neither is a candidate for
@@ -1751,7 +1920,7 @@ def test_a_staged_python_that_will_not_spawn_is_never_staged(monkeypatch, tmp_pa
     stays exactly where it was, and the copy is removed — nothing waits to
     be applied."""
     manager = _dmg_manager(monkeypatch, tmp_path)
-    (tmp_path / "FusedRender.app" / "Contents").mkdir()
+    (tmp_path / "FusedRender.app" / "Contents").mkdir(exist_ok=True)
     (tmp_path / "FusedRender.app" / "Contents" / "marker").write_text("the running bundle")
 
     _stage_through_fakes(monkeypatch, manager, tmp_path,
@@ -1763,7 +1932,7 @@ def test_a_staged_python_that_will_not_spawn_is_never_staged(monkeypatch, tmp_pa
     assert (tmp_path / "FusedRender.app" / "Contents" / "marker").read_text() == "the running bundle"
     assert _old_bundles(tmp_path) == []
     assert not (tmp_path / ".FusedRender-update.app").exists()
-    assert manager._disk_version() is None  # nothing staged, bundle has no plist
+    assert manager._disk_version() == "0.4.10"  # nothing staged: the bundle's own
 
 
 def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):

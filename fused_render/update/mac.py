@@ -71,6 +71,9 @@ not be drawn.
 """
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import errno
 import logging
 import os
 import platform
@@ -244,6 +247,53 @@ def _superseded_path(staged: str) -> str:
     return staged + ".superseded"
 
 
+# Serialises everything that writes the `.partial` / `.superseded` siblings:
+# `_install_dmg` (the install thread) against `discard_stale_staged` (the
+# boot sweep thread). Without it the sweep could delete a `.partial` an
+# install is dittoing into, or claim the staged name back from
+# `.superseded` inside an install's publish window (CodeRabbit, PR #2088).
+# `apply_staged` deliberately does NOT take it: it only ever touches the
+# staged name, which is atomically renamed to or from, and a quit must not
+# wait out a 30 s ditto on the way to the watchdog's hard deadline.
+_stage_lock = threading.Lock()
+
+# `renameatx_np(2)`'s RENAME_SWAP: exchange two paths in one atomic call.
+_AT_FDCWD = -2
+_RENAME_SWAP = 0x2
+_renameatx_np = None
+
+
+def _swap_paths(a: str, b: str) -> bool:
+    """Atomically exchange `a` and `b` (macOS `renameatx_np` + RENAME_SWAP,
+    APFS and HFS+). True when it happened. False — and NOTHING moved — when
+    the call does not exist here (Linux CI) or the volume refuses it
+    (ENOTSUP/EINVAL/EXDEV); the caller falls back to two renames. Any other
+    errno (EPERM, ENOENT…) raises as an OSError like `os.rename` would."""
+    global _renameatx_np
+    if sys.platform != "darwin":
+        return False
+    if _renameatx_np is None:
+        try:
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            fn = libc.renameatx_np
+            fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                           ctypes.c_char_p, ctypes.c_uint]
+            fn.restype = ctypes.c_int
+            _renameatx_np = fn
+        except (OSError, AttributeError):
+            _renameatx_np = False
+    if _renameatx_np is False:
+        return False
+    rc = _renameatx_np(_AT_FDCWD, os.fsencode(a), _AT_FDCWD, os.fsencode(b),
+                       _RENAME_SWAP)
+    if rc == 0:
+        return True
+    code = ctypes.get_errno()
+    if code in (errno.ENOTSUP, errno.EINVAL, errno.EXDEV):
+        return False
+    raise OSError(code, os.strerror(code), a, None, b)
+
+
 def discard_stale_staged(bundle: str) -> bool:
     """Remove what no quit should ever apply: a staged sibling that is NOT
     newer than `bundle` — the apply already happened (a crash between the
@@ -254,25 +304,44 @@ def discard_stale_staged(bundle: str) -> bool:
     real = os.path.realpath(bundle)
     staged = installed.staged_bundle_path(real)
     removed = False
-    for leftover in (_partial_path(staged), _superseded_path(staged)):
-        if not os.path.isdir(leftover):
-            continue
+    with _stage_lock:
+        # A process that died between an install's two publish renames
+        # left the only complete copy under `.superseded`: give it the
+        # staged name back before anything is judged or removed. If that
+        # rename fails the copy stays put for a later attempt.
+        superseded = _superseded_path(staged)
+        if os.path.isdir(superseded) and not os.path.exists(staged):
+            try:
+                os.rename(superseded, staged)
+                logger.info("update: restored %s from %s", staged, superseded)
+            except OSError:
+                logger.warning("update: could not restore %s", superseded,
+                               exc_info=True)
+        for leftover in (_partial_path(staged), superseded):
+            if not os.path.isdir(leftover):
+                continue
+            try:
+                shutil.rmtree(leftover)
+                logger.info("update: removed leftover staged copy %s", leftover)
+                removed = True
+            except OSError:
+                logger.warning("update: could not remove %s", leftover, exc_info=True)
+        if not os.path.isdir(staged):
+            return removed
+        # Only a staged copy PROVABLY not newer goes: an unreadable installed
+        # plist is not a verdict (`installed.staged_version` fails closed for
+        # the apply; the mirror here is to keep the copy, not delete it).
+        current = installed.bundle_version(real)
+        if current is None or installed.staged_version(real) is not None:
+            return removed
         try:
-            shutil.rmtree(leftover)
-            logger.info("update: removed leftover staged copy %s", leftover)
-            removed = True
+            shutil.rmtree(staged)
         except OSError:
-            logger.warning("update: could not remove %s", leftover, exc_info=True)
-    if not os.path.isdir(staged) or installed.staged_version(real) is not None:
-        return removed
-    try:
-        shutil.rmtree(staged)
-    except OSError:
-        logger.warning("update: could not remove stale staged bundle %s", staged,
-                       exc_info=True)
-        return removed
+            logger.warning("update: could not remove stale staged bundle %s", staged,
+                           exc_info=True)
+            return removed
     logger.info("update: removed stale staged bundle %s (not newer than %s)",
-                staged, installed.bundle_version(real))
+                staged, current)
     return True
 
 
@@ -282,15 +351,32 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
     there was nothing (newer) to apply or the apply failed — the running
     bundle is left exactly as it was in every failure case.
 
-    Called from the quit teardown (app.quit_teardown's "update" rung), so
-    the server has drained and the children are reaped: nothing is about to
-    read from the bundle but this process, and it is about to `os._exit`.
-    That is what makes the rename safe where it was not at install time (see
-    the module docstring). Two same-volume renames, each atomic: the bundle
-    is parked under `_old_bundle_path` (and stays there for a later boot's
-    `sweep_old_bundles` — see that docstring for the TCC reason), then the
-    staged copy takes its name; a failed second rename puts the bundle back
-    so there is never no app at all."""
+    Called from the quit teardown (app.quit_teardown's "update" rung), after
+    the server has drained and the children rung has run: nothing is about
+    to read from the bundle but this process, and it is about to `os._exit`.
+    (A child the children rung could not confirm dead keeps its open files
+    on the renamed inode — the situation every child was in, for hours, under
+    the old install-time swap.) That is what makes the rename safe where it
+    was not at install time (see the module docstring).
+
+    ONE atomic exchange where the volume allows it (`_swap_paths`, APFS and
+    HFS+): the bundle and the staged copy trade names in a single
+    `renameatx_np` call, so there is no instant at which the app's path is
+    empty — the quit watchdog's `os._exit` can land anywhere and leave either
+    the old app or the new one, never nothing (CodeRabbit, PR #2088). The
+    displaced bundle then lands under the staged name, which a best-effort
+    third rename parks under `_old_bundle_path` for a later boot's
+    `sweep_old_bundles` (see that docstring for the TCC reason); if that
+    rename never runs, the boot sweep removes it from the staged name as
+    "not newer" instead. Where the exchange is unavailable, two renames with
+    a rollback — and, should the rollback fail too, the staged copy is
+    promoted into the empty path rather than leaving no app at all.
+
+    A failure to move anything at all discards the staged copy: a parent
+    directory this process cannot rename in today will refuse the next quit
+    the same way, and `installed_version()` would otherwise keep raising a
+    restart card whose restart changes nothing. The next check offers the
+    update again, and that install's own writability check says why."""
     real = os.path.realpath(bundle)
     version = installed.staged_version(real)
     if version is None:
@@ -299,10 +385,60 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
     parent = os.path.dirname(real)
     old = _old_bundle_path(parent, os.getpid() if pid is None else pid)
     try:
+        swapped = _swap_paths(real, staged)
+    except OSError:
+        logger.warning("update: could not exchange %s with staged v%s; discarding "
+                       "the staged copy", real, version, exc_info=True)
+        shutil.rmtree(staged, ignore_errors=True)
+        return None
+    if swapped:
+        # The bundle that was running is now under the staged name. Re-read
+        # it: an install that landed from OUTSIDE between the check above
+        # and the exchange (a DMG drag, brew) is newer than what was
+        # staged, and must win — swap straight back.
+        displaced = installed.bundle_version(staged)
+        try:
+            outran = displaced is not None and not common.is_newer(version, displaced)
+        except ValueError:
+            outran = False
+        if outran:
+            logger.info("update: %s became v%s under the staged v%s; keeping it",
+                        real, displaced, version)
+            try:
+                _swap_paths(real, staged)
+            except OSError:
+                logger.error("update: could not swap back; v%s is at %s", displaced,
+                             staged, exc_info=True)
+            return None
+        try:
+            os.rename(staged, old)
+        except OSError:
+            # Left under the staged name: not newer than the bundle now, so
+            # the next boot's `discard_stale_staged` removes it.
+            logger.warning("update: applied v%s; could not park the previous "
+                           "bundle (left at %s)", version, staged, exc_info=True)
+            old = staged
+        logger.info("update: applied staged v%s to %s (previous bundle parked at %s)",
+                    version, real, old)
+        return version
+    # No atomic exchange on this volume: park, then promote, with the
+    # bundle's path empty for the instant between.
+    try:
         os.rename(real, old)
     except OSError:
-        logger.warning("update: could not park %s for the apply; staged v%s stays "
-                       "for the next quit", real, version, exc_info=True)
+        logger.warning("update: could not park %s for the apply; discarding the "
+                       "staged v%s", real, version, exc_info=True)
+        shutil.rmtree(staged, ignore_errors=True)
+        return None
+    displaced = installed.bundle_version(old)
+    try:
+        outran = displaced is not None and not common.is_newer(version, displaced)
+    except ValueError:
+        outran = False
+    if outran:
+        logger.info("update: %s became v%s under the staged v%s; keeping it",
+                    real, displaced, version)
+        os.rename(old, real)
         return None
     try:
         os.rename(staged, real)
@@ -312,8 +448,14 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
         try:
             os.rename(old, real)
         except OSError:
-            logger.error("update: ROLLBACK FAILED — %s is parked at %s", real, old,
-                         exc_info=True)
+            logger.error("update: ROLLBACK FAILED — %s is parked at %s; promoting "
+                         "the staged copy instead", real, old, exc_info=True)
+            try:
+                os.rename(staged, real)
+                return version
+            except OSError:
+                logger.error("update: NO APP at %s — the previous bundle is at %s "
+                             "and the update at %s", real, old, staged, exc_info=True)
         return None
     logger.info("update: applied staged v%s to %s (previous bundle parked at %s)",
                 version, real, old)
@@ -610,6 +752,10 @@ class UpdateManager(_base.UpdateManager):
         # app into /Applications. The staged path is either absent or
         # complete, never in between.
         swap_in = _partial_path(staged)
+        # Held from the first write to the `.partial` name through the
+        # publish: the boot sweep (`discard_stale_staged`) takes the same
+        # lock before it removes a `.partial` or restores a `.superseded`.
+        _stage_lock.acquire()
         try:
             mount = self._attach(dmg)
             source = self._find_app(mount)
@@ -659,7 +805,20 @@ class UpdateManager(_base.UpdateManager):
                 shutil.rmtree(superseded)
             if os.path.exists(staged):
                 os.rename(staged, superseded)
-            os.rename(swap_in, staged)
+            try:
+                os.rename(swap_in, staged)
+            except OSError:
+                # The older copy is still complete under `.superseded`:
+                # give it its name back (a quit can still apply it) before
+                # the failure is reported. The boot sweep does the same for
+                # a process that died here.
+                if os.path.exists(superseded):
+                    try:
+                        os.rename(superseded, staged)
+                    except OSError:
+                        logger.warning("update: could not restore %s", superseded,
+                                       exc_info=True)
+                raise
             if os.path.exists(superseded):
                 shutil.rmtree(superseded, ignore_errors=True)
             # That is the install: the copy waits here, next to the bundle,
@@ -678,6 +837,7 @@ class UpdateManager(_base.UpdateManager):
             # Gone on every failure path; already renamed away on success.
             if os.path.exists(swap_in):
                 shutil.rmtree(swap_in, ignore_errors=True)
+            _stage_lock.release()
             # Last, so the row is still being kept alive through the detach
             # and the cleanup above — `_install` deals with the row next
             # (removing it on success, a terminal report on a failure), and
