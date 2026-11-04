@@ -50,6 +50,11 @@ from fused_render.connect.mcp_client import (
 logger = logging.getLogger(__name__)
 
 CACHE_SECONDS = 60.0
+#: How long a failed listing (server unreachable, token refused) is remembered before the
+#: vendor is asked again. `apptools.registry()` lists every connected service on each bot
+#: turn (the prompt, `risk`, `must_ask`); without this, one lapsed service would make every
+#: one of those wait out the MCP timeout.
+FAIL_CACHE_SECONDS = 30.0
 NATIVE_TIMEOUT = 30.0
 
 
@@ -86,7 +91,7 @@ class _Ctx:
 
 
 _lock = threading.Lock()
-_cache: dict[str, tuple[float, list[ToolSpec]]] = {}
+_cache: dict[str, tuple[float, list[ToolSpec], bool]] = {}   # key -> (listed_at, specs, ok)
 _clients: dict[str, McpClient] = {}
 _native: dict[str, tuple[str, float, object]] = {}   # key -> (path, mtime, module)
 _warming: set[str] = set()
@@ -203,16 +208,26 @@ def _connected(key: str) -> bool:
 
 
 def list_tools(key: str) -> list[ToolSpec]:
-    """Every tool `key` offers right now; [] unless connected."""
+    """Every tool `key` offers right now; [] unless connected.
+
+    A listing that fails is remembered for FAIL_CACHE_SECONDS (what it did get,
+    usually the native tools) so a vendor that is down costs one round-trip per
+    half minute, not one per caller. A provider marked `reconnect` lists nothing
+    and asks nobody: the card already says Reconnect, and the vendor's answer
+    cannot change until the user does.
+    """
     p = registry.get(key)
-    if p is None or not _connected(key):
+    if p is None or not _connected(key) or manager.needs_reconnect(key):
         return []
     now = time.monotonic()
     with _lock:
         hit = _cache.get(key)
         client = _clients.get(key)
-    if hit and now - hit[0] < CACHE_SECONDS and not (client and client.tools_changed):
-        return list(hit[1])
+    if hit:
+        at, specs, was_ok = hit
+        fresh = now - at < (CACHE_SECONDS if was_ok else FAIL_CACHE_SECONDS)
+        if fresh and not (was_ok and client and client.tools_changed):
+            return list(specs)
     specs: list[ToolSpec] = []
     ok = True
     remote = (p.tools or {}).get("remote")
@@ -234,17 +249,17 @@ def list_tools(key: str) -> list[ToolSpec]:
         for t in getattr(mod, "TOOLS", None) or []:
             if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"] not in seen:
                 specs.append(_spec_from_native(key, t))
-    if ok:
-        with _lock:
-            _cache[key] = (now, specs)
+    with _lock:
+        _cache[key] = (now, specs, ok)
     return list(specs)
 
 
 def cached_count(key: str) -> int | None:
-    """How many tools the cache holds for `key`, without any network (status polls)."""
+    """How many tools the last good listing found for `key`, without any network
+    (status polls); None until one succeeds."""
     with _lock:
         hit = _cache.get(key)
-    return len(hit[1]) if hit else None
+    return len(hit[1]) if hit and hit[2] else None
 
 
 def warm(key: str) -> None:

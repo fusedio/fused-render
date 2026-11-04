@@ -268,6 +268,67 @@ def test_pkce_login_joins_then_paste_completes_then_revokes(loopback, vendor, mo
     assert rv and "token=good" in rv[0].content.decode() and rv[0].headers["authorization"] == "Bearer good"
 
 
+def test_identity_probe_failure_keeps_the_grant(loopback, monkeypatch):
+    """The token endpoint just issued the token; a label probe that cannot be
+    reached (or is rate-limited) must not throw the sign-in away."""
+    def down(request):
+        raise httpx.ConnectError("down")
+    monkeypatch.setattr(manager, "_http", lambda: httpx.Client(transport=httpx.MockTransport(down)))
+    manager.login("demo")
+    st = manager.callback("demo", "http://localhost:47823/callback?code=c&state=s")
+    assert st["state"] == "connected" and st.get("account") is None
+    assert store.get("demo")["access"] == "good"
+    manager.logout("demo")
+    v = Vendor(good=())    # 403 on /me, as GitHub answers a rate limit
+    monkeypatch.setattr(manager, "_http", lambda: httpx.Client(transport=httpx.MockTransport(v)))
+    manager.login("demo")
+    st = manager.callback("demo", "http://localhost:47823/callback?code=c&state=s")
+    assert st["state"] == "connected" and store.get("demo")["access"] == "good"
+
+
+def test_reconnect_keeps_the_client_id_the_sign_in_was_made_with(loopback, vendor):
+    manager.login("demo", kind="oauth-pkce", client_id="my-app")
+    manager.callback("demo", "http://localhost:47823/callback?code=c&state=s")
+    assert store.get("demo")["client_id"] == "my-app"
+    manager.mark_reconnect("demo")
+    assert manager.status("demo")["state"] == "reconnect"
+    manager.login("demo", kind="oauth-pkce")       # what the Reconnect button sends
+    assert loopback.instances[-1].kw["client_id"] == "my-app"
+    manager.callback("demo", "http://localhost:47823/callback?code=c&state=s")
+    assert manager.status("demo")["state"] == "connected"
+    # A paste still wins, and Disconnect forgets the choice.
+    manager.login("demo", kind="oauth-pkce", client_id="other")
+    assert loopback.instances[-1].kw["client_id"] == "other"
+    manager.cancel("demo")
+    manager._flows["demo"].finished.wait(5)
+    manager.logout("demo")
+    manager.login("demo", kind="oauth-pkce")
+    assert loopback.instances[-1].kw["client_id"] == "cid"
+
+
+def test_mcp_oauth_sends_the_resource_the_metadata_names(loopback, monkeypatch, tmp_path):
+    """RFC 8707: the `resource` on both OAuth legs is the identifier the server's
+    protected-resource metadata declares, not necessarily the URL we connect to."""
+    from fused_render.connect import discovery
+    url = "http://127.0.0.1:9/mcp"
+    _pack(tmp_path / "packs", "mcpdemo", {"name": "McpDemo", "privacy": "p", "tools": {"remote": url},
+                                          "auth": [{"kind": "mcp-oauth", "resource": url}]})
+    d = discovery.Discovered(resource="http://127.0.0.1:9/", issuer="https://as.example",
+                             authorization_endpoint="https://as.example/authorize",
+                             token_endpoint="https://as.example/token", registration_endpoint=None,
+                             revocation_endpoint=None, scopes=[], cimd_supported=False,
+                             pkce_methods=["S256"], raw={})
+    monkeypatch.setattr(discovery, "discover", lambda u: d)
+    monkeypatch.setattr(discovery, "choose_client", lambda *a, **k: ("cid", None))
+    manager.login("mcpdemo")
+    kw = loopback.instances[-1].kw
+    assert kw["extra_authorize"] == {"resource": "http://127.0.0.1:9/"}
+    assert kw["extra_token"] == {"resource": "http://127.0.0.1:9/"}
+    st = manager.callback("mcpdemo", "http://localhost:47823/callback?code=c&state=s")
+    assert st["state"] == "connected"
+    assert store.get("mcpdemo")["resource"] == "http://127.0.0.1:9/"
+
+
 def test_browser_opened_when_allowed(loopback, vendor, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_CONNECT_OPEN_BROWSER", "1")
     opened = []

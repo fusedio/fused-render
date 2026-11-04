@@ -201,6 +201,46 @@ def test_failed_refresh_marks_reconnect(monkeypatch):
     assert manager.status("demo")["state"] == "reconnect"
 
 
+def test_failed_listing_is_remembered_briefly(monkeypatch):
+    """A vendor that is down costs one round-trip per FAIL_CACHE_SECONDS, not one
+    per caller (apptools.registry() lists every service on every bot turn)."""
+    srv = Mcp(status=(503, {}))
+    _use(monkeypatch, srv)
+    store.put("demo", {"kind": "api-key", "access": "tok"})
+    clock = [1000.0]
+    monkeypatch.setattr(tools.time, "monotonic", lambda: clock[0])
+    assert [s.name for s in tools.list_tools("demo")] == ["local_sum", "local_fail"]
+    assert tools.cached_count("demo") is None     # no good listing yet: the card keeps polling
+    before = len(srv.methods)
+    # The native tools are still offered, but no request leaves while the failure is remembered.
+    n = 0
+    def counting(request):
+        nonlocal n
+        n += 1
+        return srv(request)
+    _use(monkeypatch, counting)
+    tools._clients.clear()
+    assert [s.name for s in tools.list_tools("demo")] == ["local_sum", "local_fail"]
+    assert n == 0
+    clock[0] += tools.FAIL_CACHE_SECONDS + 1
+    tools.list_tools("demo")
+    assert n > 0
+    assert len(srv.methods) == before
+
+
+def test_reconnect_lists_nothing_without_asking(monkeypatch):
+    n = 0
+    def counting(request):
+        nonlocal n
+        n += 1
+        return httpx.Response(401, headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+    _use(monkeypatch, counting)
+    store.put("demo", _oauth_record())
+    manager.mark_reconnect("demo")
+    assert tools.list_tools("demo") == []
+    assert n == 0
+
+
 def test_scope_error_names_scope(monkeypatch):
     _use(monkeypatch, Mcp(status=(403, {"WWW-Authenticate": 'Bearer error="insufficient_scope", scope="notes:write"'})))
     store.put("demo", {"kind": "api-key", "access": "tok"})

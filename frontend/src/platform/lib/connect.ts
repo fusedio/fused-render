@@ -124,8 +124,9 @@ export const CERT_WARNING =
   "Choose Advanced › Proceed, or paste the address the warning page sits on here.";
 
 /** Reconnect / Try again keep the kind the record was made with when it is
- *  still on offer — a BYO client id or a CLI login should not silently
- *  become the default flow. */
+ *  still on offer — a CLI login should not silently become the default flow.
+ *  The server keeps the client id the stored record was made with (a pasted
+ *  or environment one), so the body carries only the kind. */
 export function againBody(p: ConnectProvider, st: ConnectStatus): LoginBody {
   const primary = defaultAuth(p.auth);
   const was = p.auth.find((a) => a.kind === st.kind && a.available);

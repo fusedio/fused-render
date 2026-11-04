@@ -323,6 +323,12 @@ def mark_reconnect(key: str) -> None:
         _reconnect.add(key)
 
 
+def needs_reconnect(key: str) -> bool:
+    """A refused or unrefreshable credential is still stored: the card says Reconnect."""
+    with _lock:
+        return key in _reconnect
+
+
 def status(key: str) -> dict:
     _provider(key)
     with _lock:
@@ -412,8 +418,12 @@ def _check_cancel(flow: _Flow) -> None:
 
 def _mcp_oauth(key: str, p, entry: dict, flow: _Flow) -> dict:
     from fused_render.connect import discovery  # only the mcp-oauth path needs it
-    resource = entry["resource"]
-    d = discovery.discover(resource)
+    url = entry["resource"]
+    d = discovery.discover(url)
+    # RFC 8707 / MCP authorization: the `resource` sent on both legs (and kept for
+    # refresh) is the identifier the server's protected-resource metadata declares,
+    # which may differ from the URL we connect to (same origin; discovery checks).
+    resource = d.resource or url
     _check_cancel(flow)
     redirect_uris = [f"http://localhost:{port}{oauth.REDIRECT_PATH}" for port in oauth.REDIRECT_PORTS]
     cid, registration = discovery.choose_client(d, preregistered=entry.get("client_id") or None,
@@ -428,7 +438,7 @@ def _mcp_oauth(key: str, p, entry: dict, flow: _Flow) -> dict:
     account = None
     try:
         from fused_render.connect.mcp_client import McpClient
-        c = McpClient(resource, ts.access)
+        c = McpClient(url, ts.access)
         try:
             info = c.initialize().get("serverInfo") or {}
             account = info.get("name") or None
@@ -439,6 +449,21 @@ def _mcp_oauth(key: str, p, entry: dict, flow: _Flow) -> dict:
     return _token_record("mcp-oauth", ts, account=account, resource=resource, client_id=cid,
                          client_registration=registration, token_url=d.token_endpoint,
                          revoke_url=d.revocation_endpoint)
+
+
+def _label(key: str, entry: dict, token: str) -> str | None:
+    """The account name for a token the vendor just granted: best effort.
+
+    The token endpoint issued this token a moment ago, so the identity probe is a
+    label, not a gate (the api-key and cli logins, which probe something the user
+    pasted, keep it as a gate). A probe that times out, cannot connect, or answers
+    403 to a rate limit must not throw away a sign-in the browser already called done.
+    """
+    try:
+        return _identity(entry.get("identity_url"), token, entry)
+    except (_Refused, httpx.HTTPError) as e:
+        logger.info("connect %s: identity probe after sign-in failed: %s", key, e.__class__.__name__)
+        return None
 
 
 def _run_loopback(flow: _Flow, lf) -> object:
@@ -460,7 +485,7 @@ def _oauth_pkce(key: str, p, entry: dict, flow: _Flow) -> dict:
         client_secret=entry.get("client_secret") or None)
     ts = _run_loopback(flow, lf)
     _check_cancel(flow)
-    account = _identity(entry.get("identity_url"), ts.access, entry)
+    account = _label(key, entry, ts.access)
     return _token_record("oauth-pkce", ts, account=account, client_id=entry["client_id"],
                          token_url=entry["token_url"], revoke_url=entry.get("revoke_url"))
 
@@ -479,12 +504,24 @@ def _oauth_device(key: str, p, entry: dict, flow: _Flow) -> dict:
     flow.ready.set()
     ts = df.result(timeout=float(info.get("expires_in") or 900))
     _check_cancel(flow)
-    account = _identity(entry.get("identity_url"), ts.access, entry)
+    account = _label(key, entry, ts.access)
     return _token_record("oauth-device", ts, account=account, client_id=entry["client_id"],
                          token_url=entry["token_url"], revoke_url=entry.get("revoke_url"))
 
 
 _RUNNERS = {"mcp-oauth": _mcp_oauth, "oauth-pkce": _oauth_pkce, "oauth-device": _oauth_device}
+
+
+def _stored_client_id(key: str, kind: str | None) -> str | None:
+    """The client id the stored record of the same kind was made with, for the
+    pre-registered kinds only (an mcp-oauth record's id came from registration,
+    which `choose_client` redoes against the server's current metadata)."""
+    if kind not in ("oauth-pkce", "oauth-device"):
+        return None
+    rec = store.get(key)
+    if rec and rec.get("kind") == kind and isinstance(rec.get("client_id"), str):
+        return rec["client_id"].strip() or None
+    return None
 
 
 def login(key: str, kind: str | None = None, client_id: str | None = None,
@@ -496,6 +533,10 @@ def login(key: str, kind: str | None = None, client_id: str | None = None,
     kind = entry.get("kind")
     if client_id and client_id.strip():
         entry["client_id"] = client_id.strip()   # bring-your-own app
+    elif _stored_client_id(key, kind):
+        # Reconnect / Try again send only the kind: a sign-in made with a pasted
+        # (or environment) client id must not silently restart on the shipped app.
+        entry["client_id"] = _stored_client_id(key, kind)
     elif not public["available"]:
         raise ValueError(public.get("reason") or f"{public['label']} is not available")
 
