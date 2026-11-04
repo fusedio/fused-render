@@ -99,7 +99,8 @@
   padding: 2px 0;
   margin: -2px 0;
 }
-/* The column's leftover, under the foot and above the Git section: nothing
+/* The column's leftover, under the Git section and above the favourites
+   (owner, 2026-11-04: Git follows the list, favourites hold the foot): nothing
    is drawn in it; it is what the list could grow into, and ClaudeRail `fit`
    adds its height to the list's to know how many rings the column holds. */
 .claude-rail-room {

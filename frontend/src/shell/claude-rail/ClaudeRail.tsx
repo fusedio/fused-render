@@ -453,7 +453,7 @@ export function ClaudeRail({
   // only show the top chats"). The list is its rings' height and the foot
   // stands right under the last ring (owner, 2026-11-03: "the back to canvas
   // button should be end of list"); the column's leftover is the ROOM, an
-  // empty box under the foot (claude-rail.css `.claude-rail-room`). How many
+  // empty box under the Git section (claude-rail.css `.claude-rail-room`). How many
   // whole seats the column holds is measured off the two together — the
   // list's height plus the room's, the list's row gap, one seat's height —
   // and re-measured when either resizes, so a taller window shows more and a
@@ -1498,10 +1498,6 @@ export function ClaudeRail({
             )}
           </div>
         )}
-        {/* THE ROOM (header, `fit`): the column's leftover, measured, never
-            drawn in — so the foot keeps to the list's end and the Git
-            section to the column's. */}
-        <div ref={roomRef} className="claude-rail-room" aria-hidden="true" />
         {git && railGit.repo && (
           // THE GIT SECTION (header): past the left rail's own separator
           // (sidebar.css `.sidebar-rail-sep`), the repository the page sits
@@ -1601,6 +1597,15 @@ export function ClaudeRail({
             </div>
           </>
         )}
+        {/* THE ROOM (header, `fit`): the column's leftover, measured, never
+            drawn in. UNDER the Git section, above the favourites (owner,
+            2026-11-04: "Git should move up right after the list; favourites
+            stay at the bottom"): the foot keeps to the list's end, Git to
+            the foot, and the favourites to the rail's foot — where their
+            card anchors. With favourites off, Git simply follows the list.
+            The list's rings plus this box are still what the list could
+            grow into: Git between them is fixed height. */}
+        <div ref={roomRef} className="claude-rail-room" aria-hidden="true" />
         {favs.length > 0 && (
           // THE FAVOURITES, LAST (owner, 2026-11-03: "favourite should be
           // below git"): past their own hairline, one ring per starred chat
