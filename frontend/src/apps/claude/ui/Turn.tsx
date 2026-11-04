@@ -518,7 +518,7 @@ export const Turn = memo(function Turn({
             </div>
           ) : null}
         </span>
-        {onBreakout ? (
+        {onBreakout && !turn.streaming ? (
           <button
             type="button"
             className="turn-breakout"

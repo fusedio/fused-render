@@ -34,6 +34,10 @@ describe("Turn breakout button", () => {
     const { uuid: _u, ...noUuid } = base;
     expect(html(noUuid as UserTurn, () => {})).toContain('class="turn-breakout"');
   });
+  test("absent on an assistant turn that is still streaming", () => {
+    expect(html({ ...answer, streaming: true } as AssistantTurn, () => {})).not.toContain("turn-breakout");
+    expect(html({ ...answer, streaming: false } as AssistantTurn, () => {})).toContain("turn-breakout");
+  });
   test("absent without onBreakout", () => {
     expect(html(base)).not.toContain("turn-breakout");
     expect(html(answer)).not.toContain("turn-breakout");
