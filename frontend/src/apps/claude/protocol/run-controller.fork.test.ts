@@ -283,6 +283,45 @@ describe("breakout posture", () => {
     expect(r.of("start")[1]!.fields).toMatchObject({ breakout: "1", fork_at: "u2" });
   });
 
+  test("an unspent breakout never refreshes over the parent's scoped transcript", async () => {
+    const r = await opened(started, "claude", { breakout: true, breakoutAt: "u2" });
+    const before = r.of("history").length;
+    const turnsBefore = r.controller.getState().turns;
+    await r.controller.refreshHistory("old");
+    expect(r.of("history")).toHaveLength(before);
+    expect(r.controller.getState().turns).toBe(turnsBefore);
+  });
+
+  test("a spent breakout may refresh its own history", async () => {
+    const r = await opened(started, "claude", { breakout: true, breakoutAt: "u2" });
+    await r.controller.sendMessage("one");
+    const before = r.of("history").length;
+    await r.controller.refreshHistory("brk");
+    expect(r.of("history").length).toBe(before + 1);
+  });
+
+  test("a usage limit in a breakout never schedules a (policy-less) comeback", async () => {
+    const posted: unknown[] = [];
+    const limited = {
+      ...started,
+      poll: () =>
+        ({
+          ...donePoll("brk"),
+          error: "You've hit your session limit",
+          quota: { status: "rejected", type: "five_hour", resets_at: 1789066800, utilization: null, windows: {} },
+        }) as unknown as PollResponse,
+    };
+    const r = await opened(limited, "claude", {
+      breakout: true,
+      breakoutAt: "u2",
+      schedule: (b: unknown) => (posted.push(b), Promise.resolve({ entry: { id: "e" } })),
+      listSchedule: () => Promise.resolve({ entries: [] }),
+    });
+    await r.controller.sendMessage("go");
+    await new Promise<void>((res) => setTimeout(res, 0));
+    expect(posted).toEqual([]);
+  });
+
   test("a plain chat sends no breakout field", async () => {
     const r = await opened({
       live_host: () => ({ run_id: "" }),

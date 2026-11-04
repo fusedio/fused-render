@@ -1267,6 +1267,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  ones booked at or after its own generation. A failed POST yields no id. */
   const bookings = new Set<Promise<{ sid: string; mark: number; id: string | null }>>();
   const scheduleComeback = (runId: string, error: string, quota: Quota): boolean => {
+    // A scheduled continuation is a plain run: it would drop the research-only policy.
+    if (deps.breakout) return false;
     if (scheduledRuns.has(runId)) return true;
     const sessionId = state.sessionId;
     if (!FILE || !sessionId) return false;
@@ -4546,6 +4548,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
   async function refreshHistory(sessionId: string): Promise<void> {
     if (disposed || !sessionId) return;
     if (activeRun || sending) return;
+    // An unspent breakout card shows the parent's scoped transcript; the
+    // parent's own history must not overwrite it.
+    if (deps.breakout && !breakoutSpent) return;
     const gen = logGen;
     // WHAT THE LOG LOOKED LIKE WHEN THIS WAS ASKED (Bugbot 3977975835). A
     // scheduled or adopted repair that starts AND finishes inside the round

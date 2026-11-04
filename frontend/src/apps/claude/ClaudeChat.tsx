@@ -3889,6 +3889,11 @@ function ChatBody(props: ChatBodyProps) {
       }
       switch (plan.do) {
         case "clear":
+          // A breakout has nowhere to go "back" to: its card is the only door.
+          if (props.breakout) {
+            notify({ title: "Breakout chats cannot be cleared; close the card instead", tone: "info" });
+            return false;
+          }
           // THE SAME DOOR AS `← Chats`: a new conversation in this folder.
           onBack();
           return true;
@@ -3911,7 +3916,7 @@ function ChatBody(props: ChatBodyProps) {
       }
     },
     [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk,
-     defaults.model],
+     defaults.model, props.breakout],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the
