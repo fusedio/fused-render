@@ -230,6 +230,51 @@ describe("the cards", () => {
     expect(calls.find((c) => c.method === "POST")?.body).toEqual({ kind: "oauth-pkce", client_id: "9.8" });
   });
 
+  test("a BYO client that wants a secret posts it as the login's value", async () => {
+    // Google's desktop clients: the pack says `byo.secret`, so the form has a second, password-type field,
+    // Connect waits for both, and the link names an OAuth client rather than a manifest.
+    const gmail: ConnectProvider = {
+      key: "gmail",
+      name: "Gmail",
+      icon: null,
+      privacy: "Google sees the calls.",
+      auth: [
+        {
+          kind: "oauth-pkce",
+          available: false,
+          reason: "no client id: create your own OAuth client under Advanced",
+          byo: { docs: "https://console.cloud.google.com/apis/credentials", secret: "Client secret" },
+        },
+      ],
+      state: "disconnected",
+      tools: 0,
+      store: "keychain",
+    };
+    list = [gmail];
+    answers["GET /api/connect/gmail"] = { state: "disconnected" };
+    answers["POST /api/connect/gmail/login"] = { state: "pending", url: "https://accounts.google.com/o/oauth2/v2/auth?x=1" };
+    const box = await mount();
+    const g = card(box, "gmail");
+    expect(g.find((x) => x.type === "a" && textOf(x) === "Create an OAuth client").props.href).toBe(
+      "https://console.cloud.google.com/apis/credentials",
+    );
+    const id = g.find((x) => x.type === Input && x.props["aria-label"] === "Client ID");
+    const secret = g.find((x) => x.type === Input && x.props["aria-label"] === "Client secret");
+    expect(secret.props.type).toBe("password");
+    await act(async () => id.props.onChange({ target: { value: "123.apps" } }));
+    expect(buttons(card(box, "gmail"), "Connect")[0].props.disabled).toBe(true); // the id alone is not enough
+    await act(async () => secret.props.onChange({ target: { value: " GOCSPX-s " } }));
+    expect(buttons(card(box, "gmail"), "Connect")[0].props.disabled).toBe(false);
+    const form = card(box, "gmail").findAll((x) => x.type === "form")[0];
+    await act(async () => form.props.onSubmit({ preventDefault() {} }));
+    await settle();
+    expect(calls.find((c) => c.url === "/api/connect/gmail/login")!.body).toEqual({
+      kind: "oauth-pkce",
+      client_id: "123.apps",
+      value: "GOCSPX-s",
+    });
+  });
+
   test("reconnect on an https-localhost kind shows the notice first", async () => {
     list = [{ ...slack, state: "reconnect", kind: "oauth-pkce", auth: [{ ...slack.auth[0], available: true, reason: null, cert_warning: true }] }];
     answers["POST /api/connect/slack/login"] = { state: "pending", kind: "oauth-pkce", url: "https://slack.com/x", cert_warning: true };

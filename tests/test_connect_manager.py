@@ -44,6 +44,8 @@ def _env(monkeypatch, tmp_path):
         {"kind": "api-key", "label": "Token", "identity_url": "https://demo.example/me"}]})
     _pack(root, "tlsdemo", {"name": "TlsDemo", "privacy": "p", "tools": {"remote": None}, "auth": [
         dict(PKCE, redirect={"scheme": "https", "host": "localhost", "ports": None, "path": "/callback"})]})
+    _pack(root, "gdemo", {"name": "GDemo", "privacy": "p", "auth": [
+        dict(PKCE, client_id="", byo={"docs": "https://g.example/creds", "secret": "Client secret"})]})
     _pack(root, "nocid", {"name": "NoCid", "privacy": "p", "auth": [
         dict(PKCE, client_id=""),
         {"kind": "cli", "command": ["definitely-not-installed-xyz"], "identity_url": "https://demo.example/me"},
@@ -312,6 +314,55 @@ def test_reconnect_keeps_the_client_id_the_sign_in_was_made_with(loopback, vendo
     manager.logout("demo")
     manager.login("demo", kind="oauth-pkce")
     assert loopback.instances[-1].kw["client_id"] == "cid"
+
+
+def test_byo_secret_rides_with_the_id_and_lives_in_the_record(loopback, vendor, monkeypatch):
+    """Google's desktop clients: the Advanced form posts the id and the secret (`value`);
+    the secret goes to the flow, is kept in the record, and refresh and Reconnect reuse
+    it. Without the secret the pack asked for, the sign-in is refused before a tab opens."""
+    with pytest.raises(ValueError, match="client secret"):
+        manager.login("gdemo", kind="oauth-pkce", client_id="my.apps")
+    assert "gdemo" not in manager._flows
+    manager.login("gdemo", kind="oauth-pkce", client_id="my.apps", value=" GOCSPX-s ")
+    assert loopback.instances[-1].kw["client_id"] == "my.apps"
+    assert loopback.instances[-1].kw["client_secret"] == "GOCSPX-s"
+    manager.callback("gdemo", "http://localhost:47823/callback?code=c&state=s")
+    rec = store.get("gdemo")
+    assert rec["client_id"] == "my.apps" and rec["client_secret"] == "GOCSPX-s"
+    assert "GOCSPX-s" not in json.dumps(manager.status("gdemo"))
+    assert "GOCSPX-s" not in json.dumps(manager.list())
+    calls = []
+
+    def fake_refresh(**kw):
+        calls.append(kw)
+        return _ts("a2", None)
+    monkeypatch.setattr(manager.oauth, "refresh", fake_refresh)
+    store.put("gdemo", {**rec, "refresh": "r1", "expires_at": time.time() - 1})
+    assert manager.token("gdemo") == "a2"
+    assert calls[0]["client_secret"] == "GOCSPX-s" and calls[0]["client_id"] == "my.apps"
+    manager.mark_reconnect("gdemo")
+    manager.login("gdemo", kind="oauth-pkce")       # the Reconnect button: only the kind
+    assert loopback.instances[-1].kw["client_id"] == "my.apps"
+    assert loopback.instances[-1].kw["client_secret"] == "GOCSPX-s"
+
+
+def test_environment_secret_is_not_copied_into_the_record(loopback, vendor, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_CONNECT_GDEMO_CLIENT_ID", "env.apps")
+    monkeypatch.setenv("FUSED_RENDER_CONNECT_GDEMO_CLIENT_SECRET", "env-secret")
+    manager.login("gdemo", kind="oauth-pkce")
+    assert loopback.instances[-1].kw["client_secret"] == "env-secret"
+    manager.callback("gdemo", "http://localhost:47823/callback?code=c&state=s")
+    rec = store.get("gdemo")
+    assert rec["client_id"] == "env.apps" and "client_secret" not in rec
+    calls = []
+
+    def fake_refresh(**kw):
+        calls.append(kw)
+        return _ts("a2", None)
+    monkeypatch.setattr(manager.oauth, "refresh", fake_refresh)
+    store.put("gdemo", {**rec, "refresh": "r1", "expires_at": time.time() - 1})
+    manager.token("gdemo")
+    assert calls[0]["client_secret"] == "env-secret"   # read from the pack (the environment) at refresh time
 
 
 def test_mcp_oauth_sends_the_resource_the_metadata_names(loopback, monkeypatch, tmp_path):

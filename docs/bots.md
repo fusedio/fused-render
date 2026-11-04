@@ -280,7 +280,7 @@ Super Bot task (§5: no button on the card, no match), and for a built-in only
 while the task has not read the web (the posture in §6 stands). Revoked under
 Settings → Permissions → Approved forever (`allow_rules_remove`: removals only, applied to the live list, since the task thread writes it too); the `clone` copies them.
 `connections`: provider keys of `fused_render.connect` (`notion`, `github`,
-`slack`…, normalised like app folders) this bot may use (2026-11-04). The
+`slack`, `gmail`, `google-calendar`, `google-docs`…, normalised like app folders) this bot may use (2026-11-04). The
 sign-in is GLOBAL (Preferences → Connections, one token per service on this
 Mac); access is PER BOT and off by default. A `tool` call into a service not
 listed raises an approval card on EVERY call, read-only or not, and under

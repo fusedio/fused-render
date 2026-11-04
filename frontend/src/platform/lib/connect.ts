@@ -27,7 +27,10 @@ export interface ConnectAuth {
   label?: string;
   available: boolean;
   reason?: string | null;
-  byo?: { manifest?: string; docs?: string } | null;
+  /** Bring your own OAuth app: `manifest` is the shipped app manifest to make it from (Slack);
+   *  `secret` labels a client-secret field the vendor wants beside the id (Google's desktop
+   *  clients), posted as the login's `value`. */
+  byo?: { manifest?: string; docs?: string; secret?: string } | null;
   /** api-key: where to make one. */
   docs?: string | null;
   /** oauth-pkce with an https localhost redirect (Slack): the browser will warn about the listener's own

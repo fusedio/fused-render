@@ -10,7 +10,7 @@ from fused_render.connect import registry
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKE_PACKS = os.path.join(REPO, "tests", "_fake_provider")
-FIRST_WAVE = ("github", "notion", "slack")
+FIRST_WAVE = ("github", "notion", "slack", "gmail", "google-calendar", "google-docs")
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +118,59 @@ def test_slack_client_id_env_override(monkeypatch):
     p = registry.get("slack")
     assert p.auth[0]["client_id"] == "123.456"
     assert registry.availability(p, p.auth[0]) == (True, None)
+
+
+GOOGLE = ("gmail", "google-calendar", "google-docs")
+
+
+@pytest.mark.parametrize("key", GOOGLE)
+def test_google_packs_are_desktop_pkce_clients_with_their_own_scopes(key):
+    """Three cards on purpose: each Google pack asks for only its own scopes at its own
+    consent screen. All three sign in the same way: Google's desktop-client rules
+    (any loopback port on 127.0.0.1, `access_type=offline` for a refresh token,
+    `prompt=consent` so one is issued every time) and no shipped client id yet."""
+    p = registry.get(key)
+    assert [a["kind"] for a in p.auth] == ["oauth-pkce"]
+    a = p.auth[0]
+    assert a["client_id"] == "" and "client_secret" not in a
+    assert a["authorize_url"] == "https://accounts.google.com/o/oauth2/v2/auth"
+    assert a["token_url"] == "https://oauth2.googleapis.com/token"
+    assert a["redirect"] == {"host": "127.0.0.1", "ports": None, "path": "/callback"}
+    assert a["extra_authorize"] == {"access_type": "offline", "prompt": "consent"}
+    assert a["identity_url"] == "https://www.googleapis.com/oauth2/v3/userinfo"
+    scopes = a["scopes"]["scope"].split()
+    assert "email" in scopes      # what the identity endpoint needs for "Connected as ana@…"
+    own = {"gmail": "gmail.", "google-calendar": "calendar", "google-docs": "documents"}[key]
+    assert any(own in s for s in scopes)
+    others = {"gmail.", "calendar", "documents"} - {own}
+    assert not any(o in s for s in scopes for o in others)   # one card grants nothing of the other two
+    assert a["byo"] == {"docs": "https://console.cloud.google.com/apis/credentials", "secret": "Client secret"}
+    assert p.tools == {"remote": None, "native": True}
+    ok, reason = registry.availability(p, a)
+    env = key.upper().replace("-", "_")
+    assert not ok and "manifest" not in reason
+    assert f"FUSED_RENDER_CONNECT_{env}_CLIENT_ID" in reason and f"FUSED_RENDER_CONNECT_{env}_CLIENT_SECRET" in reason
+
+
+def test_google_client_id_and_secret_come_from_the_environment(monkeypatch):
+    """Google's desktop clients need both at the token endpoint; neither is in the file."""
+    monkeypatch.setenv("FUSED_RENDER_CONNECT_GMAIL_CLIENT_ID", "123.apps.googleusercontent.com")
+    monkeypatch.setenv("FUSED_RENDER_CONNECT_GMAIL_CLIENT_SECRET", "GOCSPX-x")
+    p = registry.get("gmail")
+    assert p.auth[0]["client_id"] == "123.apps.googleusercontent.com"
+    assert p.auth[0]["client_secret"] == "GOCSPX-x"
+    assert registry.availability(p, p.auth[0]) == (True, None)
+    assert registry.get("google-docs").auth[0]["client_id"] == ""   # each card its own variables
+    assert "client_secret" not in registry.get("google-docs").auth[0]
+
+
+def test_byo_takes_only_its_known_keys():
+    d = _good()
+    d["auth"] = [{"kind": "oauth-pkce", "client_id": "", "authorize_url": "https://a/x", "token_url": "https://a/t",
+                  "redirect": {"host": "localhost", "ports": None, "path": "/cb"},
+                  "byo": {"docs": "https://a/d", "secrets": "x"}}]
+    with pytest.raises(ValueError, match=r"auth\[0\].byo.secrets"):
+        registry.validate(d, "/x/provider.json")
 
 
 def test_no_secret_in_any_shipped_pack():
