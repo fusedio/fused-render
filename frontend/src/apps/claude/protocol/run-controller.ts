@@ -2837,7 +2837,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // probe — that start provably launched nothing.
           // A fork's `sessionId` is the OLD session, whose live host is not
           // this turn's run: no probe, the fork stays set for a resend.
-          if (!isTimeout(startErr) || forkAt) throw startErr;
+          // A breakout's first start has no session to ask about, and a probe
+          // by file alone would find the PARENT chat's live run: no probe.
+          if (!isTimeout(startErr) || forkAt || breakoutMode() === "1") throw startErr;
           runId = await liveAfterStartTimeout(sessionId);
           if (!runId) throw startErr;
         }

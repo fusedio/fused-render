@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 
 const { createChatController } = await import("./run-controller");
 const { createMemoryParamsStore } = await import("../params/store");
+const { AgentError } = await import("./agent");
 
 import type { runAgent } from "./agent";
 import type { PollResponse } from "./types";
@@ -243,6 +244,19 @@ describe("breakout posture", () => {
     const second = r.of("start")[1]!.fields;
     expect(second).toMatchObject({ breakout: "1", session_id: "" });
     expect(String(second.message)).toContain(CTX);
+  });
+
+  test("a first start that times out never adopts a live run in the file", async () => {
+    const r = fresh({
+      start: () => {
+        throw new AgentError({ type: "Timeout", message: "start timed out after 60s" });
+      },
+      live_run: () => ({ run_id: "parent-run" }),
+    });
+    await r.controller.sendMessage("one");
+    expect(r.of("live_run")).toHaveLength(0);
+    expect(r.of("poll")).toHaveLength(0);
+    expect(r.controller.getState().trouble).not.toBeNull();
   });
 
   test("a usage limit in a breakout never schedules a (policy-less) comeback", async () => {
