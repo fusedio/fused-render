@@ -251,6 +251,27 @@ test("the card is clamped to the screen", () => {
   expect(s.top).toBe(1000);
 });
 
+test("the default slot never steps a card off the top of a short window", () => {
+  const w = window as unknown as Record<string, number>;
+  const prev = w["innerHeight"];
+  w["innerHeight"] = 300;
+  try {
+    let r!: ReturnType<typeof create>;
+    act(() => {
+      r = create(<Card card={card} index={5} mount={NoChat} />, { createNodeMock: () => el });
+    });
+    const s = r.root.findByProps({ role: "dialog" }).props.style;
+    // card height = min(PEEK_MAX_HEIGHT, 0.7 * 300) = 210, so bottom <= 300 - 210.
+    expect(s.bottom).toBe(16 + (300 - 16 - 210));
+    expect(300 - s.bottom - 210).toBeGreaterThanOrEqual(0);
+    act(() => r.unmount());
+  } finally {
+    w["innerHeight"] = prev;
+  }
+  const roomy = mount();
+  expect(roomy.cardDiv().props.style.bottom).toBe(16);
+});
+
 test("a pointerdown on a button does not start a drag", () => {
   const m = mount();
   const button = { closest: (sel: string) => (sel === "button" ? {} : null) };

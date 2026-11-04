@@ -100,6 +100,12 @@ export function FloatingCard({
     setDragging(false);
     e.currentTarget.releasePointerCapture?.(e.pointerId);
   };
+  // The default slot steps up and left by `index`, but never so far that the
+  // card's top or left edge leaves the screen (many cards, a short window).
+  const cardH = Math.min(PEEK_MAX_HEIGHT, 0.7 * window.innerHeight);
+  const cardW = Math.min(PEEK_WIDTH, window.innerWidth - 16);
+  const slotY = Math.max(0, Math.min(index * OFFSET, window.innerHeight - 16 - cardH));
+  const slotX = Math.max(0, Math.min(index * OFFSET, window.innerWidth - 16 - cardW));
   const hasPos = pos !== null;
   useEffect(() => {
     if (!hasPos) return;
@@ -119,7 +125,7 @@ export function FloatingCard({
         height: `min(${PEEK_MAX_HEIGHT}px, 70vh)`,
         ...(pos
           ? { left: pos.x, top: pos.y }
-          : { right: 16 + index * OFFSET, bottom: 16 + index * OFFSET }),
+          : { right: 16 + slotX, bottom: 16 + slotY }),
       }}
     >
       <div className="claude-rail-peek-card">
