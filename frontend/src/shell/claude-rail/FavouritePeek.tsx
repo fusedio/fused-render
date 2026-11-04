@@ -118,7 +118,7 @@ export function FavouritePeek() {
       if (!ev.failed) setListing(ev.rows);
     });
   }, [on]);
-  const { rail, pendingFocus } = useFavPeekState();
+  const { rail, page, pendingFocus } = useFavPeekState();
   // No room beside this rail (RailPeek `onNoRoom`): hidden until the window
   // or the rail changes shape, or another rail stands.
   const [noRoom, setNoRoom] = useState(false);
@@ -268,6 +268,7 @@ export function FavouritePeek() {
       onNoRoom={() => setNoRoom(true)}
       onOpenChat={(href) => navigateUrl(href)}
       here={here}
+      pageRoot={page?.root ?? null}
       onPin={noop}
       held
       onHeld={noop}

@@ -26,6 +26,7 @@ import {
   keepAlive,
   peekPlacement,
   placeClear,
+  railOnChipLeave,
   railOnStarred,
   railOpenFav,
   starMarkStep,
@@ -640,6 +641,33 @@ describe("PeekIntent", () => {
       expect(warmed).toEqual(["a"]);
     });
 
+    it("pinned: a pointer rest on an `overPin` ring (a favourite's) swaps the card after the open dwell, still pinned", () => {
+      const { clock, shown, intent } = rig();
+      intent.press("a");
+      intent.leaveRing();
+      intent.enterRing("f", "pointer", true);
+      clock.tick(PEEK_OPEN_MS - 1);
+      expect(shown).toEqual(["a"]);
+      clock.tick(1);
+      expect(shown).toEqual(["a", "f"]);
+      expect(intent.isPinned).toBe(true);
+      // The pin moved with it: leaving the ring closes nothing.
+      intent.leaveRing();
+      clock.tick(10_000);
+      expect(shown).toEqual(["a", "f"]);
+    });
+
+    it("pinned: a sweep across an `overPin` ring, or a focus on it, moves nothing", () => {
+      const { clock, shown, intent } = rig();
+      intent.press("a");
+      intent.enterRing("f", "pointer", true);
+      clock.tick(PEEK_OPEN_MS / 2);
+      intent.leaveRing();
+      intent.enterRing("g", "focus", true);
+      clock.tick(10_000);
+      expect(shown).toEqual(["a"]);
+    });
+
     it("tells the sink when it pins and unpins", () => {
       const clock = new Clock();
       const pins: boolean[] = [];
@@ -778,6 +806,28 @@ describe("starOutcome (dismissOnUnstar)", () => {
   it("a star never shuts a card here (the rail lets go through onStarred)", () => {
     expect(starOutcome(true, "k1", "k1", true).dismiss).toBe(false);
     expect(starOutcome(true, "k1", "k1", false).dismiss).toBe(false);
+  });
+});
+
+describe("railOnChipLeave (a favourite's chat leaving by the rail card's where-chip)", () => {
+  it("a live favourite: let go first, then open its card in this window — before the hop", () => {
+    const calls: string[] = [];
+    const leave = railOnChipLeave(
+      () => true,
+      (k) => k === "f",
+      (k) => calls.push("letGo:" + k),
+      (k) => calls.push("open:" + k),
+    );
+    leave("f");
+    expect(calls).toEqual(["letGo:f", "open:f"]);
+  });
+
+  it("a list chat, or favourites off: nothing — the chip just goes", () => {
+    const calls: string[] = [];
+    const sink = (k: string) => calls.push(k);
+    railOnChipLeave(() => true, (k) => k === "f", sink, sink)("a");
+    railOnChipLeave(() => false, () => true, sink, sink)("f");
+    expect(calls).toEqual([]);
   });
 });
 

@@ -474,6 +474,47 @@ describe("ringMarks (what each ring wears, per section)", () => {
     expect(listPinned.find((r) => r.key === "A")!.classes).toContain("is-pinned");
   });
 
+  it("a list card pinned, no favourite open: favourite rings hover over the pin; list rings stay caption-only", () => {
+    const rings = rail({ list: ["A", "B"], favs: ["F", "G"], peekKey: "A", pinned: true, held: true });
+    const by = (k: string) => rings.find((r) => r.key === k)!;
+    // The favourites swap the pinned card (the pin moves with the hover).
+    for (const k of ["F", "G"]) {
+      expect(by(k).hovers).toBe(true);
+      expect(by(k).overPin).toBe(true);
+      expect(by(k).titleOnly).toBe(false);
+    }
+    // Another list ring: "click only" — its hover is its caption.
+    expect(by("B").overPin).toBe(false);
+    expect(by("B").titleOnly).toBe(true);
+    // The pinned ring itself is no caption-only ring.
+    expect(by("A").titleOnly).toBe(false);
+  });
+
+  it("a list card pinned AND a favourite card open: favourite rings stay caption-only", () => {
+    const rings = rail({ list: ["A"], favs: ["F", "G"], peekKey: "A", pinned: true, openFavKey: "F" });
+    for (const k of ["F", "G"]) {
+      const r = rings.find((x) => x.key === k)!;
+      expect(r.hovers).toBe(false);
+      expect(r.overPin).toBe(false);
+      expect(r.titleOnly).toBe(true);
+    }
+  });
+
+  it("favourites off: no ring swaps a pinned card", () => {
+    const r = ringMarks({
+      ...base,
+      favsOn: false,
+      key: "F",
+      foot: true,
+      sessionHere: false,
+      isLast: false,
+      peekKey: "A",
+      pinned: true,
+    });
+    expect(r.overPin).toBe(false);
+    expect(r.titleOnly).toBe(true);
+  });
+
   it("favourites off: every mark as before, the held accent included", () => {
     const off = (key: string, o: Partial<RingMarkInput>) =>
       ringMarks({ ...base, favsOn: false, key, foot: false, sessionHere: false, isLast: false, ...o }).classes;
@@ -497,24 +538,55 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
 
   it("a node on another canvas (or no canvas page) navigates to that canvas with the node selected", () => {
     const at: RailPlace = { kind: "canvas", env: "prod", name: "other", dir: OTHER };
-    const door = chipDoor({ kind: "node", name: "map", file: "map.py" }, at, { env: "unstable", name: "demo", file: null });
+    const door = chipDoor({ kind: "node", name: "map", file: "map.py" }, at, { env: "unstable", name: "demo", file: null })!;
     expect(door.select).toBeUndefined();
     expect(door.href).toBe("/canvases/prod/other?node=map&node_file=map.py");
     expect(door.title).toBe("Open map on other");
-    expect(chipDoor({ kind: "whole", word: "Canvas" }, at, null).href).toBe("/canvases/prod/other");
+    expect(chipDoor({ kind: "whole", word: "Canvas" }, at, null)!.href).toBe("/canvases/prod/other");
   });
 
   it("on this canvas's page the chip selects in place (the node, or the canvas as a whole)", () => {
     const here = { env: "unstable" as const, name: "demo", file: "hex.py" };
-    const node = chipDoor({ kind: "node", name: "grid", file: "grid.py" }, PLACE, here);
-    expect(node.select).toEqual({ udfName: "grid", current: false });
+    const node = chipDoor({ kind: "node", name: "grid", file: "grid.py" }, PLACE, here)!;
+    expect(node.select).toEqual({ udfName: "grid" });
     expect(node.href).toBe("/canvases/unstable/demo?node=grid&node_file=grid.py");
-    expect(chipDoor({ kind: "node", name: "hex", file: "hex.py" }, PLACE, here).select).toEqual({
-      udfName: "hex",
-      current: true,
-    });
-    expect(chipDoor({ kind: "whole", word: "Canvas" }, PLACE, here).select).toEqual({ udfName: null, current: false });
-    expect(chipDoor({ kind: "whole", word: "Canvas" }, PLACE, { ...here, file: null }).select!.current).toBe(true);
+    // The whole canvas while a node is selected: the press deselects.
+    expect(chipDoor({ kind: "whole", word: "Canvas" }, PLACE, here)!.select).toEqual({ udfName: null });
+  });
+
+  it("a chip is a door (fill, link) only when its press does something; else null — plain text", () => {
+    const app: RailPlace = { kind: "folder", dir: "/apps/x/", word: "App" };
+    const page = placeRoot(app);
+    const whole = { kind: "whole", word: "App" } as const;
+    // Same folder: nowhere to go (a trailing slash is the same folder).
+    expect(chipDoor(whole, app, null, page)).toBeNull();
+    expect(chipDoor(whole, { kind: "folder", dir: "/apps/x" }, null, page)).toBeNull();
+    // Another folder: a door.
+    expect(chipDoor(whole, { kind: "folder", dir: "/apps/y" }, null, page)?.href).toBe("/explorer/view/apps/y");
+    // A file under this folder: a door to its page — none on that very page.
+    const sub = { kind: "file", name: "src/a.py", file: "/apps/x/src/a.py" } as const;
+    expect(chipDoor(sub, app, null, page)?.href).toBe("/explorer/view/apps/x/src/a.py");
+    expect(chipDoor(sub, app, null, "file:/apps/x/src/a.py")).toBeNull();
+    // A file rail's own file: nowhere; another file: a door.
+    const onFile: RailPlace = { kind: "file", file: "/apps/x/b.py" };
+    expect(chipDoor({ kind: "whole", word: "File" }, onFile, null, placeRoot(onFile))).toBeNull();
+    expect(chipDoor({ kind: "whole", word: "File" }, onFile, null, page)?.href).toBe("/explorer/view/apps/x/b.py");
+    // This canvas, no node selected: the whole canvas goes nowhere…
+    const here = { env: "unstable" as const, name: "demo", file: null };
+    const canvas = { kind: "whole", word: "Canvas" } as const;
+    expect(chipDoor(canvas, PLACE, here, placeRoot(PLACE))).toBeNull();
+    // …and the same with no in-place select on that page.
+    expect(chipDoor(canvas, PLACE, null, placeRoot(PLACE))).toBeNull();
+    // A node on this canvas: selects it — unless it already is the selection.
+    const hex = { kind: "node", name: "hex", file: "hex.py" } as const;
+    expect(chipDoor(hex, PLACE, here, placeRoot(PLACE))?.select).toEqual({ udfName: "hex" });
+    expect(chipDoor(hex, PLACE, { ...here, file: "hex.py" }, placeRoot(PLACE))).toBeNull();
+    // Another canvas: a door, whole or node.
+    const other: RailPlace = { kind: "canvas", env: "prod", name: "other", dir: OTHER };
+    expect(chipDoor(canvas, other, here, placeRoot(PLACE))?.href).toBe("/canvases/prod/other");
+    expect(chipDoor(hex, other, here, placeRoot(PLACE))?.select).toBeUndefined();
+    // A folder chip seen from a canvas page: a door.
+    expect(chipDoor(whole, app, here, placeRoot(PLACE))?.isDir).toBe(true);
   });
 
   it("chipLabel: a folder or a file by its own name, never the bare word; a page's own word stays", () => {
@@ -527,7 +599,7 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     expect(chipLabel({ kind: "whole", word: "Canvas" }, PLACE)).toBe("Canvas");
     expect(chipLabel({ kind: "node", name: "hex", file: "hex.py" }, PLACE)).toBe("hex");
     // …and the door under the name is the folder's page, its path the title.
-    const door = chipDoor({ kind: "whole", word: "Folder" }, folder, null);
+    const door = chipDoor({ kind: "whole", word: "Folder" }, folder, null)!;
     expect(door.href).toBe("/explorer/view/Users/me/Fused/app/insta-edit-pro");
     expect(door.isDir).toBe(true);
     expect(door.title).toBe("Open /Users/me/Fused/app/insta-edit-pro");
@@ -535,14 +607,14 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
 
   it("a folder chip opens the explorer folder page; a file chip its file page", () => {
     const app: RailPlace = { kind: "folder", dir: "/apps/x/", word: "App" };
-    const whole = chipDoor({ kind: "whole", word: "App" }, app, null);
+    const whole = chipDoor({ kind: "whole", word: "App" }, app, null)!;
     expect(whole.href).toBe("/explorer/view/apps/x");
     expect(whole.isDir).toBe(true);
     expect(whole.title).toBe("Open /apps/x");
-    const file = chipDoor({ kind: "file", name: "src/a.py", file: "/apps/x/src/a.py" }, app, null);
+    const file = chipDoor({ kind: "file", name: "src/a.py", file: "/apps/x/src/a.py" }, app, null)!;
     expect(file.href).toBe("/explorer/view/apps/x/src/a.py");
     expect(file.isDir).toBeUndefined();
-    const onFile = chipDoor({ kind: "whole", word: "File" }, { kind: "file", file: "/apps/x/b.py" }, null);
+    const onFile = chipDoor({ kind: "whole", word: "File" }, { kind: "file", file: "/apps/x/b.py" }, null)!;
     expect(onFile.href).toBe("/explorer/view/apps/x/b.py");
   });
 });

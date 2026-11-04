@@ -169,36 +169,47 @@ export interface RailHere {
  *  Tasks door's `canvasPagePath`), the explorer's folder page, its file page.
  *  `href` is always that page (a modified click opens it in a tab); `select`
  *  is set only when the chip's canvas IS the page's (`here`): the page
- *  selects the node in the workbench instead of navigating (`current`: it
- *  already is the selection, nothing to do). */
+ *  selects the node in the workbench instead of navigating.
+ *
+ *  NULL WHEN THE CHIP GOES NOWHERE (owner, 2026-11-05: "filled background
+ *  only when a click navigates or does something"): the chip names the place
+ *  the page already stands on — the same folder or file (`pageRoot`, the
+ *  page's `placeRoot`), the same canvas with that node (or, for the whole
+ *  canvas, no node) already selected. RailPeek draws that chip as plain
+ *  text: no fill, no link, no `Open …` title. */
 export interface ChipDoor {
   href: string;
   /** The navigation hint for a folder (router `navigateUrl` `isDir`). */
   isDir?: boolean;
   title: string;
-  select?: { udfName: string | null; current: boolean };
+  select?: { udfName: string | null };
 }
 
 export function chipDoor(
   scope: RailScope,
   at: RailPlace,
   here: Pick<RailHere, "env" | "name" | "file"> | null,
-): ChipDoor {
+  pageRoot: string | null = null,
+): ChipDoor | null {
   if (at.kind === "canvas") {
     const file = scope.kind === "node" ? scope.file : undefined;
     const href = canvasPagePath(at.env, at.name, file ? { file } : undefined);
     const title = scope.kind === "node" ? `Open ${scope.name} on ${at.name}` : `Open the canvas ${at.name}`;
-    if (!here || here.env !== at.env || here.name !== at.name) return { href, title };
+    if (!here || here.env !== at.env || here.name !== at.name) {
+      // The whole canvas, named on its own page with no way to select in
+      // place: nowhere to go.
+      return scope.kind === "whole" && pageRoot === placeRoot(at) ? null : { href, title };
+    }
     const udfName = scope.kind === "node" ? scope.name : null;
     const now = here.file ? nodeName(here.file) : null;
-    const current = udfName === now;
-    return {
-      href,
-      title: current ? (udfName ? `On ${udfName}, selected` : `On the canvas ${at.name}`) : title,
-      select: { udfName, current },
-    };
+    // Already the selection: nothing to do.
+    if (udfName === now) return null;
+    return { href, title, select: { udfName } };
   }
-  if (scope.kind === "file") return { href: urlForFsPath(scope.file), title: `Open ${scope.file}` };
+  if (scope.kind === "file") {
+    return `file:${scope.file}` === pageRoot ? null : { href: urlForFsPath(scope.file), title: `Open ${scope.file}` };
+  }
+  if (placeRoot(at) === pageRoot) return null;
   if (at.kind === "file") return { href: urlForFsPath(at.file), title: `Open ${at.file}` };
   const dir = trimSlash(at.dir);
   return { href: urlForFsPath(dir), isDir: true, title: `Open ${dir}` };
@@ -430,7 +441,14 @@ export function activeRing(keys: readonly string[], wants: readonly (string | nu
  *     moment after a star pressed in the rail's card, before the pulse moves
  *     it to the foot — the open one still in the list (rail-peek-lib
  *     `railOpenFav`). Their hover is the caption. With none open they hover
- *     like list rings. List rings are unchanged. */
+ *     like list rings. List rings are unchanged;
+ *   - …AND WITH NONE OPEN, A FAVOURITE'S RING HOVERS EVEN OVER A PINNED CARD
+ *     (`overPin`; owner, 2026-11-05: "when I have a preview open in the
+ *     non-fav section and I hover over items of the fav section it should
+ *     show me the hover preview"): the rail's card, pinned on a list chat,
+ *     swaps to the favourite's chat and stays pinned there — the pin moves
+ *     with the hover (rail-peek-lib `PeekIntent.enterRing`). A LIST ring over
+ *     a pinned card still shows its caption alone ("click only", `titleOnly`). */
 export interface RingMarkInput {
   key: string;
   /** In the favourites section. */
@@ -452,7 +470,13 @@ export interface RingMarkInput {
   activeFav: string | null;
 }
 
-export function ringMarks(o: RingMarkInput): { classes: string[]; hovers: boolean; favRing: boolean } {
+export function ringMarks(o: RingMarkInput): {
+  classes: string[];
+  hovers: boolean;
+  favRing: boolean;
+  overPin: boolean;
+  titleOnly: boolean;
+} {
   const peeked = o.peekOn && o.peekKey === o.key;
   const favRing = o.favsOn && o.openFavKey === o.key;
   const one = o.favsOn;
@@ -472,5 +496,15 @@ export function ringMarks(o: RingMarkInput): { classes: string[]; hovers: boolea
   // While ANY favourite's card is open, every favourite-section ring (and
   // the just-starred one still in the list) shows its caption only.
   const silenced = o.openFavKey !== null && o.favsOn && fav;
-  return { classes, hovers: o.peekOn && !silenced, favRing };
+  const hovers = o.peekOn && !silenced;
+  // A favourite's ring hovers over a PINNED card too (header): the card
+  // swaps to it and the pin moves with it.
+  const overPin = hovers && o.favsOn && o.foot;
+  // The caption alone: the ring's hover shows no card — another ring while a
+  // card is pinned (bar `overPin`), the open favourite's ring, a silenced one.
+  const titleOnly =
+    (o.peekOn && o.pinned && o.peekKey !== null && o.peekKey !== o.key && !overPin) ||
+    favRing ||
+    (o.peekOn && !hovers);
+  return { classes, hovers, favRing, overPin, titleOnly };
 }

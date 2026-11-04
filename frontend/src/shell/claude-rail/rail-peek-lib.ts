@@ -305,6 +305,9 @@ export class PeekIntent {
   private closeTimer = 0;
   /** Which ring the pointer / the focus rests on (null = none). */
   private pointerKey: string | null = null;
+  /** The ring under the pointer may swap a PINNED card (`enterRing`'s
+   *  `overPin`): kept beside `pointerKey` for the re-entry `leaveCone` makes. */
+  private pointerOverPin = false;
   private focusKey: string | null = null;
   private overCard = false;
   /** The pointer is in the safe cone or on the bridge: on its way to the
@@ -340,10 +343,17 @@ export class PeekIntent {
     return this.pinned;
   }
 
-  /** The pointer (or the keyboard focus) arrived on ring `key`. */
-  enterRing(key: string, via: Via = "pointer"): void {
+  /** The pointer (or the keyboard focus) arrived on ring `key`. `overPin`:
+   *  a POINTER rest on this ring swaps even a pinned card, and the pin moves
+   *  with it (a favourite's ring, claude-rail-lib `ringMarks`; owner,
+   *  2026-11-05: "when I have a preview open in the non-fav section and I
+   *  hover over items of the fav section it should show me the hover
+   *  preview"). The swap waits the first-open dwell, not the swap's, so a
+   *  pointer sweeping past the favourites does not move a pinned card. */
+  enterRing(key: string, via: Via = "pointer", overPin = false): void {
     if (via === "pointer") {
       this.pointerKey = key;
+      this.pointerOverPin = overPin;
       this.muteFocus = false;
       // Crossing a ring INSIDE the cone is not a hover of it: the swap waits
       // until the pointer leaves the cone still on that ring (`leaveCone`).
@@ -356,8 +366,9 @@ export class PeekIntent {
       if (this.muteFocus) return;
     }
     // A pinned card: a hover (or a Tab) on another ring moves nothing — that
-    // ring's press does (header).
-    if (this.pinned) return;
+    // ring's press does (header) — bar a favourite's ring under the pointer.
+    const swapPinned = this.pinned && via === "pointer" && overPin;
+    if (this.pinned && !swapPinned) return;
     this.cancelClose();
     if (this.shown === key) {
       this.cancelOpen();
@@ -379,14 +390,16 @@ export class PeekIntent {
         this.pendingKey = null;
         this.set(key);
       },
-      this.shown === null ? PEEK_OPEN_MS : PEEK_SWAP_MS,
+      this.shown === null || swapPinned ? PEEK_OPEN_MS : PEEK_SWAP_MS,
     );
   }
 
   /** The pointer (or focus) left the ring it was on. */
   leaveRing(via: Via = "pointer"): void {
-    if (via === "pointer") this.pointerKey = null;
-    else {
+    if (via === "pointer") {
+      this.pointerKey = null;
+      this.pointerOverPin = false;
+    } else {
       this.focusKey = null;
       this.muteFocus = false;
     }
@@ -464,7 +477,7 @@ export class PeekIntent {
     this.inCone = false;
     if (!settle) return;
     if (this.pointerKey !== null && this.pointerKey !== this.shown && this.pendingKey !== this.pointerKey) {
-      this.enterRing(this.pointerKey, "pointer");
+      this.enterRing(this.pointerKey, "pointer", this.pointerOverPin);
       return;
     }
     this.scheduleClose();
@@ -646,6 +659,26 @@ export function railOnStarred(
 ): (key: string, on: boolean) => void {
   return (key, on) => {
     if (!on || !favsOn()) return;
+    letGo(key);
+    open(key);
+  };
+}
+
+/** The rail's side of a WHERE-CHIP LEAVING THE PAGE (ClaudeRail
+ *  `onChipLeave`): the rail's card, showing a live favourite's chat (a hover
+ *  on its ring), hands it to the favourite's card in this window before the
+ *  hop — `letGo` first (the draft flushed, one composer per draft), then
+ *  `open` (the per-window open key, sessionStorage: it survives the hop).
+ *  Anything else (favourites off, a list chat, a favourite with no session)
+ *  just goes. */
+export function railOnChipLeave(
+  favsOn: () => boolean,
+  liveFav: (key: string) => boolean,
+  letGo: (key: string) => void,
+  open: (key: string) => void,
+): (key: string) => void {
+  return (key) => {
+    if (!favsOn() || !liveFav(key)) return;
     letGo(key);
     open(key);
   };

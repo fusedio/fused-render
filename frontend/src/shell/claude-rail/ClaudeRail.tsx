@@ -98,7 +98,14 @@
 //     (kept clear of the favourite's card, `avoid`) — unless ANY favourite's
 //     card is open in this window, where every favourite ring's hover is its
 //     caption alone (owner, 2026-11-04: "only the tooltip with the title").
-//     Its press opens the favourite's card and lets the hover card go.
+//     With none open it hovers EVEN OVER THIS RAIL'S PINNED CARD (owner,
+//     2026-11-05: "when I have a preview open in the non-fav section and I
+//     hover over items of the fav section it should show me the hover
+//     preview"): the card swaps to the favourite's chat and the pin moves
+//     with it (claude-rail-lib `ringMarks` `overPin`).
+//     Its press opens the favourite's card and lets the hover card go — and
+//     so does a press on that hover card's where-chip that leaves the page
+//     (`onChipLeave`): the chat goes with the reader, in its own card.
 //   - ONE ACTIVE RING PER SECTION (owner, 2026-11-04: "in one section at a
 //     time only one item should be active"): the favourites' is their open
 //     card's ring, else their last-pressed ring; the list's is the ring its
@@ -127,7 +134,8 @@
 //
 // A PINNED CARD MOVES ONLY ON A PRESS (owner, 2026-11-02: "click only" — the
 // click-or-hover trigger pref of 2026-10-31 is gone): resting on another
-// ring shows that ring's title and moves nothing; its press swaps the chat.
+// LIST ring shows that ring's title and moves nothing; its press swaps the
+// chat. (A favourite's ring is the exception, above.)
 // A pinned card can also be RESIZED from its left corners, and keeps that
 // size for the next pin (RailPeek; a hover card is always the default size).
 //
@@ -223,9 +231,9 @@ import {
   type ReadMark,
 } from "./claude-rail-lib";
 import { CanvasGlyph } from "@apps/canvases/glyph";
-import { FAV_SETTLE_MS, PeekIntent, keepAlive, railOnStarred, railOpenFav, statusWords } from "./rail-peek-lib";
+import { FAV_SETTLE_MS, PeekIntent, keepAlive, railOnChipLeave, railOnStarred, railOpenFav, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
-import { focusRail, registerRail, requestFavFocus, takeQuietFocus, useFavPeekState } from "./fav-peek-store";
+import { focusRail, registerRail, requestFavFocus, setRailPage, takeQuietFocus, useFavPeekState } from "./fav-peek-store";
 import { FAV_PEEK_ID } from "./FavouritePeek";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
@@ -709,6 +717,15 @@ export function ClaudeRail({
     const el = railRef.current;
     return el ? registerRail(el, hereOf) : undefined;
   }, [hereOf]);
+  // …and WHERE THE PAGE STANDS, for the favourite card's where-chip (fav-
+  // peek-store `setRailPage`): said again on every hop this rail makes in
+  // place and every node selected. After the register above, in the same
+  // commit, so the card hears one change.
+  const pageNode = place.kind === "canvas" ? (place.file ?? null) : null;
+  useEffect(() => {
+    const el = railRef.current;
+    if (el) setRailPage(el, { root, node: pageNode });
+  }, [root, pageNode]);
   // ONE CHAT, ONE MOUNT: this rail's card lets go of the chat the
   // favourite's card is taking — on a favourite ring's press
   // (`openFavourite`), when this card's own star is pressed on (`onStarred`,
@@ -783,6 +800,26 @@ export function ClaudeRail({
     },
     [letGo],
   );
+  // A FAVOURITE'S CHAT LEFT BY THIS CARD'S WHERE-CHIP (owner, 2026-11-05: a
+  // press "navigates to that canvas page but does not open the favourite
+  // card; a second press opens it"): the hover card on a favourite's ring is
+  // this rail's, and goes with the page — so before the chip's hop, the
+  // chat is handed to the favourite's card in this window (the open key is
+  // sessionStorage: it survives the hop, and the card stands on the next
+  // page's rail). The same hand-over as the ring's press (`openFavourite`).
+  const onChipLeave = useMemo(() => {
+    const seatOf = (key: string) => seatsRef.current.find((s) => s.pulse.key === key);
+    return railOnChipLeave(
+      () => favsOnRef.current,
+      (key) => favKeys.has(key) && !!seatOf(key)?.pulse.session_id,
+      letGo,
+      (key) => {
+        const seat = seatOf(key);
+        if (seat) setLastFav(lastChatId(seat.pulse));
+        setFavOpen(key);
+      },
+    );
+  }, [favKeys, letGo]);
   // JSON, not a joined string: a key is free to contain any delimiter.
   const seatKeys = JSON.stringify(seats.map((s) => s.pulse.key));
   useEffect(() => {
@@ -1060,11 +1097,11 @@ export function ClaudeRail({
     ringsWere.current = ringOrder;
     if (lastPointer.current) stillAt.current = lastPointer.current;
   }, [ringOrder]);
-  const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>) => {
+  const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>, overPin: boolean) => {
     const at = stillAt.current;
     if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
     stillAt.current = null;
-    intent.enterRing(key, "pointer");
+    intent.enterRing(key, "pointer", overPin);
   };
   useEffect(() => {
     if (node || !refocusPlus.current) return;
@@ -1277,8 +1314,10 @@ export function ClaudeRail({
               // window (header) — in the foot, or still in the list a moment
               // after its star was pressed (`railOpenFav`): the hover is its
               // caption; so is every other favourite's ring while any favourite card is open.
+              // A favourite's ring over a pinned card is the exception: it
+              // swaps the card (`wears.overPin`, claude-rail-lib `ringMarks`).
               const favRing = wears.favRing;
-              const titleOnly = (peekOn && pinned && peekKey !== null && peekKey !== t.key) || favRing || (peekOn && !wears.hovers);
+              const titleOnly = wears.titleOnly;
               const captionless = peekOn && !titleOnly;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
@@ -1334,7 +1373,8 @@ export function ClaudeRail({
                         ...(!wears.hovers
                           ? {}
                           : {
-                              onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(t.key, e),
+                              onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) =>
+                                enterRing(t.key, e, wears.overPin),
                               // A focus HANDED here (a card shutting
                               // under the keyboard, fav-peek-store
                               // `focusRail`) opens no card.
@@ -1647,6 +1687,8 @@ export function ClaudeRail({
           onNoRoom={onNoRoom}
           onOpenChat={openChat}
           here={hereOf}
+          pageRoot={root}
+          onChipLeave={onChipLeave}
           held={held}
           onHeld={setHeld}
           onStarred={onStarred}

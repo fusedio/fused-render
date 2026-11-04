@@ -760,34 +760,31 @@
   border: 1px solid var(--border);
   color: var(--fg-muted);
 }
-.claude-rail-peek-scope.is-node {
-  color: var(--fg);
-  background: rgba(var(--tint), 0.06);
-}
-/* The where-chip is a LINK (RailPeek; owner, 2026-11-04: "click on the tag
-   — we should go to the page/node, wherever we have"): the same chip, no
-   underline, and a hover wash like the head's other seats. The chip naming
-   the page's own selection is `aria-disabled` and stays still. */
-a.claude-rail-peek-scope,
-a.claude-rail-peek-scope:hover {
+/* The where-chip FILLS ONLY WHEN IT IS A DOOR (RailPeek; owner, 2026-11-05:
+   "filled background only when a click navigates or does something"): a
+   link to another folder, file or canvas, or a node of this canvas to
+   select (`.is-door`, claude-rail-lib `chipDoor`). A chip naming the place
+   the page already stands on is a plain-text span — the outline alone, the
+   muted ink, the default cursor. The door: no underline, ink, the fill, and
+   a firmer wash on hover. */
+a.claude-rail-peek-scope.is-door,
+a.claude-rail-peek-scope.is-door:hover {
   text-decoration: none;
 }
-a.claude-rail-peek-scope {
+a.claude-rail-peek-scope.is-door {
   display: inline-block;
   cursor: pointer;
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
   transition:
     background-color 0.12s ease,
     border-color 0.12s ease;
 }
-a.claude-rail-peek-scope[aria-disabled="true"] {
-  cursor: default;
-}
-a.claude-rail-peek-scope:not([aria-disabled="true"]):hover {
-  color: var(--fg);
+a.claude-rail-peek-scope.is-door:hover {
   background: rgba(var(--tint), 0.14);
   border-color: rgba(var(--tint), 0.35);
 }
-a.claude-rail-peek-scope:not([aria-disabled="true"]):active {
+a.claude-rail-peek-scope.is-door:active {
   background: rgba(var(--tint), 0.2);
 }
 a.claude-rail-peek-scope:focus-visible {

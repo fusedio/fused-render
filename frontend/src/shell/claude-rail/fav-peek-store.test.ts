@@ -16,6 +16,7 @@ import {
   registerRail,
   requestFavFocus,
   resetFavPeekStoreForTests,
+  setRailPage,
   takeFavFocus,
   takeQuietFocus,
   useFavOpenRow,
@@ -243,6 +244,41 @@ describe("the page's canvas rides with its rail", () => {
     registerRail(rail("b"));
     expect(railHere(rail("b"))).toBeNull();
     expect(railHere(null)).toBeNull();
+  });
+});
+
+describe("the page a rail stands on", () => {
+  it("is the top rail's, heard on a hop in place and on a node selected, and gone with the rail", async () => {
+    const a = rail("a");
+    const b = rail("b");
+    registerRail(a);
+    setRailPage(a, { root: "folder:/x", node: null });
+    await settle();
+    expect(favPeekState().page).toEqual({ root: "folder:/x", node: null });
+    // The explorer's one rail hops from folder to file in place.
+    setRailPage(a, { root: "file:/x/a.py", node: null });
+    await settle();
+    expect(favPeekState().page?.root).toBe("file:/x/a.py");
+    // A second rail on top: its page.
+    const offB = registerRail(b);
+    setRailPage(b, { root: "canvas:prod:c", node: null });
+    await settle();
+    expect(favPeekState().page?.root).toBe("canvas:prod:c");
+    // A node selected: the readers hear it.
+    const before = favPeekState();
+    setRailPage(b, { root: "canvas:prod:c", node: "hex.py" });
+    await settle();
+    expect(favPeekState()).not.toBe(before);
+    expect(favPeekState().page?.node).toBe("hex.py");
+    // The same page said again: no change heard.
+    const same = favPeekState();
+    setRailPage(b, { root: "canvas:prod:c", node: "hex.py" });
+    await settle();
+    expect(favPeekState()).toBe(same);
+    // The top rail leaves: the one under it, and its page.
+    offB();
+    await settle();
+    expect(favPeekState().page?.root).toBe("file:/x/a.py");
   });
 });
 
