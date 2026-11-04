@@ -437,8 +437,11 @@ def terminal_enabled(bot) -> bool:
 # Revoked in Settings › Permissions › Approved forever.
 # `trusted` is the app-level rule: it lives in bot.json `trusted_apps` (the Settings checkbox "Apps it may use
 # without asking"), never in `allow_rules`. The old per-tool kinds `tool` / `py` migrate into it (migrate_app_rules).
+# `connect` is the same for a connected service: it lives in bot.json `connections` (Settings › Connections, one
+# switch per service), never in `allow_rules`; a service not ticked asks on EVERY call, even under "Never ask".
 FOREVER_KINDS = frozenset({"browser", "builtin", "text", "upload", "build", "terminal"})
 TRUSTED_KIND = "trusted"
+CONNECT_KIND = "connect"
 _TRAIL_COUNT = re.compile(r"[\s(\[]*\d+[)\]]*$")  # "Submit review (3)" / "Approve 2" -> "Submit review"
 
 
@@ -478,6 +481,8 @@ def forever_rule(bot, act: str, d: dict, obs: dict):
         rec = apptools.find(apptools.registry(), app, name)
         if rec is None:
             return None
+        if apptools.is_connect(rec):
+            return connect_rule(apptools.connect_key(rec))  # one switch per SERVICE (Settings › Connections)
         return trusted_rule(rec.app)
     if act == "py":
         app_dir, file, _ = bot.py_ref(d)
@@ -581,6 +586,27 @@ def trusted_rule(app: str):
     return {"kind": TRUSTED_KIND, "key": key, "label": f"uses the {app} app"} if key else None
 
 
+def connect_rule(key: str):
+    """The service-level rule for a connected service: {kind: connect, key: <provider key>}; the label names the
+    service ("uses Notion"), and the tick lands in bot.json `connections` (apptools.allow_connection)."""
+    k = apptools.norm_app(key)
+    return {"kind": CONNECT_KIND, "key": k, "label": f"uses {apptools.connect_title(key)}"} if k else None
+
+
+def must_ask(bot, act: str, d: dict) -> bool:
+    """Calls whose card shows under "Never ask" too: bot management and installs (ALWAYS_ASK), the terminal, and a
+    `tool` call into a connected service this bot is not yet allowed to use (bot.json `connections`): a bot gets
+    access to a signed-in service only from the user's yes, whatever its approval setting says."""
+    if act in ALWAYS_ASK or act == "terminal_run":
+        return True
+    if act == "tool":
+        app, name, _ = apptools.tool_ref(d or {})
+        rec = apptools.find(apptools.registry(), app, name)
+        return rec is not None and apptools.is_connect(rec) \
+            and not apptools.is_connection_allowed(getattr(bot, "meta", None) or {}, apptools.connect_key(rec))
+    return False
+
+
 def migrate_app_rules(meta) -> bool:
     """Old per-tool `allow_rules` (kind `tool` key `app/tool`, kind `py` key `app/file`) become ticks in
     `trusted_apps`, and every finished build (`builds[].done_at`) is ticked too: both ran without a card before,
@@ -632,6 +658,8 @@ def forever_match(bot, rule) -> bool:
     meta = getattr(bot, "meta", None) or {}
     if rule["kind"] == TRUSTED_KIND:
         return apptools.is_trusted(meta, rule["key"])
+    if rule["kind"] == CONNECT_KIND:
+        return apptools.is_connection_allowed(meta, rule["key"])
     rules = clean_allow_rules(meta.get("allow_rules"))
     if rule["kind"] == "terminal":
         return any(r["kind"] == "terminal" and terminal_rule_covers(r["key"], rule["key"]) for r in rules)
@@ -645,10 +673,13 @@ def add_allow_rule(bot, rule) -> None:
     with bot.lock:
         if rule["kind"] == TRUSTED_KIND:
             apptools.trust_app(bot.meta, rule["key"])  # the Settings checkbox, not a rule row
+        elif rule["kind"] == CONNECT_KIND:
+            apptools.allow_connection(bot.meta, rule["key"])  # the Settings › Connections switch
         else:
             bot.meta["allow_rules"] = clean_allow_rules([*(bot.meta.get("allow_rules") or []), rule])
     bot.save()
-    bot.emit("note", f"Won't ask again when this bot {rule['label']}. Undo it in Settings › Permissions.")
+    where = "Settings › Connections" if rule["kind"] == CONNECT_KIND else "Settings › Permissions"
+    bot.emit("note", f"Won't ask again when this bot {rule['label']}. Undo it in {where}.")
 
 
 def roster(bot) -> list[dict]:
@@ -1255,6 +1286,15 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         rec = apptools.find(apptools.registry(), app, name)
         if rec is None:
             return ""
+        if apptools.is_connect(rec):
+            # A connected service answers to bot.json `connections` (Settings › Connections), never to
+            # trusted_apps: a local app folder of the same name must not open it. Not ticked: every call asks
+            # (must_ask shows the card under "Never ask" too); ticked: runs at once, risky or not.
+            key = apptools.connect_key(rec)
+            if apptools.is_connection_allowed(bot.meta, key):
+                return ""
+            return (f"It uses {apptools.connect_title(key)} ({rec.name}), which this bot has no access to yet. "
+                    "Approve runs this one call; “Always approve” lets this bot use the service from now on.")
         if apptools.is_trusted(bot.meta, rec.app):
             return ""  # ticked under "Apps it may use without asking" (bot.json trusted_apps): runs at once, risky or not
         if d.get("risky") is True:

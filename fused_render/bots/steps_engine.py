@@ -390,8 +390,9 @@ def run(bot, task, label=None):
             # An "Approve forever" rule from an earlier card skips it (tools.forever_rule; the same rule set as
             # the agent engine, so a bot moved to a local model keeps what the user allowed).
             rule = tools.forever_rule(bot, act, decision, obs) if why else None
-            # ALWAYS_ASK (marketplace_install) raises the card under "Never ask" too, like the agent engine's _act.
-            ask = bool(why) and (act in tools.ALWAYS_ASK or (bot.meta.get("approval") or "ask") != "auto")
+            # ALWAYS_ASK (marketplace_install) and a service this bot may not use yet (tools.must_ask) raise the card
+            # under "Never ask" too, like the agent engine's _act.
+            ask = bool(why) and (tools.must_ask(bot, act, decision) or (bot.meta.get("approval") or "ask") != "auto")
             if ask and tools.forever_match(bot, rule):
                 bot.emit("note", f"Running without asking ({rule['label']}: approved forever).")
                 history.append(f"APPROVED by a standing rule the user set: {tools.describe(bot, act, decision, obs)}")
@@ -544,7 +545,7 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
     declined = bot.declined_offers()
     if declined:
         dls_s += "\n\nOFFERS DECLINED (the user turned these app offers down recently; do not offer them again): " + ", ".join(sorted(declined))
-    dls_s += apptools.prompt_section(apptools.registry(), apptools.trusted_set(bot.meta))
+    dls_s += apptools.prompt_section(apptools.registry(), apptools.trusted_set(bot.meta), apptools.connections_set(bot.meta))
     dls_s += apptools.skill_section(bot._skill_dirs(task))  # SKILL.md of the apps this task needs (see _skill_dirs)
     skills_s = bot.skills_for_prompt(task)
     # CURRENT RESULT: the last app call's value IS the bot's current state.

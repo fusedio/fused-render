@@ -1,5 +1,5 @@
 // Settings (edit an existing bot), on shadcn/ui (owner's ask, 2026-10-07: "the entire settings modal black, use
-// shadcn"): a Dialog with a rail of sections — General · Permissions · Browser · Skills · Routines · Memory, plus
+// shadcn"): a Dialog with a rail of sections — General · Permissions · Connections · Browser · Skills · Routines · Memory, plus
 // Phone on Super Bot (the one bot reachable over iMessage, docs §10) — and one setting per
 // row (SettingsRow.tsx): its name and one line of why on the left, the control on the right. Skills and Routines
 // (once their own dialogs behind the ☰ menu, folded in 2026-10-09) are lists whose every op posts at once, like the
@@ -30,6 +30,7 @@ import { faceOf } from "../lib/face";
 import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
 import { exportBotFile, type BotDialogValue } from "./actions";
 import { askConfirm } from "./ask";
+import { ConnectionsSection } from "./ConnectionsSection";
 import { FacePopover } from "./FacePopover";
 import { PhoneSection } from "./PhoneSection";
 import { RoutinesSection } from "./RoutinesSection";
@@ -37,7 +38,7 @@ import { Row, Rows } from "./SettingsRow";
 import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 import { SkillsSection } from "./SkillsSection";
 
-export type SettingsTab = "general" | "permissions" | "browser" | "skills" | "routines" | "memory" | "phone";
+export type SettingsTab = "general" | "permissions" | "connections" | "browser" | "skills" | "routines" | "memory" | "phone";
 
 export interface BotSettingsProps {
   bot: Bot;
@@ -48,7 +49,7 @@ export interface BotSettingsProps {
 
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
-  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"], ["browser", "Browser"], ["skills", "Skills"],
+  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"], ["connections", "Connections"], ["browser", "Browser"], ["skills", "Skills"],
     ["routines", "Routines"], ["memory", "Memory"],
     ...(isSuper ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
   const [tab, setTab] = useState<SettingsTab>(() => (tabs.some(([t]) => t === tab0) ? (tab0 as SettingsTab) : "general"));
@@ -58,7 +59,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", terminal: bot.terminal === true, encrypt: !!bot.encrypt,
     maxSteps: bot.max_steps ? String(bot.max_steps) : "",
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
-    superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], allowRules: bot.allow_rules || [],
+    superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], connections: bot.connections || [], allowRules: bot.allow_rules || [],
     folders: bot.folders || [],
     browserId: isSuper ? "" : loginValue(bot),
   }));
@@ -100,6 +101,21 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     }
     prevLive.current = liveTrusted;
   }, [liveKey]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // Connected services this bot may use (bot.connections, Settings › Connections): the same live-fold as
+  // trusted_apps, since a card answered "Always approve" ticks a service while this dialog is open.
+  const [connections, setConnections] = useState<string[]>(init.connections);
+  const liveConnections = bot.connections || [];
+  const liveConnKey = liveConnections.join("|");
+  const prevLiveConn = useRef(liveConnections);
+  useEffect(() => {
+    const before = prevLiveConn.current;
+    const added = liveConnections.filter((a) => !before.includes(a));
+    const removed = before.filter((a) => !liveConnections.includes(a));
+    if (added.length || removed.length) {
+      setConnections((cur) => [...cur.filter((a) => !removed.includes(a)), ...added.filter((a) => !cur.includes(a))]);
+    }
+    prevLiveConn.current = liveConnections;
+  }, [liveConnKey]);  // eslint-disable-line react-hooks/exhaustive-deps
   const [allowRules, setAllowRules] = useState<AllowRule[]>(init.allowRules);
   // Folders it may read (docs §2 `folders`): the user's own folders, read-only for the bot. The native folder dialog
   // (POST /api/fs/pick-folder, the same one the templates use) when this machine has one; a typed path otherwise.
@@ -123,12 +139,13 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, ...(terminalFeature ? { terminal } : {}), encrypt, profile, maxSteps,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
-    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, trustedAppsWas: liveTrusted, folders,
+    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, trustedAppsWas: liveTrusted, connections, connectionsWas: liveConnections, folders,
     allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
   // Dirty = what Save would send. The trusted-apps pair is compared as the add / remove diff, not the lists: a tick
   // that lands from a build or a card while the dialog is open changes both lists and is not the user's edit.
   const fingerprint = (v: BotDialogValue) => JSON.stringify({ ...v,
-    trustedApps: v.trustedApps.filter((a) => !v.trustedAppsWas.includes(a)), trustedAppsWas: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)) });
+    trustedApps: v.trustedApps.filter((a) => !v.trustedAppsWas.includes(a)), trustedAppsWas: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)),
+    connections: v.connections.filter((a) => !v.connectionsWas.includes(a)), connectionsWas: v.connectionsWas.filter((a) => !v.connections.includes(a)) });
   const [initial] = useState(() => fingerprint(read()));
   const okDisabled = fingerprint(read()) === initial;
   const n = name.trim();
@@ -202,7 +219,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
       <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
         <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>Settings · {n || init.name}</DialogTitle>
-          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its playbooks, its routines, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
+          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, the services it may use, its browser, its playbooks, its routines, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 gap-6 px-6 pb-5">
           <nav className="-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start" aria-label="Settings sections">
@@ -344,6 +361,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 ) : null}
               </Rows>
             ) : null}
+
+            {tab === "connections" ? <ConnectionsSection botName={n || init.name} enabled={connections} setEnabled={setConnections} /> : null}
 
             {tab === "browser" ? (
               <Rows>

@@ -197,7 +197,7 @@ reply:  {seq, role, text}   (quoted message the user replied to)
 
 Bot summary (`Bot.summary(light, detail)`): every key of `bot.json`
 (`id, name, model, effort, status, instructions, created, task, step, url,
-title, note, updated, approval, build_access, terminal, trusted_apps, allow_rules, folders, face, routines, pinned, hidden,
+title, note, updated, approval, build_access, terminal, trusted_apps, connections, allow_rules, folders, face, routines, pinned, hidden,
 reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
 `seq`, `browser: {running, url, title, headed, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
@@ -278,7 +278,25 @@ the card and beats the model's `risky: true` flag (for a click that flag is the
 only trigger). Never for `bot_create` / `bot_settings` (§12) or a phone-started
 Super Bot task (§5: no button on the card, no match), and for a built-in only
 while the task has not read the web (the posture in §6 stands). Revoked under
-Settings → Permissions → Approved forever (`allow_rules_remove`: removals only, applied to the live list, since the task thread writes it too); the `clone` copies them. `folders`: `["<abs path>", …]`, the user's own
+Settings → Permissions → Approved forever (`allow_rules_remove`: removals only, applied to the live list, since the task thread writes it too); the `clone` copies them.
+`connections`: provider keys of `fused_render.connect` (`notion`, `github`,
+`slack`…, normalised like app folders) this bot may use (2026-11-04). The
+sign-in is GLOBAL (Preferences → Connections, one token per service on this
+Mac); access is PER BOT and off by default. A `tool` call into a service not
+listed raises an approval card on EVERY call, read-only or not, and under
+"Never ask" too (`tools.must_ask`, read by both engines before `approval`:
+a bot gets a signed-in service only from the user's yes); the card's third
+button ticks the service (rule kind `connect`, key = the provider key,
+`apptools.allow_connection`; never an `allow_rules` row). A listed service
+runs without a card, risky or not, like a trusted app. `trusted_apps` never
+opens a service (a local app folder and a service may share a name). Shown as
+Settings → Connections (one row per provider: the global sign-in buttons, and
+the bot's switch); the dialog sends `connections_add` / `connections_remove`
+against the live list, since cards write it too. The APP TOOLS prompt heads
+a listed service "(enabled for you: its tools never ask)" and any other
+"(not enabled for this bot: every call asks first)" with every tool tagged
+`[approval]`. User-only (never in `MANAGE_FIELDS`), private (not in
+`store.PUBLIC_KEYS`), copied by `clone`. `folders`: `["<abs path>", …]`, the user's own
 folders this bot may READ (Settings → Permissions → "Folders it may read",
 2026-10-15): plain paths, no per-folder state, nothing managed by the bot. They
 are the only paths a bot's file tools (`readfile`, `upload`, `ls`, `find`) may
@@ -321,7 +339,8 @@ POST   /api/bots/<id>/attach          {name, data: <base64>}                -> {
 POST   /api/bots/<id>/react           {seq, emoji}                          -> {ok, reactions}
 POST   /api/bots/<id>/flag            {pinned?, hidden?, face?: {shape, color, icon}} -> {ok}   (icon: a preset key = brand mark)
 POST   /api/bots/<id>/settings        {name?, model?, effort?, instructions?, memory?, approval?, build_access?,
-                                       encrypt?, imessage_handle?, imessage_to?, trusted_apps?, allow_rules_remove?,
+                                       encrypt?, imessage_handle?, imessage_to?, trusted_apps?, trusted_apps_add?,
+                                       trusted_apps_remove?, connections_add?, connections_remove?, allow_rules_remove?,
                                        folders?}  -> {ok}   ("rename" in OpenBot;
                                        POST because the server has no do_PATCH)
 POST   /api/bots/<id>/profile         {profile}                             -> {ok}   (import a Chrome profile into the bot's

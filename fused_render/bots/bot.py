@@ -4465,6 +4465,7 @@ def clone(src_id, name="", share=True):
             "approval": src.meta.get("approval", "ask"), "build_access": src.meta.get("build_access", "scoped"),
             "terminal": src.meta.get("terminal") is True,
             "trusted_apps": apptools.clean_trusted_apps(src.meta.get("trusted_apps")),
+            "connections": apptools.clean_connections(src.meta.get("connections")),
             "allow_rules": _tools_mod().clean_allow_rules(src.meta.get("allow_rules")),
             "folders": clean_folders(src.meta.get("folders")),
             # The apps manifest as the source has it (export-dialog edits included); present, so __init__ does

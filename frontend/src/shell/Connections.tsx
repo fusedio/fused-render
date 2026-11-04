@@ -3,24 +3,30 @@
 // its sign-in, its state and the tool count its MCP server (or native pack)
 // offers. `?tab=connections`.
 //
-// NO TOKEN PASSES THROUGH THIS FILE, in either direction — the same rule as
-// settings/accounts.tsx's sign-ins. A login starts the server's flow
-// (`POST /api/connect/<key>/login`), the vendor's consent page opens in a new
-// tab, the server stores what comes back, and this page only reads the state
-// and the account name. The one exception is a pasted API key, which goes up
-// once and is never read back.
-//
-// POLLING: once a second while any card is pending (a person is finishing a
-// browser round trip, and the page should flip the moment they do), else
-// every 30 s (a token can lapse, or another window can connect). Only the
-// pending cards are re-read on the fast cadence.
+// The client, the types and the polling live in platform/lib/connect.ts (the
+// bot Settings › Connections tab shares them: a sign-in is global); this file
+// is the page and its cards. NO TOKEN PASSES THROUGH HERE — see that file.
 //
 // THE PRIMARY BUTTON is the first auth kind the server lists as available;
 // everything else (paste a key, bring your own OAuth app, a CLI login) is
 // under Advanced, so the card a newcomer sees has one button on it.
-import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import { Copy } from "lucide-react";
-import { getJson, postJson } from "@platform/lib/api";
+import {
+  againBody,
+  cancelConnection,
+  connectPath,
+  defaultAuth,
+  kindLabel,
+  logoutConnection,
+  pasteCallback,
+  toolCount,
+  useConnections,
+  type ConnectAuth,
+  type ConnectProvider,
+  type ConnectStatus,
+  type LoginBody,
+} from "@platform/lib/connect";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -29,164 +35,25 @@ import { Input } from "@platform/shadcn/ui/input";
 import { PointerRow } from "./settings/ai";
 import { rowId, SettingsViewContext } from "./settings/SettingRow";
 
-// ── The /api/connect contract (SPEC §11 manager.list / manager.status) ─────
-
-export type ConnectState = "disconnected" | "pending" | "connected" | "reconnect" | "error";
-
-export interface ConnectAuth {
-  kind: string;
-  label?: string;
-  available: boolean;
-  reason?: string | null;
-  byo?: { manifest?: string; docs?: string } | null;
-  /** api-key: where to make one. */
-  docs?: string | null;
-}
-
-export interface ConnectStatus {
-  state: ConnectState;
-  kind?: string | null;
-  account?: string | null;
-  url?: string | null;
-  opened?: boolean;
-  user_code?: string | null;
-  verification_uri?: string | null;
-  error?: string | null;
-  /** A count from status(); the list row carries the pack's source with the
-   *  count inside it (`{remote, native, count}`). */
-  tools?: number | { remote?: string | null; native?: boolean; count?: number } | null;
-  store?: "keychain" | "file" | string;
-}
-
-export interface ConnectProvider extends ConnectStatus {
-  key: string;
-  name: string;
-  icon?: string | null;
-  privacy?: string | null;
-  auth: ConnectAuth[];
-}
-
-export interface LoginBody {
-  kind?: string;
-  client_id?: string;
-  value?: string;
-}
-
-const connectPath = (key: string, tail = "") => `/api/connect/${encodeURIComponent(key)}${tail}`;
-
-export function listConnections(): Promise<ConnectProvider[]> {
-  return getJson<ConnectProvider[] | { providers?: ConnectProvider[] }>("/api/connect").then((d) =>
-    Array.isArray(d) ? d : (d?.providers ?? []),
-  );
-}
-export const getConnection = (key: string) => getJson<ConnectStatus>(connectPath(key));
-export const loginConnection = (key: string, body: LoginBody) =>
-  postJson<ConnectStatus>(connectPath(key, "/login"), body);
-export const cancelConnection = (key: string) => postJson<ConnectStatus>(connectPath(key, "/cancel"), {});
-export const logoutConnection = (key: string) => postJson<ConnectStatus>(connectPath(key, "/logout"), {});
-export const pasteCallback = (key: string, url: string) =>
-  postJson<ConnectStatus>(connectPath(key, "/callback"), { url });
-
-export const FAST_POLL_MS = 1000;
-export const SLOW_POLL_MS = 30_000;
-
-/** How long until the next status read: fast while a sign-in is in flight. */
-export function pollDelay(states: readonly ConnectState[]): number {
-  return states.includes("pending") ? FAST_POLL_MS : SLOW_POLL_MS;
-}
-
-/** The kind the card's main button uses: the first one the server says works. */
-export function defaultAuth(auth: readonly ConnectAuth[]): ConnectAuth | null {
-  return auth.find((a) => a.available) ?? null;
-}
-
-export function toolCount(st: ConnectStatus): number | null {
-  if (typeof st.tools === "number") return st.tools;
-  if (st.tools && typeof st.tools.count === "number") return st.tools.count;
-  return null;
-}
-
-const KIND_LABELS: Record<string, string> = {
-  "mcp-oauth": "Sign in with your browser",
-  "oauth-pkce": "Sign in with your own OAuth app",
-  "oauth-device": "Sign in with a device code",
-  cli: "Use the command-line login",
-  "api-key": "Paste an API key",
-};
-const kindLabel = (a: ConnectAuth) => a.label || KIND_LABELS[a.kind] || a.kind;
+// The contract and its helpers, re-exported for the callers (and the test)
+// that reached them here before they moved to platform/lib/connect.ts.
+export {
+  defaultAuth,
+  FAST_POLL_MS,
+  pollDelay,
+  SLOW_POLL_MS,
+  toolCount,
+  type ConnectAuth,
+  type ConnectProvider,
+  type ConnectState,
+  type ConnectStatus,
+  type LoginBody,
+} from "@platform/lib/connect";
 
 // ── The page ────────────────────────────────────────────────────────────────
 
 export default function Connections() {
-  const [rows, setRows] = useState<ConnectProvider[] | null>(null);
-  const [statuses, setStatuses] = useState<Record<string, ConnectStatus>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
-  // Keys whose login this page started and whose consent URL it has not
-  // opened yet. The flow runs on a server thread, so the URL can arrive on
-  // the login's answer or on a poll after it; either way it opens once.
-  const wantOpen = useRef(new Set<string>());
-  const statusesRef = useRef(statuses);
-  statusesRef.current = statuses;
-
-  useEffect(() => {
-    let alive = true;
-    listConnections()
-      .then((r) => alive && setRows(r))
-      .catch((e) => alive && setError((e as Error).message));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const apply = useCallback((key: string, st: ConnectStatus) => {
-    if (wantOpen.current.has(key)) {
-      if (st.url) {
-        wantOpen.current.delete(key);
-        // The server opens the consent page itself when it can (desktop app:
-        // same machine); it says so with `opened`, and a second tab is noise.
-        if (!st.opened) window.open(st.url, "_blank");
-      } else if (st.state !== "pending") {
-        wantOpen.current.delete(key);
-      }
-    }
-    setStatuses((prev) => ({ ...prev, [key]: st }));
-  }, []);
-
-  const stateOf = (p: ConnectProvider): ConnectStatus => statuses[p.key] ?? p;
-  const states = (rows ?? []).map((p) => stateOf(p).state);
-  const delay = pollDelay(states);
-
-  useEffect(() => {
-    if (!rows || rows.length === 0) return;
-    let alive = true;
-    const t = window.setTimeout(() => {
-      const now = rows.map((p) => ({ key: p.key, st: statusesRef.current[p.key] ?? p }));
-      const pending = now.filter((r) => r.st.state === "pending");
-      const keys = (delay === FAST_POLL_MS ? pending : now).map((r) => r.key);
-      void Promise.all(
-        keys.map((k) =>
-          getConnection(k)
-            .then((s) => alive && apply(k, s))
-            .catch(() => undefined), // a blip mid-login is not worth a banner
-        ),
-      ).then(() => alive && setTick((n) => n + 1));
-    }, delay);
-    return () => {
-      alive = false;
-      window.clearTimeout(t);
-    };
-  }, [rows, delay, tick, apply]);
-
-  const login = async (key: string, body: LoginBody) => {
-    wantOpen.current.add(key);
-    try {
-      apply(key, await loginConnection(key, body));
-    } catch (e) {
-      wantOpen.current.delete(key);
-      throw e;
-    }
-  };
+  const { rows, error, stateOf, apply, login } = useConnections();
 
   return (
     <section className="settings-section" aria-label="Services" id={rowId("connections")} data-setting="connections">
@@ -280,14 +147,7 @@ function ProviderCard({
   // is on the card itself rather than behind a Connect that could not work.
   const primaryIsKey = primary?.kind === "api-key";
   const others = p.auth.filter((a) => a !== primary);
-  // Reconnect / Try again keep the kind the record was made with when it is
-  // still on offer — a BYO client id or a CLI login should not silently
-  // become the default flow.
-  const again: LoginBody = (() => {
-    const was = p.auth.find((a) => a.kind === st.kind && a.available);
-    const use = was ?? primary;
-    return use ? { kind: use.kind } : {};
-  })();
+  const again: LoginBody = againBody(p, st);
   const n = toolCount(st);
 
   let status: ReactNode;

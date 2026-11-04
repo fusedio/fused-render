@@ -30,6 +30,10 @@ export interface BotDialogValue {
   /** The same list as the dialog opened: Save sends the additions and removals against it, never the full list, because
    *  a build finishing and a card answered "Always approve" also tick apps while Settings is open (it is non-modal). */
   trustedAppsWas: string[];
+  /** Connected services this bot may use (Settings > Connections), and the list as the dialog opened: Save sends the
+   *  diff, never the full list, because a card answered "Always approve" ticks a service while Settings is open. */
+  connections: string[];
+  connectionsWas: string[];
   /** Calls approved forever from a card (Settings > Permissions > Approved forever) the user removed in the dialog.
    *  Removals only: the task thread writes new rules while Settings is open (it is non-modal), so a full list would
    *  overwrite them; the backend drops these from the list as it stands at Save. */
@@ -69,7 +73,9 @@ export async function saveSettings(id: string, v: BotDialogValue): Promise<void>
   const encrypt = switched && v.encrypt === !!was?.encrypt ? {} : { encrypt: v.encrypt };
   const rules = v.allowRulesRemoved.length ? { allow_rules_remove: v.allowRulesRemoved } : {};
   const apps = { trusted_apps_add: v.trustedApps.filter((a) => !v.trustedAppsWas.includes(a)),
-    trusted_apps_remove: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)) };
+    trusted_apps_remove: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)),
+    connections_add: v.connections.filter((a) => !v.connectionsWas.includes(a)),
+    connections_remove: v.connectionsWas.filter((a) => !v.connections.includes(a)) };
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
     build_access: v.buildAccess, ...(v.terminal !== undefined ? { terminal: v.terminal } : {}), ...encrypt, ...phone(v), super_access: v.superAccess,
     ...(v.maxSteps !== undefined ? { max_steps: Number(v.maxSteps) || 0 } : {}),

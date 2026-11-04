@@ -768,6 +768,54 @@ def set_trusted_apps(meta, add=(), remove=()):
     meta["trusted_apps"] = cur
 
 
+# ---- connections: a per-bot whitelist of connected services ------------------------
+# bot.json `connections`: provider keys (`fused_render.connect`, normalised like app
+# folders) this bot may use. Sign-in is GLOBAL (Preferences › Connections, one token per
+# service on this machine); access is PER BOT and off by default: a `tool` call into a
+# service not in the list raises an approval card every time, read-only or not, even
+# under "Never ask" (tools.must_ask), and "Always approve" on that card ticks the
+# service here. A ticked service runs without a card, like a trusted app (one list,
+# ticked = without asking). Kept apart from `trusted_apps` because a local app folder
+# and a service may share a name ("notion"), and a tick on one must not open the other.
+# User-only: never in bot.MANAGE_FIELDS, never exported (store.PUBLIC_KEYS).
+def clean_connections(v):
+    """The stored form of a connections setting: normalised keys, deduped, strings only, order kept."""
+    return clean_trusted_apps(v)
+
+
+def connections_set(meta):
+    return set(clean_connections((meta or {}).get("connections")))
+
+
+def is_connection_allowed(meta, key):
+    """May this bot use the service `key`?"""
+    return bool(key) and norm_app(key) in connections_set(meta)
+
+
+def allow_connection(meta, key) -> bool:
+    """Tick the service for this bot (caller holds bot.lock and saves). True when meta changed."""
+    k = norm_app(key)
+    if not k:
+        return False
+    cur = clean_connections(meta.get("connections"))
+    if k in cur:
+        return False
+    meta["connections"] = [*cur, k]
+    return True
+
+
+def set_connections(meta, add=(), remove=()):
+    """The dialog's edit: additions and removals against the live list (a card answered "Always approve"
+    writes it too while Settings is open, so a full list from the dialog would clobber that tick)."""
+    cur = clean_connections(meta.get("connections"))
+    drop = set(clean_connections(list(remove)))
+    cur = [a for a in cur if a not in drop]
+    for a in clean_connections(list(add)):
+        if a not in cur:
+            cur.append(a)
+    meta["connections"] = cur
+
+
 # ---- prompt -------------------------------------------------------------------------
 SECTION_CAP = 6000
 DESC_CAP = 160
@@ -786,43 +834,52 @@ def _sig(rec):
     return ", ".join(parts)
 
 
-def _line(rec, trusted=False):
+def _line(rec, trusted=False, gated=False):
+    """`trusted`: no [approval] tag at all; `gated`: every tool tagged (a service this bot may not use yet)."""
     d = (rec.description or "").strip().replace("\n", " ")
     if len(d) > DESC_CAP:
         d = d[:DESC_CAP].rstrip() + "…"
-    return f"- {rec.name}({_sig(rec)}): {d}" + (" [approval]" if is_write(rec) and not trusted else "")
+    tag = " [approval]" if gated or (is_write(rec) and not trusted) else ""
+    return f"- {rec.name}({_sig(rec)}): {d}" + tag
 
 
-def _render(recs, limit, trusted=frozenset()):
+def _render(recs, limit, trusted=frozenset(), connections=frozenset()):
     by_app = {}
     for r in recs:  # a local app folder and a service may share a name: two headings
         by_app.setdefault((r.app, is_connect(r)), []).append(r)
     out = []
     for (app, conn), rs in by_app.items():
         head = app + (" (connected service)" if conn else "")
-        tr = norm_app(app) in trusted
-        if tr:
+        # A service answers to `connections`, a local app to `trusted_apps`; a tick on one never opens the other.
+        tr = norm_app(app) in (connections if conn else trusted)
+        gated = conn and not tr
+        if conn:
+            head += " (enabled for you: its tools never ask)" if tr else " (not enabled for this bot: every call asks first)"
+        elif tr:
             head += " (trusted: its tools never ask)"
         shown = rs if limit is None or len(rs) <= limit else rs[:limit]
         if len(shown) < len(rs):
             head += f" ({len(rs)} tools; first {limit} shown, all callable)"
-        out.append(head + "\n" + "\n".join(_line(r, tr) for r in shown))
+        out.append(head + "\n" + "\n".join(_line(r, tr, gated) for r in shown))
     return "\n".join(out)
 
 
-def prompt_section(recs, trusted=None):
+def prompt_section(recs, trusted=None, connections=None):
     """The APP TOOLS prompt section; `trusted` (normalised folder names, see
-    trusted_set) drops the [approval] tag from those apps' tools."""
+    trusted_set) drops the [approval] tag from those apps' tools; `connections`
+    (connections_set) does the same for those services, and every other
+    service's tools carry the tag since each call asks (docs §2)."""
     if not recs:
         return ""
     trusted = frozenset(trusted or ())
+    connections = frozenset(connections or ())
     services = ", and connected services (Notion, GitHub, Slack…) whose tools run on the service's own servers" \
         if any(is_connect(r) for r in recs) else ""
     hdr = (f"\n\nAPP TOOLS (local apps on this Mac{services}; call one with `tool` app name args. Prefer a tool over browsing when it "
            "does the job directly. Tools marked [approval] change something and pause for the user's yes; the rest run at once):\n")
-    body = _render(recs, None, trusted)
+    body = _render(recs, None, trusted, connections)
     if len(body) > SECTION_CAP:
-        body = _render(recs, PER_APP_MAX, trusted)
+        body = _render(recs, PER_APP_MAX, trusted, connections)
     return hdr + body
 
 

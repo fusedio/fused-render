@@ -230,19 +230,50 @@ def test_is_write_follows_read_only(connect, no_local):
 
 
 class _GateBot:
-    def __init__(self, trusted=()):
-        self.meta = {"trusted_apps": list(trusted)}
+    def __init__(self, trusted=(), connections=(), approval="ask"):
+        self.meta = {"trusted_apps": list(trusted), "connections": list(connections), "approval": approval}
 
 
-def test_gate_asks_for_a_write_tool_unless_trusted(connect, no_local):
+WRITE = {"app": "notion", "name": "notion-create-pages", "args": {"title": "x"}}
+READ = {"app": "notion", "name": "search", "args": {"query": "x"}}
+
+
+def test_gate_asks_on_every_call_until_the_service_is_enabled_for_the_bot(connect, no_local):
+    """bot.json `connections` (docs §2): a service not ticked asks on every call, read-only or not; ticked, it never
+    asks, risky or not. `trusted_apps` never opens a service: a local app folder may share its name."""
     apptools.registry(force=True)
-    write = {"app": "notion", "name": "notion-create-pages", "args": {"title": "x"}}
-    read = {"app": "notion", "name": "search", "args": {"query": "x"}}
-    assert "notion › notion-create-pages" in bot_tools.risk(_GateBot(), "tool", write, {})
-    assert bot_tools.risk(_GateBot(), "tool", read, {}) == ""
-    assert bot_tools.risk(_GateBot(["Notion"]), "tool", write, {}) == ""
-    assert "notion › search" in bot_tools.risk(_GateBot(["notion"]), "tool", dict(read, risky=True), {})
-    assert bot_tools.describe(_GateBot(), "tool", write, {}).startswith("call notion › notion-create-pages with ")
+    for d in (WRITE, READ, dict(READ, risky=True)):
+        why = bot_tools.risk(_GateBot(), "tool", d, {})
+        assert "It uses Notion (" in why and "no access to yet" in why and "Always approve" in why
+    assert "Notion (search)" in bot_tools.risk(_GateBot(trusted=["notion"]), "tool", READ, {})
+    for d in (WRITE, READ, dict(READ, risky=True)):
+        assert bot_tools.risk(_GateBot(connections=["Notion"]), "tool", d, {}) == ""
+    assert bot_tools.describe(_GateBot(), "tool", WRITE, {}).startswith("call notion › notion-create-pages with ")
+
+
+def test_access_card_shows_under_never_ask_too(connect, no_local):
+    """must_ask: the gate the engines read before `approval` — access to a signed-in service is the user's yes."""
+    apptools.registry(force=True)
+    assert bot_tools.must_ask(_GateBot(approval="auto"), "tool", READ)
+    assert not bot_tools.must_ask(_GateBot(approval="auto", connections=["notion"]), "tool", READ)
+    assert not bot_tools.must_ask(_GateBot(), "tool", {"app": "nope", "name": "x"})
+    assert bot_tools.must_ask(_GateBot(), "bot_create", {}) and bot_tools.must_ask(_GateBot(), "terminal_run", {})
+    assert not bot_tools.must_ask(_GateBot(), "click", {})
+
+
+def test_always_approve_ticks_the_service_not_trusted_apps(connect, no_local):
+    apptools.registry(force=True)
+    rule = bot_tools.forever_rule(_GateBot(), "tool", WRITE, {})
+    assert rule == {"kind": "connect", "key": "notion", "label": "uses Notion"}
+    assert not bot_tools.forever_match(_GateBot(), rule)
+    assert bot_tools.forever_match(_GateBot(connections=["notion"]), rule)
+    assert not bot_tools.forever_match(_GateBot(trusted=["notion"]), rule)
+    meta = {}
+    assert apptools.allow_connection(meta, "Notion") and meta["connections"] == ["notion"]
+    assert not apptools.allow_connection(meta, "notion")
+    apptools.set_connections(meta, add=["github"], remove=["notion"])
+    assert meta["connections"] == ["github"]
+    assert bot_tools.clean_allow_rules([rule]) == []  # never a rule row: the switch is the record
 
 
 # ---- prompt -------------------------------------------------------------------------
@@ -250,12 +281,15 @@ def test_prompt_section_heading_and_approval(connect, no_local):
     recs = apptools.registry(force=True)
     sec = apptools.prompt_section(recs)
     assert "and connected services (Notion, GitHub, Slack…) whose tools run on the service's own servers" in sec
-    assert "\nnotion (connected service)\n" in sec
-    assert "- search(query: str, limit: int=10, filter: dict=null): Search the workspace.\n" in sec
+    assert "- search(query: str, limit: int=10, filter: dict=null): Search the workspace. [approval]\n" in sec
     assert "- notion-create-pages(title: str, tags: list=null, draft: bool=null, w: float=null, x=null): Make pages. [approval]" in sec
+    assert "\nnotion (connected service) (not enabled for this bot: every call asks first)\n" in sec
+    assert "Search the workspace. [approval]\n" in sec  # not enabled: the read-only tool asks too
     trusted = apptools.prompt_section(recs, apptools.trusted_set({"trusted_apps": ["notion"]}))
-    assert "notion (connected service) (trusted: its tools never ask)" in trusted
-    assert "Make pages. [approval]" not in trusted and trusted.endswith("Make pages.")
+    assert "every call asks first" in trusted  # trusted_apps never opens a service
+    on = apptools.prompt_section(recs, connections=apptools.connections_set({"connections": ["Notion"]}))
+    assert "notion (connected service) (enabled for you: its tools never ask)" in on
+    assert "[approval]" not in on.split("\nnotion", 1)[1] and on.endswith("Make pages.")
 
 
 def test_prompt_header_unchanged_without_services(connect, tmp_path, monkeypatch):
@@ -273,7 +307,7 @@ def test_local_app_and_service_of_one_name_get_two_headings():
     local = apptools.ToolRec("notion", "/x/notion", "fake_echo", "Echoes.")
     svc = apptools.ToolRec("notion", "connect:notion", "search", "Searches.", spec=SEARCH)
     body = apptools._render([local, svc], None)
-    assert body.splitlines()[0] == "notion" and "notion (connected service)" in body.splitlines()
+    assert body.splitlines()[0] == "notion" and any(l.startswith("notion (connected service)") for l in body.splitlines())
 
 
 # ---- bot.run_tool / _deliver --------------------------------------------------------
