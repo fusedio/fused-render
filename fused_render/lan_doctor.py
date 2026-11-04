@@ -59,7 +59,8 @@ def reset_cache() -> None:
 def _run(args: list[str], timeout: float = 2.0) -> str | None:
     """stdout of a tool, or None when it is missing, fails or hangs."""
     try:
-        out = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+        out = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     return out.stdout if out.returncode == 0 else None
@@ -111,7 +112,7 @@ def _hostname_resolves(name: str) -> bool | None:
         # its fifth column.
         try:
             proc = subprocess.Popen(["dns-sd", "-G", "v4", name], stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, text=True)
+                                    stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace")
         except OSError:
             return None
         try:
