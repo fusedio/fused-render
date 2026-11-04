@@ -3957,11 +3957,6 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # more than one turn, which is the normal case here.
         cmd += ["--resume", session_id, "--resume-session-at", resume_at,
                 "--fork-session", "--session-id", new_session_id]
-    elif session_id and new_session_id and breakout:
-        # A BREAKOUT FORKED AT THE TIP: the whole session, no truncation, into
-        # a new minted id. The parent transcript is untouched.
-        cmd += ["--resume", session_id, "--fork-session",
-                "--session-id", new_session_id]
     elif session_id:
         cmd += ["--resume", session_id]
     elif new_session_id:
@@ -5029,14 +5024,13 @@ def _start(file: str, message: str, session_id: str, model: str,
     fork_parent = ""
     forked_from = ""
     clamped = False
-    # A BREAKOUT is a fork too (research-only, see `_claude_argv`): at a
-    # message when `fork_at` names one, at the TIP when it is empty. Claude
-    # only, and it needs the session to fork.
+    # A BREAKOUT is a fresh, research-only Claude session (see `_claude_argv`):
+    # the selected parent messages ride in its first message, so it names no
+    # session to fork or resume.
     #
     # `breakout_resume` is a LATER turn of a breakout that already exists (its
-    # live host is gone, so the page starts a new one): same policy, but the
-    # session is continued, not forked again.
-    tip_fork = False
+    # live host is gone, so the page starts a new one): same policy, and the
+    # session is continued.
     if breakout and not _breakout_pref():
         return {"error": "Breakout is off — turn it on in Preferences › Chats & tasks",
                 "reason": "breakout_disabled"}
@@ -5050,13 +5044,9 @@ def _start(file: str, message: str, session_id: str, model: str,
             return {"error": "no such breakout", "reason": "breakout_missing"}
         fork_at = ""
     elif breakout:
-        if not session_id or backend != "claude":
+        if backend != "claude" or session_id or fork_at:
             return {"error": "breakout is only available for Claude chats",
                     "reason": "unsupported", "backend": backend}
-        if _bad_id(session_id):
-            return {"error": "malformed session id"}
-        if not fork_at:
-            tip_fork, forked_from = True, session_id
     if fork_at:
         if not session_id or backend != "claude":
             return {"error": "fork is only available for Claude chats",
@@ -5150,7 +5140,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # CLI mints the id, the host announces it on the init row, and `_poll`
     # records it (the `session` file, the `recorded` marker, and — for this
     # case — the settings record below).
-    new_session_id = "" if (session_id and not fork_parent and not tip_fork) \
+    new_session_id = "" if (session_id and not fork_parent) \
         or backend in _SELF_MINTED_ID_BACKENDS else str(uuid.uuid4())
 
     # THE NON-CLAUDE AGENTS' ARGV, READY-MADE, before anything else is
@@ -5187,7 +5177,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # has — `_poll`, `_live_run`, `_send`'s fallback, the queue — and nothing
     # else about a run dir says which CLI is behind it.
     meta = {"file": file, "message": _strip_app_state(message),
-            "resumed_from": "" if (fork_parent or tip_fork) else session_id,
+            "resumed_from": "" if fork_parent else session_id,
             "mode": mode, "backend": backend}
     # A FORK IS NOT A CONTINUATION of the old session, so `resumed_from` stays
     # "" (like a fresh chat): `_live_run`, `_entry_session` and the Tasks

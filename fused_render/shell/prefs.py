@@ -502,7 +502,7 @@ def task_recap_titles_enabled() -> bool:
 
 
 def breakout_enabled() -> bool:
-    """Whether Breakout (research-only side chats forked from a conversation)
+    """Whether Breakout (research-only side chats seeded from selected messages)
     is available (default off — opt-in beta). Off, no Breakout buttons render
     and the agent refuses `breakout` starts. Only a stored `true` is on."""
     return read_prefs().get("breakout_enabled") is True

@@ -3298,8 +3298,8 @@ def _rekeyed_pendings(keys) -> dict[str, str]:
 
 
 def _breakout(task: dict, breakouts: dict) -> bool:
-    """Is this transcript a breakout — a side chat forked from another chat,
-    which keeps its transcript but is never a task (`tasks_store.BREAKOUTS_FILE`)?
+    """Is this transcript a breakout — a side chat opened from another chat's
+    messages, which keeps its transcript but is never a task (`tasks_store.BREAKOUTS_FILE`)?
     Keyed by session, no revival: a breakout stays one."""
     return isinstance(breakouts.get(str(task["session_id"])), dict)
 

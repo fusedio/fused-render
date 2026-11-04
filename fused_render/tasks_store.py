@@ -1044,8 +1044,8 @@ def mark_deleted(key: str, now: float | None = None) -> None:
 #
 #     {"<session-id>": {"at": 1755300000.0}}
 #
-# A BREAKOUT is a research-only side chat forked from a chat (agent.py
-# `_start(breakout=...)`). It is a real Claude session with a real transcript,
+# A BREAKOUT is a research-only side chat opened from selected chat messages
+# (agent.py `_start(breakout=...)`). It is a real Claude session with a real transcript,
 # and that transcript stays, but it is not a task: the Tasks scan drops these
 # sessions (`_breakout` in routers/tasks.py). Marked by the router from the
 # start's answer, keyed by session like `deleted.json` and for the same
