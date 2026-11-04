@@ -148,6 +148,7 @@ def start(agent, tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "_backend_for_session",
                         lambda sid, wd, hint="": "claude")
     monkeypatch.setattr(agent, "_breakout_pref", lambda: True)
+    monkeypatch.setattr(agent, "_breakout_recorded", lambda sid: sid == "BRK")
     holder = {"rows": ROWS}
     monkeypatch.setattr(agent, "_session_transcript_path",
                         lambda wd, sid: _transcript(tmp_path, holder["rows"]))
@@ -390,6 +391,23 @@ def test_start_breakout_resume_continues_without_forking(agent, start):
     meta = _meta(run_dir)
     assert meta["breakout"] is True and "forked_from" not in meta
     assert meta["resumed_from"] == "BRK"
+
+
+def test_start_breakout_resume_of_an_unrecorded_session_is_refused(agent, start):
+    out, req, run_dir = start("", session_id="ORDINARY", breakout=True,
+                              breakout_resume=True)
+    assert out["reason"] == "breakout_missing"
+    assert req is None and run_dir == ""
+
+
+def test_breakout_recorded_reads_the_global_store(agent, tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    assert agent._breakout_recorded("S1") is False
+    d = tmp_path / "claude-sessions"
+    d.mkdir()
+    (d / "breakouts.json").write_text(json.dumps({"S1": {"at": 1}}))
+    assert agent._breakout_recorded("S1") is True
+    assert agent._breakout_recorded("S2") is False
 
 
 def test_main_breakout_resume_param(agent, monkeypatch):

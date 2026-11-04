@@ -825,6 +825,23 @@ def _breakout_pref() -> bool:
     return isinstance(prefs, dict) and prefs.get("breakout_enabled") is True
 
 
+def _breakout_recorded(session_id: str) -> bool:
+    """Whether `session_id` is a breakout the server recorded
+    (`tasks_store.is_breakout`): `claude-sessions/breakouts.json` under the
+    GLOBAL home (`FUSED_RENDER_HOME`, never branch-nested — tasks_store's
+    STATE_DIR). A stdlib read for the same reason as `_breakout_pref`; missing
+    or unreadable reads as not recorded."""
+    root = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    try:
+        with open(os.path.join(root, "claude-sessions", "breakouts.json"),
+                  encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return (bool(session_id) and isinstance(state, dict)
+            and isinstance(state.get(str(session_id)), dict))
+
+
 def _strict_mcp_pref() -> bool:
     """Whether chat and Tasks-page sessions start "lean" — with
     `--strict-mcp-config`, so the user's own MCP servers and claude.ai
@@ -4978,6 +4995,10 @@ def _start(file: str, message: str, session_id: str, model: str,
         if not session_id or backend != "claude":
             return {"error": "breakout is only available for Claude chats",
                     "reason": "unsupported", "backend": backend}
+        if _bad_id(session_id) or not _breakout_recorded(session_id):
+            # `breakout=resume` skips the folder gate and runs research-only:
+            # only for a session the server recorded as a breakout.
+            return {"error": "no such breakout", "reason": "breakout_missing"}
         fork_at = ""
     elif breakout:
         if not session_id or backend != "claude":
