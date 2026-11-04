@@ -5152,9 +5152,10 @@ def _start(file: str, message: str, session_id: str, model: str,
             if clamped:
                 meta["fork_clamped"] = True
     if breakout:
-        # The Tasks scan's second guard (routers/tasks.py `_breakout_run`): a
-        # breakout is never a task. The first is `breakouts.json`, marked by
-        # the router from the start's answer.
+        # A breakout is never a task, and the guard that hides it is
+        # `breakouts.json` (routers/tasks.py `_breakout`), which the router marks
+        # from the start's answer. This flag is only a record of the run: the
+        # peek reads it, and `_set_mode` uses it to keep the chat in Ask mode.
         meta["breakout"] = True
     if new_session_id:
         # `session_id` on meta is the ANSWER — the conversation this run's turn
