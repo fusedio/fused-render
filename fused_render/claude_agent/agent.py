@@ -4852,26 +4852,46 @@ _HOST_FILES = {"claude": _SESSION_HOST, "copilot": _COPILOT_HOST,
 
 
 def _fork_point(transcript_path: str, prompt_uuid: str):
-    """Where a fork before the user prompt `prompt_uuid` resumes from: that
-    prompt's own `parentUuid` (often an `attachment` record; verified against
-    the CLI). "" when the prompt has no parent, so nothing precedes it and the
-    fork is a fresh chat; None when no such user record is in the transcript
-    (or the file is unreadable)."""
+    """Where a fork before the user prompt `prompt_uuid` resumes from, as
+    `(point, clamped)`.
+
+    `point` is that prompt's own `parentUuid` (often an `attachment` record;
+    verified against the CLI). "" when the prompt has no parent, so nothing
+    precedes it and the fork is a fresh chat. `(None, False)` when no such user
+    record is in the transcript (or the file is unreadable).
+
+    CLI LIMIT: `--resume-session-at <uuid>` only resolves records AFTER the
+    latest compaction summary row (`type: "user"`, `isCompactSummary: true`);
+    an older uuid dies with "No message found with message.uuid of". Resuming
+    AT the summary row itself works. So a prompt that predates the last
+    compaction is CLAMPED: `(summary_row_uuid, True)`."""
+    prompt = None  # (line index, parentUuid)
+    compact = None  # (line index, uuid) of the LAST compaction row
     try:
         with open(transcript_path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if prompt_uuid not in line:
+            for i, line in enumerate(fh):
+                has_prompt = prompt_uuid in line
+                if not has_prompt and "isCompactSummary" not in line:
                     continue
                 try:
                     rec = json.loads(line)
                 except ValueError:
                     continue
-                if (isinstance(rec, dict) and rec.get("uuid") == prompt_uuid
+                if not isinstance(rec, dict):
+                    continue
+                if (has_prompt and prompt is None
+                        and rec.get("uuid") == prompt_uuid
                         and rec.get("type") == "user"):
-                    return str(rec.get("parentUuid") or "")
+                    prompt = (i, str(rec.get("parentUuid") or ""))
+                if rec.get("isCompactSummary") is True and rec.get("uuid"):
+                    compact = (i, str(rec["uuid"]))
     except OSError:
-        return None
-    return None
+        return None, False
+    if prompt is None:
+        return None, False
+    if compact is not None and prompt[0] < compact[0]:
+        return compact[1], True
+    return prompt[1], False
 
 
 def _start(file: str, message: str, session_id: str, model: str,
@@ -4917,6 +4937,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # prompt, so the fork is just a fresh chat.
     fork_parent = ""
     forked_from = ""
+    clamped = False
     # A BREAKOUT is a fork too (research-only, see `_claude_argv`): at a
     # message when `fork_at` names one, at the TIP when it is empty. Claude
     # only, and it needs the session to fork.
@@ -4945,7 +4966,7 @@ def _start(file: str, message: str, session_id: str, model: str,
         if _bad_id(session_id) or _bad_id(fork_at):
             return {"error": "message not found in this conversation",
                     "reason": "fork_target_missing"}
-        point = _fork_point(
+        point, clamped = _fork_point(
             _session_transcript_path(_workdir(file), session_id), fork_at)
         if point is None:
             return {"error": "message not found in this conversation",
@@ -5079,6 +5100,8 @@ def _start(file: str, message: str, session_id: str, model: str,
         meta["forked_from"] = forked_from
         if fork_parent:
             meta["fork_at"] = fork_at
+            if clamped:
+                meta["fork_clamped"] = True
     if breakout:
         # The Tasks scan's second guard (routers/tasks.py `_breakout_run`): a
         # breakout is never a task. The first is `breakouts.json`, marked by
@@ -5258,8 +5281,11 @@ def _start(file: str, message: str, session_id: str, model: str,
     # no transcript yet. A fresh Copilot or Codex chat answers "" — its id
     # arrives on a later poll, the path every chat took before Claude's
     # `--session-id`.
-    return {"run_id": run_id, "session_id": new_session_id or session_id,
-            "backend": backend}
+    out = {"run_id": run_id, "session_id": new_session_id or session_id,
+           "backend": backend}
+    if clamped:
+        out["fork_clamped"] = True
+    return out
 
 
 def _app_dir_for(path: str) -> str:

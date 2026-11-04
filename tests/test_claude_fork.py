@@ -49,20 +49,41 @@ ROWS = [
 ]
 
 
+ROWS_COMPACTED = ROWS + [
+    {"type": "user", "uuid": "c1", "parentUuid": "a2", "isCompactSummary": True,
+     "message": {"role": "user", "content": "summary"}},
+    {"type": "attachment", "uuid": "t3", "parentUuid": "c1", "attachment": {}},
+    {"type": "user", "uuid": "u3", "parentUuid": "t3",
+     "message": {"role": "user", "content": "third"}},
+    {"type": "assistant", "uuid": "a3", "parentUuid": "u3",
+     "message": {"role": "assistant", "content": []}},
+]
+
+
 def test_fork_point_returns_parent(agent, tmp_path):
-    assert agent._fork_point(_transcript(tmp_path, ROWS), "u2") == "t2"
+    assert agent._fork_point(_transcript(tmp_path, ROWS), "u2") == ("t2", False)
 
 
 def test_fork_point_null_parent_is_empty(agent, tmp_path):
-    assert agent._fork_point(_transcript(tmp_path, ROWS), "u1") == ""
+    assert agent._fork_point(_transcript(tmp_path, ROWS), "u1") == ("", False)
+
+
+def test_fork_point_before_compaction_clamps_to_the_summary_row(agent, tmp_path):
+    path = _transcript(tmp_path, ROWS_COMPACTED)
+    assert agent._fork_point(path, "u2") == ("c1", True)
+
+
+def test_fork_point_after_compaction_keeps_its_parent(agent, tmp_path):
+    path = _transcript(tmp_path, ROWS_COMPACTED)
+    assert agent._fork_point(path, "u3") == ("t3", False)
 
 
 def test_fork_point_not_found(agent, tmp_path):
     path = _transcript(tmp_path, ROWS)
-    assert agent._fork_point(path, "nope") is None
+    assert agent._fork_point(path, "nope") == (None, False)
     # only a USER record counts
-    assert agent._fork_point(path, "a1") is None
-    assert agent._fork_point(str(tmp_path / "missing.jsonl"), "u2") is None
+    assert agent._fork_point(path, "a1") == (None, False)
+    assert agent._fork_point(str(tmp_path / "missing.jsonl"), "u2") == (None, False)
 
 
 def _argv(agent, tmp_path, **kw):
@@ -132,6 +153,7 @@ def start(agent, tmp_path, monkeypatch):
             if "run_id" in out else ""
         return out, seen.get("req"), run_dir
 
+    go.holder = holder
     return go
 
 
@@ -151,6 +173,26 @@ def test_start_fork_resumes_at_parent(agent, start):
     assert meta["forked_from"] == "OLD" and meta["fork_at"] == "u2"
     assert meta["session_id"] == new
     assert meta["resumed_from"] == ""
+
+
+def test_start_fork_before_compaction_resumes_at_the_summary_row(agent, start):
+    start.holder["rows"] = ROWS_COMPACTED
+    out, req, run_dir = start("u2")
+    assert "error" not in out, out
+    assert req["resume_at"] == "c1"
+    assert out["fork_clamped"] is True
+    meta = _meta(run_dir)
+    assert meta["fork_clamped"] is True
+    assert meta["fork_at"] == "u2"
+
+
+def test_start_fork_after_compaction_is_not_clamped(agent, start):
+    start.holder["rows"] = ROWS_COMPACTED
+    out, req, run_dir = start("u3")
+    assert "error" not in out, out
+    assert req["resume_at"] == "t3"
+    assert "fork_clamped" not in out
+    assert "fork_clamped" not in _meta(run_dir)
 
 
 def test_start_fork_null_parent_is_fresh_chat(agent, start):
