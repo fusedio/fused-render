@@ -321,3 +321,29 @@ test("publishBreakoutEnabled writes the broadcast key", () => {
     (globalThis as { localStorage: unknown }).localStorage = realLs;
   }
 });
+
+test("a Breakout publish that lands while a prefs read is in flight is not overwritten by it", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  // The read departs now and answers late, with the value from BEFORE the toggle.
+  answer = async () => {
+    await gate;
+    return { breakout: { enabled: false }, queue: { enabled: true } };
+  };
+  const seen: boolean[] = [];
+  function Probe() {
+    seen.push(useBreakoutEnabled());
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  await act(async () => {
+    r = create(<Probe />);
+  });
+  mounted.push(r);
+  await act(async () => publishBreakoutEnabled(true));
+  await act(async () => {
+    release();
+    await new Promise((done) => setTimeout(done, 0));
+  });
+  expect(seen[seen.length - 1]).toBe(true);
+});

@@ -18,6 +18,11 @@ import type { PermissionMode } from "./protocol/types";
 
 let reading: Promise<void> | null = null;
 let generation = 0;
+// Bumped by every known-fresh Breakout answer (`publishBreakoutEnabled`). A prefs
+// read that departed before the bump may land after it with an older value; it
+// must not overwrite the fresher one. Breakout-only: the shared `generation`
+// would also discard the queue / recap answers the same read carries.
+let breakoutPublishedAt = 0;
 
 /**
  * NOT a tri-state. It gates ONE extra call in front of a send, it DEFAULTS
@@ -165,6 +170,7 @@ function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
+  const breakoutStamp = breakoutPublishedAt;
   // ONE BUDGET FOR THE WHOLE READ, retry included (bugbot, 2026-09-15).
   //
   // The deadline used to wrap each ATTEMPT, so a wedged server spent 8 s, was
@@ -189,7 +195,7 @@ function read(): Promise<void> {
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
       setRecapTitles(p.task_recap?.enabled === true);
-      setBreakout(p.breakout?.enabled === true);
+      if (breakoutPublishedAt === breakoutStamp) setBreakout(p.breakout?.enabled === true);
       // A server that predates the field keeps "auto", the server's default.
       setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
     })
@@ -254,6 +260,7 @@ export const BREAKOUT_FLAG_BROADCAST_KEY = "fused-render:breakout";
 
 /** Hand over a known-fresh Breakout answer (a PUT's prefs payload). */
 export function publishBreakoutEnabled(next: boolean) {
+  breakoutPublishedAt += 1;
   setBreakout(next);
   try {
     localStorage.setItem(BREAKOUT_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
