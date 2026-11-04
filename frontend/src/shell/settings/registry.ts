@@ -365,7 +365,7 @@ const ENTRIES = [
     group: "tasks",
     section: "Running",
     label: "Breakout side chats",
-    description: "Open a research-only side chat forked from any point of a conversation. It reads and searches but never edits or runs commands; drafts come back into the composer.",
+    description: "Open a research-only side chat forked from any point of a conversation (a message older than the chat's last compaction starts from that summary). It reads and searches; it cannot run commands or edit files, except Markdown notes in the chat's handoff folder. Drafts come back into the composer.",
     keywords: "breakout fork side chat research read-only",
     badge: "Beta",
   },

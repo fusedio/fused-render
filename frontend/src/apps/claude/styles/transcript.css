@@ -225,6 +225,12 @@
   outline: 2px solid var(--c-accent);
   outline-offset: 1px;
 }
+/* A touch screen has no hover, so the per-turn button stays visible. */
+@media (hover: none) {
+  .chat-root .turn.user .turn-breakout {
+    opacity: 1;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .chat-root .turn.user .turn-breakout {
     transition: none;
