@@ -268,6 +268,14 @@ def test_pkce_login_joins_then_paste_completes_then_revokes(loopback, vendor, mo
     assert rv and "token=good" in rv[0].content.decode() and rv[0].headers["authorization"] == "Bearer good"
 
 
+def test_a_vendor_that_cannot_check_a_pasted_key_stores_nothing(monkeypatch):
+    monkeypatch.setattr(manager, "_http", lambda: httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(503))))
+    with pytest.raises(ValueError, match="could not check"):
+        manager.login("demo", kind="api-key", value="k")
+    assert store.get("demo") is None
+
+
 def test_identity_probe_failure_keeps_the_grant(loopback, monkeypatch):
     """The token endpoint just issued the token; a label probe that cannot be
     reached (or is rate-limited) must not throw the sign-in away."""

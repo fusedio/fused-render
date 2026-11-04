@@ -30,7 +30,8 @@ import { faceOf } from "../lib/face";
 import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
 import { exportBotFile, type BotDialogValue } from "./actions";
 import { askConfirm } from "./ask";
-import { ConnectionsSection } from "./ConnectionsSection";
+import { navigateUrl } from "@platform/lib/router";
+import { ConnectionsSection, PREFERENCES_CONNECTIONS_URL } from "./ConnectionsSection";
 import { FacePopover } from "./FacePopover";
 import { PhoneSection } from "./PhoneSection";
 import { RoutinesSection } from "./RoutinesSection";
@@ -213,6 +214,12 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     if (!okDisabled && !(await confirm("Discard changes?", "You have unsaved changes to this bot's settings.", "Discard"))) return;
     exportBotFile(bot.id);
   };
+  // Connections › "All sign-in options in Preferences": leaving the bots app drops unsaved edits, so it asks as a close does.
+  const openPreferences = async () => {
+    if (busy.current) return;
+    if (!okDisabled && !(await confirm("Discard changes?", "You have unsaved changes to this bot's settings.", "Discard"))) return;
+    navigateUrl(PREFERENCES_CONNECTIONS_URL);
+  };
 
   return (
     <Dialog open modal={false} onOpenChange={(open) => { if (!open) void tryClose(); }}>
@@ -362,7 +369,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
               </Rows>
             ) : null}
 
-            {tab === "connections" ? <ConnectionsSection botName={n || init.name} enabled={connections} setEnabled={setConnections} /> : null}
+            {tab === "connections" ? <ConnectionsSection botName={n || init.name} enabled={connections} setEnabled={setConnections} openPreferences={() => { void openPreferences(); }} /> : null}
 
             {tab === "browser" ? (
               <Rows>

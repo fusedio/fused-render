@@ -211,8 +211,55 @@ describe("the cards", () => {
     const byo = details.findAll((x) => x.type === Input)[0];
     await act(async () => byo.props.onChange({ target: { value: "9.8" } }));
     await act(async () => details.findAll((x) => x.type === "form")[0].props.onSubmit({ preventDefault() {} }));
+    // The BYO form starts the same https-localhost flow: the notice first, then the login with the id.
+    const notice2 = () => s2.findAll((x) => x.type === ConnectCertNotice)[0];
+    expect(notice2().props.open).toBe(true);
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    await act(async () => notice2().props.onContinue());
     await settle();
     expect(calls.find((c) => c.method === "POST")?.body).toEqual({ kind: "oauth-pkce", client_id: "9.8" });
+  });
+
+  test("reconnect on an https-localhost kind shows the notice first", async () => {
+    list = [{ ...slack, state: "reconnect", kind: "oauth-pkce", auth: [{ ...slack.auth[0], available: true, reason: null, cert_warning: true }] }];
+    answers["POST /api/connect/slack/login"] = { state: "pending", kind: "oauth-pkce", url: "https://slack.com/x", cert_warning: true };
+    const box = await mount();
+    const s = card(box, "slack");
+    await click(buttons(s, "Reconnect")[0]);
+    const notice = () => s.findAll((x) => x.type === ConnectCertNotice)[0];
+    expect(notice().props.open).toBe(true);
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    await act(async () => notice().props.onContinue());
+    await settle();
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ kind: "oauth-pkce" }]);
+  });
+
+  test("a refused key is replaced by pasting another, not by a Reconnect that has nothing to send", async () => {
+    list = [{ ...github, state: "reconnect", kind: "api-key" }];
+    answers["POST /api/connect/github/login"] = { state: "connected", account: "octocat", tools: 5 };
+    const box = await mount();
+    const g = card(box, "github");
+    expect(textOf(g)).toContain("Needs reconnecting");
+    expect(buttons(g, "Reconnect")).toHaveLength(0);
+    // The card's own field (the first); Advanced keeps its paste-a-token form below it.
+    const field = g.findAll((x) => x.type === Input && x.props.type === "password")[0];
+    await act(async () => field.props.onChange({ target: { value: "ghp_new" } }));
+    await act(async () => g.findAll((x) => x.type === "form")[0].props.onSubmit({ preventDefault() {} }));
+    await settle();
+    expect(calls.find((c) => c.url === "/api/connect/github/login")!.body).toEqual({ kind: "api-key", value: "ghp_new" });
+    expect(textOf(card(box, "github"))).toContain("octocat");
+  });
+
+  test("a paste the server refused stays in its field", async () => {
+    // No answer registered for the login: the stub's 404 is the refusal.
+    const box = await mount();
+    const g = card(box, "github");
+    const field = () => card(box, "github").find((x) => x.type === Input && x.props.type === "password");
+    await act(async () => field().props.onChange({ target: { value: "ghp_bad" } }));
+    await act(async () => g.findAll((x) => x.type === "form")[0].props.onSubmit({ preventDefault() {} }));
+    await settle();
+    expect(textOf(card(box, "github"))).toContain("unexpected POST /api/connect/github/login");
+    expect(field().props.value).toBe("ghp_bad");
   });
 
   test("a connected card's Disconnect posts logout", async () => {
@@ -282,7 +329,7 @@ describe("signing in", () => {
     expect(login.body).toEqual({ kind: "mcp-oauth" });
     expect(login.headers["X-Fused"]).toBe("1");
     expect(login.headers["Content-Type"]).toBe("application/json");
-    expect(opened).toEqual([[url, "_blank"]]);
+    expect(opened).toEqual([[url, "_blank", "noopener"]]);
 
     const g = card(box, "github");
     expect(textOf(g)).toContain("Waiting for you in the browser…");
@@ -317,7 +364,7 @@ describe("signing in", () => {
     await click(buttons(card(box, "github"), "Connect")[0]);
     expect(opened).toHaveLength(0);
     await act(async () => new Promise((r) => setTimeout(r, FAST_POLL_MS + 150)));
-    expect(opened).toEqual([[url, "_blank"]]);
+    expect(opened).toEqual([[url, "_blank", "noopener"]]);
     await act(async () => new Promise((r) => setTimeout(r, FAST_POLL_MS + 150)));
     expect(opened).toHaveLength(1);
     await act(async () => box.unmount());

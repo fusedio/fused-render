@@ -127,6 +127,32 @@ def test_unreachable_or_metadata_free_servers_raise():
                            http=httpx.Client(transport=httpx.MockTransport(refused)))
 
 
+def test_origin_ignores_case_and_a_default_port():
+    assert discovery._origin("https://X.Example:443/mcp") == discovery._origin("https://x.example/mcp")
+    assert discovery._origin("http://x.example:80/") == "http://x.example"
+    assert discovery._origin("https://x.example:8443/mcp") != discovery._origin("https://x.example/mcp")
+
+
+def test_plain_http_endpoints_off_loopback_are_refused():
+    def handler(req):
+        if req.url.path == "/mcp":
+            return httpx.Response(401, headers={"WWW-Authenticate":
+                                                'Bearer resource_metadata="https://x.example/prm"'})
+        if req.url.path == "/prm":
+            return httpx.Response(200, json={"resource": "https://x.example/mcp",
+                                             "authorization_servers": ["https://x.example"]})
+        if req.url.path == "/.well-known/oauth-authorization-server":
+            return httpx.Response(200, json={"issuer": "https://x.example",
+                                             "authorization_endpoint": "https://x.example/authorize",
+                                             "token_endpoint": "http://x.example/token",
+                                             "code_challenge_methods_supported": ["S256"]})
+        return httpx.Response(404)
+
+    with pytest.raises(DiscoveryError, match="not https"):
+        discovery.discover("https://x.example/mcp",
+                           http=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
 def test_prm_for_another_origin_is_refused():
     def handler(req):
         if req.url.path == "/mcp":

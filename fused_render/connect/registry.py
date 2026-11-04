@@ -47,6 +47,7 @@ import threading
 import time
 import re
 import shutil
+from urllib.parse import urlparse
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,18 @@ class Provider:
 # ------------------------------------------------------------- validation ---
 
 def _is_url(v) -> bool:
-    return isinstance(v, str) and v.startswith(("https://", "http://"))
+    """https anywhere; http only to a loopback host (a dev server, the test vendor)."""
+    if not isinstance(v, str):
+        return False
+    try:
+        u = urlparse(v)
+    except ValueError:
+        return False
+    if not u.hostname:
+        return False
+    if u.scheme == "https":
+        return True
+    return u.scheme == "http" and u.hostname.lower() in ("localhost", "127.0.0.1", "::1")
 
 
 def validate(d: dict, where: str) -> None:

@@ -285,8 +285,8 @@ vendors here have nothing to delegate to).
 
 - macOS: login Keychain, service `fused-render.connect.<key>`, via
   `security`, the way `bots/browser.py` keeps the profile key. Linux and
-  Windows: `keyring` when a backend exists, else an owner-only (0600)
-  file under the app's config dir; the card says which.
+  Windows: an owner-only (0600) file under the app's config dir
+  (`store.backend()` knows no `keyring`); the card says which.
 - One record per provider: `{kind, resource?, client_id, access, refresh?,
   expires?, account, scopes}`. Today's starter keys in `.fused/data`
   migrate in.

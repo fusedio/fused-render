@@ -210,7 +210,9 @@ def test_failed_listing_is_remembered_briefly(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(tools.time, "monotonic", lambda: clock[0])
     assert [s.name for s in tools.list_tools("demo")] == ["local_sum", "local_fail"]
-    assert tools.cached_count("demo") is None     # no good listing yet: the card keeps polling
+    # The card shows what the listing did get and drops to its slow poll; once the
+    # failure is forgotten the count is None again, so the next status poll retries.
+    assert tools.cached_count("demo") == 2
     before = len(srv.methods)
     # The native tools are still offered, but no request leaves while the failure is remembered.
     n = 0
@@ -223,9 +225,25 @@ def test_failed_listing_is_remembered_briefly(monkeypatch):
     assert [s.name for s in tools.list_tools("demo")] == ["local_sum", "local_fail"]
     assert n == 0
     clock[0] += tools.FAIL_CACHE_SECONDS + 1
+    assert tools.cached_count("demo") is None
     tools.list_tools("demo")
     assert n > 0
     assert len(srv.methods) == before
+
+
+def test_native_tool_shadows_a_remote_one_of_the_same_name(monkeypatch, tmp_path):
+    """call_tool runs the native tool for a shared name, so the listing (whose
+    flags gate the bots' approval card) must show the native one."""
+    _use(monkeypatch, Mcp())
+    root = tmp_path / "packs"
+    pack_dir = root / "demo"
+    (pack_dir / "tools.py").write_text(NATIVE.replace('"local_sum"', '"echo"'))
+    store.put("demo", {"kind": "api-key", "access": "tok"})
+    by = {s.name: s for s in tools.list_tools("demo")}
+    assert list(by) == ["write_note", "echo", "local_fail"]
+    assert by["echo"].read_only is True and by["echo"].destructive is False
+    out = tools.call_tool("demo", "echo", {"a": 2, "b": 3})
+    assert json.loads(out["text"])["sum"] == 5
 
 
 def test_reconnect_lists_nothing_without_asking(monkeypatch):
@@ -259,16 +277,21 @@ def test_unknown_tool(monkeypatch):
 class Slack:
     def __init__(self):
         self.calls = []
+        self.paged = False
 
     def __call__(self, request):
         method = request.url.path.rsplit("/", 1)[-1]
         form = dict(httpx.QueryParams(request.content.decode()))
         self.calls.append((method, form, request.headers.get("authorization")))
         if method == "conversations.list":
+            if form.get("cursor") == "p2":   # the second page: a channel the first did not hold
+                return httpx.Response(200, json={"ok": True, "channels": [
+                    {"id": "C0999999", "name": "late", "is_member": False}],
+                    "response_metadata": {"next_cursor": "p2"}})   # Slack repeats the cursor: the walk must end
             return httpx.Response(200, json={"ok": True, "channels": [
                 {"id": "C0123456", "name": "general", "is_member": True, "num_members": 9,
                  "topic": {"value": "chat"}, "purpose": {"value": "bulky"}}],
-                "response_metadata": {"next_cursor": ""}})
+                "response_metadata": {"next_cursor": "p2" if self.paged else ""}})
         if method == "conversations.history":
             if form["channel"] != "C0123456":
                 return httpx.Response(200, json={"ok": False, "error": "channel_not_found"})
@@ -315,6 +338,17 @@ def test_slack_history_resolves_name_and_trims(slack):
     assert data["messages"] == [{"ts": "1.1", "user": "U1", "text": "hi", "reactions": {"tada": 2}}]
     assert [c[0] for c in slack.calls] == ["conversations.list", "conversations.history"]
     assert all(c[2] == "Bearer xoxp-1" for c in slack.calls)
+
+
+def test_slack_channel_on_a_later_page_resolves_and_a_repeated_cursor_ends_the_walk(slack):
+    slack.paged = True
+    tools.call_tool("slack", "slack_channel_history", {"channel": "late", "limit": 5})
+    hist = [c for c in slack.calls if c[0] == "conversations.history"]
+    assert hist and hist[0][1]["channel"] == "C0999999"   # resolved from the second page
+    lists = [c for c in slack.calls if c[0] == "conversations.list"]
+    assert [c[1].get("cursor") for c in lists] == [None, "p2"]   # page 2 fetched once, not forever
+    chans = json.loads(tools.call_tool("slack", "slack_list_channels", {"limit": 10})["text"])
+    assert [c["name"] for c in chans["channels"]] == ["general", "late"]
 
 
 def test_slack_search_users_send(slack):

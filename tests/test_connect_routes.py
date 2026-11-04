@@ -17,7 +17,7 @@ import pytest
 from _fake_vendor import FAKE_API_KEY, FAKE_LOGIN, FakeVendor
 from fastapi.testclient import TestClient
 
-from fused_render.connect import manager, store, tools
+from fused_render.connect import manager, store, tools, oauth
 from fused_render.server import create_app
 
 FUSED = {"X-Fused": "1"}
@@ -29,6 +29,7 @@ def fake(monkeypatch, tmp_path):
     # 300 s tokens: the fake's default 60 s equals manager.REFRESH_MARGIN, which
     # would refresh on every token() call; the refresh path is driven by expire_all().
     v = FakeVendor(access_ttl=300).start()
+    monkeypatch.setattr(oauth, "MIN_INTERVAL", 0.0)   # the fake names a 0.05 s device poll
     monkeypatch.setenv("FUSED_RENDER_FAKE_VENDOR_URL", v.base_url)
     monkeypatch.setenv("FUSED_RENDER_CONNECT_PROVIDERS", PACKS)
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))

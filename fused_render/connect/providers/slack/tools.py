@@ -114,20 +114,31 @@ def _msg(m: dict, channel=None) -> dict:
     return out
 
 
-def _channels(ctx, types: str, limit: int) -> list[dict]:
-    out, cursor = [], None
-    while len(out) < limit:
-        body = _api(ctx, "conversations.list", {"types": types, "limit": min(200, limit - len(out)),
+def _walk_channels(ctx, types: str, page: int = 200):
+    """Every channel of `types`, page by page, until Slack's cursor runs out. A
+    cursor Slack hands back twice ends the walk rather than repeating the request."""
+    cursor, seen = None, set()
+    while True:
+        body = _api(ctx, "conversations.list", {"types": types, "limit": page,
                                                 "exclude_archived": "true", "cursor": cursor})
         for c in body.get("channels") or []:
-            out.append({"id": c.get("id"), "name": c.get("name"),
-                        "is_private": bool(c.get("is_private")), "is_member": bool(c.get("is_member")),
-                        "num_members": c.get("num_members"),
-                        "topic": (c.get("topic") or {}).get("value") or None})
+            yield {"id": c.get("id"), "name": c.get("name"),
+                   "is_private": bool(c.get("is_private")), "is_member": bool(c.get("is_member")),
+                   "num_members": c.get("num_members"),
+                   "topic": (c.get("topic") or {}).get("value") or None}
         cursor = (body.get("response_metadata") or {}).get("next_cursor")
-        if not cursor:
+        if not cursor or cursor in seen:
+            return
+        seen.add(cursor)
+
+
+def _channels(ctx, types: str, limit: int) -> list[dict]:
+    out = []
+    for c in _walk_channels(ctx, types, page=min(200, limit)):
+        out.append(c)
+        if len(out) >= limit:
             break
-    return out[:limit]
+    return out
 
 
 def _resolve_channel(ctx, channel: str) -> str:
@@ -138,7 +149,7 @@ def _resolve_channel(ctx, channel: str) -> str:
     if _CHANNEL_ID.match(channel):
         return channel
     name = channel.lstrip("#")
-    for c in _channels(ctx, "public_channel,private_channel", 2000):
+    for c in _walk_channels(ctx, "public_channel,private_channel"):   # every page: a name can sit on any of them
         if c["name"] == name:
             return c["id"]
     raise ToolError(f"channel_not_found ({channel})")
@@ -167,7 +178,7 @@ def channel_history(ctx, channel: str, limit=50, oldest="", latest="") -> dict:
 
 def list_users(ctx, limit=200) -> dict:
     limit = _clamp(limit, 1, 2000, 200)
-    out, cursor = [], None
+    out, cursor, seen = [], None, set()
     while len(out) < limit:
         body = _api(ctx, "users.list", {"limit": min(200, limit - len(out)), "cursor": cursor})
         for u in body.get("members") or []:
@@ -176,8 +187,9 @@ def list_users(ctx, limit=200) -> dict:
                         "real_name": u.get("real_name") or prof.get("real_name") or None,
                         "is_bot": bool(u.get("is_bot")), "deleted": bool(u.get("deleted"))})
         cursor = (body.get("response_metadata") or {}).get("next_cursor")
-        if not cursor:
+        if not cursor or cursor in seen:
             break
+        seen.add(cursor)
     return {"count": len(out[:limit]), "users": out[:limit]}
 
 

@@ -146,12 +146,19 @@ def _spec_from_mcp(key: str, t: dict) -> ToolSpec:
 
 
 def _client(key: str, url: str) -> McpClient:
+    stale = None
     with _lock:
         c = _clients.get(key)
         if c is None or c.url != url:
-            c = McpClient(url, token=lambda: manager.token(key), http=_mcp_http())
+            stale = c
+            c = McpClient(url, token=lambda: manager.token(key), http=_mcp_http(), own_http=True)
             _clients[key] = c
-        return c
+    if stale is not None:   # outside the lock: close() says goodbye to the server
+        try:
+            stale.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return c
 
 
 def _drop_client(key: str) -> None:
@@ -245,21 +252,35 @@ def list_tools(key: str) -> list[ToolSpec]:
         logger.warning("connect %s: native tools.py failed to load: %s", key, e)
         mod = None
     if mod is not None:
-        seen = {s.name for s in specs}
-        for t in getattr(mod, "TOOLS", None) or []:
-            if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"] not in seen:
-                specs.append(_spec_from_native(key, t))
+        native = [t for t in getattr(mod, "TOOLS", None) or []
+                  if isinstance(t, dict) and isinstance(t.get("name"), str)]
+        # call_tool runs the native tool for a name both sources offer, so the
+        # listing (whose flags gate the bots' approval) must show that one.
+        shadowed = {t["name"] for t in native}
+        specs = [s for s in specs if s.name not in shadowed]
+        specs.extend(_spec_from_native(key, t) for t in native)
     with _lock:
         _cache[key] = (now, specs, ok)
     return list(specs)
 
 
 def cached_count(key: str) -> int | None:
-    """How many tools the last good listing found for `key`, without any network
-    (status polls); None until one succeeds."""
+    """How many tools the cache holds for `key`, without any network (status polls).
+
+    None while nothing is cached, which makes `manager.status` list on a thread
+    and the page poll fast until a number lands. A failed listing counts what it
+    did get (the native tools) for FAIL_CACHE_SECONDS, then goes back to None so
+    the next status poll tries the vendor again, rather than keeping the page on
+    its 1 s poll for as long as the vendor is down.
+    """
     with _lock:
         hit = _cache.get(key)
-    return len(hit[1]) if hit and hit[2] else None
+    if not hit:
+        return None
+    at, specs, ok = hit
+    if not ok and time.monotonic() - at >= FAIL_CACHE_SECONDS:
+        return None
+    return len(specs)
 
 
 def warm(key: str) -> None:

@@ -21,7 +21,6 @@ import {
   type LoginBody,
 } from "@platform/lib/connect";
 import { copyToClipboard } from "@platform/lib/clipboard";
-import { navigateUrl } from "@platform/lib/router";
 import { ConnectCertNotice } from "@platform/ui/ConnectCertNotice";
 import { ConnectIcon } from "@platform/ui/ConnectIcon";
 import { Button } from "@platform/shadcn/ui/button";
@@ -31,11 +30,13 @@ import { Row, Rows } from "./SettingsRow";
 
 export const PREFERENCES_CONNECTIONS_URL = "/preferences?tab=connections";
 
-export function ConnectionsSection({ botName, enabled, setEnabled }: {
+export function ConnectionsSection({ botName, enabled, setEnabled, openPreferences }: {
   botName: string;
   /** Provider keys (normalised) this bot may use, as the dialog holds them. */
   enabled: string[];
   setEnabled: (f: (cur: string[]) => string[]) => void;
+  /** Leaves for Preferences › Connections; the dialog's own guard asks about unsaved edits first. */
+  openPreferences: () => void;
 }) {
   const { rows, error, stateOf, apply, login } = useConnections();
   const toggle = (key: string, on: boolean) => {
@@ -52,12 +53,13 @@ export function ConnectionsSection({ botName, enabled, setEnabled }: {
           <div className="divide-y divide-foreground/5 rounded-lg border border-input" id="bmconnections">
             {rows.map((p) => (
               <ProviderRow key={p.key} provider={p} status={stateOf(p)} on={enabled.includes(normApp(p.key))}
-                onToggle={(c) => toggle(p.key, c)} onStatus={(st) => apply(p.key, st)} onLogin={(body) => login(p.key, body)} />
+                onToggle={(c) => toggle(p.key, c)} onStatus={(st) => apply(p.key, st)} onLogin={(body) => login(p.key, body)}
+                openPreferences={openPreferences} />
             ))}
           </div>
         ) : null}
         <div>
-          <Button type="button" variant="ghost" size="sm" onClick={() => navigateUrl(PREFERENCES_CONNECTIONS_URL)}>
+          <Button type="button" variant="ghost" size="sm" onClick={openPreferences}>
             All sign-in options in Preferences<ExternalLinkIcon data-icon="inline-end" />
           </Button>
         </div>
@@ -66,18 +68,20 @@ export function ConnectionsSection({ botName, enabled, setEnabled }: {
   );
 }
 
-function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin }: {
+function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin, openPreferences }: {
   provider: ConnectProvider;
   status: ConnectStatus;
   on: boolean;
   onToggle: (on: boolean) => void;
   onStatus: (st: ConnectStatus) => void;
   onLogin: (body: LoginBody) => Promise<void>;
+  openPreferences: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [notice, setNotice] = useState(false);  // Connect on an https-localhost kind: the modal first, its Continue starts it
+  // A sign-in on an https-localhost kind waits here while the modal is up (Connect, Reconnect and Try again alike).
+  const [pending, setPending] = useState<LoginBody | null>(null);
   const act = async (fn: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
@@ -95,6 +99,12 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
   const again = againBody(p, st);
   const n = toolCount(st);
   const connected = st.state === "connected";
+  const start = (body: LoginBody) => {
+    if (p.auth.find((a) => a.kind === body.kind)?.cert_warning) setPending(body);
+    else void act(() => onLogin(body));
+  };
+  // A pasted key or a BYO client id needs a form: that lives on the Preferences page.
+  const toPreferences = <Button variant="outline" size="sm" onClick={openPreferences}>Set up in Preferences</Button>;
 
   let status: ReactNode;
   let control: ReactNode = null;
@@ -109,19 +119,19 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
       break;
     case "reconnect":
       status = "Needs reconnecting";
-      control = <Button variant="outline" size="sm" disabled={busy || !again.kind} onClick={() => void act(() => onLogin(again))}>Reconnect</Button>;
+      // A refused key is replaced by pasting another, on the Preferences page.
+      control = again.kind === "api-key" ? toPreferences
+        : <Button variant="outline" size="sm" disabled={busy || pending !== null || !again.kind} onClick={() => start(again)}>Reconnect</Button>;
       break;
     case "error":
       status = <span className="text-destructive">{st.error || "The last sign-in failed."}</span>;
-      control = <Button variant="outline" size="sm" disabled={busy || !again.kind} onClick={() => void act(() => onLogin(again))}>Try again</Button>;
+      control = <Button variant="outline" size="sm" disabled={busy || pending !== null || !again.kind} onClick={() => start(again)}>Try again</Button>;
       break;
     default:
       status = primary ? "Not connected" : p.auth.find((a) => a.reason)?.reason || "Not available on this machine.";
-      // A pasted key or a BYO client id needs a form: that lives on the Preferences page.
       control = primary && primary.kind !== "api-key"
-        ? <Button variant="outline" size="sm" disabled={busy || notice}
-            onClick={() => (primary.cert_warning ? setNotice(true) : void act(() => onLogin({ kind: primary.kind })))}>Connect</Button>
-        : <Button variant="outline" size="sm" onClick={() => navigateUrl(PREFERENCES_CONNECTIONS_URL)}>Set up in Preferences</Button>;
+        ? <Button variant="outline" size="sm" disabled={busy || pending !== null} onClick={() => start({ kind: primary.kind })}>Connect</Button>
+        : toPreferences;
   }
 
   return (
@@ -147,10 +157,9 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
           {st.verification_uri ? <a className="text-xs underline" href={st.verification_uri} target="_blank" rel="noopener noreferrer">Enter it at {st.verification_uri}</a> : null}
         </div>
       ) : null}
-      {primary ? (
-        <ConnectCertNotice open={notice && st.state === "disconnected"} name={p.name} busy={busy}
-          onContinue={() => { setNotice(false); void act(() => onLogin({ kind: primary.kind })); }} onCancel={() => setNotice(false)} />
-      ) : null}
+      <ConnectCertNotice open={pending !== null} name={p.name} busy={busy}
+        onContinue={() => { const body = pending; setPending(null); if (body) void act(() => onLogin(body)); }}
+        onCancel={() => setPending(null)} />
       {st.state === "pending" && st.cert_warning ? <p className="m-0 pl-[30px] text-xs text-muted-foreground">{CERT_WARNING}</p> : null}
       {st.state === "pending" && st.url ? (
         <p className="m-0 pl-[30px] text-xs text-muted-foreground">

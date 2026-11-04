@@ -37,6 +37,13 @@ def vendor():
     v.stop()
 
 
+@pytest.fixture(autouse=True)
+def _fast_device_polls(monkeypatch):
+    """The fake vendor names a 0.05 s poll interval so a device flow finishes in well under a
+    second; the production floor (MIN_INTERVAL) would make every such test wait seconds."""
+    monkeypatch.setattr(oauth, "MIN_INTERVAL", 0.0)
+
+
 def _browser():
     # The "browser": follows the vendor's 302 to the loopback listener.
     return httpx.Client(timeout=10, follow_redirects=True)
@@ -105,6 +112,28 @@ def test_loopback_flow_end_to_end(vendor):
     assert form["redirect_uri"] == flow.redirect_uri and form["resource"] == vendor.base_url + "/mcp"
     assert "client_secret" not in form
     assert oauth.identity(vendor.base_url + "/me", t.access) == "fake-user"
+
+
+def test_a_key_that_is_not_the_certificates_forces_a_reissue(tmp_path, monkeypatch):
+    pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from fused_render.connect import tls
+    from fused_render.shell import storage
+    monkeypatch.setattr(storage, "home_dir", lambda: str(tmp_path))
+    cert, key = tls.localhost_cert()
+    assert tls._fresh(cert, key) is True
+    other = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    with open(key, "wb") as f:   # an interrupted reissue: the certificate's key is gone
+        f.write(other)
+    assert tls._fresh(cert, key) is False
+    with open(cert, "rb") as f:
+        before = f.read()
+    assert tls.localhost_cert() == (cert, key)
+    with open(cert, "rb") as f:
+        assert f.read() != before   # reissued as a pair
+    assert tls._fresh(cert, key) is True
 
 
 def test_https_listener_on_the_localhost_certificate(vendor, tmp_path, monkeypatch):
@@ -428,6 +457,17 @@ def test_device_flow_slow_down_without_interval_adds_five_seconds(monkeypatch):
                       http=httpx.Client(transport=httpx.MockTransport(handler)))
     flow.start()
     assert flow.result(timeout=5).access == "a" and flow.interval == pytest.approx(0.01)
+
+
+def test_device_flow_never_polls_back_to_back(monkeypatch):
+    monkeypatch.setattr(oauth, "MIN_INTERVAL", 1.0)
+
+    def handler(req):
+        return httpx.Response(200, json={"device_code": "d", "user_code": "U",
+                                         "verification_uri": "https://v/d", "interval": 0})
+    flow = DeviceFlow(device_url="https://v/device", token_url="https://v/token", client_id="c",
+                      http=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert flow.start()["interval"] == oauth.MIN_INTERVAL == flow.interval
 
 
 @pytest.mark.parametrize("outcome, code", [("deny", "access_denied"), ("expire", "expired_token")])

@@ -176,7 +176,9 @@ export function useConnections(): Connections {
         wantOpen.current.delete(key);
         // The server opens the consent page itself when it can (desktop app:
         // same machine); it says so with `opened`, and a second tab is noise.
-        if (!st.opened) window.open(st.url, "_blank");
+        // noopener: a consent page (for mcp-oauth, whatever server the resource's
+        // metadata names) must not be able to steer this tab through window.opener.
+        if (!st.opened) window.open(st.url, "_blank", "noopener");
       } else if (st.state !== "pending") {
         wantOpen.current.delete(key);
       }

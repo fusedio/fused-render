@@ -118,6 +118,15 @@ _reconnect: set[str] = set()
 _refresh_locks: dict[str, threading.Lock] = {}
 
 
+def _key_lock(key: str) -> threading.Lock:
+    """The per-key lock every write of `key`'s record and its delete go through:
+    a refresh (`token`), a finishing sign-in (`_finish`), a paste (`_login_api_key`,
+    `_login_cli`) and `logout`. A sign-in that finishes while Disconnect runs
+    cannot land its token after the delete."""
+    with _lock:
+        return _refresh_locks.setdefault(key, threading.Lock())
+
+
 # -- helpers --------------------------------------------------------------------
 
 def _provider(key: str):
@@ -195,6 +204,10 @@ class _Refused(Exception):
     """The vendor said this credential is not valid (identity probe)."""
 
 
+class _Unavailable(Exception):
+    """The vendor could not say (429, 5xx): the credential is unchecked, not refused."""
+
+
 def _account_from(data) -> str | None:
     if not isinstance(data, dict):
         return None
@@ -234,6 +247,10 @@ def _identity(url: str | None, token: str, entry: dict | None = None) -> str | N
         r = http.request(method, url, headers=headers)
     if r.status_code in (401, 403):
         raise _Refused(f"the token was refused (HTTP {r.status_code})")
+    if r.status_code == 429 or r.status_code >= 500:
+        # Not an answer about the token: the paste-a-key and CLI logins must not
+        # store it as checked, and the OAuth label (`_label`) just goes without.
+        raise _Unavailable(f"HTTP {r.status_code}")
     if r.status_code >= 400:
         logger.debug("identity probe answered %s", r.status_code)
         return None
@@ -386,9 +403,10 @@ def _finish(key: str, flow: _Flow, rec_fn) -> None:
     """Run a flow body on its thread; store what it returns unless cancelled."""
     try:
         rec = rec_fn()
-        if flow.cancelled:
-            return
-        store.put(key, rec)
+        with _key_lock(key):
+            if flow.cancelled:
+                return
+            store.put(key, rec)
         flow.account = rec.get("account")
         _connected_now(key)
         logger.info("connect %s: connected (%s)", key, flow.kind)
@@ -461,7 +479,7 @@ def _label(key: str, entry: dict, token: str) -> str | None:
     """
     try:
         return _identity(entry.get("identity_url"), token, entry)
-    except (_Refused, httpx.HTTPError) as e:
+    except (_Refused, _Unavailable, httpx.HTTPError) as e:
         logger.info("connect %s: identity probe after sign-in failed: %s", key, e.__class__.__name__)
         return None
 
@@ -482,7 +500,7 @@ def _oauth_pkce(key: str, p, entry: dict, flow: _Flow) -> dict:
         authorize_url=entry["authorize_url"], token_url=entry["token_url"],
         client_id=entry["client_id"], redirect=entry.get("redirect"),
         scopes=entry.get("scopes"), extra_authorize=entry.get("extra_authorize"),
-        client_secret=entry.get("client_secret") or None)
+        extra_token=entry.get("extra_token"), client_secret=entry.get("client_secret") or None)
     ts = _run_loopback(flow, lf)
     _check_cancel(flow)
     account = _label(key, entry, ts.access)
@@ -576,10 +594,13 @@ def _login_api_key(key: str, p, entry: dict, value: str | None) -> dict:
         account = _identity(entry.get("identity_url"), value, entry)
     except _Refused as e:
         raise ValueError(f"{p.name} did not accept that token: {e}") from None
+    except _Unavailable as e:
+        raise ValueError(f"{p.name} could not check the token right now ({e}); try again in a moment") from None
     except httpx.HTTPError as e:
         raise ValueError(f"{p.name} could not be reached to check the token: "
                          f"{e.__class__.__name__}") from None
-    store.put(key, {"kind": "api-key", "access": value, "account": account})
+    with _key_lock(key):
+        store.put(key, {"kind": "api-key", "access": value, "account": account})
     with _lock:
         _flows.pop(key, None)
     _connected_now(key)
@@ -594,9 +615,12 @@ def _login_cli(key: str, p, entry: dict) -> dict:
         raise ValueError(str(e)) from None
     except _Refused as e:
         raise ValueError(f"{p.name} refused the token `{entry['command'][0]}` holds: {e}") from None
+    except _Unavailable as e:
+        raise ValueError(f"{p.name} could not check the token right now ({e}); try again in a moment") from None
     except httpx.HTTPError as e:
         raise ValueError(f"{p.name} could not be reached: {e.__class__.__name__}") from None
-    store.put(key, {"kind": "cli", "account": account})
+    with _key_lock(key):
+        store.put(key, {"kind": "cli", "account": account})
     with _lock:
         _flows.pop(key, None)
     _connected_now(key)
@@ -670,7 +694,8 @@ def logout(key: str) -> dict:
     _invalidate_tools(key)
     rec = store.get(key)
     revoked = _revoke(rec) if rec else None
-    store.delete(key)
+    with _key_lock(key):   # after a refresh in flight, before a finishing sign-in could write
+        store.delete(key)
     with _lock:
         _flows.pop(key, None)
         _reconnect.discard(key)
@@ -712,8 +737,7 @@ def token(key: str, force_refresh: bool = False) -> str:
     due = force_refresh or (exp is not None and float(exp) - time.time() < REFRESH_MARGIN)
     if not due:
         return rec["access"]
-    with _lock:
-        rlock = _refresh_locks.setdefault(key, threading.Lock())
+    rlock = _key_lock(key)
     seen = rec.get("access")
     with rlock:
         rec = store.get(key)

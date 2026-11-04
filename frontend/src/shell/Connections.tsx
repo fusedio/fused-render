@@ -107,23 +107,37 @@ function ProviderCard({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Connect on a kind that warns (an https localhost redirect): the modal first, its Continue starts the flow.
-  const [notice, setNotice] = useState(false);
+  // A sign-in on a kind that warns (an https localhost redirect) waits here while the
+  // modal is up; its Continue starts that very body (Connect, Reconnect, Try again or
+  // the Advanced client-id form alike), its Cancel drops it.
+  const [pending, setPending] = useState<LoginBody | null>(null);
 
-  const act = async (fn: () => Promise<unknown>) => {
-    if (busy) return;
+  /** Runs one action; true when it succeeded (a form clears its field only then). */
+  const act = async (fn: () => Promise<unknown>): Promise<boolean> => {
+    if (busy) return false;
     setBusy(true);
     setError(null);
     try {
       const out = await fn();
       if (out && typeof out === "object" && "state" in out) onStatus(out as ConnectStatus);
+      return true;
     } catch (e) {
       setError((e as Error).message);
+      return false;
     } finally {
       setBusy(false);
     }
   };
   const login = (body: LoginBody) => act(() => onLogin(body));
+  const warns = (body: LoginBody) => !!p.auth.find((a) => a.kind === body.kind)?.cert_warning;
+  /** The one way a sign-in starts from this card: the certificate notice first when the kind needs it. */
+  const start = (body: LoginBody): Promise<boolean> => {
+    if (warns(body)) {
+      setPending(body);
+      return Promise.resolve(false);
+    }
+    return login(body);
+  };
 
   const primary = defaultAuth(p.auth);
   // A key has nothing to open in a browser: when it is the default, its field
@@ -170,16 +184,20 @@ function ProviderCard({
       break;
     case "reconnect":
       status = <span className="settings-dot settings-dot-warn">Needs reconnecting</span>;
-      control = (
-        <Button variant="accent" size="sm" disabled={busy || !again.kind} onClick={() => void login(again)}>
-          Reconnect
-        </Button>
-      );
+      // A refused key is replaced by pasting another (the field below); a button
+      // sending only the kind would be told to paste a token first.
+      if (again.kind !== "api-key") {
+        control = (
+          <Button variant="accent" size="sm" disabled={busy || pending !== null || !again.kind} onClick={() => void start(again)}>
+            Reconnect
+          </Button>
+        );
+      }
       break;
     case "error":
       status = <span className="settings-warn">{st.error || "The last sign-in failed."}</span>;
       control = (
-        <Button variant="accent" size="sm" disabled={busy || !again.kind} onClick={() => void login(again)}>
+        <Button variant="accent" size="sm" disabled={busy || pending !== null || !again.kind} onClick={() => void start(again)}>
           Try again
         </Button>
       );
@@ -188,13 +206,16 @@ function ProviderCard({
       status = primary ? "Not connected" : p.auth.find((a) => a.reason)?.reason || "Not available on this machine.";
       if (primary && !primaryIsKey) {
         control = (
-          <Button variant="accent" size="sm" disabled={busy || notice}
-            onClick={() => (primary.cert_warning ? setNotice(true) : void login({ kind: primary.kind }))}>
+          <Button variant="accent" size="sm" disabled={busy || pending !== null} onClick={() => void start({ kind: primary.kind })}>
             Connect
           </Button>
         );
       }
   }
+  // The key field: on a fresh card whose default is a key, and on one whose saved key was refused.
+  const keyAuth = st.state === "disconnected" && primaryIsKey ? primary
+    : st.state === "reconnect" && again.kind === "api-key" ? p.auth.find((a) => a.kind === "api-key") ?? null
+    : null;
 
   return (
     <div className="settings-card" data-provider={p.key}>
@@ -209,12 +230,11 @@ function ProviderCard({
         {control && <div className="settings-row-control">{control}</div>}
         <div className="settings-row-extra">
           {st.state === "pending" && <PendingDetails provider={p} status={st} busy={busy} act={act} />}
-          {primary && (
-            <ConnectCertNotice open={notice && st.state === "disconnected"} name={p.name} busy={busy}
-              onContinue={() => { setNotice(false); void login({ kind: primary.kind }); }} onCancel={() => setNotice(false)} />
-          )}
-          {st.state === "disconnected" && primaryIsKey && primary && (
-            <KeyForm auth={primary} busy={busy} onSave={(value) => login({ kind: "api-key", value })} />
+          <ConnectCertNotice open={pending !== null} name={p.name} busy={busy}
+            onContinue={() => { const body = pending; setPending(null); if (body) void login(body); }}
+            onCancel={() => setPending(null)} />
+          {keyAuth && (
+            <KeyForm auth={keyAuth} busy={busy} onSave={(value) => login({ kind: "api-key", value })} />
           )}
           {error && <ErrorBanner>{error}</ErrorBanner>}
           {p.privacy && <p className="settings-row-desc">{p.privacy}</p>}
@@ -228,7 +248,7 @@ function ProviderCard({
               <summary className="cursor-pointer select-none">Advanced</summary>
               <div className="mt-2 flex flex-col gap-3">
                 {others.map((a) => (
-                  <OtherKind key={a.kind} auth={a} busy={busy} onLogin={login} />
+                  <OtherKind key={a.kind} auth={a} busy={busy} onLogin={start} />
                 ))}
               </div>
             </details>
@@ -248,7 +268,7 @@ function PendingDetails({
   provider: ConnectProvider;
   status: ConnectStatus;
   busy: boolean;
-  act: (fn: () => Promise<unknown>) => Promise<void>;
+  act: (fn: () => Promise<unknown>) => Promise<boolean>;
 }) {
   const [pasted, setPasted] = useState("");
   const [copied, setCopied] = useState(false);
@@ -298,7 +318,8 @@ function PendingDetails({
             onSubmit={(e) => {
               e.preventDefault();
               const url = pasted.trim();
-              if (url) void act(() => pasteCallback(p.key, url)).then(() => setPasted(""));
+              // Cleared only once the server took it: a failed paste stays put to fix, not retype.
+              if (url) void act(() => pasteCallback(p.key, url)).then((ok) => ok && setPasted(""));
             }}
           >
             <Input
@@ -320,7 +341,7 @@ function PendingDetails({
   );
 }
 
-function KeyForm({ auth, busy, onSave }: { auth: ConnectAuth; busy: boolean; onSave: (value: string) => Promise<void> }) {
+function KeyForm({ auth, busy, onSave }: { auth: ConnectAuth; busy: boolean; onSave: (value: string) => Promise<boolean> }) {
   const [value, setValue] = useState("");
   return (
     <form
@@ -328,7 +349,7 @@ function KeyForm({ auth, busy, onSave }: { auth: ConnectAuth; busy: boolean; onS
       onSubmit={(e) => {
         e.preventDefault();
         const v = value.trim();
-        if (v) void onSave(v).then(() => setValue(""));
+        if (v) void onSave(v).then((ok) => ok && setValue(""));
       }}
     >
       <Input
@@ -360,7 +381,7 @@ function OtherKind({
 }: {
   auth: ConnectAuth;
   busy: boolean;
-  onLogin: (body: LoginBody) => Promise<void>;
+  onLogin: (body: LoginBody) => Promise<boolean>;
 }) {
   const [clientId, setClientId] = useState("");
   const head = <div className="font-medium text-[var(--fg)]">{kindLabel(a)}</div>;

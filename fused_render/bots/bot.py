@@ -3384,7 +3384,8 @@ class Bot:
         text = res.text
         if len(text) > apptools.RESULT_CAP:
             try:
-                p = self.save_file(f"{save_stem}-{self._tool_calls}.json", text)
+                # A local tool's result is JSON; a connected service's is the vendor's text.
+                p = self.save_file(f"{save_stem}-{self._tool_calls}.{'md' if service else 'json'}", text)
                 tail = f"\n(truncated; full result saved to Inbox as {os.path.basename(p)})"
             except Exception as e:  # noqa: BLE001
                 tail = f"\n(truncated; could not save the full result: {e})"

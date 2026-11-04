@@ -112,6 +112,8 @@ def test_sse_list_changed_notification_is_noted():
     orig = srv.reply
 
     def reply(msg_id, result, extra_events=()):
+        if "tools" in result:   # the listing's own reply carries no notification
+            return orig(msg_id, result)
         return orig(msg_id, result, extra_events=[{"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}])
     srv.reply = reply
     c = _client(srv)
@@ -121,6 +123,11 @@ def test_sse_list_changed_notification_is_noted():
     # A fresh tools/list is the answer to the notification, so it clears the flag.
     assert [t["name"] for t in c.list_tools()] == ["echo"]
     assert c.tools_changed is False
+    # One that lands DURING the listing (here: on the listing's own stream) must survive it.
+    srv.reply = lambda msg_id, result, extra_events=(): orig(
+        msg_id, result, extra_events=[{"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}])
+    c.list_tools()
+    assert c.tools_changed is True
 
 
 def test_401_is_auth_error_with_header():
@@ -207,6 +214,29 @@ def test_list_tools_follows_cursor():
             res = {"tools": [{"name": "b"}]}
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": res})
     assert [t["name"] for t in _client(h).list_tools()] == ["a", "b"]
+
+
+def test_list_tools_refuses_a_never_ending_cursor():
+    def h(request):
+        body = json.loads(request.content)
+        if "id" not in body:
+            return httpx.Response(202)
+        if body["method"] == "initialize":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {}})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                         "result": {"tools": [{"name": "a"}], "nextCursor": "again"}})
+    with pytest.raises(McpError, match="pages"):
+        _client(h).list_tools()
+
+
+def test_a_reply_to_another_request_is_not_an_answer():
+    def h(request):
+        body = json.loads(request.content)
+        if "id" not in body:
+            return httpx.Response(202)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"] + 100, "result": {}})
+    with pytest.raises(McpError, match="no JSON-RPC response"):
+        _client(h).initialize()
 
 
 def test_close_deletes_session():

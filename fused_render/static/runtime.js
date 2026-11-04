@@ -7552,8 +7552,17 @@
     logout: (key) => taskFetch("POST", connectPath(key, "/logout"), {}),
     tools: (key) =>
       taskFetch("GET", connectPath(key, "/tools")).then((d) => (Array.isArray(d) ? d : (d && d.tools) || [])),
-    call: (key, name, args) =>
-      taskFetch("POST", connectPath(key, "/tools/call"), { name: String(name), args: args || {} }).then(
+    call: (key, name, args) => {
+      // Same principle as `_daemonRejectPreview`: a picture of the page must not act on the
+      // user's account. A preview card boots the real page purely to paint it.
+      if (IS_THUMBNAIL) {
+        return Promise.reject(new Error(
+          "fused.connect.call: refused — this page is rendering as a preview thumbnail " +
+          "(a card peek or hover, not a real open), and a page must never act on a connected " +
+          "service just by being displayed or hovered. Call tools from an explicit user action."
+        ));
+      }
+      return taskFetch("POST", connectPath(key, "/tools/call"), { name: String(name), args: args || {} }).then(
         (d) => ({
           ok: !!(d && d.ok),
           text: (d && typeof d.text === "string" && d.text) || "",
@@ -7574,7 +7583,8 @@
           }
           throw err;
         },
-      ),
+      );
+    },
   };
 
   // ----------------------------------------------------------- fused.capture

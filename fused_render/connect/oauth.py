@@ -63,6 +63,9 @@ logger = logging.getLogger(__name__)
 REDIRECT_HOST, REDIRECT_PORTS, REDIRECT_PATH = "localhost", [47823, 47824, 47825, 47826, 47827], "/callback"
 HTTP_TIMEOUT = 30.0
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+#: The least a device flow waits between polls, whatever `interval` the server
+#: names (RFC 8628 §3.2 defaults it to 5; a 0 would poll back to back).
+MIN_INTERVAL = 1.0
 #: RFC 8628 §3.5: `slow_down` adds 5 s to the interval, unless the server
 #: names the new interval itself (GitHub does).
 SLOW_DOWN_STEP = 5.0
@@ -485,7 +488,7 @@ class DeviceFlow:
             raise FlowError(f"device endpoint answered HTTP {resp.status_code} without a code")
         self._device_code = body["device_code"]
         try:
-            self.interval = max(0.0, float(body.get("interval", 5)))
+            self.interval = max(MIN_INTERVAL, float(body.get("interval", 5)))
         except (TypeError, ValueError):
             self.interval = 5.0
         try:

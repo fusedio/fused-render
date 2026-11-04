@@ -104,8 +104,19 @@ def parse_www_authenticate(header: str | None) -> dict[str, str]:
 
 
 def _origin(url: str) -> str:
+    """scheme://host[:port], host lower-cased and a default port dropped, so
+    `https://X.example:443/mcp` and `https://x.example/mcp` are one origin."""
     u = urlparse(url)
-    return f"{u.scheme}://{u.netloc}"
+    scheme = (u.scheme or "").lower()
+    host = (u.hostname or "").lower()
+    port = u.port
+    if port is None or port == {"https": 443, "http": 80}.get(scheme):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
+def _is_loopback(url: str) -> bool:
+    return (urlparse(url).hostname or "").lower() in ("localhost", "127.0.0.1", "::1")
 
 
 def prm_candidates(resource_url: str) -> list[str]:
@@ -228,6 +239,11 @@ def discover(resource_url: str, http=None) -> Discovered:
     for f in ("authorization_endpoint", "token_endpoint"):
         if not isinstance(meta.get(f), str) or not meta[f]:
             raise DiscoveryError(f"{meta_url} has no {f}")
+        scheme = urlparse(meta[f]).scheme.lower()
+        # A code or a token over plain http is a credential on the wire; only a
+        # loopback server (the test vendor, a local dev server) may skip TLS.
+        if scheme != "https" and not (scheme == "http" and _is_loopback(meta[f])):
+            raise DiscoveryError(f"{meta_url}: {f} is not https ({meta[f]}); refusing to sign in")
 
     if params.get("scope"):
         scopes = params["scope"].split()

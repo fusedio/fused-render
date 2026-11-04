@@ -38,6 +38,7 @@ import json
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable
 
 import httpx
@@ -95,10 +96,12 @@ class McpClient:
     """One connection to one MCP server. Thread-safe: requests may overlap."""
 
     def __init__(self, url: str, token: str | Callable[[], str] | None,
-                 http: httpx.Client | None = None, protocol_version: str = PROTOCOL_VERSION):
+                 http: httpx.Client | None = None, protocol_version: str = PROTOCOL_VERSION,
+                 own_http: bool | None = None):
+        """`own_http`: close `http` in `close()` too (default: only one made here)."""
         self.url = url
         self._token = token
-        self._own_http = http is None
+        self._own_http = http is None if own_http is None else bool(own_http)
         self._http = http if http is not None else httpx.Client(timeout=TIMEOUT)
         self.protocol_version = protocol_version
         self.session_id: str | None = None
@@ -170,7 +173,12 @@ class McpClient:
                     self._note(m)
             return None
 
+        # The read timeout is per chunk; a server that keeps sending notifications
+        # would otherwise hold this reader (and its thread) open for good.
+        deadline = time.monotonic() + TIMEOUT.read
         for line in r.iter_lines():
+            if time.monotonic() > deadline:
+                raise McpError("the MCP server kept the stream open without answering")
             if line == "":
                 found = flush()
                 if found is not None:
@@ -212,7 +220,7 @@ class McpClient:
                     raise McpError(f"the MCP server sent a non-JSON reply ({ctype or 'no type'})") from None
                 if isinstance(msg, list):  # a batch: pick ours
                     msg = next((m for m in msg if isinstance(m, dict) and m.get("id") == payload["id"]), None)
-                if not isinstance(msg, dict):
+                if not isinstance(msg, dict) or msg.get("id") != payload["id"]:
                     raise McpError("the MCP server sent no JSON-RPC response")
         if "error" in msg:
             err = msg["error"] if isinstance(msg["error"], dict) else {"message": str(msg["error"])}
@@ -273,20 +281,25 @@ class McpClient:
             if not self._initialized:
                 self.initialize()
 
+    MAX_PAGES = 50   # a bound, not a page size: no server has 50 pages of tools
+
     def list_tools(self) -> list[dict]:
         self._ensure()
         tools: list[dict] = []
         cursor = None
-        for _ in range(50):  # a bound, not a page size: no server has 50 pages of tools
+        # Cleared before the walk: a list_changed that lands during it must survive
+        # it, so the caller's cache is refreshed rather than kept for CACHE_SECONDS.
+        self.tools_changed = False
+        for _ in range(self.MAX_PAGES):
             result = self._request("tools/list", {"cursor": cursor} if cursor else {})
             page = result.get("tools")
             tools.extend(t for t in (page if isinstance(page, list) else [])
                          if isinstance(t, dict) and isinstance(t.get("name"), str))
             cursor = result.get("nextCursor")
             if not cursor:
-                break
-        self.tools_changed = False
-        return tools
+                return tools
+        # A partial roster would be served as the whole one (and gate approvals on it).
+        raise McpError(f"the MCP server paged tools/list past {self.MAX_PAGES} pages")
 
     def call(self, name: str, args: dict) -> dict:
         self._ensure()

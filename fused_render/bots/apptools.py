@@ -600,9 +600,12 @@ def find(recs, app, name):
     """The record for app folder + tool name (app matched case-insensitively, `-`/`_`/space alike), or None."""
     def norm(s):
         return re.sub(r"[-_\s]+", "-", (s or "").strip().lower())
-    a, n = norm(app), (name or "").strip()
+    app, n = (app or "").strip(), (name or "").strip()
+    # `connect:notion` names the service outright, for when a local app folder shares its name.
+    only_connect = app.lower().startswith(CONNECT_PREFIX)
+    a = norm(app[len(CONNECT_PREFIX):] if only_connect else app)
     for r in recs:
-        if r.name == n and (not a or norm(r.app) == a):
+        if r.name == n and (not a or norm(r.app) == a) and (not only_connect or is_connect(r)):
             return r
     return None
 
@@ -875,8 +878,11 @@ def prompt_section(recs, trusted=None, connections=None):
     connections = frozenset(connections or ())
     services = ", and connected services (Notion, GitHub, Slack…) whose tools run on the service's own servers" \
         if any(is_connect(r) for r in recs) else ""
+    gate = ("pause for the user's yes: they change something, or they belong to a connected service this bot may not "
+            "use yet. The rest run at once" if services else
+            "change something and pause for the user's yes; the rest run at once")
     hdr = (f"\n\nAPP TOOLS (local apps on this Mac{services}; call one with `tool` app name args. Prefer a tool over browsing when it "
-           "does the job directly. Tools marked [approval] change something and pause for the user's yes; the rest run at once):\n")
+           f"does the job directly. Tools marked [approval] {gate}):\n")
     body = _render(recs, None, trusted, connections)
     if len(body) > SECTION_CAP:
         body = _render(recs, PER_APP_MAX, trusted, connections)

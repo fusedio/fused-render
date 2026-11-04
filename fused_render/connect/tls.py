@@ -70,9 +70,17 @@ def _fresh(cert_path: str, key_path: str) -> bool:
         return False
     try:
         from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
 
         with open(cert_path, "rb") as f:
             cur = x509.load_pem_x509_certificate(f.read())
+        with open(key_path, "rb") as f:
+            key = serialization.load_pem_private_key(f.read(), password=None)
+        # An interrupted reissue can leave a new certificate beside an old key; the
+        # pair is reused only when the key really is the certificate's.
+        if key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo) \
+                != cur.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo):
+            return False
         return cur.not_valid_after_utc > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=14)
     except ImportError:
         # No way to read the expiry: the file's own age dates the certificate.

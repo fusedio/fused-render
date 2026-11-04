@@ -205,6 +205,13 @@ def test_env_entry_may_be_a_pack_itself_and_overrides_a_builtin(tmp_path, monkey
 
 # ---------------------------------------------------------- placeholders ---
 
+def test_urls_are_https_or_loopback_http():
+    assert registry._is_url("https://mcp.notion.com/mcp")
+    assert registry._is_url("http://127.0.0.1:5555/mcp") and registry._is_url("http://localhost/x")
+    assert not registry._is_url("http://mcp.example.com/mcp")
+    assert not registry._is_url("https://") and not registry._is_url("ftp://x") and not registry._is_url(3)
+
+
 def test_fake_pack_expands_the_vendor_url(monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_CONNECT_PROVIDERS", FAKE_PACKS)
     monkeypatch.setenv("FUSED_RENDER_FAKE_VENDOR_URL", "http://127.0.0.1:5555")
