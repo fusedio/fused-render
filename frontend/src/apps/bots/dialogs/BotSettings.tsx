@@ -23,7 +23,7 @@ import { Switch } from "@platform/shadcn/ui/switch";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { cn } from "@platform/lib/utils";
 import { Face } from "../components/Face";
-import { FolderPlusIcon, Trash2Icon } from "lucide-react";
+import { FolderPlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { ApiError, api, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
@@ -165,6 +165,19 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
       window.setTimeout(() => { busy.current = held; }, 0);  // restore, never clear: a confirm may hold it meanwhile
     }
   };
+  // The apps list: ticked apps first, then the rest, each half by name; a search box narrows it by name or folder.
+  // "Ticked" is read once at open so a tick made here does not jump the row to the top under the pointer.
+  const [appQuery, setAppQuery] = useState("");
+  const [trustedAtOpen] = useState(() => new Set(init.trustedApps));
+  const visibleApps = useMemo(() => {
+    const q = appQuery.trim().toLowerCase();
+    const label = (a: AppRow) => (a.name || a.folder).toLowerCase();
+    return appRows
+      .filter((a) => !q || label(a).includes(q) || a.folder.toLowerCase().includes(q))
+      .map((a, i) => ({ a, i, on: trustedAtOpen.has(normApp(a.folder)) ? 0 : 1 }))
+      .sort((x, y) => x.on - y.on || label(x.a).localeCompare(label(y.a)) || x.i - y.i)
+      .map((r) => r.a);
+  }, [appRows, appQuery, trustedAtOpen]);
   const toggleTrusted = (folder: string, on: boolean) => {
     const k = normApp(folder);
     setTrustedApps((cur) => on ? (cur.includes(k) ? cur : [...cur, k]) : cur.filter((x) => x !== k));
@@ -328,8 +341,17 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 </Row>
                 {appRows.length ? (
                   <Row title="Apps it may use without asking" text="A ticked app's tools and scripts run without asking. Everything else asks first." stack>
+                    {appRows.length > 5 ? (
+                      <div className="relative">
+                        <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                        <Input id="bmappq" type="search" placeholder="Search apps" autoComplete="off" value={appQuery} className="h-8 pl-8"
+                          aria-label="Search apps" onChange={(e) => setAppQuery(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Escape" && appQuery) { e.stopPropagation(); setAppQuery(""); } }} />
+                      </div>
+                    ) : null}
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmtrusted">
-                      {appRows.map((a) => {
+                      {!visibleApps.length ? <div className="px-3 py-2 text-sm text-muted-foreground">No apps match “{appQuery.trim()}”.</div> : null}
+                      {visibleApps.map((a) => {
                         const on = trustedApps.includes(normApp(a.folder));
                         return (
                           <label key={a.folder} className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-foreground/[0.04]">
