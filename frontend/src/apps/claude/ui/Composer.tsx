@@ -62,8 +62,7 @@ import { agentLabel, modelLabelsOf, useAgentBackends } from "@platform/lib/agent
 import { copyToTaskShots, SchedButton } from "./SchedButton";
 import { outboxHint } from "./outbox";
 
-/** The Ctrl+X hint under the box and the send button's tooltip, while a run is live. */
-export const SEND_NOW_HINT = "Ctrl+X to send now";
+/** The send button's tooltip, while a run is live. */
 export const SEND_NOW_TITLE = "Send now (Ctrl+X)";
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
@@ -269,6 +268,11 @@ export interface ComposerCardProps {
    * `running`; otherwise Ctrl/Cmd+Enter is the plain send it always was.
    */
   onSendNow?(text: string): void;
+  /** Ctrl+X on an EMPTY box while a run is live and a line is queued: stop and
+   *  send the queued line(s) now. */
+  onSendQueuedNow?(): void;
+  /** A queued bubble exists (gates the empty-box Ctrl+X). */
+  hasQueued?: boolean;
   onStop(): void;
   /**
    * THE PAGE OUTBOX (ui/outbox.ts): how many lines this page is holding because
@@ -566,6 +570,8 @@ export function ComposerCard({
   onSend,
   onFollowUp,
   onSendNow,
+  onSendQueuedNow,
+  hasQueued,
   onStop,
   queuedCount,
   notSentCount,
@@ -2162,6 +2168,18 @@ export function ComposerCard({
         (ev.key === "x" || ev.key === "X") &&
         ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey &&
         !ev.nativeEvent?.isComposing &&
+        !text.trim() && running && hasQueued && onSendQueuedNow
+      ) {
+        const t = ev.currentTarget as HTMLTextAreaElement | undefined;
+        if (t && t.selectionStart !== t.selectionEnd) return;
+        ev.preventDefault();
+        onSendQueuedNow();
+        return;
+      }
+      if (
+        (ev.key === "x" || ev.key === "X") &&
+        ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey &&
+        !ev.nativeEvent?.isComposing &&
         text.trim()
       ) {
         const t = ev.currentTarget as HTMLTextAreaElement | undefined;
@@ -2183,7 +2201,7 @@ export function ComposerCard({
       ev.preventDefault();
       submit(undefined, ev.ctrlKey && !ev.metaKey);
     },
-    [submit, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
+    [submit, running, hasQueued, onSendQueuedNow, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
   );
 
   const draft = useCallback(() => text, [text]);
@@ -2383,13 +2401,6 @@ export function ComposerCard({
             queue's, and ↑ is the thing to do about them. */}
         {(queuedCount ?? 0) + (notSentCount ?? 0) > 0 ? (
           <div className="c-queued c-outbox">{outboxHint(queuedCount ?? 0, notSentCount ?? 0)}</div>
-        ) : null}
-        {/* CTRL+X IS SEND-NOW, AND NOTHING SAID SO. While a run is live and the
-            box has words, the one shortcut that skips the wait is named, in
-            the same quiet line as the hints above. Plain ASCII, the same words
-            on every platform. */}
-        {variant === "chat" && running && onSendNow && text.trim() ? (
-          <div className="c-queued c-sendnow-hint">{SEND_NOW_HINT}</div>
         ) : null}
         {/* THE TOOLS' SHELF: a one-track grid whose row goes 1fr → 0fr while the
             composer is idle (styles/composer.css `.c-composer-tools`). A grid

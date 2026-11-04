@@ -1277,6 +1277,10 @@ function ChatBody(props: ChatBodyProps) {
    *  through the single "current dispatch" ref, which the later dispatch
    *  overwrote. Set at dispatch, deleted in its `finally`. */
   const parkedBySendId = useRef<Map<string, OutboxPayload>>(new Map());
+  /** CTRL+X ON AN EMPTY BOX (`onSendQueuedNow`): the Stop in flight hands its
+   *  stranded lines back to be SENT, not to sit as "not sent". Read once by
+   *  `strandAll`, reset there and after the stop resolves. */
+  const sendQueuedNow = useRef(false);
   const postNotSent = useCallback(
     (text: string, payload: OutboxPayload): OutboxEntry<OutboxPayload> | null => {
       const c = controllerRef.current;
@@ -1294,7 +1298,25 @@ function ChatBody(props: ChatBodyProps) {
     (lines: readonly StrandedLine[]) => {
       if (!controllerRef.current) return;
       const entries: OutboxEntry<OutboxPayload>[] = [];
+      const resend = sendQueuedNow.current;
+      sendQueuedNow.current = false;
       for (const line of lines) {
+        // SEND-QUEUED-NOW: an ordinary outbox line, journal kept, bubble "queued".
+        if (resend && line.text) {
+          if (line.sendId && postedForSend.current.has(line.sendId)) {
+            postedForSend.current.delete(line.sendId);
+            continue;
+          }
+          const c = controllerRef.current;
+          const own = line.returned && line.sendId ? parkedBySendId.current.get(line.sendId) : null;
+          const bubble = c.postOptimisticUser(line.text, "queued");
+          const base = own ?? { opts: {}, bubble: "", taken: NO_TAKEN };
+          const opts = { ...base.opts, ...(line.clientId ? { clientId: line.clientId } : {}) };
+          const id = `o${++outboxSeq.current}`;
+          entries.push({ id, text: line.text, payload: { ...base, opts, bubble, entryId: id } });
+          if (own && line.sendId) postedForSend.current.add(line.sendId);
+          continue;
+        }
         if (line.clientId) journalDrop(line.clientId);
         if (!line.text) continue;
         // ALREADY POSTED, BY ID: `onSendReturned` took this send back earlier
@@ -3839,8 +3861,8 @@ function ChatBody(props: ChatBodyProps) {
    * a turn the reader has just asked not to have. It stays on screen as "not
    * sent" — theirs to pull back (↑ or a click) and resend, never dropped.
    */
-  const onStop = useCallback(() => {
-    if (outboxRef.current.some((e) => !e.notSent)) {
+  const stopNow = useCallback((keepOutbox: boolean) => {
+    if (!keepOutbox && outboxRef.current.some((e) => !e.notSent)) {
       const next = outboxRef.current.map((e) => {
         if (e.notSent) return e;
         // "Not sent" is the reader's to resend: a reload must not do it for them.
@@ -3858,8 +3880,16 @@ function ChatBody(props: ChatBodyProps) {
     // its line was just retagged above and `onSendNow` steps back from a
     // "not sent" entry; the drain may look again as soon as the run settles.
     sendNowInFlight.current = false;
-    void controller.stopRun();
+    void controller.stopRun().finally(() => {
+      sendQueuedNow.current = false;
+    });
   }, [controller, setOutbox, journalDrop]);
+  const onStop = useCallback(() => stopNow(false), [stopNow]);
+  /** CTRL+X with an empty box: Stop, but the queued lines come back to SEND. */
+  const onSendQueuedNow = useCallback(() => {
+    sendQueuedNow.current = true;
+    stopNow(true);
+  }, [stopNow]);
   /**
    * `sched.reset` — declared HERE, ahead of the hook that fills it, because
    * `onBack` is one of its two callers and is itself declared before the PR4
@@ -4214,6 +4244,17 @@ function ChatBody(props: ChatBodyProps) {
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
+  // THE SEND-NOW HINT lives on the NEWEST queued bubble (one, not one per
+  // bubble), and Ctrl+X on an empty box sends the queued lines now.
+  let newestQueuedKey: string | null = null;
+  for (let i = state.turns.length - 1; i >= 0; i--) {
+    const t = state.turns[i];
+    if (t.role === "user" && t.pending === "queued") {
+      newestQueuedKey = t.key;
+      break;
+    }
+  }
+  const hasQueued = newestQueuedKey !== null;
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
   const shownHint = shownWorktreeHint(state.worktreeHint, state.tasks, chatWorkdir(file, pane.noun) ?? undefined);
   const worktreeMenu = worktreeTarget && agentCaps.worktrees ? (
@@ -5007,6 +5048,8 @@ function ChatBody(props: ChatBodyProps) {
       onPullQueued,
       history: promptHistory,
       onSendNow,
+      onSendQueuedNow,
+      hasQueued,
       onPaste,
       // The chip row is ABOVE the control row and changes the composer's height,
       // never the row's width — but T re-measures on exactly this kind of change
@@ -5077,6 +5120,8 @@ function ChatBody(props: ChatBodyProps) {
       onPullQueued,
       promptHistory,
       onSendNow,
+      onSendQueuedNow,
+      hasQueued,
       urlTick,
       attach.items,
       attach.remove,
@@ -5664,6 +5709,7 @@ function ChatBody(props: ChatBodyProps) {
               onAnchorSpent={onAnchorSpent}
               {...(debugSent ? { onShowSent: setSent } : {})}
               onPullPending={onPullPending}
+              sendNowKey={running ? newestQueuedKey : null}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}

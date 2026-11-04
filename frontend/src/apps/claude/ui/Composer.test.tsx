@@ -2224,24 +2224,29 @@ test("CTRL+X while idle is a normal send, and Ctrl+Enter still sends now", () =>
   expect(now).toEqual(["again"]);
 });
 
-test("the Ctrl+X hint shows only while a run is live and the box has words, the same on every platform", () => {
+test("there is no Ctrl+X hint line under the box; the send button still names the chord", () => {
   const hint = (c: ReturnType<typeof mount>) =>
     c.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("c-sendnow-hint"));
   const title = (c: ReturnType<typeof mount>) => c.root.findByProps({ className: "c-send" }).props.title;
   const live = mount({ status: "running", onSendNow: () => {} });
-  // Empty box: no hint, the button keeps saying Stop.
-  expect(hint(live)).toHaveLength(0);
   expect(title(live)).toBe("Stop this turn");
   live.type("do this first");
-  expect(hint(live)).toHaveLength(1);
-  expect(hint(live)[0].children).toEqual(["Ctrl+X to send now"]);
-  expect(title(live)).toBe("Send now (Ctrl+X)");
-  // Whitespace is not words.
-  live.type("   ");
   expect(hint(live)).toHaveLength(0);
-  // Idle: Ctrl+X is the plain send, there is nothing to hint.
+  expect(title(live)).toBe("Send now (Ctrl+X)");
   const idle = mount({ onSendNow: () => {} });
   idle.type("go");
   expect(hint(idle)).toHaveLength(0);
   expect(title(idle)).toBe("Send");
+});
+
+test("Ctrl+X on an empty box sends the queued lines now, only while a run is live and one is queued", () => {
+  let calls = 0;
+  const live = mount({ status: "running", hasQueued: true, onSendQueuedNow: () => (calls += 1) });
+  expect(live.press("x", { ctrlKey: true })).toBe(true);
+  expect(calls).toBe(1);
+  const none = mount({ status: "running", hasQueued: false, onSendQueuedNow: () => (calls += 1) });
+  expect(none.press("x", { ctrlKey: true })).toBe(false);
+  const idle = mount({ hasQueued: true, onSendQueuedNow: () => (calls += 1) });
+  expect(idle.press("x", { ctrlKey: true })).toBe(false);
+  expect(calls).toBe(1);
 });

@@ -74,6 +74,8 @@ let failSend = false;
 /** Hold only the Nth `send` (1-based); null holds every send while `holdSend` is set. */
 let holdSendNth: number | null = null;
 let sendCount = 0;
+/** What `cancel` reports in `still_queued` (wire texts the CLI never read). */
+let cancelStill: string[] = [];
 /** What `/api/claude-sessions/history` answers (a reload's restore). */
 let historyBody: Record<string, unknown> = { turns: [], live_run: "" };
 /**
@@ -186,7 +188,7 @@ function stubFetch(): void {
       }
       if (action === "cancel") {
         cancelled = true;
-        return jsonRes({ cancelled: "r1", still_queued: [] });
+        return jsonRes({ cancelled: "r1", still_queued: cancelStill });
       }
       return jsonRes({});
     }
@@ -299,6 +301,7 @@ beforeEach(() => {
   failSend = false;
   holdSendNth = null;
   sendCount = 0;
+  cancelStill = [];
   cancelled = false;
   stickyLive = false;
   prefsBody = {};
@@ -1444,7 +1447,7 @@ test("a line typed while the run is only STARTING is parked as a queued bubble, 
     "first message",
     "second message",
   ]);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  expect(byClass(r, "is-pending")).toHaveLength(1);
   expect(JSON.stringify(r.toJSON())).toContain("1 message waiting to send");
 
   await act(async () => open());
@@ -1541,7 +1544,7 @@ test("a parked line stopped before the inbox confirmed it comes back as ONE not-
   await typeInBox(r, "second message");
   await pressEnterInBox(r);
   await settle();
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  expect(byClass(r, "is-pending")).toHaveLength(1);
   // …the run goes live and stays live (`pollLive`), so the drain sends it as a
   // follow-up whose `send` is now HELD: taken by the host, not yet confirmed.
   await act(async () => open());
@@ -1661,10 +1664,7 @@ test("two identical parked lines, one out and one waiting, each keep their own r
   await typeInBox(r, "again");
   await pressEnterInBox(r);
   await settle();
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "queued",
-    "queued",
-  ]);
+  expect(byClass(r, "is-pending")).toHaveLength(2);
   // The run goes live: BOTH "again"s drain into it — a follow-up opens the
   // latch as soon as it is handed to the controller, so the second follows the
   // first out — and both `send`s are held: two sends out, two ids, neither
@@ -1699,11 +1699,11 @@ test("Back with a line still PARKED empties the outbox: no bubble, no hint carri
   await typeInBox(r, "parked");
   await pressEnterInBox(r);
   await settle();
-  expect(byClass(r, "turn-pending")).toHaveLength(1);
+  expect(byClass(r, "is-pending")).toHaveLength(1);
   await act(async () => byClass(r, "c-back")[0]!.props.onClick({ preventDefault() {} }));
   await settle(60);
   expect(byClass(r, "bubble")).toHaveLength(0);
-  expect(byClass(r, "turn-pending")).toHaveLength(0);
+  expect(byClass(r, "is-pending")).toHaveLength(0);
   expect(JSON.stringify(r.toJSON())).not.toContain("waiting to send");
   await act(async () => open());
   await settle(60);
@@ -1743,7 +1743,7 @@ test("Stop during a send-now's wait wins: the line stays not-sent and nothing is
   await settle(150);
   // The chord's interrupt went out; the run is slow to settle.
   expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  expect(byClass(r, "is-pending")).toHaveLength(1);
   // Stop while the chord waits.
   await act(async () => {
     r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
@@ -2059,6 +2059,49 @@ for (const flagOn of [false, true]) {
     expect(admits).toHaveLength(openings);
     // The server acknowledged it, so nothing is left to re-send after a reload.
     expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: Ctrl+X on an empty box with a queued line is taken and never leaves it not-sent; a plain Stop after still does`, async () => {
+    const { r } = await liveChat();
+    // A Ctrl+Enter line waits in the outbox while the run is slow to settle:
+    // a queued bubble exists, so the empty-box chord is armed.
+    stickyLive = true;
+    await typeInBox(r, "Z");
+    await pressCtrlEnterInBox(r);
+    await settle(150);
+    expect(byClass(r, "is-pending")).toHaveLength(1);
+    // The run is live: the newest queued bubble's tag IS the hint, no "queued".
+    expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+      "(Ctrl+X to send now)",
+    ]);
+    let prevented = 0;
+    await act(async () => {
+      r.root.findByType("textarea").props.onKeyDown({
+        key: "x",
+        ctrlKey: true,
+        shiftKey: false,
+        preventDefault() {
+          prevented += 1;
+        },
+      });
+    });
+    expect(prevented).toBe(1);
+    stickyLive = false;
+    await settle(1500);
+    expect([...sends(), ...started()].filter((c) => String(c.params.message).includes("Z"))).toHaveLength(1);
+    expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).not.toContain(
+      "not sent · click to edit",
+    );
+    // A plain Stop afterwards still yields "not sent".
+    holdSend = new Promise<void>(() => {});
+    await typeInBox(r, "later");
+    await pressEnterInBox(r);
+    await settle(60);
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(200);
+    expect(byClass(r, "bubble").map((n) => String(n.props.children))).toContain("later");
   });
 
   test(`${tag}: two mid-turn lines arrive in the order typed`, async () => {

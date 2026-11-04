@@ -96,6 +96,8 @@ export interface TurnProps {
    *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
    *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
   onPullPending?: (key: string) => void;
+  /** The newest queued bubble's tag: "(Ctrl+X to send now)". Other queued bubbles show no tag. */
+  sendNowHint?: boolean;
   /** "Fork from here" on a sent user turn: park it and everything after it and
    *  re-ask it in the composer. Passed only for a Claude chat that is idle;
    *  absent, no button is drawn. One callback for the log, keyed by the turn. */
@@ -131,6 +133,7 @@ export const Turn = memo(function Turn({
   onToggleCollapse,
   pendingCard,
   onPullPending,
+  sendNowHint,
   onFork,
   cwd,
   workedFor,
@@ -254,7 +257,7 @@ export const Turn = memo(function Turn({
             )}
           </div>
         </div>
-        {pending ? (
+        {pending === "notSent" || (pending && sendNowHint) ? (
           <button
             type="button"
             className={cn("turn-pending", pending === "notSent" && "is-not-sent")}
@@ -266,7 +269,7 @@ export const Turn = memo(function Turn({
             onClick={onPullPending ? () => onPullPending(turn.key) : undefined}
             disabled={!onPullPending}
           >
-            {pending === "notSent" ? "not sent · click to edit" : "queued"}
+            {pending === "notSent" ? "not sent · click to edit" : "(Ctrl+X to send now)"}
           </button>
         ) : null}
         {/* SIBLINGS of the bubble, not wrappers around it: the re-attach probe
