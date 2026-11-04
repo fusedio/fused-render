@@ -10,7 +10,7 @@ import { ChatMount } from "@apps/claude";
 import type { Turn } from "@apps/claude/protocol/controller-api";
 import type { Segment } from "@apps/claude/protocol/types";
 import { PEEK_MAX_HEIGHT, PEEK_WIDTH } from "@shell/claude-rail/rail-peek-lib";
-import { closeAgentPeek, useAgentPeeks, useAgentSegment, type AgentPeek } from "@platform/lib/agent-peeks";
+import { closeAgentPeek, useAgentPeeks, useAgentSegment, type AgentPeek } from "@apps/claude/agent-peeks";
 import {
   buildHandoffDraft,
   closeBreakout,

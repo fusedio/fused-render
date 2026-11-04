@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { useEffect } from "react";
 import { act, create } from "react-test-renderer";
 
-import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@platform/lib/agent-peeks";
+import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@apps/claude/agent-peeks";
 import { closeBreakout, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
 import { AgentPeekCard, Card } from "./BreakoutCards";
 

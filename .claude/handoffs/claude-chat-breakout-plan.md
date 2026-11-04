@@ -187,3 +187,9 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 - T18: settings description updated (compaction clamp, handoff-notes exception).
 - T2: `breakoutPublishedAt` stamp (Breakout only; shared `generation` untouched): `read()` skips `setBreakout` when a publish happened after it departed. `publishQueueEnabled`/recap have no equivalent, nothing mirrored.
 - NOT done: no browser pass; no `/clear` test; the cross-tab `storage` path still sets the flag without the stamp.
+
+## Round 13 — agent-peek store moved into apps/claude (import boundary)
+
+- CI's `scripts/check-boundaries.mjs` failed: `platform/lib/agent-peeks.ts` imported `@apps/claude/protocol/types` and `controller-api`, and platform may only import platform.
+- Moved the store and its test to `frontend/src/apps/claude/agent-peeks{,.test}.ts` (git mv, contents unchanged except the two type imports, now relative). apps/claude may import itself and the shell may import anything, so `BreakoutCards.tsx`/test import `@apps/claude/agent-peeks` and `ClaudeChat.tsx` uses `./agent-peeks`.
+- Earlier rounds above that mention `platform/lib/agent-peeks.ts` are stale; the path is now `apps/claude/agent-peeks.ts`.

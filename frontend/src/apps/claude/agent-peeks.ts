@@ -7,8 +7,8 @@
 // here while a peek of its session is open, and the card looks its segment up.
 // Same module-store shape as `breakouts.ts`.
 import { useSyncExternalStore } from "react";
-import type { Segment, ToolSegment } from "@apps/claude/protocol/types";
-import type { Turn } from "@apps/claude/protocol/controller-api";
+import type { Segment, ToolSegment } from "./protocol/types";
+import type { Turn } from "./protocol/controller-api";
 
 export interface AgentPeekRequest {
   sessionId: string;

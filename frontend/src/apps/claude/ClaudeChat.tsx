@@ -217,7 +217,7 @@ import {
   rawUrl,
   type Task,
 } from "@platform/lib/api";
-import { hasAgentPeeks, openAgentPeek, publishPeekTurns, useAgentPeeks } from "@platform/lib/agent-peeks";
+import { hasAgentPeeks, openAgentPeek, publishPeekTurns, useAgentPeeks } from "./agent-peeks";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
 import PanelIcon from "@platform/ui/PanelIcon";
 import "./styles/ann.css";
