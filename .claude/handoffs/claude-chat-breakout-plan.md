@@ -150,3 +150,9 @@ Commit: `Claude chat: breakout cards with Send back into the parent composer`
 
 ### Fix round 8
 - Decision changed: every chat surface gets the Breakout button (composer + per-turn), user request 2026-11-04. `onBreakout={openBreakout}` now also on CanvasPage, TaskCards (2 mounts) and RailPeek, superseding the Task 4 note "Not on TaskCards/RailPeek". Still not wired in BreakoutCards (a breakout never nests).
+
+### Round 9 — feature flag
+- Breakout is now an opt-in beta: pref `breakout_enabled` (prefs.json), default off; only a stored `true` is on. GET `/api/prefs` carries `breakout: {enabled}`; PUT takes booleans only (400 otherwise).
+- Frontend gate sites in `ClaudeChat.tsx` (`useBreakoutEnabled()` in ChatBody): the composer `breakoutBtn` and the per-turn `onBreakout` spread both require it. Flag state lives in `apps/claude/feature-flag.ts` (`publishBreakoutEnabled`, broadcast key `fused-render:breakout`).
+- Server refusal: `agent._start` returns `reason: "breakout_disabled"` for any `breakout` start (fresh or resume) while the pref is off, before any run dir is made. `agent.py` reads the pref with its own stdlib `_breakout_pref()` (it cannot import the package), like `_backend_enabled`.
+- Toggle: Preferences page, "Chats & tasks" group (registry group `tasks`, section Running), "Breakout side chats", badge Beta (`BreakoutControl` in `shell/settings/toggles.tsx`).
