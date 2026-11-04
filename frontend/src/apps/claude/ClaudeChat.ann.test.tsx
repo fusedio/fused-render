@@ -80,6 +80,8 @@ let cancelStill: string[] = [];
 let holdCancel: Promise<void> | null = null;
 /** The live run's turn ends (polls answer done) until the next message arrives. */
 let turnDone = false;
+/** `live_host` / `live_run` answer only once this resolves: a live-run adoption that is slow to land. */
+let holdLiveHost: Promise<void> | null = null;
 /** What `/api/claude-sessions/history` answers (a reload's restore). */
 let historyBody: Record<string, unknown> = { turns: [], live_run: "" };
 /**
@@ -181,7 +183,10 @@ function stubFetch(): void {
         }
         return jsonRes({ done: true, session_id: "s1", text: "ok" });
       }
-      if (pollLive && action === "live_host") return jsonRes({ run_id: "r1" });
+      if (pollLive && (action === "live_host" || (action === "live_run" && holdLiveHost))) {
+        if (holdLiveHost) return holdLiveHost.then(() => jsonRes({ run_id: "r1" }));
+        return jsonRes({ run_id: "r1" });
+      }
       if (pollLive && action === "send") {
         if (failSend) return jsonRes({});
         // HOLDABLE like `start`: the window between the inbox taking the bytes
@@ -311,6 +316,7 @@ beforeEach(() => {
   cancelStill = [];
   holdCancel = null;
   turnDone = false;
+  holdLiveHost = null;
   cancelled = false;
   stickyLive = false;
   prefsBody = {};
@@ -2458,6 +2464,59 @@ for (const flagOn of [false, true]) {
     const into = [...sends(), ...started()].filter((c) => String(c.params.message).includes("held across"));
     expect(into).toHaveLength(1);
     expect(into[0]!.params.client_uuid).toBe("0f8c1c52-aaaa-4bbb-8ccc-123456789abc");
+  });
+
+  test(`${tag}: a slow live-run adoption keeps a reloaded held line held until the adopted run finishes`, async () => {
+    const id = "0f8c1c52-aaaa-4bbb-8ccc-123456789abc";
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id, text: "held slow", hold: true }]));
+    historyBody = { turns: [{ role: "user", text: "earlier", uuid: "u0" }], live_run: "r1", inbox: [] };
+    pollLive = true;
+    let release!: () => void;
+    holdLiveHost = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(3200);
+    const out = () => [...sends(), ...started()].filter((c) => String(c.params.message).includes("held slow"));
+    expect(out()).toHaveLength(0);
+    release();
+    await settle(400);
+    expect(out()).toHaveLength(0);
+    turnDone = true;
+    await settle(3500);
+    expect(out()).toHaveLength(1);
+    expect(out()[0]!.params.client_uuid).toBe(id);
+  }, 15000);
+
+  test(`${tag}: a held line goes when the live run's queue empties while the run is already idle`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "queued one");
+    await pressEnterInBox(r);
+    await settle(60);
+    await typeInBox(r, "held two");
+    await pressCtrlEnterInBox(r);
+    await settle(60);
+    expect(sends().map((c) => String(c.params.message))).toEqual([expect.stringContaining("queued one")]);
+    await endTurn();
+    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("held two"));
+    expect(out).toHaveLength(1);
+  });
+
+  test(`${tag}: a re-sent send-now line leaves the journal under its old id, so a reload cannot send it twice`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "will be stranded");
+    await pressEnterInBox(r);
+    await settle(60);
+    const oldId = sends()[0]!.params.client_uuid!;
+    cancelStill = [String(sends()[0]!.params.message)];
+    stickyLive = true;
+    await ctrlX(r);
+    await settle(100);
+    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
+    expect(stored.map((l) => l.text)).toEqual(["will be stranded"]);
+    expect(stored[0]!.id).not.toBe(oldId);
   });
 
   test(`${tag}: a reload re-sends a line the server never had, exactly once`, async () => {

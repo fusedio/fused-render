@@ -315,6 +315,7 @@ function emptyState(file: string | null): ChatState {
     taken: [],
     historyLoading: false,
     adopting: false,
+    adoptingRun: false,
     transcript: null,
     context: null,
     tasks: [],
@@ -3866,11 +3867,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // callers that could each reach `resumeRun` for the same id.
     if (adopting) return;
     adopting = true;
+    emit({ adoptingRun: true });
     const gen = logGen;
     try {
       await adoptWatch(sessionId, gen, opts);
     } finally {
       adopting = false;
+      emit({ adoptingRun: false });
       // THE BACKSTOP, not the ordinary road. Every early exit lands here — a
       // thrown lookup, a disposed controller, a generation bump, the laps
       // running out — so the renderer's gate can never be left up by a watch

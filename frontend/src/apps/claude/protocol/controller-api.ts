@@ -326,6 +326,14 @@ export interface ChatState {
    * the transcript and the card paint in ONE frame.
    */
   adopting: boolean;
+  /**
+   * THE LIVE-RUN ADOPTION WATCH IS IN FLIGHT (`adoptLiveRun`), through the
+   * adopted run's own end. `adopting` clears when the history lands, before the
+   * watch has found the run, so a restored chat reads `status: "idle"` for a
+   * live run in that gap; a line that must wait for the session to be done (a
+   * held one) waits on this too.
+   */
+  adoptingRun: boolean;
   transcript: TranscriptStat | null;
   /**
    * HOW FULL THE CONTEXT WINDOW IS — the latest usable `usage` the API

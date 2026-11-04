@@ -558,14 +558,28 @@ export function ClaudeChat(props: ClaudeChatProps) {
 /** What the page outbox keeps beside a parked line's words (ui/outbox.ts):
  *  the send options it was typed with, its optimistic bubble's key (the real
  *  send adopts that row), and the tray pictures taken for it when it was parked. */
-/** A fresh durable id for a sent line (`SendOptions.clientId`). */
-function newClientId(): string {
+/** A fresh durable id for a sent line (`SendOptions.clientId`): always a
+ *  canonical v4-shaped uuid, so the controller's `CLIENT_ID_RE` and the server's
+ *  `_CANONICAL_UUID_RE` treat it as an id. `crypto.randomUUID` is missing on a
+ *  non-secure origin (http on a LAN host); the fallback fills the same shape
+ *  from `getRandomValues`, else `Math.random`. */
+export function newClientId(): string {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   } catch {
     /* fall through */
   }
-  return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12) + "-x";
+  const bytes = new Uint8Array(16);
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") crypto.getRandomValues(bytes);
+    else for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  } catch {
+    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**
@@ -1333,10 +1347,10 @@ function ChatBody(props: ChatBodyProps) {
           const bubble = c.postOptimisticUser(line.text, "queued");
           const base = own ?? { opts: {}, bubble: "", taken: NO_TAKEN };
           // ALWAYS A FRESH ID: an acked line's id is spent (its uuid is known
-          // to the server, so a reload would treat the re-send as delivered),
-          // and an unacked one is dropped from the journal by the
-          // `onSendReturned` that follows this strand. The new id is journalled
-          // until THIS send acks.
+          // to the server, so a reload would treat the re-send as delivered).
+          // The old id leaves the journal here so a reload cannot send the same
+          // words twice; the new id is journalled until THIS send acks.
+          if (line.clientId) journalDrop(line.clientId);
           const clientId = newClientId();
           journalAdd(clientId, line.text);
           const opts = { ...base.opts, clientId };
@@ -3571,12 +3585,9 @@ function ChatBody(props: ChatBodyProps) {
    *  `dispatchSend` reads this right before the controller call. */
   const cancelledDispatch = useRef<Set<string>>(new Set());
   const drainRetry = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** The one look at held lines a reload restored, after the adoption watch. */
-  const heldReload = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
       if (drainRetry.current) clearTimeout(drainRetry.current);
-      if (heldReload.current) clearTimeout(heldReload.current);
     },
     [],
   );
@@ -3591,10 +3602,13 @@ function ChatBody(props: ChatBodyProps) {
     if (sendBusy.current || sendNowInFlight.current) return;
     if (status === "stopping" || status === "starting") return;
     // A HELD line is sendable only when the session is done: idle, nothing the
-    // live run still holds. `isBusy` below covers the beat after idle.
+    // live run still holds, and no restore still deciding whether a live run
+    // exists (`status` reads idle until the adoption watch lands). `isBusy`
+    // below covers the beat after idle.
+    const now = controller.getState();
     const { entry: next, rest } = shiftOldestSendable(
       outboxRef.current,
-      status === "idle" && controller.getState().queuedKeys.length === 0,
+      status === "idle" && now.queuedKeys.length === 0 && !now.adopting && !now.adoptingRun && !now.historyLoading,
     );
     if (!next) return;
     // `status` reads idle a beat before the controller's own send gate opens: a
@@ -3621,10 +3635,11 @@ function ChatBody(props: ChatBodyProps) {
     drainRef.current = drainOutbox;
   }, [drainOutbox]);
   // A run that settled (idle after a stop, or a fresh turn now live) is one the
-  // drain may send into again.
+  // drain may send into again. A held line also waits on the live run's queue
+  // and on the restore, so those re-check it too.
   useEffect(() => {
     if (state.status === "idle" || state.status === "running") drainRef.current();
-  }, [state.status]);
+  }, [state.status, state.queuedKeys, state.adopting, state.adoptingRun, state.historyLoading]);
   // A SESSION ID THAT ARRIVES AFTER THE LINE WAS SENT (a brand-new chat's first
   // turn): the lines kept under the run (`run:<id>`) or in memory only are
   // written under the session now, and the run's copy goes. A run id that
@@ -3719,14 +3734,9 @@ function ChatBody(props: ChatBodyProps) {
     }
     if (heldBack.length) {
       setOutbox([...outboxRef.current, ...heldBack]);
-      // `status` still reads idle for a run history says is live until the
-      // adoption watch lands, so the drain looks once that has had its laps; a
-      // run that really is live drains on its own idle transition instead.
-      if (heldReload.current) clearTimeout(heldReload.current);
-      heldReload.current = setTimeout(() => {
-        heldReload.current = null;
-        drainRef.current();
-      }, 2500);
+      // The drain's own gate decides: a live run, a queue it still holds or an
+      // unsettled restore keeps them held until the session is done.
+      drainRef.current();
     }
   }, [state.sessionId, state.historyLoading, state.adopting, state.turns, state.inbox, state.taken, controller, dispatchSend, journalAdd, setOutbox]);
   /**
