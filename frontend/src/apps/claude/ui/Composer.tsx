@@ -260,7 +260,7 @@ export interface ComposerCardProps {
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
   onFollowUp?(text: string): void;
   /**
-   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the running
+   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`), or Ctrl+X: stop the running
    * turn and send this line at once, ahead of anything parked. Only asked while
    * `running`; otherwise Ctrl/Cmd+Enter is the plain send it always was.
    */
@@ -2009,7 +2009,7 @@ export function ComposerCard({
       // draft's key (review, 2026-09-17).
       if (!hasSessionRef.current) onHeldGoneRef.current?.();
     }
-    // SEND NOW (Ctrl+Enter while live): stop the turn and this line goes first.
+    // SEND NOW (Ctrl+Enter or Ctrl+X while live): stop the turn and this line goes first.
     if (now && running && onSendNow) onSendNow(message);
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
@@ -2148,6 +2148,22 @@ export function ComposerCard({
           histIdx.current = null;
           recall(histDraft.current);
         }
+        return;
+      }
+      // CTRL+X is the second send-now chord. Ctrl ONLY, and only with words and
+      // no selection: on Win/Linux Ctrl+X still CUTS a selection, so a selected
+      // range, an IME composition or an empty box leaves the key to the browser.
+      // Idle, it is the plain send.
+      if (
+        (ev.key === "x" || ev.key === "X") &&
+        ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey &&
+        !ev.nativeEvent?.isComposing &&
+        text.trim()
+      ) {
+        const t = ev.currentTarget as HTMLTextAreaElement | undefined;
+        if (t && t.selectionStart !== t.selectionEnd) return;
+        ev.preventDefault();
+        submit(undefined, true);
         return;
       }
       if (ev.key !== "Enter") return;

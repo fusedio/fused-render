@@ -94,7 +94,14 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
     });
   const press = (
     key: string,
-    mods: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {},
+    mods: {
+      shiftKey?: boolean;
+      metaKey?: boolean;
+      ctrlKey?: boolean;
+      altKey?: boolean;
+      nativeEvent?: { isComposing: boolean };
+      currentTarget?: { selectionStart: number; selectionEnd: number };
+    } = {},
   ) => {
     let prevented = false;
     act(() => {
@@ -2171,4 +2178,48 @@ test("a recalled slash command keeps the menu shut, so ↑/↓ stay history's (B
   // Typed by hand, the same line is a query and the menu opens as ever.
   c.type("/compact");
   expect(c.box().props["aria-expanded"]).toBe(true);
+});
+
+test("CTRL+X while live with text is send-now; a selection, IME, Alt/Shift/Cmd or no text leave it alone", () => {
+  const now: string[] = [];
+  const c = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
+  c.type("stop and do this");
+  expect(c.press("x", { ctrlKey: true })).toBe(true);
+  expect(now).toEqual(["stop and do this"]);
+  expect(c.box().props.value).toBe("");
+  // A selection: Ctrl+X still cuts (Win/Linux), nothing is sent.
+  c.type("cut me");
+  expect(
+    c.press("x", { ctrlKey: true, currentTarget: { selectionStart: 0, selectionEnd: 3 } }),
+  ).toBe(false);
+  // A caret with no selection is not a selection.
+  c.type("caret only");
+  expect(
+    c.press("X", { ctrlKey: true, currentTarget: { selectionStart: 2, selectionEnd: 2 } }),
+  ).toBe(true);
+  expect(now).toEqual(["stop and do this", "caret only"]);
+  // IME composition, other modifiers.
+  c.type("more");
+  expect(c.press("x", { ctrlKey: true, nativeEvent: { isComposing: true } })).toBe(false);
+  expect(c.press("x", { ctrlKey: true, shiftKey: true })).toBe(false);
+  expect(c.press("x", { ctrlKey: true, altKey: true })).toBe(false);
+  expect(c.press("x", { ctrlKey: true, metaKey: true })).toBe(false);
+  expect(now.length).toBe(2);
+  // No text: Ctrl+X is the browser's.
+  c.type("  ");
+  expect(c.press("x", { ctrlKey: true })).toBe(false);
+  expect(now.length).toBe(2);
+});
+
+test("CTRL+X while idle is a normal send, and Ctrl+Enter still sends now", () => {
+  const now: string[] = [];
+  const idle = mount({ onSendNow: (t: string) => now.push(t) });
+  idle.type("go");
+  expect(idle.press("x", { ctrlKey: true })).toBe(true);
+  expect(idle.sent.map((x) => x.text)).toEqual(["go"]);
+  expect(now).toEqual([]);
+  const live = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
+  live.type("again");
+  live.press("Enter", { ctrlKey: true });
+  expect(now).toEqual(["again"]);
 });

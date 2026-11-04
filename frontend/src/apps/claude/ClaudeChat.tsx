@@ -4931,7 +4931,7 @@ function ChatBody(props: ChatBodyProps) {
       // it is shut is PARKED by `dispatchSend`, never refused.
       sendBusy: sendLocked,
       // THE OUTBOX'S SEAT IN THE COMPOSER: the count for the hint line, ↑ to
-      // pull the newest parked line back, Ctrl+Enter to stop and send now.
+      // pull the newest parked line back, Ctrl+Enter / Ctrl+X to stop and send now.
       queuedCount: outboxCount,
       notSentCount,
       onPullQueued,
