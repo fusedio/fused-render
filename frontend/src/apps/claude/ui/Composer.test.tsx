@@ -98,6 +98,7 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
       shiftKey?: boolean;
       metaKey?: boolean;
       ctrlKey?: boolean;
+      keyCode?: number;
       altKey?: boolean;
       nativeEvent?: { isComposing: boolean };
       currentTarget?: { selectionStart: number; selectionEnd: number };
@@ -622,12 +623,18 @@ test("the outbox hint names the parked lines under the box, and not-sent rows ap
   expect(pulled).toBe(1);
 });
 
-test("CTRL+Enter while LIVE is send-now; Cmd+Enter is never (it is ✓ Done's chord)", () => {
+test("CTRL+Enter while LIVE holds the line until done; Cmd+Enter is never (it is ✓ Done's chord)", () => {
   const now: string[] = [];
-  const live = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
-  live.type("stop and do this");
+  const held: string[] = [];
+  const live = mount({
+    status: "running",
+    onSendNow: (t: string) => now.push(t),
+    onSendHeld: (t: string) => held.push(t),
+  });
+  live.type("after this turn");
   expect(live.press("Enter", { ctrlKey: true })).toBe(true);
-  expect(now).toEqual(["stop and do this"]);
+  expect(held).toEqual(["after this turn"]);
+  expect(now).toEqual([]);
   expect(live.followups).toEqual([]);
   expect(live.box().props.value).toBe("");
   // Plain Enter while live is still the follow-up road…
@@ -639,16 +646,31 @@ test("CTRL+Enter while LIVE is send-now; Cmd+Enter is never (it is ✓ Done's ch
   live.type("cmd line");
   live.press("Enter", { metaKey: true });
   expect(live.followups).toEqual(["and then this", "cmd line"]);
-  expect(now).toEqual(["stop and do this"]);
-  // Idle: Ctrl+Enter is the ordinary send, `onSendNow` untouched.
-  const idle = mount({ onSendNow: (t: string) => now.push(t) });
+  expect(held).toEqual(["after this turn"]);
+  // A STOPPING run is live too.
+  const stopping = mount({ status: "stopping", onSendHeld: (t: string) => held.push(t) });
+  stopping.type("wait for it");
+  stopping.press("Enter", { ctrlKey: true });
+  expect(held).toEqual(["after this turn", "wait for it"]);
+  // Idle: Ctrl+Enter is the ordinary send, the seat untouched.
+  const idle = mount({ onSendHeld: (t: string) => held.push(t) });
   idle.type("go");
   idle.press("Enter", { ctrlKey: true });
   expect(idle.sent.map((s) => s.text)).toEqual(["go"]);
-  expect(now).toEqual(["stop and do this"]);
+  expect(held).toHaveLength(2);
 });
 
-test("Ctrl+Enter while live with NO send-now seat falls back to the follow-up", () => {
+test("Enter during an IME composition commits the candidate and sends nothing", () => {
+  const c = mount();
+  c.type("にほん");
+  expect(c.press("Enter", { nativeEvent: { isComposing: true } })).toBe(false);
+  expect(c.sent).toEqual([]);
+  expect(c.press("Enter", { keyCode: 229 } as never)).toBe(false);
+  expect(c.sent).toEqual([]);
+  expect(c.press("Enter")).toBe(true);
+});
+
+test("Ctrl+Enter while live with NO hold seat falls back to the follow-up", () => {
   const c = mount({ status: "running" });
   c.type("x");
   c.press("Enter", { ctrlKey: true });
@@ -2203,7 +2225,7 @@ test("CTRL+X while live with text is send-now; a selection, IME, Alt/Shift/Cmd o
   expect(now.length).toBe(2);
 });
 
-test("CTRL+X while idle is a normal send, and Ctrl+Enter still sends now", () => {
+test("CTRL+X while idle is a normal send, and Ctrl+X with words while live sends now", () => {
   const now: string[] = [];
   const idle = mount({ onSendNow: (t: string) => now.push(t) });
   idle.type("go");
@@ -2212,7 +2234,7 @@ test("CTRL+X while idle is a normal send, and Ctrl+Enter still sends now", () =>
   expect(now).toEqual([]);
   const live = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
   live.type("again");
-  live.press("Enter", { ctrlKey: true });
+  live.press("x", { ctrlKey: true });
   expect(now).toEqual(["again"]);
 });
 
@@ -2224,7 +2246,7 @@ test("there is no Ctrl+X hint line under the box; the send button still names th
   expect(title(live)).toBe("Stop this turn");
   live.type("do this first");
   expect(hint(live)).toHaveLength(0);
-  expect(title(live)).toBe("Send now (Ctrl+X)");
+  expect(title(live)).toBe("Send now (Ctrl+X) · Queue until done (Ctrl+Enter)");
   const idle = mount({ onSendNow: () => {} });
   idle.type("go");
   expect(hint(idle)).toHaveLength(0);
