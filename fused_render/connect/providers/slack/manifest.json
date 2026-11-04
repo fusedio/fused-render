@@ -1,9 +1,12 @@
 {
-  "_metadata": {"major_version": 1, "minor_version": 1},
+  "_metadata": {
+    "major_version": 1,
+    "minor_version": 1
+  },
   "display_information": {
     "name": "Fused",
     "description": "Read and search your Slack from fused-render on your own computer.",
-    "long_description": "Signs in with PKCE from the fused-render desktop app. Every call goes straight from your computer to Slack; no server of Fused's is involved and no token leaves your machine.",
+    "long_description": "Fused is an open-source desktop app that runs apps, bots and scheduled tasks on your own computer. This Slack app lets those tools read and search the channels and messages you can already see, and post as you, once you sign in. The sign-in uses PKCE from the fused-render desktop app, so there is no client secret anywhere. Every call goes straight from your computer to Slack; no server of Fused's is involved and no token leaves your machine. Disconnect at any time from Preferences, which revokes the token at Slack and deletes it locally.",
     "background_color": "#1f1f1f"
   },
   "oauth_config": {
