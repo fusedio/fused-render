@@ -39,7 +39,7 @@ enum PairingSecret {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecValueData as String: Data(secret.utf8),
         ]
-        SecItemAdd(add as CFDictionary, nil)
+        _ = SecItemAdd(add as CFDictionary, nil)
     }
 
     static func delete(for server: Server) {
@@ -48,7 +48,7 @@ enum PairingSecret {
             kSecAttrService as String: service,
             kSecAttrAccount as String: server.fingerprint,
         ]
-        SecItemDelete(query as CFDictionary)
+        _ = SecItemDelete(query as CFDictionary)
     }
 
     /// The `Cookie:` header value for a native request to this computer, or

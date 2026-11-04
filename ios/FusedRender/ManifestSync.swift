@@ -39,7 +39,7 @@ enum ManifestSync {
         let pinned = PinnedSession(fingerprint: server.fingerprint)
         var req = URLRequest(url: server.url(host: host).appendingPathComponent("api/lan/apps"))
         req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-        req.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
+        req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
         req.cachePolicy = .reloadIgnoringLocalCacheData
         guard let (data, response) = try? await pinned.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200,
@@ -78,7 +78,7 @@ enum ManifestSync {
         guard let url = URL(string: relative, relativeTo: app.baseURL)?.absoluteURL else { return nil }
         var req = URLRequest(url: url)
         req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-        req.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
+        req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await session.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let image = UIImage(data: data) else { return nil }

@@ -118,7 +118,7 @@ enum Reachability {
         req.httpMethod = "HEAD"
         req.timeoutInterval = timeout
         req.cachePolicy = .reloadIgnoringLocalCacheData
-        req.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
+        req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
         let session = PinnedSession(fingerprint: fingerprint)
         let started = Date()
         do {

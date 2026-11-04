@@ -32,6 +32,25 @@ final class WebController: ObservableObject {
     func load(_ url: URL) { webView?.load(URLRequest(url: url)) }
 }
 
+/// How this shell introduces itself to the computer. Not on `WebView` (a
+/// SwiftUI `View`, main-actor by inference), so nonisolated code such as the
+/// reachability probe can read it without a warning.
+enum ShellIdentity {
+    static let userAgentMarker: String = {
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        return "FusedRender-iOS/\(v)"
+    }()
+
+    /// What the server records as the device's name (`X-Fused-Device-Name` on
+    /// the /pair request): the device's own name, which iOS reports as a
+    /// plain "iPhone" unless the app is entitled to more — still better than
+    /// a user-agent guess.
+    @MainActor static var deviceName: String {
+        let name = UIDevice.current.name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? UIDevice.current.model : name
+    }
+}
+
 struct WebView: UIViewRepresentable {
     let server: Server
     /// The host to reach the computer on right now: its name, or the fallback
@@ -45,20 +64,6 @@ struct WebView: UIViewRepresentable {
     /// A main-frame navigation died on the network: ConnectedView runs the
     /// reachability diagnosis and shows why.
     var onNavigationFailed: () -> Void = {}
-
-    static let userAgentMarker: String = {
-        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
-        return "FusedRender-iOS/\(v)"
-    }()
-
-    /// What the server records as the device's name (`X-Fused-Device-Name` on
-    /// the /pair request): the device's own name, which iOS reports as a
-    /// plain "iPhone" unless the app is entitled to more — still better than
-    /// a user-agent guess.
-    static var deviceName: String {
-        let name = UIDevice.current.name.trimmingCharacters(in: .whitespaces)
-        return name.isEmpty ? UIDevice.current.model : name
-    }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -206,7 +211,7 @@ struct WebView: UIViewRepresentable {
             Task { @MainActor in
                 await PairingSecret.install(into: web, server: server, host: host)
                 var req = URLRequest(url: url)
-                if pairing { req.setValue(WebView.deviceName, forHTTPHeaderField: "X-Fused-Device-Name") }
+                if pairing { req.setValue(ShellIdentity.deviceName, forHTTPHeaderField: "X-Fused-Device-Name") }
                 web.load(req)
             }
         }

@@ -299,7 +299,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
             mk.setValue("application/json", forHTTPHeaderField: "Content-Type")
             mk.setValue("1", forHTTPHeaderField: "X-Fused")
             if !cookieHeader.isEmpty { mk.setValue(cookieHeader, forHTTPHeaderField: "Cookie") }
-            mk.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
+            mk.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
             mk.httpBody = try JSONSerialization.data(withJSONObject: ["path": (path as NSString).deletingLastPathComponent])
             _ = try? await pinned.data(for: mk)
         }
@@ -319,7 +319,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         req.setValue("1", forHTTPHeaderField: "X-Fused")
         if !cookieHeader.isEmpty { req.setValue(cookieHeader, forHTTPHeaderField: "Cookie") }
-        req.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
+        req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
         req.httpBody = body
 
         let (data, response) = try await pinned.data(for: req)
