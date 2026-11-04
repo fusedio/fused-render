@@ -91,7 +91,8 @@ def test_slack_pack_and_manifest_agree():
     p = registry.get("slack")
     a = p.auth[0]
     assert a["kind"] == "oauth-pkce" and a["client_id"] == "4468525343462.12501077804258"  # Fused's app, public
-    assert a["redirect"] == {"host": "localhost", "ports": [47823, 47824, 47825, 47826, 47827],
+    # Slack distributes only HTTPS redirects: the listener speaks TLS on the app's own localhost cert (connect/tls.py).
+    assert a["redirect"] == {"scheme": "https", "host": "localhost", "ports": [47823, 47824, 47825, 47826, 47827],
                              "path": "/callback"}
     assert p.tools["remote"] is None
     assert p.tools["native"] == os.path.isfile(os.path.join(p.dir, "tools.py"))
@@ -107,7 +108,7 @@ def test_slack_pack_and_manifest_agree():
     assert "bot" not in m["oauth_config"]["scopes"]
     assert m["oauth_config"]["pkce_enabled"] is True
     assert m["oauth_config"]["redirect_urls"] == [
-        f"http://localhost:{port}/callback" for port in a["redirect"]["ports"]]
+        f"https://localhost:{port}/callback" for port in a["redirect"]["ports"]]
     assert "token_rotation_enabled" not in m.get("settings", {})
 
 

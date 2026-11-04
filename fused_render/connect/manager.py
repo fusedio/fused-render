@@ -101,6 +101,7 @@ class _Flow:
     user_code: str | None = None
     verification_uri: str | None = None
     opened: bool = False                  # the server opened the browser itself; the page must not open a second tab
+    cert_warning: bool = False            # an https localhost redirect: the browser will warn about the certificate
     account: str | None = None
     error: str | None = None
     done: bool = False
@@ -342,6 +343,8 @@ def status(key: str) -> dict:
             if getattr(flow, k):
                 out[k] = getattr(flow, k)
         out["opened"] = flow.opened
+        if flow.cert_warning:
+            out["cert_warning"] = True
     elif flow is not None and flow.done and flow.error:
         if rec is None:
             out["state"] = "error"
@@ -436,6 +439,7 @@ def _mcp_oauth(key: str, p, entry: dict, flow: _Flow) -> dict:
 
 def _run_loopback(flow: _Flow, lf) -> object:
     flow.handle = lf
+    flow.cert_warning = bool(getattr(lf, "cert_warning", False))  # https localhost: the card warns about the cert
     _check_cancel(flow)
     url = lf.start()
     flow.url = url

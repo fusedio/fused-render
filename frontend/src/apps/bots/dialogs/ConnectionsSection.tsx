@@ -11,6 +11,7 @@ import { Copy, ExternalLinkIcon } from "lucide-react";
 import {
   againBody,
   cancelConnection,
+  CERT_WARNING,
   defaultAuth,
   logoutConnection,
   toolCount,
@@ -143,6 +144,7 @@ function ProviderRow({ provider: p, status: st, on, onToggle, onStatus, onLogin 
           {st.verification_uri ? <a className="text-xs underline" href={st.verification_uri} target="_blank" rel="noopener noreferrer">Enter it at {st.verification_uri}</a> : null}
         </div>
       ) : null}
+      {st.state === "pending" && st.cert_warning ? <p className="m-0 pl-[30px] text-xs text-muted-foreground">{CERT_WARNING}</p> : null}
       {st.state === "pending" && st.url ? (
         <p className="m-0 pl-[30px] text-xs text-muted-foreground">
           Didn&apos;t see a tab open? <a className="underline" href={st.url} target="_blank" rel="noopener noreferrer">Open again</a>

@@ -8,7 +8,7 @@
      "revoke_url": "https://slack.com/api/auth.revoke",
      "identity_url": "https://slack.com/api/auth.test",
      "scopes": {"user_scope": "channels:history,channels:read,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,users:read,search:read,reactions:read,reactions:write,chat:write"},
-     "redirect": {"host": "localhost", "ports": [47823, 47824, 47825, 47826, 47827], "path": "/callback"},
+     "redirect": {"scheme": "https", "host": "localhost", "ports": [47823, 47824, 47825, 47826, 47827], "path": "/callback"},
      "byo": {"manifest": "manifest.json", "docs": "https://api.slack.com/apps"}}
   ],
   "tools": {"remote": null},

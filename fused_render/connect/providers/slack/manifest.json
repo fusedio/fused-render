@@ -11,11 +11,11 @@
   },
   "oauth_config": {
     "redirect_urls": [
-      "http://localhost:47823/callback",
-      "http://localhost:47824/callback",
-      "http://localhost:47825/callback",
-      "http://localhost:47826/callback",
-      "http://localhost:47827/callback"
+      "https://localhost:47823/callback",
+      "https://localhost:47824/callback",
+      "https://localhost:47825/callback",
+      "https://localhost:47826/callback",
+      "https://localhost:47827/callback"
     ],
     "scopes": {
       "user": [

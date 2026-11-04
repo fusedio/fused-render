@@ -107,6 +107,47 @@ def test_loopback_flow_end_to_end(vendor):
     assert oauth.identity(vendor.base_url + "/me", t.access) == "fake-user"
 
 
+def test_https_listener_on_the_localhost_certificate(vendor, tmp_path, monkeypatch):
+    """`redirect.scheme: https` (Slack): the listener serves TLS on a self-signed localhost certificate issued
+    under <home_dir()>/connect; the redirect_uri and the token request say https; a plain-http hit on the port is
+    dropped (the browser's first probe before its warning page) and the flow waits on; the paste still works."""
+    from fused_render.connect import tls
+    from fused_render.shell import storage
+    monkeypatch.setattr(storage, "home_dir", lambda: str(tmp_path))
+    port = _free_ports(1)[0]
+    flow = _flow(vendor, redirect={"scheme": "https", "host": "localhost", "ports": [port], "path": "/callback"})
+    url = flow.start()
+    assert flow.listening and flow.cert_warning
+    assert flow.redirect_uri == f"https://localhost:{port}/callback"
+    cert, key = tls.paths()
+    assert os.path.isfile(cert) and os.path.isfile(key) and oct(os.stat(key).st_mode)[-3:] == "600"
+    assert tls.localhost_cert() == (cert, key)  # reused, not reissued
+    # The browser: follows the 302 to https://localhost, trusting the app's own certificate for the test. The stdlib
+    # context, not the truststore one `_system_trust` installs (that one asks the OS, which has never seen this cert).
+    import ssl
+    from fused_render._system_trust import ORIGINAL_SSL_CONTEXT
+    ctx = ORIGINAL_SSL_CONTEXT(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.load_verify_locations(cert)
+    with httpx.Client(timeout=10, follow_redirects=True, verify=ctx) as b:
+        page = b.get(url)
+    assert page.status_code == 200 and "close this tab" in page.text
+    t = flow.result(timeout=5)
+    assert t.access.startswith("at-")
+    assert vendor.token_requests[-1]["redirect_uri"] == f"https://localhost:{port}/callback"
+
+
+def test_plain_http_hit_on_the_https_listener_is_dropped(vendor, tmp_path, monkeypatch):
+    from fused_render.shell import storage
+    monkeypatch.setattr(storage, "home_dir", lambda: str(tmp_path))
+    port = _free_ports(1)[0]
+    flow = _flow(vendor, redirect={"scheme": "https", "host": "localhost", "ports": [port], "path": "/callback"})
+    flow.start()
+    with pytest.raises(httpx.HTTPError):
+        httpx.get(f"http://localhost:{port}/callback?x=1", timeout=3)
+    assert not flow._done.is_set()  # still waiting: the paste fallback can finish it
+    flow.cancel()
+
+
 def test_listener_binds_first_free_port_of_the_list(vendor):
     busy, free, spare = _free_ports(3)
     blocker = socket.socket()

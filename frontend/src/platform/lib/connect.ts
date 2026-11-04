@@ -40,6 +40,8 @@ export interface ConnectStatus {
   user_code?: string | null;
   verification_uri?: string | null;
   error?: string | null;
+  /** pending, https on localhost (Slack): the browser will warn about the listener's own certificate. */
+  cert_warning?: boolean;
   /** A count from status(); the list row carries the pack's source with the
    *  count inside it (`{remote, native, count}`). */
   tools?: number | { remote?: string | null; native?: boolean; count?: number } | null;
@@ -102,6 +104,13 @@ const KIND_LABELS: Record<string, string> = {
   "api-key": "Paste an API key",
 };
 export const kindLabel = (a: ConnectAuth) => a.label || KIND_LABELS[a.kind] || a.kind;
+
+/** The sentence under a pending card whose redirect is https on localhost: the
+ *  listener's certificate is the app's own, so the browser warns once. Both
+ *  ways on: click through, or paste the address the warning page sits on. */
+export const CERT_WARNING =
+  "Your browser will warn that the page is not secure: the sign-in lands on this app's own localhost certificate. " +
+  "Choose Advanced › Proceed, or paste the address the warning page sits on here.";
 
 /** Reconnect / Try again keep the kind the record was made with when it is
  *  still on offer — a BYO client id or a CLI login should not silently

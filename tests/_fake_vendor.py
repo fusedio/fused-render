@@ -68,7 +68,8 @@ def _s256(verifier: str) -> str:
 
 def _is_loopback(uri: str) -> bool:
     u = urlparse(uri)
-    return u.scheme == "http" and u.hostname in ("localhost", "127.0.0.1", "::1")
+    # Slack-style: https on localhost is a loopback redirect too (connect/tls.py).
+    return u.scheme in ("http", "https") and u.hostname in ("localhost", "127.0.0.1", "::1")
 
 
 class FakeVendor:

@@ -15,6 +15,7 @@ import { Copy } from "lucide-react";
 import {
   againBody,
   cancelConnection,
+  CERT_WARNING,
   defaultAuth,
   kindLabel,
   logoutConnection,
@@ -270,6 +271,7 @@ function PendingDetails({
           )}
         </div>
       )}
+      {st.cert_warning && <p className="settings-row-desc">{CERT_WARNING}</p>}
       {st.url && (
         <p className="settings-row-desc">
           Didn&apos;t see a tab open?{" "}

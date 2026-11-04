@@ -153,7 +153,9 @@ def validate(d: dict, where: str) -> None:
         if "redirect" in a:
             r = a["redirect"]
             if not isinstance(r, dict):
-                bad(f"{at}.redirect", "must be an object {host, ports, path}")
+                bad(f"{at}.redirect", "must be an object {host, ports, path, scheme?}")
+            if "scheme" in r and r["scheme"] not in ("http", "https"):
+                bad(f"{at}.redirect.scheme", "must be \"http\" or \"https\"")
             if not isinstance(r.get("host"), str) or not r["host"]:
                 bad(f"{at}.redirect.host", "required, a string")
             if not isinstance(r.get("path"), str) or not r["path"].startswith("/"):

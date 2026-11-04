@@ -117,7 +117,14 @@ def redirect_uris(redirect: dict | None = None) -> list[str]:
     registration or a CIMD document lists. Empty when `ports` is null (any
     port: the vendor must accept loopback port wildcards, RFC 8252 §7.3)."""
     r = redirect or {"host": REDIRECT_HOST, "ports": REDIRECT_PORTS, "path": REDIRECT_PATH}
-    return [f"http://{r['host']}:{p}{r['path']}" for p in (r.get("ports") or [])]
+    return [f"{redirect_scheme(r)}://{r['host']}:{p}{r['path']}" for p in (r.get("ports") or [])]
+
+
+def redirect_scheme(redirect: dict | None) -> str:
+    """`http`, or `https` when the pack says so (`redirect.scheme`): a vendor that
+    distributes only HTTPS redirects (Slack) gets a TLS listener on the app's own
+    localhost certificate (connect/tls.py); the browser warns once per sign-in."""
+    return "https" if (redirect or {}).get("scheme") == "https" else "http"
 
 
 # ------------------------------------------------------------------ HTTP ---
@@ -252,6 +259,11 @@ class LoopbackFlow:
 
     # -- start ---------------------------------------------------------------
 
+    @property
+    def cert_warning(self) -> bool:
+        """The browser will warn about the listener's certificate (https on localhost)."""
+        return redirect_scheme(self.redirect) == "https"
+
     def _bind(self) -> None:
         host = self.redirect.get("host") or REDIRECT_HOST
         path = self.redirect.get("path") or REDIRECT_PATH
@@ -275,8 +287,16 @@ class LoopbackFlow:
                 port = ports[0]
                 logger.warning("connect: every redirect port is busy (%s); "
                                "the sign-in can finish only by pasting the address", ports)
+        scheme = redirect_scheme(self.redirect)
+        if self._server is not None and scheme == "https":
+            from fused_render.connect import tls
+
+            # Wrap after bind, before serving: the handshake runs on accept, and a
+            # failed one (the browser's first, pre-warning probe) is an OSError the
+            # server loop drops — the sign-in waits on, the paste fallback stays.
+            self._server.socket = tls.server_context().wrap_socket(self._server.socket, server_side=True)
         self.listening = self._server is not None
-        self.redirect_uri = f"http://{uri_host}:{port}{path}"
+        self.redirect_uri = f"{scheme}://{uri_host}:{port}{path}"
 
     def start(self) -> str:
         """Bind the listener and return the URL to open in the browser."""

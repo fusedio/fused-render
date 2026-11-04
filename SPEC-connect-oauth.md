@@ -222,6 +222,12 @@ the driver parses `code` and `state` and continues at the token step.
 gcloud, rclone and the GitHub CLI do the same, and it covers the
 busy-port case.
 
+**Scheme.** `redirect.scheme` is `http` unless the pack says `https`
+(Slack): then the listener wraps its socket in TLS on the localhost
+certificate `connect/tls.py` issues once per state folder (P-256, 800
+days, SAN localhost/127.0.0.1/::1), `redirect_uri` and `redirect_uris()`
+say `https://`, and the pending status carries `cert_warning: true`.
+
 **Ports.** One registered list, `localhost:47823` to `:47827`, path
 `/callback`, used by the Slack app, the CIMD document and every DCR
 registration, so one listener implementation serves all. Google ignores
@@ -349,10 +355,17 @@ stores or proxies the data, or adds an account.
 - A bot calls a Notion tool through APP TOOLS with Fused shipping
   nothing for Notion; an app page calls the same tool through
   `/api/connect/notion/tools/call`; a scheduled task does too.
-- A fresh user connects Slack with no Slack app, no Fused account, no
-  cert prompt, and no request to any Fused host during the flow (a proxy
-  log in the test asserts the host list; the CIMD fetch, when it
-  happens, is made by the vendor, not by the user's machine).
+- A fresh user connects Slack with no Slack app, no Fused account, and
+  no request to any Fused host during the flow (a proxy log in the test
+  asserts the host list; the CIMD fetch, when it happens, is made by the
+  vendor, not by the user's machine). One browser certificate warning
+  per sign-in is accepted (owner, 2026-11-04): Slack distributes an app
+  only with HTTPS redirect URLs, so the loopback listener serves TLS on
+  the app's own self-signed localhost certificate (`connect/tls.py`,
+  `redirect.scheme: https`); the card says so, and the paste fallback
+  finishes the sign-in without clicking through. Chosen over a
+  Fused-hosted bounce page (a request to a Fused host carrying the
+  code) and over bring-your-own only.
 - No token in prefs, logs, the diagnostics bundle, a subprocess
   environment, or an app's tool result.
 - `grep` finds no relay URL and no Slack secret in the repo; Google's
