@@ -605,3 +605,24 @@ def test_artifacts_live_finds_a_relocated_transcript(tmp_path, monkeypatch):
     monkeypatch.setattr(claude_agent.agent_module(), "PROJECTS", str(projects))
     out = artifacts._live("s1", "", cwd=str(ground))
     assert [a["remote_url"] for a in out["artifacts"]] == [url]
+
+
+# ---------------------------------------------------------------- breakout
+
+def test_a_breakout_start_marks_its_session_so_tasks_never_lists_it(
+        client, stub, monkeypatch):
+    from fused_render import tasks_store
+    marked = []
+    monkeypatch.setattr(tasks_store, "mark_breakout", marked.append)
+    stub["install"](lambda action="", file="", breakout="":
+                    {"run_id": "r1", "session_id": "sess-b"})
+    assert _post(client, {"action": "start", "file": "/x",
+                          "breakout": "1"}).status_code == 200
+    assert marked == ["sess-b"]
+    assert stub["main"][-1]["breakout"] == "1"
+    # An ordinary start marks nothing, and neither does a refused breakout.
+    _post(client, {"action": "start", "file": "/x"})
+    stub["install"](lambda action="", file="", breakout="":
+                    {"error": "no", "reason": "unsupported"})
+    _post(client, {"action": "start", "file": "/x", "breakout": "1"})
+    assert marked == ["sess-b"]

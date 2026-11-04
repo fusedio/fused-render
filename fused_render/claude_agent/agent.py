@@ -813,6 +813,35 @@ def _backend_enabled(backend: str) -> bool:
     return False
 
 
+def _breakout_pref() -> bool:
+    """Whether Breakout is on: `breakout_enabled` stored True in
+    `<home>/prefs.json` (off by default); a stdlib read for the same reason as
+    `_backend_enabled`."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(prefs, dict) and prefs.get("breakout_enabled") is True
+
+
+def _breakout_recorded(session_id: str) -> bool:
+    """Whether `session_id` is a breakout the server recorded
+    (`tasks_store.is_breakout`): `claude-sessions/breakouts.json` under the
+    GLOBAL home (`FUSED_RENDER_HOME`, never branch-nested — tasks_store's
+    STATE_DIR). A stdlib read for the same reason as `_breakout_pref`; missing
+    or unreadable reads as not recorded."""
+    root = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    try:
+        with open(os.path.join(root, "claude-sessions", "breakouts.json"),
+                  encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return (bool(session_id) and isinstance(state, dict)
+            and isinstance(state.get(str(session_id)), dict))
+
+
 def _strict_mcp_pref() -> bool:
     """Whether chat and Tasks-page sessions start "lean" — with
     `--strict-mcp-config`, so the user's own MCP servers and claude.ai
@@ -2119,7 +2148,7 @@ def _terminal_tools_supported() -> bool:
 
 def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
                       strict: bool = False, chat_id: str = "",
-                      canvas: bool = False) -> str:
+                      canvas: bool = False, handoff_dir: str = "") -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
@@ -2184,6 +2213,12 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
         # not argv: argv[2] already has a meaning of its own (the app-state
         # directory), and the server only ever READS this path.
         server_env["FUSED_PERM_ALLOW_FILE"] = allow_path
+    if handoff_dir:
+        # A BREAKOUT's policy switch (permission_server._breakout_policy): its
+        # presence is what makes the bridge refuse edits and shell, and its
+        # value is the one directory markdown may still be written to. An env
+        # var for the same reason as FUSED_PERM_ALLOW_FILE above.
+        server_env["FUSED_BREAKOUT_HANDOFF_DIR"] = handoff_dir
     if _terminal_tools_supported():
         # The switch for the terminal tools (permission_server.TERMINAL_*): the
         # origin they call. Named here for the same reason as PYTHONUTF8 — it
@@ -3771,7 +3806,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
                  extra_read_dirs: list | None, file: str,
                  new_session_id: str = "", resume_at: str = "",
-                 strict_mcp: bool = False) -> list:
+                 strict_mcp: bool = False, breakout: bool = False) -> list:
     """The CLAUDE CLI's own argv — everything from the binary down to the
     last `--effort` flag. Pulled out of `_start` so the session host, which
     spawns this SAME process (just kept open on a stdin pipe instead of a
@@ -3793,6 +3828,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            "--replay-user-messages",
            "--mcp-config", _write_mcp_config(
                run_dir, pane, strict=strict_mcp, canvas=_in_workbench_root(file),
+               handoff_dir=_breakout_handoff_dir(file) if breakout else "",
                # The chat's stable id: a resume's own session, or the id a
                # fresh chat / fork was minted (the same key `_decide` writes).
                chat_id=new_session_id or session_id),
@@ -3860,7 +3896,10 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                        if _terminal_tools_supported() else [])
                     + [_read_rule(SHOTS)]
                     + [_read_rule(d) for d in (extra_read_dirs or [])]
-                    + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
+                    # A breakout refuses every Bash call (permission_server),
+                    # so the one Bash pre-allowance goes too.
+                    + (["Bash(fused:*)"] if _fused_cli_dir() and not breakout
+                       else []))]
     cmd += _plugin_argv(file)
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
@@ -3879,7 +3918,33 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # The fused CLI note rides every shape (file, app folder, ordinary
     # folder) because it is a fact about the machine, not the target — and
     # only when the wrapper actually exists (see _fused_cli_note).
-    cmd += ["--append-system-prompt", _appended_prompt(file, pane)]
+    cmd += ["--append-system-prompt",
+            _appended_prompt(file, pane, breakout=breakout)]
+    if breakout:
+        # Forced, whatever the page asked for: `acceptEdits`/`auto`/`bypass`
+        # would let an edit past the approve tool, and the approve tool is where
+        # the breakout's read-only policy lives.
+        cli_mode = "default"
+        # The CLI evaluates the user's settings allow rules (e.g. `Bash(ls *)`)
+        # BEFORE it calls the permission prompt tool, so a breakout's Bash call
+        # ran with source "config" and never reached the bridge policy. Deny
+        # rules beat allow rules, so refuse these tools in the CLI itself. Write
+        # needs the handoff .md exception, which a deny rule cannot express (and
+        # an allow rule cannot carve out of a deny), and a user `Write` allow rule
+        # would also run before the bridge. So a PreToolUse hook enforces the
+        # path limit: it runs before the permission system and exit 2 blocks the
+        # call. The bridge's `_breakout_policy` stays as defense in depth.
+        hook_argv = [sys.executable, "-I",
+                     os.path.join(HERE, "permission_server.py"),
+                     "--breakout-hook=" + _breakout_handoff_dir(file)]
+        hook_cmd = (subprocess.list2cmdline(hook_argv) if os.name == "nt"
+                    else shlex.join(hook_argv))
+        cmd += ["--settings", json.dumps({
+            "permissions": {"deny": ["Bash", "Edit", "MultiEdit", "NotebookEdit"]},
+            "hooks": {"PreToolUse": [{
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+                "hooks": [{"type": "command", "command": hook_cmd,
+                           "timeout": 10, "onFailure": "block"}]}]}})]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id and resume_at and new_session_id:
@@ -3892,6 +3957,11 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # more than one turn, which is the normal case here.
         cmd += ["--resume", session_id, "--resume-session-at", resume_at,
                 "--fork-session", "--session-id", new_session_id]
+    elif session_id and new_session_id and breakout:
+        # A BREAKOUT FORKED AT THE TIP: the whole session, no truncation, into
+        # a new minted id. The parent transcript is untouched.
+        cmd += ["--resume", session_id, "--fork-session",
+                "--session-id", new_session_id]
     elif session_id:
         cmd += ["--resume", session_id]
     elif new_session_id:
@@ -3918,7 +3988,26 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     return cmd
 
 
-def _appended_prompt(file: str, pane: bool, backend: str = "") -> str:
+def _breakout_handoff_dir(file: str) -> str:
+    """The one directory a breakout may write markdown into: the chat
+    folder's `.claude/handoffs/`, absolute."""
+    return os.path.join(_workdir(file), ".claude", "handoffs")
+
+
+def _breakout_note(file: str) -> str:
+    return (
+        " This conversation is a BREAKOUT: a research-only side chat forked "
+        "from the user's main chat. Edits and shell commands are refused by "
+        "policy here (Write, Edit, NotebookEdit and every Bash call), so do "
+        "not try them; skills, MCP tools, Read, Grep, Glob and web access "
+        "work normally. You may write a markdown handoff file (.md only) "
+        f"under exactly `{_breakout_handoff_dir(file)}`. The user will send a "
+        "summary of this conversation back to the main chat, so end with a "
+        "short, self-contained answer.")
+
+
+def _appended_prompt(file: str, pane: bool, backend: str = "",
+                     breakout: bool = False) -> str:
     """The prompt EVERY backend gets appended for this target — the shape
     `_claude_argv`'s comment above picks (file / app folder / ordinary
     folder) plus the machine-wide notes. One function so Claude's
@@ -3934,7 +4023,8 @@ def _appended_prompt(file: str, pane: bool, backend: str = "") -> str:
     else:
         shape = _system_prompt(file)
     return (shape + _canvas_shot_note(file) + _fused_cli_note(backend)
-            + _origin_note() + _blocked_note(backend))
+            + _origin_note() + _blocked_note(backend)
+            + (_breakout_note(file) if breakout else ""))
 
 
 def _canvas_shot_note(file: str) -> str:
@@ -4804,26 +4894,46 @@ _HOST_FILES = {"claude": _SESSION_HOST, "copilot": _COPILOT_HOST,
 
 
 def _fork_point(transcript_path: str, prompt_uuid: str):
-    """Where a fork before the user prompt `prompt_uuid` resumes from: that
-    prompt's own `parentUuid` (often an `attachment` record; verified against
-    the CLI). "" when the prompt has no parent, so nothing precedes it and the
-    fork is a fresh chat; None when no such user record is in the transcript
-    (or the file is unreadable)."""
+    """Where a fork before the user prompt `prompt_uuid` resumes from, as
+    `(point, clamped)`.
+
+    `point` is that prompt's own `parentUuid` (often an `attachment` record;
+    verified against the CLI). "" when the prompt has no parent, so nothing
+    precedes it and the fork is a fresh chat. `(None, False)` when no such user
+    record is in the transcript (or the file is unreadable).
+
+    CLI LIMIT: `--resume-session-at <uuid>` only resolves records AFTER the
+    latest compaction summary row (`type: "user"`, `isCompactSummary: true`);
+    an older uuid dies with "No message found with message.uuid of". Resuming
+    AT the summary row itself works. So a prompt that predates the last
+    compaction (or is the summary row itself) is CLAMPED: `(summary_row_uuid, True)`."""
+    prompt = None  # (line index, parentUuid)
+    compact = None  # (line index, uuid) of the LAST compaction row
     try:
         with open(transcript_path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if prompt_uuid not in line:
+            for i, line in enumerate(fh):
+                has_prompt = prompt_uuid in line
+                if not has_prompt and "isCompactSummary" not in line:
                     continue
                 try:
                     rec = json.loads(line)
                 except ValueError:
                     continue
-                if (isinstance(rec, dict) and rec.get("uuid") == prompt_uuid
+                if not isinstance(rec, dict):
+                    continue
+                if (has_prompt and prompt is None
+                        and rec.get("uuid") == prompt_uuid
                         and rec.get("type") == "user"):
-                    return str(rec.get("parentUuid") or "")
+                    prompt = (i, str(rec.get("parentUuid") or ""))
+                if rec.get("isCompactSummary") is True and rec.get("uuid"):
+                    compact = (i, str(rec["uuid"]))
     except OSError:
-        return None
-    return None
+        return None, False
+    if prompt is None:
+        return None, False
+    if compact is not None and prompt[0] <= compact[0]:
+        return compact[1], True
+    return prompt[1], False
 
 
 def _start(file: str, message: str, session_id: str, model: str,
@@ -4833,7 +4943,8 @@ def _start(file: str, message: str, session_id: str, model: str,
            extra_read_dirs: list | None = None,
            draft_key: str = "", terminal_hint: str = "",
            backend: str = "", bot: str = "", fork_at: str = "",
-           isolate_mcp: bool = False) -> dict:
+           isolate_mcp: bool = False, breakout: bool = False,
+           breakout_resume: bool = False) -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -4868,6 +4979,35 @@ def _start(file: str, message: str, session_id: str, model: str,
     # prompt, so the fork is just a fresh chat.
     fork_parent = ""
     forked_from = ""
+    clamped = False
+    # A BREAKOUT is a fork too (research-only, see `_claude_argv`): at a
+    # message when `fork_at` names one, at the TIP when it is empty. Claude
+    # only, and it needs the session to fork.
+    #
+    # `breakout_resume` is a LATER turn of a breakout that already exists (its
+    # live host is gone, so the page starts a new one): same policy, but the
+    # session is continued, not forked again.
+    tip_fork = False
+    if breakout and not _breakout_pref():
+        return {"error": "Breakout is off — turn it on in Preferences › Chats & tasks",
+                "reason": "breakout_disabled"}
+    if breakout and breakout_resume:
+        if not session_id or backend != "claude":
+            return {"error": "breakout is only available for Claude chats",
+                    "reason": "unsupported", "backend": backend}
+        if _bad_id(session_id) or not _breakout_recorded(session_id):
+            # `breakout=resume` skips the folder gate and runs research-only:
+            # only for a session the server recorded as a breakout.
+            return {"error": "no such breakout", "reason": "breakout_missing"}
+        fork_at = ""
+    elif breakout:
+        if not session_id or backend != "claude":
+            return {"error": "breakout is only available for Claude chats",
+                    "reason": "unsupported", "backend": backend}
+        if _bad_id(session_id):
+            return {"error": "malformed session id"}
+        if not fork_at:
+            tip_fork, forked_from = True, session_id
     if fork_at:
         if not session_id or backend != "claude":
             return {"error": "fork is only available for Claude chats",
@@ -4875,7 +5015,7 @@ def _start(file: str, message: str, session_id: str, model: str,
         if _bad_id(session_id) or _bad_id(fork_at):
             return {"error": "message not found in this conversation",
                     "reason": "fork_target_missing"}
-        point = _fork_point(
+        point, clamped = _fork_point(
             _session_transcript_path(_workdir(file), session_id), fork_at)
         if point is None:
             return {"error": "message not found in this conversation",
@@ -4961,7 +5101,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # CLI mints the id, the host announces it on the init row, and `_poll`
     # records it (the `session` file, the `recorded` marker, and — for this
     # case — the settings record below).
-    new_session_id = "" if (session_id and not fork_parent) \
+    new_session_id = "" if (session_id and not fork_parent and not tip_fork) \
         or backend in _SELF_MINTED_ID_BACKENDS else str(uuid.uuid4())
 
     # THE NON-CLAUDE AGENTS' ARGV, READY-MADE, before anything else is
@@ -4998,7 +5138,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # has — `_poll`, `_live_run`, `_send`'s fallback, the queue — and nothing
     # else about a run dir says which CLI is behind it.
     meta = {"file": file, "message": _strip_app_state(message),
-            "resumed_from": "" if fork_parent else session_id,
+            "resumed_from": "" if (fork_parent or tip_fork) else session_id,
             "mode": mode, "backend": backend}
     # A FORK IS NOT A CONTINUATION of the old session, so `resumed_from` stays
     # "" (like a fresh chat): `_live_run`, `_entry_session` and the Tasks
@@ -5009,6 +5149,14 @@ def _start(file: str, message: str, session_id: str, model: str,
         meta["forked_from"] = forked_from
         if fork_parent:
             meta["fork_at"] = fork_at
+            if clamped:
+                meta["fork_clamped"] = True
+    if breakout:
+        # A breakout is never a task, and the guard that hides it is
+        # `breakouts.json` (routers/tasks.py `_breakout`), which the router marks
+        # from the start's answer. This flag is only a record of the run: the
+        # peek reads it, and `_set_mode` uses it to keep the chat in Ask mode.
+        meta["breakout"] = True
     if new_session_id:
         # `session_id` on meta is the ANSWER — the conversation this run's turn
         # happens in — next to `resumed_from`, the question. Written before the
@@ -5084,6 +5232,8 @@ def _start(file: str, message: str, session_id: str, model: str,
         # Read by `_claude_argv` only; the heads-up fork resumes the NEW
         # session by its own id and never re-truncates.
         req["resume_at"] = fork_parent
+    if breakout:
+        req["breakout"] = True
     if argv is not None:
         req["argv"] = argv
     # The heads-up fork (headsup.py) reads this to rebuild an argv identical to
@@ -5181,8 +5331,11 @@ def _start(file: str, message: str, session_id: str, model: str,
     # no transcript yet. A fresh Copilot or Codex chat answers "" — its id
     # arrives on a later poll, the path every chat took before Claude's
     # `--session-id`.
-    return {"run_id": run_id, "session_id": new_session_id or session_id,
-            "backend": backend}
+    out = {"run_id": run_id, "session_id": new_session_id or session_id,
+           "backend": backend}
+    if clamped:
+        out["fork_clamped"] = True
+    return out
 
 
 def _app_dir_for(path: str) -> str:
@@ -6034,6 +6187,11 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
         meta = {}
     if not isinstance(meta, dict):
         meta = {}
+    if meta.get("breakout") is True:
+        # A breakout is pinned to Ask mode (_argv forces `default`): a mode
+        # switch here would loosen the read-only policy's approval path.
+        return {"error": "Breakout chats stay in Ask mode",
+                "reason": "breakout_locked"}
     backend = _meta_backend(host if host.get("backend") in BACKENDS else meta)
     # `host.json`'s "mode" is the CLI-wire form (_start's `cli_mode`, e.g.
     # "acceptEdits"), the same shape `--permission-mode` takes and
@@ -12569,7 +12727,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
          terminal_hint: str = "", task_id: str = "", backend: str = "",
-         fork_at: str = "", tool_use_id: str = "") -> dict:
+         fork_at: str = "", tool_use_id: str = "",
+         breakout: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -12590,7 +12749,9 @@ def main(action: str = "start", file: str = "", message: str = "",
                       has_pane=None if has_pane == "" else has_pane != "0",
                       extra_read_dirs=_attach_dirs(read_dirs),
                       draft_key=draft_key, terminal_hint=terminal_hint,
-                      backend=backend, fork_at=fork_at)
+                      backend=backend, fork_at=fork_at,
+                      breakout=breakout in ("1", "resume"),
+                      breakout_resume=breakout == "resume")
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller

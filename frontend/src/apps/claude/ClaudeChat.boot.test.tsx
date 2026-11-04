@@ -12,6 +12,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
+const { publishBreakoutEnabled, resetFlagsForTests } = await import("./feature-flag");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
@@ -126,6 +127,7 @@ beforeEach(() => {
 const mounted: Array<ReturnType<typeof create>> = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  resetFlagsForTests();
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 
@@ -659,4 +661,44 @@ test("a peek with headerInPeek draws the slim top bar; a bare peek and a compact
   const compact = await mountChat({ compact: true, peek: true, headerInPeek: true, initialSessionId: "sess-abc12345" });
   await settle(20);
   expect(byClass(compact.r, "c-topbar").length).toBe(0);
+});
+
+// BREAKOUT, COMPOSER SIDE: the one button must render exactly once in either
+// layout. In the merged-head side pane there is no `.c-anntools` strip, so it
+// rides the identity row's tail beside the kebab.
+test("the composer Breakout button renders once in the merged head and once in the strip", async () => {
+  const onBreakout = () => {};
+  const merged = await mountChat({ mergedHead: true, onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  // The flag is opt-in: the stubbed prefs read leaves it off until published.
+  await act(async () => publishBreakoutEnabled(true));
+  await settle(20);
+  expect(byClass(merged.r, "c-anntools").length).toBe(0);
+  expect(byClass(merged.r, "c-breakout").length).toBe(1);
+
+  const strip = await mountChat({ onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(strip.r, "c-anntools").length).toBe(1);
+  expect(byClass(strip.r, "c-breakout").length).toBe(1);
+});
+
+test("a TaskPeek chat (peek + headerInPeek) seats the Breakout button in its slim head, once", async () => {
+  const onBreakout = () => {};
+  const peek = await mountChat({ peek: true, headerInPeek: true, onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  await act(async () => publishBreakoutEnabled(true));
+  await settle(20);
+  expect(byClass(peek.r, "chat-peek-head").length).toBe(1);
+  expect(byClass(peek.r, "c-breakout").length).toBe(1);
+  // A bare peek has no head to seat it in.
+  const bare = await mountChat({ peek: true, onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(bare.r, "c-breakout").length).toBe(0);
+});
+
+test("the composer Breakout button is absent while the Breakout flag is off (default)", async () => {
+  const strip = await mountChat({ onBreakout: () => {}, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(strip.r, "c-anntools").length).toBe(1);
+  expect(byClass(strip.r, "c-breakout").length).toBe(0);
 });

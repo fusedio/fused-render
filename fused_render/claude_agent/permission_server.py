@@ -98,6 +98,10 @@ CANVAS_SHOT_TOOL = "canvas_screenshot"
 # the run dir's `timeout` in mcp.json is set above this so THIS deny wins and
 # the user gets a sentence instead of an MCP timeout error.
 WAIT_TIMEOUT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
+# A BREAKOUT chat's switch (agent._write_mcp_config): present means this
+# session is research-only (`_breakout_policy`), and the value is the one
+# directory markdown may still be written to. Read once, like the waits above.
+BREAKOUT_HANDOFF_DIR = os.environ.get("FUSED_BREAKOUT_HANDOFF_DIR", "")
 # The app-state wait is a different order of magnitude because there is no human
 # in it: the page's poll loop answers within a tick (400 ms) for as long as the
 # turn is running, so anything past a few seconds means the chat frame is gone
@@ -148,8 +152,14 @@ NO_APPROVE = "--no-approve" in sys.argv[1:]
 _CANVAS_FLAG = "--canvas-shots="
 CANVAS_SHOT_DIR = next((os.path.abspath(a[len(_CANVAS_FLAG):])
                         for a in sys.argv[1:] if a.startswith(_CANVAS_FLAG)), "")
+# `--breakout-hook=<handoff dir>`: not the MCP server at all but the breakout's
+# PreToolUse hook (see `_breakout_hook`), run by the CLI per Write-class call.
+_HOOK_FLAG = "--breakout-hook="
+BREAKOUT_HOOK_DIR = next((a[len(_HOOK_FLAG):]
+                          for a in sys.argv[1:] if a.startswith(_HOOK_FLAG)), None)
 _POSITIONAL = [a for a in sys.argv[1:]
-               if a != "--no-approve" and not a.startswith(_CANVAS_FLAG)]
+               if a != "--no-approve" and not a.startswith(_CANVAS_FLAG)
+               and not a.startswith(_HOOK_FLAG)]
 PERM_DIR = os.path.abspath(_POSITIONAL[0]) if len(_POSITIONAL) > 0 else ""
 STATE_DIR = os.path.abspath(_POSITIONAL[1]) if len(_POSITIONAL) > 1 else ""
 
@@ -767,11 +777,54 @@ def _chat_allows(tool_name, tool_input) -> bool:
             and isinstance(cmd, str) and cmd in bash)
 
 
+_BREAKOUT_EDIT_TOOLS = {"Write": "file_path", "Edit": "file_path",
+                        "MultiEdit": "file_path",
+                        "NotebookEdit": "notebook_path"}
+
+
+def _breakout_policy(tool_name, tool_input, handoff_dir=None):
+    """The read-only rule of a breakout chat, as a permission result, or None
+    when the call is none of its business (reads, web, MCP, skills: the normal
+    flow). Edits and every Bash call are refused outright, with no card; the
+    one exception is a `.md` file whose realpath is inside the handoff dir, so a
+    path that climbs out (`..`) or leaves through a symlink is refused."""
+    handoff_dir = BREAKOUT_HANDOFF_DIR if handoff_dir is None else handoff_dir
+    if not handoff_dir:
+        return None
+    key = _BREAKOUT_EDIT_TOOLS.get(tool_name)
+    if tool_name != "Bash" and key is None:
+        return None
+    # Only Write may land a handoff note: Edit/MultiEdit/NotebookEdit are
+    # hard-denied by the CLI settings, and refused here too (defense in depth).
+    if key is not None and tool_name == "Write":
+        path = tool_input.get(key)
+        if isinstance(path, str) and path:
+            root = os.path.realpath(handoff_dir)
+            real = os.path.realpath(path)
+            try:
+                inside = os.path.commonpath([root, real]) == root
+            except ValueError:  # another drive on Windows
+                inside = False
+            if inside and real != root and real.lower().endswith(".md"):
+                return {"behavior": "allow", "updatedInput": tool_input,
+                        "decisionClassification": "user_temporary"}
+    return {"behavior": "deny",
+            "message": "Breakout chats are research-only; edits and shell are "
+                       "refused. Markdown under %s is the one exception."
+                       % handoff_dir,
+            "decisionClassification": "user_reject"}
+
+
 def _handle_approve(args: dict) -> dict:
     tool_name = args.get("tool_name") or "(unknown tool)"
     tool_input = args.get("input")
     if not isinstance(tool_input, dict):
         tool_input = {}
+    refused = _breakout_policy(tool_name, tool_input)
+    if refused is not None:
+        # Decided here, before anything is parked: no req card, no inflight
+        # entry, no queue notification for a call that will never wait.
+        return _text(refused)
     if _chat_allows(tool_name, tool_input):
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
@@ -1206,7 +1259,33 @@ def _serve_request(req_id, method: str, params: dict) -> None:
         _RPC.id = None
 
 
+def _breakout_hook(handoff_dir: str) -> int:
+    """PreToolUse hook mode: runs BEFORE the CLI's permission system, so a user
+    allow rule for Write cannot bypass the handoff path limit. Exit 2 (reason on
+    stderr) blocks the call; exit 0 with no output lets the normal flow go on.
+    Anything unreadable fails closed."""
+    try:
+        data = json.loads(sys.stdin.read())
+        tool_name = data["tool_name"]
+        tool_input = data.get("tool_input") or {}
+        if not isinstance(tool_name, str) or not isinstance(tool_input, dict):
+            raise ValueError("bad shape")
+    except Exception:
+        sys.stderr.write("Breakout guard: unreadable hook input; refusing.\n")
+        return 2
+    if not handoff_dir:
+        sys.stderr.write("Breakout guard: no handoff dir; refusing.\n")
+        return 2
+    result = _breakout_policy(tool_name, tool_input, handoff_dir)
+    if result and result.get("behavior") == "deny":
+        sys.stderr.write(str(result.get("message") or "Refused.") + "\n")
+        return 2
+    return 0
+
+
 def main() -> int:
+    if BREAKOUT_HOOK_DIR is not None:
+        return _breakout_hook(BREAKOUT_HOOK_DIR)
     # Before the first read of stdin, which is what fixes the encoding: a
     # TextIOWrapper cannot be reconfigured once it has read anything.
     _utf8_stdio()

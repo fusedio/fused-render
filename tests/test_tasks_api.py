@@ -6412,6 +6412,20 @@ def test_add_worktree_backslash_path_survives_ntpath_normpath(monkeypatch):
     assert rec["worktrees"] == ["C:/repo/.claude/worktrees/feat"]
 
 
+# A breakout (`breakouts.json`) is a Claude session that is never a task; the
+# parent chat it was forked from still lists.
+
+
+def test_a_breakout_session_is_not_listed_but_its_parent_is(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("side", T9)])
+    assert {t["key"] for t in _tasks(client)} == {"sess-a", "sess-b"}
+    tasks_store.mark_breakout("sess-b")
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+    assert [t["key"] for t in _pulse(client)] == ["sess-a"]
+
+
 # ---------------------------------------------------------------- favouriting
 # `POST /api/tasks/favourite` — the rail card's star. Global, keyed by task key,
 # at most one favourite open at a time.

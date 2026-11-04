@@ -6,7 +6,9 @@
 // paused) task, finished ones are not listed: kind icon, description (its
 // tooltip names the subagent type and worktree), model (agents), elapsed (live),
 // stop. The row itself is the toggle: a shell or a monitor opens its output
-// (asked of the live CLI with `task_output`), an agent opens its latest update.
+// (asked of the live CLI with `task_output`), an agent opens its latest update —
+// or, when the host passes `onPeekAgent` (the breakout beta), the row opens the
+// subagent's live transcript in a floating card instead and is no toggle.
 //
 // The words are `protocol/tasks.ts`'s; this file only lays them out. The
 // open/closed bit is the host's (`ClaudeChat`), because `/tasks` toggles it.
@@ -120,6 +122,9 @@ export interface TasksPanelProps {
   onToggle: () => void;
   /** The chat's own model (`opus`...): what an agent that named none inherits. */
   parentModel?: string;
+  /** Open this subagent's transcript card. Given, an agent row with a
+   *  `tool_use_id` calls it on press instead of toggling its update note. */
+  onPeekAgent?: (t: TaskRecord) => void;
   /** Test seam: the `task_output` call. */
   fetchOutput?: FetchTaskOutput;
   /** Test seam: the `task_stop` call. */
@@ -149,7 +154,7 @@ function KindIcon({ kind }: { kind: TaskKind }) {
   return <CircleDot {...props} />;
 }
 
-export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, parentModel, fetchOutput = defaultFetch, stopTask = defaultStop, now = Date.now }: TasksPanelProps) {
+export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, parentModel, onPeekAgent, fetchOutput = defaultFetch, stopTask = defaultStop, now = Date.now }: TasksPanelProps) {
   const [outputs, setOutputs] = useState<Record<string, OutputState>>({});
   // Answers for a run that is no longer the panel's are dropped on arrival.
   const runRef = useRef(runId);
@@ -255,9 +260,10 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
               const modelLabel = t.kind === "agent" ? agentModelLabel(t, parentModel) : "";
               const isAgent = t.kind === "agent";
               const canOut = hasOutput(t) && !!runId;
+              const peeks = isAgent && !!t.tool_use_id && !!onPeekAgent;
               const toggles = canOut || isAgent;
               const expanded = canOut ? !!out : updOpen.has(t.id);
-              const toggle = () => (canOut ? toggleOutput(t.id) : toggleUpdate(t.id));
+              const toggle = () => (peeks ? onPeekAgent(t) : canOut ? toggleOutput(t.id) : toggleUpdate(t.id));
               return (
                 <li key={t.id} className={cn("chat-task", "is-" + t.kind, isLive(t.status) ? "is-live" : "is-paused")}>
                   <div
@@ -266,7 +272,7 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
                       ? {
                           role: "button",
                           tabIndex: 0,
-                          "aria-expanded": expanded,
+                          ...(peeks ? {} : { "aria-expanded": expanded }),
                           onClick: toggle,
                           onKeyDown: (ev: React.KeyboardEvent) => {
                             if (ev.target !== ev.currentTarget) return;
@@ -310,7 +316,7 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
                       {(stopping[t.id] as { message: string }).message}
                     </div>
                   ) : null}
-                  {isAgent && !canOut && updOpen.has(t.id) ? (
+                  {isAgent && !canOut && !peeks && updOpen.has(t.id) ? (
                     <div className="chat-task-note">{t.summary || "No update yet."}</div>
                   ) : null}
                   {out?.phase === "loading" ? (

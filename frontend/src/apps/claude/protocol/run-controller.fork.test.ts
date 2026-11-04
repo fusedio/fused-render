@@ -11,7 +11,7 @@ import type { PollResponse } from "./types";
 
 type Handler = (fields: Record<string, unknown>, call: number) => unknown;
 
-function rig(handlers: Record<string, Handler>) {
+function rig(handlers: Record<string, Handler>, deps: Record<string, unknown> = {}) {
   const calls: { action: string; fields: Record<string, unknown> }[] = [];
   const run = ((action: string, fields: Record<string, unknown>) => {
     calls.push({ action, fields });
@@ -26,6 +26,7 @@ function rig(handlers: Record<string, Handler>) {
     sleep: () => Promise.resolve(),
     now: () => 1_000,
     hasPane: () => true,
+    ...deps,
   });
   return { controller, calls, of: (a: string) => calls.filter((c) => c.action === a) };
 }
@@ -48,12 +49,19 @@ const HISTORY = {
   ],
 };
 
-async function opened(extra: Record<string, Handler> = {}, backend = "claude") {
-  const r = rig({
-    history: () => HISTORY,
-    live_run: () => ({ run_id: "" }),
-    ...extra,
-  });
+async function opened(
+  extra: Record<string, Handler> = {},
+  backend = "claude",
+  deps: Record<string, unknown> = {},
+) {
+  const r = rig(
+    {
+      history: () => HISTORY,
+      live_run: () => ({ run_id: "" }),
+      ...extra,
+    },
+    deps,
+  );
   await r.controller.openSession("old", { backend });
   return r;
 }
@@ -134,6 +142,26 @@ describe("sendMessage with a fork", () => {
     expect(s.turns.some((t) => t.role === "user" && t.text === "second")).toBe(false);
   });
 
+  test("a start answering fork_clamped sets state.forkClamped", async () => {
+    const r = await opened({
+      start: () => ({ run_id: "r2", session_id: "new-sid", backend: "claude", fork_clamped: true }),
+      poll: () => donePoll("new-sid"),
+    });
+    r.controller.beginFork(keyOf(r, "second"));
+    await r.controller.sendMessage("edited second");
+    expect(r.controller.getState().forkClamped).toBe(true);
+  });
+
+  test("forkClamped stays falsy when the start does not carry the flag", async () => {
+    const r = await opened({
+      start: () => ({ run_id: "r2", session_id: "new-sid", backend: "claude" }),
+      poll: () => donePoll("new-sid"),
+    });
+    r.controller.beginFork(keyOf(r, "second"));
+    await r.controller.sendMessage("edited second");
+    expect(r.controller.getState().forkClamped).toBeFalsy();
+  });
+
   test("a refused start keeps the fork set", async () => {
     const r = await opened({
       start: () => ({ error: "message not found in this conversation" }),
@@ -151,5 +179,156 @@ describe("sendMessage with a fork", () => {
     });
     await r.controller.sendMessage("more");
     expect("fork_at" in r.of("start")[0]!.fields).toBe(false);
+  });
+});
+
+describe("breakout posture", () => {
+  const started = {
+    live_host: () => {
+      throw new Error("a breakout must never probe the parent's live host");
+    },
+    send: () => {
+      throw new Error("a breakout must never follow up into the parent's host");
+    },
+    start: () => ({ run_id: "rb", session_id: "brk", backend: "claude" }),
+    poll: () => donePoll("brk"),
+  };
+
+  test("the first send forks at the chosen message with breakout=1", async () => {
+    const r = await opened(started, "claude", { breakout: true, breakoutAt: "u2" });
+    await r.controller.sendMessage("what is this?");
+    expect(r.of("live_host")).toHaveLength(0);
+    expect(r.of("send")).toHaveLength(0);
+    expect(r.of("start")[0]!.fields).toMatchObject({
+      session_id: "old",
+      fork_at: "u2",
+      breakout: "1",
+    });
+    expect(r.controller.getState().sessionId).toBe("brk");
+  });
+
+  test("opening hides the chosen message and what follows, and never attaches to a live run", async () => {
+    const r = await opened(
+      { live_run: () => ({ run_id: "parent-run" }), live_host: () => ({ run_id: "parent-run" }) },
+      "claude",
+      { breakout: true, breakoutAt: "u2" },
+    );
+    expect(
+      r.controller.getState().turns.map((t) => t.role === "user" && t.text),
+    ).toEqual(["first", false]);
+    expect(r.of("live_run")).toHaveLength(0);
+  });
+
+  test("a tip breakout sends an empty fork_at and keeps every turn", async () => {
+    const r = await opened(started, "claude", { breakout: true });
+    expect(r.controller.getState().turns.length).toBe(4);
+    await r.controller.sendMessage("summarize");
+    const f = r.of("start")[0]!.fields;
+    expect(f.breakout).toBe("1");
+    expect("fork_at" in f).toBe(false);
+  });
+
+  test("a later send into the breakout's own session resumes it, never forks again", async () => {
+    const r = await opened(
+      {
+        ...started,
+        live_host: () => ({ run_id: "" }),
+        start: (f) =>
+          f.breakout === "1"
+            ? { run_id: "rb", session_id: "brk", backend: "claude" }
+            : { run_id: "rb2", session_id: "brk", backend: "claude" },
+      },
+      "claude",
+      { breakout: true, breakoutAt: "u2" },
+    );
+    await r.controller.sendMessage("one");
+    await r.controller.sendMessage("two");
+    const starts = r.of("start").map((c) => c.fields);
+    expect(starts).toHaveLength(2);
+    expect(starts[1]).toMatchObject({ session_id: "brk", breakout: "resume" });
+    expect("fork_at" in starts[1]!).toBe(false);
+  });
+
+  test("breakoutSends counts every send in breakout posture", async () => {
+    const r = await opened(
+      { ...started, live_host: () => ({ run_id: "" }) },
+      "claude",
+      { breakout: true, breakoutAt: "u2" },
+    );
+    expect(r.controller.getState().breakoutSends).toBe(0);
+    await r.controller.sendMessage("one");
+    expect(r.controller.getState().breakoutSends).toBe(1);
+    await r.controller.sendMessage("two");
+    expect(r.controller.getState().breakoutSends).toBe(2);
+  });
+
+  test("a plain chat never counts breakout sends", async () => {
+    const r = await opened({ start: () => ({ run_id: "r", session_id: "old" }), poll: () => donePoll("old") });
+    await r.controller.sendMessage("x");
+    expect(r.controller.getState().breakoutSends).toBe(0);
+  });
+
+  test("a failed first start leaves the breakout unspent", async () => {
+    let n = 0;
+    const r = await opened(
+      {
+        ...started,
+        start: () => (n++ === 0 ? { error: "boom" } : { run_id: "rb", session_id: "brk" }),
+      },
+      "claude",
+      { breakout: true, breakoutAt: "u2" },
+    );
+    await r.controller.sendMessage("one");
+    await r.controller.sendMessage("two");
+    expect(r.of("start")[1]!.fields).toMatchObject({ breakout: "1", fork_at: "u2" });
+  });
+
+  test("an unspent breakout never refreshes over the parent's scoped transcript", async () => {
+    const r = await opened(started, "claude", { breakout: true, breakoutAt: "u2" });
+    const before = r.of("history").length;
+    const turnsBefore = r.controller.getState().turns;
+    await r.controller.refreshHistory("old");
+    expect(r.of("history")).toHaveLength(before);
+    expect(r.controller.getState().turns).toBe(turnsBefore);
+  });
+
+  test("a spent breakout may refresh its own history", async () => {
+    const r = await opened(started, "claude", { breakout: true, breakoutAt: "u2" });
+    await r.controller.sendMessage("one");
+    const before = r.of("history").length;
+    await r.controller.refreshHistory("brk");
+    expect(r.of("history").length).toBe(before + 1);
+  });
+
+  test("a usage limit in a breakout never schedules a (policy-less) comeback", async () => {
+    const posted: unknown[] = [];
+    const limited = {
+      ...started,
+      poll: () =>
+        ({
+          ...donePoll("brk"),
+          error: "You've hit your session limit",
+          quota: { status: "rejected", type: "five_hour", resets_at: 1789066800, utilization: null, windows: {} },
+        }) as unknown as PollResponse,
+    };
+    const r = await opened(limited, "claude", {
+      breakout: true,
+      breakoutAt: "u2",
+      schedule: (b: unknown) => (posted.push(b), Promise.resolve({ entry: { id: "e" } })),
+      listSchedule: () => Promise.resolve({ entries: [] }),
+    });
+    await r.controller.sendMessage("go");
+    await new Promise<void>((res) => setTimeout(res, 0));
+    expect(posted).toEqual([]);
+  });
+
+  test("a plain chat sends no breakout field", async () => {
+    const r = await opened({
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2", session_id: "old" }),
+      poll: () => donePoll("old"),
+    });
+    await r.controller.sendMessage("more");
+    expect("breakout" in r.of("start")[0]!.fields).toBe(false);
   });
 });

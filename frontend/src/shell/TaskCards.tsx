@@ -34,6 +34,7 @@ import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import { ChatFramePlaceholder, ChatMount } from "@apps/claude";
+import { breakoutOpener } from "@platform/lib/breakouts";
 import { Modal } from "@platform/ui/modal/Modal";
 import { folderHref } from "./schedule-lib";
 import {
@@ -888,6 +889,7 @@ function TaskCard({
           // The compact chat (apps/claude/styles/chat.css's type scale), its
           // `session_id` in a MEMORY param store per card (00 §1e).
           <ChatMount
+            onBreakout={breakoutOpener()}
             file={task.target || task.project}
             sessionId={task.session_id}
             backend={task.backend}
@@ -1135,6 +1137,7 @@ function TaskPeek({
         // up from the chat's own root, and `focusRef` is the composer's
         // textarea — where the reader actually wants the caret.
         <ChatMount
+          onBreakout={breakoutOpener()}
           file={task.target || task.project}
           sessionId={task.session_id}
           backend={task.backend}

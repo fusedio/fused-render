@@ -250,6 +250,7 @@ import type { ScreenshotSource } from "@platform/lib/screen-permission";
 import { watchTopOrigin } from "@apps/claude/shots";
 import { captureSources } from "@platform/lib/capture-audio";
 import { bundleName } from "@platform/lib/flavor";
+import { breakoutOpener } from "@platform/lib/breakouts";
 
 // How long a canvas screenshot waits for the frame's answer. html-to-image
 // over a big graph takes seconds; a frame without the handler never answers,
@@ -3160,6 +3161,7 @@ export default function CanvasWorkspace({
             // hands the element over. The mark stays on that iframe for PR3 to
             // read (below).
             <ChatMount
+              onBreakout={breakoutOpener()}
               key={(fixRunId ?? "chat") + ":" + canvasChatSeq}
               file={dir}
               chatOnly
