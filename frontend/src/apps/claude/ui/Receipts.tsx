@@ -137,10 +137,11 @@ function ShotRow({
 
   return (
     <>
-      {/* The overview and the pane screenshot say what they are by being the
-          picture; their caption row is the sentence the bubble no longer
-          needs. An image or a file keeps it — the caption carries the name. */}
-      {receipt.kind === "overview" || receipt.kind === "pane" ? null : (
+      {/* A row with a picture says what it is by being the picture, so its
+          caption row (overview, pane, image) would only repeat it; the name
+          stays on the picture's hover title. A file keeps its caption — the
+          caption carries the name. */}
+      {receipt.kind !== "file" ? null : (
         <div className="annsum-row">
           <span className="annsum-txt" title={receipt.viewNote || receipt.view || ""}>
             {receipt.label}
@@ -159,7 +160,7 @@ function ShotRow({
           className="annsum-pane"
           shot={shot}
           alt={alt}
-          title={onShowSent ? "Click to see exactly what was sent to the agent" : receipt.view || ""}
+          title={onShowSent ? "Click to see exactly what was sent to the agent" : receipt.label}
           onOpen={openThumb}
           onError={() => {
             if (!src.startsWith("blob:")) setGoneSrc(src);
