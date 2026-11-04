@@ -131,3 +131,10 @@ export function exchangeKeys(turns: readonly HandoffTurn[], key: string): string
     .map((t) => t.key);
   return keys.includes(key) ? keys : [key];
 }
+
+/** The keys of `selected` that name a turn of `turns`: a selection outlives
+ *  neither a re-keyed transcript nor another session. */
+export function liveKeys(turns: readonly { key: string }[], selected: ReadonlySet<string>): Set<string> {
+  const live = new Set(turns.map((t) => t.key));
+  return new Set([...selected].filter((k) => live.has(k)));
+}

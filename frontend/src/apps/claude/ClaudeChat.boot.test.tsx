@@ -793,6 +793,23 @@ describe("breakout selection", () => {
     expect(byClass(m.r, "is-breakout-selected").length).toBe(0);
   });
 
+  test("Escape is left alone when nothing is selected", async () => {
+    const doc = document as unknown as { addEventListener: (t: string, fn: (e: unknown) => void) => void };
+    const prev = doc.addEventListener;
+    const keydown: ((e: unknown) => void)[] = [];
+    doc.addEventListener = (t, fn) => void (t === "keydown" && keydown.push(fn));
+    let m: Awaited<ReturnType<typeof mountParent>>;
+    try {
+      m = await mountParent();
+    } finally {
+      doc.addEventListener = prev;
+    }
+    const evs = keydown.map(() => ({ key: "Escape", defaultPrevented: false, target: null, prevented: false, preventDefault() { this.prevented = true; } }));
+    await act(async () => keydown.forEach((fn, i) => fn(evs[i])));
+    expect(evs.some((e) => e.prevented)).toBe(false);
+    expect(byClass(m.r, "is-breakout-selected").length).toBe(0);
+  });
+
   test("the composer button opens the selection, or the last exchange when nothing is selected", async () => {
     const { r, opened } = await mountParent();
     act(() => byClass(r, "c-breakout")[0]!.props.onClick());

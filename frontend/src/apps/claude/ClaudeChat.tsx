@@ -45,7 +45,7 @@ import {
 } from "@platform/lib/drafts";
 import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
-import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, type ComposerDraftDetail } from "@platform/lib/breakouts";
+import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type ComposerDraftDetail } from "@platform/lib/breakouts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
@@ -3867,9 +3867,16 @@ function ChatBody(props: ChatBodyProps) {
     [controller, params, file, props.onBreakout],
   );
   /** The turns shift-clicked for the next breakout. Escape clears it. */
-  const [breakoutSel, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
+  const [pickedKeys, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
+  // Only keys of turns still on screen count: a re-keyed transcript or another
+  // session leaves the old keys behind, and they must not size the selection,
+  // reach the context or swallow an Escape.
+  const breakoutSel = useMemo(() => liveKeys(state.turns, pickedKeys), [pickedKeys, state.turns]);
   const breakoutSelRef = useRef(breakoutSel);
   breakoutSelRef.current = breakoutSel;
+  useEffect(() => {
+    setBreakoutSel((sel) => (sel.size ? new Set() : sel));
+  }, [state.sessionId]);
   /** "Breakout from here" (Transcript `onBreakout`). A shift-click toggles the
    *  turn's whole exchange (the prompt and every answer to it) in the selection and opens nothing; a
    *  plain click opens a breakout from the selection plus that exchange, then

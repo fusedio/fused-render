@@ -15,6 +15,7 @@ export { BREAKOUT_CTX_TAG } from "./wire-tags";
 export {
   buildBreakoutContext,
   exchangeKeys,
+  liveKeys,
   formatBreakoutContext,
   type HandoffTurn,
 } from "./breakout-context";

@@ -9,6 +9,7 @@ import {
   closeBreakout,
   exchangeKeys,
   getBreakouts,
+  liveKeys,
   openBreakout,
   resetBreakouts,
   sendBackBreakout,
@@ -231,6 +232,14 @@ describe("exchangeKeys", () => {
   test("an assistant turn with no prompt before it, or an unknown key, stands alone", () => {
     expect(exchangeKeys([turns[1]!], "a1")).toEqual(["a1"]);
     expect(exchangeKeys(turns, "nope")).toEqual([]);
+  });
+});
+
+describe("liveKeys", () => {
+  test("keeps only the keys of turns still in the transcript", () => {
+    const turns = [{ key: "a" }, { key: "b" }];
+    expect([...liveKeys(turns, new Set(["a", "gone"]))]).toEqual(["a"]);
+    expect(liveKeys([], new Set(["a"])).size).toBe(0);
   });
 });
 
