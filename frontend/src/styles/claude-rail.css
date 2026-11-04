@@ -859,6 +859,9 @@ button.claude-rail-peek-scope.is-node:focus-visible {
 .breakout-card .breakout-head button {
   cursor: pointer;
 }
+.breakout-card .breakout-error {
+  padding: 4px 12px;
+}
 .breakout-card .breakout-title {
   font-weight: 600;
 }

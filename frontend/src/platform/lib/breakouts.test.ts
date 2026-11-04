@@ -61,17 +61,62 @@ describe("breakout store", () => {
     expect(getBreakouts().map((c) => c.id)).not.toContain(a);
     expect(getBreakouts()).toHaveLength(1);
   });
-  test("sendBack dispatches the composer event and clears the card", () => {
+  test("a handled event: the composer owns the draft, nothing is saved", async () => {
     const seen: unknown[] = [];
-    const on = (e: Event) => seen.push((e as CustomEvent).detail);
+    const on = (e: Event) => {
+      seen.push((e as CustomEvent).detail);
+      e.preventDefault();
+    };
     window.addEventListener("fused:composer-draft", on);
-    const saved: Array<[string, string]> = [];
+    const saved: unknown[] = [];
     const a = openBreakout(req);
-    sendBackBreakout(a, "the summary", (key, text) => saved.push([key, text]));
+    const ok = await sendBackBreakout(
+      a,
+      "the summary",
+      (...args) => saved.push(args),
+      () => {
+        throw new Error("must not read the draft");
+      },
+    );
     window.removeEventListener("fused:composer-draft", on);
+    expect(ok).toBe(true);
     expect(seen).toEqual([{ sessionId: "s1", file: "/w/proj", text: "the summary" }]);
-    expect(saved).toEqual([["s1", "the summary"]]);
+    expect(saved).toEqual([]);
     expect(getBreakouts()).toHaveLength(0);
+  });
+  test("no parent mounted: appended to the saved draft, attachments kept", async () => {
+    const saved: unknown[][] = [];
+    const att = [{ name: "a.png" }] as never;
+    const a = openBreakout(req);
+    const ok = await sendBackBreakout(
+      a,
+      "the summary",
+      (...args) => (saved.push(args), { ok: true }),
+      async () => ({ text: "half typed", attachments: att }) as never,
+    );
+    expect(ok).toBe(true);
+    expect(saved).toEqual([["s1", "half typed\n\nthe summary", att]]);
+    expect(getBreakouts()).toHaveLength(0);
+  });
+  test("no parent mounted and no saved draft: just the text", async () => {
+    const saved: unknown[][] = [];
+    const a = openBreakout(req);
+    await sendBackBreakout(a, "the summary", (...args) => (saved.push(args), { ok: true }), async () => null);
+    expect(saved).toEqual([["s1", "the summary", []]]);
+  });
+  test("a refused save keeps the card open and answers false", async () => {
+    const a = openBreakout(req);
+    const ok = await sendBackBreakout(a, "x", () => ({ ok: false }), async () => null);
+    expect(ok).toBe(false);
+    expect(getBreakouts().map((c) => c.id)).toEqual([a]);
+  });
+  test("an unreadable draft keeps the card open without writing", async () => {
+    const a = openBreakout(req);
+    let wrote = false;
+    const ok = await sendBackBreakout(a, "x", () => ((wrote = true), { ok: true }), async () => undefined);
+    expect(ok).toBe(false);
+    expect(wrote).toBe(false);
+    expect(getBreakouts()).toHaveLength(1);
   });
 });
 

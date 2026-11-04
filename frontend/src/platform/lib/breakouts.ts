@@ -7,7 +7,7 @@
 // `task-peek-store`: pure rules at the top, a thin `useSyncExternalStore`
 // layer under them.
 import { useSyncExternalStore } from "react";
-import { chatDraftKey, saveChatDraft } from "./drafts";
+import { chatDraftKey, fetchChatDraft, saveChatDraft, type ChatDraft, type DraftAttachment } from "./drafts";
 
 /**
  * A request to open a breakout (a research-only side chat forked from a chat),
@@ -106,21 +106,40 @@ export function resetBreakouts(): void {
  * SEND BACK: hand `text` to the parent's composer, then drop the card.
  *
  * Two roads, because the parent may be mounted anywhere (side pane, rail card,
- * its own page) or nowhere: the window event reaches a mounted composer now,
- * and the persisted draft is what a composer that mounts LATER seeds from.
- * `save` is a seam for tests.
+ * its own page) or nowhere. The window event is CANCELABLE: a mounted composer
+ * appends the text and calls `preventDefault()`, and then its own syncer owns
+ * the persisted draft, so this does not touch it (a write here would clobber
+ * what the reader typed since). Unhandled means no parent is mounted: read the
+ * saved draft and file `existing + text` so nothing the reader left is lost,
+ * and the composer that mounts LATER seeds from it.
+ *
+ * Resolves `true` once handed off (the card is closed), `false` when the draft
+ * could not be read or saved (the card stays so the text is not lost).
+ * `save` and `load` are seams for tests.
  */
-export function sendBackBreakout(
+export async function sendBackBreakout(
   id: string,
   text: string,
-  save: (key: string, text: string) => unknown = (k, t) => void saveChatDraft(k, t),
-): void {
+  save: (key: string, text: string, attachments: readonly DraftAttachment[]) => unknown = (k, t, a) =>
+    saveChatDraft(k, t, a),
+  load: (key: string) => Promise<ChatDraft | null | undefined> = fetchChatDraft,
+): Promise<boolean> {
   const card = cards.find((c) => c.id === id);
-  if (!card) return;
+  if (!card) return false;
   const detail: ComposerDraftDetail = { sessionId: card.parentSessionId, file: card.file, text };
-  window.dispatchEvent(new CustomEvent(COMPOSER_DRAFT_EVENT, { detail }));
-  save(chatDraftKey(card.parentSessionId, card.file), text);
+  const handled = !window.dispatchEvent(new CustomEvent(COMPOSER_DRAFT_EVENT, { detail, cancelable: true }));
+  if (!handled) {
+    const key = chatDraftKey(card.parentSessionId, card.file);
+    // `undefined` = the read failed: writing now could erase a saved draft.
+    const existing = await load(key);
+    if (existing === undefined) return false;
+    const prior = existing?.text ?? "";
+    const merged = prior.trim() ? `${prior}\n\n${text}` : text;
+    const res = (await save(key, merged, existing?.attachments ?? [])) as { ok?: boolean } | undefined;
+    if (res && res.ok === false) return false;
+  }
   closeBreakout(id);
+  return true;
 }
 
 const HANDOFF_ANY = /\/\.claude\/handoffs\/[^/]+\.md$/;

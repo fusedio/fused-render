@@ -133,6 +133,43 @@ test("close confirms when the card has sends, even after a refresh swapped the u
   }
 });
 
+test("a failed Send back keeps the card open and shows one error line", async () => {
+  resetBreakouts();
+  openBreakout({ sessionId: "s1", file: "/w/proj" });
+  const state = {
+    sessionId: "brk",
+    sends: 1,
+    turns: [
+      { role: "user", key: "uuid-1", text: "q" },
+      { role: "assistant", key: "uuid-2", text: "an answer" },
+    ],
+  };
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<Card card={getBreakouts()[0]!} index={0} mount={reporting(state)()} />, { createNodeMock: () => el });
+  });
+  const w = window as unknown as Record<string, unknown>;
+  const g = globalThis as unknown as Record<string, unknown>;
+  const prevDispatch = w["dispatchEvent"];
+  const prevFetch = g["fetch"];
+  w["dispatchEvent"] = () => true; // nobody handled it: no parent mounted
+  g["fetch"] = () => Promise.reject(new Error("offline")); // the draft read fails
+  try {
+    const btn = r.root.findAllByType("button").find((b) => (b.children as string[]).join("") === "Send back")!;
+    await act(async () => {
+      btn.props.onClick();
+      await new Promise((res) => setTimeout(res, 20));
+    });
+    expect(getBreakouts()).toHaveLength(1);
+    expect(r.root.findAllByProps({ role: "alert" }).length).toBeGreaterThan(0);
+  } finally {
+    w["dispatchEvent"] = prevDispatch;
+    g["fetch"] = prevFetch;
+    act(() => r.unmount());
+    resetBreakouts();
+  }
+});
+
 test("close does not confirm for an unused card", () => {
   resetBreakouts();
   openBreakout({ sessionId: "s1", file: "/w/proj" });

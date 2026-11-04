@@ -35,6 +35,7 @@ export function FloatingCard({
   note,
   noteTitle,
   actions,
+  error,
   onClose,
   children,
 }: {
@@ -44,6 +45,8 @@ export function FloatingCard({
   note: string;
   noteTitle?: string;
   actions?: ReactNode;
+  /** A one-line failure shown under the head. */
+  error?: string;
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -139,6 +142,11 @@ export function FloatingCard({
             </button>
           </div>
         </div>
+        {error ? (
+          <div className="breakout-error claude-rail-peek-rename-error" role="alert">
+            {error}
+          </div>
+        ) : null}
         <div className="claude-rail-peek-body">{children}</div>
       </div>
     </div>
@@ -158,6 +166,7 @@ export function Card({
   const state = useRef<BreakoutState>({ sessionId: "", turns: [] });
   const [canSend, setCanSend] = useState(false);
   const [clamped, setClamped] = useState(false);
+  const [error, setError] = useState("");
   const onState = useCallback((s: BreakoutState) => {
     state.current = s;
     setClamped(!!s.forkClamped);
@@ -175,7 +184,10 @@ export function Card({
   const sendBack = () => {
     const text = buildHandoffDraft(ownTurns(state.current.turns, state.current.sends ?? 0));
     if (!text) return;
-    sendBackBreakout(card.id, text);
+    setError("");
+    void sendBackBreakout(card.id, text).then((ok) => {
+      if (!ok) setError("Could not hand the summary back. The card stays open.");
+    });
   };
 
   return (
@@ -201,6 +213,7 @@ export function Card({
           Send back
         </button>
       }
+      error={error}
       onClose={close}
     >
       <div className="claude-rail-peek-chat is-shown">

@@ -3508,6 +3508,8 @@ function ChatBody(props: ChatBodyProps) {
       if (!sid || d.sessionId !== sid || d.file !== file) return;
       strandSeq.current += 1;
       setStranded({ text: d.text, seq: strandSeq.current });
+      // Handled: the breakout must not also write the persisted draft.
+      e.preventDefault();
     };
     window.addEventListener(COMPOSER_DRAFT_EVENT, on);
     return () => window.removeEventListener(COMPOSER_DRAFT_EVENT, on);
