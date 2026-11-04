@@ -702,3 +702,13 @@ test("the composer Breakout button is absent while the Breakout flag is off (def
   expect(byClass(strip.r, "c-anntools").length).toBe(1);
   expect(byClass(strip.r, "c-breakout").length).toBe(0);
 });
+
+// BREAKOUT BOOT: a breakout card is a fresh chat. It restores no history and
+// wears the chip for its seeded messages until the first send carries them.
+test("a breakout boots empty: no history fetch, a chip for the selected messages above the composer", async () => {
+  const context = { block: "<breakout-context>\nThe user opened this side chat from 2 messages of their main chat.\n\nUser: q\n\nAssistant: a\n</breakout-context>", count: 2, title: "Parent" };
+  const { r } = await mountChat({ breakout: true, breakoutContext: context });
+  await settle(20);
+  expect(runs.filter((c) => c.action === "history")).toHaveLength(0);
+  expect(byClass(r, "annsum-breakout").length).toBe(1);
+});

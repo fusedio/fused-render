@@ -10,7 +10,6 @@ import {
   exchangeKeys,
   getBreakouts,
   openBreakout,
-  ownTurns,
   resetBreakouts,
   sendBackBreakout,
   subscribeBreakouts,
@@ -42,16 +41,17 @@ afterAll(() => {
 
 afterEach(() => resetBreakouts());
 
-const req = { sessionId: "s1", file: "/w/proj", forkAt: "u2" };
+const context = { block: "<breakout-context>\nx\n</breakout-context>", count: 2, title: "Parent" };
+const req = { sessionId: "s1", file: "/w/proj", context };
 
 describe("breakout store", () => {
   test("open adds a card with a unique id and the parent's session", () => {
     const a = openBreakout(req);
-    const b = openBreakout({ ...req, forkAt: "u3", forkKey: "k3" });
+    const b = openBreakout({ ...req, forkKey: "k3" });
     expect(a).not.toBe(b);
     const cards = getBreakouts();
     expect(cards.map((c) => c.id)).toEqual([a, b]);
-    expect(cards[0]).toMatchObject({ parentSessionId: "s1", file: "/w/proj", forkAt: "u2" });
+    expect(cards[0]).toMatchObject({ parentSessionId: "s1", file: "/w/proj", context });
   });
   test("a second open of the same message focuses the existing card", () => {
     const a = openBreakout({ ...req, forkKey: "k2" });
@@ -61,7 +61,7 @@ describe("breakout store", () => {
   });
   test("reopening raises the existing card to the end of the list", () => {
     const a = openBreakout({ ...req, forkKey: "k2" });
-    const b = openBreakout({ ...req, forkAt: "u3", forkKey: "k3" });
+    const b = openBreakout({ ...req, forkKey: "k3" });
     let ticks = 0;
     const off = subscribeBreakouts(() => ticks++);
     expect(openBreakout({ ...req, forkKey: "k2" })).toBe(a);
@@ -73,7 +73,7 @@ describe("breakout store", () => {
   });
   test("close removes", () => {
     const a = openBreakout(req);
-    openBreakout({ ...req, forkAt: "u9" });
+    openBreakout({ ...req, forkKey: "k9" });
     closeBreakout(a);
     expect(getBreakouts().map((c) => c.id)).not.toContain(a);
     expect(getBreakouts()).toHaveLength(1);
@@ -209,38 +209,6 @@ describe("breakoutOpener", () => {
   test("no opener inside an embedded document", () => {
     expect(breakoutOpener(true)).toBeUndefined();
     expect(breakoutOpener(false)).toBe(openBreakout);
-  });
-});
-
-describe("ownTurns", () => {
-  const parent = [
-    { role: "user", key: "h-1", text: "parent q" },
-    { role: "assistant", key: "h-2", text: "parent answer" },
-  ];
-  test("no sends means no own turns, so no draft", () => {
-    expect(ownTurns(parent, 0)).toEqual([]);
-    expect(buildHandoffDraft(ownTurns(parent, 0))).toBe("");
-  });
-  test("slices from the sends-th user turn counted from the end", () => {
-    const all = [
-      ...parent,
-      { role: "user", key: "u:1", text: "side q" },
-      { role: "assistant", key: "h-3", text: "side answer" },
-    ];
-    expect(ownTurns(all, 1).map((t) => t.key)).toEqual(["u:1", "h-3"]);
-    expect(buildHandoffDraft(ownTurns(all, 1))).toBe("side answer");
-  });
-  test("survives a history refresh: every row is uuid-keyed", () => {
-    const refreshed = [
-      ...parent,
-      { role: "user", key: "uuid-a", text: "side q1" },
-      { role: "assistant", key: "uuid-b", text: "side a1" },
-      { role: "user", key: "uuid-c", text: "side q2" },
-      { role: "assistant", key: "uuid-d", text: "side a2" },
-    ];
-    expect(ownTurns(refreshed, 1).map((t) => t.key)).toEqual(["uuid-c", "uuid-d"]);
-    expect(ownTurns(refreshed, 2).map((t) => t.key)).toEqual(["uuid-a", "uuid-b", "uuid-c", "uuid-d"]);
-    expect(ownTurns(refreshed, 9)).toEqual([]);
   });
 });
 

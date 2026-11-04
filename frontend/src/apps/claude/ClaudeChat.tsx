@@ -45,12 +45,12 @@ import {
 } from "@platform/lib/drafts";
 import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
-import { COMPOSER_DRAFT_EVENT, type ComposerDraftDetail } from "@platform/lib/breakouts";
+import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, type ComposerDraftDetail } from "@platform/lib/breakouts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
-import type { BreakoutRequest, SendOptions, StrandedLine, Turn, UserTurn } from "./protocol/controller-api";
+import type { BreakoutContext, BreakoutRequest, SendOptions, StrandedLine, Turn, UserTurn } from "./protocol/controller-api";
 import type { PermissionMode, TaskRecord } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
@@ -87,7 +87,7 @@ import {
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
 import { terminalHint } from "@platform/lib/terminalFocus";
-import { composeOutgoing, formatAnnotations, isInterruptMark, type AnnotationWire } from "./protocol/wire";
+import { breakoutContextIn, composeOutgoing, formatAnnotations, isInterruptMark, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
   AppPane,
@@ -110,6 +110,7 @@ import {
   AnnStrip,
   ArtStrip,
   AttachTray,
+  BreakoutContextChip,
   Kebab,
   CardPolicyProvider,
   Composer,
@@ -313,18 +314,19 @@ export interface ClaudeChatProps {
    *  sidebar's SideCloseButton, same glyph, same place (the header's left
    *  end, on the seam the pane collapses toward). Absent: no button. */
   onHidePane?: () => void;
-  /** BREAKOUT POSTURE: this chat is a research-only side chat forked from the
-   *  session in `params` (see `ControllerDeps.breakout`). It never joins the
-   *  folder queue and never shows the fork notice. */
+  /** BREAKOUT POSTURE: this chat is a research-only side chat that starts as a
+   *  fresh session (see `ControllerDeps.breakout`). It never joins the folder
+   *  queue and never shows the fork notice. */
   breakout?: boolean;
-  /** With `breakout`: the parent user message's uuid to fork at (absent = tip). */
-  breakoutAt?: string;
+  /** With `breakout`: the parent messages it was opened from. A chip above the
+   *  composer shows them until the first send carries them. */
+  breakoutContext?: BreakoutContext;
   /** "Breakout from here" / the composer's Breakout button: hand the request
    *  to the shell, which opens the card. Absent: no Breakout seats. */
   onBreakout?: (req: BreakoutRequest) => void;
   /** With `breakout`: the card's window onto this chat — its own session id
    *  (minted by the first send) and transcript, for Send back. */
-  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number; running?: boolean; stop?: () => void }) => void;
+  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void }) => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -1398,7 +1400,7 @@ function ChatBody(props: ChatBodyProps) {
         file,
         params,
         ...(props.breakout ? { breakout: true } : {}),
-        ...(props.breakout && props.breakoutAt ? { breakoutAt: props.breakoutAt } : {}),
+        ...(props.breakout && props.breakoutContext ? { breakoutContext: props.breakoutContext.block } : {}),
         // The transcript restore takes its own road (owner E2E R1, F5):
         // `/api/claude-sessions/history`. See `fetchHistory`.
         history: (f, s) => fetchHistory(f, s),
@@ -3831,28 +3833,39 @@ function ChatBody(props: ChatBodyProps) {
       onBreakoutState({
         sessionId: state.sessionId || "",
         turns: state.turns,
-        forkClamped: !!state.forkClamped,
-        sends: state.breakoutSends ?? 0,
         // Closing a card mid-run must end the run (it is the card's own research run).
         running: state.status !== "idle",
         stop: () => void controller.stopRun(),
       });
     }
-  }, [props.breakout, onBreakoutState, controller, state.sessionId, state.turns, state.forkClamped, state.breakoutSends, state.status]);
+  }, [props.breakout, onBreakoutState, controller, state.sessionId, state.turns, state.status]);
 
-  /** "Breakout from here" (Transcript `onBreakout`): hand the shell the chosen
-   *  message's uuid, resolved off the controller's turns exactly as the fork
-   *  does. Unlike the fork it is allowed while a run is active — the breakout
-   *  is its own run. */
-  const onBreakoutTurn = useCallback(
-    (turnKey: string) => {
+  /** The title this chat's header names it by, for the breakout chip. Written
+   *  where the header's task row is read. */
+  const breakoutTitle = useRef<string | undefined>(undefined);
+  /** Open a breakout seeded with the turns under `keys`. Unlike the fork it is
+   *  allowed while a run is active: the breakout is its own session. */
+  const openBreakoutFor = useCallback(
+    (keys: readonly string[]) => {
       const st = controller.getState();
-      const turn = st.turns.find((t) => t.key === turnKey);
       const sid = st.sessionId || params.get("session_id") || "";
-      if (!props.onBreakout || !sid || !file || !turn || turn.role !== "user" || !turn.uuid) return;
-      props.onBreakout({ sessionId: sid, file, forkAt: turn.uuid, forkKey: turn.key });
+      if (!props.onBreakout || !sid || !file) return;
+      const context = buildBreakoutContext(st.turns, keys, breakoutTitle.current);
+      if (!context.count) return;
+      props.onBreakout({
+        sessionId: sid,
+        file,
+        context: { ...context, ...(breakoutTitle.current ? { title: breakoutTitle.current } : {}) },
+        forkKey: [...keys].sort().join("|"),
+      });
     },
     [controller, params, file, props.onBreakout],
+  );
+  /** "Breakout from here" (Transcript `onBreakout`): the clicked message and
+   *  its pair. */
+  const onBreakoutTurn = useCallback(
+    (turnKey: string) => openBreakoutFor(exchangeKeys(controller.getState().turns, turnKey)),
+    [controller, openBreakoutFor],
   );
 
   /**
@@ -5067,6 +5080,14 @@ function ChatBody(props: ChatBodyProps) {
   );
   artTick.current = art.poll;
   const [snapNonce, setSnapNonce] = useState(0);
+  // The seeded parent messages, as a chip above the composer until the first
+  // send carries them into the transcript.
+  const breakoutWire = useMemo(
+    () => (props.breakout && props.breakoutContext ? breakoutContextIn(props.breakoutContext.block) : null),
+    [props.breakout, props.breakoutContext],
+  );
+  const breakoutChip =
+    breakoutWire && !state.turns.some((t) => t.role === "user") ? <BreakoutContextChip context={breakoutWire} /> : null;
   snapInvalidate.current = () => setSnapNonce((n) => n + 1);
 
   /**
@@ -5225,6 +5246,8 @@ function ChatBody(props: ChatBodyProps) {
       // (`shotBusy`/`shotAttachPane`); `capturing` is that flag.
       attachPending: attach.capturing || attach.items.some((a: Attachment) => a.pending),
       chips: (
+        <>
+        {breakoutChip}
         <AttachTray
           items={attach.items}
           paneNoun={pane.paneNoun}
@@ -5237,6 +5260,7 @@ function ChatBody(props: ChatBodyProps) {
               same ✕ (T:927). The tray renders them first. */}
           <AnnChips items={ann.chips} onEdit={ann.editNote} onRemove={ann.removeNote} />
         </AttachTray>
+        </>
       ),
       // T:8505 — whichever composer is mounted hands its send in, for the
       // walkthrough's auto-submit and for ✓ Done.
@@ -5514,6 +5538,7 @@ function ChatBody(props: ChatBodyProps) {
     inChat && showHead ? (state.sessionId ?? null) : null,
     file,
   );
+  breakoutTitle.current = head.task?.title || undefined;
   // The header's last seat: the task's PR chip when the host asked for it (the
   // chip draws nothing for a task that names no pull request), then the
   // host's own node.
@@ -5601,6 +5626,12 @@ function ChatBody(props: ChatBodyProps) {
   // BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open while a run
   // is going too (the breakout is its own run). Placed by the strip, or as the
   // merged head row's tail (that layout has no strip).
+  const openLastExchange = () => {
+    const turns = controller.getState().turns;
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (turns[i]!.role === "assistant") return openBreakoutFor(exchangeKeys(turns, turns[i]!.key));
+    }
+  };
   const breakoutBtn =
     breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
       <button
@@ -5608,7 +5639,7 @@ function ChatBody(props: ChatBodyProps) {
         className="bar-ctl bar-ctl-icon c-breakout"
         title="Breakout: a research-only side chat from here"
         aria-label="Breakout"
-        onClick={() => props.onBreakout?.({ sessionId: state.sessionId!, file })}
+        onClick={openLastExchange}
       >
         <GitBranchPlus size={14} aria-hidden="true" />
       </button>

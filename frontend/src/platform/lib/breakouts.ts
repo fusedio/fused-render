@@ -1,5 +1,5 @@
-// BREAKOUTS — the shell's open research-only side chats (docs: the Breakout
-// plan, .claude/handoffs/claude-chat-breakout-plan.md).
+// BREAKOUTS — the shell's open research-only side chats, each a fresh session
+// seeded with messages picked from a parent chat.
 //
 // A MODULE STORE, not React state: a breakout is requested from any chat mount
 // (a message's Breakout button, the explorer pane, the rail card) and drawn by
@@ -19,28 +19,36 @@ export {
   type HandoffTurn,
 } from "./breakout-context";
 
+/** The parent messages a breakout opens with: the `<breakout-context>` wire
+ *  block its first send carries, how many messages it quotes, and the parent
+ *  chat's title when known. */
+export interface BreakoutContext {
+  block: string;
+  count: number;
+  title?: string;
+}
+
 /**
- * A request to open a breakout (a research-only side chat forked from a chat),
- * handed from a chat's Breakout buttons to this store. `forkAt` is the user
- * message's uuid; absent means "from the latest message". Lives in platform
- * (every host may import it); `controller-api` re-exports it for the chat.
+ * A request to open a breakout (a research-only side chat seeded with messages
+ * from a chat), handed from a chat's Breakout buttons to this store. Lives in
+ * platform (every host may import it); `controller-api` re-exports it for the
+ * chat.
  */
 export interface BreakoutRequest {
   sessionId: string;
   file: string;
-  forkAt?: string;
-  /** Optional dedupe key for the card store (e.g. the turn key). */
+  context: BreakoutContext;
+  /** Dedupe key for the card store: the selected turn keys, sorted and joined. */
   forkKey?: string;
 }
 
 export interface BreakoutCard {
   id: string;
-  /** The PARENT chat's session: what the card forks and what Send back fills. */
+  /** The PARENT chat's session: what Send back fills. */
   parentSessionId: string;
   file: string;
-  /** The parent's user message the card forks at; absent = the tip. */
-  forkAt?: string;
-  /** Dedupe key (the clicked turn's key) so a second press finds the card. */
+  context: BreakoutContext;
+  /** Dedupe key so a second press of the same selection finds the card. */
   forkKey?: string;
 }
 
@@ -69,7 +77,7 @@ export const subscribeBreakouts = (fn: () => void): (() => void) => {
 export const useBreakouts = (): readonly BreakoutCard[] =>
   useSyncExternalStore(subscribeBreakouts, getBreakouts, getBreakouts);
 
-/** Open a card for `req` and return its id. The same message of the same
+/** Open a card for `req` and return its id. The same selection of the same
  *  parent answers with the card already open (raised to the top)
  *  rather than a second one. */
 export function openBreakout(req: BreakoutRequest): string {
@@ -88,7 +96,7 @@ export function openBreakout(req: BreakoutRequest): string {
     id: `breakout-${Date.now().toString(36)}-${seq}`,
     parentSessionId: req.sessionId,
     file: req.file,
-    ...(req.forkAt ? { forkAt: req.forkAt } : {}),
+    context: req.context,
     ...(req.forkKey ? { forkKey: req.forkKey } : {}),
   };
   emit([...cards, card]);
@@ -182,17 +190,4 @@ export function buildHandoffDraft(turns: readonly HandoffTurn[], handoffDir?: st
   for (const t of turns) if (t.role === "assistant" && t.text?.trim()) last = t.text.trim();
   const file = lastHandoffPath(turns, handoffDir);
   return [last, file ? `Handoff file: ${file}` : ""].filter(Boolean).join("\n\n");
-}
-
-/** The breakout's own turns: from its `sends`-th user turn counted from the
- *  END (a send count, not a key shape: a history refresh swaps the live `u:`
- *  keys for uuid-keyed rows). Everything before is the parent transcript
- *  restored from history. Empty until the first send. */
-export function ownTurns<T extends HandoffTurn>(turns: readonly T[], sends: number): T[] {
-  if (sends <= 0) return [];
-  let seen = 0;
-  for (let i = turns.length - 1; i >= 0; i--) {
-    if (turns[i]!.role === "user" && ++seen === sends) return turns.slice(i);
-  }
-  return [];
 }

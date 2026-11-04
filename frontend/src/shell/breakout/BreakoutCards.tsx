@@ -2,8 +2,9 @@
 // shell's own overlay so a card outlives whichever page, pane or rail card it
 // was opened from. Chrome follows the rail peek card (claude-rail.css
 // `.claude-rail-peek-card`, `.breakout-card` modifier); body is a plain
-// `ChatMount` in breakout posture: forked from the parent session on its first
-// send, research-only on the server (permission bridge), no queue, no nesting.
+// `ChatMount` in breakout posture: a fresh session that opens with a chip for
+// the parent messages it was seeded with (they ride on its first send),
+// research-only on the server (permission bridge), no queue, no nesting.
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ComponentProps, type ComponentType, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChatMount } from "@apps/claude";
@@ -14,7 +15,6 @@ import { closeAgentPeek, useAgentPeeks, useAgentSegment, type AgentPeek } from "
 import {
   buildHandoffDraft,
   closeBreakout,
-  ownTurns,
   sendBackBreakout,
   useBreakouts,
   type BreakoutCard,
@@ -23,7 +23,7 @@ import {
 const OFFSET = 28;
 
 /** What a breakout chat reports up (`onBreakoutState`). */
-type BreakoutState = { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number; running?: boolean; stop?: () => void };
+type BreakoutState = { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void };
 
 /** The shared floating-card chrome: the fixed box (draggable by the head row,
  *  clamped to the viewport, stacked by `index`), the head (title, note, spacer,
@@ -33,7 +33,6 @@ export function FloatingCard({
   label,
   title,
   note,
-  noteTitle,
   actions,
   error,
   onClose,
@@ -43,7 +42,6 @@ export function FloatingCard({
   label: string;
   title: string;
   note: string;
-  noteTitle?: string;
   actions?: ReactNode;
   /** A one-line failure shown under the head. */
   error?: string;
@@ -138,9 +136,7 @@ export function FloatingCard({
         >
           <div className="claude-rail-peek-row">
             <span className="breakout-title">{title}</span>
-            <span className="breakout-note" {...(noteTitle ? { title: noteTitle } : {})}>
-              {note}
-            </span>
+            <span className="breakout-note">{note}</span>
             <span className="breakout-spacer" />
             {actions}
             <button type="button" className="breakout-btn" onClick={onClose}>
@@ -171,26 +167,21 @@ export function Card({
 }) {
   const state = useRef<BreakoutState>({ sessionId: "", turns: [] });
   const [canSend, setCanSend] = useState(false);
-  const [clamped, setClamped] = useState(false);
   const [error, setError] = useState("");
   const onState = useCallback((s: BreakoutState) => {
     state.current = s;
-    setClamped(!!s.forkClamped);
-    // Only the breakout's own turns: the parent's restored history is not
-    // something to send back to the parent.
-    setCanSend(ownTurns(s.turns, s.sends ?? 0).some((t) => t.role === "assistant" && !!t.text.trim()));
+    setCanSend(s.turns.some((t) => t.role === "assistant" && !!t.text.trim()));
   }, []);
 
   const close = () => {
-    // `sends` counts this card's own sends; the parent's restored history is not a reason to confirm.
-    const used = (state.current.sends ?? 0) > 0;
+    const used = state.current.turns.some((t) => t.role === "user");
     if (used && !window.confirm("Discard this breakout? The chat is not sent back.")) return;
     // The card's own research run would otherwise outlive its only view.
     if (state.current.running) state.current.stop?.();
     closeBreakout(card.id);
   };
   const sendBack = () => {
-    const text = buildHandoffDraft(ownTurns(state.current.turns, state.current.sends ?? 0));
+    const text = buildHandoffDraft(state.current.turns);
     if (!text) return;
     setError("");
     void sendBackBreakout(card.id, text).then((ok) => {
@@ -203,13 +194,7 @@ export function Card({
       index={index}
       label="Breakout"
       title="Breakout"
-      note={clamped ? "research only · forked at the last compaction" : "research only"}
-      {...(clamped
-        ? {
-            noteTitle:
-              "The turn you chose is older than this chat's last compaction, so the breakout starts from the compaction summary instead.",
-          }
-        : {})}
+      note="research only"
       actions={
         <button
           type="button"
@@ -227,9 +212,8 @@ export function Card({
       <div className="claude-rail-peek-chat is-shown">
         <Mount
           file={card.file}
-          sessionId={card.parentSessionId}
           breakout
-          {...(card.forkAt ? { breakoutAt: card.forkAt } : {})}
+          breakoutContext={card.context}
           onBreakoutState={onState}
           chatOnly
           peek

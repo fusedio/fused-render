@@ -70,22 +70,27 @@ const ev = (x: number, y: number, target: unknown = {}) => ({
   currentTarget: { setPointerCapture() {}, releasePointerCapture() {} },
 });
 
-test("the note says when the fork was clamped to the last compaction", () => {
-  const Clamped = (props: { onBreakoutState?: (s: { sessionId: string; turns: []; forkClamped?: boolean }) => void }) => {
-    useEffect(() => {
-      props.onBreakoutState?.({ sessionId: "s", turns: [], forkClamped: true });
-    }, [props]);
+test("the chat mounts fresh: no parent session, the selected messages as context", () => {
+  let seen: Record<string, unknown> = {};
+  const Spy = (props: Record<string, unknown>) => {
+    seen = props;
     return null;
   };
-  let r!: ReturnType<typeof create>;
+  const withContext = {
+    ...(card as object),
+    context: { block: "<breakout-context>\nx\n</breakout-context>", count: 2, title: "Parent" },
+  } as never;
   act(() => {
-    r = create(<Card card={card} index={0} mount={Clamped as never} />, { createNodeMock: () => el });
+    create(<Card card={withContext} index={0} mount={Spy as never} />, { createNodeMock: () => el });
   });
-  const note = r.root.findByProps({ className: "breakout-note" });
-  expect(note.children.join("")).toContain("forked at the last compaction");
-  expect(note.props.title).toContain("last compaction");
-  const plain = mount().r.root.findByProps({ className: "breakout-note" });
-  expect(plain.children.join("")).toBe("research only");
+  expect(seen["sessionId"]).toBeUndefined();
+  expect(seen["breakout"]).toBe(true);
+  expect(seen["breakoutContext"]).toEqual({ block: "<breakout-context>\nx\n</breakout-context>", count: 2, title: "Parent" });
+  expect("breakoutAt" in seen).toBe(false);
+});
+
+test("the note reads research only", () => {
+  expect(mount().r.root.findByProps({ className: "breakout-note" }).children.join("")).toBe("research only");
 });
 
 // A mount that reports a fixed breakout state once.
@@ -101,12 +106,11 @@ const reporting = (s: unknown) => () => {
 const closeBtn = (r: ReturnType<typeof create>) =>
   r.root.findAllByType("button").find((b) => (b.children as string[]).join("") === "Close")!;
 
-test("close confirms when the card has sends, even after a refresh swapped the u: keys", () => {
+test("close confirms once the card has a user turn", () => {
   resetBreakouts();
-  const id = openBreakout({ sessionId: "s1", file: "/w/proj" });
+  const id = openBreakout({ sessionId: "s1", file: "/w/proj", context: { block: "b", count: 1 } });
   const refreshed = {
     sessionId: "brk",
-    sends: 1,
     turns: [
       { role: "user", key: "uuid-1", text: "q" },
       { role: "assistant", key: "uuid-2", text: "a" },
@@ -136,10 +140,9 @@ test("close confirms when the card has sends, even after a refresh swapped the u
 
 test("a failed Send back keeps the card open and shows one error line", async () => {
   resetBreakouts();
-  openBreakout({ sessionId: "s1", file: "/w/proj" });
+  openBreakout({ sessionId: "s1", file: "/w/proj", context: { block: "b", count: 1 } });
   const state = {
     sessionId: "brk",
-    sends: 1,
     turns: [
       { role: "user", key: "uuid-1", text: "q" },
       { role: "assistant", key: "uuid-2", text: "an answer" },
@@ -173,11 +176,10 @@ test("a failed Send back keeps the card open and shows one error line", async ()
 
 test("closing a used card mid-run stops the run once the discard is confirmed", () => {
   resetBreakouts();
-  openBreakout({ sessionId: "s1", file: "/w/proj" });
+  openBreakout({ sessionId: "s1", file: "/w/proj", context: { block: "b", count: 1 } });
   let stops = 0;
   const state = {
     sessionId: "brk",
-    sends: 1,
     running: true,
     stop: () => void stops++,
     turns: [{ role: "user", key: "u:1", text: "q" }],
@@ -205,11 +207,11 @@ test("closing a used card mid-run stops the run once the discard is confirmed", 
 
 test("close does not confirm for an unused card", () => {
   resetBreakouts();
-  openBreakout({ sessionId: "s1", file: "/w/proj" });
+  openBreakout({ sessionId: "s1", file: "/w/proj", context: { block: "b", count: 1 } });
   let r!: ReturnType<typeof create>;
   act(() => {
     r = create(
-      <Card card={getBreakouts()[0]!} index={0} mount={reporting({ sessionId: "", sends: 0, turns: [{ role: "user", key: "h-1", text: "parent" }] })()} />,
+      <Card card={getBreakouts()[0]!} index={0} mount={reporting({ sessionId: "", turns: [] })()} />,
       { createNodeMock: () => el },
     );
   });
