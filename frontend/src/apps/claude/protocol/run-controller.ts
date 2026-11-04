@@ -305,7 +305,9 @@ function emptyState(file: string | null): ChatState {
     trouble: null,
     permissionMode: defaultPermissionNow(),
     queued: [],
+    queuedKeys: [],
     inbox: [],
+    taken: [],
     historyLoading: false,
     adopting: false,
     transcript: null,
@@ -549,7 +551,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     handedBack: boolean;
   }[] = [];
   let queuedSeq = 0;
-  const publishQueued = () => emit({ queued: queued.map((q) => q.typed || q.wire) });
+  const publishQueued = () =>
+    emit({ queued: queued.map((q) => q.typed || q.wire), queuedKeys: queued.map((q) => q.bubble) });
   /** Every entry, gone, published once. The run is over: the CLI has either
    *  answered these or died with them, and neither is "queued". */
   const clearQueued = () => {
@@ -582,6 +585,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (sig === inboxSig) return;
     inboxSig = sig;
     emit({ inbox: rows });
+  };
+  /**
+   * THE CLI TOOK THESE LINES (`PollResponse.inbox_taken`): a `command_lifecycle`
+   * `started`/`completed` receipt or the `isReplay` echo named the uuid. A
+   * `queued` entry is "queued for this turn" only until then — it used to stand
+   * until the run ended, so a line the CLI read three seconds after Enter still
+   * said "1 follow-up is queued" for the rest of the turn. Keyed by the page's
+   * own `client_uuid` (the inbox entry's uuid since the journal work).
+   */
+  const noteTaken = (ids: readonly string[] | null | undefined) => {
+    const list = Array.isArray(ids) ? ids.filter((u) => typeof u === "string" && u) : [];
+    if (!list.length) return;
+    const known = new Set(state.taken);
+    const fresh = list.filter((u) => !known.has(u));
+    if (fresh.length) emit({ taken: [...state.taken, ...fresh].slice(-128) });
+    const gone = new Set(list);
+    let moved = false;
+    for (let i = queued.length - 1; i >= 0; i--) {
+      const id = queued[i].opts.clientId;
+      if (id && gone.has(id)) {
+        queued.splice(i, 1);
+        moved = true;
+      }
+    }
+    if (moved) publishQueued();
   };
   /** Nothing is held once the run is over: the CLI has answered its inbox or
    *  died with it, the same rule `clearQueued` states for the optimistic half. */
@@ -1022,14 +1050,30 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * controller drops it (`dropOptimisticUser`, and `returnSend` for the roads
    * that refuse inside).
    */
-  const postOptimisticUser = (text: string): string => {
+  const postOptimisticUser = (text: string, pending?: UserTurn["pending"]): string => {
     if (disposed || !text) return "";
-    return addUser(text).key;
+    const key = addUser(text).key;
+    // THE TAG RIDES THE ROW, not a side list: the page outbox's bubble IS this
+    // turn, and `addUser`'s adoption rebuilds the turn without `pending` — which
+    // is exactly when the tag should go, because the run has the words.
+    if (pending) setOptimisticPending(key, pending);
+    return key;
   };
 
   const dropOptimisticUser = (key: string): void => {
     if (!key || !state.turns.some((t) => t.key === key)) return;
     dropTurn(key);
+  };
+
+  const setOptimisticPending = (key: string, pending: UserTurn["pending"] | undefined): void => {
+    if (!key || !state.turns.some((t) => t.key === key && t.role === "user")) return;
+    emit({
+      turns: state.turns.map((t) => {
+        if (t.key !== key || t.role !== "user") return t;
+        const { pending: _was, ...rest } = t;
+        return pending ? { ...rest, pending } : rest;
+      }),
+    });
   };
 
   /**
@@ -1066,7 +1110,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (disposed || sending || state.status !== "idle" || curBackend() !== "claude") return null;
     const at = state.turns.findIndex((t) => t.key === turnKey);
     const turn = state.turns[at];
-    if (at < 0 || !turn || turn.role !== "user" || !turn.uuid) return null;
+    if (at < 0 || !turn || turn.role !== "user" || !turn.uuid || turn.pending) return null;
     // A second fork while one is parked re-forks from what is still visible;
     // the newly hidden turns come earlier in the transcript than the ones
     // already parked, so they go first and cancelFork restores transcript order.
@@ -2036,6 +2080,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
         publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
+        noteTaken(poll.inbox_taken);
         // THE RUN'S BACKGROUND TASKS (SPEC T-5) — sticky per run, see `publishTasks`.
         // …BUT NOT OVER A JOB ANOTHER HOST STILL HOLDS (Akshil, 2026-10-19):
         // a follow-up can open a turn on a NEWER host of this session (the
@@ -2597,7 +2642,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // inside the first one's capture window made the first roll back a turn
       // the agent had already taken (`SendOptions.sendId`).
       ...(opts.sendId ? { sendId: opts.sendId } : {}),
+      ...(opts.clientId ? { clientId: opts.clientId } : {}),
     });
+  };
+  /** The server has this line (see `ChatControllerDeps.onSendDelivered`). */
+  const delivered = (opts: SendOptions): void => {
+    if (opts.clientId) deps.onSendDelivered?.(opts.clientId);
   };
 
   async function sendMessage(text: string, opts: SendOptions = {}): Promise<void> {
@@ -2714,6 +2764,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 // #1194): proof this send is the one already counted, so the
                 // server gate only looks rather than claiming a second time.
                 ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+                ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
               },
             )) as SendResponse;
           } catch (err) {
@@ -2781,6 +2832,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
               // proof this send is the one already counted, so the server gate
               // only looks rather than claiming a second time.
               ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+              ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
             },
           )) as StartResponse;
         } catch (startErr) {
@@ -2825,6 +2877,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
       }
       started = true;
+      delivered(opts);
       if (bk === "1") breakoutSpent = true;
       if (bk) {
         breakoutSends += 1;
@@ -2962,18 +3015,44 @@ export function createChatController(deps: ControllerDeps): ChatController {
       runId = activeRun;
     }
     if (!runId) {
-      // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`). This road has
-      // slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample room
-      // for a Back (or an `openOtherSession`) to land — and an unguarded
-      // handback posts the red trouble card and re-injects the text into
-      // whatever transcript is now current: the landing, or a different
-      // conversation entirely. A stale failure stays quiet; `newChat` has
-      // already cleared the queue and the bubble it would give back.
-      if (logGen === gen) {
-        giveBack();
-        addError("Could not send: no run to attach this message to.");
+      // A PARKED LINE OPENS A FRESH TURN INSTEAD (`SendOptions.orStart`): the
+      // run it was parked behind ended before the drain got here, and the
+      // words were typed to be said either way. Same bubble — `sendMessage`
+      // adopts the row this follow-up already adopted — and the queue entry
+      // goes, because the line is no longer waiting behind anything.
+      if (opts.orStart && logGen === gen && !disposed) {
+        // SERIALIZED (Bugbot 4122227219): two parked lines can sit here
+        // together — a follow-up into a live run opens the latch at once — and
+        // if both took this road the second would hit `sendMessage`'s `sending`
+        // gate and be REFUSED, the very "third message swallowed" this queue
+        // exists to end. So only the first opens the turn; a later one waits
+        // for that turn to have a run and follows it in, in order.
+        if (!sending) {
+          drop();
+          const { orStart: _o, ...rest } = opts;
+          await sendMessage(text, { ...rest, optimisticKey: bubble.key });
+          return;
+        }
+        for (let tries = 0; !runId && tries < FOLLOWUP_WAIT_TRIES; tries++) {
+          await sleep(FOLLOWUP_WAIT_MS);
+          runId = activeRun;
+        }
       }
-      return;
+      if (!runId) {
+        // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`, :1443). This road
+        // has slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample
+        // room for a Back (or an `openOtherSession`) to land — and an unguarded
+        // handback posts the red trouble card and re-injects the text into
+        // whatever transcript is now current: the landing, or a different
+        // conversation entirely. A stale failure stays quiet; `newChat` has
+        // already cleared the queue and the bubble it would give back
+        // (QA, PR #1061).
+        if (logGen === gen) {
+          giveBack();
+          addError("Could not send: no run to attach this message to.");
+        }
+        return;
+      }
     }
     try {
       const res = (await run(
@@ -2992,6 +3071,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // proof this send is the one already counted, so the server gate
           // only looks rather than claiming a second time.
           ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+          ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
         },
       )) as SendResponse;
       if (res && "respawn" in res && res.respawn) {
@@ -3019,6 +3099,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // proof this send is the one already counted, so the server gate
             // only looks rather than claiming a second time.
             ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+            ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
           },
         )) as StartResponse;
         const failed = (startedRes as { error?: string }).error;
@@ -3033,6 +3114,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // turn now in flight. Drop the entry (the bubble stays: it is that
         // turn's own bubble).
         drop();
+        delivered(opts);
         if (logGen === gen) {
           setRunParam(fresh);
           void pollLoop(fresh, gen, { prompt: spoken });
@@ -3058,6 +3140,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // fact: the inbox has the message, so a stop from here on cannot claim
       // the CLI never received it (`stopRun`).
       entry.landed = true;
+      delivered(opts);
       followupSeq++;
     } catch (err) {
       // A 504 MAY STILL LAND (`SEND_TIMEOUT_PROBES`), so it does not hand the
@@ -3079,6 +3162,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // news about a message the reader has already been given back.
         if (entry.handedBack) return;
         if (alive) {
+          delivered(opts);
           followupSeq++;
           return;
         }
@@ -3174,6 +3258,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         stranded.push({
           text: entry.typed || entry.wire,
           ...(entry.opts.sendId ? { sendId: entry.opts.sendId } : {}),
+          ...(entry.opts.clientId ? { clientId: entry.opts.clientId } : {}),
           ...(willReturn ? { returned: true } : {}),
         });
         // AND ITS PICTURES, but only for a send the inbox never confirmed. The
@@ -3565,6 +3650,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // at all — and `live_run: ""` publishes the empty list, because nothing is
     // held when nothing is running.
     if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);
+    noteTaken(res.inbox_taken);
     // THE SESSION'S LAST RUN'S TASKS (SPEC T-1/T-5): a reload shows the panel
     // it left. An empty answer about the run already drawn keeps the list —
     // the poll owns a live run's tasks.
@@ -3594,6 +3680,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (sending) return;
     sending = true;
     const seat = ++sendSeq;
+    // LEAVING A CONVERSATION DETACHES FROM ITS LIVE RUN (Bugbot, PR #2097):
+    // left attached, `status` stays "running" and a line typed in the arriving
+    // chat is routed as a follow-up into the OLD run's inbox. The run keeps
+    // going server-side; the arriving session's own live run, if any, is
+    // adopted below. Re-opening the SAME session leaves its run alone.
+    const leaving = sessionId !== state.sessionId;
+    if (leaving) {
+      logGen++;
+      activeRun = null;
+      activeSeat = 0;
+      activeTurnKey = null;
+    }
     const gen = logGen;
     permCards.clear();
     notedSkills.clear();
@@ -3620,6 +3718,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     backendSeeded = !!opts.backend;
     emit({
       sessionId,
+      ...(leaving ? { status: "idle" as const, runId: null } : {}),
       // The agent belongs to the conversation that is leaving. The ARRIVING
       // one's, when the opener knows it (the row it was opened from), is
       // named at once — so a restore that fails, or is slow, never shows the
@@ -4693,6 +4792,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     sendFollowUp,
     postOptimisticUser,
     dropOptimisticUser,
+    setOptimisticPending,
     beginFork,
     cancelFork,
     stopRun,

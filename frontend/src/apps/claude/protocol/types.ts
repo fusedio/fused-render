@@ -671,6 +671,10 @@ export interface PollResponse {
    * which is the same as an empty one: the optimistic bubbles are all there is.
    */
   inbox?: InboxMessage[];
+  /** The uuids of the stdin lines the CLI has TAKEN (a `command_lifecycle`
+   *  `started`/`completed` receipt or the `isReplay` echo), newest last. Absent
+   *  on an older agent.py. */
+  inbox_taken?: string[];
   /** True on a window that held an `init` or `commands_changed` row: the
    *  slash-command list may have moved, so the page re-fetches `commands`
    *  once (SPEC C-2). Absent on an older agent.py. */
@@ -693,6 +697,9 @@ export interface InboxMessage {
   id: string;
   text: string;
   at?: string | number;
+  /** The entry's identity on the wire — the page's own `client_uuid` when the
+   *  send named one (a reload matches its stored lines against this). */
+  uuid?: string;
   /**
    * THE HOST HAS TAKEN IT OFF THE PILE — but the transcript has not echoed it
    * back yet (the project queue's inbox, agent.py). The server lists these ANYWAY
@@ -935,6 +942,10 @@ export interface HistoryResponse {
    * nothing is held when nothing is running.
    */
   inbox?: InboxMessage[];
+  /** The uuids of the stdin lines the CLI has TAKEN (a `command_lifecycle`
+   *  `started`/`completed` receipt or the `isReplay` echo), newest last. Absent
+   *  on an older agent.py. */
+  inbox_taken?: string[];
   /**
    * HOW FULL THE MODEL'S CONTEXT WINDOW IS, off the LATEST USABLE assistant
    * record's `message.usage` (agent.py `_context_usage` / `_usage_row`).
@@ -1240,14 +1251,13 @@ export interface TaskStopResponse {
   error?: undefined;
 }
 /** `task_background {run_id, tool_use_id}` (agent.py `_task_background`): send
- *  the running foreground Bash call or subagent to the background. */
+ *  the running foreground Bash call to the background. */
 export interface TaskBackgroundRequest {
   run_id: string;
   tool_use_id: string;
 }
 /** `task_background`: `{ok: true, backgrounded}` once the CLI answered; the
- *  Bash tool then returns "manually backgrounded" (an Agent call returns its
- *  async-launch result) and the turn carries on. */
+ *  Bash tool then returns "manually backgrounded" and the turn carries on. */
 export interface TaskBackgroundResponse {
   ok: true;
   backgrounded: boolean;

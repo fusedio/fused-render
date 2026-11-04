@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
-  heldKey, loadHeld, outboxHint, popNewest, pushBack, pushFront, pushFrontAll, saveHeld, shiftOldest,
-  shiftOldestSendable, takeById,
+  outboxHint, popNewest, pushBack, pushFront, pushFrontAll, shiftOldest, shiftOldestSendable,
+  takeById,
 } from "./outbox";
 
 const e = (id: string, text = id) => ({ id, text, payload: null });
@@ -88,65 +88,21 @@ test("the hint counts only lines that WILL send; not-sent rows get their own lin
   expect(outboxHint(1, 2)).toContain("waiting");
 });
 
-test("lines held through a turn drain FIFO, one per call", () => {
-  let list = ["A", "B", "C"].reduce((l, id) => pushBack(l, e(id)), [] as ReturnType<typeof e>[]);
-  const out: string[] = [];
-  for (;;) {
-    const { entry, rest } = shiftOldestSendable(list);
-    if (!entry) break;
-    out.push(entry.id);
-    expect(rest).toHaveLength(list.length - 1);
-    list = rest;
-  }
-  expect(out).toEqual(["A", "B", "C"]);
-});
-
-function fakeStore() {
-  const m = new Map<string, string>();
-  return {
-    m,
-    getItem: (k: string) => m.get(k) ?? null,
-    setItem: (k: string, v: string) => void m.set(k, v),
-    removeItem: (k: string) => void m.delete(k),
+test("the pending journal: save, load and split round-trip per session", async () => {
+  const { savePending, loadPending, splitPending } = await import("./outbox");
+  const mem = new Map<string, string>();
+  (globalThis as any).sessionStorage = {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => void mem.set(k, v),
+    removeItem: (k: string) => void mem.delete(k),
   };
-}
-
-test("held lines are saved per session and read back in order", () => {
-  const store = fakeStore();
-  saveHeld("s1", [{ text: "A", items: [] }, { text: "B", items: [{ view: "/p.png" }] }], store);
-  saveHeld("s2", [{ text: "other", items: [] }], store);
-  expect(store.m.has(heldKey("s1"))).toBe(true);
-  expect(loadHeld("s1", store)).toEqual([
-    { text: "A", items: [] },
-    { text: "B", items: [{ view: "/p.png" }] },
-  ]);
-  expect(loadHeld("s2", store).map((l) => l.text)).toEqual(["other"]);
-  expect(loadHeld("s3", store)).toEqual([]);
-});
-
-test("an empty list clears the session's key; no session id touches nothing", () => {
-  const store = fakeStore();
-  saveHeld("s1", [{ text: "A", items: [] }], store);
-  saveHeld("s1", [], store);
-  expect(store.m.size).toBe(0);
-  saveHeld("", [{ text: "A", items: [] }], store);
-  expect(store.m.size).toBe(0);
-  expect(loadHeld("", store)).toEqual([]);
-});
-
-test("unreadable or malformed storage reads as nothing held", () => {
-  const store = fakeStore();
-  store.m.set(heldKey("s1"), "{not json");
-  expect(loadHeld("s1", store)).toEqual([]);
-  store.m.set(heldKey("s1"), JSON.stringify({ text: "A" }));
-  expect(loadHeld("s1", store)).toEqual([]);
-  store.m.set(heldKey("s1"), JSON.stringify([{ text: 3 }, { text: "" }, { text: "ok" }]));
-  expect(loadHeld("s1", store)).toEqual([{ text: "ok", items: [] }]);
-  expect(loadHeld("s1", null)).toEqual([]);
-});
-
-test("a picture-only line is kept; a line with neither words nor pictures is not", () => {
-  const store = fakeStore();
-  store.m.set(heldKey("s1"), JSON.stringify([{ text: "", items: [{ view: "/a.png" }] }, { text: "", items: [] }]));
-  expect(loadHeld("s1", store)).toEqual([{ text: "", items: [{ view: "/a.png" }] }]);
+  savePending("s1", [{ id: "a", text: "one" }, { id: "b", text: "two" }]);
+  expect(loadPending("s1").length).toBe(2);
+  expect(loadPending("s2")).toEqual([]);
+  // Matched by id, never by text: "b" is on the server, "a" is not.
+  const { resend, drop } = splitPending(loadPending("s1"), new Set(["b"]));
+  expect(resend.map((l) => l.id)).toEqual(["a"]);
+  expect(drop.map((l) => l.id)).toEqual(["b"]);
+  savePending("s1", []);
+  expect(loadPending("s1")).toEqual([]);
 });

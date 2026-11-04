@@ -62,6 +62,9 @@ import { agentLabel, modelLabelsOf, useAgentBackends } from "@platform/lib/agent
 import { copyToTaskShots, SchedButton } from "./SchedButton";
 import { outboxHint } from "./outbox";
 
+/** The send button's tooltip, while a run is live. */
+export const SEND_NOW_TITLE = "Send now (Ctrl+X)";
+
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
 export const CHAT_PLACEHOLDER = "Reply to Claude…";
@@ -240,11 +243,16 @@ export interface ComposerCardProps {
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
   onFollowUp?(text: string): void;
   /**
-   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the running
+   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`), or Ctrl+X: stop the running
    * turn and send this line at once, ahead of anything parked. Only asked while
    * `running`; otherwise Ctrl/Cmd+Enter is the plain send it always was.
    */
   onSendNow?(text: string): void;
+  /** Ctrl+X on an EMPTY box while a run is live and a line is queued: stop and
+   *  send the queued line(s) now. */
+  onSendQueuedNow?(): void;
+  /** A queued bubble exists (gates the empty-box Ctrl+X). */
+  hasQueued?: boolean;
   onStop(): void;
   /**
    * THE PAGE OUTBOX (ui/outbox.ts): how many lines this page is holding because
@@ -540,6 +548,8 @@ export function ComposerCard({
   onSend,
   onFollowUp,
   onSendNow,
+  onSendQueuedNow,
+  hasQueued,
   onStop,
   queuedCount,
   notSentCount,
@@ -1987,7 +1997,7 @@ export function ComposerCard({
       // draft's key (review, 2026-09-17).
       if (!hasSessionRef.current) onHeldGoneRef.current?.();
     }
-    // SEND NOW (Ctrl+Enter while live): stop the turn and this line goes first.
+    // SEND NOW (Ctrl+Enter or Ctrl+X while live): stop the turn and this line goes first.
     if (now && running && onSendNow) onSendNow(message);
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
@@ -2128,6 +2138,34 @@ export function ComposerCard({
         }
         return;
       }
+      // CTRL+X is the second send-now chord. Ctrl ONLY, and only with words and
+      // no selection: on Win/Linux Ctrl+X still CUTS a selection, so a selected
+      // range, an IME composition or an empty box leaves the key to the browser.
+      // Idle, it is the plain send.
+      if (
+        (ev.key === "x" || ev.key === "X") &&
+        ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey &&
+        !ev.nativeEvent?.isComposing &&
+        !text.trim() && running && hasQueued && onSendQueuedNow
+      ) {
+        const t = ev.currentTarget as HTMLTextAreaElement | undefined;
+        if (t && t.selectionStart !== t.selectionEnd) return;
+        ev.preventDefault();
+        onSendQueuedNow();
+        return;
+      }
+      if (
+        (ev.key === "x" || ev.key === "X") &&
+        ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey &&
+        !ev.nativeEvent?.isComposing &&
+        text.trim()
+      ) {
+        const t = ev.currentTarget as HTMLTextAreaElement | undefined;
+        if (t && t.selectionStart !== t.selectionEnd) return;
+        ev.preventDefault();
+        submit(undefined, true);
+        return;
+      }
       if (ev.key !== "Enter") return;
       // Shift+Enter is a newline. Enter never STOPS a run — a user drafting the
       // next message mid-run must not kill the turn with a keystroke meant to
@@ -2141,7 +2179,7 @@ export function ComposerCard({
       ev.preventDefault();
       submit(undefined, ev.ctrlKey && !ev.metaKey);
     },
-    [submit, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
+    [submit, running, hasQueued, onSendQueuedNow, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
   );
 
   const draft = useCallback(() => text, [text]);
@@ -2319,7 +2357,8 @@ export function ComposerCard({
         />
         {/* THE AGENT IS OFF (D17): the placeholder says so; this is the link. */}
         {blockedNote ? <div className="c-queued c-blocked-note">{blockedNote}</div> : null}
-        {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding.
+        {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding,
+            as against the follow-ups above that the run's host already has.
             Drawn whatever the queue flag says — these are not the project
             queue's, and ↑ is the thing to do about them. */}
         {(queuedCount ?? 0) + (notSentCount ?? 0) > 0 ? (
@@ -2437,7 +2476,9 @@ export function ComposerCard({
       // the window closes (ClaudeChat's outbox), so the tooltip names the
       // wait, not a refusal.
       title={
-        running
+        running && onSendNow && text.trim()
+          ? SEND_NOW_TITLE
+          : running
           ? // T:4187's own string, not the shorter one this shipped with
             // (visual pass 3, FIX-27). `aria-label` is `Stop` on both sides —
             // that is the control's NAME — and the tooltip is where legacy says

@@ -524,8 +524,82 @@ describe("start → poll → done", () => {
     const key = controller.postOptimisticUser("say PONG only, nothing else");
     await controller.sendMessage("say PONG only, nothing else", { optimisticKey: key });
     expect(users(controller).map((t) => t.text)).toEqual(["say PONG only, nothing else"]);
+    expect(users(controller)[0]!.pending).toBeUndefined();
     expect(assistants(controller).map((t) => t.text)).toEqual(["PONG"]);
     expect(controller.getState().status).toBe("idle");
+  });
+
+  test("a queued tag comes off when the real send adopts the row", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const key = controller.postOptimisticUser("later", "queued");
+    expect(users(controller)[0]!.pending).toBe("queued");
+    controller.setOptimisticPending(key, "notSent");
+    expect(users(controller)[0]!.pending).toBe("notSent");
+    await controller.sendMessage("later", { optimisticKey: key });
+    expect(users(controller).length).toBe(1);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+  });
+
+  test("a follow-up with `orStart` opens a fresh turn when no run is live, same bubble", async () => {
+    // A line the page parked behind a send drains after that run has already
+    // ended. Without the flag this road hands the words back ("no run to attach");
+    // with it, the same bubble becomes the opening message of a new turn.
+    const { controller, agent, stranded, returned } = makeController({
+      start: () => ({ run_id: "r2", session_id: "s2" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const key = controller.postOptimisticUser("parked line", "queued");
+    await controller.sendFollowUp("parked line", { optimisticKey: key, orStart: true });
+    expect(agent.of("start")).toHaveLength(1);
+    expect(agent.of("start")[0]!.fields).toMatchObject({ message: "parked line" });
+    expect(users(controller).map((t) => t.text)).toEqual(["parked line"]);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+    expect(controller.getState().queued).toEqual([]);
+    expect(stranded).toEqual([]);
+    expect(returned).toEqual([]);
+    // …and without the flag, the old road: handed back, no start.
+    const plain = makeController({
+      start: () => ({ run_id: "r3" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    await plain.controller.sendFollowUp("alone", {});
+    expect(plain.agent.of("start")).toHaveLength(0);
+    expect(plain.returned.map((r) => r.text)).toEqual(["alone"]);
+  });
+
+  test("two `orStart` follow-ups with no run: the first opens the turn, the second follows it in", async () => {
+    // Bugbot 4122227219: both used to take `sendMessage`; the second hit the
+    // `sending` gate, was refused, and never went out — the "third message
+    // swallowed" this queue exists to end. Now the second waits for the run the
+    // first is opening and goes in as a follow-up, in order, one bubble each.
+    let openStart!: () => void;
+    const held = new Promise<void>((resolve) => {
+      openStart = resolve;
+    });
+    const { controller, agent, returned, stranded } = makeController({
+      start: async () => {
+        await held;
+        return { run_id: "r2", session_id: "s2" };
+      },
+      send: () => ({ sent: true as const }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const kA = controller.postOptimisticUser("A", "queued");
+    const kB = controller.postOptimisticUser("B", "queued");
+    const a = controller.sendFollowUp("A", { optimisticKey: kA, orStart: true });
+    const b = controller.sendFollowUp("B", { optimisticKey: kB, orStart: true });
+    // Let A reach the held `start` and B reach its wait.
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    openStart();
+    await Promise.all([a, b]);
+    expect(agent.of("start").map((c) => c.fields.message)).toEqual(["A"]);
+    expect(agent.of("send").map((c) => c.fields.message)).toEqual(["B"]);
+    expect(users(controller).map((t) => t.text)).toEqual(["A", "B"]);
+    expect(returned).toEqual([]);
+    expect(stranded).toEqual([]);
   });
 
   test("a dead host, a refusal or a respawn all fall through to `start`", async () => {
@@ -919,6 +993,55 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(seen).toEqual([["and then say goodnight"], ["and then say goodnight"]]);
     // The run is over: the CLI drained its queue as part of it.
     expect(controller.getState().queued).toEqual([]);
+  });
+
+  // THE LIVE CASE (run 20261104-130202-870854): the CLI emitted command_lifecycle
+  // queued, then (after the next tool result) the isReplay user echo and
+  // command_lifecycle started for the page's uuid — 3 s after Enter — and the
+  // composer still said "1 follow-up is queued" 35 s later. The server reports
+  // those uuids as `inbox_taken`; the entry leaves on them, keyed by uuid.
+  test("a follow-up the CLI took leaves the queue at once, keyed by its uuid", async () => {
+    const UUID = "00ed356b-e46f-4447-8456-58ba48aa6450";
+    let controller!: ChatController;
+    const seen: { queued: string[]; taken: string[] | undefined }[] = [];
+    const snap = () => {
+      const st = controller.getState();
+      seen.push({ queued: st.queued, taken: st.taken });
+    };
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("since worktree is not in main", { clientId: UUID });
+          snap();
+          return poll({ segments: [text("working")] });
+        }
+        if (n === 1) {
+          // `command_lifecycle queued` only: not taken yet.
+          snap();
+          return poll({ segments: [text("working")] });
+        }
+        if (n === 2) {
+          // The replay echo + `started` landed.
+          return poll({ segments: [text("working")], inbox_taken: [UUID] } as never);
+        }
+        snap();
+        return poll({ done: true, segments: [text("working")], inbox_taken: [UUID] } as never);
+      },
+    });
+    controller = made.controller;
+    // The run ends on the poll after the snapshot, so the retirement cannot be
+    // the run-end clear.
+    await controller.sendMessage("go");
+    expect(seen.length).toBe(3);
+    expect(seen[0].queued).toEqual(["since worktree is not in main"]);
+    expect(seen[1].queued).toEqual(["since worktree is not in main"]);
+    // Snapshotted while the run is still live (poll 3, before it answers done).
+    expect(seen[2].queued).toEqual([]);
+    expect(seen[2].taken).toContain(UUID);
+    // The user's bubble is still drawn (it is the transcript's own row now).
+    expect(users(controller).some((u) => u.text === "since worktree is not in main")).toBe(true);
   });
 
   test("two follow-ups are both counted, and identical text does not collapse", async () => {
@@ -3389,6 +3512,38 @@ describe("openSession / resumeRun / newChat", () => {
     expect((controller.getState().turns[1] as AssistantTurn).stopped).toBe(true);
   });
 
+  test("openSession to ANOTHER chat detaches from the live run; the same chat keeps it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "rB2", session_id: "sB" }),
+      history: () => ({ turns: [], transcript: { path: "/t.jsonl", mtime: 1, size: 1 } }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ message: "go", segments: [text("x")], text: "x", session_id: "sA" });
+        await gate;
+        return poll({ done: true, text: "ok", segments: [text("ok")] });
+      },
+    });
+    const attached = controller.resumeRun("rA");
+    for (let i = 0; i < 50 && controller.getState().status !== "running"; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(controller.getState().status).toBe("running");
+    // Same session: the live run stays attached.
+    await controller.openSession("sA");
+    expect(controller.getState().status).toBe("running");
+    expect(controller.getState().runId).toBe("rA");
+    // Another session: detached, so a typed line starts a message, not a send into rA.
+    await controller.openSession("sB");
+    expect(controller.getState().status).toBe("idle");
+    expect(controller.getState().runId).toBeNull();
+    release();
+    await controller.sendFollowUp("for B", { orStart: true });
+    expect(agent.of("send")).toHaveLength(0);
+    expect(agent.of("start")).toHaveLength(1);
+    await attached;
+    controller.dispose();
+  });
+
   test("a failed restore leaves an empty log and no trouble card", async () => {
     const { controller } = makeController({ history: () => ({ error: "no such session" }) });
     await controller.openSession("s-42");
@@ -5322,5 +5477,61 @@ describe("the working clock survives a reload (server stamp)", () => {
     controller = made.controller;
     await controller.sendMessage("go");
     expect(seen).toEqual([1000]);
+  });
+});
+
+describe("the page-minted client id rides the wire and comes back", () => {
+  test("start and follow-up send carry client_uuid; delivery reports the id", async () => {
+    const delivered: string[] = [];
+    let controller!: ChatController;
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) await controller.sendFollowUp("more", { clientId: "id-follow" });
+        return poll({ done: n > 0 });
+      },
+    });
+    controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      wallClock: () => 1_000,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+      onSendDelivered: (id) => delivered.push(id),
+    });
+    await controller.sendMessage("go", { clientId: "id-start" });
+    expect(agent.of("start")[0]!.fields.client_uuid).toBe("id-start");
+    expect(agent.of("send")[0]!.fields.client_uuid).toBe("id-follow");
+    expect(delivered).toEqual(["id-start", "id-follow"]);
+    controller.dispose();
+  });
+
+  test("a send that is refused echoes the id back on returned", async () => {
+    const returned: { clientId?: string }[] = [];
+    const agent = fakeAgent({
+      start: () => {
+        throw new AgentError({ message: "boom" });
+      },
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      wallClock: () => 1_000,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+      onSendReturned: (info) => returned.push(info),
+    });
+    await controller.sendMessage("go", { clientId: "id-x" });
+    expect(returned.map((r) => r.clientId)).toEqual(["id-x"]);
+    controller.dispose();
   });
 });

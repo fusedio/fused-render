@@ -112,6 +112,13 @@ export interface TranscriptProps {
    *  (`null`, not `""`) so a copied address carries no dangling `&msg=`. */
   onAnchorSpent?: () => void;
   onShowSent?: (turn: UserTurn) => void;
+  /** A queued / not-sent bubble was clicked: pull it back into the box
+   *  (`TurnProps.onPullPending`). */
+  onPullPending?: (key: string) => void;
+  /** The key of the one queued bubble that carries "(Ctrl+X to send now)". */
+  sendNowKey?: string | null;
+  /** Click on that hint: the same as Ctrl+X on an empty box. */
+  onSendNow?: () => void;
   /** "Fork from here" on a user turn (`TurnProps.onFork`). */
   onFork?: (key: string) => void;
   /** "Breakout from here" on a user turn (`TurnProps.onBreakout`). */
@@ -174,6 +181,9 @@ export const Transcript = memo(function Transcript({
   msgAnchor,
   onAnchorSpent,
   onShowSent,
+  onPullPending,
+  sendNowKey,
+  onSendNow,
   onFork,
   onBreakout,
   onOpenShot,
@@ -720,12 +730,12 @@ export const Transcript = memo(function Transcript({
     bgInFlight.current = true;
     const fail = (reason: string) => {
       console.warn("[claude] background failed:", reason);
-      actions.addNote("Could not send that to the background" + (reason ? ": " + reason : "."), "⏹");
+      actions.addNote("Could not send that command to the background" + (reason ? ": " + reason : "."), "⏹");
     };
     runAgent("task_background", { run_id: runId, tool_use_id: toolUseId })
       .then((res) => {
         if ("error" in res && res.error) fail(String(res.error));
-        else if ((res as { backgrounded?: boolean }).backgrounded === false) fail("it was not running yet");
+        else if ((res as { backgrounded?: boolean }).backgrounded === false) fail("the command was not running yet");
       })
       .catch((err) => fail(err instanceof Error ? err.message : String(err)))
       .finally(() => {
@@ -964,6 +974,9 @@ export const Transcript = memo(function Transcript({
                   anchored={turn.role === "user" && !!flare && turn.uuid === flare}
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
+                  {...(onPullPending ? { onPullPending } : {})}
+                  {...(sendNowKey && sendNowKey === turn.key ? { sendNowHint: true } : {})}
+                  {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}
                   {...(onBreakout ? { onBreakout } : {})}
                   {...(after ? { cardsAfter: after } : {})}

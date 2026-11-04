@@ -67,6 +67,15 @@ export interface UserTurn {
    * when the session is reopened.
    */
   attachments?: Receipt[];
+  /**
+   * THIS PAGE HAS NOT HANDED THE LINE TO THE RUN YET (the page outbox,
+   * `ui/outbox.ts`). `"queued"` — typed while a send was in flight, waiting
+   * its turn; `"notSent"` — handed back (a failed send, an interrupt) and
+   * waiting for the reader to decide. Drawn as a small grey tag on the bubble,
+   * the way Claude Code's terminal greys a queued line. Comes off when the real
+   * send adopts the row (`addUser` rebuilds the turn without it).
+   */
+  pending?: "queued" | "notSent";
 }
 
 export interface AssistantTurn {
@@ -283,6 +292,8 @@ export interface ChatState {
   permissionMode: PermissionMode;
   /** Follow-ups typed while a run is live, not yet acknowledged (T:16024 sendFollowUp). */
   queued: string[];
+  /** The transcript keys of those follow-ups' bubbles (same order as `queued`). */
+  queuedKeys: string[];
   /**
    * THE SAME MESSAGES AS THE RUN SEES THEM — the live host's undrained inbox
    * (`PollResponse.inbox`), reported by the poll and therefore SURVIVING A
@@ -295,6 +306,10 @@ export interface ChatState {
    * between runs: a run that has ended has drained or died with its inbox.
    */
   inbox: InboxMessage[];
+  /** The uuids the CLI has taken off its queue (`PollResponse.inbox_taken`),
+   *  kept for the run: what retires a `queued` entry and what a reload's dedupe
+   *  counts as known. */
+  taken: string[];
   historyLoading: boolean;
   /**
    * A RESTORE IS NOT FINISHED UNTIL ADOPTION HAS SPOKEN. True from the first
@@ -419,6 +434,14 @@ export interface SendOptions {
    */
   sendId?: string;
   /**
+   * THE PAGE'S DURABLE ID FOR THIS LINE (a uuid, unlike `sendId` which restarts
+   * at 1 on every load). Sent to the server as `client_uuid`, which stamps the
+   * inbox entry with it, so a page that reloaded with the line still in its
+   * sessionStorage can ask the history "is this id here?" instead of guessing
+   * by text. Echoed in `onSendDelivered`, `onSendReturned` and `StrandedLine`.
+   */
+  clientId?: string;
+  /**
    * ADDED (PR3): a user bubble ALREADY on screen that this send's bubble should
    * ADOPT rather than duplicate.
    *
@@ -442,6 +465,16 @@ export interface SendOptions {
    * mint one.
    */
   queueClaim?: string;
+  /**
+   * A FOLLOW-UP THAT MAY OPEN A FRESH TURN INSTEAD. `sendFollowUp` waits a
+   * bounded moment for a live run and, finding none, hands the words back with
+   * "no run to attach this message to". A line the page PARKED behind a send
+   * (`ui/outbox.ts`) is different: it was typed to be said whatever the run
+   * does, and the run it was parked behind may well have ended in the seconds
+   * before the drain reached it. With this set, that road falls through to
+   * `sendMessage` — same words, same bubble — rather than giving up.
+   */
+  orStart?: boolean;
 }
 
 /** One follow-up a stop handed back (`ChatControllerDeps.onStranded`). */
@@ -449,6 +482,8 @@ export interface StrandedLine {
   text: string;
   /** The page's own id for the send (`SendOptions.sendId`), when it gave one. */
   sendId?: string;
+  /** `SendOptions.clientId`: the line's durable id, when the page gave one. */
+  clientId?: string;
   /** This send's `returnSend` already fired for THIS stop — its pictures went
    *  back through `onSendReturned` in the same tick. The words still come
    *  through here (a page that keys rows by `sendId` may already have posted
@@ -519,9 +554,12 @@ export interface ChatController {
    * bubble adopt this row instead of adding a second. Empty text posts nothing
    * and answers "".
    */
-  postOptimisticUser(text: string): string;
+  postOptimisticUser(text: string, pending?: UserTurn["pending"]): string;
   /** Drop an optimistic bubble whose send never reached `sendMessage` at all. */
   dropOptimisticUser(key: string): void;
+  /** Re-tag an optimistic bubble (queued → not sent, or clear the tag) without
+   *  moving it. No-op for a key that is not a user row. */
+  setOptimisticPending(key: string, pending: UserTurn["pending"] | undefined): void;
   /** Queue/send a follow-up into the live run (T:16024). `opts` ADDED: notes
    *  and pictures fold into a follow-up exactly as into a fresh turn. */
   sendFollowUp(text: string, opts?: SendOptions): Promise<void>;
@@ -773,6 +811,11 @@ export interface ControllerDeps {
    *  never by text (Bugbot round 3, PR #1323). A line the CLI named that this
    *  page has no entry for carries no id. */
   onStranded?: (lines: StrandedLine[]) => void;
+  /** ADDED: the server ACKNOWLEDGED this line — the inbox took a follow-up, or
+   *  `start` / the live host's `send` answered for a turn's opening message.
+   *  From here the server owns it and a reload needs nothing from the page.
+   *  Named by `SendOptions.clientId`. */
+  onSendDelivered?: (clientId: string) => void;
   /** ADDED: every 8th poll (~3.2 s) and once at the run's end — where PR4 hangs
    *  its artifacts read (T:16229, 16330). */
   onArtifactsTick?: () => void;
@@ -840,6 +883,8 @@ export interface ControllerDeps {
     attachments?: Receipt[];
     /** `SendOptions.sendId`, echoed: WHICH send came back (see its own note). */
     sendId?: string;
+    /** `SendOptions.clientId`, echoed. */
+    clientId?: string;
     /**
      * The send was turned away BEFORE any bubble went up (disposed, the
      * `sending` gate, nothing to send) — so `text` is not in the transcript,
