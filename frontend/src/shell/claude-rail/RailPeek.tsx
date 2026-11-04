@@ -1283,8 +1283,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     href={door.href}
                     className={cls + " is-door"}
                     title={door.title}
-                    // Favourites off: the page's own place, a link that goes
-                    // nowhere (as before favourites; `chipDoor` `current`).
+                    // Favourites off: this canvas's chip, already the
+                    // selection — a disabled link (`chipDoor` `current`).
                     aria-disabled={door.current || undefined}
                     onClick={(e) => {
                       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
@@ -1293,8 +1293,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                       // have moved since this render.
                       const pick = here?.() ?? null;
                       const now = chipDoor(head.scope, head.at, pick, pageRoot ?? null, favsOn);
-                      if (!now) return;
-                      if (now.current && (!now.select || !pick)) return;
+                      // A `current` chip (favourites off, already the
+                      // selection) is a disabled link: its press does nothing
+                      // — no reselect, no navigation (Bugbot on #2122).
+                      if (!now || now.current) return;
                       if (!now.select || !pick) {
                         const key = head.t.key;
                         const keyboard = e.detail === 0;

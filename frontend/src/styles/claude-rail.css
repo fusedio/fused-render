@@ -261,6 +261,12 @@
   inset: -2px -9px;
   z-index: 1;
 }
+/* …only while the hover CAN swap: typing in the card or a press inside it
+   blocks the swap (rail-peek-lib `enterRing`), and the ring's caption shows
+   instead of nothing (ClaudeRail's intent sink sets the attribute). */
+.claude-rail[data-swap-blocked] .claude-rail-chat-shield {
+  display: none;
+}
 .claude-rail-held {
   display: flex;
   justify-content: center;

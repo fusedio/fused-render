@@ -287,6 +287,11 @@ export interface IntentSink {
   pin?(on: boolean): void;
   /** `key` is about to be wanted: mount it now. Called on every arrival. */
   warm(key: string): void;
+  /** A pinned card can (`false`) or cannot (`true`) be swapped by a
+   *  favourite's hover now — the owner is typing in it or pressing inside it
+   *  (`enterRing`). Called only on change: ClaudeRail draws the ring's quiet
+   *  shield only while a swap can happen. */
+  blocked?(on: boolean): void;
 }
 
 /** How a ring came to be "entered": the pointer resting on it, or the
@@ -322,6 +327,8 @@ export class PeekIntent {
   /** A pointer is down inside the card (a text selection, a scrollbar drag)
    *  — it may leave the card mid-gesture and must not close it. */
   private pressing = false;
+  /** `typing || pressing` as last told to the sink (`syncBlocked`). */
+  private blockedSent = false;
   /** Set by `dismiss(true)`: the focus that comes straight back to the ring
    *  (Escape hands it there) must not reopen what Escape just closed. Cleared
    *  by the next pointer arrival, the next focus LEAVING a ring (Tab moving
@@ -403,6 +410,11 @@ export class PeekIntent {
   /** The pointer (or focus) left the ring it was on. */
   leaveRing(via: Via = "pointer"): void {
     if (via === "pointer") {
+      // A PINNED card's swap is the pointer's alone (`enterRing`: a focus
+      // never swaps it): the pointer leaving the ring the swap was for drops
+      // it, even with the keyboard focus on that same ring — else a sweep
+      // past it moves the pinned card a beat later (Bugbot on #2122).
+      if (this.pinned && this.pendingKey !== null && this.pendingKey === this.pointerKey) this.cancelOpen();
       this.pointerKey = null;
       this.pointerOverPin = false;
     } else {
@@ -422,6 +434,7 @@ export class PeekIntent {
    *  and pin it, since a click on the card is a click (header). */
   pressStart(): void {
     this.pressing = true;
+    this.syncBlocked();
     this.cancelClose();
     if (this.shown !== null) this.setPinned(true);
   }
@@ -430,6 +443,7 @@ export class PeekIntent {
   pressEnd(): void {
     if (!this.pressing) return;
     this.pressing = false;
+    this.syncBlocked();
     this.scheduleClose();
   }
 
@@ -447,6 +461,7 @@ export class PeekIntent {
       this.held = false;
       this.typing = false;
       this.pressing = false;
+      this.syncBlocked();
       this.setPinned(false);
       this.set(null);
       return;
@@ -501,6 +516,7 @@ export class PeekIntent {
   hold(on: boolean): void {
     this.held = on;
     if (!on) this.typing = false;
+    this.syncBlocked();
     if (on) this.cancelClose();
     else this.scheduleClose();
   }
@@ -510,7 +526,19 @@ export class PeekIntent {
    *  on its dwell is dropped — a pinned card only ever waits on that. */
   typed(): void {
     this.typing = true;
+    this.syncBlocked();
     if (this.pinned && this.pendingKey !== null) this.cancelOpen();
+  }
+
+  /** The pinned card became a HELD OUTSIDER (ClaudeRail `heldExtra`): no
+   *  favourite's hover may swap it any more (claude-rail-lib `ringMarks`
+   *  `heldOutsider`), so a swap already waiting on its dwell — started while
+   *  the card was still swappable — is dropped, and the ring under the
+   *  pointer stops counting as one that may swap (`leaveCone`'s re-entry). */
+  dropSwap(): void {
+    if (!this.pinned) return;
+    this.cancelOpen();
+    this.pointerOverPin = false;
   }
 
   /** The keyboard was HANDED to ring `key` (fav-peek-store `focusRail`, a
@@ -560,6 +588,7 @@ export class PeekIntent {
     this.held = false;
     this.typing = false;
     this.pressing = false;
+    this.syncBlocked();
     this.setPinned(false);
     // The card goes pointer-events: none under the pointer; no leave fires.
     this.overCard = false;
@@ -584,7 +613,15 @@ export class PeekIntent {
     if (this.shown === key) return;
     this.shown = key;
     this.typing = false;
+    this.syncBlocked();
     this.sink.show(key);
+  }
+
+  private syncBlocked(): void {
+    const on = this.typing || this.pressing;
+    if (on === this.blockedSent) return;
+    this.blockedSent = on;
+    this.sink.blocked?.(on);
   }
 
   private get kept(): boolean {
@@ -712,19 +749,32 @@ export interface HopTarget {
 
 /** THE HOP, ONLY WHEN IT HAPPENS: `go` starts a navigation the router's
  *  leave guard may refuse (router `guarded`: a question first, the push only
- *  on a yes). `then` runs once the hop is real — on the router's navigate
- *  `event`, dispatched right after the push and before the page repaints —
- *  so a refused hop hands nothing over (the card stays, no favourite card
- *  opens on the page that stayed). Heard once: a refused hop's listener
- *  answers the next navigation, which runs `then` only when it landed where
- *  this one was going (`arrived`). */
-export function onHop(win: HopTarget, event: string, arrived: () => boolean, then: () => void, go: () => void): void {
+ *  on a yes) and settles once it is decided (router `navigateUrl`: `true`
+ *  pushed, `false` refused). `then` runs once the hop is real — on the
+ *  router's navigate `event`, which the router dispatches synchronously
+ *  inside the push (router `navigateUrl` → `notifyNavigate`, after
+ *  `pushHistory`), so with no guard it runs before `go` returns, and on a
+ *  guard's yes as the answer lands, before the page repaints. The listener
+ *  lives exactly as long as the question: once `go` settles (the push, if
+ *  any, has fired the event by then) it is removed — a refused hop hands
+ *  nothing over, and never answers a later navigation either (Bugbot on
+ *  #2122: a stale listener used to run its hand-over on the next hop to the
+ *  same page, one more per refused press). `arrived` double-checks the
+ *  event was this hop's. */
+export function onHop(
+  win: HopTarget,
+  event: string,
+  arrived: () => boolean,
+  then: () => void,
+  go: () => Promise<boolean>,
+): void {
   const heard = () => {
     win.removeEventListener(event, heard);
     if (arrived()) then();
   };
   win.addEventListener(event, heard);
-  go();
+  const drop = () => win.removeEventListener(event, heard);
+  go().then(drop, drop);
 }
 
 /** The words a refused favourite write says: the server's own `detail` (a

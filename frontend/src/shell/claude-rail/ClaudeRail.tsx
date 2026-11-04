@@ -582,6 +582,13 @@ export function ClaudeRail({
         if (on && favsOnRef.current) setHeld(true);
       },
       warm: (key) => setKept((s) => keepAlive(s, key)),
+      // The owner is typing in the card or pressing inside it: no
+      // favourite's hover swaps a pinned card then (rail-peek-lib
+      // `enterRing`), so the rings' quiet shields step aside and the hover
+      // reads the caption (the shield, below; claude-rail.css). An
+      // attribute on the rail, NOT state: a re-render here runs inside the
+      // composer's first `input` event and loses that keystroke.
+      blocked: (on) => railRef.current?.toggleAttribute("data-swap-blocked", on),
     });
   }
   const intent = intentRef.current;
@@ -641,8 +648,20 @@ export function ClaudeRail({
     [baseSeats, heldExtra, favs],
   );
   const favKeys = useMemo(() => new Set(favs.map((s) => s.pulse.key)), [favs]);
+  // Read at the moment, not at the render that made the callback: the chip's
+  // hand-over runs after the hop (`onChipLeave`).
+  const favKeysRef = useRef(favKeys);
+  favKeysRef.current = favKeys;
   const seatsRef = useRef(seats);
   seatsRef.current = seats;
+  // A HELD OUTSIDER IS NEVER SWAPPED by a favourite's hover (`ringMarks`
+  // `heldOutsider`): a swap that started its dwell before the card became
+  // one is dropped as it does (Bugbot on #2122). Before paint, so the dwell
+  // cannot land in between.
+  const outsiderHeld = !!heldExtra;
+  useLayoutEffect(() => {
+    if (outsiderHeld) intent.dropSwap();
+  }, [outsiderHeld, intent]);
   // THE LAST RING PRESSED (owner, 2026-11-02): "the active css to the last
   // selected task… keep by task id so it is easier to spot; it doesn't
   // change when we filter tasks based on the selected node, only when we
@@ -813,7 +832,9 @@ export function ClaudeRail({
     const seatOf = (key: string) => seatsRef.current.find((s) => s.pulse.key === key);
     return railOnChipLeave(
       () => favsOnRef.current,
-      (key) => favKeys.has(key) && !!seatOf(key)?.pulse.session_id,
+      // The refs, not this render's sets: the hand-over runs once the hop
+      // lands, and a chat starred in between is a favourite by then.
+      (key) => favKeysRef.current.has(key) && !!seatOf(key)?.pulse.session_id,
       letGo,
       (key, keyboard) => {
         if (keyboard) requestFavFocus(key);
@@ -822,7 +843,7 @@ export function ClaudeRail({
         setFavOpen(key);
       },
     );
-  }, [favKeys, letGo]);
+  }, [letGo]);
   // JSON, not a joined string: a key is free to contain any delimiter.
   const seatKeys = JSON.stringify(seats.map((s) => s.pulse.key));
   useEffect(() => {
@@ -1443,7 +1464,11 @@ export function ClaudeRail({
                     // empty hint over the ring's whole hit box is the
                     // pointer's opt-out (platform/lib/hints `hintAt`), while
                     // a Tab onto the link, which swaps nothing, still reads
-                    // the link's own title (`titleOnly`).
+                    // the link's own title (`titleOnly`). Only while a swap
+                    // CAN happen: typing in the card or pressing inside it
+                    // blocks the swap, and the shield is hidden then (the
+                    // rail's `data-swap-blocked`) so the hover reads the
+                    // caption instead of nothing (Bugbot on #2122).
                     <span className="claude-rail-chat-shield" data-hint="" aria-hidden="true" />
                   )}
                 </a>

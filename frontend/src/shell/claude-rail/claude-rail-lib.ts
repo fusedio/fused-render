@@ -179,16 +179,19 @@ export interface RailHere {
  *  text: no fill, no link, no `Open …` title.
  *
  *  FAVOURITES OFF (`favsOn` false, favourites-flag): never null — the chip is
- *  always the link it was before favourites; on the page's own place it is
- *  marked `current` instead. */
+ *  the link it was before favourites, byte for byte: a plain door everywhere
+ *  (a folder or file chip on its own page still opens it), `current` only on
+ *  this canvas's chip whose node (or no node) is already the selection, with
+ *  main's `On …` title. */
 export interface ChipDoor {
   href: string;
   /** The navigation hint for a folder (router `navigateUrl` `isDir`). */
   isDir?: boolean;
   title: string;
   select?: { udfName: string | null };
-  /** Favourites off only: the chip names the page's own place — a link
-   *  marked `aria-disabled` whose press goes nowhere (as before favourites). */
+  /** Favourites off only: this canvas's chip, its node (or no node) already
+   *  the selection — a link marked `aria-disabled` whose press does nothing
+   *  (as before favourites). */
   current?: boolean;
 }
 
@@ -199,9 +202,9 @@ export function chipDoor(
   pageRoot: string | null = null,
   favsOn = true,
 ): ChipDoor | null {
-  // Favourites off: the page's own place is still a door, marked `current`
-  // (RailPeek: `aria-disabled`, no hover) — the chip as it was before them.
-  const nowhere = (door: ChipDoor): ChipDoor | null => (favsOn ? null : { ...door, current: true });
+  // Favourites off: the page's own place is still a plain door — the chip as
+  // it was before them (only the selected canvas chip is `current`, below).
+  const nowhere = (door: ChipDoor): ChipDoor | null => (favsOn ? null : door);
   if (at.kind === "canvas") {
     const file = scope.kind === "node" ? scope.file : undefined;
     const href = canvasPagePath(at.env, at.name, file ? { file } : undefined);
@@ -213,8 +216,13 @@ export function chipDoor(
     }
     const udfName = scope.kind === "node" ? scope.name : null;
     const now = here.file ? nodeName(here.file) : null;
-    // Already the selection: nothing to do.
-    if (udfName === now) return nowhere({ href, title, select: { udfName } });
+    // Already the selection: nothing to do (favourites off: the disabled
+    // link it was, with its `On …` title).
+    if (udfName === now) {
+      if (favsOn) return null;
+      const on = udfName ? `On ${udfName}, selected` : `On the canvas ${at.name}`;
+      return { href, title: on, select: { udfName }, current: true };
+    }
     return { href, title, select: { udfName } };
   }
   if (scope.kind === "file") {

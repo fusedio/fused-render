@@ -626,28 +626,48 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     expect(chipPath({ kind: "node", name: "hex", file: "hex.py" }, PLACE)).toBe("hex on demo");
   });
 
-  it("favourites off: never null — every chip stays the door it was, on its own place too", () => {
+  it("favourites off: never null — every chip stays the door it was on main, on its own place too", () => {
     const app: RailPlace = { kind: "folder", dir: "/apps/x/", word: "App" };
     const whole = { kind: "whole", word: "App" } as const;
+    // A folder chip on its own page is a plain door (main opened it again).
     expect(chipDoor(whole, app, null, placeRoot(app), false)).toEqual({
       href: "/explorer/view/apps/x",
       isDir: true,
       title: "Open /apps/x",
-      current: true,
     });
     expect(chipDoor(whole, { kind: "folder", dir: "/apps/y" }, null, placeRoot(app), false)?.current).toBeUndefined();
     const sub = { kind: "file", name: "src/a.py", file: "/apps/x/src/a.py" } as const;
-    expect(chipDoor(sub, app, null, "file:/apps/x/src/a.py", false)?.href).toBe("/explorer/view/apps/x/src/a.py");
+    expect(chipDoor(sub, app, null, "file:/apps/x/src/a.py", false)).toEqual({
+      href: "/explorer/view/apps/x/src/a.py",
+      title: "Open /apps/x/src/a.py",
+    });
     const onFile: RailPlace = { kind: "file", file: "/apps/x/b.py" };
-    expect(chipDoor({ kind: "whole", word: "File" }, onFile, null, placeRoot(onFile), false)?.title).toBe(
-      "Open /apps/x/b.py",
-    );
+    expect(chipDoor({ kind: "whole", word: "File" }, onFile, null, placeRoot(onFile), false)).toEqual({
+      href: "/explorer/view/apps/x/b.py",
+      title: "Open /apps/x/b.py",
+    });
     const canvas = { kind: "whole", word: "Canvas" } as const;
-    expect(chipDoor(canvas, PLACE, null, placeRoot(PLACE), false)).toMatchObject({ href: "/canvases/unstable/demo", current: true });
+    // No selection seat on the page: a plain door, as on main.
+    expect(chipDoor(canvas, PLACE, null, placeRoot(PLACE), false)).toEqual({
+      href: "/canvases/unstable/demo",
+      title: "Open the canvas demo",
+    });
+    // This canvas, that node already selected: the only `current` chip, main's title.
     const here = { env: "unstable" as const, name: "demo", file: "hex.py" };
     const hex = { kind: "node", name: "hex", file: "hex.py" } as const;
-    expect(chipDoor(hex, PLACE, here, placeRoot(PLACE), false)).toMatchObject({ select: { udfName: "hex" }, current: true });
-    expect(chipDoor(canvas, PLACE, { ...here, file: null }, placeRoot(PLACE), false)?.select).toEqual({ udfName: null });
+    expect(chipDoor(hex, PLACE, here, placeRoot(PLACE), false)).toMatchObject({
+      select: { udfName: "hex" },
+      current: true,
+      title: "On hex, selected",
+    });
+    expect(chipDoor(canvas, PLACE, { ...here, file: null }, placeRoot(PLACE), false)).toMatchObject({
+      select: { udfName: null },
+      current: true,
+      title: "On the canvas demo",
+    });
+    // Another node / the whole canvas while a node is selected: select in place.
+    expect(chipDoor(canvas, PLACE, here, placeRoot(PLACE), false)?.current).toBeUndefined();
+    expect(chipDoor(hex, PLACE, { ...here, file: "grid.py" }, placeRoot(PLACE), false)?.current).toBeUndefined();
   });
 
   it("chipLabel: a folder or a file by its own name, never the bare word; a page's own word stays", () => {

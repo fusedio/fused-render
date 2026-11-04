@@ -712,6 +712,55 @@ describe("PeekIntent", () => {
       expect(shown).toEqual(["a", "f"]);
     });
 
+    it("pinned, the focus on a favourite's ring: the pointer sweeping past it leaves no swap behind", () => {
+      const { clock, shown, intent } = rig();
+      intent.press("a");
+      intent.leaveRing();
+      intent.enterRing("f", "focus", true);
+      intent.enterRing("f", "pointer", true);
+      clock.tick(PEEK_OPEN_MS / 2);
+      intent.leaveRing("pointer");
+      clock.tick(10_000);
+      expect(shown).toEqual(["a"]);
+      expect(intent.isPinned).toBe(true);
+    });
+
+    it("pinned: `dropSwap` (the card became a held outsider) drops a swap already waiting on its dwell", () => {
+      const { clock, shown, intent } = rig();
+      intent.press("a");
+      intent.leaveRing();
+      intent.enterRing("f", "pointer", true);
+      clock.tick(PEEK_OPEN_MS / 2);
+      intent.dropSwap();
+      clock.tick(10_000);
+      expect(shown).toEqual(["a"]);
+      expect(intent.isPinned).toBe(true);
+    });
+
+    it("tells the sink when a pinned card cannot be swapped (typing, a press inside), on change only", () => {
+      const clock = new Clock();
+      const blocked: boolean[] = [];
+      const intent = new PeekIntent({ show: () => {}, warm: () => {}, blocked: (on) => blocked.push(on) }, clock);
+      intent.press("a");
+      intent.hold(true);
+      intent.typed();
+      intent.typed();
+      intent.pressStart();
+      intent.hold(false);
+      expect(blocked).toEqual([true]);
+      intent.pressEnd();
+      expect(blocked).toEqual([true, false]);
+      intent.pressStart();
+      intent.dismiss();
+      expect(blocked).toEqual([true, false, true, false]);
+      // A swap to another chat clears the typing with the words' card.
+      intent.press("b");
+      intent.hold(true);
+      intent.typed();
+      intent.press("c");
+      expect(blocked).toEqual([true, false, true, false, true, false]);
+    });
+
     it("tells the sink when it pins and unpins", () => {
       const clock = new Clock();
       const pins: boolean[] = [];
@@ -894,38 +943,92 @@ describe("onHop (the chip's hand-over waits for the router's yes)", () => {
     }
   }
 
-  it("no guard: the push is heard in the same tick — the hand-over runs before `go` returns", () => {
+  /** A router's `navigateUrl` in miniature: with no guard, push now; with
+   *  one, push on `answer(true)`, settle `false` on `answer(false)`. */
+  function router(win: Win, loc: { at: string }) {
+    let asking: ((ok: boolean) => void) | null = null;
+    const push = (to: string) => {
+      loc.at = to;
+      win.fire("nav");
+    };
+    return {
+      push,
+      free: (to: string) => () => {
+        push(to);
+        return Promise.resolve(true);
+      },
+      guarded: (to: string) => () =>
+        new Promise<boolean>((resolve) => {
+          asking = (ok) => {
+            if (ok) push(to);
+            resolve(ok);
+          };
+        }),
+      answer: (ok: boolean) => asking?.(ok),
+    };
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it("no guard: the push is heard in the same tick — the hand-over runs before `go` returns", async () => {
     const win = new Win();
     const log: string[] = [];
-    let at = "/a";
-    onHop(win, "nav", () => at === "/b", () => log.push("hand"), () => {
-      at = "/b";
-      win.fire("nav");
+    const loc = { at: "/a" };
+    const r = router(win, loc);
+    onHop(win, "nav", () => loc.at === "/b", () => log.push("hand"), () => {
+      const went = r.free("/b")();
       log.push("pushed");
+      return went;
     });
     expect(log).toEqual(["hand", "pushed"]);
     expect(win.count("nav")).toBe(0);
-  });
-
-  it("a guard that says no: nothing is handed over, and a later unrelated hop runs nothing either", () => {
-    const win = new Win();
-    const log: string[] = [];
-    let at = "/a";
-    onHop(win, "nav", () => at === "/b", () => log.push("hand"), () => {});
-    expect(log).toEqual([]);
-    at = "/c";
-    win.fire("nav");
-    expect(log).toEqual([]);
+    await tick();
     expect(win.count("nav")).toBe(0);
   });
 
-  it("a guard that says yes later: the hand-over runs at the push", () => {
+  it("a guard that says no: nothing is handed over, the listener goes, and a later hop to the same page runs nothing", async () => {
     const win = new Win();
     const log: string[] = [];
-    let at = "/a";
-    onHop(win, "nav", () => at === "/b", () => log.push("hand"), () => {});
-    at = "/b";
-    win.fire("nav");
+    const loc = { at: "/a" };
+    const r = router(win, loc);
+    onHop(win, "nav", () => loc.at === "/b", () => log.push("hand"), r.guarded("/b"));
+    expect(win.count("nav")).toBe(1);
+    r.answer(false);
+    await tick();
+    expect(win.count("nav")).toBe(0);
+    // A later navigation — to that very page, by another door — hands nothing over.
+    r.push("/b");
+    r.push("/c");
+    expect(log).toEqual([]);
+  });
+
+  it("refused presses never stack: each one's listener goes with its answer", async () => {
+    const win = new Win();
+    const log: string[] = [];
+    const loc = { at: "/a" };
+    const r = router(win, loc);
+    for (let i = 0; i < 3; i++) {
+      onHop(win, "nav", () => loc.at === "/b", () => log.push("hand"), r.guarded("/b"));
+      r.answer(false);
+    }
+    await tick();
+    expect(win.count("nav")).toBe(0);
+    r.push("/b");
+    expect(log).toEqual([]);
+  });
+
+  it("a guard that says yes later: the hand-over runs at the push, once", async () => {
+    const win = new Win();
+    const log: string[] = [];
+    const loc = { at: "/a" };
+    const r = router(win, loc);
+    onHop(win, "nav", () => loc.at === "/b", () => log.push("hand"), r.guarded("/b"));
+    await tick();
+    expect(log).toEqual([]);
+    r.answer(true);
+    expect(log).toEqual(["hand"]);
+    await tick();
+    expect(win.count("nav")).toBe(0);
+    r.push("/b");
     expect(log).toEqual(["hand"]);
   });
 });
