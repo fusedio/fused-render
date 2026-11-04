@@ -361,6 +361,15 @@ const ENTRIES = [
     keywords: "approvals permission mode default auto plan ask accept edits",
   },
   {
+    id: "breakout",
+    group: "tasks",
+    section: "Running",
+    label: "Breakout side chats",
+    description: "Open a research-only side chat forked from any point of a conversation. It reads and searches but never edits or runs commands; drafts come back into the composer.",
+    keywords: "breakout fork side chat research read-only",
+    badge: "Beta",
+  },
+  {
     id: "claude-max-sessions",
     group: "tasks",
     section: "Running",

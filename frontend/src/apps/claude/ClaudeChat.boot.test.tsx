@@ -12,6 +12,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
+const { publishBreakoutEnabled, resetFlagsForTests } = await import("./feature-flag");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
@@ -126,6 +127,7 @@ beforeEach(() => {
 const mounted: Array<ReturnType<typeof create>> = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  resetFlagsForTests();
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 
@@ -668,6 +670,9 @@ test("the composer Breakout button renders once in the merged head and once in t
   const onBreakout = () => {};
   const merged = await mountChat({ mergedHead: true, onBreakout, initialSessionId: "sess-abc12345" });
   await settle(20);
+  // The flag is opt-in: the stubbed prefs read leaves it off until published.
+  await act(async () => publishBreakoutEnabled(true));
+  await settle(20);
   expect(byClass(merged.r, "c-anntools").length).toBe(0);
   expect(byClass(merged.r, "c-breakout").length).toBe(1);
 
@@ -675,4 +680,11 @@ test("the composer Breakout button renders once in the merged head and once in t
   await settle(20);
   expect(byClass(strip.r, "c-anntools").length).toBe(1);
   expect(byClass(strip.r, "c-breakout").length).toBe(1);
+});
+
+test("the composer Breakout button is absent while the Breakout flag is off (default)", async () => {
+  const strip = await mountChat({ onBreakout: () => {}, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(strip.r, "c-anntools").length).toBe(1);
+  expect(byClass(strip.r, "c-breakout").length).toBe(0);
 });

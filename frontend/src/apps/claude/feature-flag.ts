@@ -41,6 +41,11 @@ let settledOnce = false;
 let recapTitles = false;
 const recapListeners = new Set<(v: boolean) => void>();
 
+/** The Breakout switch (`prefs.breakout.enabled`): opt-in beta, off until the
+ *  prefs read says otherwise. Same shape as `recapTitles`. */
+let breakout = false;
+const breakoutListeners = new Set<(v: boolean) => void>();
+
 /** The four Approvals modes, for narrowing a value off the wire or a URL. */
 const PERMISSION_VALUES: readonly PermissionMode[] = ["plan", "prompt", "acceptEdits", "auto"];
 
@@ -85,6 +90,12 @@ export function useDefaultPermission(): PermissionMode {
     };
   }, []);
   return current;
+}
+
+function setBreakout(next: boolean) {
+  if (breakout === next) return;
+  breakout = next;
+  for (const listener of breakoutListeners) listener(next);
 }
 
 function setRecapTitles(next: boolean) {
@@ -178,6 +189,7 @@ function read(): Promise<void> {
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
       setRecapTitles(p.task_recap?.enabled === true);
+      setBreakout(p.breakout?.enabled === true);
       // A server that predates the field keeps "auto", the server's default.
       setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
     })
@@ -237,6 +249,19 @@ export const QUEUE_FLAG_BROADCAST_KEY = "fused-render:project-queue";
 /** The same announcement for the recap titles switch. */
 export const RECAP_FLAG_BROADCAST_KEY = "fused-render:task-recap-titles";
 
+/** The same announcement for the Breakout switch. */
+export const BREAKOUT_FLAG_BROADCAST_KEY = "fused-render:breakout";
+
+/** Hand over a known-fresh Breakout answer (a PUT's prefs payload). */
+export function publishBreakoutEnabled(next: boolean) {
+  setBreakout(next);
+  try {
+    localStorage.setItem(BREAKOUT_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
+  } catch {
+    // Storage may be unavailable; the other tabs still re-read on focus.
+  }
+}
+
 /** Hand over a known-fresh recap-titles answer (a PUT's prefs payload). */
 export function publishTaskRecapTitlesEnabled(next: boolean) {
   setRecapTitles(next);
@@ -274,6 +299,14 @@ if (typeof window !== "undefined") {
     if (ev.key !== RECAP_FLAG_BROADCAST_KEY || !ev.newValue) return;
     try {
       setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
+    } catch {
+      // Malformed: the next focus re-reads.
+    }
+  });
+  window.addEventListener("storage", (ev) => {
+    if (ev.key !== BREAKOUT_FLAG_BROADCAST_KEY || !ev.newValue) return;
+    try {
+      setBreakout((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
     } catch {
       // Malformed: the next focus re-reads.
     }
@@ -320,6 +353,21 @@ export function useTaskRecapTitlesEnabled(): boolean {
   return current;
 }
 
+/** Subscribe to the Breakout switch (see `breakout`). Triggers the one prefs
+ *  read, like `useTaskRecapTitlesEnabled`. */
+export function useBreakoutEnabled(): boolean {
+  const [current, setCurrent] = useState<boolean>(() => breakout);
+  useEffect(() => {
+    breakoutListeners.add(setCurrent);
+    setCurrent(breakout);
+    void read();
+    return () => {
+      breakoutListeners.delete(setCurrent);
+    };
+  }, []);
+  return current;
+}
+
 /** Test-only: how many components are currently subscribed. `bun test` runs
  *  every suite in ONE process, so this Set is shared globally for the run —
  *  a tree a test forgets to unmount leaves its subscription here forever,
@@ -340,5 +388,6 @@ export function resetFlagsForTests() {
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
   setRecapTitles(false);
+  setBreakout(false);
   setDefaultPermission("auto");
 }

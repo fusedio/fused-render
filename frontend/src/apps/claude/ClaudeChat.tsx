@@ -175,6 +175,7 @@ import {
   queueFlagReady,
   useProjectQueueEnabled,
   useTaskRecapTitlesEnabled,
+  useBreakoutEnabled,
 } from "./feature-flag";
 import { WaitingCard, WaitingRow } from "./ui/Waiting";
 import { copyToTaskShots } from "./ui/SchedButton";
@@ -1086,6 +1087,9 @@ function ChatBody(props: ChatBodyProps) {
   // folder somebody has just protected. The VALUE is drawn for two things the
   // flag owns outright: the waiting rows and the admission's own door.
   const queueOn = useProjectQueueEnabled();
+  // Breakout is an opt-in beta: off, neither the composer button nor the
+  // per-turn "Breakout from here" renders.
+  const breakoutOn = useBreakoutEnabled();
   /**
    * THE PAGE OUTBOX (ui/outbox.ts) — lines typed while the latch above was
    * shut, or while this chat's turn was running.
@@ -5172,7 +5176,7 @@ function ChatBody(props: ChatBodyProps) {
   // is going too (the breakout is its own run). Placed by the strip, or as the
   // merged head row's tail (that layout has no strip).
   const breakoutBtn =
-    props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
+    breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
       <button
         type="button"
         className="bar-ctl bar-ctl-icon c-breakout"
@@ -5494,7 +5498,7 @@ function ChatBody(props: ChatBodyProps) {
               onAnchorSpent={onAnchorSpent}
               {...(debugSent ? { onShowSent: setSent } : {})}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
-              {...(chatBackend === "claude" && props.onBreakout ? { onBreakout: onBreakoutTurn } : {})}
+              {...(chatBackend === "claude" && breakoutOn && props.onBreakout ? { onBreakout: onBreakoutTurn } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}

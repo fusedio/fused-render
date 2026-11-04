@@ -18,6 +18,7 @@ import {
   putReaderEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putTaskRecapTitlesEnabled,
+  putBreakoutEnabled,
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
@@ -34,6 +35,7 @@ import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
   publishTaskRecapTitlesEnabled,
+  publishBreakoutEnabled,
 } from "@apps/claude/feature-flag";
 import { publishTaskNotifyTerminalSessions } from "../task-notify-terminal-flag";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -58,6 +60,19 @@ export function ProjectQueueControl({ prefs, onChange }: PrefControlProps) {
       // refreshed by a mount; a composer already on screen would keep
       // admitting (or not) by the old answer until a navigation.
       after={(next) => publishProjectQueueEnabled(next.queue?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// Breakout side chats: research-only forks of a conversation. Opt-in beta.
+export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="breakout"
+      checked={prefs.breakout?.enabled === true}
+      put={putBreakoutEnabled}
+      after={(next) => publishBreakoutEnabled(next.breakout?.enabled === true)}
       onChange={onChange}
     />
   );
