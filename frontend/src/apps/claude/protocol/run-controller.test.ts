@@ -3512,6 +3512,38 @@ describe("openSession / resumeRun / newChat", () => {
     expect((controller.getState().turns[1] as AssistantTurn).stopped).toBe(true);
   });
 
+  test("openSession to ANOTHER chat detaches from the live run; the same chat keeps it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "rB2", session_id: "sB" }),
+      history: () => ({ turns: [], transcript: { path: "/t.jsonl", mtime: 1, size: 1 } }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ message: "go", segments: [text("x")], text: "x", session_id: "sA" });
+        await gate;
+        return poll({ done: true, text: "ok", segments: [text("ok")] });
+      },
+    });
+    const attached = controller.resumeRun("rA");
+    for (let i = 0; i < 50 && controller.getState().status !== "running"; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(controller.getState().status).toBe("running");
+    // Same session: the live run stays attached.
+    await controller.openSession("sA");
+    expect(controller.getState().status).toBe("running");
+    expect(controller.getState().runId).toBe("rA");
+    // Another session: detached, so a typed line starts a message, not a send into rA.
+    await controller.openSession("sB");
+    expect(controller.getState().status).toBe("idle");
+    expect(controller.getState().runId).toBeNull();
+    release();
+    await controller.sendFollowUp("for B", { orStart: true });
+    expect(agent.of("send")).toHaveLength(0);
+    expect(agent.of("start")).toHaveLength(1);
+    await attached;
+    controller.dispose();
+  });
+
   test("a failed restore leaves an empty log and no trouble card", async () => {
     const { controller } = makeController({ history: () => ({ error: "no such session" }) });
     await controller.openSession("s-42");

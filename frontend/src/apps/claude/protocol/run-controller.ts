@@ -3634,6 +3634,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (sending) return;
     sending = true;
     const seat = ++sendSeq;
+    // LEAVING A CONVERSATION DETACHES FROM ITS LIVE RUN (Bugbot, PR #2097):
+    // left attached, `status` stays "running" and a line typed in the arriving
+    // chat is routed as a follow-up into the OLD run's inbox. The run keeps
+    // going server-side; the arriving session's own live run, if any, is
+    // adopted below. Re-opening the SAME session leaves its run alone.
+    const leaving = sessionId !== state.sessionId;
+    if (leaving) {
+      logGen++;
+      activeRun = null;
+      activeSeat = 0;
+      activeTurnKey = null;
+    }
     const gen = logGen;
     permCards.clear();
     notedSkills.clear();
@@ -3660,6 +3672,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     backendSeeded = !!opts.backend;
     emit({
       sessionId,
+      ...(leaving ? { status: "idle" as const, runId: null } : {}),
       // The agent belongs to the conversation that is leaving. The ARRIVING
       // one's, when the opener knows it (the row it was opened from), is
       // named at once — so a restore that fails, or is slow, never shows the
