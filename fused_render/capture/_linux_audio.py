@@ -36,6 +36,22 @@ between and risk the default source/monitor changing underneath a paused
 recording; instead the puller threads keep reading (so PipeWire is never left
 blocked on a reader) and just stop writing to the WAV while `paused` is set.
 
+**Each puller thread owns closing its own stream; nothing else ever frees a
+stream a read may be inside.** `libpulse-simple` aborts the whole process when
+`pa_simple_free` runs under a blocked `pa_simple_read` (a mutex freed while the
+reader holds it, or the reader waking on a freed stream). A read can block
+forever — a Bluetooth headset whose transport failed delivers nothing and
+never errors — so `stop` sets the stop flag, waits a bounded time, and closes
+only streams whose reader thread has exited or never started. A reader still
+stuck is left running with its stream (a logged leak, cheaper than a dead
+server) and closes the stream itself if its read ever returns; the WAV is
+closed regardless and `Handle.write` is a no-op once it is.
+
+**A stalled stream is reported, not waited on.** Every read stamps its stream's
+last-chunk time (paused or not — pause keeps reading); `failure()` flags a
+stream that has delivered nothing for `STALL_AFTER_S`, counted from start until
+its first chunk arrives.
+
 **Permission is not a concept here.** Unlike the macOS tap, there is no grant
 a user can deny — if PipeWire is reachable at all, `pasimple` gets real
 samples. What IS silent for an unrelated reason is a muted or idle output: the
@@ -75,6 +91,13 @@ CHUNK_BYTES = CHUNK_SAMPLES * 4                       # float32 mono
 #: How long "both" lets the microphone drift from the monitor before dropping
 #: or padding — one second, generous because a desktop's two clocks are close.
 RING_HIGH_WATER = RATE * 4 * 1
+
+#: A stream that delivers no chunk for this long is reported as stalled by
+#: `failure()`; the same span after start is the grace for the first chunk.
+STALL_AFTER_S = 3.0
+
+#: How long `_teardown` waits for each reader to exit before leaving it.
+_JOIN_TIMEOUT_S = 2.0
 
 #: A recording shorter than this has not been given long enough to hear
 #: anything, so `warning()` never flags it.
@@ -229,6 +252,7 @@ class Handle:
         self.started_at = time.monotonic()
         self.paused = False
         self.last_level = 0.0
+        self.last_chunk_at: dict[str, float] = {}     # stream label -> monotonic
         self._lock = threading.Lock()                 # guards error and the wav
         self._ring_lock = threading.Lock()             # guards the mic ring
         self._stop = threading.Event()
@@ -249,6 +273,18 @@ class Handle:
         with self._lock:
             if self._wav is not None:
                 self._wav.writeframes(pcm16)
+
+    def beat(self, label: str) -> None:
+        self.last_chunk_at[label] = time.monotonic()
+
+    def stalled(self) -> str | None:
+        """The label of a stream that has delivered nothing for
+        `STALL_AFTER_S`, else None."""
+        now = time.monotonic()
+        for label, at in list(self.last_chunk_at.items()):
+            if now - at > STALL_AFTER_S:
+                return label
+        return None
 
     def meter(self, floats: bytes) -> None:
         try:
@@ -282,11 +318,19 @@ def _open_stream(pasimple_mod, device_name: str | None, label: str):
         device_name=device_name, fragsize=CHUNK_BYTES)
 
 
+def _close_stream(stream) -> None:
+    try:
+        stream.close()
+    except Exception:                                   # noqa: BLE001
+        logger.warning("closing an audio stream failed", exc_info=True)
+
+
 def _pull_single(handle: Handle, stream, is_monitor: bool, label: str) -> None:
     """One source, written straight to the WAV."""
     try:
         while not handle._stop.is_set():
             data = stream.read(CHUNK_BYTES)
+            handle.beat(label)
             if is_monitor and not handle.heard_system:
                 if _pause.rms_f32(data) > _HEAR_RMS:
                     handle.heard_system = True
@@ -297,6 +341,8 @@ def _pull_single(handle: Handle, stream, is_monitor: bool, label: str) -> None:
             handle.note_error(
                 f"the {label} audio stream ended unexpectedly: {exc} "
                 "(PipeWire may have gone away)")
+    finally:
+        _close_stream(stream)
 
 
 def _pull_mic_into_ring(handle: Handle, stream) -> None:
@@ -304,6 +350,7 @@ def _pull_mic_into_ring(handle: Handle, stream) -> None:
     try:
         while not handle._stop.is_set():
             data = stream.read(CHUNK_BYTES)
+            handle.beat("microphone")
             with handle._ring_lock:
                 handle._ring.push(data)
     except Exception as exc:                            # noqa: BLE001
@@ -311,6 +358,8 @@ def _pull_mic_into_ring(handle: Handle, stream) -> None:
             handle.note_error(
                 f"the microphone audio stream ended unexpectedly: {exc} "
                 "(PipeWire may have gone away)")
+    finally:
+        _close_stream(stream)
 
 
 def _pull_monitor_master(handle: Handle, stream) -> None:
@@ -319,6 +368,7 @@ def _pull_monitor_master(handle: Handle, stream) -> None:
     try:
         while not handle._stop.is_set():
             tap = bytearray(stream.read(CHUNK_BYTES))
+            handle.beat("system")
             if not handle.heard_system and _pause.rms_f32(tap) > _HEAR_RMS:
                 handle.heard_system = True
             with handle._ring_lock:
@@ -331,6 +381,8 @@ def _pull_monitor_master(handle: Handle, stream) -> None:
             handle.note_error(
                 f"the system audio stream ended unexpectedly: {exc} "
                 "(PipeWire may have gone away)")
+    finally:
+        _close_stream(stream)
 
 
 # ------------------------------------------------------------------- start/stop
@@ -365,6 +417,7 @@ def _start(handle: Handle, out: str, source: str) -> None:
             target=_pull_single, args=(handle, stream, False, "microphone"),
             daemon=True, name="fused-capture-mic")
         handle._threads.append(thread)
+        handle.beat("microphone")
         thread.start()
     elif source == "system":
         stream = _open_stream(pasimple_mod, MONITOR_DEVICE, "Fused system audio")
@@ -373,6 +426,7 @@ def _start(handle: Handle, out: str, source: str) -> None:
             target=_pull_single, args=(handle, stream, True, "system"),
             daemon=True, name="fused-capture-system")
         handle._threads.append(thread)
+        handle.beat("system")
         thread.start()
     else:
         handle._ring = _mixdown.Ring(RING_HIGH_WATER)
@@ -390,14 +444,17 @@ def _start(handle: Handle, out: str, source: str) -> None:
             target=_pull_monitor_master, args=(handle, monitor),
             daemon=True, name="fused-capture-system")
         handle._threads.extend([mic_thread, monitor_thread])
+        handle.beat("microphone")
+        handle.beat("system")
         mic_thread.start()
         monitor_thread.start()
 
 
 def _teardown(handle: Handle, raise_errors: bool = True) -> None:
-    """Stop every puller, close every stream, finalise the WAV header.
+    """Stop every puller, close the streams no reader owns, finalise the WAV.
 
-    Every step runs even if an earlier one raises, so a failed stop never
+    A stream with a live reader thread is never closed here — see the module
+    header: the reader closes it itself if its read ever returns. Every step runs even if an earlier one raises, so a failed stop never
     leaves a stream attached to PipeWire with nothing reading it."""
     first: BaseException | None = None
     handle._stop.set()
@@ -409,10 +466,21 @@ def _teardown(handle: Handle, raise_errors: bool = True) -> None:
         except BaseException as exc:                    # noqa: BLE001
             first = first or exc
 
+    deadline = time.monotonic() + _JOIN_TIMEOUT_S
     for thread in handle._threads:
-        step(thread.join, 2.0)
-    for stream in handle._streams:
-        step(stream.close)
+        step(thread.join, max(0.0, deadline - time.monotonic()))
+    # `_streams[i]` is read by `_threads[i]`; a stream past the end of
+    # `_threads` (an open that failed mid-`_start`) or whose thread never ran
+    # has no reader to close it.
+    for i, stream in enumerate(handle._streams):
+        thread = handle._threads[i] if i < len(handle._threads) else None
+        if thread is not None and thread.ident is not None:
+            if thread.is_alive():
+                logger.warning(
+                    "audio reader %s is stuck in a read; leaving its stream "
+                    "open rather than freeing it under the read", thread.name)
+            continue
+        step(_close_stream, stream)
     with handle._lock:
         wav, handle._wav = handle._wav, None
     if wav is not None:
@@ -448,7 +516,14 @@ def level(handle: Handle) -> float:
 
 
 def failure(handle: Handle) -> str | None:
-    """The puller-thread error this recording has ALREADY died of."""
+    """The error this recording has ALREADY died of: a puller thread's, or a
+    stream that has stopped delivering chunks."""
+    if handle.error is None:
+        label = handle.stalled()
+        if label is not None:
+            handle.note_error(
+                f"the {label} audio device stopped delivering audio (it may "
+                "have disconnected or switched profile)")
     return handle.error
 
 
