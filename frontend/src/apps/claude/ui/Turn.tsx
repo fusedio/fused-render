@@ -285,7 +285,18 @@ export const Turn = memo(function Turn({
             (Ctrl+X to send now)
           </button>
         ) : null}
-        {pending === "notSent" || (pending && sendNowHint) ? (
+        {pending === "held" ? (
+          <button
+            type="button"
+            className="turn-pending"
+            title="Waiting for this turn to finish. Click to put it back in the box."
+            onClick={onPullPending ? () => onPullPending(turn.key) : undefined}
+            disabled={!onPullPending}
+          >
+            (queued until this turn is done)
+          </button>
+        ) : null}
+        {pending === "notSent" || (pending === "queued" && sendNowHint) ? (
           <button
             type="button"
             className={cn("turn-pending", pending === "notSent" && "is-not-sent")}

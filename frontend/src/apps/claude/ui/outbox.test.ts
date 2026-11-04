@@ -106,3 +106,26 @@ test("the pending journal: save, load and split round-trip per session", async (
   savePending("s1", []);
   expect(loadPending("s1")).toEqual([]);
 });
+
+test("a held line is skipped until the session is done, ordinary lines first, one held line at a time", () => {
+  const h1 = { ...e("h1"), hold: true as const };
+  const h2 = { ...e("h2"), hold: true as const };
+  const list = [h1, e("plain"), h2];
+  expect(shiftOldestSendable(list).entry?.id).toBe("plain");
+  expect(shiftOldestSendable([h1, h2]).entry).toBeNull();
+  expect(shiftOldestSendable(list, true).entry?.id).toBe("plain");
+  expect(shiftOldestSendable([h1, h2], true).entry?.id).toBe("h1");
+  expect(shiftOldestSendable([{ ...h1, notSent: true }, h2], true).entry?.id).toBe("h2");
+});
+
+test("the pending journal keeps a held line's bit across a reload", async () => {
+  const { loadPending, savePending } = await import("./outbox");
+  const cells = new Map<string, string>();
+  const store = {
+    getItem: (k: string) => cells.get(k) ?? null,
+    setItem: (k: string, v: string) => void cells.set(k, v),
+    removeItem: (k: string) => void cells.delete(k),
+  };
+  savePending("s", [{ id: "a", text: "x", hold: true }, { id: "b", text: "y" }], store);
+  expect(loadPending("s", store)).toEqual([{ id: "a", text: "x", hold: true }, { id: "b", text: "y" }]);
+});

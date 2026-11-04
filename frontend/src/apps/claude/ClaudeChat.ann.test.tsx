@@ -78,6 +78,8 @@ let sendCount = 0;
 let cancelStill: string[] = [];
 /** Holds the `cancel` answer until released: the run can go idle first. */
 let holdCancel: Promise<void> | null = null;
+/** The live run's turn ends (polls answer done) until the next message arrives. */
+let turnDone = false;
 /** What `/api/claude-sessions/history` answers (a reload's restore). */
 let historyBody: Record<string, unknown> = { turns: [], live_run: "" };
 /**
@@ -150,6 +152,7 @@ function stubFetch(): void {
       }
       const action = String(body.action ?? "");
       runs.push({ action, params: body });
+      if (action === "start" || action === "send") turnDone = false;
       if (action === "start") {
         // HOLDABLE, so a test can act inside the window between "the controller
         // took the message" and "the run is live" — where `status` is still
@@ -161,7 +164,7 @@ function stubFetch(): void {
         // `pollLive` keeps the run OPEN (a long reply streaming), so a line can
         // drain into it as a follow-up and a stop can land before the host
         // confirms it.
-        if (pollLive && (!cancelled || stickyLive)) {
+        if (pollLive && (!cancelled || stickyLive) && !turnDone) {
           return jsonRes({
             done: false,
             session_id: "s1",
@@ -307,6 +310,7 @@ beforeEach(() => {
   sendCount = 0;
   cancelStill = [];
   holdCancel = null;
+  turnDone = false;
   cancelled = false;
   stickyLive = false;
   prefsBody = {};
@@ -2360,6 +2364,100 @@ for (const flagOn of [false, true]) {
     release();
     await settle(60);
     expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  const heldTag = "(queued until this turn is done)";
+  const endTurn = async () => {
+    turnDone = true;
+    await settle(1200);
+  };
+
+  test(`${tag}: Ctrl+Enter mid-turn holds the line out of the run, tagged, and sends it as a new message once the turn ends`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "later please");
+    await pressCtrlEnterInBox(r);
+    await settle(300);
+    expect(sends()).toHaveLength(0);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+    expect(hints(r)).toEqual([heldTag]);
+    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string; hold?: boolean }>;
+    expect(stored.map((l) => [l.text, l.hold])).toEqual([["later please", true]]);
+    await endTurn();
+    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("later please"));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.params.client_uuid).toBe(stored[0]!.id);
+    expect(hints(r)).toEqual([]);
+  });
+
+  test(`${tag}: two held lines go one per turn, in typed order`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "held one");
+    await pressCtrlEnterInBox(r);
+    await typeInBox(r, "held two");
+    await pressCtrlEnterInBox(r);
+    await settle(200);
+    expect(sends()).toHaveLength(0);
+    await endTurn();
+    const sentHeld = () =>
+      [...sends(), ...started()].filter((c) => String(c.params.message).includes("held ")).map((c) => String(c.params.message));
+    expect(sentHeld()).toEqual([expect.stringContaining("held one")]);
+    expect(hints(r)).toEqual([heldTag]);
+    await endTurn();
+    expect(sentHeld()).toEqual([expect.stringContaining("held one"), expect.stringContaining("held two")]);
+    expect(hints(r)).toEqual([]);
+  });
+
+  test(`${tag}: an ordinary follow-up goes ahead of a held line; the held one waits for that turn too`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "held one");
+    await pressCtrlEnterInBox(r);
+    await typeInBox(r, "plain");
+    await pressEnterInBox(r);
+    await settle(200);
+    expect(sends().map((c) => String(c.params.message))).toEqual([expect.stringContaining("plain")]);
+    expect([...sends(), ...started()].some((c) => String(c.params.message).includes("held one"))).toBe(false);
+    await endTurn();
+    expect([...sends(), ...started()].filter((c) => String(c.params.message).includes("held one"))).toHaveLength(1);
+  });
+
+  test(`${tag}: Ctrl+Enter while idle is the plain send`, async () => {
+    const { r } = await mountChat();
+    await typeInBox(r, "now please");
+    await pressCtrlEnterInBox(r);
+    await settle(200);
+    expect(started().filter((c) => String(c.params.message).includes("now please"))).toHaveLength(1);
+    expect(hints(r)).not.toContain(heldTag);
+  });
+
+  test(`${tag}: a plain Stop turns a held line into "not sent", and it never sends`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "held one");
+    await pressCtrlEnterInBox(r);
+    await settle(100);
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(1500);
+    expect(hints(r)).toEqual(["not sent · click to edit"]);
+    expect([...sends(), ...started()].some((c) => String(c.params.message).includes("held one"))).toBe(false);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: a reload keeps a held line held while the run is live, and sends it after the turn`, async () => {
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id: "0f8c1c52-aaaa-4bbb-8ccc-123456789abc", text: "held across", hold: true }]));
+    historyBody = { turns: [{ role: "user", text: "earlier", uuid: "u0" }], live_run: "r1", inbox: [] };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    const { r } = await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(400);
+    expect([...sends(), ...started()].some((c) => String(c.params.message).includes("held across"))).toBe(false);
+    expect(hints(r)).toEqual([heldTag]);
+    turnDone = true;
+    await settle(3500);
+    const into = [...sends(), ...started()].filter((c) => String(c.params.message).includes("held across"));
+    expect(into).toHaveLength(1);
+    expect(into[0]!.params.client_uuid).toBe("0f8c1c52-aaaa-4bbb-8ccc-123456789abc");
   });
 
   test(`${tag}: a reload re-sends a line the server never had, exactly once`, async () => {

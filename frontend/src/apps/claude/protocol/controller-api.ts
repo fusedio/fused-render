@@ -70,12 +70,13 @@ export interface UserTurn {
   /**
    * THIS PAGE HAS NOT HANDED THE LINE TO THE RUN YET (the page outbox,
    * `ui/outbox.ts`). `"queued"` — typed while a send was in flight, waiting
-   * its turn; `"notSent"` — handed back (a failed send, an interrupt) and
+   * its turn; `"held"` — Ctrl+Enter: waiting until the session is done;
+   * `"notSent"` — handed back (a failed send, an interrupt) and
    * waiting for the reader to decide. Drawn as a small grey tag on the bubble,
    * the way Claude Code's terminal greys a queued line. Comes off when the real
    * send adopts the row (`addUser` rebuilds the turn without it).
    */
-  pending?: "queued" | "notSent";
+  pending?: "queued" | "held" | "notSent";
 }
 
 export interface AssistantTurn {

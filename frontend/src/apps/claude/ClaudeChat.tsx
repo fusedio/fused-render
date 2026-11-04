@@ -1154,7 +1154,7 @@ function ChatBody(props: ChatBodyProps) {
    * written the moment the id appears. The server project queue is not
    * involved: this works the same with the flag on or off.
    */
-  const journal = useRef<Map<string, { text: string; sid: string }>>(new Map());
+  const journal = useRef<Map<string, { text: string; sid: string; hold?: true }>>(new Map());
   const journalSid = useCallback(
     () => controllerRef.current?.getState().sessionId || params.get("session_id") || "",
     [params],
@@ -1179,15 +1179,17 @@ function ChatBody(props: ChatBodyProps) {
     (owner: string) => {
       if (!owner) return;
       const lines: PendingLine[] = [];
-      for (const [id, e] of journal.current) if (journalOwner(e) === owner) lines.push({ id, text: e.text });
+      for (const [id, e] of journal.current) {
+        if (journalOwner(e) === owner) lines.push({ id, text: e.text, ...(e.hold ? { hold: true as const } : {}) });
+      }
       savePending(owner, lines);
     },
     [journalOwner],
   );
   const journalAdd = useCallback(
-    (id: string, text: string) => {
+    (id: string, text: string, hold?: true) => {
       if (!id || !text) return;
-      const entry = { text, sid: journalSid() };
+      const entry = { text, sid: journalSid(), ...(hold ? { hold } : {}) };
       journal.current.set(id, entry);
       journalFlush(journalOwner(entry));
     },
@@ -3569,9 +3571,12 @@ function ChatBody(props: ChatBodyProps) {
    *  `dispatchSend` reads this right before the controller call. */
   const cancelledDispatch = useRef<Set<string>>(new Set());
   const drainRetry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The one look at held lines a reload restored, after the adoption watch. */
+  const heldReload = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
       if (drainRetry.current) clearTimeout(drainRetry.current);
+      if (heldReload.current) clearTimeout(heldReload.current);
     },
     [],
   );
@@ -3585,7 +3590,12 @@ function ChatBody(props: ChatBodyProps) {
     const status = controller.getState().status;
     if (sendBusy.current || sendNowInFlight.current) return;
     if (status === "stopping" || status === "starting") return;
-    const { entry: next, rest } = shiftOldestSendable(outboxRef.current);
+    // A HELD line is sendable only when the session is done: idle, nothing the
+    // live run still holds. `isBusy` below covers the beat after idle.
+    const { entry: next, rest } = shiftOldestSendable(
+      outboxRef.current,
+      status === "idle" && controller.getState().queuedKeys.length === 0,
+    );
     if (!next) return;
     // `status` reads idle a beat before the controller's own send gate opens: a
     // new turn drained in that beat is refused and comes back "not sent", with
@@ -3601,9 +3611,12 @@ function ChatBody(props: ChatBodyProps) {
     }
     setOutbox(rest);
     dispatching.current.add(next.id);
+    // Out of the page's hands now: a reload before the ack re-sends it as an
+    // ordinary line, not a held one.
+    if (next.hold && next.payload.opts.clientId) journalAdd(next.payload.opts.clientId, next.text);
     const followUp = status !== "idle";
     dispatchSend(next.text, next.payload.opts, followUp, { ...next.payload, entryId: next.id });
-  }, [controller, dispatchSend, setOutbox]);
+  }, [controller, dispatchSend, setOutbox, journalAdd]);
   useEffect(() => {
     drainRef.current = drainOutbox;
   }, [drainOutbox]);
@@ -3686,11 +3699,36 @@ function ChatBody(props: ChatBodyProps) {
     // `dispatchSend` writes for each re-sent line.
     // ALL of them are journalled before the first goes out: each write rewrites
     // the session's whole list, and a reload in between must not lose the rest.
-    for (const l of resend) journalAdd(l.id, l.text);
+    for (const l of resend) journalAdd(l.id, l.text, l.hold);
+    const heldBack: OutboxEntry<OutboxPayload>[] = [];
     for (const l of resend) {
+      if (l.hold) {
+        // Still held: back in the outbox with its bubble, waiting for the
+        // session to be done — never a follow-up into a live run.
+        const id = `o${++outboxSeq.current}`;
+        const bubble = controller.postOptimisticUser(l.text, "held");
+        heldBack.push({
+          id,
+          text: l.text,
+          hold: true,
+          payload: { opts: { clientId: l.id }, bubble, entryId: id, taken: NO_TAKEN },
+        });
+        continue;
+      }
       dispatchSend(l.text, { clientId: l.id }, controller.getState().status !== "idle");
     }
-  }, [state.sessionId, state.historyLoading, state.adopting, state.turns, state.inbox, state.taken, controller, dispatchSend, journalAdd]);
+    if (heldBack.length) {
+      setOutbox([...outboxRef.current, ...heldBack]);
+      // `status` still reads idle for a run history says is live until the
+      // adoption watch lands, so the drain looks once that has had its laps; a
+      // run that really is live drains on its own idle transition instead.
+      if (heldReload.current) clearTimeout(heldReload.current);
+      heldReload.current = setTimeout(() => {
+        heldReload.current = null;
+        drainRef.current();
+      }, 2500);
+    }
+  }, [state.sessionId, state.historyLoading, state.adopting, state.turns, state.inbox, state.taken, controller, dispatchSend, journalAdd, setOutbox]);
   /**
    * PARKED PICTURES GO BACK TO THE TRAY when the outbox is emptied by a
    * navigation (Bugbot 4121249270): Back and Open session used to drop the
@@ -3898,6 +3936,44 @@ function ChatBody(props: ChatBodyProps) {
       defaults.permission,
       journalAdd,
     ],
+  );
+
+  /**
+   * HOLD UNTIL DONE — Ctrl+Enter while a run is live (D1462): the line is NOT
+   * written into the run. It waits in the outbox as a held line (bubble tag
+   * "queued until this turn is done") until the turn is over and every ordinary
+   * line ahead of it has been sent and answered, then goes as its own turn;
+   * several go one per turn, in typed order (`shiftOldestSendable`, the drain).
+   */
+  const onSendHeld = useCallback(
+    (text: string) => {
+      const bubble = text ? controller.postOptimisticUser(text, "held") : "";
+      const took = trayTakenRef.current || !sendBusy.current;
+      const entryId = `o${++outboxSeq.current}`;
+      const clientId = text ? newClientId() : "";
+      if (clientId) journalAdd(clientId, text, true);
+      setOutbox(
+        pushBack(outboxRef.current, {
+          id: entryId,
+          text,
+          hold: true,
+          payload: {
+            opts: {
+              model: defaults.model,
+              effort: defaults.effort,
+              permission: defaults.permission,
+              ...(clientId ? { clientId } : {}),
+            },
+            bubble,
+            entryId,
+            taken: took ? takeAttachments() : NO_TAKEN,
+            ...(took ? {} : { takeLater: true }),
+          },
+        }),
+      );
+      drainRef.current();
+    },
+    [controller, takeAttachments, setOutbox, defaults.model, defaults.effort, defaults.permission, journalAdd],
   );
 
   const rc = useRemoteControl(state.sessionId ?? "", file ?? "", () => {
@@ -5159,12 +5235,13 @@ function ChatBody(props: ChatBodyProps) {
       // it is shut is PARKED by `dispatchSend`, never refused.
       sendBusy: sendLocked,
       // THE OUTBOX'S SEAT IN THE COMPOSER: the count for the hint line, ↑ to
-      // pull the newest parked line back, Ctrl+Enter / Ctrl+X to stop and send now.
+      // pull the newest parked line back, Ctrl+X to stop and send now, Ctrl+Enter to hold.
       queuedCount: outboxCount,
       notSentCount,
       onPullQueued,
       history: promptHistory,
       onSendNow,
+      onSendHeld,
       onSendQueuedNow,
       hasQueued,
       onPaste,
@@ -5230,6 +5307,7 @@ function ChatBody(props: ChatBodyProps) {
       onPullQueued,
       promptHistory,
       onSendNow,
+      onSendHeld,
       onSendQueuedNow,
       hasQueued,
       urlTick,
