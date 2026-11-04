@@ -62,6 +62,10 @@ import { agentLabel, modelLabelsOf, useAgentBackends } from "@platform/lib/agent
 import { copyToTaskShots, SchedButton } from "./SchedButton";
 import { outboxHint } from "./outbox";
 
+/** The Ctrl+X hint under the box and the send button's tooltip, while a run is live. */
+export const SEND_NOW_HINT = "Ctrl+X to send now";
+export const SEND_NOW_TITLE = "Send now (Ctrl+X)";
+
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
 export const CHAT_PLACEHOLDER = "Reply to Claude…";
@@ -2380,6 +2384,13 @@ export function ComposerCard({
         {(queuedCount ?? 0) + (notSentCount ?? 0) > 0 ? (
           <div className="c-queued c-outbox">{outboxHint(queuedCount ?? 0, notSentCount ?? 0)}</div>
         ) : null}
+        {/* CTRL+X IS SEND-NOW, AND NOTHING SAID SO. While a run is live and the
+            box has words, the one shortcut that skips the wait is named, in
+            the same quiet line as the hints above. Plain ASCII, the same words
+            on every platform. */}
+        {variant === "chat" && running && onSendNow && text.trim() ? (
+          <div className="c-queued c-sendnow-hint">{SEND_NOW_HINT}</div>
+        ) : null}
         {/* THE TOOLS' SHELF: a one-track grid whose row goes 1fr → 0fr while the
             composer is idle (styles/composer.css `.c-composer-tools`). A grid
             track is the one height that animates from "whatever the row needs"
@@ -2492,7 +2503,9 @@ export function ComposerCard({
       // the window closes (ClaudeChat's outbox), so the tooltip names the
       // wait, not a refusal.
       title={
-        running
+        running && onSendNow && text.trim()
+          ? SEND_NOW_TITLE
+          : running
           ? // T:4187's own string, not the shorter one this shipped with
             // (visual pass 3, FIX-27). `aria-label` is `Stop` on both sides —
             // that is the control's NAME — and the tooltip is where legacy says

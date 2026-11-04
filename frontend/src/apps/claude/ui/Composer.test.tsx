@@ -2223,3 +2223,25 @@ test("CTRL+X while idle is a normal send, and Ctrl+Enter still sends now", () =>
   live.press("Enter", { ctrlKey: true });
   expect(now).toEqual(["again"]);
 });
+
+test("the Ctrl+X hint shows only while a run is live and the box has words, the same on every platform", () => {
+  const hint = (c: ReturnType<typeof mount>) =>
+    c.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("c-sendnow-hint"));
+  const title = (c: ReturnType<typeof mount>) => c.root.findByProps({ className: "c-send" }).props.title;
+  const live = mount({ status: "running", onSendNow: () => {} });
+  // Empty box: no hint, the button keeps saying Stop.
+  expect(hint(live)).toHaveLength(0);
+  expect(title(live)).toBe("Stop this turn");
+  live.type("do this first");
+  expect(hint(live)).toHaveLength(1);
+  expect(hint(live)[0].children).toEqual(["Ctrl+X to send now"]);
+  expect(title(live)).toBe("Send now (Ctrl+X)");
+  // Whitespace is not words.
+  live.type("   ");
+  expect(hint(live)).toHaveLength(0);
+  // Idle: Ctrl+X is the plain send, there is nothing to hint.
+  const idle = mount({ onSendNow: () => {} });
+  idle.type("go");
+  expect(hint(idle)).toHaveLength(0);
+  expect(title(idle)).toBe("Send");
+});
