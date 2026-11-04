@@ -26,10 +26,11 @@
 // the commit is called as that key would call it). Everything between is real.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 import { dropSharedPrefsRead } from "@platform/lib/api";
 import { sharedHistoryCache } from "./protocol/history";
+import * as runControllerModule from "./protocol/run-controller";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
 const { NAV_LOCKED_REASON } = await import("./ann");
@@ -1465,6 +1466,60 @@ test("a line typed while the run is only STARTING is parked as a queued bubble, 
   ]);
   expect(boxValue(r)).toBe("");
 });
+
+test("a parked line drained while status is idle but the controller gate is still shut is retried, never not-sent", async () => {
+  // `status` reads idle a beat before the controller's own send gate opens. A
+  // line drained in that beat used to be refused and come back "not sent" with
+  // nothing to retry it. The drain looks again shortly instead.
+  const realCreate = runControllerModule.createChatController;
+  let gateShut = false;
+  const spy = spyOn(runControllerModule, "createChatController").mockImplementation(((...a: Parameters<typeof realCreate>) => {
+    const c = realCreate(...a);
+    const real = c.isBusy.bind(c);
+    // The beat in question, as the drain reads it: status already idle, the
+    // controller's own gate not open yet.
+    const realState = c.getState.bind(c);
+    // One derived object per real state, so a subscriber sees a stable snapshot.
+    const idleOf = new WeakMap<object, ReturnType<typeof realState>>();
+    c.getState = () => {
+      const st = realState();
+      if (!gateShut || st.status === "idle") return st;
+      let v = idleOf.get(st);
+      if (!v) idleOf.set(st, (v = { ...st, status: "idle" as const }));
+      return v;
+    };
+    c.isBusy = () => gateShut || real();
+    return c;
+  }) as typeof realCreate);
+  try {
+    const open = heldStart();
+    const { r } = await mountChat();
+    await typeInBox(r, "first message");
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle();
+    await typeInBox(r, "second message");
+    await pressEnterInBox(r);
+    await settle();
+    expect(started()).toHaveLength(1);
+    gateShut = true;
+    await act(async () => open());
+    // Longer than the follow-up road's own 3 s wait, so a line that WAS drained
+    // would have reached `start` by now.
+    await settle(3800);
+    // Held, not sent and not refused: no second start yet, no not-sent row.
+    expect(started()).toHaveLength(1);
+    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
+    gateShut = false;
+    await settle(3400);
+    expect(started()).toHaveLength(2);
+    expect(started()[1]!.params.message).toContain("second message");
+    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
+  } finally {
+    spy.mockRestore();
+  }
+}, 20000);
 
 test("a parked line stopped before the inbox confirmed it comes back as ONE not-sent bubble", async () => {
   // Bugbot round 2 (PR #1323): a stop hands an unconfirmed follow-up back twice

@@ -3439,6 +3439,10 @@ function ChatBody(props: ChatBodyProps) {
           if (parked?.entryId) dispatching.current.delete(parked.entryId);
           parkedBySendId.current.delete(sendId);
           releaseSend(sendId);
+          // THE TURN THIS SEND OPENED IS OVER and the controller's own gate is
+          // free again: the next held line may go. The status effect saw
+          // `idle` a moment earlier, while that gate was still shut.
+          drainRef.current();
         }
       })();
     },
@@ -3480,6 +3484,13 @@ function ChatBody(props: ChatBodyProps) {
   /** …and the ones a Stop asked to abort while they were in that gap:
    *  `dispatchSend` reads this right before the controller call. */
   const cancelledDispatch = useRef<Set<string>>(new Set());
+  const drainRetry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (drainRetry.current) clearTimeout(drainRetry.current);
+    },
+    [],
+  );
   const drainOutbox = useCallback(() => {
     // Not while "send now" is between its stop and its own dispatch: a line
     // drained here would go out as a follow-up into a run that is still
@@ -3492,6 +3503,18 @@ function ChatBody(props: ChatBodyProps) {
     if (status === "stopping" || status === "starting") return;
     const { entry: next, rest } = shiftOldestSendable(outboxRef.current);
     if (!next) return;
+    // `status` reads idle a beat before the controller's own send gate opens: a
+    // new turn drained in that beat is refused and comes back "not sent", with
+    // nothing to retry it. Look again shortly instead.
+    if (status === "idle" && controller.isBusy()) {
+      if (!drainRetry.current) {
+        drainRetry.current = setTimeout(() => {
+          drainRetry.current = null;
+          drainRef.current();
+        }, 50);
+      }
+      return;
+    }
     setOutbox(rest);
     dispatching.current.add(next.id);
     const followUp = status !== "idle";
