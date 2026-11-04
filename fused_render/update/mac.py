@@ -386,7 +386,16 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
     old = _old_bundle_path(parent, os.getpid() if pid is None else pid)
     try:
         swapped = _swap_paths(real, staged)
-    except OSError:
+    except OSError as error:
+        # ENOENT is not a refusal: the install thread is mid-publish (it
+        # just moved the older copy to `.superseded` and is about to rename
+        # `.partial` into the staged name), and an rmtree here could land on
+        # the complete new copy a moment later. Nothing to discard; the
+        # next quit sees whatever the publish leaves.
+        if error.errno == errno.ENOENT:
+            logger.info("update: nothing at %s to apply yet (an install is "
+                        "publishing); leaving it for the next quit", staged)
+            return None
         logger.warning("update: could not exchange %s with staged v%s; discarding "
                        "the staged copy", real, version, exc_info=True)
         shutil.rmtree(staged, ignore_errors=True)

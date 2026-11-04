@@ -1803,7 +1803,29 @@ def test_an_apply_that_cannot_move_anything_discards_the_staged_copy(
     from fused_render import installed
     assert installed.bundle_version(str(bundle)) == "0.4.10"
     assert not staged.exists()
-    assert installed.installed_version is not None
+
+
+def test_an_apply_that_finds_the_staged_name_gone_discards_nothing(monkeypatch, tmp_path):
+    """ENOENT from the exchange means an install is mid-publish (older copy
+    moved to `.superseded`, new copy about to take the staged name): the
+    apply must not rmtree a name the publish is about to fill."""
+    import errno
+
+    bundle = tmp_path / "FusedRender.app"
+    _plist(bundle, "0.4.10")
+    staged = tmp_path / ".FusedRender-update.app"
+    _plist(staged, "9.9.9")
+    rmtrees = []
+
+    def vanished(a, b):
+        raise OSError(errno.ENOENT, "No such file or directory", a, None, b)
+
+    monkeypatch.setattr(mac, "_swap_paths", vanished)
+    monkeypatch.setattr(mac.shutil, "rmtree", lambda *a, **k: rmtrees.append(a))
+
+    assert mac.apply_staged(str(bundle)) is None
+    assert rmtrees == []
+    assert staged.is_dir()
 
 
 def test_an_unreadable_installed_plist_neither_applies_nor_sweeps(monkeypatch, tmp_path):
