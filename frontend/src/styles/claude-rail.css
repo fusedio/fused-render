@@ -862,10 +862,21 @@ button.claude-rail-peek-scope.is-node:focus-visible {
 .breakout-card .breakout-error {
   padding: 4px 12px;
 }
+.breakout-card .breakout-title,
+.breakout-card .breakout-note {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* One line for the head: a long subagent description ellipsizes first, the
+   note (type · model · status) keeps more of its width and gives way after. */
 .breakout-card .breakout-title {
+  flex: 0 1 auto;
   font-weight: 600;
 }
 .breakout-card .breakout-note {
+  flex: 0 100 auto;
   color: var(--c-faint, var(--fg));
   opacity: 0.7;
 }
@@ -890,8 +901,13 @@ button.claude-rail-peek-scope.is-node:focus-visible {
 }
 
 /* The Agent peek card body (BreakoutCards `AgentPeekCard`): the subagent's
-   transcript, read-only, scrolling inside the card. */
-.agent-peek-body {
+   transcript, read-only, scrolling inside the card. It wears `.chat-root` for
+   the transcript's scoped styles, and `.chat-root` is the chat's flex ROW
+   (chat.css), `overflow: hidden` and `position: relative` — so every rule
+   here is on the pair, to win over it whatever order the sheets load in. A
+   block, or the transcript's blocks sit side by side. */
+.chat-root.agent-peek-body {
+  display: block;
   position: absolute;
   inset: 0;
   overflow: auto;
