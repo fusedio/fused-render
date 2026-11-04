@@ -329,20 +329,54 @@ in WKWebView (`NSURLErrorCannotFindHost`, `CannotConnectToHost`,
 `NotConnectedToInternet`, `TimedOut`) triggers `diagnose` instead of showing
 WebKit's error, so the user always sees one of the three messages above.
 
-### 7.4 The computer's side of the same problem
+### 7.4 The computer's side: checks macOS can run itself
 
-The most common "same Wi-Fi, still unreachable" cause that the phone cannot
-see is the **macOS firewall** blocking incoming connections to the python
-process. Preferences already shows the listener state; add one check there:
+The phone's probe is the ground truth for "can the phone reach the
+computer", but several causes live on the computer and the computer can
+detect them without any phone involved. `lan.status()` grows a
+`warnings: [{code, message}]` list that `/api/prefs` carries and Preferences
+renders under the switch, one banner per entry. Each check is a few lines in
+`lan.py` (or a small `lan_doctor.py`), run when sharing is switched on and
+on every prefs read (cached for a few seconds).
 
-- Read `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate` and
-  `--getblockall`. If the firewall is on and either "block all incoming" is
-  set or the running executable is not in the allow list
-  (`--listapps`), show: "macOS firewall may block phones from reaching this
-  computer. Allow incoming connections for Fused Render in System Settings,
-  Network, Firewall." Linux: skip (no uniform API; the doc copy covers it).
-- Keep the existing "no network address found" and "listener not running"
-  errors; they already answer "is the computer on a network at all".
+| Check | How | Warning when it fails |
+|---|---|---|
+| **Listener up** | `_controller.running`, and a TLS self-connect to `https://<lan ip>:<port>/` accepting only our own fingerprint | "Sharing is on but the listener is not answering." (existing `error` field; the self-connect also catches a bad certificate or a bind on the wrong interface) |
+| **A LAN address on a real interface** | Enumerate interfaces; require a private IPv4 on `en*` (Wi-Fi or Ethernet), not only on `utun*`/`ipsec*`/`ppp*` | "No Wi-Fi or Ethernet address found. Connect this computer to the network the phone uses." |
+| **VPN is not hiding the LAN** | Default route interface from `route -n get default` is `utun*`, or the only private address is on a tunnel | "A VPN is active. Phones usually cannot reach this computer while it is on. The code uses the Wi-Fi address, but the VPN may still block it." Also: the QR must use the `en*` address, never the default-route one, which is what `lan_ip()` returns today |
+| **macOS firewall** | `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate`, `--getblockall`, and `--listapps` for the running executable (the `.app` bundle, or the python binary under `fused serve`) | "The macOS firewall may block phones from reaching this computer. Allow incoming connections for Fused Render in System Settings, Network, Firewall." Only when the global state is on and (block-all is set, or the executable is listed as blocked, or stealth mode is on, which drops the phone's probe) |
+| **Local hostname is advertised** | `scutil --get LocalHostName` returns a name, and `dns-sd -G v4 <name>.local` (2 s timeout) resolves to one of our own addresses | "This computer's local name is not resolving. Phones will fall back to the IP address." |
+| **Hostname changed since pairing** | Compare the name stored at pairing time (new field in `lan_devices.json`) with the current one | "This computer was renamed since *iPhone* paired. The phone will reconnect by address, or scan a new code." |
+| **Each phone's last contact** | `last_seen` per device, already stored | Device list shows "reachable, seen just now" versus "last seen 3 days ago" so the user sees from the computer which phones are currently getting through |
+
+macOS 15 added a Local Network privacy prompt for apps, but it applies to
+apps that **send** to local addresses or use Bonjour, not to a process that
+only **listens** (Apple TN3179). With advertising gone, the server never
+sends first, so no permission check is needed on the computer. If a Bonjour
+advertise is ever re-added (the `dns-sd -R` variant of §3), that changes and
+the same policy-denied detection as on iOS applies.
+
+Linux: the firewall check becomes `ufw status` / `firewall-cmd --state`
+where present, the hostname check uses `avahi-resolve -n`, and the rest is
+identical.
+
+### 7.5 The two sides covering each other
+
+- **While the QR is on screen and nothing arrives.** Preferences already
+  polls the device list. If no `/pair` request lands within 45 seconds of
+  showing a code, the panel unfolds a short checklist: same Wi-Fi on both;
+  on the phone, Settings, Fused Render, Local Network on; the computer's own
+  warnings above if any. This is the one moment the computer knows the phone
+  is trying and failing, so it is where the computer-side hints belong.
+- **After pairing.** The phone's banner (§7.3) handles every failure it can
+  see. The computer's device list, with `last_seen`, answers "is my phone
+  getting through right now" from the other end. Together they cover the
+  denied-permission, wrong-network, firewall, VPN and sleeping-computer cases
+  from whichever device the user happens to be looking at.
+- **One shared vocabulary.** The three phone states and the computer
+  warnings use the same wording for the same cause, so a user who reads
+  "Local Network" on the Mac finds the same words in the iOS banner and in
+  Settings.
 
 Not proposed: comparing SSIDs. Reading the SSID on iOS needs the
 Access Wi-Fi Information entitlement plus location permission, and on macOS
