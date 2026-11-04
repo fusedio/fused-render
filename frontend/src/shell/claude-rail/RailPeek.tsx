@@ -66,8 +66,13 @@
 // (the height, growing down), the corners over their ends. A bottom drag
 // stops a gap over the favourite's card when this one stands above it
 // (`bottomClear`). The favourite's card wears the same grips whenever it is
-// up (`resizeKey`, its own ui-layout `canvasRailFav`), bar the bottom two:
-// its bottom stands on the rail's foot. A press INSIDE a hover card pins
+// up (`resizeKey`, its own ui-layout `canvasRailFav`) — its bottom ones too
+// (owner, 2026-11-04: "fav card preview: no option to resize from bottom"):
+// a bottom drag keeps its TOP where it was and moves the bottom, never past
+// the rail's bottom; on release the new height is kept and the card stands
+// on the rail's bottom again. No accent while a drag is on (owner,
+// 2026-11-04): the cursor and the grip's own quiet trace are the feedback.
+// A press INSIDE a hover card pins
 // it too — but the remembered size waits for that press to END (`grown`):
 // a card that grew under a pressed pin would move the pin out from under
 // the pointer before the click landed.
@@ -79,13 +84,15 @@
 // chat a favourite (`setTaskFavourite`; the server keeps the stars, so every
 // rail and pane lists the same ones). Starred, the star is filled in the
 // accent. A favourite's card is the one that may stay open between visits:
-// the server records which favourite is open (`starred_open`), so the ×
-// on a starred card writes "closed" too, and unstarring the favourite's own
-// card shuts it (`dismissOnUnstar`: the server drops its record, the ring
-// leaves the foot). The rail's card never shows a starred chat: a star
-// lets it go (`onStarred`) and the list leaves the chat out (ClaudeRail
-// header, 2026-11-04). The rail reopens the recorded one on its own
-// (ClaudeRail header).
+// which favourite is open is PER WINDOW (platform/lib/last-chat
+// `useFavOpen`; the server's `starred_open` is followed by no card since
+// 2026-11-04), so the × on the favourite's card closes it in this window and
+// writes nothing, and unstarring the favourite's own card shuts it
+// (`dismissOnUnstar`: the ring leaves the foot). A star pressed ON in the
+// rail's card lets that card go of the chat and opens the favourite's card
+// in this window (`onStarred`, ClaudeRail); the list leaves the chat out
+// (ClaudeRail header). The rail's card may still show a favourite on a hover
+// of its ring (ClaudeRail header, 2026-11-04).
 //
 // ACCESSIBILITY: the card is a non-modal `dialog` named for its chat; the ring
 // that opened it says `aria-expanded` and `aria-controls` (ClaudeRail). The
@@ -134,7 +141,8 @@ import {
   taskWhen,
   type CardTitle,
 } from "@shell/tasks-lib";
-import { nodeName, railScope, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { navigateUrl } from "@platform/lib/router";
+import { chipDoor, chipLabel, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -174,13 +182,9 @@ function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; h
   };
 }
 
-/** Every grip, corners last so they paint (and hit) over the edges' ends. */
+/** Every grip, corners last so they paint (and hit) over the edges' ends —
+ *  the favourite's card's too (header). */
 const ALL_GRIPS: readonly ResizeEdge[] = ["l", "t", "b", "tl", "bl"];
-/** A card whose bottom stands on the rail's (`align: "bottom"`, the
- *  favourite's): its bottom never moves — a drag there could only shrink it
- *  and the release would land it back on the rail's foot — so no bottom
- *  grips. */
-const TOP_GRIPS: readonly ResizeEdge[] = ["l", "t", "tl"];
 
 /** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this") —
  *  Bootstrap Icons' `pin-angle-fill` (MIT), inlined: react-icons is not a
@@ -211,6 +215,9 @@ interface SeatFacts {
   /** `#T12` — "" on a draft, which has no task number yet. */
   id: string;
   scope: ReturnType<typeof railScope>;
+  /** The place the where-chip names (claude-rail-lib `chipPlace`): the
+   *  rail's own, or — a favourite from elsewhere — the row's. */
+  at: RailPlace;
   words: string;
   /** How many messages the chat holds (the listing's `message_count`; 0
    *  until the full row is held, or for a chat with none). */
@@ -238,6 +245,7 @@ function seatFacts(seat: RailRow, place: RailPlace): SeatFacts {
   const line = cardTitleLine(merged);
   const draft = !!row && isDraftTask(row);
   const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged);
+  const at = chipPlace(merged, place);
   return {
     t,
     row,
@@ -246,7 +254,8 @@ function seatFacts(seat: RailRow, place: RailPlace): SeatFacts {
     href,
     draft,
     id: draft ? "" : shortTaskId(t.task_id),
-    scope: railScope(t, place),
+    scope: railScope(merged, at),
+    at,
     words: draft ? "draft" : statusWords(t, !!row?.failed),
     count: Math.max(0, row?.message_count ?? 0),
     unread: t.unread > 0 ? t.unread : 0,
@@ -285,8 +294,9 @@ export interface RailPeekProps {
   /** The rail, for its edge and for the row it stands in (its parent). */
   railEl: HTMLElement | null;
   /** Where the rail stands (claude-rail-lib `RailPlace`): what a row's
-   *  target is read against to name its node or file (`railScope`), and —
-   *  on a canvas — the selected node, whose chip is a label, not a door. */
+   *  target is read against to name its node or file (`railScope`) — a row
+   *  not in it (a favourite from elsewhere) is read against its own place
+   *  (`chipPlace`). */
   place: RailPlace;
   /** The ⋮ filed or deleted a task: re-read the listing now rather than on
    *  the pulse's next move. */
@@ -316,10 +326,12 @@ export interface RailPeekProps {
   onNoRoom: () => void;
   /** "Open in panel →", and any hop the chat itself makes. */
   onOpenChat: (href: string) => void;
-  /** The head's node chip: select that node in the workbench (its name, as
-   *  the workbench names it — the file's stem). Canvas pages only; without
-   *  it the chip is a label. */
-  onSelectNode?: (udfName: string) => void;
+  /** The canvas the PAGE stands on, where the page can select a node in
+   *  place (claude-rail-lib `RailHere`; the canvas page only): the where-chip
+   *  of a chat on that canvas selects its node there instead of navigating.
+   *  A getter, read at render and at the press — the favourite's card reads
+   *  it off the rail it stands beside (fav-peek-store `railHere`). */
+  here?: () => RailHere | null;
   /** The chip was pressed: pin the shown card (a keyboard press has no
    *  pointer-down to do it, `onPressInside`), and see the keyboard into its
    *  composer once that has mounted (ClaudeRail `focusComposerSoon`). */
@@ -341,7 +353,8 @@ export interface RailPeekProps {
    *  card wears its grips whenever it is up, pinned or not, and the size
    *  dragged lands under this ui-layout key and stands over `size`'s width
    *  and height from then on. A card on the rail's foot (`align: "bottom"`)
-   *  has no bottom grips (`TOP_GRIPS`). */
+   *  takes a bottom drag with its top held, never past the rail's bottom,
+   *  and stands on the rail's bottom again on release. */
   resizeKey?: "canvasRailFav";
   /** Another card's box to keep clear of (the favourite's card, at the
    *  rail's foot; rail-peek-lib `placeClear`: above it, else to its left,
@@ -423,7 +436,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onDismiss,
     onNoRoom,
     onOpenChat,
-    onSelectNode,
+    here,
     onPin,
     held,
     onHeld,
@@ -519,9 +532,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // ends. A ref, not state — `place` runs before every `setBox`, so the
   // render that draws the new box reads a fresh value.
   const railLeft = useRef(0);
-  // The node the canvas page has selected (its file), if any (RailPeekProps
-  // `place`).
-  const selectedFile = where.kind === "canvas" ? where.file ?? null : null;
   // Resolved once per rail element, not per placement: `rowOf` reads computed
   // style, and `place` runs on every scroll of the rail's list.
   const row = useMemo(() => rowOf(railEl), [railEl]);
@@ -559,8 +569,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     // A bottom drag stops a gap over the favourite's card when this card
-    // stands above it (`avoid`); the favourite's own card avoids nothing.
-    const floor = bottomClear(box, avoid);
+    // stands above it (`avoid`); the favourite's own card, standing on the
+    // rail's bottom, stops there (header).
+    const floor = size?.align === "bottom" && railEl ? railEl.getBoundingClientRect().bottom : bottomClear(box, avoid);
     dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floor };
     dragLast.current = null;
     setResizing(corner);
@@ -644,7 +655,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // A pinned list card, or a card sized by the reader whatever its pin (the
   // favourite's, `resizeKey`); a fixed-size card never.
   const gripsOn = (size ? !!resizeKey : pinned) && visible && !!view?.pulse.session_id;
-  const grips = size?.align === "bottom" ? TOP_GRIPS : ALL_GRIPS;
   const dragKey = useRef<string | null>(null);
   useEffect(() => {
     if (dragStart.current && (!gripsOn || dragKey.current !== shownKey)) endDrag(false);
@@ -929,9 +939,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   };
 
   // THE STAR (header): the server stores it, the pulse brings it back to
-  // every rail. A plain star (`setTaskFavourite` with `open` omitted) opens
-  // the favourite's card and closes whichever was open — a star you just
-  // pressed is a card you want to see. UNSTARRING shuts the card only under `dismissOnUnstar`
+  // every rail. A star pressed on opens the favourite's card in THIS window
+  // (the host's `onStarred`, ClaudeRail) — a star you just pressed is a card
+  // you want to see; the server's own `starred_open` answer is not read.
+  // UNSTARRING shuts the card only under `dismissOnUnstar`
   // (the favourite's card host, FavouritePeek) — its ring leaves the foot,
   // and a card with no ring to stand beside lets go — and only if the card
   // is still on that chat when the call returns.
@@ -1130,7 +1141,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         // chat card (or the favourite's). `aria-hidden`: a pointer-only
         // affordance; the card's size is a preference, not a control the
         // keyboard needs.
-        grips.map((corner) => (
+        ALL_GRIPS.map((corner) => (
           <div
             key={corner}
             className={"claude-rail-peek-grip is-" + corner + (resizing === corner ? " is-active" : "")}
@@ -1215,65 +1226,65 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   {head.id}
                 </span>
               )}
-              {head.scope.kind === "node" && onSelectNode ? (
-                // The node's chip is a door: it selects the node in the
-                // workbench (which zooms to it and shows its code). The card
-                // STAYS (owner, 2026-10-31: "when I click on the tag, shouldn't
-                // the chat preview still stay open") — the press is inside the
-                // card, so it pins it like any other; the rail then narrows to
-                // that node, whose rings still hold this chat, and the card
-                // follows its ring. The selected node's chip is the SAME
-                // button, `aria-disabled` (still focusable): swapping it for a
-                // span when the selection echo lands would unmount the focus
-                // it may hold (Bugbot on #2044). Names, not files: the page's
-                // selected file is a guess from the echo (claude-rail-lib
-                // `onRail`).
-                (() => {
-                  const current = !!selectedFile && nodeName(selectedFile) === head.scope.name;
-                  return (
-                    <button
-                      type="button"
-                      className="claude-rail-peek-scope is-node"
-                      aria-disabled={current || undefined}
-                      title={
-                        current
-                          ? `On the node ${head.scope.name} (${head.scope.file}), selected`
-                          : `Select the node ${head.scope.name} (${head.scope.file}) in the workbench`
+              {(() => {
+                // THE WHERE-CHIP IS A DOOR, on every page (owner, 2026-11-04:
+                // "click on the tag — we should go to the page/node, wherever
+                // we have"): a real link to the place's page (claude-rail-lib
+                // `chipDoor` — the canvas, with its node selected; the
+                // explorer's folder or file), so a modified press opens it
+                // in a tab. On the canvas page, a chip naming THIS canvas
+                // selects in place instead (the node, or the whole canvas):
+                // the workbench zooms to it and the card STAYS (owner,
+                // 2026-10-31: "when I click on the tag, shouldn't the chat
+                // preview still stay open") — pinned first, since the rail
+                // narrows to that node and only a pinned card is held through
+                // that (CodeRabbit on #2044). The chip already naming the
+                // selection is the SAME link, `aria-disabled` (still
+                // focusable): swapping it for a span when the selection echo
+                // lands would unmount the focus it may hold (Bugbot on #2044).
+                // Names, not files: the page's selected file is a guess from
+                // the echo (claude-rail-lib `onRail`).
+                const door = chipDoor(head.scope, head.at, here?.() ?? null);
+                const current = !!door.select?.current;
+                const label = chipLabel(head.scope, head.at);
+                return (
+                  <a
+                    href={door.href}
+                    className={
+                      "claude-rail-peek-scope" +
+                      (head.scope.kind === "node" ? " is-node" : head.scope.kind === "file" ? " is-file" : "")
+                    }
+                    aria-disabled={current || undefined}
+                    title={door.title}
+                    onClick={(e) => {
+                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                      e.preventDefault();
+                      // Read again at the press: the page's selection may
+                      // have moved since this render.
+                      const now = chipDoor(head.scope, head.at, here?.() ?? null);
+                      const pick = here?.();
+                      if (!now.select || !pick) {
+                        navigateUrl(now.href, now.isDir === undefined ? undefined : { isDir: now.isDir });
+                        return;
                       }
-                      onClick={(e) => {
-                        // Pinned FIRST: the selection may reshape the rail (it
-                        // narrows to the node), and only a pinned card is held
-                        // through that (CodeRabbit on #2044).
-                        onPin();
-                        if (!current && head.scope.kind === "node") onSelectNode(head.scope.name);
-                        // Back to the composer: the reader is still in this chat,
-                        // and WebKit leaves a pressed button unfocused — focus on
-                        // the body, where a later press into the canvas frame is
-                        // not heard as the window's blur and so never closes the
-                        // pinned card (ClaudeRail's frame-press rule). A seat with
-                        // no composer (a draft on the node), or a chat still
-                        // mounting, keeps it on the chip — the latter until
-                        // `onPin`'s wait moves it on.
-                        const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
-                        (box ?? e.currentTarget).focus({ preventScroll: true });
-                      }}
-                    >
-                      {head.scope.name}
-                    </button>
-                  );
-                })()
-              ) : head.scope.kind === "whole" ? (
-                <span className="claude-rail-peek-scope" title={`On the ${head.scope.word.toLowerCase()} as a whole`}>
-                  {head.scope.word}
-                </span>
-              ) : (
-                // A FILE under the folder (the app page, the explorer's folder
-                // view), or a node with no workbench to select it in: where the
-                // chat is, as a label — the full path in the tooltip.
-                <span className="claude-rail-peek-scope is-file" title={`On ${head.scope.file}`}>
-                  {head.scope.name}
-                </span>
-              )}
+                      onPin();
+                      if (!now.select.current) pick.select(now.select.udfName);
+                      // Back to the composer: the reader is still in this
+                      // chat, and WebKit leaves a pressed control unfocused —
+                      // focus on the body, where a later press into the
+                      // canvas frame is not heard as the window's blur and so
+                      // never closes the pinned card (ClaudeRail's frame-press
+                      // rule). A seat with no composer (a draft on the node),
+                      // or a chat still mounting, keeps it on the chip — the
+                      // latter until `onPin`'s wait moves it on.
+                      const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
+                      (box ?? e.currentTarget).focus({ preventScroll: true });
+                    }}
+                  >
+                    {label}
+                  </a>
+                );
+              })()}
               <span className="claude-rail-peek-gap" aria-hidden="true" />
               {head.t.session_id && !head.draft && (
                 // THE PULSE AND THE ARCHIVE share one seat: the unread count
