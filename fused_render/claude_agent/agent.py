@@ -12398,8 +12398,12 @@ def _interrupt_turn(run_dir: str, stranded: list, queued: bool) -> dict | None:
     # way a named remainder does.
     if still or queued:
         _kill_tree(run_dir)
-    return {"cancelled": run_id, "still_queued": still,
-            "still_queued_text": _still_queued_text(run_dir, still)}
+    out = {"cancelled": run_id, "still_queued": still}
+    # Only when a name resolved: the response keeps its shape otherwise.
+    words = _still_queued_text(run_dir, still)
+    if words:
+        out["still_queued_text"] = words
+    return out
 
 
 #: The deferred half of a Stop pressed before the run's first turn opened —
