@@ -682,6 +682,20 @@ test("the composer Breakout button renders once in the merged head and once in t
   expect(byClass(strip.r, "c-breakout").length).toBe(1);
 });
 
+test("a TaskPeek chat (peek + headerInPeek) seats the Breakout button in its slim head, once", async () => {
+  const onBreakout = () => {};
+  const peek = await mountChat({ peek: true, headerInPeek: true, onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  await act(async () => publishBreakoutEnabled(true));
+  await settle(20);
+  expect(byClass(peek.r, "chat-peek-head").length).toBe(1);
+  expect(byClass(peek.r, "c-breakout").length).toBe(1);
+  // A bare peek has no head to seat it in.
+  const bare = await mountChat({ peek: true, onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(bare.r, "c-breakout").length).toBe(0);
+});
+
 test("the composer Breakout button is absent while the Breakout flag is off (default)", async () => {
   const strip = await mountChat({ onBreakout: () => {}, initialSessionId: "sess-abc12345" });
   await settle(20);

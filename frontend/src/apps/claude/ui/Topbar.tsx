@@ -200,6 +200,7 @@ export function Topbar({
         {worktree}
         {worktreeHint}
         {extra ? <span className="c-tb-slim-extra">{extra}</span> : null}
+        {tail}
       </div>
     );
   }

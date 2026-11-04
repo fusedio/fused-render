@@ -5453,7 +5453,12 @@ function ChatBody(props: ChatBodyProps) {
             {showHead ? (
               <Topbar
                 slim={peek}
-                {...(mergedHeadRow ? { lead: backBtn, tail: <>{breakoutBtn}{kebabEl}</>, noProject: true } : {})}
+                {...(mergedHeadRow
+                  ? { lead: backBtn, tail: <>{breakoutBtn}{kebabEl}</>, noProject: true }
+                  : // The slim peek head has no strip or merged row: it seats the button itself.
+                    peek && breakoutBtn
+                    ? { tail: breakoutBtn }
+                    : {})}
                 {...(headerExtra ? { extra: headerExtra } : {})}
                 // The hint names where the work is; the menu would only repeat the
                 // original checkout's branch.
