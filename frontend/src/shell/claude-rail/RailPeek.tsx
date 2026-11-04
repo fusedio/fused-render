@@ -147,6 +147,7 @@ import {
   errorWords,
   inSafeCone,
   placeClear,
+  rowOf,
   starMarkStep,
   starOutcome,
   statusWords,
@@ -257,17 +258,6 @@ function seatFacts(seat: RailRow, place: RailPlace): SeatFacts {
     line,
     reply: row && !recapTitlesOn(row) ? (row.last_reply || "").trim() : "",
   };
-}
-
-/** THE ROW THE RAIL STANDS IN — the box the card is placed against and
- *  watched for resizes: the rail's nearest ancestor that HAS a box. The
- *  explorer's file view portals the rail into `.stat-side-slot`, which is
- *  `display: contents` (explorer.css) and so measures as nothing; the row
- *  there is the split behind it. */
-function rowOf(rail: HTMLElement | null): HTMLElement | null {
-  let el = rail?.parentElement ?? null;
-  while (el && getComputedStyle(el).display === "contents") el = el.parentElement;
-  return el;
 }
 
 export interface RailPeekHandle {

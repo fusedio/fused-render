@@ -38,8 +38,8 @@ this file is written around:
   (cancel the work, archive the session), which is why it is a verb here rather
   than a triage write the client composes. See the archiving section at the end.
 * ``POST /api/tasks/favourite`` — star or unstar one task (the rail card's star),
-  and say whether its card is open; at most one favourite is open at a time,
-  and a plain star opens its card only when no other is open.
+  and say whether its card is open; at most one favourite is open at a time
+  (a star opens its card and closes the other).
   See `api_task_favourite`.
 * ``POST /api/tasks/unarchive`` — take that filing back, and nothing else: the
   work archiving cancelled stays cancelled, no run starts, and the task lands in
@@ -7943,6 +7943,25 @@ def api_task_archive(patch: ArchivePatch,
             "stopped": stopped, "teardown": task.get("teardown") or {}}
 
 
+def _filed_on_disk(key: str) -> bool:
+    """Is this task key filed away, read off the filing records themselves?
+
+    The favourites route's under-the-lock check (`force_closed`), so it must
+    NEVER build a row: `_task_rows`/`_collect` wait on `_BUILD_LOCK`, which
+    the warm build holds while it auto-files a missing-folder task — and that
+    filing (`archive_task`) waits on the favourites lock (deadlock,
+    CodeRabbit PR #2100). Same split `_row` reads: a session-less task (its
+    key `pending:`-prefixed) is filed on its KEY (`ARCHIVED_FILE`), any other
+    on its session's triage record — its key IS the session id.
+
+    The revival rule (`_revived`) is not asked: a filing the thread has since
+    overtaken reads as filed until the next build drops it, which only ever
+    costs an open card, never a star."""
+    if key.startswith(tasks_store.PENDING_PREFIX):
+        return tasks_store.archived_at(tasks_store.archived_state(), key) > 0
+    return _archive_record(key, sessions._load_state("triage.json")) is not None
+
+
 class FavouritePatch(BaseModel):
     key: str
     # True = star, False = unstar, omitted = leave the star alone and set only
@@ -7960,8 +7979,7 @@ def api_task_favourite(patch: FavouritePatch,
     window cannot invert it. `open` says whether the favourite's card is the
     expanded one. An explicit `open: true` opens it and closes every other,
     which is why the watcher is told about EVERY key whose record flipped and
-    not only the one named; a star with `open` omitted opens its card only
-    when no other favourite is open, and is otherwise recorded closed
+    not only the one named; a star with `open` omitted opens its card too
     (`tasks_store.set_favourite`). With `on` omitted only `open` moves, and
     only on a starred key — the card's close paths use this, so a stale
     window can never re-star.
@@ -7984,8 +8002,7 @@ def api_task_favourite(patch: FavouritePatch,
         raise HTTPException(status_code=400, detail="nothing to set: give 'on' or 'open'")
 
     def _archived() -> bool:
-        row = _task_rows(only=frozenset({key}))
-        return bool(row) and row[0].get("status") == "archived"
+        return _filed_on_disk(key)
 
     # Asked by the store under the favourites lock (`set_favourite`), not
     # read here: an archive filed between this route's checks and the write

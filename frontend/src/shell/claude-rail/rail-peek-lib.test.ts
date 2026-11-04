@@ -33,6 +33,7 @@ import {
   type Box,
   type StarMark,
   type Timers,
+  rowOf,
 } from "./rail-peek-lib";
 import type { TaskPulseTask } from "@platform/lib/api";
 
@@ -847,5 +848,24 @@ describe("openFavouriteFlow", () => {
     expect(log.filter((l) => l.startsWith("letGo"))).toEqual([]);
     expect(log.filter((l) => l.startsWith("fail:"))).toHaveLength(1);
     expect(log[log.length - 1]).toBe("press");
+  });
+});
+
+describe("rowOf", () => {
+  it("the rail's nearest ancestor with a box: a display:contents slot is skipped", () => {
+    const real = globalThis.getComputedStyle;
+    const split = { display: "flex", parentElement: null } as unknown as HTMLElement;
+    const slot = { display: "contents", parentElement: split } as unknown as HTMLElement;
+    const rail = { parentElement: slot } as unknown as HTMLElement;
+    (globalThis as { getComputedStyle: unknown }).getComputedStyle = (el: { display: string }) => ({
+      display: el.display,
+    });
+    try {
+      expect(rowOf(rail)).toBe(split);
+      expect(rowOf({ parentElement: split } as unknown as HTMLElement)).toBe(split);
+      expect(rowOf(null)).toBeNull();
+    } finally {
+      (globalThis as { getComputedStyle: unknown }).getComputedStyle = real;
+    }
   });
 });

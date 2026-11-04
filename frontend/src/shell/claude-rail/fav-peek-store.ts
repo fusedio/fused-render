@@ -140,6 +140,24 @@ export function takeFavFocus(key: string): boolean {
   return fresh;
 }
 
+/** THE READER MOVED ON (CodeRabbit, PR #2100): a pending wish is withdrawn
+ *  when the keyboard lands on a control that is neither inside `card` nor
+ *  the ring that asked (its `data-task-key`) — a × taking the keyboard back
+ *  seconds later would undo where the reader went meanwhile. The body (the
+ *  removed-ring case: focus fell to nowhere) and a non-element target
+ *  withdraw nothing. */
+export function withdrawFavFocusOn(target: EventTarget | null, card: Element | null): void {
+  const key = live.pendingFocus;
+  if (!key || !target) return;
+  const el = target as Element;
+  if (typeof el.closest !== "function") return;
+  if (el.tagName === "BODY" || el.tagName === "HTML") return;
+  if (card?.contains(el)) return;
+  const ring = el.closest<HTMLElement>(".claude-rail-chat[data-task-key]");
+  if (ring?.dataset.taskKey === key) return;
+  requestFavFocus(null);
+}
+
 /** WHERE THE KEYBOARD GOES WHEN A CARD SHUTS UNDER IT — never the body: the
  *  ring for `key`, looked for first in the section `section` names — the
  *  rail's favourites (`"foot"`: the favourite's card, and the rail's own card

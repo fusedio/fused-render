@@ -715,3 +715,16 @@ export function favOpenStep(mark: FavOpenMark, pulseOpen: string | null, live: b
   if (now - mark.at >= FAV_MARK_MS) return null;
   return mark;
 }
+
+/** THE ROW THE RAIL STANDS IN — the box the card is placed against and
+ *  watched for resizes: the rail's nearest ancestor that HAS a box. The
+ *  explorer's file view portals the rail into `.stat-side-slot`, which is
+ *  `display: contents` (explorer.css) and so measures as nothing; the row
+ *  there is the split behind it. Shared by RailPeek (placement) and
+ *  FavouritePeek (its no-room reset: a sidebar folding widens the row, not
+ *  the 48px rail). */
+export function rowOf(rail: HTMLElement | null): HTMLElement | null {
+  let el = rail?.parentElement ?? null;
+  while (el && getComputedStyle(el).display === "contents") el = el.parentElement;
+  return el;
+}

@@ -6535,45 +6535,85 @@ def test_update_only_open_on_a_starred_orphan_is_a_404(
 def test_an_archive_filed_during_the_star_write_lands_closed(
         client, projects_dir, state_dir, monkeypatch):
     """The archived check runs under the favourites lock, inside the store's
-    mutate: an archive filed after the route's own checks (the status flips
-    between them and the write) still leaves no open card."""
+    mutate: an archive filed after the route's own checks (the triage record
+    is written between them and the write) still leaves no open card."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    real_rows = tasks_mod._task_rows
-    in_mutate = {"on": False}
     real_set = tasks_store.set_favourite
 
     def set_favourite(*a, **k):
-        in_mutate["on"] = True
-        try:
-            return real_set(*a, **k)
-        finally:
-            in_mutate["on"] = False
-
-    def rows(only=None, *a, **k):
-        out = real_rows(only, *a, **k)
-        if in_mutate["on"]:
-            return [{**r, "status": "archived"} for r in out]
-        return out
+        sessions_mod.write_triage("sess-a", "archived")
+        return real_set(*a, **k)
 
     monkeypatch.setattr(tasks_store, "set_favourite", set_favourite)
-    monkeypatch.setattr(tasks_mod, "_task_rows", rows)
     r = _favourite(client, "sess-a", open=True)
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": "sess-a", "starred": True, "open": False}
     assert json.loads((state_dir / "favourites.json").read_text())["sess-a"]["open"] is False
 
 
-def test_a_plain_star_stays_closed_while_another_favourite_is_open(
+def test_the_locked_archived_check_never_builds_rows(
+        client, projects_dir, state_dir, monkeypatch):
+    """The check the store asks under the favourites lock reads the filing
+    records directly: `_task_rows`/`_collect` wait on `_BUILD_LOCK`, which the
+    warm build holds while it files a missing-folder task — and that filing
+    waits on the favourites lock (deadlock, CodeRabbit PR #2100)."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    real_set = tasks_store.set_favourite
+    seen = []
+
+    def boom(*a, **k):
+        raise AssertionError("row build under the favourites lock")
+
+    def set_favourite(key, on, open_=None, *a, force_closed=False, **k):
+        assert callable(force_closed)
+        with monkeypatch.context() as m:
+            m.setattr(tasks_mod, "_task_rows", boom)
+            m.setattr(tasks_mod, "_collect", boom)
+            seen.append(force_closed())
+            sessions_mod.write_triage(key, "archived")
+            seen.append(force_closed())
+            return real_set(key, on, open_, *a, force_closed=force_closed, **k)
+
+    monkeypatch.setattr(tasks_store, "set_favourite", set_favourite)
+    r = _favourite(client, "sess-a", open=True)
+    assert r.status_code == 200, r.text
+    assert r.json()["open"] is False
+    assert seen == [False, True]
+
+
+def test_the_on_disk_filing_check_reads_triage_and_key_filings(
+        projects_dir, state_dir, monkeypatch):
+    """`_filed_on_disk`: a session key reads its triage record, a session-less
+    `pending:` key its key filing (`archived.json`) — no row build either way."""
+    def boom(*a, **k):
+        raise AssertionError("row build")
+
+    monkeypatch.setattr(tasks_mod, "_task_rows", boom)
+    monkeypatch.setattr(tasks_mod, "_collect", boom)
+    assert tasks_mod._filed_on_disk("sess-a") is False
+    sessions_mod.write_triage("sess-a", "archived")
+    assert tasks_mod._filed_on_disk("sess-a") is True
+    pending = tasks_store.PENDING_PREFIX + "e1"
+    assert tasks_mod._filed_on_disk(pending) is False
+    tasks_store.mark_archived(pending)
+    assert tasks_mod._filed_on_disk(pending) is True
+    # A key record never files a session key (`_row` never reads it there).
+    tasks_store.mark_archived("sess-b")
+    assert tasks_mod._filed_on_disk("sess-b") is False
+
+
+def test_a_plain_star_opens_its_card_and_closes_the_other(
         client, projects_dir):
-    """Starring from a card must not silently replace the open favourite."""
+    """A star you just pressed is a card you want to see: it opens, and the
+    favourite that was open closes."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _write_transcript(projects_dir, "sess-b", "/p", [_user("yo", T10)])
     _favourite(client, "sess-a")
     r = _favourite(client, "sess-b")
-    assert r.json() == {"ok": True, "key": "sess-b", "starred": True, "open": False}
+    assert r.json() == {"ok": True, "key": "sess-b", "starred": True, "open": True}
     rows = _by_key(client)
-    assert (rows["sess-a"]["starred"], rows["sess-a"]["starred_open"]) == (True, True)
-    assert (rows["sess-b"]["starred"], rows["sess-b"]["starred_open"]) == (True, False)
+    assert (rows["sess-a"]["starred"], rows["sess-a"]["starred_open"]) == (True, False)
+    assert (rows["sess-b"]["starred"], rows["sess-b"]["starred_open"]) == (True, True)
 
 
 def test_starring_an_archived_task_records_it_closed(client, projects_dir,

@@ -1980,10 +1980,21 @@ function announcePrefs(next: Prefs) {
 export function onPrefsWrittenElsewhere(handler: (p: Prefs) => void): () => void {
   prefsElsewhere.add(handler);
   if (!prefsListen && typeof BroadcastChannel === "function") {
-    prefsListen = new BroadcastChannel(PREFS_CHANNEL);
+    let ch: BroadcastChannel;
+    try {
+      ch = new BroadcastChannel(PREFS_CHANNEL);
+    } catch {
+      // Refused (a sandboxed frame, a locked-down WebView): nothing is armed
+      // and the focus re-read is all there is, as with no channel at all. A
+      // later subscriber tries again.
+      return () => {
+        prefsElsewhere.delete(handler);
+      };
+    }
+    prefsListen = ch;
     // Never the thing that keeps a (bun) process alive.
-    (prefsListen as unknown as { unref?: () => void }).unref?.();
-    prefsListen.onmessage = (ev: MessageEvent) => {
+    (ch as unknown as { unref?: () => void }).unref?.();
+    ch.onmessage = (ev: MessageEvent) => {
       const p = (ev.data as { prefs?: Prefs } | null)?.prefs;
       if (!p || typeof p !== "object") return;
       for (const h of prefsElsewhere) h(p);

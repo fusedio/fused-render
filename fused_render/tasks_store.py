@@ -291,8 +291,9 @@ def _set_aside_corrupt(filename: str) -> str | None:
     the reads in between — never the bytes (2026-11-04: a parse error used to
     read as {} and the next star overwrote every other one). Once per bad
     file: after the move the live name is gone or freshly written. Answers the
-    new path, or None when the move itself failed (the write then goes ahead
-    over it, as it always did, rather than refusing the gesture)."""
+    new path, or None when the move itself failed — and then `_update`
+    refuses the write, so the corrupt bytes stay where they are rather than
+    being written over (CodeRabbit, PR #2100)."""
     path = os.path.join(STATE_DIR, filename)
     base = f"{path}.corrupt-{int(time.time())}"
     aside, n = base, 0
@@ -303,7 +304,7 @@ def _set_aside_corrupt(filename: str) -> str | None:
         os.replace(path, aside)
     except OSError as e:
         logger.warning("tasks_store: %s does not parse and could not be moved "
-                       "aside (%s); overwriting it", path, e)
+                       "aside (%s); refusing the write", path, e)
         return None
     logger.warning("tasks_store: %s did not parse; moved it to %s and started "
                    "a fresh one", path, aside)
@@ -365,7 +366,7 @@ def _update(filename: str, mutate):
 
     A store that exists but does not parse reads as `{}` to `mutate`, but is
     moved aside (`<filename>.corrupt-<ts>`) before the write lands — never
-    silently overwritten. An empty file is just empty. A read that FAILS
+    silently overwritten; a move that fails refuses the write (OSError). An empty file is just empty. A read that FAILS
     (`_read_state` raises) refuses the write: the OSError propagates and the
     file is left as it was."""
     path = os.path.join(STATE_DIR, filename)
@@ -375,8 +376,10 @@ def _update(filename: str, mutate):
         if changed:
             # A file that is there but does not parse is NOT an empty store:
             # it is set aside, not written over (`_set_aside_corrupt`).
-            if corrupt:
-                _set_aside_corrupt(filename)
+            # A set-aside that fails refuses the write (the bytes are kept).
+            if corrupt and _set_aside_corrupt(filename) is None:
+                raise OSError(f"tasks_store: {path} does not parse and could "
+                              "not be moved aside; refusing to overwrite it")
             # Atomic: unlocked readers (`load_state` in a listing) must never
             # see a half-written file and read it as `{}`. A tmp file beside
             # it, then `os.replace`.
@@ -1115,8 +1118,9 @@ def clear_archived(key: str) -> bool:
 # carry. `open` is whether the favourite sits expanded in the rail, and AT MOST
 # ONE does — `set_favourite` closes every other record when one opens, under the
 # same lock, so two windows cannot leave two expanded cards behind. A plain star
-# (no `open` asked) opens its card only onto an empty rail; with another card
-# open it is recorded closed.
+# (no `open` asked) opens its card — a star you just pressed is a card you want
+# to see — and so closes whichever was open (Akshil, 2026-11-04: the "open only
+# onto an empty rail" rule of the same day was reverted).
 #
 # ONLY A STARTED CHAT can be starred (the route refuses a key with no
 # session): a `pending:` key rekeys on dispatch (`_apply_rekey`) and a record
@@ -1151,10 +1155,9 @@ def set_favourite(key: str, on: bool | None, open: bool | None = None,
     `on=True` creates the record (an existing one keeps its original `at`) and
     sets `open`. Given explicitly, `open=True` opens this card and closes every
     other; `open=False` records it closed. NOT given, the star opens its card
-    ONLY when no other favourite is open — a star pressed on some card must
-    never silently swap out the card the reader already has open (Akshil,
-    2026-11-04); with one open, the new star is recorded closed and nothing
-    else moves.
+    (and closes every other): a star you just pressed is a card you want to
+    see (Akshil, 2026-11-04 — the "open only onto an empty rail" rule tried
+    the same day is reverted).
 
     `on=False` deletes the record. `on=None` touches ONLY `open`, and only on a
     key that is starred — the card's × and its swaps say "closed" without ever
@@ -1185,14 +1188,10 @@ def set_favourite(key: str, on: bool | None, open: bool | None = None,
             return ({"starred": False, "open": False, "changed": changed}, False)
         if force_closed() if callable(force_closed) else force_closed:
             want_open = False
-        elif open is not None:
-            want_open = bool(open)
         else:
-            # `on=True`, `open` not given (`on=None` always carries `open`):
-            # open only onto an empty rail.
-            want_open = not any(
-                other != key and isinstance(rec, dict) and rec.get("open") is True
-                for other, rec in state.items())
+            # `on=True` with `open` not given opens (`on=None` always carries
+            # `open`).
+            want_open = True if open is None else bool(open)
         at = stamp
         if isinstance(before, dict):
             try:

@@ -12,6 +12,7 @@ import {
   requestFavFocus,
   resetFavPeekStoreForTests,
   takeFavFocus,
+  withdrawFavFocusOn,
 } from "./fav-peek-store";
 
 const rail = (name: string) => ({ name, isConnected: true }) as unknown as HTMLElement;
@@ -91,6 +92,48 @@ describe("the pending focus", () => {
     } finally {
       Date.now = realNow;
     }
+  });
+});
+
+describe("the pending focus, withdrawn when the reader moves on", () => {
+  // A focus target as `withdrawFavFocusOn` reads it: its tag and the ring
+  // (`data-task-key`) it sits in, if any.
+  const target = (tagName: string, ringKey: string | null = null) =>
+    ({
+      tagName,
+      closest: () => (ringKey === null ? null : { dataset: { taskKey: ringKey } }),
+    }) as unknown as Element;
+  const card = (...inside: Element[]) => ({ contains: (n: Node) => inside.includes(n as unknown as Element) }) as Element;
+
+  it("focus on another control withdraws it", () => {
+    requestFavFocus("k1");
+    withdrawFavFocusOn(target("INPUT"), card());
+    expect(takeFavFocus("k1")).toBe(false);
+  });
+
+  it("another ring withdraws it; the ring that asked does not", () => {
+    requestFavFocus("k1");
+    withdrawFavFocusOn(target("BUTTON", "k1"), card());
+    expect(takeFavFocus("k1")).toBe(true);
+    requestFavFocus("k1");
+    withdrawFavFocusOn(target("BUTTON", "k2"), card());
+    expect(takeFavFocus("k1")).toBe(false);
+  });
+
+  it("focus inside the card, on the body (a removed ring), or on no element keeps it", () => {
+    const x = target("BUTTON");
+    requestFavFocus("k1");
+    withdrawFavFocusOn(x, card(x));
+    withdrawFavFocusOn(target("BODY"), card());
+    withdrawFavFocusOn({} as EventTarget, card());
+    withdrawFavFocusOn(null, card());
+    expect(takeFavFocus("k1")).toBe(true);
+  });
+
+  it("with no wish pending, nothing happens", async () => {
+    withdrawFavFocusOn(target("INPUT"), null);
+    await settle();
+    expect(favPeekState().pendingFocus).toBeNull();
   });
 });
 

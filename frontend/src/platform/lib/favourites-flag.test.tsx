@@ -9,7 +9,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const { useTaskFavourites, publishTaskFavourites, publishFavouritesParent, resetTaskFavouritesFlagForTests } =
   await import("./favourites-flag");
-const { putTaskFavouritesEnabled, resetPrefsChannelForTests } = await import("./api");
+const { onPrefsWrittenElsewhere, putTaskFavouritesEnabled, resetPrefsChannelForTests } = await import("./api");
 
 let answer: () => Promise<unknown> = async () => ({});
 const realFetch = globalThis.fetch;
@@ -147,5 +147,33 @@ test("a posted payload WITHOUT the field is not an answer about it", async () =>
     expect(seen.slice(seen.indexOf(true)).every((v) => v === true)).toBe(true);
   } finally {
     otherTab.close();
+  }
+});
+
+test("a BroadcastChannel that refuses to open arms nothing and throws nothing", async () => {
+  resetPrefsChannelForTests();
+  const Real = globalThis.BroadcastChannel;
+  const heard: unknown[] = [];
+  let off!: () => void;
+  (globalThis as { BroadcastChannel: unknown }).BroadcastChannel = function Refused() {
+    throw new Error("SecurityError: refused");
+  };
+  try {
+    expect(() => {
+      off = onPrefsWrittenElsewhere((p) => heard.push(p));
+    }).not.toThrow();
+  } finally {
+    (globalThis as { BroadcastChannel: unknown }).BroadcastChannel = Real;
+  }
+  // Nothing listens: another tab's post reaches no handler (the focus
+  // re-read is the fallback), and the unsubscribe still works.
+  const otherTab = new BroadcastChannel("fused-render:prefs");
+  try {
+    otherTab.postMessage({ prefs: { task_favourites: { enabled: false } } });
+    await new Promise((res) => setTimeout(res, 50));
+    expect(heard).toEqual([]);
+  } finally {
+    otherTab.close();
+    off();
   }
 });

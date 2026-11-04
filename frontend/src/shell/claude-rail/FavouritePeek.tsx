@@ -25,8 +25,8 @@
 // press, not Escape, not a place change. The Open door opens the pane; the
 // card stays the recorded open favourite (RailPeek `onDismiss("door")`) and
 // is back when the rail is. A rail with no room for it (a window shrunk to
-// nothing) hides it until the window or the rail changes shape, or the next
-// rail stands.
+// nothing) hides it until the window, the rail or the row it stands in
+// changes shape, or the next rail stands.
 //
 // A RING'S PRESS SHOWS AT ONCE (owner, 2026-11-04: "click on the pin
 // doesn't open it and switch it" — on a loaded Mac the pulse carrying
@@ -59,12 +59,20 @@ import { navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import { pokeTasks, readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
 import { RailPeek } from "./RailPeek";
-import { focusRail, onFavOpened, publishFavBox, takeFavFocus, useFavOpenMark, useFavPeekState } from "./fav-peek-store";
+import {
+  focusRail,
+  onFavOpened,
+  publishFavBox,
+  takeFavFocus,
+  useFavOpenMark,
+  useFavPeekState,
+  withdrawFavFocusOn,
+} from "./fav-peek-store";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import type { RailPlace, RailRow } from "./claude-rail-lib";
-import { FAV_HEIGHT, FAV_WIDTH, errorWords, type PeekWish } from "./rail-peek-lib";
+import { FAV_HEIGHT, FAV_WIDTH, errorWords, rowOf, type PeekWish } from "./rail-peek-lib";
 
 export const FAV_PEEK_ID = "claude-rail-fav-peek";
 
@@ -118,10 +126,16 @@ export function FavouritePeek() {
     setNoRoom(false);
     const re = () => setNoRoom(false);
     window.addEventListener("resize", re);
-    // The rail's own box: a pane shutting, a sidebar folding — the window
-    // stays the same size while the rail grows back into room.
+    // The rail's own box (a pane shutting: the rail grows back into room)
+    // and the ROW it stands in, the box RailPeek measures (`rowOf`): a
+    // sidebar folding widens the row while the 48px rail and the window
+    // stay the same size.
     const ro = rail && typeof ResizeObserver !== "undefined" ? new ResizeObserver(re) : null;
-    if (rail) ro?.observe(rail);
+    if (rail && ro) {
+      ro.observe(rail);
+      const row = rowOf(rail);
+      if (row) ro.observe(row);
+    }
     return () => {
       window.removeEventListener("resize", re);
       ro?.disconnect();
@@ -178,6 +192,9 @@ export function FavouritePeek() {
     const inCard = (n: EventTarget | null) => !!n && !!document.getElementById(FAV_PEEK_ID)?.contains(n as Node);
     const onIn = (e: FocusEvent) => {
       focusIn.current = inCard(e.target);
+      // A keyboard press's pending wish for the × (fav-peek-store) is
+      // withdrawn once the reader moves to another control meanwhile.
+      withdrawFavFocusOn(e.target, document.getElementById(FAV_PEEK_ID));
     };
     // A press on the card's (or the page's) bare background sends the
     // keyboard to the body with no focusin: a focusout leaving for nowhere,
