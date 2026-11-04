@@ -115,3 +115,81 @@ export function outboxHint(sendable: number, notSent = 0): string {
   }
   return "";
 }
+
+// ---- THE PENDING JOURNAL (what survives a reload) ---------------------------
+//
+// A line the reader sent is OWNED BY THE SERVER once the inbox write (or the
+// turn's `start`) is acknowledged: the inbox is on disk and history replays it.
+// Before that — the round trip itself, and the outbox's latch window — the line
+// lives only in this page, and a reload used to lose it. So every sent line is
+// journalled in sessionStorage under its session, named by a uuid the SERVER
+// stamps on the inbox entry (`client_uuid`), and dropped the moment the server
+// acknowledges it (or the line is handed back to the reader).
+//
+// After a reload the page asks history which ids it already has
+// (`splitPending`): those are the server's now and are dropped; the rest were
+// never acknowledged and are sent again, once. Ids, never text.
+
+/** One sent-but-unacknowledged line. Words only: pictures are not kept. */
+export interface PendingLine {
+  id: string;
+  text: string;
+}
+
+export function pendingKey(sessionId: string): string {
+  return "claude.outbox:" + sessionId;
+}
+
+type PendingStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function pendingStore(): PendingStore | null {
+  try {
+    return typeof sessionStorage === "undefined" ? null : sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Writes a session's pending lines; an empty list removes the key. */
+export function savePending(
+  sessionId: string,
+  lines: readonly PendingLine[],
+  store: PendingStore | null = pendingStore(),
+): void {
+  if (!sessionId || !store) return;
+  try {
+    if (lines.length) store.setItem(pendingKey(sessionId), JSON.stringify(lines));
+    else store.removeItem(pendingKey(sessionId));
+  } catch {
+    /* storage full or refused: the lines still live in this page */
+  }
+}
+
+/** Reads a session's pending lines back. Anything unreadable is an empty list. */
+export function loadPending(sessionId: string, store: PendingStore | null = pendingStore()): PendingLine[] {
+  if (!sessionId || !store) return [];
+  try {
+    const raw = store.getItem(pendingKey(sessionId));
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((l: unknown) => {
+      const line = l as { id?: unknown; text?: unknown };
+      if (typeof line?.id !== "string" || !line.id || typeof line.text !== "string" || !line.text) return [];
+      return [{ id: line.id, text: line.text }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** Splits stored lines against the ids the server's history already holds (the
+ *  inbox rows and the transcript's user turns): `resend` never reached it. */
+export function splitPending(
+  lines: readonly PendingLine[],
+  serverIds: ReadonlySet<string>,
+): { resend: PendingLine[]; drop: PendingLine[] } {
+  const resend: PendingLine[] = [];
+  const drop: PendingLine[] = [];
+  for (const l of lines) (serverIds.has(l.id) ? drop : resend).push(l);
+  return { resend, drop };
+}

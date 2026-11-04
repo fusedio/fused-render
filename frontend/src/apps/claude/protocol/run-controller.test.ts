@@ -5398,3 +5398,59 @@ describe("the working clock survives a reload (server stamp)", () => {
     expect(seen).toEqual([1000]);
   });
 });
+
+describe("the page-minted client id rides the wire and comes back", () => {
+  test("start and follow-up send carry client_uuid; delivery reports the id", async () => {
+    const delivered: string[] = [];
+    let controller!: ChatController;
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) await controller.sendFollowUp("more", { clientId: "id-follow" });
+        return poll({ done: n > 0 });
+      },
+    });
+    controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      wallClock: () => 1_000,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+      onSendDelivered: (id) => delivered.push(id),
+    });
+    await controller.sendMessage("go", { clientId: "id-start" });
+    expect(agent.of("start")[0]!.fields.client_uuid).toBe("id-start");
+    expect(agent.of("send")[0]!.fields.client_uuid).toBe("id-follow");
+    expect(delivered).toEqual(["id-start", "id-follow"]);
+    controller.dispose();
+  });
+
+  test("a send that is refused echoes the id back on returned", async () => {
+    const returned: { clientId?: string }[] = [];
+    const agent = fakeAgent({
+      start: () => {
+        throw new AgentError("boom", 500);
+      },
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      wallClock: () => 1_000,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+      onSendReturned: (info) => returned.push(info),
+    });
+    await controller.sendMessage("go", { clientId: "id-x" });
+    expect(returned.map((r) => r.clientId)).toEqual(["id-x"]);
+    controller.dispose();
+  });
+});

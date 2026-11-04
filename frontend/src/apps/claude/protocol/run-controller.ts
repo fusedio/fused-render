@@ -2579,7 +2579,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // inside the first one's capture window made the first roll back a turn
       // the agent had already taken (`SendOptions.sendId`).
       ...(opts.sendId ? { sendId: opts.sendId } : {}),
+      ...(opts.clientId ? { clientId: opts.clientId } : {}),
     });
+  };
+  /** The server has this line (see `ChatControllerDeps.onSendDelivered`). */
+  const delivered = (opts: SendOptions): void => {
+    if (opts.clientId) deps.onSendDelivered?.(opts.clientId);
   };
 
   async function sendMessage(text: string, opts: SendOptions = {}): Promise<void> {
@@ -2692,6 +2697,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 // #1194): proof this send is the one already counted, so the
                 // server gate only looks rather than claiming a second time.
                 ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+                ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
               },
             )) as SendResponse;
           } catch (err) {
@@ -2758,6 +2764,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
               // proof this send is the one already counted, so the server gate
               // only looks rather than claiming a second time.
               ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+              ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
             },
           )) as StartResponse;
         } catch (startErr) {
@@ -2801,6 +2808,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
       }
       started = true;
+      delivered(opts);
       // The fork has been spent: the new session exists. A failed start never
       // reaches here, so the fork stays set and the hand-back re-offers it.
       if (forkAt && logGen === gen && state.fork) emit({ fork: null });
@@ -2988,6 +2996,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // proof this send is the one already counted, so the server gate
           // only looks rather than claiming a second time.
           ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+          ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
         },
       )) as SendResponse;
       if (res && "respawn" in res && res.respawn) {
@@ -3014,6 +3023,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // proof this send is the one already counted, so the server gate
             // only looks rather than claiming a second time.
             ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
+            ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
           },
         )) as StartResponse;
         const failed = (startedRes as { error?: string }).error;
@@ -3028,6 +3038,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // turn now in flight. Drop the entry (the bubble stays: it is that
         // turn's own bubble).
         drop();
+        delivered(opts);
         if (logGen === gen) {
           setRunParam(fresh);
           void pollLoop(fresh, gen, { prompt: spoken });
@@ -3053,6 +3064,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // fact: the inbox has the message, so a stop from here on cannot claim
       // the CLI never received it (`stopRun`).
       entry.landed = true;
+      delivered(opts);
       followupSeq++;
     } catch (err) {
       // A 504 MAY STILL LAND (`SEND_TIMEOUT_PROBES`), so it does not hand the
@@ -3074,6 +3086,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // news about a message the reader has already been given back.
         if (entry.handedBack) return;
         if (alive) {
+          delivered(opts);
           followupSeq++;
           return;
         }
@@ -3169,6 +3182,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         stranded.push({
           text: entry.typed || entry.wire,
           ...(entry.opts.sendId ? { sendId: entry.opts.sendId } : {}),
+          ...(entry.opts.clientId ? { clientId: entry.opts.clientId } : {}),
           ...(willReturn ? { returned: true } : {}),
         });
         // AND ITS PICTURES, but only for a send the inbox never confirmed. The

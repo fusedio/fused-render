@@ -722,3 +722,23 @@ def test_a_stamped_entry_behind_a_fold_lands_on_its_own_receipt(agent, tmp_path)
         fh.write(json.dumps({"type": "command_lifecycle", "command_uuid": uz,
                              "state": "started"}) + "\n")
     assert agent._poll("run")["inbox"] == []
+
+
+def test_a_page_named_uuid_is_the_inbox_entry_identity(agent, tmp_path):
+    """A mid-turn line kept in sessionStorage is matched after a reload by the
+    id the page named, so the entry (and the `_inbox_waiting` row a reload's
+    history carries) must wear exactly that id."""
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir)
+    agent._write_inbox_entry(str(run_dir), "go on", "0f8c1c52-aaaa-4bbb-8ccc-123456789abc")
+    rows = agent._inbox_waiting(str(run_dir))
+    assert [r["uuid"] for r in rows] == ["0f8c1c52-aaaa-4bbb-8ccc-123456789abc"]
+    assert rows[0]["text"] == "go on"
+
+
+def test_an_unusable_page_uuid_falls_back_to_a_server_one(agent, tmp_path):
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir)
+    agent._write_inbox_entry(str(run_dir), "a", "../../etc/passwd")
+    (uid,) = [r["uuid"] for r in agent._inbox_waiting(str(run_dir))]
+    assert uid and "/" not in uid and uid != "../../etc/passwd"

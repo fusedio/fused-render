@@ -421,6 +421,14 @@ export interface SendOptions {
    */
   sendId?: string;
   /**
+   * THE PAGE'S DURABLE ID FOR THIS LINE (a uuid, unlike `sendId` which restarts
+   * at 1 on every load). Sent to the server as `client_uuid`, which stamps the
+   * inbox entry with it, so a page that reloaded with the line still in its
+   * sessionStorage can ask the history "is this id here?" instead of guessing
+   * by text. Echoed in `onSendDelivered`, `onSendReturned` and `StrandedLine`.
+   */
+  clientId?: string;
+  /**
    * ADDED (PR3): a user bubble ALREADY on screen that this send's bubble should
    * ADOPT rather than duplicate.
    *
@@ -461,6 +469,8 @@ export interface StrandedLine {
   text: string;
   /** The page's own id for the send (`SendOptions.sendId`), when it gave one. */
   sendId?: string;
+  /** `SendOptions.clientId`: the line's durable id, when the page gave one. */
+  clientId?: string;
   /** This send's `returnSend` already fired for THIS stop — its pictures went
    *  back through `onSendReturned` in the same tick. The words still come
    *  through here (a page that keys rows by `sendId` may already have posted
@@ -777,6 +787,11 @@ export interface ControllerDeps {
    *  never by text (Bugbot round 3, PR #1323). A line the CLI named that this
    *  page has no entry for carries no id. */
   onStranded?: (lines: StrandedLine[]) => void;
+  /** ADDED: the server ACKNOWLEDGED this line — the inbox took a follow-up, or
+   *  `start` / the live host's `send` answered for a turn's opening message.
+   *  From here the server owns it and a reload needs nothing from the page.
+   *  Named by `SendOptions.clientId`. */
+  onSendDelivered?: (clientId: string) => void;
   /** ADDED: every 8th poll (~3.2 s) and once at the run's end — where PR4 hangs
    *  its artifacts read (T:16229, 16330). */
   onArtifactsTick?: () => void;
@@ -844,6 +859,8 @@ export interface ControllerDeps {
     attachments?: Receipt[];
     /** `SendOptions.sendId`, echoed: WHICH send came back (see its own note). */
     sendId?: string;
+    /** `SendOptions.clientId`, echoed. */
+    clientId?: string;
     /**
      * The send was turned away BEFORE any bubble went up (disposed, the
      * `sending` gate, nothing to send) — so `text` is not in the transcript,

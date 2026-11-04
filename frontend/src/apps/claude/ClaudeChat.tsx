@@ -196,6 +196,10 @@ import { inboxBubbles } from "./protocol/inbox";
 import { createLiveWatch } from "./live/watch";
 import {
   type OutboxEntry,
+  type PendingLine,
+  loadPending,
+  savePending,
+  splitPending,
   popNewest,
   pushBack,
   pushFront,
@@ -538,6 +542,31 @@ export function ClaudeChat(props: ClaudeChatProps) {
 /** What the page outbox keeps beside a parked line's words (ui/outbox.ts):
  *  the send options it was typed with, its optimistic bubble's key (the real
  *  send adopts that row), and the tray pictures taken for it when it was parked. */
+/** A fresh durable id for a sent line (`SendOptions.clientId`). */
+function newClientId(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  } catch {
+    /* fall through */
+  }
+  return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12) + "-x";
+}
+
+/**
+ * IS A LIVE STATUS THIS PANE'S OWN RUN? (the flag-independent rule for a line
+ * typed mid-turn.) `openSession` does not reset `status` when the pane switches
+ * conversations, so a stale "running" from the previous chat must not read as
+ * this one's. The controller's session and the URL's agree when both are known;
+ * while a brand-new chat is still starting NEITHER is known yet, and right after
+ * the first reply the URL can still be behind the controller. Both are this
+ * chat's own run. A controller that knows no session while the URL names one is
+ * the other chat.
+ */
+export function ownSession(controllerSid: string | null, urlSid: string): boolean {
+  if (!controllerSid) return !urlSid;
+  return !urlSid || controllerSid === urlSid;
+}
+
 interface OutboxPayload {
   opts: SendOptions;
   bubble: string;
@@ -1096,6 +1125,45 @@ function ChatBody(props: ChatBodyProps) {
     setOutboxCount(next.length - notSent);
     setNotSentCount(notSent);
   }, []);
+  /**
+   * THE PENDING JOURNAL (ui/outbox.ts): every line sent and not yet
+   * acknowledged by the server, mirrored into sessionStorage under its
+   * session, so a reload cannot lose it. Added when the line is sent or
+   * parked; dropped on the server's acknowledgement (`onSendDelivered`), on a
+   * hand-back (`onSendReturned`, a Stop's strand) and when the reader pulls it
+   * back. A line sent before its session has an id waits in memory and is
+   * written the moment the id appears. The server project queue is not
+   * involved: this works the same with the flag on or off.
+   */
+  const journal = useRef<Map<string, { text: string; sid: string }>>(new Map());
+  const journalSid = useCallback(
+    () => controllerRef.current?.getState().sessionId || params.get("session_id") || "",
+    [params],
+  );
+  const journalFlush = useCallback((sid: string) => {
+    if (!sid) return;
+    const lines: PendingLine[] = [];
+    for (const [id, e] of journal.current) if (e.sid === sid) lines.push({ id, text: e.text });
+    savePending(sid, lines);
+  }, []);
+  const journalAdd = useCallback(
+    (id: string, text: string) => {
+      if (!id || !text) return;
+      const sid = journalSid();
+      journal.current.set(id, { text, sid });
+      journalFlush(sid);
+    },
+    [journalSid, journalFlush],
+  );
+  const journalDrop = useCallback(
+    (id: string) => {
+      const e = journal.current.get(id);
+      if (!e) return;
+      journal.current.delete(id);
+      journalFlush(e.sid);
+    },
+    [journalFlush],
+  );
   /** The drain, as a ref: `releaseSend` is declared before `dispatchSend` (a
    *  dep of the drain) and has to call it without a hook cycle. */
   const drainRef = useRef<() => void>(() => {});
@@ -1207,6 +1275,7 @@ function ChatBody(props: ChatBodyProps) {
       if (!controllerRef.current) return;
       const entries: OutboxEntry<OutboxPayload>[] = [];
       for (const line of lines) {
+        if (line.clientId) journalDrop(line.clientId);
         if (!line.text) continue;
         // ALREADY POSTED, BY ID: `onSendReturned` took this send back earlier
         // (its `send` failed on its own) and posted its row then.
@@ -1227,7 +1296,7 @@ function ChatBody(props: ChatBodyProps) {
       }
       if (entries.length) setOutbox(pushFrontAll(outboxRef.current, entries));
     },
-    [setOutbox, postNotSent],
+    [setOutbox, postNotSent, journalDrop],
   );
 
   // One collapse policy per MOUNT, not per module: six compact mounts on the
@@ -1319,7 +1388,11 @@ function ChatBody(props: ChatBodyProps) {
         // The agent saw none of it, so the pictures come back to the tray —
         // never revoked on this road, because those very thumbnails are what the
         // returned chips show (T:16693-16720).
-        onSendReturned: ({ attachments, sendId, text, refused }) => {
+        onSendDelivered: (clientId) => journalDrop(clientId),
+        onSendReturned: ({ attachments, sendId, text, refused, clientId }) => {
+          // Handed back to the reader: it is theirs now, not the page's to
+          // re-send after a reload.
+          if (clientId) journalDrop(clientId);
           // A REFUSED SEND OWES THE WORDS BACK. The composer cleared its box on
           // the keystroke and the controller turned the message away before it
           // ever reached `addUser`, so there is no bubble and no queue entry
@@ -1371,7 +1444,7 @@ function ChatBody(props: ChatBodyProps) {
           attachBack.current?.(back);
         },
       }),
-    [file, params, strand, strandAll],
+    [file, params, strand, strandAll, journalDrop],
   );
   // For `strand`, which the controller itself calls (see `controllerRef`).
   controllerRef.current = controller;
@@ -2912,6 +2985,13 @@ function ChatBody(props: ChatBodyProps) {
        *  when it was parked. */
       parked?: OutboxPayload,
     ): void => {
+      // THE LINE'S DURABLE ID, minted once: a parked line keeps the one it was
+      // parked under (it rides `opts`), a direct send mints it here. Journalled
+      // (sessionStorage) until the server acknowledges it, so a reload in
+      // between re-sends it instead of losing it.
+      if (!opts.clientId) opts = { ...opts, clientId: newClientId() };
+      const clientId = opts.clientId!;
+      if (text && !parked) journalAdd(clientId, text);
       // THE DOOR IS SHUT — PARK THE LINE, NEVER REFUSE IT (ui/outbox.ts). The
       // bubble goes up now with a "queued" tag, the tray's pictures go with THIS
       // line, and `releaseSend` drains it the moment the door opens. This used
@@ -3004,11 +3084,7 @@ function ChatBody(props: ChatBodyProps) {
           // different folder (review): the controller's own session has to
           // name the one on this pane's URL.
           const liveNow = controller.getState();
-          const ownRunLive =
-            followUp &&
-            liveNow.status !== "idle" &&
-            !!liveNow.sessionId &&
-            liveNow.sessionId === (params.get("session_id") || "");
+          const ownRunLive = followUp && liveNow.status !== "idle" && ownSession(liveNow.sessionId, params.get("session_id") || "");
           if (queueEnabled() && !ownRunLive) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
@@ -3300,6 +3376,7 @@ function ChatBody(props: ChatBodyProps) {
               },
             };
             controller.setOptimisticPending(parked.bubble, "notSent");
+            journalDrop(clientId);
             setOutbox(
               pushFront(outboxRef.current, {
                 id: parked.entryId,
@@ -3317,6 +3394,7 @@ function ChatBody(props: ChatBodyProps) {
             sendId,
             ...(optimisticKey ? { optimisticKey } : {}),
             ...(queueClaim ? { queueClaim } : {}),
+            clientId,
             // A drained line was typed to be said whatever the run does: if
             // the run it waited behind has ended by now, it opens a fresh turn
             // rather than coming back "no run to attach" (`orStart`).
@@ -3351,6 +3429,9 @@ function ChatBody(props: ChatBodyProps) {
           // live status for the effect above to read. Owned by `sendId`, so a
           // turn ending cannot open the door on a LATER send's window.
           if (!taken && optimisticKey) controller.dropOptimisticUser(optimisticKey);
+          // Never handed to the controller (the capture threw, or a Stop took
+          // it back): nothing was sent, so nothing is owed after a reload.
+          if (!taken) journalDrop(clientId);
           // OWNED (Bugbot 4122227276): a later parked send may already hold
           // the slot while this one's turn runs out, and clearing it here
           // would leave that send's admission road reading "not parked".
@@ -3374,6 +3455,8 @@ function ChatBody(props: ChatBodyProps) {
       setOutbox,
       leader,
       params,
+      journalAdd,
+      journalDrop,
     ],
   );
 
@@ -3422,6 +3505,59 @@ function ChatBody(props: ChatBodyProps) {
   useEffect(() => {
     if (state.status === "idle" || state.status === "running") drainRef.current();
   }, [state.status]);
+  // A SESSION ID THAT ARRIVES AFTER THE LINE WAS SENT (a brand-new chat's first
+  // turn): the lines journalled without one are written under it now.
+  useEffect(() => {
+    const sid = state.sessionId;
+    if (!sid) return;
+    let changed = false;
+    for (const e of journal.current.values()) {
+      if (!e.sid) {
+        e.sid = sid;
+        changed = true;
+      }
+    }
+    if (changed) journalFlush(sid);
+  }, [state.sessionId, journalFlush]);
+  /**
+   * A RELOAD'S UNACKNOWLEDGED LINES ARE SENT AGAIN, ONCE (ui/outbox.ts, the
+   * pending journal). When this page restored a session from the URL and its
+   * history has landed (and the live-run adoption has settled, so `status` is
+   * true), every line the previous page left in sessionStorage is looked up BY
+   * ID in what the server shows — the inbox rows and the transcript's user
+   * turns. Found: the server has it, forget it. Not found: it never got there,
+   * so it goes out now — as a follow-up into the live run, or as a new turn when
+   * the chat is idle — with the same id, in the order it was typed. A line this
+   * page itself has in flight is left alone.
+   */
+  const reconciledFor = useRef("");
+  useEffect(() => {
+    const sid = state.sessionId;
+    if (!sid || !bootDispatched.current || state.historyLoading || state.adopting) return;
+    if (reconciledFor.current === sid) return;
+    reconciledFor.current = sid;
+    const stored = loadPending(sid).filter((l) => !journal.current.has(l.id));
+    if (!stored.length) return;
+    const known = new Set<string>();
+    for (const t of state.turns) {
+      const u = (t as { uuid?: string }).uuid;
+      if (u) known.add(u);
+    }
+    for (const m of state.inbox) if (m.uuid) known.add(m.uuid);
+    const { resend, drop } = splitPending(stored, known);
+    if (drop.length) {
+      const keep = loadPending(sid).filter((l) => !drop.some((d) => d.id === l.id));
+      savePending(sid, keep);
+    }
+    // The storage copy is superseded by the in-memory journal entry
+    // `dispatchSend` writes for each re-sent line.
+    // ALL of them are journalled before the first goes out: each write rewrites
+    // the session's whole list, and a reload in between must not lose the rest.
+    for (const l of resend) journalAdd(l.id, l.text);
+    for (const l of resend) {
+      dispatchSend(l.text, { clientId: l.id }, controller.getState().status !== "idle");
+    }
+  }, [state.sessionId, state.historyLoading, state.adopting, state.turns, state.inbox, controller, dispatchSend, journalAdd]);
   /**
    * PARKED PICTURES GO BACK TO THE TRAY when the outbox is emptied by a
    * navigation (Bugbot 4121249270): Back and Open session used to drop the
@@ -3433,8 +3569,9 @@ function ChatBody(props: ChatBodyProps) {
   const emptyOutbox = useCallback(() => {
     const items = outboxRef.current.flatMap((e) => e.payload.taken.items);
     if (items.length) attachBack.current?.(items);
+    for (const e of outboxRef.current) if (e.payload.opts.clientId) journalDrop(e.payload.opts.clientId);
     setOutbox([]);
-  }, [setOutbox]);
+  }, [setOutbox, journalDrop]);
 
   /**
    * ↑ IN AN EMPTY BOX, and a click on a queued bubble: the line comes back to
@@ -3447,12 +3584,13 @@ function ChatBody(props: ChatBodyProps) {
       const got = id ? takeById(outboxRef.current, id) : popNewest(outboxRef.current);
       if (!got.entry) return null;
       setOutbox(got.rest);
+      if (got.entry.payload.opts.clientId) journalDrop(got.entry.payload.opts.clientId);
       const { bubble, taken } = got.entry.payload;
       if (bubble) controller.dropOptimisticUser(bubble);
       if (taken.items.length) attachBack.current?.(taken.items);
       return got.entry.text;
     },
-    [controller, setOutbox],
+    [controller, setOutbox, journalDrop],
   );
   /** The composer's ↑: newest line back into the box. */
   const onPullQueued = useCallback((): string | null => pullOutbox(), [pullOutbox]);
@@ -3636,6 +3774,8 @@ function ChatBody(props: ChatBodyProps) {
     if (outboxRef.current.some((e) => !e.notSent)) {
       const next = outboxRef.current.map((e) => {
         if (e.notSent) return e;
+        // "Not sent" is the reader's to resend: a reload must not do it for them.
+        if (e.payload.opts.clientId) journalDrop(e.payload.opts.clientId);
         if (e.payload.bubble) controller.setOptimisticPending(e.payload.bubble, "notSent");
         return { ...e, notSent: true as const };
       });
@@ -3650,7 +3790,7 @@ function ChatBody(props: ChatBodyProps) {
     // "not sent" entry; the drain may look again as soon as the run settles.
     sendNowInFlight.current = false;
     void controller.stopRun();
-  }, [controller, setOutbox]);
+  }, [controller, setOutbox, journalDrop]);
   /**
    * `sched.reset` — declared HERE, ahead of the hook that fills it, because
    * `onBack` is one of its two callers and is itself declared before the PR4

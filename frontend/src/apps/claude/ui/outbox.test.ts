@@ -87,3 +87,22 @@ test("the hint counts only lines that WILL send; not-sent rows get their own lin
   // Sendable lines win the one line there is.
   expect(outboxHint(1, 2)).toContain("waiting");
 });
+
+test("the pending journal: save, load and split round-trip per session", async () => {
+  const { savePending, loadPending, splitPending } = await import("./outbox");
+  const mem = new Map<string, string>();
+  (globalThis as any).sessionStorage = {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => void mem.set(k, v),
+    removeItem: (k: string) => void mem.delete(k),
+  };
+  savePending("s1", [{ id: "a", text: "one" }, { id: "b", text: "two" }]);
+  expect(loadPending("s1").length).toBe(2);
+  expect(loadPending("s2")).toEqual([]);
+  // Matched by id, never by text: "b" is on the server, "a" is not.
+  const { resend, drop } = splitPending(loadPending("s1"), new Set(["b"]));
+  expect(resend.map((l) => l.id)).toEqual(["a"]);
+  expect(drop.map((l) => l.id)).toEqual(["b"]);
+  savePending("s1", []);
+  expect(loadPending("s1")).toEqual([]);
+});

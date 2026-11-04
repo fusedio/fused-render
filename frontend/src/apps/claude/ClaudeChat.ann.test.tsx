@@ -69,6 +69,16 @@ let failSend = false;
 /** Hold only the Nth `send` (1-based); null holds every send while `holdSend` is set. */
 let holdSendNth: number | null = null;
 let sendCount = 0;
+/** What `/api/claude-sessions/history` answers (a reload's restore). */
+let historyBody: Record<string, unknown> = { turns: [], live_run: "" };
+/**
+ * This suite's own sessionStorage, fresh for every test. Sent lines are
+ * journalled per session id and every chat here runs as `s1`, so a store shared
+ * across tests (or left on `globalThis` by another file in the same `bun test`
+ * process) would bring one test's lines back as another's re-sends.
+ */
+const storeCells = new Map<string, string>();
+let realSession: { had: boolean; was: unknown } = { had: false, was: undefined };
 
 /** `/api/prefs` — the project queue's switch lives there (`queue.enabled`). */
 let prefsBody: Record<string, unknown> = {};
@@ -119,6 +129,7 @@ function stubFetch(): void {
         jobId: "job1",
       });
     }
+    if (url.startsWith("/api/claude-sessions/history")) return jsonRes(historyBody);
     if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
     if (url === "/api/claude/agent" || url === "/api/claude/app-entry") {
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
@@ -243,6 +254,15 @@ function pressDoneChord(over: Record<string, unknown> = {}): {
 }
 
 beforeEach(() => {
+  storeCells.clear();
+  historyBody = { turns: [], live_run: "" };
+  const g = globalThis as { sessionStorage?: unknown };
+  realSession = { had: Object.prototype.hasOwnProperty.call(g, "sessionStorage"), was: g.sessionStorage };
+  g.sessionStorage = {
+    getItem: (k: string) => storeCells.get(k) ?? null,
+    setItem: (k: string, v: string) => void storeCells.set(k, String(v)),
+    removeItem: (k: string) => void storeCells.delete(k),
+  };
   // A shared prefs GET pinned by an earlier file's never-settling fetch stub
   // would starve the flag read this chat's send waits on.
   dropSharedPrefsRead();
@@ -467,6 +487,9 @@ afterEach(() => {
   if (realCreate === undefined) delete doc.createElement;
   else doc.createElement = realCreate;
   restoreApi();
+  const g = globalThis as { sessionStorage?: unknown };
+  if (realSession.had) g.sessionStorage = realSession.was;
+  else delete g.sessionStorage;
   expect(Object.keys(API).sort()).toEqual(Object.keys(asFound).sort());
   for (const k of Object.keys(asFound)) expect(API[k]).toBe(asFound[k]);
 });
@@ -1895,4 +1918,171 @@ test("a REFUSED admission leaves the round exactly where the reader left it", as
   expect(annChips(r)).toHaveLength(1);
   expect(annotationsForTests()!.annotations[0]!.sent).toBeFalsy();
   expect(revoked).toHaveLength(1);
+});
+
+
+// ---- CLI PARITY: a mid-turn line goes to the live run, flag on OR off -------
+//
+// The one-task-per-folder flag decides folder exclusivity between DIFFERENT
+// runs. It never changes how a line typed into this chat's own live run is
+// delivered, nor whether the line survives a reload — so every case below runs
+// under both settings and expects the same outcome.
+
+const PENDING_KEY = "claude.outbox:s1";
+
+for (const flagOn of [false, true]) {
+  const tag = flagOn ? "flag ON" : "flag OFF";
+
+  /** The chat with a LIVE run of its own (`pollLive`), the flag set. */
+  async function liveChat() {
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    const rig = await mountChat();
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await typeInBox(rig.r, "first message");
+    await act(async () => {
+      rig.r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(60);
+    return rig;
+  }
+  const sends = () => runs.filter((c) => c.action === "send");
+
+  test(`${tag}: Enter mid-turn writes to the live run at once, not a new start`, async () => {
+    const { r } = await liveChat();
+    const openings = admits.length;
+    expect(started()).toHaveLength(1);
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    expect(sends()).toHaveLength(1);
+    expect(sends()[0]!.params.message).toContain("keep going");
+    expect(sends()[0]!.params.client_uuid).toBeTruthy();
+    expect(started()).toHaveLength(1);
+    // Never through admission: this is the chat's own run.
+    expect(admits).toHaveLength(openings);
+    // The server acknowledged it, so nothing is left to re-send after a reload.
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: two mid-turn lines arrive in the order typed`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "one");
+    await pressEnterInBox(r);
+    await typeInBox(r, "two");
+    await pressEnterInBox(r);
+    await settle(80);
+    expect(sends().map((c) => c.params.message)).toEqual([
+      expect.stringContaining("one"),
+      expect.stringContaining("two"),
+    ]);
+    expect(started()).toHaveLength(1);
+  });
+
+  test(`${tag}: a line typed while the run is STARTING is delivered into this chat's run`, async () => {
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    const open = heldStart();
+    const { r } = await mountChat();
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await typeInBox(r, "first message");
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(30);
+    const openings = admits.length;
+    // The session id is not known yet: only `start` is out.
+    await typeInBox(r, "typed while starting");
+    await pressEnterInBox(r);
+    await settle(30);
+    // Journalled while it waits: a reload now must not lose it.
+    expect(sends()).toHaveLength(0);
+    await act(async () => open());
+    await settle(200);
+    expect(sends()).toHaveLength(1);
+    expect(sends()[0]!.params.message).toContain("typed while starting");
+    // Not a second turn, and not queued behind itself.
+    expect(started()).toHaveLength(1);
+    expect(admits).toHaveLength(openings);
+    expect(byClass(r, "turn-pending")).toHaveLength(0);
+  });
+
+  test(`${tag}: a line with no acknowledgement yet is journalled, and dropped once the server has it`, async () => {
+    let release!: () => void;
+    holdSend = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { r } = await liveChat();
+    await typeInBox(r, "in flight");
+    await pressEnterInBox(r);
+    await settle(30);
+    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
+    expect(stored.map((l) => l.text)).toEqual(["in flight"]);
+    expect(stored[0]!.id).toBe(sends()[0]!.params.client_uuid!);
+    release();
+    await settle(60);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: a reload re-sends a line the server never had, exactly once`, async () => {
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id: "0f8c1c52-aaaa-4bbb-8ccc-123456789abc", text: "lost line" }]));
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(200);
+    const opening = started().filter((c) => String(c.params.message).includes("lost line"));
+    expect(opening).toHaveLength(1);
+    expect(opening[0]!.params.client_uuid).toBe("0f8c1c52-aaaa-4bbb-8ccc-123456789abc");
+    await settle(200);
+    expect(started().filter((c) => String(c.params.message).includes("lost line"))).toHaveLength(1);
+    // Acknowledged now, so a SECOND reload has nothing to send.
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: a reload whose history already holds that entry id does not re-send it`, async () => {
+    const id = "0f8c1c52-aaaa-4bbb-8ccc-123456789abc";
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id, text: "already there" }]));
+    historyBody = {
+      turns: [{ role: "user", text: "earlier", uuid: "u0" }],
+      live_run: "r1",
+      inbox: [{ id: "i1", text: "already there", uuid: id }],
+    };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(300);
+    expect(started()).toHaveLength(0);
+    expect(sends()).toHaveLength(0);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: a reload into a live run re-sends the lost line as a follow-up`, async () => {
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id: "0f8c1c52-aaaa-4bbb-8ccc-123456789abc", text: "lost mid-turn" }]));
+    historyBody = { turns: [{ role: "user", text: "earlier", uuid: "u0" }], live_run: "r1", inbox: [] };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(400);
+    const into = [...sends(), ...started()].filter((c) => String(c.params.message).includes("lost mid-turn"));
+    expect(into).toHaveLength(1);
+    expect(into[0]!.params.client_uuid).toBe("0f8c1c52-aaaa-4bbb-8ccc-123456789abc");
+  });
+}
+
+test("flag ON: a line typed while ANOTHER chat holds the folder is admitted, never sent into the wrong run", async () => {
+  // The flag's one job. No live run of this chat's own, so the line is a new
+  // turn and goes through admission; the answer says the folder is busy and the
+  // line is queued — nothing is `send`-t into anybody's run.
+  prefsBody = { queue: { enabled: true } };
+  admitAnswer = { run: false, entry: { id: "q1" }, key: "pending:q1", position: 2, ahead: "TASK-041", ahead_title: "other" };
+  const { r } = await mountChat();
+  await act(async () => publishProjectQueueEnabled(true));
+  await typeInBox(r, "wait your turn");
+  await pressEnterInBox(r);
+  await settle(60);
+  expect(admits).toHaveLength(1);
+  expect(started()).toHaveLength(0);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
 });

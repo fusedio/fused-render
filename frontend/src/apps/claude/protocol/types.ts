@@ -693,6 +693,9 @@ export interface InboxMessage {
   id: string;
   text: string;
   at?: string | number;
+  /** The entry's identity on the wire — the page's own `client_uuid` when the
+   *  send named one (a reload matches its stored lines against this). */
+  uuid?: string;
   /**
    * THE HOST HAS TAKEN IT OFF THE PILE — but the transcript has not echoed it
    * back yet (the project queue's inbox, agent.py). The server lists these ANYWAY

@@ -4687,7 +4687,10 @@ def _turn_opening_time(run_dir: str, cursor: int, echo_pending: bool) -> float:
         return 0.0
 
 
-def _write_inbox_entry(run_dir: str, message: str) -> None:
+_CLIENT_UUID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+
+
+def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "") -> None:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
     `_send` (every follow-up) write from.
@@ -4698,8 +4701,14 @@ def _write_inbox_entry(run_dir: str, message: str) -> None:
     other by identity, not by words — two "go on"s are two entries with two
     ids, and a folded N-block echo row that repeats a uuid is still that one
     entry (`_drained_unechoed`). A CLI that ignores the key loses nothing: the
-    text match stands behind it."""
-    entry_uuid = str(uuid.uuid4())
+    text match stands behind it.
+
+    THE PAGE MAY NAME THE ENTRY (`client_uuid`): a line typed mid-turn is kept in
+    the tab's sessionStorage until this write is acknowledged, and after a reload
+    the page asks the history whether an entry with THAT id is already here
+    (inbox rows and transcript turns both carry `uuid`) before sending it again.
+    Identity, never text: two "go on"s are two ids."""
+    entry_uuid = client_uuid if _CLIENT_UUID_RE.match(client_uuid or "") else str(uuid.uuid4())
     _inbox_time_record(run_dir, entry_uuid)
     _write_inbox_row(run_dir, {"type": "user", "uuid": entry_uuid, "message": {
         "role": "user",
@@ -4833,7 +4842,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            extra_read_dirs: list | None = None,
            draft_key: str = "", terminal_hint: str = "",
            backend: str = "", bot: str = "", fork_at: str = "",
-           isolate_mcp: bool = False) -> dict:
+           isolate_mcp: bool = False, client_uuid: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -5052,7 +5061,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (a later follow-up) writes the exact same shape into the exact same
     # directory, and the host does not know or care which one started the
     # session versus which one rode in on the CLI's own queue mid-turn.
-    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint))
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid)
 
     # The session host owns the CLI's stdin pipe for the life of the session
     # — see session_host.py's own module docstring for the fork-safety and
@@ -6077,7 +6086,7 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
          effort: str = "", permission_mode: str = "",
-         terminal_hint: str = "") -> dict:
+         terminal_hint: str = "", client_uuid: str = "") -> dict:
     """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
     process for it.
 
@@ -6264,7 +6273,13 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = 0
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
-    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint))
+    # A RE-SEND OF A LINE THE HOST ALREADY HOLDS is a no-op: the page keeps a
+    # line until its `send` is acknowledged, so a 504 or a reload in that gap
+    # can send the same `client_uuid` twice.
+    if client_uuid and any(r.get("uuid") == client_uuid
+                           for r in _inbox_waiting(run_dir)):
+        return {"sent": True}
+    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid)
     return {"sent": True}
 
 
@@ -12569,7 +12584,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
          terminal_hint: str = "", task_id: str = "", backend: str = "",
-         fork_at: str = "", tool_use_id: str = "") -> dict:
+         fork_at: str = "", tool_use_id: str = "",
+         client_uuid: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -12590,7 +12606,7 @@ def main(action: str = "start", file: str = "", message: str = "",
                       has_pane=None if has_pane == "" else has_pane != "0",
                       extra_read_dirs=_attach_dirs(read_dirs),
                       draft_key=draft_key, terminal_hint=terminal_hint,
-                      backend=backend, fork_at=fork_at)
+                      backend=backend, fork_at=fork_at, client_uuid=client_uuid)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
@@ -12717,7 +12733,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         # itself decides which of the three (if any) actually changed, and
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
-                    permission_mode, terminal_hint)
+                    permission_mode, terminal_hint, client_uuid)
     if action == "set_mode":
         # The Approvals pill changed on a live chat: apply it now, with no
         # message and no turn (`_send` only applies it piggybacked on a send).
