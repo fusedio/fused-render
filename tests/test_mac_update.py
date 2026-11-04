@@ -1672,70 +1672,29 @@ def test_apply_renames_the_staged_copy_into_place_and_parks_the_old_bundle(
     assert mac.apply_staged(str(bundle)) is None  # nothing left to apply
 
 
-def test_a_failed_second_rename_rolls_the_bundle_back(monkeypatch, tmp_path):
-    """The apply must never leave no app at all: when the staged copy cannot
-    take the bundle's name, the bundle gets its name back and the staged
-    copy stays for the next quit."""
-    bundle = tmp_path / "FusedRender.app"
-    _plist(bundle, "0.4.10")
-    (bundle / "Contents" / "marker").write_text("the running bundle")
-    staged = tmp_path / ".FusedRender-update.app"
-    _plist(staged, "9.9.9")
-    real_rename = os.rename
-
-    def failing_rename(src, dst):
-        if src.endswith(".FusedRender-update.app"):
-            raise OSError("simulated: second rename failed")
-        return real_rename(src, dst)
-
-    monkeypatch.setattr(mac.os, "rename", failing_rename)
-    monkeypatch.setattr(mac, "_swap_paths", lambda a, b: False)  # the volume has no exchange
-
-    assert mac.apply_staged(str(bundle)) is None
-
-    assert (bundle / "Contents" / "marker").read_text() == "the running bundle"
-    assert _old_bundles(tmp_path) == []  # renamed back, nothing left behind
-    assert staged.is_dir()
-    assert mac.staged_version(str(bundle)) == "9.9.9"
+def _exchange_available(tmp_path) -> bool:
+    """Can this volume exchange two paths (APFS/HFS+ on macOS; ext4/xfs/
+    btrfs/tmpfs with glibc >= 2.28 on Linux)? Probed once per test on the
+    tmp volume, so a CI runner whose tmp cannot skips rather than fails."""
+    a, b = tmp_path / "_xa", tmp_path / "_xb"
+    a.mkdir(); b.mkdir()
+    try:
+        mac._swap_paths(str(a), str(b))
+    except OSError:
+        return False
+    finally:
+        a.rmdir(); b.rmdir()
+    return True
 
 
-def test_when_the_rollback_fails_too_the_staged_copy_is_promoted(monkeypatch, tmp_path):
-    """Two-rename fallback, worst case: the promote failed AND the park cannot
-    be undone. Leaving no app at all is the one outcome that is never
-    acceptable, so the staged copy is tried into the empty path once more
-    (CodeRabbit, PR #2088)."""
-    bundle = tmp_path / "FusedRender.app"
-    _plist(bundle, "0.4.10")
-    staged = tmp_path / ".FusedRender-update.app"
-    _plist(staged, "9.9.9")
-    real_rename = os.rename
-    attempts = {"promote": 0}
-
-    def flaky_rename(src, dst):
-        if src.endswith(".FusedRender-update.app"):
-            attempts["promote"] += 1
-            if attempts["promote"] == 1:
-                raise OSError("simulated: first promote failed")
-            return real_rename(src, dst)
-        if "-old-" in src:
-            raise OSError("simulated: rollback failed")
-        return real_rename(src, dst)
-
-    monkeypatch.setattr(mac.os, "rename", flaky_rename)
-    monkeypatch.setattr(mac, "_swap_paths", lambda a, b: False)
-
-    assert mac.apply_staged(str(bundle)) == "9.9.9"
-    from fused_render import installed
-    assert installed.bundle_version(str(bundle)) == "9.9.9"
-    assert len(_old_bundles(tmp_path)) == 1
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="renameatx_np is macOS-only")
-def test_the_apply_is_one_atomic_exchange_on_macos(monkeypatch, tmp_path):
-    """Where the volume allows it the bundle and the staged copy trade names
-    in ONE call: `os.rename` is never asked to move the bundle itself, so
-    there is no instant with nothing at the app's path for the quit
-    watchdog's `os._exit` to land in (CodeRabbit, PR #2088)."""
+def test_the_apply_is_one_atomic_exchange(monkeypatch, tmp_path):
+    """The bundle and the staged copy trade names in ONE call: `os.rename`
+    is never asked to move the bundle itself, so there is no instant with
+    nothing at the app's path for the quit watchdog's `os._exit` to land
+    in (CodeRabbit, PR #2088). The same primitive on both platforms —
+    `renameatx_np` on macOS, `renameat2` on Linux — so this runs in CI."""
+    if not _exchange_available(tmp_path):
+        pytest.skip("this volume cannot exchange two paths")
     bundle = tmp_path / "FusedRender.app"
     _plist(bundle, "0.4.10")
     (bundle / "Contents" / "marker").write_text("the running bundle")
@@ -1765,6 +1724,8 @@ def test_an_external_install_that_outran_the_staged_copy_is_kept(monkeypatch, tm
     """A DMG drag or brew landing between the newer-check and the exchange
     leaves a bundle NEWER than the staged copy: the apply notices after the
     swap and puts it straight back (CodeRabbit, PR #2088)."""
+    if not _exchange_available(tmp_path):
+        pytest.skip("this volume cannot exchange two paths")
     bundle = tmp_path / "FusedRender.app"
     _plist(bundle, "9.9.10")
     (bundle / "Contents" / "marker").write_text("dragged in by hand")
@@ -1780,26 +1741,38 @@ def test_an_external_install_that_outran_the_staged_copy_is_kept(monkeypatch, tm
     assert staged.is_dir()
 
 
-def test_an_apply_that_cannot_move_anything_discards_the_staged_copy(
-        monkeypatch, tmp_path):
-    """A parent the process cannot rename in refuses the next quit the same
-    way, and `installed_version()` would otherwise keep raising a restart
-    card whose restart changes nothing: the copy goes, the next check
-    offers the update again and that install's writability check says why
-    (CodeRabbit, PR #2088)."""
+@pytest.mark.parametrize("code", ["EPERM", "ENOTSUP", "EXDEV"])
+def test_an_apply_that_cannot_exchange_leaves_the_bundle_and_discards_the_copy(
+        monkeypatch, tmp_path, code):
+    """No exchange, no apply — never a park-then-promote with an empty
+    instant between (CodeRabbit, PR #2088). A volume that refuses today
+    refuses the next quit the same way, and `installed_version()` would
+    otherwise keep raising a restart card whose restart changes nothing:
+    the copy goes, the next check offers the update again."""
     import errno
 
     bundle = tmp_path / "FusedRender.app"
     _plist(bundle, "0.4.10")
+    (bundle / "Contents" / "marker").write_text("the running bundle")
     staged = tmp_path / ".FusedRender-update.app"
     _plist(staged, "9.9.9")
+    renamed = []
+    real_rename = os.rename
+
+    def recording_rename(src, dst):
+        renamed.append((src, dst))
+        return real_rename(src, dst)
 
     def refused(a, b):
-        raise OSError(errno.EPERM, "Operation not permitted", a, None, b)
+        raise OSError(getattr(errno, code), code, a, None, b)
 
     monkeypatch.setattr(mac, "_swap_paths", refused)
+    monkeypatch.setattr(mac.os, "rename", recording_rename)
 
     assert mac.apply_staged(str(bundle)) is None
+    assert renamed == []  # nothing moved, least of all the bundle
+    assert (bundle / "Contents" / "marker").read_text() == "the running bundle"
+    assert _old_bundles(tmp_path) == []
     from fused_render import installed
     assert installed.bundle_version(str(bundle)) == "0.4.10"
     assert not staged.exists()

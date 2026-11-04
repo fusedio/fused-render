@@ -257,40 +257,42 @@ def _superseded_path(staged: str) -> str:
 # wait out a 30 s ditto on the way to the watchdog's hard deadline.
 _stage_lock = threading.Lock()
 
-# `renameatx_np(2)`'s RENAME_SWAP: exchange two paths in one atomic call.
-_AT_FDCWD = -2
-_RENAME_SWAP = 0x2
-_renameatx_np = None
+# The one-call atomic exchange of two paths: macOS `renameatx_np(2)` with
+# RENAME_SWAP (APFS, HFS+), Linux `renameat2(2)` with RENAME_EXCHANGE
+# (glibc >= 2.28; ext4, xfs, btrfs, tmpfs — where the tests run). Both flags
+# happen to be 0x2; AT_FDCWD differs per libc.
+_EXCHANGE_FLAG = 0x2
+_EXCHANGE_CALL, _AT_FDCWD = (
+    ("renameatx_np", -2) if sys.platform == "darwin" else ("renameat2", -100))
+_exchange_fn = None
 
 
-def _swap_paths(a: str, b: str) -> bool:
-    """Atomically exchange `a` and `b` (macOS `renameatx_np` + RENAME_SWAP,
-    APFS and HFS+). True when it happened. False — and NOTHING moved — when
-    the call does not exist here (Linux CI) or the volume refuses it
-    (ENOTSUP/EINVAL/EXDEV); the caller falls back to two renames. Any other
-    errno (EPERM, ENOENT…) raises as an OSError like `os.rename` would."""
-    global _renameatx_np
-    if sys.platform != "darwin":
-        return False
-    if _renameatx_np is None:
+def _swap_paths(a: str, b: str) -> None:
+    """Atomically exchange `a` and `b`, or raise OSError with NOTHING moved.
+    ENOTSUP when the libc has no such call or the volume refuses the
+    exchange (also EINVAL/EXDEV from the kernel); any other errno (EPERM,
+    ENOENT…) as `os.rename` would raise it. THERE IS NO TWO-RENAME FALLBACK:
+    a park-then-promote has an instant with nothing at the app's path, and
+    the quit watchdog's `os._exit` can land in it (CodeRabbit, PR #2088) —
+    so where the exchange is unavailable the bundle is left alone."""
+    global _exchange_fn
+    if _exchange_fn is None:
         try:
             libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-            fn = libc.renameatx_np
+            fn = getattr(libc, _EXCHANGE_CALL)
             fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
                            ctypes.c_char_p, ctypes.c_uint]
             fn.restype = ctypes.c_int
-            _renameatx_np = fn
+            _exchange_fn = fn
         except (OSError, AttributeError):
-            _renameatx_np = False
-    if _renameatx_np is False:
-        return False
-    rc = _renameatx_np(_AT_FDCWD, os.fsencode(a), _AT_FDCWD, os.fsencode(b),
-                       _RENAME_SWAP)
+            _exchange_fn = False
+    if _exchange_fn is False:
+        raise OSError(errno.ENOTSUP, f"{_EXCHANGE_CALL} is not available", a, None, b)
+    rc = _exchange_fn(_AT_FDCWD, os.fsencode(a), _AT_FDCWD, os.fsencode(b),
+                      _EXCHANGE_FLAG)
     if rc == 0:
-        return True
+        return
     code = ctypes.get_errno()
-    if code in (errno.ENOTSUP, errno.EINVAL, errno.EXDEV):
-        return False
     raise OSError(code, os.strerror(code), a, None, b)
 
 
@@ -359,24 +361,24 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
     the old install-time swap.) That is what makes the rename safe where it
     was not at install time (see the module docstring).
 
-    ONE atomic exchange where the volume allows it (`_swap_paths`, APFS and
-    HFS+): the bundle and the staged copy trade names in a single
-    `renameatx_np` call, so there is no instant at which the app's path is
+    ONE atomic exchange, and only that (`_swap_paths`: `renameatx_np` on
+    macOS, `renameat2` on Linux): the bundle and the staged copy trade names
+    in a single call, so there is no instant at which the app's path is
     empty — the quit watchdog's `os._exit` can land anywhere and leave either
-    the old app or the new one, never nothing (CodeRabbit, PR #2088). The
-    displaced bundle then lands under the staged name, which a best-effort
-    third rename parks under `_old_bundle_path` for a later boot's
-    `sweep_old_bundles` (see that docstring for the TCC reason); if that
-    rename never runs, the boot sweep removes it from the staged name as
-    "not newer" instead. Where the exchange is unavailable, two renames with
-    a rollback — and, should the rollback fail too, the staged copy is
-    promoted into the empty path rather than leaving no app at all.
+    the old app or the new one, never nothing (CodeRabbit, PR #2088). A
+    park-then-promote pair of renames would have exactly that instant, so
+    there is no such fallback: where the volume cannot exchange, the bundle
+    is left alone. The displaced bundle lands under the staged name, which a
+    best-effort third rename parks under `_old_bundle_path` for a later
+    boot's `sweep_old_bundles` (see that docstring for the TCC reason); if
+    that rename never runs, the boot sweep removes it from the staged name
+    as "not newer" instead.
 
-    A failure to move anything at all discards the staged copy: a parent
-    directory this process cannot rename in today will refuse the next quit
-    the same way, and `installed_version()` would otherwise keep raising a
-    restart card whose restart changes nothing. The next check offers the
-    update again, and that install's own writability check says why."""
+    A failure to exchange discards the staged copy: a volume that refuses
+    today refuses the next quit the same way, and `installed_version()`
+    would otherwise keep raising a restart card whose restart changes
+    nothing. The next check offers the update again, and that install's
+    own writability check (or this log line) says why."""
     real = os.path.realpath(bundle)
     version = installed.staged_version(real)
     if version is None:
@@ -385,7 +387,7 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
     parent = os.path.dirname(real)
     old = _old_bundle_path(parent, os.getpid() if pid is None else pid)
     try:
-        swapped = _swap_paths(real, staged)
+        _swap_paths(real, staged)
     except OSError as error:
         # ENOENT is not a refusal: the install thread is mid-publish (it
         # just moved the older copy to `.superseded` and is about to rename
@@ -396,50 +398,16 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
             logger.info("update: nothing at %s to apply yet (an install is "
                         "publishing); leaving it for the next quit", staged)
             return None
-        logger.warning("update: could not exchange %s with staged v%s; discarding "
-                       "the staged copy", real, version, exc_info=True)
+        logger.warning("update: could not exchange %s with staged v%s (%s); the "
+                       "bundle is untouched and the staged copy is discarded",
+                       real, version, error.strerror, exc_info=True)
         shutil.rmtree(staged, ignore_errors=True)
         return None
-    if swapped:
-        # The bundle that was running is now under the staged name. Re-read
-        # it: an install that landed from OUTSIDE between the check above
-        # and the exchange (a DMG drag, brew) is newer than what was
-        # staged, and must win — swap straight back.
-        displaced = installed.bundle_version(staged)
-        try:
-            outran = displaced is not None and not common.is_newer(version, displaced)
-        except ValueError:
-            outran = False
-        if outran:
-            logger.info("update: %s became v%s under the staged v%s; keeping it",
-                        real, displaced, version)
-            try:
-                _swap_paths(real, staged)
-            except OSError:
-                logger.error("update: could not swap back; v%s is at %s", displaced,
-                             staged, exc_info=True)
-            return None
-        try:
-            os.rename(staged, old)
-        except OSError:
-            # Left under the staged name: not newer than the bundle now, so
-            # the next boot's `discard_stale_staged` removes it.
-            logger.warning("update: applied v%s; could not park the previous "
-                           "bundle (left at %s)", version, staged, exc_info=True)
-            old = staged
-        logger.info("update: applied staged v%s to %s (previous bundle parked at %s)",
-                    version, real, old)
-        return version
-    # No atomic exchange on this volume: park, then promote, with the
-    # bundle's path empty for the instant between.
-    try:
-        os.rename(real, old)
-    except OSError:
-        logger.warning("update: could not park %s for the apply; discarding the "
-                       "staged v%s", real, version, exc_info=True)
-        shutil.rmtree(staged, ignore_errors=True)
-        return None
-    displaced = installed.bundle_version(old)
+    # The bundle that was running is now under the staged name. Re-read
+    # it: an install that landed from OUTSIDE between the check above and
+    # the exchange (a DMG drag, brew) is newer than what was staged, and
+    # must win — swap straight back.
+    displaced = installed.bundle_version(staged)
     try:
         outran = displaced is not None and not common.is_newer(version, displaced)
     except ValueError:
@@ -447,25 +415,20 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
     if outran:
         logger.info("update: %s became v%s under the staged v%s; keeping it",
                     real, displaced, version)
-        os.rename(old, real)
+        try:
+            _swap_paths(real, staged)
+        except OSError:
+            logger.error("update: could not swap back; v%s is at %s", displaced,
+                         staged, exc_info=True)
         return None
     try:
-        os.rename(staged, real)
+        os.rename(staged, old)
     except OSError:
-        logger.warning("update: could not move staged v%s into place; rolling back",
-                       version, exc_info=True)
-        try:
-            os.rename(old, real)
-        except OSError:
-            logger.error("update: ROLLBACK FAILED — %s is parked at %s; promoting "
-                         "the staged copy instead", real, old, exc_info=True)
-            try:
-                os.rename(staged, real)
-                return version
-            except OSError:
-                logger.error("update: NO APP at %s — the previous bundle is at %s "
-                             "and the update at %s", real, old, staged, exc_info=True)
-        return None
+        # Left under the staged name: not newer than the bundle now, so
+        # the next boot's `discard_stale_staged` removes it.
+        logger.warning("update: applied v%s; could not park the previous "
+                       "bundle (left at %s)", version, staged, exc_info=True)
+        old = staged
     logger.info("update: applied staged v%s to %s (previous bundle parked at %s)",
                 version, real, old)
     return version
