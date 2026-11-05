@@ -56,7 +56,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import type { TaskPulseTask } from "@platform/lib/api";
 import { clearFavOpen, favOpenedAtMs, useFavOpen } from "@platform/lib/last-chat";
 import type { RailHere } from "./claude-rail-lib";
-import { FAV_SETTLE_MS, PeekIntent, favOpenVerdict, type Box } from "./rail-peek-lib";
+import { FAV_SETTLE_MS, PeekIntent, favLike, favOpenVerdict, type Box } from "./rail-peek-lib";
 
 /** Where the page a rail stands on is (header): its `placeRoot`, and the
  *  canvas's selected node file (null: none, or not a canvas). */
@@ -402,7 +402,7 @@ export function useFavOpenRow(on: boolean, rows: readonly TaskPulseTask[]): Task
   const openRow = useMemo(() => (openKey ? rows.find((t) => t.key === openKey) : undefined), [openKey, rows]);
   const seenLive = useRef<{ key: string | null; seen: boolean }>({ key: null, seen: false });
   if (seenLive.current.key !== openKey) seenLive.current = { key: openKey, seen: false };
-  if (openRow?.starred && openRow.status !== "archived") seenLive.current.seen = true;
+  if (favLike(openRow) && openRow!.status !== "archived") seenLive.current.seen = true;
   const [, setSettled] = useState(0);
   useEffect(() => {
     const at = openKey ? favOpenedAtMs(openKey) : null;

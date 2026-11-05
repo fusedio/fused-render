@@ -25,14 +25,18 @@
    card like "Path copied" used to sit in. */
 .notif-host {
   position: fixed;
-  right: 16px;
+  /* OFF THE CLAUDE RAIL (owner, 2026-11-05: "move the notification modal to
+     the right a little bit so it doesn't cover the mini sidebar"): the rail
+     says its width on the document while it stands (ClaudeRail `railUp`,
+     `--claude-rail-w`); none stands, nothing moves. */
+  right: calc(16px + var(--claude-rail-w, 0px));
   bottom: 16px;
   z-index: 2000;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
-  width: min(300px, calc(100vw - 32px));
+  width: min(300px, calc(100vw - 32px - var(--claude-rail-w, 0px)));
   pointer-events: none;
 }
 
@@ -55,12 +59,12 @@
 .native-sync-host {
   position: fixed;
   top: 12px;
-  right: 12px;
+  right: calc(12px + var(--claude-rail-w, 0px));
   z-index: 2000;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: min(300px, calc(100vw - 24px));
+  width: min(300px, calc(100vw - 24px - var(--claude-rail-w, 0px)));
 }
 
 .native-sync-host > .dl-row {
@@ -151,6 +155,14 @@
      to the BAR's right edge, not to its own chip's, so Models' panel no longer
      opens a hundred pixels in from where Notifications' does. */
   --status-bar-gutter: 12px;
+  /* …PLUS THE CLAUDE RAIL while one stands (owner, 2026-11-05: "the rail
+     goes all the way to the bottom like the left sidebar, and the
+     notifications etc. are shifted because that is where it ends"): the
+     rail's column continues down through this strip (claude-rail.css
+     `.claude-rail::after`), so the bar's right end — its chips and every
+     `.dl-panel` anchored to it — stops at the rail's edge. `--claude-rail-w`
+     is the document's, 0 without a rail (ClaudeRail `railUp`). */
+  --status-bar-end: calc(var(--status-bar-gutter) + var(--claude-rail-w, 0px));
   /* The LEFT end's gutter: the System chip (`.status-bar-start`) starts here
      and its panel opens from here, the mirror of the right gutter above. */
   --status-bar-start-gutter: 8px;
@@ -160,7 +172,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 0;
-  padding: 0 var(--status-bar-gutter) 0 var(--status-bar-start-gutter);
+  padding: 0 var(--status-bar-end) 0 var(--status-bar-start-gutter);
   /* FIXED at `--status-bar-h` (explorer.css), VS Code's own status-bar height
      (D576, user: "lets follow exactly what vscode is doing for the status
      bar") — `height`, not `min-height`, because every item is now full-height
@@ -776,7 +788,7 @@
 .dl-panel {
   position: absolute;
   bottom: 100%;
-  right: var(--status-bar-gutter);
+  right: var(--status-bar-end);
   margin-bottom: 8px;
   width: max-content;
   max-width: min(340px, calc(100vw - 32px));

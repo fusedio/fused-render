@@ -1186,6 +1186,23 @@ def favourite_of(state: dict, key: str) -> tuple[bool, bool]:
     return True, rec.get("open") is True
 
 
+def favourite_at(state: dict, key: str) -> float | None:
+    """When this key was starred (the record's `at`, kept across re-stars
+    and open/close writes), or None for a key that is not starred or whose
+    record has no readable stamp. The rail's favourites sort by it, newest
+    star first (Akshil, 2026-11-05)."""
+    rec = state.get(str(key))
+    if not isinstance(rec, dict):
+        return None
+    try:
+        at = float(rec.get("at"))
+    except (TypeError, ValueError):
+        return None
+    # NaN / inf would pass `float()` and break the JSON the pulse answers
+    # with (CodeRabbit): unreadable, like a missing stamp.
+    return at if math.isfinite(at) else None
+
+
 def set_favourite(key: str, on: bool | None, open: bool | None = None,
                   now: float | None = None,
                   force_closed: bool | Callable[[], bool] = False) -> dict:

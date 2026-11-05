@@ -100,6 +100,7 @@ import {
   favHoverRow,
   rowOf,
   type PeekWish,
+  favLike,
 } from "./rail-peek-lib";
 import { usePaneSessions, usePeekSession } from "@platform/lib/peek-session";
 
@@ -182,7 +183,7 @@ export function FavouritePeek() {
     dismissFavHover();
   }, [rail]);
   // A hover on a key the pulse no longer holds (unstarred, gone): forgotten.
-  const hoverLive = useMemo(() => new Set(rows.filter((r) => r.starred).map((r) => r.key)), [rows]);
+  const hoverLive = useMemo(() => new Set(rows.filter((r) => favLike(r)).map((r) => r.key)), [rows]);
   useEffect(() => {
     if (on) favHoverIntent().prune(hoverLive);
   }, [on, hoverLive]);

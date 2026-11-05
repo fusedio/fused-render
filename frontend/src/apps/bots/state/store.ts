@@ -302,7 +302,9 @@ export function markSeen(id: string | null | undefined, seq: number): void {
  *  the server's raw `seen_seq`: a bot you just opened is read here at once, and the chip must not count it for the
  *  poll or two until the server echoes the POST. Called on every poll and on every local mark. */
 function publishPulse(): void {
-  publishBots(S.bots.map((b) => ({ id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden })));
+  // …with the pin, the name and the face: the Claude rail's pinned bots read
+  // these rows while this page is the feeder (CodeRabbit, #2136).
+  publishBots(S.bots.map((b) => ({ id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden, pinned: b.pinned, name: b.name, face: b.face })));
 }
 export const unreadCount = (b: Bot): number => unreadOf(S.seen[b.id], eventsOf(b.id), b);
 /** The "new" rule sits at the seen mark as of opening this bot and stays put until you switch bots; set only when something is past it, else cleared. */

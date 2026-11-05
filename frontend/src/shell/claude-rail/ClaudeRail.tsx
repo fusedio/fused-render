@@ -70,6 +70,19 @@
 //     favourites on, shut pane too) — the clip of 2026-11-02 is the
 //     favourites-off rail's.
 //
+// THE RAIL'S FOOT, 2026-11-05 (owner): the LIST is at most ten rings tall
+// and scrolls, its edges fading where there is more (`listEdges`); a new
+// place starts it at the top, and the active ring is scrolled into view
+// without reordering anything. The BLOCKED chats (rail-peek-lib `favLike`,
+// claude-rail-lib `favSeats`) stand at the head of the favourites' section
+// as favourites in all but the star — temporary favourites. The starred
+// stand newest star first.
+// The PINNED BOTS (`pinnedBots`, platform/lib/botsPulse `useBotsRows`) stand
+// under them, each a door to its page. Beside the open pane on its HOME the
+// list is not drawn (`listHidden`). The + is a page rail's only
+// (`plusShown`). While the rail stands the document carries its width
+// (`railUp`, `--claude-rail-w`) and the notification column and the shadcn
+// menus keep off it (platform/lib/rail-gutter).
 // ON A PAGE WITH NO RAIL (owner, 2026-11-05: home, Bots, Tasks, AI Models,
 // Community, Preferences…): the shell's FALLBACK (FallbackRail, App.tsx), this
 // rail with `favouritesOnly` — no place, no list, no Git, no glyph, but the +:
@@ -258,9 +271,17 @@ import {
   activeRing,
   dotCleared,
   favSeats,
+  inPlace,
   keepMarks,
+  listHidden,
   listSeats,
+  LIST_ROWS_MAX,
   nodeName,
+  pinnedBots,
+  plusShown,
+  RAIL_WARM_MS,
+  railRemembered,
+  rememberRail,
   collapseRestore,
   paneTakesPinned,
   paneHoldAfter,
@@ -284,6 +305,7 @@ import {
   FAV_SETTLE_MS,
   PeekIntent,
   favChatElsewhere,
+  favLike,
   favRingRoute,
   favPressClears,
   keepAlive,
@@ -312,6 +334,33 @@ import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useRailGit } from "./rail-git";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
+import { botHasUnread, useBotsRows } from "@platform/lib/botsPulse";
+import { navigateUrl } from "@platform/lib/router";
+import { Face } from "@apps/bots/components/Face";
+import type { FaceSubject } from "@apps/bots/lib/face";
+
+/** THE RAIL'S WIDTH, SAID TO THE DOCUMENT (owner, 2026-11-05: "move the
+ *  notification modal to the right a little bit so it doesn't cover the mini
+ *  sidebar … basically all menus will shift"): while a rail stands, the
+ *  document's `--claude-rail-w` is its width, and every fixed surface on the
+ *  window's right edge — the notification column (notifications.css), the
+ *  shadcn menus and popovers (platform/lib/rail-gutter `railGutter`) — keeps
+ *  off it. A hidden rail says nothing. Counted: a page's rail and the shell's
+ *  fallback never stand together, but the count makes that a fact, not a hope. */
+let railsUp = 0;
+function railUp(): () => void {
+  // A test renderer's document has no root element: nothing to say it to.
+  const root = typeof document !== "undefined" ? document.documentElement : null;
+  railsUp += 1;
+  root?.style.setProperty("--claude-rail-w", "48px");
+  return () => {
+    railsUp -= 1;
+    if (railsUp <= 0) {
+      railsUp = 0;
+      root?.style.removeProperty("--claude-rail-w");
+    }
+  };
+}
 
 /** The rail beside an open pane, for the pages' seam drags (rail-peek-lib
  *  `railInset`) — re-exported here, the one rail module apps may import. */
@@ -583,10 +632,26 @@ export function ClaudeRail({
   const favsOnRef = useRef(favsOn);
   favsOnRef.current = favsOn;
   const favs = useMemo(() => (favsOn ? favSeats(rows, full) : []), [favsOn, rows, full]);
+  // THE BLOCKED ARE AT THEIR HEAD (claude-rail-lib `favSeats`, rail-peek-lib
+  // `favLike`; owner, 2026-11-05): favourites in every way bar the star —
+  // window B's hover, the favourite's card, the pane hand-over — drawn with
+  // `.is-blocked` and no star. How many, for the rail's standing (`railShown`:
+  // the fallback never stands for them alone).
+  const blockedCount = useMemo(() => favs.filter((s) => !s.pulse.starred).length, [favs]);
+  // THE PINNED BOTS, UNDER THE FAVOURITES (claude-rail-lib `pinnedBots`;
+  // owner, 2026-11-05): their faces, each a door to the bot's page.
+  const botRows = useBotsRows(favsOn);
+  const bots = useMemo(() => pinnedBots(botRows), [botRows]);
   const allSeats = useMemo(
     () => (favouritesOnly ? [] : listSeats(railRows(rows, full, seatPlace), favsOn)),
     [rows, full, seatPlace, favsOn, favouritesOnly],
   );
+  // THE LIST STEPS ASIDE FOR THE PANE'S HOME (claude-rail-lib `listHidden`):
+  // the pane is home when the page's URL names no session (`activeSessionId`
+  // — every page's pane routes by `session_id`: present, that chat; absent,
+  // the home page) — known the moment the pane opens, no wait on a mount
+  // (owner, 2026-11-05: "there is still some delay").
+  const paneHome = !activeSessionId;
   // The +'s New task card (`openNewTask`, below) — declared up here because
   // an open one keeps the rail standing (`shown`).
   const [card, setCard] = useState<Card | null>(null);
@@ -602,8 +667,36 @@ export function ClaudeRail({
   // THE PANEL GLYPH AND THE PULL SEAM: only while the pane is shut, and
   // never on the shell's fallback (no pane to show).
   const chrome = !paneOpen && !favouritesOnly;
-  const shown =
-    railShown({ list: allSeats.length, favs: favs.length, paneOpen, always: favsOn, favouritesOnly }) || card !== null;
+  const hideList = listHidden({ paneOpen, favsOn, paneHome });
+  const stands =
+    railShown({
+      list: hideList ? 0 : allSeats.length,
+      favs: favs.length - blockedCount,
+      blocked: blockedCount,
+      bots: bots.length,
+      paneOpen,
+      always: favsOn,
+      favouritesOnly,
+    }) || card !== null;
+  // STANDING FROM THE FIRST PAINT after a reload (claude-rail-lib
+  // `railRemembered`): a rail that stood in this window last stands again
+  // at once, empty, until the pulse and the bots say what it holds — or,
+  // past `RAIL_WARM_MS`, that it holds nothing. The flag itself is
+  // remembered the same way (favourites-flag), or the fallback could not
+  // mount at all.
+  const [warming, setWarming] = useState(() => favsOn && railRemembered());
+  useEffect(() => {
+    if (!warming) return;
+    const t = window.setTimeout(() => setWarming(false), RAIL_WARM_MS);
+    return () => window.clearTimeout(t);
+  }, [warming]);
+  useEffect(() => {
+    if (stands) {
+      setWarming(false);
+      rememberRail(true);
+    } else if (!warming) rememberRail(false);
+  }, [stands, warming]);
+  const shown = stands || warming;
   // ONE CHAT, ONE COMPOSER beside the open pane: a chat the pane (or the
   // explorer's sidebar) has mounted is not mounted again in this rail's card
   // — the card says where it is instead (`bodyNote`), as the favourite's card
@@ -659,6 +752,26 @@ export function ClaudeRail({
     () => (!favsOn && fit < allSeats.length ? allSeats.slice(0, fit) : allSeats),
     [allSeats, fit, favsOn],
   );
+  // THE LIST'S EDGES (owner, 2026-11-05: "subtle indicators showing this is
+  // not the top and this is not the bottom"): whether there is more above
+  // and below the scrolled box — read on every scroll and whenever the
+  // rings or the box change; the fades draw off it (claude-rail.css).
+  const [listEdges, setListEdges] = useState({ up: false, down: false });
+  const measureEdges = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const up = el.scrollTop > 1;
+    const down = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+    setListEdges((e) => (e.up === up && e.down === down ? e : { up, down }));
+  }, []);
+  useLayoutEffect(() => {
+    measureEdges();
+    const el = listRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measureEdges);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measureEdges, baseSeats, hideList]);
 
   // THE DOTS A PRESS CLEARED (header; claude-rail-lib `ReadMark`): held
   // while the pulse still reports what the press saw, spent the moment it
@@ -789,10 +902,20 @@ export function ClaudeRail({
   const heldExtra = useMemo((): RailRow | null => {
     // A favourite's held card (a hover on its ring, then a press inside) has
     // its ring in the favourites section already.
+    // …and so has a blocked chat's (at the head of that section, Bugbot).
     if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey) || favs.some((s) => s.pulse.key === heldKey)) return null;
     const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
-    return pulse ? { pulse, row: full.get(heldKey) ?? null } : null;
-  }, [baseSeats, heldKey, rows, full, favs]);
+    if (!pulse) return null;
+    // WITH THE FAVOURITES ON the list scrolls, so nothing is "past its room":
+    // the one outsider left is the selected node's neighbour on this canvas.
+    // A chat of ANOTHER place — a blocked chat from elsewhere whose card was
+    // held while it was answered, and which left the section the moment it
+    // unblocked — is not drawn, and its card goes with it (owner, 2026-11-05:
+    // "should close preview and not show up unless the task belongs to the
+    // same view / same page").
+    if (favsOn && !inPlace(pulse, place)) return null;
+    return { pulse, row: full.get(heldKey) ?? null };
+  }, [baseSeats, heldKey, rows, full, favs, favsOn, place]);
   // Every seat this rail's card may show — the list's, plus the held
   // outsider, plus the favourites (a hover on their rings, header) — for the
   // card's anchors, the kept mounts and the prune; the LIST itself is
@@ -891,6 +1014,9 @@ export function ClaudeRail({
     const el = railRef.current;
     return el && shown ? registerRail(el, hereOf) : undefined;
   }, [hereOf, shown]);
+  // Favourites on only (flag-off parity: the rail of 2026-11-04 moved
+  // nothing).
+  useLayoutEffect(() => (shown && favsOn ? railUp() : undefined), [shown, favsOn]);
   // …and WHERE THE PAGE STANDS, for the favourite card's where-chip (fav-
   // peek-store `setRailPage`): said again on every hop this rail makes in
   // place and every node selected. After the register above, in the same
@@ -965,7 +1091,9 @@ export function ClaudeRail({
   // `pendingFocus`).
   const openFavourite = useCallback(
     (t: TaskPulseTask, href: string) => {
-      if (!t.starred || t.status === "archived" || !t.session_id) {
+      // A favourite as the rail counts one — starred or blocked (rail-peek-
+      // lib `favLike`); anything else goes through the chat's door.
+      if (!favLike(t) || t.status === "archived" || !t.session_id) {
         requestFavFocus(null);
         openChatRef.current(href);
         return;
@@ -1603,6 +1731,29 @@ export function ClaudeRail({
     favs.map((s) => s.pulse.key),
     [openFavKey, lastFavPressed !== null ? favs.find((s) => lastChatId(s.pulse) === lastFavPressed)?.pulse.key : null],
   );
+  // SCROLL, NEVER POSITIONS (owner, 2026-11-05: "it is just moving scroll,
+  // not moving positions"): a new place starts the list at its top; the
+  // list's active ring — the last selected, the chat the pane gave back on
+  // collapsing — is scrolled into the box when it stands outside it, to the
+  // bottom edge when it is below (the 14th ring as the 10th row), the top
+  // when above. Rings in view are left where they are.
+  const placeWas = useRef(place);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    if (placeWas.current !== place) {
+      placeWas.current = place;
+      el.scrollTop = 0;
+    }
+    const ring = activeList ? ringEls.current.get(activeList) : null;
+    if (ring && el.contains(ring)) {
+      const r = ring.getBoundingClientRect();
+      const b = el.getBoundingClientRect();
+      if (r.bottom > b.bottom) el.scrollTop += r.bottom - b.bottom + 2;
+      else if (r.top < b.top) el.scrollTop -= b.top - r.top + 2;
+    }
+    measureEdges();
+  }, [place, activeList, measureEdges, hideList]);
 
   // ONE RING, as the list draws it — and as the foot draws the held outsider.
   const ringOf = ({ pulse: t, row }: RailRow, foot = false) => {
@@ -1685,7 +1836,9 @@ export function ClaudeRail({
                   // Found again by key when a card shuts under the keyboard
                   // (fav-peek-store `focusRail`).
                   data-task-key={t.key}
-                  className={["sidebar-rail-btn", "claude-rail-chat", ...wears.classes].join(" ")}
+                  // A blocked, unstarred favourite wears `.is-blocked`
+                  // (rail-peek-lib `favLike`): the section's ring, no star.
+                  className={["sidebar-rail-btn", "claude-rail-chat", ...wears.classes, ...(foot && !t.starred ? ["is-blocked"] : [])].join(" ")}
                   aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the
                   // title's line, then the reply's — what the row clamps.
@@ -1802,7 +1955,7 @@ export function ClaudeRail({
       ref={railRef}
       className={
         "claude-rail" +
-        (favs.length > 0 ? " has-favs" : "") +
+        (favs.length + bots.length > 0 ? " has-favs" : "") +
         // No glyph above the + (beside the open pane, the fallback): nothing
         // keeps its room (claude-rail.css).
         (favsOn && !chrome ? " no-glyph" : "") +
@@ -1845,25 +1998,39 @@ export function ClaudeRail({
         </button>
       )}
       <div className="sidebar-rail-items">
-        <button
-          ref={plusRef}
-          type="button"
-          className="sidebar-rail-btn claude-rail-item"
-          title={plusLabel}
-          aria-label={plusLabel}
-          {...(plusPane ? {} : { "aria-haspopup": "dialog" as const })}
-          aria-busy={opening || waiting !== null || undefined}
-          disabled={opening || waiting !== null}
-          onClick={plusPane ? openPaneHome : openNewTask}
-        >
-          <Plus size={16} aria-hidden="true" />
-        </button>
-        {anyRing && (
+        {/* THE +: a page rail's only (claude-rail-lib `plusShown`). */}
+        {plusShown({ favouritesOnly }) && (
+          <button
+            ref={plusRef}
+            type="button"
+            className="sidebar-rail-btn claude-rail-item"
+            title={plusLabel}
+            aria-label={plusLabel}
+            {...(plusPane ? {} : { "aria-haspopup": "dialog" as const })}
+            aria-busy={opening || waiting !== null || undefined}
+            disabled={opening || waiting !== null}
+            onClick={plusPane ? openPaneHome : openNewTask}
+          >
+            <Plus size={16} aria-hidden="true" />
+          </button>
+        )}
+        {anyRing && !hideList && (
           <div
             ref={listRef}
             className="claude-rail-chats"
             role="list"
             aria-label={`Chats on ${scope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
+            // AT MOST TEN RINGS TALL, then it scrolls (claude-rail-lib
+            // `LIST_ROWS_MAX`, claude-rail.css `.is-scroll`); the fades at
+            // its edges say there is more above / below (`listEdges`).
+            style={
+              {
+                "--list-rows": LIST_ROWS_MAX,
+                "--fade-top": listEdges.up ? "12px" : "0px",
+                "--fade-bottom": listEdges.down ? "12px" : "0px",
+              } as CSSProperties
+            }
+            onScroll={measureEdges}
           >
             {baseSeats.map((seat) => ringOf(seat))}
           </div>
@@ -2026,7 +2193,8 @@ export function ClaudeRail({
           // from anywhere — the chat the shell's favourite card stands
           // beside (`.is-open`). A ring here hovers like a list ring, bar the
           // open one (its caption stays); its press opens the favourite's
-          // card.
+          // card. THE BLOCKED STAND AT ITS HEAD (owner, 2026-11-05), as list
+          // rings: window A's hover, no star.
           <>
             {/* The fallback's favourites are all it draws: nothing above to
                 part them from. */}
@@ -2034,11 +2202,59 @@ export function ClaudeRail({
             <div
               className="claude-rail-favs"
               role="list"
-              aria-label="Favourite chats"
+              aria-label={blockedCount > 0 ? "Blocked and favourite chats" : "Favourite chats"}
               // Its floor (claude-rail.css): three rings, or every star when fewer.
               style={{ "--fav-floor": Math.min(favs.length, 3) } as CSSProperties}
             >
               {favs.map((seat) => ringOf(seat, true))}
+            </div>
+          </>
+        )}
+        {bots.length > 0 && (
+          // THE PINNED BOTS, UNDER THE FAVOURITES (owner, 2026-11-05: "have
+          // the right sidebar go all the way and have bots below it — pinned
+          // bots show up there; for now I can click on it to navigate to the
+          // page"): each bot's face, its name the caption, the bot's page
+          // its door. The red dot is the Bots row's (GlobalSidebar): the bot
+          // waits on the reader; the green one, news past their mark.
+          <>
+            {(favs.length > 0 || !favouritesOnly) && (
+              <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
+            )}
+            <div className="claude-rail-bots" role="list" aria-label="Pinned bots">
+              {bots.map((b) => {
+                const name = b.name || b.id;
+                const href = "/bots/" + encodeURIComponent(b.id);
+                const subject = { id: b.id, name, face: (b.face ?? null) as FaceSubject["face"], status: b.status as FaceSubject["status"] };
+                const waiting = b.status === "waiting";
+                const unread = botHasUnread(b);
+                return (
+                  <div key={b.id} role="listitem" className="claude-rail-seat">
+                    <a
+                      href={href}
+                      className={"sidebar-rail-btn claude-rail-item claude-rail-bot" + (waiting ? " is-waiting" : "")}
+                      aria-label={`${name} — ${waiting ? "waiting for you" : b.status}`}
+                      data-hint={name}
+                      data-hint-side="left"
+                      onClick={(e) => {
+                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                        e.preventDefault();
+                        hideHint();
+                        navigateUrl(href);
+                      }}
+                    >
+                      <span className="claude-rail-bot-face" aria-hidden="true">
+                        <Face b={subject} />
+                      </span>
+                      {waiting ? (
+                        <span className="sidebar-rail-dot is-attention" aria-hidden="true" />
+                      ) : unread ? (
+                        <span className="sidebar-rail-dot is-unread" aria-hidden="true" />
+                      ) : null}
+                    </a>
+                  </div>
+                );
+              })}
             </div>
           </>
         )}

@@ -3917,6 +3917,10 @@ export interface Task {
   // server.
   starred?: boolean;
   starred_open?: boolean;
+  /** When it was starred (epoch seconds; `tasks_store.favourite_at`): the
+   *  rail's favourites stand newest star first (2026-11-05). Null / absent
+   *  unstarred, or from a server that predates it. */
+  starred_at?: number | null;
   project: string; // the FOLDER: a task on ~/x/foo.py belongs to project ~/x
   target: string; // what the task actually points at (may be that file)
   // The app page a FOLDER target opens as, "" when the folder is not an app:
@@ -4327,6 +4331,7 @@ export type TaskPulseTask = Pick<
   | "last_message"
   | "starred"
   | "starred_open"
+  | "starred_at"
 > &
   // Optional: a pulse row from a server that predates it carries none.
   Partial<Pick<Task, "title_source">>;

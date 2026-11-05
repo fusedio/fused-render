@@ -128,7 +128,9 @@ describe("wiring", () => {
     release();
     expect(botsPulseFeeders()).toBe(0);
     // The self-poll never runs beside a feeder, and never for no reader.
-    expect(STORE).toContain("if (listeners.size === 0 || feeders > 0) return;");
+    // …a reader being either kind: the sidebar's summary or the Claude
+    // rail's rows (`useBotsRows`, 2026-11-05).
+    expect(STORE).toContain("if (listeners.size + rowListeners.size === 0 || feeders > 0) return;");
     // A stale self-poll that lost to a fresher publish is dropped, not applied.
     expect(STORE).toContain("if (feeders === 0 && generation === departed) publishBots(");
   });

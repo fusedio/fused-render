@@ -1,3 +1,4 @@
+import { railCollisionPadding } from "@platform/lib/rail-gutter"
 import * as React from "react"
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover"
 import { cn } from "@platform/lib/utils"
@@ -25,6 +26,9 @@ function PopoverContent({
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Positioner
+        // Off the Claude rail (platform/lib/rail-gutter): the right-edge
+        // padding grows by the rail's width while one stands.
+        collisionPadding={railCollisionPadding()}
         align={align}
         alignOffset={alignOffset}
         side={side}

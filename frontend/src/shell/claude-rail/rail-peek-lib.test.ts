@@ -4,6 +4,7 @@ import { describe, expect, it } from "bun:test";
 import {
   PEEK_CLOSE_MS,
   PEEK_CONE_MS,
+  clampAnchor,
   inSafeCone,
   PEEK_GAP,
   PEEK_INSET,
@@ -1165,3 +1166,32 @@ describe("favPressClears", () => {
     expect(favPressClears("card", "x", "y")).toEqual([]);
   });
 });
+
+// Owner, 2026-11-05: the click preview of a ring in the scrolled list sticks
+// at the 1st and the 10th seat, never past the box.
+describe("clampAnchor", () => {
+  const box = { left: 0, top: 100, width: 48, height: 320 };
+  it("a ring in view anchors itself", () => {
+    const a = { left: 10, top: 200, width: 28, height: 28 };
+    expect(clampAnchor(a, box)).toBe(a);
+  });
+  it("a ring scrolled above the box anchors at the first seat; below, at the last", () => {
+    expect(clampAnchor({ left: 10, top: 40, width: 28, height: 28 }, box).top).toBe(100);
+    expect(clampAnchor({ left: 10, top: 900, width: 28, height: 28 }, box).top).toBe(392);
+  });
+  it("no box (a favourite's ring): untouched", () => {
+    const a = { left: 10, top: 900, width: 28, height: 28 };
+    expect(clampAnchor(a, null)).toBe(a);
+  });
+});
+
+// Owner, 2026-11-05: a blocked chat is a temporary favourite — its open card
+// shows like a starred one's and closes once it is neither.
+describe("favOpenVerdict on a blocked chat", () => {
+  it("blocked and unstarred: shown; unblocked and unstarred after being seen live: closed", () => {
+    expect(favOpenVerdict({ status: "needs_attention" }, true, false, null, 0)).toBe("show");
+    expect(favOpenVerdict({ status: "blocked" }, true, false, null, 0)).toBe("show");
+    expect(favOpenVerdict({ status: "done" }, true, true, null, 0)).toBe("close");
+  });
+});
+

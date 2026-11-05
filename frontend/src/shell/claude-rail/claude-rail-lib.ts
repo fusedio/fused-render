@@ -44,6 +44,7 @@ import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { isDraftTask, sortForList, taskColumn } from "@shell/tasks-lib";
 import { canvasPagePath, type WorkbenchEnv } from "@apps/canvases/api";
 import { urlForFsPath } from "@platform/lib/router";
+import { favLike, isBlockedChat } from "./rail-peek-lib";
 
 /** One rail seat: the pulse row (live status) and, once the listing holds it,
  *  the full row the caption is built from. */
@@ -423,10 +424,24 @@ export function keepMarks(
  *  ties by key so the foot never reshuffles between reads. The rows are the
  *  GLOBAL pulse's; `full` hands each its listing row when it is held. */
 export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<string, Task>): RailRow[] {
-  return rows
+  const byKey = (a: TaskPulseTask, b: TaskPulseTask) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  const byActivity = (a: TaskPulseTask, b: TaskPulseTask) => (b.happened_at ?? 0) - (a.happened_at ?? 0) || byKey(a, b);
+  // THE BLOCKED FIRST (owner, 2026-11-05: "blocked tasks will also be added
+  // on top of favourites — even a non-fav task"; rail-peek-lib `favLike`):
+  // every blocked, unstarred chat with a door (a row with no session has no
+  // ring), newest activity first. A starred blocked chat is a favourite
+  // already, in its place among them.
+  const blocked = rows
+    .filter((t) => isBlockedChat(t) && !t.starred && t.status !== "archived" && !!t.session_id)
+    .sort(byActivity);
+  // …THEN THE STARRED, NEWEST STAR FIRST (owner, 2026-11-05: "sort order for
+  // fav tasks will be new favourites on top"): by when it was starred
+  // (`starred_at`, the server's record), the chat's own activity breaking
+  // ties — and standing in for an older server that sends no stamp.
+  const starred = rows
     .filter((t) => t.starred && t.status !== "archived")
-    .sort((a, b) => (b.happened_at ?? 0) - (a.happened_at ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
-    .map((pulse) => ({ pulse, row: full.get(pulse.key) ?? null }));
+    .sort((a, b) => (b.starred_at ?? 0) - (a.starred_at ?? 0) || byActivity(a, b));
+  return [...blocked, ...starred].map((pulse) => ({ pulse, row: full.get(pulse.key) ?? null }));
 }
 
 /** THE LIST WITHOUT ITS FAVOURITES (owner, 2026-11-04: "when I fav one task,
@@ -437,8 +452,42 @@ export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<strin
  *  exactly one of the two. Off, the list is untouched (a starred ring is a
  *  ring like any other). Returns the same array when nothing is starred. */
 export function listSeats(seats: RailRow[], favsOn: boolean): RailRow[] {
-  if (!favsOn || !seats.some((s) => s.pulse.starred)) return seats;
-  return seats.filter((s) => !s.pulse.starred);
+  // …and a BLOCKED chat stands above the favourites (`favSeats`, rail-peek-
+  // lib `favLike`), so it leaves the list the same way: one ring per chat.
+  if (!favsOn || !seats.some((s) => favLike(s.pulse))) return seats;
+  return seats.filter((s) => !favLike(s.pulse));
+}
+
+/** THE LIST STEPS ASIDE FOR THE PANE'S HOME (owner, 2026-11-05: "when in
+ *  new chat [list in view] we don't show the normal tasks in the sidebar
+ *  rail"): beside the open pane on its home page — its Recent list is the
+ *  list, drawn large — the rail's own list of the place's chats is not
+ *  drawn; the blocked and the favourites still are. Favourites off: the
+ *  rail of 2026-11-04, nothing hidden (the rail is not beside an open pane
+ *  then anyway). */
+export function listHidden(o: { paneOpen: boolean; favsOn: boolean; paneHome: boolean }): boolean {
+  return o.paneOpen && o.favsOn && o.paneHome;
+}
+
+/** WHERE THE + STANDS (owner, 2026-11-05: "plus icon should only be in
+ *  explorer, app and canvas view — for other views we don't show it"): on a
+ *  page's own rail, never on the shell's fallback (home, Bots, Tasks, …).
+ *  Favourites off there is no fallback at all, so nothing changes. */
+export function plusShown(o: { favouritesOnly: boolean }): boolean {
+  return !o.favouritesOnly;
+}
+
+/** HOW MANY RINGS THE LIST SHOWS AT ONCE (owner, 2026-11-05: "max 10 tasks
+ *  visible and it is scrollable"): the list's box is at most this many
+ *  seats tall; past it the list scrolls (claude-rail.css `.is-scroll`). */
+export const LIST_ROWS_MAX = 10;
+
+/** THE PINNED BOTS (owner, 2026-11-05: "have the right sidebar go all the
+ *  way and have bots below it — pinned bots show up there"): every pinned,
+ *  un-hidden bot, in the pulse's order (the Bots page's own: pinned first).
+ *  An older server's pulse carries no `pinned`: none. */
+export function pinnedBots<B extends { pinned?: boolean; hidden?: boolean }>(bots: readonly B[]): B[] {
+  return bots.filter((b) => b.pinned === true && !b.hidden);
 }
 
 /** WHICH RING OF A SECTION WEARS THE ACTIVE WASH (owner, 2026-11-04: "in one
@@ -565,13 +614,44 @@ export function railShown(o: {
   favs: number;
   paneOpen: boolean;
   always: boolean;
-  /** The shell's fallback rail (`fallbackRailUp`): the + and its favourites. */
+  /** The shell's fallback rail (`fallbackRailUp`): its favourites, blocked
+   *  chats and pinned bots — no + (`plusShown`). It stands for any of the
+   *  three (owner, 2026-11-05, final word: "blocked chats trigger open of
+   *  the rail in all views"). */
   favouritesOnly?: boolean;
+  /** Blocked chats drawn at the head of the favourites (`favSeats`). */
+  blocked?: number;
+  /** Pinned bots drawn under the favourites (`pinnedBots`). */
+  bots?: number;
 }): boolean {
-  if (o.favouritesOnly) return o.always;
+  const foot = o.favs + (o.blocked ?? 0) + (o.bots ?? 0);
+  if (o.favouritesOnly) return o.always && foot > 0;
   if (!o.paneOpen) return true;
   if (!o.always) return false;
-  return o.list > 0 || o.favs > 0;
+  return o.list > 0 || foot > 0;
+}
+
+/** THE RAIL REMEMBERED ACROSS A RELOAD (ClaudeRail; owner, 2026-11-05:
+ *  "when I reload the sidebar pops up a little late"): whether a rail stood
+ *  in this window last, kept in sessionStorage. On mount a rail that stood
+ *  stands again at once — its column, before its rings — for `RAIL_WARM_MS`
+ *  at most, by when the pulse and the bots have answered; if they say there
+ *  is nothing to draw, it goes then. */
+export const RAIL_WARM_MS = 3000;
+const RAIL_KEY = "fused-render:rail-up";
+export function railRemembered(): boolean {
+  try {
+    return sessionStorage.getItem(RAIL_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+export function rememberRail(up: boolean): void {
+  try {
+    sessionStorage.setItem(RAIL_KEY, up ? "1" : "0");
+  } catch {
+    /* no storage: nothing remembered */
+  }
 }
 
 /** THE SHELL'S FALLBACK RAIL (shell/claude-rail/FallbackRail; owner,

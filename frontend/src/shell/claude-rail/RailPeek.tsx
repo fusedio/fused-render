@@ -165,6 +165,8 @@ import {
   listCardWish,
   inSafeCone,
   onHop,
+  clampAnchor,
+  favLike,
   placeClear,
   rowOf,
   starMarkStep,
@@ -577,7 +579,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     railLeft.current = rail.left;
     // Clear of the other card (`avoid`): above it, else beside it, else —
     // a window too small for either — over it (rail-peek-lib `placeClear`).
-    return placeClear(anchor.getBoundingClientRect(), rail, row.getBoundingClientRect(), avoid, wishFor(key));
+    // A list ring scrolled past the list's box anchors at the box's edge
+    // (rail-peek-lib `clampAnchor`), never above or below it.
+    const scroller = anchor.closest(".claude-rail-chats");
+    const at = clampAnchor(anchor.getBoundingClientRect(), scroller ? scroller.getBoundingClientRect() : null);
+    return placeClear(at, rail, row.getBoundingClientRect(), avoid, wishFor(key));
   };
   // THE CORNER AND EDGE DRAG (header). `resizing` names the held grip while
   // a drag is on: the card drops its glide transitions and the placement
@@ -1030,7 +1036,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     starSeq.current += 1;
     setStarMark({ key: t.key, on: res.starred, pulse: t, seen: 0, seq: starSeq.current });
     onStarred?.(t.key, res.starred);
-    if (starOutcome(res.starred, t.key, shownKeyRef.current, dismissOnUnstar).dismiss) {
+    // Unstarred but still blocked: still a favourite as the rail counts one
+    // (rail-peek-lib `favLike`), so its card stays.
+    if (starOutcome(favLike({ status: t.status, starred: res.starred }), t.key, shownKeyRef.current, dismissOnUnstar).dismiss) {
       onHeld(false);
       onDismiss("unstar");
     }

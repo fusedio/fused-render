@@ -43,6 +43,25 @@
 import type { TaskPulseTask } from "@platform/lib/api";
 import { inFlight, liveJobRow, taskColumn } from "@shell/tasks-lib";
 
+/** A BLOCKED CHAT (owner, 2026-11-05: "blocked tasks will also be added on
+ *  top of favourites, so we know something is blocked — even a non-fav
+ *  task"): one the Tasks page files in its Blocked lane — waiting on a card
+ *  nobody answered (`needs_attention`) or a run that broke (`blocked`),
+ *  schedule-lib `laneOf`. */
+export function isBlockedChat(t: { status: string }): boolean {
+  return t.status === "needs_attention" || t.status === "blocked";
+}
+
+/** A FAVOURITE AS THE RAIL COUNTS ONE (owner, 2026-11-05: a blocked chat
+ *  "is technically a temporary favourite without showing it to the user"):
+ *  starred, or blocked — the favourites' section, window B's hover card,
+ *  the favourite's open card, the pane hand-over, all of it, bar the star
+ *  itself. Unblocked and unstarred, it is a chat like any other again, and
+ *  its open card closes (`favOpenVerdict`). */
+export function favLike(t: { status: string; starred?: boolean } | undefined | null): boolean {
+  return !!t && (!!t.starred || isBlockedChat(t));
+}
+
 /** The pointer rests this long on a ring before its chat is MOUNTED (the
  *  warm-up): a sweep down the rail must not mount every chat it crosses. */
 export const PEEK_WARM_MS = 60;
@@ -191,6 +210,23 @@ export function peekPlacement(anchor: Box, rail: Box, bounds: Box, wish: number 
  *       ring press opening the pane.
  *  With no favourite's card up, or one wholly below the row, the plain
  *  placement. */
+/** THE ANCHOR STAYS IN ITS SCROLLED BOX (owner, 2026-11-05: "when I open a
+ *  click preview in the collapsed rail of something that can scroll past
+ *  10 items, it should stick at the 1st item and the 10th item — top
+ *  shouldn't go all the way to the bottom or all the way to the top"): a
+ *  ring scrolled out of the list's box (ClaudeRail `.claude-rail-chats`)
+ *  would anchor the card above or below the box; instead the anchor is
+ *  held at the box's first or last seat, so the card stands beside the
+ *  list's edge and follows the ring only while it is in view. No box
+ *  (a favourite's ring, the foot): the ring itself. */
+export function clampAnchor(anchor: Box, scroller: Box | null): Box {
+  if (!scroller) return anchor;
+  const lo = scroller.top;
+  const hi = Math.max(lo, scroller.top + scroller.height - anchor.height);
+  const top = Math.min(hi, Math.max(lo, anchor.top));
+  return top === anchor.top ? anchor : { ...anchor, top };
+}
+
 export function placeClear(anchor: Box, rail: Box, row: Box, avoid: Box | null, wish: number | PeekWish): Box | null {
   if (avoid && avoid.top < row.top + row.height) {
     const above = avoid.top - PEEK_GAP - row.top;
@@ -687,7 +723,7 @@ export function favHoverRow(
 ): TaskPulseTask | null {
   if (!hoverKey || openKey) return null;
   const t = rows.find((r) => r.key === hoverKey);
-  return t && t.starred && t.status !== "archived" && t.session_id ? t : null;
+  return t && favLike(t) && t.status !== "archived" && t.session_id ? t : null;
 }
 
 /** What a card does once the server has answered its star (RailPeek
@@ -819,7 +855,7 @@ export function favOpenVerdict(
   now: number,
 ): "show" | "wait" | "close" {
   if (row?.status === "archived") return "close";
-  if (row?.starred) return "show";
+  if (favLike(row)) return "show";
   if (seenLive) return "close";
   if (openedAt !== null && now - openedAt < FAV_SETTLE_MS) return row ? "show" : "wait";
   return loaded ? "close" : "wait";
