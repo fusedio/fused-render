@@ -32,6 +32,53 @@
 .claude-rail .sidebar-rail-items {
   width: 100%;
 }
+/* NO GLYPH, NO GAP (owner, 2026-11-05: the open pane's rail kept the hidden
+   glyph's room and its separator above the +): beside the open pane and on
+   the shell's fallback the items column is the rail's first child, so its
+   divider and the room it keeps from the glyph go — the first seat sits on
+   the rail's own top padding (ClaudeRail `.no-glyph`). */
+.claude-rail.no-glyph .sidebar-rail-items {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+/* THE LIST SCROLLS, favourites on (owner, 2026-11-05; ClaudeRail
+   `.is-scroll`): every ring drawn, the list scrolling in its share of the
+   column with its scrollbar hidden — the favourites' own idiom (below) —
+   while the favourites keep their floor (the list still gives way first:
+   its shrink is the full 1 beside their token). Off, it clips (below). */
+.claude-rail.is-scroll .claude-rail-chats {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.claude-rail.is-scroll .claude-rail-chats::-webkit-scrollbar {
+  display: none;
+}
+/* THE SHELL'S FALLBACK RAIL (shell/claude-rail FallbackRail, App.tsx): two
+   wrappers around the page that are no box at all — the page laid out as it
+   always was — until the fallback stands, when they become a row: the page's
+   column (what #main is, restated), then the 48px rail at the right edge,
+   above the status bar. */
+.shell-main-row,
+.shell-main-col {
+  display: contents;
+}
+.shell-main-row:has(> .claude-rail:not([hidden])) {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+.shell-main-row:has(> .claude-rail:not([hidden])) > .shell-main-col {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .claude-rail.has-favs .sidebar-rail-items {
   /* NOTHING DRAWS PAST THE RAIL'S FOOT (under the status bar): the list
      clips to the rings that fit and the favourites scroll (below), so this

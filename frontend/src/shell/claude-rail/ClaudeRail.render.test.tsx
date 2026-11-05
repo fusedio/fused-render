@@ -13,14 +13,12 @@ import type { Task, TaskPulseTask } from "@platform/lib/api";
 
 const { ClaudeRail } = await import("./ClaudeRail");
 const { RailPeek } = await import("./RailPeek");
-const { ChatMount } = await import("@apps/claude/ChatMount");
 const { publishTaskFavourites, publishFavouritesParent, resetTaskFavouritesFlagForTests } = await import(
   "@platform/lib/favourites-flag"
 );
 const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import("./rail-peek-flag");
 const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-store");
-const { announcePaneSession } = await import("@platform/lib/peek-session");
 
 const DIR = "/home/me/apps/demo";
 
@@ -143,7 +141,7 @@ afterEach(() => {
   saved.clear();
 });
 
-async function mountRail(o: { paneOpen: boolean; favourites: boolean; chats?: Task[] }) {
+async function mountRail(o: { paneOpen: boolean; favourites: boolean; chats?: Task[]; onOpenChat?: (href: string) => void }) {
   // The card's flag and the favourites' pair, as Settings would publish them.
   publishCanvasRailPeek({ enabled: true });
   publishFavouritesParent({ enabled: true });
@@ -160,7 +158,7 @@ async function mountRail(o: { paneOpen: boolean; favourites: boolean; chats?: Ta
         newTask={{ target: DIR, waiting: null, on: null }}
         activeSessionId={null}
         onOpen={() => {}}
-        onOpenChat={() => {}}
+        onOpenChat={o.onOpenChat ?? (() => {})}
         onPullStart={() => {}}
       />,
       { createNodeMock: () => fakeEl() },
@@ -239,17 +237,12 @@ describe("ClaudeRail's card beside the pane", () => {
     if (!hadGetById) delete doc.getElementById;
   });
 
-  test("a chat the open pane holds is said in the card's body, never mounted again", async () => {
-    const off = announcePaneSession("s-a");
-    try {
-      const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a")] });
-      await press(r, "a");
-      const card = r.root.findByType(RailPeek);
-      expect(card.props.bodyNote).toBe("Open in the Claude panel");
-      // One chat, one composer: the pane's chat is not mounted in the card.
-      expect(card.findAllByType(ChatMount)).toHaveLength(0);
-    } finally {
-      off();
-    }
+  test("beside the open pane a ring press opens the chat in the pane: no card is pinned", async () => {
+    const opened: string[] = [];
+    const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a")], onOpenChat: (h) => opened.push(h) });
+    await press(r, "a");
+    expect(opened).toHaveLength(1);
+    expect(r.root.findAllByType(RailPeek)).toHaveLength(0);
   });
+
 });

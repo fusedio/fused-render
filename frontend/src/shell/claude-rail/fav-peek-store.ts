@@ -42,6 +42,16 @@
 // (claude-rail-lib `chipDoor`'s `pageRoot`), so the card hears a hop the
 // rail makes in place (the explorer keeps one rail from folder to file) and
 // a node selected on the canvas.
+//
+// HOW MANY PAGE RAILS ARE MOUNTED (`registerPageRail`, `usePageRailCount`):
+// the shell's fallback rail (FallbackRail; owner, 2026-11-05) stands only
+// while no page draws a rail of its own — one count, read in one place, so
+// the two never stand together. Every page rail counts from its mount to its
+// unmount, shown or hidden (a hidden page rail has no favourite to draw, and
+// neither would the fallback). Said SYNCHRONOUSLY, not coalesced like the
+// rest of this store, and from the rails' layout phase: a hop unmounts one
+// page and mounts the next in one commit, and the fallback's re-render lands
+// before that commit paints — no frame with two rails, or none.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TaskPulseTask } from "@platform/lib/api";
 import { clearFavOpen, favOpenedAtMs, useFavOpen } from "@platform/lib/last-chat";
@@ -259,6 +269,38 @@ export function focusRail(
   quiet.delete(target);
 }
 
+let pageRails = 0;
+const pageSubs = new Set<() => void>();
+
+/** A page's rail mounted (header): counted until the answer runs, once. */
+export function registerPageRail(): () => void {
+  pageRails += 1;
+  for (const fn of [...pageSubs]) fn();
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    pageRails -= 1;
+    for (const fn of [...pageSubs]) fn();
+  };
+}
+
+export function pageRailCount(): number {
+  return pageRails;
+}
+
+function subscribePages(fn: () => void): () => void {
+  pageSubs.add(fn);
+  return () => {
+    pageSubs.delete(fn);
+  };
+}
+
+/** How many page rails are mounted now (header), re-rendering on each. */
+export function usePageRailCount(): number {
+  return useSyncExternalStore(subscribePages, pageRailCount, pageRailCount);
+}
+
 export function favPeekState(): FavPeekState {
   return seen;
 }
@@ -282,6 +324,7 @@ export function resetFavPeekStoreForTests(): void {
   dirty = false;
   rails = [];
   pendingAt = 0;
+  pageRails = 0;
 }
 
 /** THIS WINDOW'S OPEN FAVOURITE, checked against the pulse's stars

@@ -121,7 +121,7 @@ import {
 } from "@platform/lib/pending-claude-ask";
 import { SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
-import { ClaudeRail, RAIL_W } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { canonFsPath } from "@platform/lib/path-url";
@@ -2361,6 +2361,12 @@ export default function Listing({
             activeSessionId={new URLSearchParams(location.search).get("session_id")}
             onOpen={openClaudeSide}
             onOpenChat={(href) => navigateUrl(href)}
+            // The + beside the open pane: this folder's chat with no session,
+            // its Recent chats page (already there: nothing to load).
+            onNewChat={() => {
+              const home = paneHomeHref(location.href);
+              if (home) navigateUrl(home);
+            }}
             onPullStart={(e) =>
               startSideReopenPull(e, e.currentTarget.closest<HTMLElement>(".listing-split"), openClaudeSide, RAIL_W)
             }

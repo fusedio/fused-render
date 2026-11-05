@@ -21,6 +21,12 @@ import {
   FAV_SETTLE_MS,
   bottomClear,
   dragResize,
+  FAV_HEIGHT,
+  FAV_WIDTH,
+  PEEK_PLAIN_HEIGHT,
+  favCardWish,
+  favMaxHeight,
+  listCardWish,
   favChatElsewhere,
   favOpenVerdict,
   keepAlive,
@@ -1178,5 +1184,58 @@ describe("railInset", () => {
 
   it("a rail that is not at the right edge is not the pane's neighbour", () => {
     expect(railInset(split(900, [{ right: 600, width: 48 }]))).toBe(0);
+  });
+});
+
+// ---- ONE SIZE PER CARD KIND; THE FAVOURITE'S CEILING (owner, 2026-11-05) ----
+describe("listCardWish (the list's card)", () => {
+  const stored = { width: 500, height: 700 };
+  it("favourites on: the hover card is the remembered size, as the pinned one is", () => {
+    const hover = listCardWish({ hasSession: true, stored, grown: false, oneSize: true });
+    const pinned = listCardWish({ hasSession: true, stored, grown: true, oneSize: true });
+    expect(hover).toEqual({ width: 500, maxHeight: 700 });
+    expect(pinned).toEqual(hover);
+  });
+  it("favourites off: a hover card is the default, a grown (pinned) one the remembered size", () => {
+    expect(listCardWish({ hasSession: true, stored, grown: false, oneSize: false })).toEqual({ maxHeight: PEEK_MAX_HEIGHT });
+    expect(listCardWish({ hasSession: true, stored, grown: true, oneSize: false })).toEqual({ width: 500, maxHeight: 700 });
+  });
+  it("nothing remembered: the default either way", () => {
+    expect(listCardWish({ hasSession: true, stored: null, grown: true, oneSize: true })).toEqual({ maxHeight: PEEK_MAX_HEIGHT });
+  });
+  it("a seat with no conversation: the short card, whatever is remembered", () => {
+    expect(listCardWish({ hasSession: false, stored, grown: true, oneSize: true })).toEqual({ maxHeight: PEEK_PLAIN_HEIGHT });
+  });
+});
+
+describe("favCardWish (the favourite's card, never taller than half the window)", () => {
+  const base = { width: FAV_WIDTH, maxHeight: FAV_HEIGHT, align: "bottom" as const };
+  it("its own remembered size over the fixed wish", () => {
+    expect(favCardWish(base, { width: 400, height: 420 }, 1000)).toEqual({ width: 400, maxHeight: 420, align: "bottom" });
+  });
+  it("capped at half the window on open: a 1400x900 window holds 450", () => {
+    expect(favMaxHeight(900)).toBe(450);
+    expect(favCardWish(base, { width: 400, height: 800 }, 900).maxHeight).toBe(450);
+    // The default 520 is over half of 900 too.
+    expect(favCardWish(base, null, 900).maxHeight).toBe(450);
+  });
+  it("…and again as the window shrinks: 600 tall holds 300", () => {
+    expect(favCardWish(base, { width: 400, height: 420 }, 600)).toEqual({ width: 400, maxHeight: 300, align: "bottom" });
+  });
+});
+
+describe("dragResize with a height ceiling (the favourite's card)", () => {
+  const start = { left: 900, top: 500, width: 380, height: 300 };
+  it("a top drag stops at the ceiling", () => {
+    const box = dragResize("t", start, 0, -400, ROW, undefined, 450);
+    expect(box.height).toBe(450);
+    expect(box.top + box.height).toBe(800);
+  });
+  it("a bottom drag stops at the ceiling", () => {
+    const tall = { ...start, top: 60 };
+    expect(dragResize("b", tall, 0, 700, ROW, undefined, 450).height).toBe(450);
+  });
+  it("no ceiling: as before", () => {
+    expect(dragResize("t", start, 0, -400, ROW).height).toBe(700);
   });
 });

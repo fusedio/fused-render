@@ -84,7 +84,7 @@ import { CanvasWorkspace } from "@apps/canvases";
 import { CanvasGlyph } from "@apps/canvases/glyph";
 import { ChatMount } from "@apps/claude";
 import { breakoutOpener } from "@platform/lib/breakouts";
-import { ClaudeRail } from "./claude-rail/ClaudeRail";
+import { ClaudeRail, paneHomeHref } from "./claude-rail/ClaudeRail";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { chatDoorOnApp, chatDoorOnCanvas, useAppPageClaudePane } from "./useAppPageClaudePane";
 
@@ -302,6 +302,9 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
       navigateUrl(href);
       return;
     }
+    openChatDoor(door);
+  };
+  const openChatDoor = (door: { params: Record<string, string> }) => {
     void confirmLeave().then((ok) => {
       if (!ok) return;
       const next = new URL(location.href);
@@ -315,6 +318,13 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
       setClaudeSeq((n) => n + 1);
       claude.show();
     });
+  };
+  // THE RAIL'S + BESIDE THE OPEN PANE (ClaudeRail `onNewChat`): the pane's
+  // home — the chat with no session, remounted behind the same leave guard;
+  // already there, it stays as it is (the rail focuses its composer).
+  const openPaneHome = () => {
+    if (paneHomeHref(location.href) === null) claude.show();
+    else openChatDoor({ params: {} });
   };
   const railPlace = useMemo(() => ({ kind: "canvas" as const, env, name, dir }), [env, name, dir]);
 
@@ -506,6 +516,7 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
           activeSessionId={new URLSearchParams(location.search).get("session_id")}
           onOpen={claude.show}
           onOpenChat={openChatHere}
+          onNewChat={openPaneHome}
           onPullStart={claude.onRailPull}
           onCardPinned={setRailCardPinned}
         />

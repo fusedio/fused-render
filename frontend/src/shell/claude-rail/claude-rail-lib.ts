@@ -562,9 +562,88 @@ export function ringMarks(o: RingMarkInput): {
  *     a chat in the list (`list`, the place's — and the node's — chats, before
  *     the clip) or a favourite (`favs`).
  *   - THE PANE OPEN, favourites off: never — the rail of 2026-11-04, which
- *     stood only while the pane was shut. */
-export function railShown(o: { list: number; favs: number; paneOpen: boolean; always: boolean }): boolean {
+ *     stood only while the pane was shut.
+ *   - THE SHELL'S FALLBACK (`favouritesOnly`, `fallbackRailUp`): only while
+ *     favourites are on and there is a favourite to draw. */
+export function railShown(o: {
+  list: number;
+  favs: number;
+  paneOpen: boolean;
+  always: boolean;
+  /** The shell's fallback rail (`fallbackRailUp`): its favourites or nothing. */
+  favouritesOnly?: boolean;
+}): boolean {
+  if (o.favouritesOnly) return o.always && o.favs > 0;
   if (!o.paneOpen) return true;
   if (!o.always) return false;
   return o.list > 0 || o.favs > 0;
+}
+
+/** THE SHELL'S FALLBACK RAIL (shell/claude-rail/FallbackRail; owner,
+ *  2026-11-05: "pages without a page-level rail must show the rail when
+ *  there are fav tasks"): mounted while favourites are on and NO page rail
+ *  is mounted (fav-peek-store `registerPageRail` — one count, so a page rail
+ *  and the fallback never stand together). Whether it then shows is
+ *  `railShown`'s `favouritesOnly` (a favourite to draw). */
+export function fallbackRailUp(o: { favsOn: boolean; pageRails: number }): boolean {
+  return o.favsOn && o.pageRails === 0;
+}
+
+/** WHAT THE + DOES (ClaudeRail; owner, 2026-11-05): beside the OPEN pane
+ *  (favourites on), the pane's own home — its Recent chats and new-chat
+ *  composer, the keyboard in it — where the page can show it (`paneHome`);
+ *  else the New task card, as ever. */
+export function plusDoor(o: { paneOpen: boolean; favsOn: boolean; paneHome: boolean }): "pane" | "modal" {
+  return o.paneOpen && o.favsOn && o.paneHome ? "pane" : "modal";
+}
+
+/** WHAT A LIST RING'S PLAIN PRESS DOES (ClaudeRail `pressRing`; owner,
+ *  2026-11-05): beside the OPEN pane (favourites on) it opens that chat IN
+ *  THE PANE — no card is pinned, and a card that is up goes (`"pane"`);
+ *  shut, the card pins (`"card"`) where the hover card is on and has room,
+ *  else the chat's door (`"door"`). A favourite's ring is not asked: its
+ *  press opens the favourite's card whatever the pane does. */
+export function ringPress(o: {
+  paneOpen: boolean;
+  favsOn: boolean;
+  peekOn: boolean;
+  noRoom: boolean;
+}): "pane" | "card" | "door" {
+  if (o.paneOpen && o.favsOn) return "pane";
+  if (o.peekOn && !o.noRoom) return "card";
+  return "door";
+}
+
+/** THE PANE OPENING UNDER A PINNED LIST CARD (ClaudeRail; owner,
+ *  2026-11-05): the pane takes that chat and the card goes — on the turn
+ *  from shut to open only, favourites on, a list card (not a favourite's
+ *  ring hovered over it) with a conversation to open. The pane shutting
+ *  forces nothing. */
+export function paneTakesPinned(o: {
+  wasOpen: boolean;
+  open: boolean;
+  favsOn: boolean;
+  pinnedKey: string | null;
+  isFav: boolean;
+  hasSession: boolean;
+}): boolean {
+  return !o.wasOpen && o.open && o.favsOn && o.pinnedKey !== null && !o.isFav && o.hasSession;
+}
+
+/** The params that name the pane chat's conversation on a page's URL: a
+ *  session, a queued entry, the backend it runs on (shell/useAppPageClaudePane `chatDoorOnApp`). */
+const CHAT_PARAMS = ["session_id", "queued", "backend"] as const;
+
+/**
+ * THE PANE'S HOME, READ OFF A PAGE'S URL (the rail's + beside the open pane,
+ * ClaudeRail `onNewChat`): `href` with the chat's conversation params
+ * dropped — the URL-backed pane chat (`paramsSource="url"`) boots on its
+ * Recent chats page and new-chat composer there. Null when `href` names no
+ * conversation: the pane is home already, nothing to remount.
+ */
+export function paneHomeHref(href: string): string | null {
+  const url = new URL(href, "http://x");
+  if (!CHAT_PARAMS.some((k) => url.searchParams.has(k))) return null;
+  for (const k of CHAT_PARAMS) url.searchParams.delete(k);
+  return url.pathname + url.search + url.hash;
 }
