@@ -186,8 +186,11 @@ export function usePreviewPane(enabled = true, onDragClose?: () => void) {
       // to the container's right edge, run through the shared FS-12 clamps and
       // divided back into a fraction of the container (dragPaneFrac).
       // Less the rail standing past the pane (favourites on, rail-peek-lib
-      // `railInset`): the pane's edge is the rail's, not the split's.
-      const rawPx = rect.right - railInset(splitRef.current) - ev.clientX;
+      // `railInset`): the pane's edge is the rail's, not the split's, and the
+      // pane and the list share what is left beside the rail (`room`).
+      const inset = railInset(splitRef.current);
+      const room = rect.width - inset;
+      const rawPx = rect.right - inset - ev.clientX;
       // Dragged clean through the resistance band: the gesture means SHUT.
       // Deliberately BEFORE any width is recorded this move, and `resized`
       // untouched by the close: every move before this one stuck the pane at
@@ -195,21 +198,23 @@ export function usePreviewPane(enabled = true, onDragClose?: () => void) {
       // chosen share — shut a wide pane and it would come back a sliver.
       // Closing a pane and narrowing it are different acts; one drag must not
       // do both. (Same rule as platform/lib/panel-drag `committedWidth`.)
-      if (onDragClose && paneDragCloses(rect.width, rawPx)) {
+      if (onDragClose && paneDragCloses(room, rawPx)) {
         closed = true;
         onDragClose();
         return;
       }
-      const next = dragPaneFrac(rect.width, rawPx);
+      const next = dragPaneFrac(room, rawPx);
       if (next === null) return;
       resized = true;
-      draggedFrac = next;
       // The first move is already a choice: from here the pane leaves the
       // shared default and renders what the cursor says. Rendered here as the
       // equivalent PIXEL width for this container: `chosenPx` is what both this
       // pane and the file sidebar now read (D460), so it has to be a number the
       // sidebar's own floors can make sense of too, not this pane's fraction.
-      const nextPx = Math.round(next * rect.width);
+      const nextPx = Math.round(next * room);
+      // Kept as a share of the WHOLE split, which is what renders (the pane's
+      // flex-basis) and what the commit converts back below.
+      draggedFrac = nextPx / rect.width;
       setChosenPx((prev) => (prev === nextPx ? prev : nextPx));
     };
     const onUp = () => {

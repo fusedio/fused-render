@@ -59,7 +59,10 @@
    sidebar's seam, then the chat, at the width the hook gives it. The chat's
    floor is the explorer sidebar's (MIN_W, apps/explorer/lib/side-width.ts);
    on a row too narrow for both floors the pane yields the rest, so the app
-   never collapses to nothing (`.app-page-frame-slot`'s own floor). */
+   never collapses to nothing (`.app-page-frame-slot`'s own floor). With the
+   Claude rail standing past the open pane (favourites on, ClaudeRail
+   `paneOpen`) the rail's 48px comes off that rest too, so the app keeps its
+   320px whatever stands at the window's edge. */
 .app-page-claude {
   flex: 0 0 auto;
   min-width: min(380px, calc(100% - 320px));
@@ -68,6 +71,10 @@
   display: flex;
   flex-direction: row;
   background: var(--bg);
+}
+.app-page-claude:has(~ .claude-rail:not([hidden])) {
+  min-width: min(380px, calc(100% - 320px - 48px));
+  max-width: calc(100% - 320px - 48px);
 }
 
 .app-page-claude-chat {

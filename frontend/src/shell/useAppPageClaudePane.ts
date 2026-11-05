@@ -128,7 +128,13 @@ export function useAppPageClaudePane(splitRef: RefObject<HTMLElement | null>): A
       }),
     [],
   );
-  const width = clampSideWidth(chosen ?? defaultSideWidth(hostW), chosen, hostW);
+  // The pane's room is the split LESS a rail standing past it (favourites
+  // on: rail-peek-lib `railInset`) — clamped against the whole split, the
+  // app frame would be squeezed under its 320px floor by the rail's 48px.
+  // Read at render: the rail's standing moves with the pane's own open, which
+  // renders here; app-page.css caps the pane the same way between renders.
+  const room = hostW - railInset(splitRef.current);
+  const width = clampSideWidth(chosen ?? defaultSideWidth(room), chosen, room);
 
   // THE SEAM DRAG (the open pane's left edge). Captured on the seam, as the
   // explorer's divider does; `dragging` makes the frames inert meanwhile.
@@ -159,7 +165,8 @@ export function useAppPageClaudePane(splitRef: RefObject<HTMLElement | null>): A
         if (!rect || rect.width <= 0) return;
         // Less the rail standing past the pane (favourites on, rail-peek-lib
         // `railInset`): the pane's edge is the rail's, not the split's.
-        const implied = rect.right - railInset(splitRef.current) - ev.clientX;
+        const inset = railInset(splitRef.current);
+        const implied = rect.right - inset - ev.clientX;
         // Past the floor by a hand's width: the pane SHUTS and the rail
         // takes the edge (the canvas page's gesture).
         if (implied < MIN_W - CLOSE_UNDER) {
@@ -168,7 +175,7 @@ export function useAppPageClaudePane(splitRef: RefObject<HTMLElement | null>): A
           setOpen(false);
           return;
         }
-        const next = Math.round(clampSideWidth(implied, implied, rect.width));
+        const next = Math.round(clampSideWidth(implied, implied, rect.width - inset));
         settled = next;
         setChosen((prev) => (prev === next ? prev : next));
       };
