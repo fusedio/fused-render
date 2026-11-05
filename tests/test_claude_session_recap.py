@@ -748,6 +748,7 @@ def test_flag_default_on_endpoint_generates_on_demand(
     write(("user", "go"), ("assistant", "done"))
     body = _get(client, target).json()
     assert body["text"] and "pending" not in body
+    assert not body.get("disabled")
     assert len(_spawns(calls)) == 1
 
 
@@ -761,6 +762,7 @@ def test_flag_off_endpoint_answers_empty_and_never_spawns(
     body = _get(client, target).json()
     assert body["text"] == "" and body["for_uuid"] == FOR_UUID
     assert "pending" not in body
+    assert body["disabled"] is True
     assert _spawns(calls) == []
 
 

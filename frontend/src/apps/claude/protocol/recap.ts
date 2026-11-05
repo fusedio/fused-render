@@ -32,6 +32,9 @@ export interface RecapResponse {
    *  "not yet — ask again". The current server generates on demand and never
    *  sends it; the client still honours it. */
   pending?: boolean;
+  /** The server's chat-recap switch is off: `text` is empty and says nothing
+   *  about this position, so the client must not mark it asked. */
+  disabled?: boolean;
 }
 
 /** What the hook holds: the server's answer, keyed to the transcript position

@@ -1272,7 +1272,7 @@ def api_claude_session_recap(file: str, session_id: str, for_uuid: str):
                             detail="file, session_id and for_uuid are required")
     if not _chat_recap_on():
         # `chat_recap_enabled` off: no fold anywhere, and no haiku call.
-        return {"text": "", "for_uuid": for_uuid,
+        return {"text": "", "for_uuid": for_uuid, "disabled": True,
                 "at": datetime.now(timezone.utc).isoformat()}
     return {"text": _recap(agent, file, session_id, for_uuid),
             "for_uuid": for_uuid,
