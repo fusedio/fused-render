@@ -44,6 +44,7 @@ import { useHoldTail } from "./cardPolicy";
 import { TroubleView } from "./TroubleView";
 import type { Viewable } from "./attachApi";
 import { isOneLiner, Turn } from "./Turn";
+import { pickPlan, type TurnPick } from "./TurnPick";
 import { turnWorkedWords } from "./run-when";
 import { stampTitle } from "./stamp";
 import { WorkingLine } from "./WorkingLine";
@@ -121,10 +122,8 @@ export interface TranscriptProps {
   onSendNow?: () => void;
   /** "Fork from here" on a user turn (`TurnProps.onFork`). */
   onFork?: (key: string) => void;
-  /** "Breakout from here" on a user or assistant turn (`TurnProps.onBreakout`). */
-  onBreakout?: (key: string, opts: { add: boolean }) => void;
-  /** The turn keys picked for the next breakout (`TurnProps.breakoutSelected`). */
-  breakoutSel?: ReadonlySet<string>;
+  /** Breakout pick mode: absent when not picking (`TurnProps.pick`). */
+  pick?: { keys: ReadonlySet<string>; onToggle: (key: string) => void };
   /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
   onOpenShot?: (shot: Viewable) => void;
   /** "preview" / "app" — the word a receipt's nouns use (`PaneState.paneNoun`). */
@@ -187,8 +186,7 @@ export const Transcript = memo(function Transcript({
   sendNowKey,
   onSendNow,
   onFork,
-  onBreakout,
-  breakoutSel,
+  pick,
   onOpenShot,
   paneNoun,
   what,
@@ -945,6 +943,10 @@ export const Transcript = memo(function Transcript({
     followTail.current = false;
   }, []));
 
+  // BREAKOUT PICK MODE: every turn of an exchange shares one pick; the prompt
+  // turn carries the check. An exchange still streaming or pending is locked.
+  const pickFor = useMemo(() => (pick ? pickPlan(state.turns, pick.keys, pick.onToggle) : new Map<string, TurnPick>()), [pick, state.turns]);
+
   return (
     <div className={"chat-logwrap"} ref={port}>
       <div className={cn("chat-log", !settled && "is-settling")} ref={log}>
@@ -981,8 +983,7 @@ export const Transcript = memo(function Transcript({
                   {...(sendNowKey && sendNowKey === turn.key ? { sendNowHint: true } : {})}
                   {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}
-                  {...(onBreakout ? { onBreakout } : {})}
-                  {...(breakoutSel?.has(turn.key) ? { breakoutSelected: true } : {})}
+                  {...(pickFor.get(turn.key) ? { pick: pickFor.get(turn.key)! } : {})}
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}

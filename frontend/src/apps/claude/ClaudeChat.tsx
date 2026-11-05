@@ -2516,8 +2516,8 @@ function ChatBody(props: ChatBodyProps) {
       }
       annRef.current?.onEscape(ev);
       if (ev.defaultPrevented) return;
-      if (breakoutSelRef.current.size) {
-        setBreakoutSel(new Set());
+      if (pickingRef.current) {
+        setPicking(false);
         ev.preventDefault();
         return;
       }
@@ -3870,37 +3870,37 @@ function ChatBody(props: ChatBodyProps) {
     },
     [controller, params, file, props.onBreakout],
   );
-  /** The turns shift-clicked for the next breakout. Escape clears it. */
+  /** Breakout pick mode: the top-bar button turns it on, Escape, Start, Cancel,
+   *  the button again and a session change turn it off. */
+  const [picking, setPicking] = useState(false);
+  const pickingRef = useRef(false);
+  pickingRef.current = picking;
+  /** The turns picked for the next breakout (whole exchanges). */
   const [pickedKeys, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
   // Only keys of turns still on screen count: a re-keyed transcript or another
-  // session leaves the old keys behind, and they must not size the selection,
-  // reach the context or swallow an Escape.
+  // session leaves the old keys behind, and they must not size the selection
+  // or reach the context.
   const breakoutSel = useMemo(() => liveKeys(state.turns, pickedKeys), [pickedKeys, state.turns]);
-  const breakoutSelRef = useRef(breakoutSel);
-  breakoutSelRef.current = breakoutSel;
   useEffect(() => {
+    setPicking(false);
     setBreakoutSel((sel) => (sel.size ? new Set() : sel));
   }, [state.sessionId]);
-  /** "Breakout from here" (Transcript `onBreakout`). A shift-click toggles the
-   *  turn's whole exchange (the prompt and every answer to it) in the selection and opens nothing; a
-   *  plain click opens a breakout from the selection plus that exchange, then
-   *  clears the selection. */
-  const onBreakoutTurn = useCallback(
-    (turnKey: string, opts: { add: boolean }) => {
+  /** A click on an exchange in pick mode toggles all of its turns. */
+  const onPickTurn = useCallback(
+    (turnKey: string) => {
       const pair = exchangeKeys(controller.getState().turns, turnKey);
-      if (opts.add) {
-        setBreakoutSel((sel) => {
-          const next = new Set(sel);
-          if (pair.every((k) => sel.has(k))) for (const k of pair) next.delete(k);
-          else for (const k of pair) next.add(k);
-          return next;
-        });
-        return;
-      }
-      openBreakoutFor([...new Set([...breakoutSelRef.current, ...pair])]);
-      setBreakoutSel(new Set());
+      setBreakoutSel((sel) => {
+        const next = new Set(sel);
+        if (pair.every((k) => sel.has(k))) for (const k of pair) next.delete(k);
+        else for (const k of pair) next.add(k);
+        return next;
+      });
     },
-    [controller, openBreakoutFor],
+    [controller],
+  );
+  const pickProp = useMemo(
+    () => (picking ? { keys: breakoutSel, onToggle: onPickTurn } : undefined),
+    [picking, breakoutSel, onPickTurn],
   );
 
   /**
@@ -5330,6 +5330,7 @@ function ChatBody(props: ChatBodyProps) {
       // worse state than the one this feature prevents.
       // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
       // its own sentence, and the link to the switch under it.
+      ...(picking ? { pickPlaceholder: "First question for the breakout (optional)…" } : {}),
       blocked: sched.blocked || agentOff || rcConnecting,
       blockedPlaceholder: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
@@ -5355,6 +5356,7 @@ function ChatBody(props: ChatBodyProps) {
       ...(stranded && entered ? { restore: stranded } : {}),
     }),
     [
+      picking,
       file,
       state.sessionId,
       state.backend,
@@ -5662,28 +5664,47 @@ function ChatBody(props: ChatBodyProps) {
       )}
     </div>
   ) : null;
-  // BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open while a run
-  // is going too (the breakout is its own run). Placed by the strip, or as the
-  // merged head row's tail (that layout has no strip).
-  const openFromComposer = () => {
-    if (breakoutSel.size) {
-      openBreakoutFor([...breakoutSel]);
+  // BREAKOUT PICK MODE: the composer-side door toggles it, open while a run is
+  // going too (the breakout is its own run). Entering pre-selects the latest
+  // exchange that is neither streaming nor pending. Placed by the strip, or as
+  // the merged head row's tail (that layout has no strip).
+  const togglePicking = () => {
+    if (picking) {
+      setPicking(false);
       setBreakoutSel(new Set());
       return;
     }
     const turns = controller.getState().turns;
+    let pre: string[] = [];
     for (let i = turns.length - 1; i >= 0; i--) {
-      if (turns[i]!.role === "assistant") return openBreakoutFor(exchangeKeys(turns, turns[i]!.key));
+      if (turns[i]!.role !== "user") continue;
+      const ex = exchangeKeys(turns, turns[i]!.key);
+      const busy = ex.some((k) => {
+        const t = turns.find((x) => x.key === k) as { streaming?: boolean; pending?: boolean } | undefined;
+        return !!t?.streaming || !!t?.pending;
+      });
+      if (!busy) {
+        pre = ex;
+        break;
+      }
     }
+    setBreakoutSel(new Set(pre));
+    setPicking(true);
+  };
+  const startBreakout = () => {
+    if (breakoutSel.size) openBreakoutFor([...breakoutSel]);
+    setPicking(false);
+    setBreakoutSel(new Set());
   };
   const breakoutBtn =
     breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
       <button
         type="button"
-        className="bar-ctl bar-ctl-icon c-breakout"
-        title="Breakout: a research-only side chat from here"
+        className={"bar-ctl bar-ctl-icon c-breakout" + (picking ? " on" : "")}
+        title={picking ? "Pick messages for a breakout" : "Breakout: a research-only side chat from here"}
         aria-label="Breakout"
-        onClick={openFromComposer}
+        aria-pressed={picking}
+        onClick={togglePicking}
       >
         <GitBranchPlus size={14} aria-hidden="true" />
       </button>
@@ -6007,9 +6028,7 @@ function ChatBody(props: ChatBodyProps) {
               sendNowKey={running ? newestQueuedKey : null}
               onSendNow={onSendQueuedNow}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
-              {...(chatBackend === "claude" && breakoutOn && props.onBreakout
-                ? { onBreakout: onBreakoutTurn, breakoutSel }
-                : {})}
+              {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
@@ -6163,12 +6182,15 @@ function ChatBody(props: ChatBodyProps) {
                 </button>
               </div>
             ) : null}
-            {/* BREAKOUT SELECTION: the shift-picked exchanges, above the composer. */}
-            {breakoutBtn && breakoutSel.size ? (
+            {/* BREAKOUT PICK MODE: the picked exchanges, above the composer. */}
+            {breakoutBtn && picking ? (
               <BreakoutSelectionBar
                 count={state.turns.filter((t) => t.role === "user" && breakoutSel.has(t.key)).length}
-                onOpen={openFromComposer}
-                onClear={() => setBreakoutSel(new Set())}
+                onStart={startBreakout}
+                onCancel={() => {
+                  setPicking(false);
+                  setBreakoutSel(new Set());
+                }}
               />
             ) : null}
             {/* A card is READ, not typed into: compact is the one cut that takes

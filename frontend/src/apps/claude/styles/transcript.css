@@ -194,64 +194,55 @@
     transition: none;
   }
 }
-/* BREAKOUT FROM HERE: the fork button's twin, hung one lane further left on a
-   user turn. Its net flex size is zero too (-48 + 20 + 28), so nothing moves. */
-.chat-root .turn .turn-breakout {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  margin: 0;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: 0;
-  border-radius: 4px;
-  color: var(--c-faint);
+/* BREAKOUT PICK MODE: each exchange is one click target. The check circle
+   takes the lane the time stamp uses on hover, so the stamp is hidden while
+   picking and the two can never overlap. */
+.chat-root .turn.is-pick {
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 90ms ease-out, color 90ms ease-out;
-}
-.chat-root .turn:hover .turn-breakout,
-.chat-root .turn .turn-breakout:focus-visible {
-  opacity: 1;
-}
-.chat-root .turn .turn-breakout:hover,
-.chat-root .turn .turn-breakout:focus-visible {
-  color: var(--c-fg);
-}
-.chat-root .turn .turn-breakout:focus-visible {
-  outline: 2px solid var(--c-accent);
-  outline-offset: 1px;
-}
-/* A touch screen has no hover, so the per-turn button stays visible. */
-@media (hover: none) {
-  .chat-root .turn .turn-breakout {
-    opacity: 1;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-root .turn .turn-breakout {
-    transition: none;
-  }
-}
-.chat-root .turn.user .turn-breakout {
-  margin: 0 28px 0 -48px;
-}
-/* On an assistant turn it is the row's last item, after the body. */
-.chat-root .turn.assistant .turn-breakout {
-  margin-top: 2px;
-}
-/* PICKED FOR A BREAKOUT (shift-click): the whole turn is outlined, and its
-   button stays lit so the selection is visible without hovering. */
-.chat-root .turn.is-breakout-selected {
   border-radius: 10px;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-accent) 55%, transparent);
 }
-.chat-root .turn.is-breakout-selected .turn-breakout {
-  opacity: 1;
-  color: var(--c-accent);
+.chat-root .turn.is-pick:hover {
+  background: color-mix(in srgb, var(--c-fg) 4%, transparent);
+}
+.chat-root .turn.is-pick.is-pick-on {
+  background: color-mix(in srgb, var(--c-accent) 9%, transparent);
+}
+.chat-root .turn.is-pick.is-pick-locked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat-root .turn.is-pick.is-pick-locked:hover {
+  background: none;
+}
+.chat-root .turn.is-pick .turn-stamp {
+  display: none;
+}
+.chat-root .turn-pick-check {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--c-border-strong);
+  cursor: inherit;
+}
+.chat-root .turn-pick-check svg {
+  stroke-width: 1.5;
+}
+.chat-root .turn.is-pick-on .turn-pick-check {
+  color: var(--c-on-accent);
+}
+.chat-root .turn.is-pick-on .turn-pick-check svg {
+  fill: var(--c-accent);
+  stroke: var(--c-on-accent);
+}
+.chat-root .turn-pick-check:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
 }
 .chat-root .turn.user .bubble {
   background: var(--c-bubble-user);

@@ -311,6 +311,8 @@ export interface ComposerCardProps {
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
+  /** Breakout pick mode: the box's hint while exchanges are being picked. */
+  pickPlaceholder?: string;
   /** ONE LINE UNDER THE BOX while `blocked`, for a block the placeholder
    *  cannot say alone — "Copilot is turned off in Preferences." plus the link
    *  (D17). The schedule's block has its own card and passes nothing. */
@@ -568,6 +570,7 @@ export function ComposerCard({
   attachPending,
   blocked,
   blockedPlaceholder,
+  pickPlaceholder,
   blockedNote,
   blockedReason,
   navLocked,
@@ -2289,7 +2292,9 @@ export function ComposerCard({
           placeholder={
             blocked && blockedPlaceholder
               ? blockedPlaceholder
-              : variant === "home"
+              : pickPlaceholder
+                ? pickPlaceholder
+                : variant === "home"
                 ? // `homePlaceholderFor` names the KIND once the pane has decided
                   // it ("Ask Claude about this project…"); the markup's own
                   // kind-free wording stands until then (T:5392).

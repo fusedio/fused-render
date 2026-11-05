@@ -1930,7 +1930,7 @@ select.c-pill {
 }
 
 /* THE BREAKOUT SELECTION BAR, directly above the composer: wears the fork
-   notice's skin, with a primary Open and a quiet Clear. */
+   notice's skin, with a primary Start and a quiet Cancel. */
 .chat-root .breakout-sel-bar {
   display: flex;
   align-items: center;
@@ -1950,25 +1950,33 @@ select.c-pill {
   align-items: center;
   gap: 8px;
 }
-.chat-root .breakout-sel-open,
-.chat-root .breakout-sel-clear {
-  padding: 2px 8px;
+.chat-root .breakout-sel-text b {
+  color: var(--c-fg);
+  font-weight: 700;
+}
+.chat-root .breakout-sel-start,
+.chat-root .breakout-sel-cancel {
+  padding: 3px 10px;
   font: inherit;
   border-radius: 6px;
   cursor: pointer;
 }
-.chat-root .breakout-sel-open {
-  color: var(--c-fg);
-  background: none;
-  border: 1px solid var(--c-border-strong);
+.chat-root .breakout-sel-start {
+  color: var(--c-on-accent);
+  background: var(--c-accent);
+  border: 1px solid var(--c-accent);
   font-weight: 600;
 }
-.chat-root .breakout-sel-clear {
+.chat-root .breakout-sel-start:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.chat-root .breakout-sel-cancel {
   color: var(--c-dim);
   background: none;
   border: 1px solid transparent;
 }
-.chat-root .breakout-sel-clear:hover {
+.chat-root .breakout-sel-cancel:hover {
   color: var(--c-fg);
 }
 

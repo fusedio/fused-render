@@ -745,6 +745,10 @@
   padding: 2px 8px;
   line-height: 1.5;
 }
+.chat-root .c-breakout.on {
+  color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 14%, transparent);
+}
 .chat-root .c-topbar-merged .c-breakout {
   flex: 0 0 auto;
   align-self: center;

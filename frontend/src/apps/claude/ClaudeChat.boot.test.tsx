@@ -727,105 +727,108 @@ test("a breakout card opens on the chat, never the folder landing", async () => 
   expect(byClass(r, "c-home").length).toBe(0);
 });
 
-// BREAKOUT SELECTION: shift-click picks messages, a plain click opens the card.
-describe("breakout selection", () => {
+// BREAKOUT PICK MODE: the top-bar button toggles it; each exchange is one click target.
+describe("breakout pick mode", () => {
   const HISTORY = [
     { role: "user", text: "first question", uuid: "u1" },
     { role: "assistant", text: "first answer", uuid: "a1" },
     { role: "user", text: "second question", uuid: "u2" },
     { role: "assistant", text: "second answer", uuid: "a2" },
   ];
-  async function mountParent() {
-    historyTurns = HISTORY;
-    const opened: { context: { block: string; count: number }; forkKey?: string }[] = [];
-    const m = await mountChat({
-      initialSessionId: "sess-abc12345",
-      onBreakout: (req: { context: { block: string; count: number }; forkKey?: string }) => void opened.push(req),
-    });
-    await settle(20);
-    await act(async () => publishBreakoutEnabled(true));
-    await settle(20);
-    return { ...m, opened };
+  type Opened = { context: { block: string; count: number }; forkKey?: string };
+  async function mountParent(history: unknown[] = HISTORY, capture?: ((e: unknown) => void)[]) {
+    historyTurns = history;
+    const opened: Opened[] = [];
+    const doc = document as unknown as { addEventListener: (t: string, fn: (e: unknown) => void) => void };
+    const prev = doc.addEventListener;
+    if (capture) doc.addEventListener = (t, fn) => void (t === "keydown" && capture.push(fn));
+    try {
+      const m = await mountChat({ initialSessionId: "sess-abc12345", onBreakout: (req: Opened) => void opened.push(req) });
+      await settle(20);
+      await act(async () => publishBreakoutEnabled(true));
+      await settle(20);
+      return { ...m, opened };
+    } finally {
+      doc.addEventListener = prev;
+    }
   }
-  const turnBtn = (r: ReturnType<typeof create>, i: number) => byClass(r, "turn-breakout")[i]!;
-  const click = (r: ReturnType<typeof create>, i: number, shiftKey = false) =>
-    act(() => turnBtn(r, i).props.onClick({ shiftKey }));
+  const btn = (r: ReturnType<typeof create>) => byClass(r, "c-breakout")[0]!;
+  const toggle = (r: ReturnType<typeof create>) => act(() => btn(r).props.onClick());
+  const picked = (r: ReturnType<typeof create>) => byClass(r, "is-pick-on").length;
+  const exchange = (r: ReturnType<typeof create>, i: number) =>
+    r.root.findAll((x) => typeof x.props.className === "string" && /\bturn\b/.test(x.props.className) && /\bis-pick\b/.test(x.props.className) && typeof x.type === "string")[i]!;
+  const click = (r: ReturnType<typeof create>, i: number, target: unknown = { closest: () => null }) =>
+    act(() => exchange(r, i).props.onClick({ target }));
 
-  test("the button is on user and assistant turns", async () => {
+  test("no per-message breakout button, and no pick UI until the button is pressed", async () => {
     const { r } = await mountParent();
-    expect(byClass(r, "turn-breakout").length).toBe(4);
+    expect(byClass(r, "turn-breakout").length).toBe(0);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    expect(btn(r).props["aria-pressed"]).toBe(false);
   });
 
-  test("shift-click selects the exchange and opens nothing; a second shift-click unselects it", async () => {
+  test("the button enters pick mode with the latest exchange picked, and toggles it off", async () => {
+    const { r } = await mountParent();
+    toggle(r);
+    expect(btn(r).props["aria-pressed"]).toBe(true);
+    expect(btn(r).props.title).toBe("Pick messages for a breakout");
+    expect(byClass(r, "breakout-sel-bar").length).toBe(1);
+    expect(picked(r)).toBe(2);
+    expect(byClass(r, "turn-pick-check").length).toBe(2);
+    toggle(r);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    expect(byClass(r, "is-pick").length).toBe(0);
+  });
+
+  test("clicking an exchange toggles it; a click on a link or button inside does not", async () => {
+    const { r } = await mountParent();
+    toggle(r);
+    click(r, 0);
+    expect(picked(r)).toBe(4);
+    click(r, 1, { closest: () => ({}) });
+    expect(picked(r)).toBe(4);
+    click(r, 1);
+    expect(picked(r)).toBe(2);
+    click(r, 2);
+    expect(picked(r)).toBe(0);
+  });
+
+  test("Start opens with the picked keys and leaves pick mode; Start is disabled at zero", async () => {
     const { r, opened } = await mountParent();
-    click(r, 1, true);
+    toggle(r);
+    click(r, 0);
+    act(() => byClass(r, "breakout-sel-start")[0]!.props.onClick());
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.context.count).toBe(4);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    toggle(r);
+    click(r, 2);
+    expect(picked(r)).toBe(0);
+    expect(byClass(r, "breakout-sel-start")[0]!.props.disabled).toBe(true);
+  });
+
+  test("Cancel leaves pick mode without opening", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    act(() => byClass(r, "breakout-sel-cancel")[0]!.props.onClick());
     expect(opened).toHaveLength(0);
-    expect(byClass(r, "is-breakout-selected").length).toBe(2);
-    click(r, 1, true);
-    expect(byClass(r, "is-breakout-selected").length).toBe(0);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
   });
 
-  test("a click opens with the pair; with a selection it opens the union and clears it", async () => {
-    const { r, opened } = await mountParent();
-    click(r, 3);
-    expect(opened).toHaveLength(1);
-    expect(opened[0]!.context.count).toBe(2);
-    expect(opened[0]!.context.block).toContain("second question");
-    expect(opened[0]!.context.block).not.toContain("User: first question");
-    click(r, 0, true);
-    click(r, 3);
-    expect(opened).toHaveLength(2);
-    expect(opened[1]!.context.count).toBe(4);
-    expect(byClass(r, "is-breakout-selected").length).toBe(0);
-  });
-
-  test("Escape clears the selection", async () => {
-    // The DOM shim has no event dispatch: capture the chat's document keydown listeners.
-    const doc = document as unknown as { addEventListener: (t: string, fn: (e: unknown) => void) => void };
-    const prev = doc.addEventListener;
+  test("Escape cancels pick mode, and is left alone otherwise", async () => {
     const keydown: ((e: unknown) => void)[] = [];
-    doc.addEventListener = (t, fn) => void (t === "keydown" && keydown.push(fn));
-    let m: Awaited<ReturnType<typeof mountParent>>;
-    try {
-      m = await mountParent();
-    } finally {
-      doc.addEventListener = prev;
-    }
-    click(m.r, 1, true);
-    expect(byClass(m.r, "is-breakout-selected").length).toBe(2);
-    await act(async () => {
-      for (const fn of keydown) fn({ key: "Escape", defaultPrevented: false, target: null, preventDefault() {} });
-    });
-    expect(byClass(m.r, "is-breakout-selected").length).toBe(0);
-  });
-
-  test("Escape is left alone when nothing is selected", async () => {
-    const doc = document as unknown as { addEventListener: (t: string, fn: (e: unknown) => void) => void };
-    const prev = doc.addEventListener;
-    const keydown: ((e: unknown) => void)[] = [];
-    doc.addEventListener = (t, fn) => void (t === "keydown" && keydown.push(fn));
-    let m: Awaited<ReturnType<typeof mountParent>>;
-    try {
-      m = await mountParent();
-    } finally {
-      doc.addEventListener = prev;
-    }
-    const evs = keydown.map(() => ({ key: "Escape", defaultPrevented: false, target: null, prevented: false, preventDefault() { this.prevented = true; } }));
-    await act(async () => keydown.forEach((fn, i) => fn(evs[i])));
-    expect(evs.some((e) => e.prevented)).toBe(false);
-    expect(byClass(m.r, "is-breakout-selected").length).toBe(0);
-  });
-
-  test("the composer button opens the selection, or the last exchange when nothing is selected", async () => {
-    const { r, opened } = await mountParent();
-    act(() => byClass(r, "c-breakout")[0]!.props.onClick());
-    expect(opened).toHaveLength(1);
-    expect(opened[0]!.context.block).toContain("second answer");
-    expect(opened[0]!.context.block).not.toContain("first answer");
-    click(r, 1, true);
-    act(() => byClass(r, "c-breakout")[0]!.props.onClick());
-    expect(opened).toHaveLength(2);
-    expect(opened[1]!.context.block).toContain("first answer");
-    expect(opened[1]!.context.block).not.toContain("second answer");
+    const { r } = await mountParent(HISTORY, keydown);
+    const press = async () => {
+      const evs = keydown.map(() => ({ key: "Escape", defaultPrevented: false, target: null, prevented: false, preventDefault() { this.prevented = true; } }));
+      await act(async () => keydown.forEach((fn, i) => fn(evs[i])));
+      return evs;
+    };
+    const idle = await press();
+    expect(idle.some((e) => e.prevented)).toBe(false);
+    toggle(r);
+    expect(picked(r)).toBe(2);
+    await press();
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    expect(picked(r)).toBe(0);
   });
 });
