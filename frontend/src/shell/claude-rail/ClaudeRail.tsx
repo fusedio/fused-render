@@ -286,6 +286,7 @@ import {
   PeekIntent,
   favChatElsewhere,
   favRingRoute,
+  favPressClears,
   keepAlive,
   railOnChipLeave,
   railOnStarred,
@@ -1764,7 +1765,7 @@ export function ClaudeRail({
                       if (route !== "card") {
                         // The chat is already in the pane: its composer takes
                         // the keyboard; no card, no open key.
-                        clearFavOpen(t.key);
+                        for (const k of favPressClears(route, t.key, openFavKey)) clearFavOpen(k);
                         if (route === "pane") focusPaneComposerSoon();
                         else openChat(href);
                         return;

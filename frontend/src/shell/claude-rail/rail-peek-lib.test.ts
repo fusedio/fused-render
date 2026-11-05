@@ -26,6 +26,7 @@ import {
   PEEK_PLAIN_HEIGHT,
   favCardWish,
   favRingRoute,
+  favPressClears,
   favMaxHeight,
   listCardWish,
   favChatElsewhere,
@@ -1153,5 +1154,14 @@ describe("favRingRoute (a fav whose chat is already shown has no card)", () => {
     expect(favRingRoute(fav, [], "s1")).toBe("door");
     expect(favRingRoute(fav, ["other"], "other")).toBe("card");
     expect(favRingRoute(fav, [], null)).toBe("card");
+  });
+});
+
+describe("favPressClears", () => {
+  it("a pane or door press also closes B open on another favourite; a card press clears nothing", () => {
+    expect(favPressClears("pane", "x", "y")).toEqual(["x", "y"]);
+    expect(favPressClears("pane", "x", "x")).toEqual(["x"]);
+    expect(favPressClears("door", "x", null)).toEqual(["x"]);
+    expect(favPressClears("card", "x", "y")).toEqual([]);
   });
 });
