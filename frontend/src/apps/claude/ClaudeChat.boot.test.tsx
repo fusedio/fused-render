@@ -721,6 +721,12 @@ test("a breakout boots empty: no history fetch, a chip for the selected messages
   expect(byClass(r, "annsum-breakout").length).toBe(1);
 });
 
+test("a breakout card opens on the chat, never the folder landing", async () => {
+  const { r } = await mountChat({ breakout: true });
+  await settle(20);
+  expect(byClass(r, "c-home").length).toBe(0);
+});
+
 // BREAKOUT SELECTION: shift-click picks messages, a plain click opens the card.
 describe("breakout selection", () => {
   const HISTORY = [

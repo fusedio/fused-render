@@ -2131,6 +2131,9 @@ function ChatBody(props: ChatBodyProps) {
   const [entered, setEntered] = useState(
     () =>
       !!(
+        // A BREAKOUT CARD IS A CHAT FROM ITS FIRST FRAME: it has no landing to
+        // show, and a Home row would load another conversation into it.
+        props.breakout ||
         params.get("session_id") ||
         // A CHAT THAT HAS NEVER RUN IS STILL A CHAT (`QUEUED_PARAM`): it has a
         // waiting bubble, a task number and a line to be in, and landing on the
