@@ -130,7 +130,7 @@ in a `starter.json` or `preset.json` resolves.
 under "Advanced". `tools.remote` is a hosted MCP server fused-render
 connects to; `tools.app` is a local starter. A tool may have both.
 
-### The four auth kinds
+### The auth kinds
 
 | kind | Flow | Fused ships | Who holds the token | Precedent | First wave |
 |---|---|---|---|---|---|
@@ -138,9 +138,18 @@ connects to; `tools.app` is a local starter. A tool may have both.
 | `oauth-pkce` | loopback + PKCE against a Fused-registered public client, local refresh | public `client_id` (+ Google's non-secret desktop secret) | `connect/store.py` | `_fused_login.py` | Slack, Google |
 | `oauth-device` | RFC 8628 device code, polled on a daemon thread; or delegated to a vendor CLI | public `client_id` | `connect/store.py`, or the vendor CLI's own store (`gh`, `hf`) | `hf_auth.py`, `github_login.py` | GitHub, Hugging Face |
 | `api-key` | paste (API key, internal-integration token, service-account JSON) | nothing | `connect/store.py` | Google Sheets/Docs starters | fallback everywhere |
+| `local-app` | an app on this Mac through `osascript` (Apple events); Connect is one read against the app, which raises macOS's Automation consent prompt once | nothing | nobody: the app holds the account; the record is the kind, the app and a label | `mac-automation` and `apple-notes` starters | Apple Notes, Apple Calendar |
 
 `byo` is a modifier on `oauth-pkce` or `oauth-device`: same flow, the
 user's own `client_id`, created from the shipped manifest.
+
+`local-app` is only ever listed as available on macOS with `osascript`;
+elsewhere the card is one sentence saying so. Its "token" is `""`, its
+tools are native (`providers/<key>/tools.py` over `connect/applescript.py`),
+and a call macOS refuses (-1743, the grant withdrawn in System Settings >
+Privacy & Security > Automation) marks the card Reconnect, which re-runs the
+probe. The packaged app declares `NSAppleEventsUsageDescription` so the
+prompt appears under Fused's own name (scripts/setup_py2app.py).
 
 Rule for the default: **prefer the kind where Fused holds the least and
 the tools reach every surface.** `mcp-oauth` first when the vendor hosts
@@ -319,6 +328,8 @@ preset's missing connection both open the card.
 | Slack | `oauth-pkce`, Fused app, 13 user scopes, PKCE on, public distribution, no team lock | `byo` from manifest | starter `slack` (slack-connect); `mcp.slack.com/mcp` as `remote` only if it accepts the PKCE app | |
 | Google | `oauth-pkce`, desktop client, minimal read-only scopes per feature | `api-key` service account (today) | starters `google-sheets-tabs`, `google-docs-tabs`, later Gmail/Calendar | publish the project; verification before any restricted scope |
 | Hugging Face | `oauth-device` via hf (exists, D402) | `HF_TOKEN` | none | same card UI, no code change |
+| Apple Notes | `local-app`, Notes.app on this Mac (macOS only) | none | native: folders, search, read, recent, create, append | the Apple Notes starter's JXA, no NotesBridge: the host app asks for the grant |
+| Apple Calendar | `local-app`, Calendar.app on this Mac (macOS only) | none | native: calendars, events, search, event, create | every account Calendar.app syncs; recurring events once, as the rule |
 
 ## 8. Trust and open source
 
@@ -421,6 +432,9 @@ Auth kinds and their required fields:
 - `oauth-device`: `client_id`, `device_url`, `token_url`, `scope`, `identity_url`.
 - `cli`: `command` (argv list printing a token on stdout), `identity_url`. Available when the command runs and prints a non-empty token.
 - `api-key`: `label`, `identity_url`, optional `docs`.
+- `local-app`: `app` (the name scripting knows, `"Notes"`), optional `account`
+  (a JXA expression with `app` bound whose string labels the card). Available
+  on macOS with `osascript`; the record is `{"kind", "app", "account"?}`, no token.
 
 **Availability.** A kind needing `client_id` with `""` in the file reads
 `FUSED_RENDER_CONNECT_<KEY>_CLIENT_ID` (key upper-cased); still empty

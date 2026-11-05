@@ -113,8 +113,16 @@ const KIND_LABELS: Record<string, string> = {
   "oauth-device": "Sign in with a device code",
   cli: "Use the command-line login",
   "api-key": "Paste an API key",
+  "local-app": "Use the app on this Mac",
 };
 export const kindLabel = (a: ConnectAuth) => a.label || KIND_LABELS[a.kind] || a.kind;
+
+/** An app on this Mac (Apple Notes, Apple Calendar): no browser, no token. Its
+ *  sign-in is macOS's own "allow Fused to control Notes?" prompt, so a pending
+ *  card waits on that, and the paste-the-address fallback does not apply. */
+export const isLocalApp = (kind: string | null | undefined) => kind === "local-app";
+export const pendingLabel = (st: ConnectStatus) =>
+  isLocalApp(st.kind) ? "Waiting for macOS to allow access…" : "Waiting for you in the browser…";
 
 /** The sentence under a pending card whose redirect is https on localhost: the
  *  listener's certificate is the app's own, so the browser warns once. Both

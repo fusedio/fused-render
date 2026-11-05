@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 BUILTIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "providers")
 PROVIDERS_ENV = "FUSED_RENDER_CONNECT_PROVIDERS"
 
-KINDS = ("mcp-oauth", "oauth-pkce", "oauth-device", "cli", "api-key")
+KINDS = ("mcp-oauth", "oauth-pkce", "oauth-device", "cli", "api-key", "local-app")
 
 #: kind -> (required fields, optional fields). Anything else in an auth entry
 #: is a typo until proven otherwise, so it is refused by name.
@@ -72,6 +72,10 @@ _FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     ),
     "cli": (("command", "identity_url"), ("label", "identity_method")),
     "api-key": (("label", "identity_url"), ("docs", "header", "identity_method")),
+    # An app on this Mac (Notes, Calendar) through `osascript`: no token, the
+    # app holds the account. `app` is the scriptable name; `account` an optional
+    # JXA expression (with `app` bound) whose string labels the card.
+    "local-app": (("app",), ("account", "label")),
 }
 _URL_FIELDS = ("resource", "authorize_url", "token_url", "revoke_url",
                "identity_url", "device_url", "docs")
@@ -153,7 +157,7 @@ def validate(d: dict, where: str) -> None:
             bad(f"{at}.identity_method", "must be GET or POST")
         if "client_id" in a and not isinstance(a["client_id"], str):
             bad(f"{at}.client_id", "must be a string (\"\" = from the environment)")
-        for f in ("label", "scope", "client_secret", "header"):
+        for f in ("label", "scope", "client_secret", "header", "account"):
             if f in a and not isinstance(a[f], str):
                 bad(f"{at}.{f}", "must be a string")
         for f in ("scopes", "extra_authorize", "extra_token"):
@@ -185,6 +189,8 @@ def validate(d: dict, where: str) -> None:
         if "client" in a and (not isinstance(a["client"], list) or not all(
                 x in ("cimd", "dcr", "prompt") for x in a["client"])):
             bad(f"{at}.client", "must be a list drawn from cimd, dcr, prompt")
+        if kind == "local-app" and (not isinstance(a["app"], str) or not a["app"].strip()):
+            bad(f"{at}.app", "required, the app's name as scripting knows it (\"Notes\")")
         if kind == "cli":
             c = a["command"]
             if not isinstance(c, list) or not c or not all(isinstance(x, str) and x for x in c):
@@ -367,6 +373,8 @@ def availability(provider: Provider, entry: dict) -> tuple[bool, str | None]:
       (it runs the vendor's CLI) and belongs to login, not to a listing.
     - `mcp-oauth` and `api-key` are always available: the first registers
       itself at sign-in, the second is a paste.
+    - `local-app` needs a Mac with `osascript` (connect/applescript.py). Whether
+      macOS lets this process control the app is the probe's answer at Connect.
     """
     kind = entry.get("kind")
     if kind in ("oauth-pkce", "oauth-device") and not entry.get("client_id"):
@@ -378,4 +386,9 @@ def availability(provider: Provider, entry: dict) -> tuple[bool, str | None]:
         exe = (entry.get("command") or [""])[0]
         if not shutil.which(exe):
             return False, f"`{exe}` is not installed"
+    if kind == "local-app":
+        from fused_render.connect import applescript
+        ok, why = applescript.available()
+        if not ok:
+            return False, f"{provider.name} works {why}" if why.startswith("only") else why
     return True, None

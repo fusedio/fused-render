@@ -1,0 +1,9 @@
+{
+  "name": "Apple Notes",
+  "_comment": "No sign-in: Notes.app on this Mac already holds the account. Connect runs one read against Notes, which makes macOS ask once whether Fused may control it (Automation consent); the record stores the kind and the default account's name, never a credential. Off a Mac the card says so and offers nothing.",
+  "auth": [
+    {"kind": "local-app", "app": "Notes", "account": "app.defaultAccount().name()"}
+  ],
+  "tools": {"remote": null},
+  "privacy": "Fused talks to the Notes app on this Mac, the way Shortcuts does: no sign-in, no token, and Fused sends nothing anywhere. A note in a synced account (iCloud) syncs through Notes to your other devices as usual. macOS asks once whether to allow it (System Settings > Privacy & Security > Automation)."
+}
