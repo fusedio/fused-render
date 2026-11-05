@@ -11,6 +11,9 @@
 import Foundation
 import Security
 import WebKit
+import os
+
+private let log = Logger(subsystem: "io.fused.render", category: "pairing")
 
 enum PairingSecret {
     static let cookieName = "fused_lan_device"
@@ -57,15 +60,19 @@ enum PairingSecret {
         get(for: server).map { "\(cookieName)=\($0)" }
     }
 
-    /// After /pair landed on the grid: take the cookie WebKit holds for the
-    /// host the pairing ran on and keep it.
+    /// After a page landed on `/`: take the cookie WebKit holds for that host
+    /// and keep it. Returns whether there was one — the how-to-pair page is
+    /// served at `/` too, so a landing there without a cookie is NOT a
+    /// pairing (WebView only confirms one when this says true).
     @MainActor
-    static func capture(from webView: WKWebView, server: Server, host: String) async {
+    @discardableResult
+    static func capture(from webView: WKWebView, server: Server, host: String) async -> Bool {
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         guard let cookie = cookies.first(where: {
             $0.name == cookieName && $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host
-        }) else { return }
+        }) else { return false }
         set(cookie.value, for: server)
+        return true
     }
 
     /// Before loading a page from this computer on `host`: make sure WebKit
@@ -80,14 +87,20 @@ enum PairingSecret {
                                 && $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host }) {
             return
         }
+        // `.originURL` rather than a bare `.domain`: HTTPCookie derives the
+        // domain from it and accepts an IP address that way, which it does
+        // not as a `.domain` value — and the fallback host IS an address.
         guard let cookie = HTTPCookie(properties: [
-            .domain: host,
+            .originURL: server.url(host: host),
             .path: "/",
             .name: cookieName,
             .value: secret,
             .secure: "TRUE",
             .expires: Date(timeIntervalSinceNow: 90 * 86400),
-        ]) else { return }
+        ]) else {
+            log.error("pairing: could not build the cookie for \(host, privacy: .public)")
+            return
+        }
         await store.setCookie(cookie)
     }
 }

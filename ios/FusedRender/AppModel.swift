@@ -158,11 +158,16 @@ final class AppModel: ObservableObject {
         return c.url!
     }
 
-    /// The pairing's /pair never reached the computer by its name, and the
-    /// probe found it on `host` instead: send the same code there.
-    func retryPairing(on host: String) {
-        guard let server = unconfirmed, let token = pendingToken, server.reaches(host) else { return }
+    /// The pairing's /pair never reached the computer (the name did not
+    /// resolve, or Local Network access was only just allowed), and the probe
+    /// now finds it on `host`: send the same code there. A token is only
+    /// spent when the server receives it. Returns false when no pairing is
+    /// pending.
+    @discardableResult
+    func retryPairing(on host: String) -> Bool {
+        guard let server = unconfirmed, let token = pendingToken, server.reaches(host) else { return false }
         pendingPairURL = Self.pairURL(server, host: host, token: token)
+        return true
     }
 
     /// The webview landed on the grid for `host`. If a pairing was in flight

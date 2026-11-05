@@ -275,7 +275,12 @@ struct ConnectedView: View {
                 host = reached
                 model.retryPairing(on: reached)
             } else if web.location == nil {
-                web.load(baseURL)
+                // Nothing ever landed (the first load died, typically before
+                // Local Network access was allowed). A pairing still pending
+                // goes out again as /pair — loading `/` instead would show the
+                // how-to-pair page and strand the token; with none pending the
+                // grid is the page to ask for.
+                if !model.retryPairing(on: reached) { web.load(baseURL) }
             }
         }
     }

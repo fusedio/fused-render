@@ -294,12 +294,17 @@ struct WebView: UIViewRepresentable {
             controller.location = webView.url
             controller.canGoBack = webView.canGoBack
             controller.title = webView.title ?? ""
-            // The grid just loaded (paired, current): keep the pairing, and
-            // refresh what the widgets and quick actions know.
+            // A page landed at `/`. Only with the device cookie is that the
+            // grid (the how-to-pair page lives at `/` too, for an unpaired
+            // phone): then keep the pairing, confirm it, and refresh what the
+            // widgets and quick actions know.
             if let u = webView.url, u.path == "/" || u.path == "/index.html", let landed = u.host {
                 let server = self.server
                 Task { @MainActor in
-                    await PairingSecret.capture(from: webView, server: server, host: landed)
+                    guard await PairingSecret.capture(from: webView, server: server, host: landed) else {
+                        webLog.info("landed on / without a pairing cookie: not paired")
+                        return
+                    }
                     onGridLoaded(landed)
                     ManifestSync.refresh(server: server, host: landed)
                 }
