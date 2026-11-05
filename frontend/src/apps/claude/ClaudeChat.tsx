@@ -331,7 +331,14 @@ export interface ClaudeChatProps {
   onBreakout?: (req: BreakoutRequest) => void;
   /** With `breakout`: the card's window onto this chat — its own session id
    *  (minted by the first send) and transcript, for Send back. */
-  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void }) => void;
+  onBreakoutState?: (s: {
+    sessionId: string;
+    turns: readonly Turn[];
+    running?: boolean;
+    stop?: () => void;
+    /** Send `text` as a new message in this chat, the way a typed one goes. */
+    send?: (text: string) => void;
+  }) => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -3841,6 +3848,8 @@ function ChatBody(props: ChatBodyProps) {
   /** A breakout card reads this chat's session + transcript through
    *  `onBreakoutState` (Send back builds its draft from it). */
   const { onBreakoutState } = props;
+  /** Set once `onFollowUp` exists (it is defined further down this body). */
+  const breakoutSendRef = useRef<((text: string) => void) | null>(null);
   useEffect(() => {
     if (props.breakout && onBreakoutState) {
       onBreakoutState({
@@ -3849,6 +3858,7 @@ function ChatBody(props: ChatBodyProps) {
         // Closing a card mid-run must end the run (it is the card's own research run).
         running: state.status !== "idle",
         stop: () => void controller.stopRun(),
+        send: (text: string) => breakoutSendRef.current?.(text),
       });
     }
   }, [props.breakout, onBreakoutState, controller, state.sessionId, state.turns, state.status]);
@@ -4119,6 +4129,7 @@ function ChatBody(props: ChatBodyProps) {
     },
     [dispatchSend, defaults.model, defaults.effort, defaults.permission, rcSay],
   );
+  breakoutSendRef.current = onFollowUp;
   /**
    * STOP MEANS STOP, THE OUTBOX INCLUDED (Akshil's R2-12 rule, kept over Claude
    * Code's own Esc, which lets the queue run on). A line parked behind the

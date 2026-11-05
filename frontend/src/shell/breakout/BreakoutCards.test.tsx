@@ -6,7 +6,7 @@ import { act, create } from "react-test-renderer";
 
 import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@apps/claude/agent-peeks";
 import { closeBreakout, consumeBreakoutPrompt, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
-import { AgentPeekCard, Card } from "./BreakoutCards";
+import { AgentPeekCard, Card, HANDOFF_PROMPT } from "./BreakoutCards";
 import AgentPeekLog, { agentPeekTurns, agentPeekWork } from "@apps/claude/ui/AgentPeekLog";
 import { RunTrigger } from "@apps/claude/ui/RunTrigger";
 
@@ -139,39 +139,197 @@ test("close confirms once the card has a user turn", () => {
   }
 });
 
-test("a failed Send back keeps the card open and shows one error line", async () => {
+// A mount whose reported state the test drives, with `send` and `stop` spies.
+function driven() {
+  const calls = { sent: [] as string[], stops: 0 };
+  let push!: (s: Record<string, unknown>) => void;
+  const P = (props: { onBreakoutState?: (s: never) => void }) => {
+    useEffect(() => {
+      push = (s) =>
+        props.onBreakoutState?.({ sessionId: "brk", send: (t: string) => void calls.sent.push(t), stop: () => void calls.stops++, ...s } as never);
+    }, [props]);
+    return null;
+  };
+  return { calls, Mount: P as never, report: (s: Record<string, unknown>) => act(() => push(s)) };
+}
+const U1 = { role: "user", key: "u1", text: "q" };
+const A1 = { role: "assistant", key: "a1", text: "an earlier answer" };
+const PU = { role: "user", key: "u2", text: HANDOFF_PROMPT };
+const labelOf = (b: { children: unknown }) => (b.children as string[]).join("");
+const btnNamed = (r: ReturnType<typeof create>, name: string) => r.root.findAllByType("button").find((b) => labelOf(b) === name);
+
+async function setup() {
   resetBreakouts();
   openBreakout({ sessionId: "s1", file: "/w/proj", context: { block: "b", count: 1 } });
-  const state = {
-    sessionId: "brk",
-    turns: [
-      { role: "user", key: "uuid-1", text: "q" },
-      { role: "assistant", key: "uuid-2", text: "an answer" },
-    ],
-  };
+  const d = driven();
   let r!: ReturnType<typeof create>;
   act(() => {
-    r = create(<Card card={getBreakouts()[0]!} index={0} mount={reporting(state)()} />, { createNodeMock: () => el });
+    r = create(<Card card={getBreakouts()[0]!} index={0} mount={d.Mount} />, { createNodeMock: () => el });
   });
+  d.report({ turns: [U1, A1], running: false });
+  // The composer event is the parent's seat: a handled event means "draft filed".
+  const drafts: string[] = [];
+  const w = window as unknown as Record<string, unknown>;
+  const prevDispatch = w["dispatchEvent"];
+  w["dispatchEvent"] = (e: { detail?: { text?: string } }) => {
+    drafts.push(e.detail?.text ?? "");
+    return false;
+  };
+  const done = () => {
+    w["dispatchEvent"] = prevDispatch;
+    act(() => r.unmount());
+    resetBreakouts();
+  };
+  return { r, d, drafts, done };
+}
+
+test("Send back sends the fixed prompt, files nothing until the run completes, then drafts the NEW reply", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    expect(d.calls.sent).toEqual([HANDOFF_PROMPT]);
+    expect(btnNamed(r, "Writing handoff…")!.props.disabled).toBe(true);
+    expect(btnNamed(r, "Cancel")).toBeDefined();
+    // Running: still nothing filed, the card stays.
+    d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "partial", streaming: true }], running: true });
+    expect(drafts).toHaveLength(0);
+    expect(getBreakouts()).toHaveLength(1);
+    // Done: the draft is the handoff reply, not the earlier one, and the card closes.
+    await act(async () => {
+      d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "The handoff note." }], running: false });
+      await new Promise((res) => setTimeout(res, 20));
+    });
+    expect(drafts).toEqual(["The handoff note."]);
+    expect(getBreakouts()).toHaveLength(0);
+  } finally {
+    done();
+  }
+});
+
+test("the draft carries the Handoff file line when the handoff run wrote a .md", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    const reply = {
+      role: "assistant",
+      key: "a2",
+      text: "Note.",
+      segments: [{ kind: "tool", id: "t", name: "Write", status: "ok", input: { file_path: "/w/.claude/handoffs/h.md" } }],
+    };
+    await act(async () => {
+      d.report({ turns: [U1, A1, PU], running: true });
+      d.report({ turns: [U1, A1, PU, reply], running: false });
+      await new Promise((res) => setTimeout(res, 20));
+    });
+    expect(drafts[0]).toBe("Note.\n\nHandoff file: /w/.claude/handoffs/h.md");
+  } finally {
+    done();
+  }
+});
+
+test("an empty reply keeps the card open with the inline error and restores the button", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    await act(async () => {
+      d.report({ turns: [U1, A1, PU], running: true });
+      d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "  " }], running: false });
+      await new Promise((res) => setTimeout(res, 20));
+    });
+    expect(drafts).toHaveLength(0);
+    expect(getBreakouts()).toHaveLength(1);
+    const alert = r.root.findAllByProps({ role: "alert" });
+    expect(alert.length).toBeGreaterThan(0);
+    expect(JSON.stringify(alert[0]!.children)).toContain("Couldn't write a handoff. Try again");
+    expect(btnNamed(r, "Send back")!.props.disabled).toBe(false);
+  } finally {
+    done();
+  }
+});
+
+test("a run that errors with no reply after the prompt keeps the card open with the error", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    await act(async () => {
+      d.report({ turns: [U1, A1, PU], running: true });
+      // The earlier reply must not be mistaken for the handoff.
+      d.report({ turns: [U1, A1, PU], running: false });
+      await new Promise((res) => setTimeout(res, 20));
+    });
+    expect(drafts).toHaveLength(0);
+    expect(getBreakouts()).toHaveLength(1);
+    expect(r.root.findAllByProps({ role: "alert" }).length).toBeGreaterThan(0);
+  } finally {
+    done();
+  }
+});
+
+test("Cancel stops the run, restores the button, and a late finish files nothing", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    d.report({ turns: [U1, A1, PU], running: true });
+    act(() => btnNamed(r, "Cancel")!.props.onClick());
+    expect(d.calls.stops).toBe(1);
+    expect(btnNamed(r, "Cancel")).toBeUndefined();
+    d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "late" }], running: false });
+    expect(drafts).toHaveLength(0);
+    expect(btnNamed(r, "Send back")!.props.disabled).toBe(false);
+  } finally {
+    done();
+  }
+});
+
+test("Send back is disabled with a hint while the breakout runs, and before any reply; Close still works", async () => {
+  const { r, d, done } = await setup();
+  try {
+    d.report({ turns: [U1, A1, { role: "user", key: "u3", text: "more" }], running: true });
+    const b = btnNamed(r, "Send back")!;
+    expect(b.props.disabled).toBe(true);
+    expect(b.props["data-hint"]).toBe("Wait for the breakout to finish");
+    act(() => b.props.onClick());
+    expect(d.calls.sent).toHaveLength(0);
+    d.report({ turns: [U1], running: false });
+    expect(btnNamed(r, "Send back")!.props.disabled).toBe(true);
+    // Close mid-writing still closes (and stops the run).
+    d.report({ turns: [U1, A1], running: false });
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    d.report({ turns: [U1, A1, PU], running: true });
+    const w = window as unknown as Record<string, unknown>;
+    const prev = w["confirm"];
+    w["confirm"] = () => true;
+    try {
+      act(() => closeBtn(r).props.onClick());
+    } finally {
+      w["confirm"] = prev;
+    }
+    expect(d.calls.stops).toBe(1);
+    expect(getBreakouts()).toHaveLength(0);
+  } finally {
+    done();
+  }
+});
+
+test("a draft that cannot be filed keeps the card open and shows one error line", async () => {
+  const { r, d, done } = await setup();
   const w = window as unknown as Record<string, unknown>;
   const g = globalThis as unknown as Record<string, unknown>;
-  const prevDispatch = w["dispatchEvent"];
   const prevFetch = g["fetch"];
   w["dispatchEvent"] = () => true; // nobody handled it: no parent mounted
   g["fetch"] = () => Promise.reject(new Error("offline")); // the draft read fails
   try {
-    const btn = r.root.findAllByType("button").find((b) => (b.children as string[]).join("") === "Send back")!;
+    act(() => btnNamed(r, "Send back")!.props.onClick());
     await act(async () => {
-      btn.props.onClick();
+      d.report({ turns: [U1, A1, PU], running: true });
+      d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "note" }], running: false });
       await new Promise((res) => setTimeout(res, 20));
     });
     expect(getBreakouts()).toHaveLength(1);
     expect(r.root.findAllByProps({ role: "alert" }).length).toBeGreaterThan(0);
   } finally {
-    w["dispatchEvent"] = prevDispatch;
     g["fetch"] = prevFetch;
-    act(() => r.unmount());
-    resetBreakouts();
+    done();
   }
 });
 

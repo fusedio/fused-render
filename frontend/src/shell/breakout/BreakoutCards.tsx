@@ -24,7 +24,17 @@ import {
 const OFFSET = 28;
 
 /** What a breakout chat reports up (`onBreakoutState`). */
-type BreakoutState = { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void };
+type BreakoutState = {
+  sessionId: string;
+  turns: readonly Turn[];
+  running?: boolean;
+  stop?: () => void;
+  send?: (text: string) => void;
+};
+
+/** What Send back asks the breakout to write before anything reaches the main chat. */
+export const HANDOFF_PROMPT =
+  "Write a handoff note for the main conversation: what we found that matters to it, any decision or recommendation, and open questions. Be concise and self-contained, since the main chat has not seen this breakout. Reply with the note only.";
 
 /** The shared floating-card chrome: the fixed box (draggable by the head row,
  *  clamped to the viewport, stacked by `index`), the head (title, note, spacer,
@@ -179,26 +189,65 @@ export function Card({
 }) {
   const state = useRef<BreakoutState>({ sessionId: "", turns: [] });
   const [canSend, setCanSend] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [writing, setWriting] = useState(false);
   const [error, setError] = useState("");
-  const onState = useCallback((s: BreakoutState) => {
-    state.current = s;
-    setCanSend(s.turns.some((t) => t.role === "assistant" && !!t.text.trim()));
-  }, []);
+  /** The handoff run in flight: where its turns start, and whether the chat has
+   *  been seen running yet (idle alone means the send has not landed). */
+  const pend = useRef<{ from: number; saw: boolean } | null>(null);
+
+  const finish = useCallback(
+    (turns: readonly Turn[], from: number) => {
+      const slice = turns.slice(from);
+      const reply = [...slice].reverse().find((t) => t.role === "assistant" && !!t.text.trim());
+      setWriting(false);
+      if (!reply) {
+        setError("Couldn't write a handoff. Try again");
+        return;
+      }
+      void sendBackBreakout(card.id, buildHandoffDraft(slice)).then((ok) => {
+        if (!ok) setError("Could not hand the summary back. The card stays open.");
+      });
+    },
+    [card.id],
+  );
+  const onState = useCallback(
+    (s: BreakoutState) => {
+      state.current = s;
+      setCanSend(s.turns.some((t) => t.role === "assistant" && !!t.text.trim()));
+      setRunning(!!s.running);
+      const p = pend.current;
+      if (!p) return;
+      if (s.running) p.saw = true;
+      else if (p.saw) {
+        pend.current = null;
+        finish(s.turns, p.from);
+      }
+    },
+    [finish],
+  );
 
   const close = () => {
     const used = state.current.turns.some((t) => t.role === "user");
     if (used && !window.confirm("Discard this breakout? The chat is not sent back.")) return;
+    pend.current = null;
     // The card's own research run would otherwise outlive its only view.
     if (state.current.running) state.current.stop?.();
     closeBreakout(card.id);
   };
+  // SEND BACK asks the breakout for a handoff note as a new message; the draft
+  // is built from THAT reply when the run ends (see `onState`).
   const sendBack = () => {
-    const text = buildHandoffDraft(state.current.turns);
-    if (!text) return;
+    if (pend.current || state.current.running || !state.current.send) return;
     setError("");
-    void sendBackBreakout(card.id, text).then((ok) => {
-      if (!ok) setError("Could not hand the summary back. The card stays open.");
-    });
+    pend.current = { from: state.current.turns.length, saw: false };
+    setWriting(true);
+    state.current.send(HANDOFF_PROMPT);
+  };
+  const cancelWriting = () => {
+    pend.current = null;
+    setWriting(false);
+    state.current.stop?.();
   };
 
   return (
@@ -208,15 +257,24 @@ export function Card({
       title="Breakout"
       note="research only"
       actions={
-        <button
-          type="button"
-          className="breakout-btn"
-          onClick={sendBack}
-          disabled={!canSend}
-          data-hint="Draft a summary into the chat's composer"
-        >
-          Send back
-        </button>
+        <>
+          {writing ? (
+            <button type="button" className="breakout-btn" onClick={cancelWriting}>
+              Cancel
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="breakout-btn"
+            onClick={sendBack}
+            disabled={!canSend || running || writing}
+            data-hint={
+              running && !writing ? "Wait for the breakout to finish" : "Have the breakout write a handoff note for the chat's composer"
+            }
+          >
+            {writing ? "Writing handoff…" : "Send back"}
+          </button>
+        </>
       }
       error={error}
       onClose={close}
