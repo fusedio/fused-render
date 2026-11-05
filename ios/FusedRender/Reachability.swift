@@ -31,6 +31,11 @@ enum LanState: Equatable {
     case localNetworkDenied
     /// Permission and Wi-Fi are fine; nothing answered on any host.
     case unreachable(host: String)
+
+    var isOK: Bool {
+        if case .ok = self { return true }
+        return false
+    }
 }
 
 enum Reachability {
