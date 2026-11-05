@@ -221,7 +221,7 @@ import {
 } from "@platform/lib/api";
 import { hasAgentPeeks, openAgentPeek, publishPeekTurns, useAgentPeeks } from "./agent-peeks";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
-import PanelIcon from "@platform/ui/PanelIcon";
+import { X } from "lucide-react";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -5847,7 +5847,7 @@ function ChatBody(props: ChatBodyProps) {
                 aria-label="Hide the Claude panel"
                 onClick={props.onHidePane}
               >
-                <PanelIcon side="right" />
+                <X size={16} strokeWidth={2} aria-hidden="true" />
               </button>
             ) : null}
             {/* The way back, at the strip's left end (T:3941). Absent on the

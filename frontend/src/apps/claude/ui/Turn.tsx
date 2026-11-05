@@ -97,6 +97,10 @@ export interface TurnProps {
    *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
    *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
   onPullPending?: (key: string) => void;
+  /** A click on a user bubble opens the reply under it (prefs
+   *  `turn_click_open`, off by default): present only with the flag on, one
+   *  callback for the log, keyed by the turn. It only ever OPENS. */
+  onOpenReply?: (key: string) => void;
   /** The newest queued bubble's tag: "(Ctrl+X to send now)". Other queued bubbles show no tag. */
   sendNowHint?: boolean;
   /** Click on a follow-up's hint (a bubble with no `pending`): Ctrl+X's send-now. */
@@ -141,6 +145,7 @@ export const Turn = memo(function Turn({
   onToggleCollapse,
   pendingCard,
   onPullPending,
+  onOpenReply,
   sendNowHint,
   onSendNow,
   onFork,
@@ -246,7 +251,18 @@ export const Turn = memo(function Turn({
             instead — "pane screenshot", "files" — each with the lucide glyph
             the chip and the receipt wear (P2-7). Anything the reader actually
             typed is their own words and gets none. */}
-          <div className={cn("bubble", termAsk && "is-terminal-ask")}>
+          <div
+            className={cn("bubble", termAsk && "is-terminal-ask")}
+            {...(onOpenReply && !pick
+              ? {
+                  onClick: () => {
+                    // Selecting words to copy is not a click on the message.
+                    if (window.getSelection?.()?.toString()) return;
+                    onOpenReply(turn.key);
+                  },
+                }
+              : {})}
+          >
             {termAsk ? (
               <>
                 <div

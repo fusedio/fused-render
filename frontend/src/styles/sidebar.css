@@ -232,8 +232,11 @@ a.sidebar-rail-btn {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  margin-top: 8px;
-  padding-top: 8px;
+  /* VERY LITTLE between the expand/collapse control and the first item (owner,
+     2026-11-05); the left rail and the Claude rail share this box, so the two
+     stand the same. Section dividers below (.sidebar-rail-sep) get more. */
+  margin-top: 2px;
+  padding-top: 4px;
   border-top: 1px solid var(--rail-sep);
   flex: 1 1 auto;
   min-height: 0;
@@ -340,8 +343,9 @@ a.sidebar-rail-btn {
   /* 24px each side, not 4: the margin + heading it stands in for are ~48px
      tall (20 + 28), so the rail's "+" and app icons land on the same y the
      expanded "+ New app" and app rows hold (measured: 218/250/282 against
-     218/248/278). */
-  margin: 24px 0;
+     218/248/278). HALVED to 12 (owner, 2026-11-05), with the expanded
+     sections' seams above; the Claude rail's dividers wear the same 12. */
+  margin: 12px 0;
   background: var(--rail-sep);
 }
 
@@ -826,13 +830,16 @@ button.sidebar-prefs-trigger {
   overflow-y: auto;
   padding: 0;
 }
+/* HALF THE SEAM (owner, 2026-11-05): the gap between two sections was the
+   margin (12, or 8 under the nav group) plus the heading's 6px top padding —
+   18 / 14px. Margin 5 / 3 plus a 4px top padding below is 9 / 7. */
 .sidebar-current-apps,
 .sidebar-bookmarks {
-  margin-top: 12px;
+  margin-top: 5px;
 }
 .sidebar-group + .sidebar-current-apps,
 .sidebar-group + .sidebar-bookmarks {
-  margin-top: 8px;
+  margin-top: 3px;
 }
 .sidebar-current-apps > .sidebar-section-body,
 .sidebar-bookmarks > .sidebar-section-body {
@@ -902,7 +909,7 @@ button.sidebar-prefs-trigger {
 }
 .sidebar-current-apps .sidebar-section-body > .sidebar-heading,
 .sidebar-bookmarks-head > .sidebar-heading {
-  padding-top: 6px;
+  padding-top: 4px;
 }
 /* flow-root: the pinned block's bottom margin stays INSIDE the opaque sticky
    box instead of collapsing out of it (rows would show through the gap). */

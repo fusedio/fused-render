@@ -5,6 +5,7 @@
 // recents, and app lists. Width/collapsed state is shared across all owners
 // (platform/lib/sidebarstate): switching sub-apps must not jump the layout.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { FusedMark } from "@platform/ui/FusedMark";
 import { navigateUrl } from "@platform/lib/router";
@@ -503,11 +504,10 @@ export function SidebarFrame({
           title="Collapse sidebar"
           onClick={toggleSidebarCollapsed}
         >
-          {/* The shared glyph (platform/ui/PanelIcon): a frame with its LEFT
-              half filled — this panel, on this side — in place of the chevron
-              that used to say only "something collapses that way", identically,
-              on both edges of the window. */}
-          <PanelIcon side="left" />
+          {/* An X, not the panel glyph (owner, 2026-11-05): while the panel
+              is open the control reads as "close this"; the collapsed rail's
+              expand button keeps the panel glyph (platform/ui/PanelIcon). */}
+          <X size={16} strokeWidth={2} aria-hidden="true" />
         </button>
       </div>
 

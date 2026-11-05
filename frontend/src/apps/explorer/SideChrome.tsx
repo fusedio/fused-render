@@ -25,6 +25,7 @@
 // rendering fault rather than as a choice. Exactly one of them is on screen at
 // any moment, and each sits where its own action makes sense.
 import { useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { X } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { modeTitle } from "@platform/lib/mode-name";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
@@ -51,12 +52,9 @@ export function SideCloseButton({ what, onClick }: { what: string; onClick: () =
       aria-label={label}
       onClick={onClick}
     >
-      {/* A frame with its RIGHT half filled — this column, on this side. The
-          same glyph mirrored is what the global sidebar's toggle wears
-          (platform/ui/PanelIcon), which is what makes the two edges of the
-          window read as one idea rather than as two chevrons pointing
-          opposite ways for unrelated reasons. */}
-      <PanelIcon side="right" />
+      {/* An X while the column is open (owner, 2026-11-05), like the global
+          sidebar's close; the opener below keeps the panel glyph. */}
+      <X size={16} strokeWidth={2} aria-hidden="true" />
     </button>
   );
 }

@@ -46,6 +46,12 @@ let settledOnce = false;
 let recapTitles = false;
 const recapListeners = new Set<(v: boolean) => void>();
 
+/** The click-opens-reply switch (`prefs.turn_click_open.enabled`): a click on
+ *  a user message opens the folded reply under it. Opt-in, same shape as
+ *  `recapTitles`. */
+let turnClickOpen = false;
+const turnClickOpenListeners = new Set<(v: boolean) => void>();
+
 /** The Breakout switch (`prefs.breakout.enabled`): opt-in beta, off until the
  *  prefs read says otherwise. Same shape as `recapTitles`. */
 let breakout = false;
@@ -107,6 +113,12 @@ function setRecapTitles(next: boolean) {
   if (recapTitles === next) return;
   recapTitles = next;
   for (const listener of recapListeners) listener(next);
+}
+
+function setTurnClickOpen(next: boolean) {
+  if (turnClickOpen === next) return;
+  turnClickOpen = next;
+  for (const listener of turnClickOpenListeners) listener(next);
 }
 
 function setQueue(next: boolean) {
@@ -195,6 +207,7 @@ function read(): Promise<void> {
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
       setRecapTitles(p.task_recap?.enabled === true);
+      setTurnClickOpen(p.turn_click_open?.enabled === true);
       if (breakoutPublishedAt === breakoutStamp) setBreakout(p.breakout?.enabled === true);
       // A server that predates the field keeps "auto", the server's default.
       setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
@@ -267,6 +280,11 @@ export function publishBreakoutEnabled(next: boolean) {
   } catch {
     // Storage may be unavailable; the other tabs still re-read on focus.
   }
+}
+
+/** Hand over a known-fresh click-opens-reply answer (a PUT's prefs payload). */
+export function publishTurnClickOpensReplyEnabled(next: boolean) {
+  setTurnClickOpen(next);
 }
 
 /** Hand over a known-fresh recap-titles answer (a PUT's prefs payload). */
@@ -360,6 +378,21 @@ export function useTaskRecapTitlesEnabled(): boolean {
   return current;
 }
 
+/** Subscribe to the click-opens-reply switch (see `turnClickOpen`). Triggers
+ *  the one prefs read, like `useTaskRecapTitlesEnabled`. */
+export function useTurnClickOpensReplyEnabled(): boolean {
+  const [current, setCurrent] = useState<boolean>(() => turnClickOpen);
+  useEffect(() => {
+    turnClickOpenListeners.add(setCurrent);
+    setCurrent(turnClickOpen);
+    void read();
+    return () => {
+      turnClickOpenListeners.delete(setCurrent);
+    };
+  }, []);
+  return current;
+}
+
 /** Subscribe to the Breakout switch (see `breakout`). Triggers the one prefs
  *  read, like `useTaskRecapTitlesEnabled`. */
 export function useBreakoutEnabled(): boolean {
@@ -395,6 +428,7 @@ export function resetFlagsForTests() {
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
   setRecapTitles(false);
+  setTurnClickOpen(false);
   setBreakout(false);
   setDefaultPermission("auto");
 }

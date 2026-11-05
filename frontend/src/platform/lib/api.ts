@@ -1569,6 +1569,10 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
+  // A click on a user message opens the reply under it
+  // (`turn_click_opens_reply_enabled`, shell/prefs.py; opt-in, off by default).
+  // Optional like `queue`: absent reads as off.
+  turn_click_open?: { enabled: boolean };
   // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
   // default). Optional like `queue`: absent reads as off.
   breakout?: { enabled: boolean };
@@ -2135,6 +2139,10 @@ export function putClaudeMaxConcurrentSessions(max: number): Promise<Prefs> {
 
 export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_recap_titles_enabled: enabled });
+}
+
+export function putTurnClickOpensReplyEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { turn_click_opens_reply_enabled: enabled });
 }
 
 export function putBreakoutEnabled(enabled: boolean): Promise<Prefs> {

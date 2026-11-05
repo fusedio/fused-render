@@ -332,6 +332,15 @@ const ENTRIES = [
     keywords: "summary title name fixed stable rename ai stable haiku",
   },
   {
+    id: "turn-click-opens-reply",
+    group: "tasks",
+    section: "Chat",
+    label: "Click a message to open its reply",
+    description: "In a Claude task chat, clicking your message opens the reply under it when that reply is folded. It only opens — clicking again never folds it.",
+    keywords: "click message reply open expand fold response turn",
+    badge: "Beta",
+  },
+  {
     id: "claude-strict-mcp",
     group: "tasks",
     section: "Running",

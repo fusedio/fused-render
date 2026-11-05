@@ -18,6 +18,7 @@ import {
   putReaderEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putTaskRecapTitlesEnabled,
+  putTurnClickOpensReplyEnabled,
   putBreakoutEnabled,
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
@@ -35,6 +36,7 @@ import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
   publishTaskRecapTitlesEnabled,
+  publishTurnClickOpensReplyEnabled,
   publishBreakoutEnabled,
 } from "@apps/claude/feature-flag";
 import { publishTaskNotifyTerminalSessions } from "../task-notify-terminal-flag";
@@ -86,6 +88,19 @@ export function TaskRecapsControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.task_recap?.enabled === true}
       put={putTaskRecapTitlesEnabled}
       after={(next) => publishTaskRecapTitlesEnabled(next.task_recap?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// A click on a user message opens the folded reply under it.
+export function TurnClickOpensReplyControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="turn-click-opens-reply"
+      checked={prefs.turn_click_open?.enabled === true}
+      put={putTurnClickOpensReplyEnabled}
+      after={(next) => publishTurnClickOpensReplyEnabled(next.turn_click_open?.enabled === true)}
       onChange={onChange}
     />
   );
