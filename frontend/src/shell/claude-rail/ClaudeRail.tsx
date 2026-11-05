@@ -1587,7 +1587,10 @@ export function ClaudeRail({
       open: paneOpen,
       favsOn: now.favsOn,
       pinnedKey: key,
-      isFav: !!key && favKeysRef.current.has(key),
+      // A favourite's RING (window B's), not a starred chat: a starred chat
+      // pinned from its LIST ring is the list's card, and the pane takes it
+      // like any other (2026-11-05: the sections do not see each other).
+      isFav: !!key && favKeysRef.current.has(key) && !baseSeatsRef.current.some((s) => s.pulse.key === key),
       hasSession: !!seat?.pulse.session_id,
     });
     if (!takes || !seat) return;
@@ -1801,9 +1804,15 @@ export function ClaudeRail({
                 <div key={t.key} role="listitem" className="claude-rail-seat">
                 <a
                   ref={(el) => {
-                    // A favourite's ring anchors this rail's hover card
-                    // (header); the favourite's own card stands on the
-                    // rail's bottom edge (FavouritePeek).
+                    // THE LIST'S RINGS ANCHOR WINDOW A (header): with the
+                    // favourites on, a favourite's ring is window B's
+                    // (FavouritePeek, on the rail's bottom edge) and must
+                    // not claim the chat's anchor — the same chat stands
+                    // in both sections (2026-11-05), and a star pressed in
+                    // window A moved the card onto the new foot ring.
+                    // Favourites off, the foot is empty and every ring is
+                    // the list's.
+                    if (foot && favsOn) return;
                     if (el) ringEls.current.set(t.key, el);
                     else ringEls.current.delete(t.key);
                   }}
