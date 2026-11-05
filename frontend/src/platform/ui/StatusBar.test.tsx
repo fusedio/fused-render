@@ -138,7 +138,9 @@ describe("right-aligned chips (D569) and the panel anchor that has to move with 
     // touching the bar's own edge exactly, same reasoning, a token instead of
     // a literal.
     const panel = block(CSS, ".dl-panel");
-    expect(panel).toContain("right: var(--status-bar-gutter);");
+    // …the gutter plus the Claude rail while one stands (2026-11-05,
+    // notifications.css `--status-bar-end`).
+    expect(panel).toContain("right: var(--status-bar-end);");
     expect(panel).not.toContain("right: 0;");
     expect(panel).not.toContain("left: 0;");
   });
