@@ -267,7 +267,11 @@ struct ConnectedView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     topBar
-                    if let state = lanState, state != .ok(host: host, port: port) {
+                    // Only a failure shows the banner. An `.ok` on another
+                    // host or port is still reached — the diagnosis moves
+                    // the webview there a moment later — and would otherwise
+                    // render as a yellow bar with no message.
+                    if let state = lanState, !state.isOK {
                         ReachabilityBanner(state: state, server: server, retry: { diagnoseRun += 1 },
                                            scan: { showPair = true })
                     }
