@@ -327,10 +327,17 @@ def test_create_from_a_known_folder_stamps_the_phone_origin(client, agent, proje
     _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9)])
     monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
     alpha = str(tmp_path / "alpha")
-    # A typed path the listing does not know, and one that is not a folder: refused.
-    for bad in ("/etc", str(tmp_path / "nowhere"), "", None, "~/elsewhere"):
+    # Folders the listing does not know, folders that are not there, the home
+    # dir and the root, the workspace root itself, a dot-directory and a symlink
+    # under the workspace that points out of it: all refused.
+    (workspace / ".hidden").mkdir()
+    (workspace / "local").mkdir(exist_ok=True)
+    os.symlink(str(tmp_path), str(workspace / "local" / "escape"))
+    for bad in ("/etc", str(tmp_path / "nowhere"), "", None, "~/elsewhere", "~", "/", str(workspace),
+                str(workspace / ".hidden"), str(workspace / "local" / "escape"), str(tmp_path / "alpha" / "..")):
         r = client.post(P, headers=H, json={"prompt": "go", "target": bad})
         assert r.status_code == 400 and "folder" in r.json()["error"], bad
+    assert phone_tasks._known_folder(str(tmp_path / "alpha")) == alpha  # the row's own spelling, as written
     assert client.post(P, headers=H, json={"prompt": " ", "target": alpha}).status_code == 400
     # A row's own folder, tilde'd the way the list hands it out.
     tilded = client.get(P).json()["projects"][0]["path"]
@@ -354,9 +361,8 @@ def test_create_from_a_known_folder_stamps_the_phone_origin(client, agent, proje
 def test_new_app_names_scaffolds_and_answers_the_task_key(client, agent, workspace, monkeypatch):
     from fused_render.server.routers import apps as apps_mod
     calls = []
-    monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda entry, prompt, *rest: calls.append((entry, prompt)) or
-                        ({"id": "e-new", "claude_session_id": "", "state": schedule.PENDING}, None))
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    monkeypatch.setattr(apps_mod, "_await_sent", lambda entry_id, entry: entry)  # no 20 s wait on a stubbed send
 
     async def relay(body, **kw):
         calls.append(("relay", body["prompt"], body["model"]))
@@ -371,9 +377,15 @@ def test_new_app_names_scaffolds_and_answers_the_task_key(client, agent, workspa
     dest = workspace / "app" / "plant-watering-log"
     assert out["app"]["name"] == "plant-watering-log" and dest.is_dir() and (dest / "index.html").is_file()
     assert out["app"]["url"] == "/render?path=" + str(dest / "index.html")
-    assert out["key"] == tasks_store.pending_key("e-new") and out["entry_id"] == "e-new"
-    assert calls[0] == ("relay", "track which plants I watered", "haiku")
-    assert calls[1] == (str(dest / "index.html"), "track which plants I watered")
+    assert out["key"] == tasks_store.pending_key(out["entry_id"]) and out["entry_id"]
+    assert calls == [("relay", "track which plants I watered", "haiku")]
+    # THE BUILD TASK ASKS. The scheduler's default for a scheduled message is
+    # "auto", the broadest; a phone-started build runs in the asking mode, on
+    # the app's entry page, stamped phone, with no model or effort.
+    [entry] = [e for e in schedule.list_entries() if e["id"] == out["entry_id"]]
+    assert entry["permission_mode"] == "prompt" and entry["origin"] == "phone"
+    assert entry["target"] == str(dest / "index.html") and entry["message"] == "track which plants I watered"
+    assert not entry.get("model") and not entry.get("effort")
     # A taken name: the desktop's own 409 and sentence.
     r = client.post(P + "/new-app", headers=H, json={"prompt": "again", "name": "plant-watering-log"})
     assert r.status_code == 409 and "already exists" in r.json()["error"]
@@ -384,7 +396,9 @@ def test_new_app_names_scaffolds_and_answers_the_task_key(client, agent, workspa
 
 def test_new_app_falls_back_to_a_dated_slug_when_the_relay_is_down(client, agent, workspace, monkeypatch):
     from fused_render.server.routers import apps as apps_mod
-    monkeypatch.setattr(apps_mod, "_create_app_task", lambda entry, prompt, *rest: ({"id": "e1", "claude_session_id": "sess-x"}, None))
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda entry, prompt, *rest, **kw: ({"id": "e1", "claude_session_id": "sess-x"}, None))
+    monkeypatch.setattr(phone_tasks, "_dated_slug", lambda: "app-20261105-1000")
 
     async def down(body, **kw):
         raise RuntimeError("relay down")
@@ -392,7 +406,7 @@ def test_new_app_falls_back_to_a_dated_slug_when_the_relay_is_down(client, agent
     monkeypatch.setattr(ai_mod, "_ai_relay", down)
     r = client.post(P + "/new-app", headers=H, json={"prompt": "a thing"})
     assert r.status_code == 200, r.text
-    assert r.json()["app"]["name"].startswith("app-20") and r.json()["key"] == "sess-x"
+    assert r.json()["app"]["name"] == "app-20261105-1000" and r.json()["key"] == "sess-x"
 
     async def prose(body, **kw):
         from fastapi.responses import JSONResponse
@@ -400,7 +414,19 @@ def test_new_app_falls_back_to_a_dated_slug_when_the_relay_is_down(client, agent
     monkeypatch.setattr(ai_mod, "_ai_relay", prose)
     second = client.post(P + "/new-app", headers=H, json={"prompt": "b thing"}).json()["app"]["name"]
     # The same minute's slug is taken by the first: a suffix, never a 409 for a name nobody typed.
-    assert second.startswith("app-20") and second.endswith("-2")
+    assert second == "app-20261105-1000-2"
+    # …even when the name is taken between the check and the copy (two quick taps).
+    real = apps_mod._new_app
+    raced = []
+
+    def race(body, **kw):
+        if not raced:
+            raced.append(body["name"])
+            (workspace / "app" / body["name"]).mkdir()
+        return real(body, **kw)
+    monkeypatch.setattr(apps_mod, "_new_app", race)
+    third = client.post(P + "/new-app", headers=H, json={"prompt": "c thing"}).json()["app"]["name"]
+    assert raced == ["app-20261105-1000-3"] and third == "app-20261105-1000-4"
 
 
 def test_send_cancel_and_the_pending_refusals_go_through_the_desktop_handlers(client, agent, projects_dir, tmp_path, monkeypatch):
@@ -419,10 +445,11 @@ def test_send_cancel_and_the_pending_refusals_go_through_the_desktop_handlers(cl
 def test_archive_refuses_a_running_task_with_the_desktops_words(client, agent, projects_dir, state_dir, tmp_path, monkeypatch):
     _already_using(state_dir)
     _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9), _assistant("ok", T10)])
-    monkeypatch.setattr(phone_tasks, "_running", lambda key: True)
+    real_row = phone_tasks._row
+    monkeypatch.setattr(phone_tasks, "_row", lambda key: {**real_row(key), "live": True})  # the listing says a turn is running
     r = client.post(f"{P}/sess-a/archive", headers=H)
     assert r.status_code == 409 and r.json() == {"error": "Stop the run first"}
-    monkeypatch.setattr(phone_tasks, "_running", lambda key: False)
+    monkeypatch.setattr(phone_tasks, "_row", real_row)
     assert client.post(f"{P}/sess-a/archive", headers=H).status_code == 200
     assert [t["status"] for t in client.get(P, params={"archived": "1"}).json()["tasks"]] == ["archived"]
     assert client.post(f"{P}/sess-a/unarchive", headers=H).status_code == 200
@@ -461,7 +488,10 @@ def test_decide_forces_once_and_refuses_a_card_that_is_not_live(client, agent, p
     from fused_render import project_queue
     _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9), _assistant("ok", T10)])
     perms = [{"id": "r1", "tool": "Bash", "input": {"command": "ls"}, "decision": "", "held": False, "answers": {}},
-             {"id": "r0", "tool": "Bash", "input": {"command": "pwd"}, "decision": "allow", "held": False, "answers": {}}]
+             {"id": "r0", "tool": "Bash", "input": {"command": "pwd"}, "decision": "allow", "held": False, "answers": {}},
+             {"id": "rh", "tool": "Bash", "input": {"command": "rm"}, "decision": "", "held": True, "answers": {}},
+             {"id": "q1", "tool": "AskUserQuestion", "input": {"questions": [{"question": "Which?", "options": [{"label": "A"}]}]},
+              "decision": "", "held": False, "answers": {}}]
     live = {"live_run": "run-1", "permissions": perms, "mode": "", "inbox": []}
     monkeypatch.setattr(agent, "_history_live", lambda file, session_id, inbox=True: live)
     decided = []
@@ -474,8 +504,10 @@ def test_decide_forces_once_and_refuses_a_card_that_is_not_live(client, agent, p
     assert r.json() == {"held": False, "decided": "r1"}
     assert decided == [{"run_id": "run-1", "request_id": "r1", "decision": "deny", "scope": "once", "mode": "",
                         "answers": "", "note": "no", "custom": ""}]
-    # The decided card, a stranger's id, a bad decision, a run that ended: refused before anything is written.
-    for body in ({"request_id": "r0", "decision": "allow"}, {"request_id": "zzz", "decision": "allow"},
+    # The decided card, a HELD card (answered at the Mac, the queue delivers it), a question card, a stranger's
+    # id, a bad decision, a run that ended: refused before anything is written.
+    for body in ({"request_id": "r0", "decision": "allow"}, {"request_id": "rh", "decision": "allow"},
+                 {"request_id": "q1", "decision": "allow"}, {"request_id": "zzz", "decision": "allow"},
                  {"request_id": "r1", "decision": "maybe"}, {"request_id": "../x", "decision": "allow"}):
         r = client.post(f"{P}/sess-a/decide", headers=H, json=body)
         assert r.status_code == 400, body
@@ -487,20 +519,36 @@ def test_decide_forces_once_and_refuses_a_card_that_is_not_live(client, agent, p
 def test_answer_sends_the_composers_payload(client, agent, projects_dir, tmp_path, monkeypatch):
     from fused_render import project_queue
     _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9), _assistant("ok", T10)])
-    perms = [{"id": "q1", "tool": "AskUserQuestion", "input": {"questions": [{"question": "Which?", "options": [{"label": "A"}]}]},
-              "decision": "", "held": False, "answers": {}}]
+    questions = [{"question": "Which one?\nSay.", "multiSelect": True,
+                  "options": [{"label": "A"}, {"label": "B, with a comma"}, {"label": "C"}]},
+                 {"question": "Colour", "options": [{"label": "red"}, {"label": "blue"}]}]
+    perms = [{"id": "q1", "tool": "AskUserQuestion", "input": {"questions": questions}, "decision": "", "held": False, "answers": {}},
+             {"id": "r1", "tool": "Bash", "input": {"command": "ls"}, "decision": "", "held": False, "answers": {}}]
     monkeypatch.setattr(agent, "_history_live", lambda file, session_id, inbox=True: {"live_run": "run-1", "permissions": perms, "mode": "", "inbox": []})
     decided = []
     monkeypatch.setattr(agent, "_decide", lambda **kw: decided.append(kw) or {"ok": True})
     monkeypatch.setattr(project_queue, "agent_module", lambda: agent)
     monkeypatch.setattr(project_queue, "enabled", lambda: False)
-    r = client.post(f"{P}/sess-a/answer", headers=H, json={"request_id": "q1", "answers": {"Which?": ["A"]}, "custom": {"Which?": "mine"}})
+    # The card carries the question and label strings EXACTLY (a newline kept): the answer names them.
+    card = client.get(f"{P}/sess-a").json()["card"]
+    assert card["request_id"] == "q1" and [q["question"] for q in card["questions"]] == ["Which one?\nSay.", "Colour"]
+    assert [o["label"] for o in card["questions"][0]["options"]] == ["A", "B, with a comma", "C"]
+    body = {"request_id": "q1", "answers": {"Which one?\nSay.": ["C", "mine", "A"], "Colour": "blue"},
+            "custom": {"Which one?\nSay.": "mine"}}
+    r = client.post(f"{P}/sess-a/answer", headers=H, json=body)
     assert r.status_code == 200, r.text
     [kw] = decided
     assert kw["decision"] == "allow" and kw["scope"] == "once"
-    assert json.loads(kw["answers"]) == {"Which?": ["A"]} and json.loads(kw["custom"]) == {"Which?": "mine"}
-    assert client.post(f"{P}/sess-a/answer", headers=H, json={"request_id": "q1", "answers": {}}).status_code == 400
-    assert client.post(f"{P}/sess-a/answer", headers=H, json={"request_id": "q1", "answers": {"Which?": ["A"]}, "custom": 3}).status_code == 400
+    # A list becomes the ", "-join in the card's option order with the typed line last — the string
+    # the agent latches. Checked against the agent's own validator, not a copy of its rule.
+    answers = json.loads(kw["answers"])
+    assert answers == {"Which one?\nSay.": "A, C, mine", "Colour": "blue"}
+    assert agent._answers_from(questions, answers, json.loads(kw["custom"])) == answers
+    assert agent._answers_from(questions, {"Which one?\nSay.": ["A"]}, None) is None  # what a list would have been
+    for bad in ({"request_id": "q1", "answers": {}}, {"request_id": "q1", "answers": {"Colour": ["blue"]}, "custom": 3},
+                {"request_id": "q1", "answers": {"Colour": 7}}, {"request_id": "r1", "answers": {"Colour": "blue"}}):
+        assert client.post(f"{P}/sess-a/answer", headers=H, json=bad).status_code == 400, bad
+    assert len(decided) == 1
 
 
 def test_skip_goes_to_the_queue_door(client, agent, projects_dir, tmp_path, monkeypatch):

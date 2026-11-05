@@ -1241,7 +1241,8 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
                      images: list[str] | None = None,
                      permission_mode: str = "",
                      backend: str = "claude",
-                     strict_mcp: bool = False) -> tuple[dict | None, str | None]:
+                     strict_mcp: bool = False,
+                     origin: str = "") -> tuple[dict | None, str | None]:
     """Create the scaffolding TASK: the prompt, on the app's index.html, due now.
 
     The seam a test stubs. `schedule.create` is the New task form's own path
@@ -1294,7 +1295,7 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
             entry_html, prompt, datetime.now(timezone.utc),
             immediate=True, model=model, effort=effort,
             permission_mode=permission_mode, images=images or None,
-            backend=backend or "claude",
+            backend=backend or "claude", origin=origin,
             **({"strict_mcp": True} if strict_mcp else {}))
     except schedule.BackendRefused as exc:
         # The agent refusal WHOLE (`reason`, `backend`), not flattened into
@@ -1341,7 +1342,15 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    return _new_app(body)
 
+
+def _new_app(body: dict, permission_mode: str = "", origin: str = ""):
+    """`api_new_app`'s body past the `X-Fused` guard. `permission_mode` and
+    `origin` are the build task's, a seam and not body fields: the desktop's
+    own door leaves both empty (the scheduler's default mode, no origin); the
+    phone's (`routers/phone_tasks.py`) passes "prompt" and "phone", because a
+    phone must never start an unattended run."""
     name = body.get("name")
     name_err = _app_name_error(name)
     if name_err is not None:
@@ -1475,7 +1484,8 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         # Positional through `permission_mode` ("" — the default "auto"): the
         # seam's test stubs take `*rest`.
         task, task_error = _create_app_task(entry_html, prompt, model, effort,
-                                            images, "", backend)
+                                            images, permission_mode, backend,
+                                            **({"origin": origin} if origin else {}))
 
     return {
         "path": os.path.abspath(dest),

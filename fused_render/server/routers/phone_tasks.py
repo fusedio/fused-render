@@ -500,11 +500,14 @@ def _card(agent, perm: dict) -> dict:
         for q in inp.get("questions") or []:
             if not isinstance(q, dict):
                 continue
+            # The question and label strings go out EXACTLY as asked: an answer
+            # is matched to them by the agent (`_answers_from`), and a cut or
+            # a folded space would make every answer a deny.
             questions.append({
                 "header": _flat(q.get("header"), 60),
-                "question": _flat(q.get("question"), DETAIL_MAX),
+                "question": str(q.get("question") or ""),
                 "multiSelect": bool(q.get("multiSelect")),
-                "options": [{"label": _flat(o.get("label"), 120), "description": _flat(o.get("description"))}
+                "options": [{"label": str(o.get("label") or ""), "description": _flat(o.get("description"))}
                             for o in (q.get("options") or []) if isinstance(o, dict)],
             })
     sev = str(perm.get("severity") or "")
@@ -568,9 +571,8 @@ def _guarded(fn):
         return _error(str(detail), exc.status_code)
 
 
-def _running(key: str) -> bool:
-    row = _row(key)
-    return bool(row and row.get("live"))
+def _running(row: dict) -> bool:
+    return bool(row.get("live"))
 
 
 RUN_BLOCKED_HINT = "Stop the run first"  # platform/lib/task-actions.ts, the same words
@@ -614,33 +616,41 @@ def _free_name(name: str) -> str:
     root = os.path.join(fused_dir(), "app")
     if not os.path.exists(os.path.join(root, name)):
         return name
-    for i in range(2, 100):
+    for i in range(2, 1000):
         if not os.path.exists(os.path.join(root, f"{name}-{i}")):
             return f"{name}-{i}"
-    return name
+    return f"{name}-{os.urandom(3).hex()}"
 
 
 def _known_folder(target: str) -> str | None:
-    """The absolute folder `target` names if the phone may start a task there:
-    a project of a row the listing knows, or a folder under the workspace
-    (`fused_dir()`). Tilde'd paths are expanded; anything else is None. The
-    phone picks from a list, it never types a path."""
+    """The folder `target` names if the phone may start a task there: a project
+    of a row the listing knows (its own spelling, so the task joins that
+    folder's queue — `project_queue` keys on the path as written, never its
+    realpath), or a folder strictly under the workspace (`fused_dir()`) whose
+    real location stays under it (a symlink out of the workspace is refused).
+    Never the workspace root, the home dir, `/` or a dot-directory; never a
+    path that is not a directory. Tilde'd paths are expanded; anything else is
+    None. The phone picks from a list, it never types a path."""
     from fused_render.shell.seed import fused_dir
     t = str(target or "").strip()
     if not t:
         return None
-    path = os.path.realpath(os.path.expanduser(t))
-    if not os.path.isdir(path):
+    path = os.path.abspath(os.path.expanduser(t))
+    home = os.path.abspath(os.path.expanduser("~"))
+    if path in ("/", home) or not os.path.isdir(path):
         return None
-    root = os.path.realpath(fused_dir())
-    if path == root or path.startswith(root + os.sep):
-        return path
-    rows, _gen = _tasks()._listing()
-    for r in rows:
-        p = str(r.get("project") or "")
-        if p and os.path.realpath(p) == path:
+    if any(seg.startswith(".") for seg in path.split(os.sep) if seg):
+        return None
+    root = os.path.abspath(fused_dir())
+    if path.startswith(root + os.sep):
+        real_root, real = os.path.realpath(root), os.path.realpath(path)
+        if real == real_root or real.startswith(real_root + os.sep):
             return path
-    return None
+        return None
+    rows, _gen = _tasks()._listing()
+    known = {os.path.abspath(str(r.get("project"))) for r in rows if r.get("project")}
+    known.discard(home)
+    return path if path in known else None
 
 
 @router.post(PREFIX)
@@ -691,18 +701,32 @@ async def phone_new_app(body: dict = Body(...), x_fused: str | None = Header(def
     name = body.get("name")
     if name is not None and not isinstance(name, str):
         return _error("name must be a string", 400)
-    name = (name or "").strip()
+    typed = (name or "").strip()
+    suggested = "" if typed else (await _suggest_name(prompt) or _dated_slug())
+    # Everything below touches the disk and the listing, and `_new_app` waits
+    # for the task's send to resolve (up to 20 s): all of it off the event loop.
+    return await asyncio.to_thread(_new_app_sync, typed or suggested, bool(typed), prompt, _device(x_fused_device))
+
+
+def _new_app_sync(name: str, typed: bool, prompt: str, device: str):
     from fused_render.server.routers import apps
-    if not name:
-        name = _free_name(await _suggest_name(prompt) or _dated_slug())
+    base = name
+    if not typed:
+        name = _free_name(base)
     err = apps._app_name_error(name)
     if err is not None:
         return _error(err, 400)
-    # `api_new_app` waits for the task's send to resolve (up to 20 s): off the
-    # event loop, like any sync route.
-    resp = await asyncio.to_thread(
-        _guarded, lambda: apps.api_new_app({"name": name, "prompt": prompt, "backend": ""}, x_fused="1"))
+    # The build task asks before anything risky ("prompt"), whatever the
+    # scheduler's default for a scheduled message is, and is stamped phone.
+    body = {"name": name, "prompt": prompt, "backend": ""}
+    resp = _guarded(lambda: apps._new_app(body, permission_mode="prompt", origin="phone"))
     status, data = _body(resp)
+    if status == 409 and not typed:
+        # A name nobody typed was taken between the check and the copy (two
+        # quick taps in one minute): the next free one, once.
+        body["name"] = name = _free_name(base)
+        resp = _guarded(lambda: apps._new_app(body, permission_mode="prompt", origin="phone"))
+        status, data = _body(resp)
     if status != 200:
         return resp
     task = data.get("task") if isinstance(data.get("task"), dict) else {}
@@ -716,7 +740,7 @@ async def phone_new_app(body: dict = Body(...), x_fused: str | None = Header(def
                    "url": "/render?path=" + _q(str(data.get("entry_html") or ""))}}
     if data.get("task_error"):
         out["task_error"] = str(data["task_error"])
-    logger.info("phone new app %r (%s) from device %r", name, key, _device(x_fused_device))
+    logger.info("phone new app %r (%s) from device %r", name, key, device)
     return out
 
 
@@ -725,7 +749,7 @@ def _q(s: str) -> str:
     return quote(s, safe="/")
 
 
-def _send(key, body, _device):
+def _send(key, body, _device, _row_):
     text = body.get("text")
     if not isinstance(text, str) or not text.strip():
         raise ValueError("text: required")
@@ -733,83 +757,120 @@ def _send(key, body, _device):
     return tasks.api_task_send(key, {"text": text}, x_fused="1")  # no model, effort or backend from the phone
 
 
-def _cancel(key, _body, _device):
+def _cancel(key, _body, _device, _row_):
     return _tasks().api_task_cancel(key, x_fused="1")
 
 
-def _live_card_ids(key: str) -> tuple[str, str, set[str]]:
-    """`(run_id, session_id, {pending request ids})` of the key's live run."""
-    tasks = _tasks()
-    task = tasks._collect().get(key)
-    if task is None:
-        raise ValueError("that card is not waiting on an answer")
-    session = str(task.get("session_id") or key)
-    tasks._place(task)
-    target = str(task.get("target") or task.get("project") or "")
-    agent = tasks._agent_module()
+NOT_WAITING = "that card is not waiting on an answer"
+
+
+def _live_cards(row: dict) -> tuple[str, str, dict[str, dict]]:
+    """`(run_id, session_id, {request id: permission row})` of the row's live
+    run, the rows being the cards a phone may answer: undecided AND not held
+    (a held card is answered; the queue delivers that answer when the folder
+    frees, and a second answer from here would race it onto the disk first)."""
+    key = str(row.get("key") or "")
+    session = str(row.get("session_id") or key)
+    target = str(row.get("target") or row.get("project") or "")
+    agent = _tasks()._agent_module()
     if agent is None or not target:
-        raise ValueError("that card is not waiting on an answer")
+        raise ValueError(NOT_WAITING)
     live = agent._history_live(target, session, inbox=False) or {}
     run_id = str(live.get("live_run") or "")
-    pending = {str(p.get("id") or "") for p in (live.get("permissions") or [])
-               if isinstance(p, dict) and not p.get("decision")}
+    pending = {str(p.get("id") or ""): p for p in (live.get("permissions") or [])
+               if isinstance(p, dict) and not p.get("decision") and not p.get("held")}
     return run_id, session, pending
 
 
-def _decide_with(key, body, decision, answers=None, custom=None):
+def _decide_with(row, body, decision, question: bool, answers=None, custom=None):
     request_id = str(body.get("request_id") or "")
-    run_id, session, pending = _live_card_ids(key)
-    if not run_id or request_id not in pending:
-        raise ValueError("that card is not waiting on an answer")
+    run_id, session, pending = _live_cards(row)
+    perm = pending.get(request_id) if run_id else None
+    if perm is None:
+        raise ValueError(NOT_WAITING)
+    agent = _tasks()._agent_module()
+    answerable = str(perm.get("tool") or "") == getattr(agent, "ANSWERABLE_TOOL", "AskUserQuestion")
+    if question and not answerable:
+        raise ValueError("that card is a permission: allow or deny it")
+    if not question and answerable:
+        raise ValueError("that card is a question: answer it")
     raw = {"run_id": run_id, "request_id": request_id, "session_id": session,
            "decision": decision, "scope": "once", "note": str(body.get("note") or "")}
     if answers is not None:
-        raw["answers"] = json.dumps(answers)
+        raw["answers"] = json.dumps(_answer_values(perm, answers, custom))
     if custom is not None:
         raw["custom"] = json.dumps(custom)
     return _tasks().api_queue_decide(raw, x_fused="1")
 
 
-def _decide(key, body, _device):
+def _answer_values(perm: dict, answers: dict, custom) -> dict:
+    """The answers as `agent._answers_from` wants them: one STRING per question
+    — a label, or for a multi-select the ", "-join of the chosen labels in the
+    card's option order with a typed "Other" last. The phone may send a string
+    or a list of labels; anything else is a 400 here, not a silent deny there."""
+    inp = perm.get("input") if isinstance(perm.get("input"), dict) else {}
+    order: dict[str, list[str]] = {}
+    for q in inp.get("questions") or []:
+        if isinstance(q, dict) and isinstance(q.get("question"), str):
+            order[q["question"]] = [o["label"] for o in (q.get("options") or [])
+                                    if isinstance(o, dict) and isinstance(o.get("label"), str)]
+    out = {}
+    for text, value in answers.items():
+        if isinstance(value, str):
+            out[text] = value
+        elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+            labels = order.get(text, [])
+            picked = [l for l in labels if l in value]
+            typed = str((custom or {}).get(text) or "") if isinstance(custom, dict) else ""
+            if typed and typed in value and typed not in picked:
+                picked.append(typed)
+            out[text] = ", ".join(picked) if picked else ", ".join(value)
+        else:
+            raise ValueError("answers: each value is a label or a list of labels")
+    return out
+
+
+def _decide(key, body, _device, row):
     """Allow once or deny the permission card the detail served. `scope` is
     forced to `once`: "for this session" and "always" are desktop decisions."""
     decision = body.get("decision")
     if decision not in ("allow", "deny"):
         raise ValueError("decision must be allow or deny")
-    return _decide_with(key, body, decision)
+    return _decide_with(row, body, decision, question=False)
 
 
-def _answer(key, body, _device):
-    """Answer a question card: `{request_id, answers: {question: [labels]},
-    custom?: {question: typed}}`, the desktop composer's own payload."""
+def _answer(key, body, _device, row):
+    """Answer a question card: `{request_id, answers: {question: label | [labels]},
+    custom?: {question: typed}}` — the desktop composer's payload, joined into
+    the strings the agent latches (`_answer_values`)."""
     answers = body.get("answers")
     if not isinstance(answers, dict) or not answers:
         raise ValueError("answers: required")
     custom = body.get("custom")
     if custom is not None and not isinstance(custom, dict):
         raise ValueError("custom must be an object")
-    return _decide_with(key, body, "allow", answers=answers, custom=custom)
+    return _decide_with(row, body, "allow", question=True, answers=answers, custom=custom)
 
 
-def _archive(key, _body, _device):
-    if _running(key):
+def _archive(key, _body, _device, row):
+    if _running(row):
         return _error(RUN_BLOCKED_HINT, 409)
     tasks = _tasks()
     return tasks.api_task_archive(tasks.ArchivePatch(key=key), x_fused="1")
 
 
-def _unarchive(key, _body, _device):
+def _unarchive(key, _body, _device, _row_):
     tasks = _tasks()
     return tasks.api_task_unarchive(tasks.UnarchivePatch(key=key), x_fused="1")
 
 
-def _rename(key, body, _device):
+def _rename(key, body, _device, _row_):
     tasks = _tasks()
     title = body.get("title", "")
     return tasks.api_task_rename(tasks.RenamePatch(key=key, title=title), x_fused="1")
 
 
-def _favourite(key, body, _device):
+def _favourite(key, body, _device, _row_):
     on = body.get("on")
     if not isinstance(on, bool):
         raise ValueError("on must be true or false")
@@ -817,17 +878,17 @@ def _favourite(key, body, _device):
     return tasks.api_task_favourite(tasks.FavouritePatch(key=key, on=on), x_fused="1")
 
 
-def _delete(key, _body, _device):
+def _delete(key, _body, _device, _row_):
     tasks = _tasks()
     return tasks.api_task_delete(tasks.DeletePatch(key=key), x_fused="1")  # 409 while running, its own words
 
 
-def _read(key, _body, _device):
+def _read(key, _body, _device, _row_):
     tasks = _tasks()
     return tasks.api_task_read(tasks.ReadPatch(key=key, all=True), x_fused="1")
 
 
-def _skip(key, _body, _device):
+def _skip(key, _body, _device, _row_):
     return _tasks().api_queue_skip({"key": key}, x_fused="1")
 
 
@@ -848,9 +909,10 @@ def phone_op(key: str, op: str, body: dict = Body(default=None), x_fused: str | 
     fn = _OPS.get(op)
     if fn is None:
         return _error(f"unknown task action {op!r}", 404)
-    if _row(key) is None:
+    row = _row(key)
+    if row is None:
         return _error(f"no task with key {key!r}", 404)
     try:
-        return _guarded(lambda: fn(key, body if isinstance(body, dict) else {}, _device(x_fused_device)))
+        return _guarded(lambda: fn(key, body if isinstance(body, dict) else {}, _device(x_fused_device), row))
     except (ValueError, RuntimeError) as exc:
         return _error(str(exc) or exc.__class__.__name__, 400)
