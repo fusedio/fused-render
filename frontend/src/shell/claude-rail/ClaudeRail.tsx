@@ -251,6 +251,7 @@ import {
   useFavOpen,
   useLastChat,
   useLastFav,
+  clearFavOpen,
 } from "@platform/lib/last-chat";
 import { draftHref, preloadChat } from "@apps/claude";
 import { hideHint } from "@platform/lib/hints";
@@ -284,6 +285,7 @@ import {
   FAV_SETTLE_MS,
   PeekIntent,
   favChatElsewhere,
+  favRingRoute,
   keepAlive,
   railOnChipLeave,
   railOnStarred,
@@ -291,7 +293,7 @@ import {
   rowOf,
   statusWords,
 } from "./rail-peek-lib";
-import { usePaneSessions } from "@platform/lib/peek-session";
+import { usePaneSessions, usePeekSession } from "@platform/lib/peek-session";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import {
   dismissFavHover,
@@ -609,6 +611,7 @@ export function ClaudeRail({
   // mounted there, and the rail is the rail of 2026-11-04.
   const paneSidsLive = usePaneSessions();
   const paneSids = paneOpen ? paneSidsLive : NO_SESSIONS;
+  const peekSid = usePeekSession();
   // WITH FAVOURITES ON, THE LIST SCROLLS (owner, 2026-11-05: "remove the
   // clip-not-scroll restriction"): every ring is drawn and the list scrolls
   // in its share of the column, its scrollbar hidden like the favourites'
@@ -831,7 +834,7 @@ export function ClaudeRail({
   // fires a leave, and a chat that left the rail (archived, the node changed)
   // takes its card with it; the kept set drops the same keys so a stale chat
   // never holds one of the three warm slots.
-  const peekSeat = peekOn ? seats.find((s) => s.pulse.key === peekKey) ?? null : null;
+  const peekSeat = peekOn ? seats.find((s) => s.pulse.key === peekKey) ?? null : null; // (a chat the pane holds is not in `keptSeats`: no card for it)
   useEffect(() => {
     if (!peekOn && peekKey) intent.dismiss();
   }, [peekOn, peekKey, intent]);
@@ -1407,6 +1410,23 @@ export function ClaudeRail({
     if (seat?.row && isDraftTask(seat.row)) openDraftCard(seat.row, href);
     else onOpenChat(href);
   };
+  // The pane's own composer (the shell's `.c-composer-chat`, never one inside
+  // a rail card), for a favourite whose chat the pane already shows.
+  const focusPaneComposerSoon = () => {
+    let tries = 0;
+    const attempt = () => {
+      const ta = [...document.querySelectorAll<HTMLTextAreaElement>(".c-composer-chat textarea")].find(
+        (el) => !el.closest(`#${PEEK_ID}, #${FAV_PEEK_ID}`),
+      );
+      if (ta) {
+        ta.scrollIntoView({ block: "nearest" });
+        ta.focus({ preventScroll: true });
+        if (document.activeElement === ta) return;
+      }
+      if (++tries < 30) requestAnimationFrame(attempt);
+    };
+    attempt();
+  };
   const openChatRef = useRef(openChat);
   openChatRef.current = openChat;
   // A RING'S ORDINARY PRESS (header): the card, shown now and pinned, with
@@ -1628,6 +1648,7 @@ export function ClaudeRail({
                 activeFav,
                 favHoverKey,
                 paneOpen,
+                chatElsewhere: foot && favRingRoute(t, paneSids, peekSid) !== "card",
               });
               // The rings' own captions step aside for the card: a hover
               // shows the card, and the card IS the caption. The exception
@@ -1739,6 +1760,15 @@ export function ClaudeRail({
                       // A keyboard press: the favourite's card takes the
                       // keyboard once it stands (fav-peek-store); a pointer
                       // press takes nothing.
+                      const route = favRingRoute(t, paneSids, peekSid);
+                      if (route !== "card") {
+                        // The chat is already in the pane: its composer takes
+                        // the keyboard; no card, no open key.
+                        clearFavOpen(t.key);
+                        if (route === "pane") focusPaneComposerSoon();
+                        else openChat(href);
+                        return;
+                      }
                       if (e.detail === 0) requestFavFocus(t.key);
                       if (!favRing) openFavourite(t, href);
                       return;
@@ -2015,7 +2045,7 @@ export function ClaudeRail({
           </>
         )}
       </div>
-      {peekOn && (keptSeats.length > 0 || (paneOpen && peekSeat)) && (
+      {peekOn && keptSeats.length > 0 && (
         // Beside the open pane a card can stand with no chat of its own: the
         // one the pane holds (`paneSids`), said in its body instead.
         <RailPeek
@@ -2043,7 +2073,6 @@ export function ClaudeRail({
           onStarred={onStarred}
           avoid={favBox}
           oneSize={favsOn}
-          bodyNote={peekSeat && favChatElsewhere(peekSeat.pulse, paneSids, null) ? "Open in the Claude panel" : null}
           pinned={pinned}
           onPin={() => {
             const key = intent.current;

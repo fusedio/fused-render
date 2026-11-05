@@ -398,10 +398,6 @@ export interface RailPeekProps {
    *  gone). The rail's card leaves it false — it lets go on the star
    *  itself (`onStarred`), so an unstar never reaches it. */
   dismissOnUnstar?: boolean;
-  /** Said in the body instead of the chat while the shown seat's chat is not
-   *  mounted here (`kept` leaves it out — FavouritePeek, while the pane or
-   *  the Open door shows the same session: one chat, one composer). */
-  bodyNote?: string | null;
   /** Where the card stands now, or null while it is closed — for a host
    *  that places another card around it. */
   onBox?: (box: Box | null) => void;
@@ -484,7 +480,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     oneSize = false,
     avoid = null,
     dismissOnUnstar = false,
-    bodyNote = null,
     onBox,
     pinned,
   },
@@ -1014,8 +1009,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     starMark && starMark.key === t.key ? starMark.on : !!t.starred;
   useEffect(() => {
     if (!starMark) return;
-    // The shown seat too: a card drawn without its chat (`bodyNote`) keeps
-    // nothing in `kept`.
+    // The shown seat too.
     const t = (kept.find((s) => s.pulse.key === starMark.key) ?? (view?.pulse.key === starMark.key ? view : null))?.pulse;
     const next = starMarkStep(starMark, t);
     if (next !== starMark) setStarMark(next);
@@ -1562,9 +1556,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           </div>
         )}
         <div className="claude-rail-peek-body">
-          {bodyNote && view?.pulse.session_id && !kept.some((s) => s.pulse.key === viewKey) && (
-            <p className="claude-rail-peek-note">{bodyNote}</p>
-          )}
           {kept.map((seat) => {
             const { pulse: t, row } = seat;
             const facts = seatFacts(seat, where);

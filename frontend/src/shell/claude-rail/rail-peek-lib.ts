@@ -862,6 +862,20 @@ export function favChatElsewhere(
   return null;
 }
 
+/** WHAT A FAVOURITE'S RING DOES (ClaudeRail; owner, 2026-11-05: a card with
+ *  only a note must never show): `"pane"` when the pane's composer already
+ *  holds its chat (a press focuses that composer, no card, the hover shows
+ *  the title only), `"door"` when the Tasks peek holds it (a press opens the
+ *  chat, no card), else `"card"` (window B as always). */
+export function favRingRoute(
+  fav: { key: string; session_id?: string | null } | null,
+  paneSessions: readonly string[],
+  peekSession: string | null,
+): "pane" | "door" | "card" {
+  const where = favChatElsewhere(fav, paneSessions, peekSession);
+  return where === "pane" ? "pane" : where === "peek" ? "door" : "card";
+}
+
 /** THE ROW THE RAIL STANDS IN — the box the card is placed against and
  *  watched for resizes: the rail's nearest ancestor that HAS a box. The
  *  explorer's file view portals the rail into `.stat-side-slot`, which is

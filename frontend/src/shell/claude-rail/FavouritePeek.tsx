@@ -186,13 +186,21 @@ export function FavouritePeek() {
   useEffect(() => {
     if (on) favHoverIntent().prune(hoverLive);
   }, [on, hoverLive]);
-  const shown = on && seat && rail && !noRoom ? seat : null;
-  // A mounted pane chat on this very session (header), or the Tasks side
-  // peek showing it: no chat here. Never the URL alone — a shut pane leaves
-  // `session_id` in it and shows nothing.
+  // …and a favourite whose chat the pane or the Tasks peek already shows has
+  // NO card (an empty one with a note must never stand): its open key and
+  // hover are let go, its ring is a caption and a door (`favRingRoute`).
   const paneSids = usePaneSessions();
   const peekSid = usePeekSession();
   const elsewhere = favChatElsewhere(seat?.pulse ?? null, paneSids, peekSid);
+  useEffect(() => {
+    if (!elsewhere) return;
+    dismissFavHover();
+    if (open) clearFavOpen(open.key);
+  }, [elsewhere, open]);
+  const shown = on && seat && rail && !noRoom && !elsewhere ? seat : null;
+  // A mounted pane chat on this very session (header), or the Tasks side
+  // peek showing it: no chat here. Never the URL alone — a shut pane leaves
+  // `session_id` in it and shows nothing.
   const kept = useMemo(() => (seat && !elsewhere ? [seat] : []), [seat, elsewhere]);
 
   // FOCUS NEVER FALLS TO THE BODY (header). Whether the keyboard was last
@@ -321,7 +329,6 @@ export function FavouritePeek() {
       onHold={hovering ? (on) => favHoverIntent().hold(on) : noop}
       onDismiss={close}
       dismissOnUnstar
-      bodyNote={elsewhere === "peek" ? "Open in the Tasks peek" : elsewhere ? "Open in the Claude panel" : null}
       onNoRoom={() => setNoRoom(true)}
       onOpenChat={(href) => navigateUrl(href)}
       here={here}

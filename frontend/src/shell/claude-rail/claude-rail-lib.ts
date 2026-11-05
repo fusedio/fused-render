@@ -506,6 +506,9 @@ export interface RingMarkInput {
   /** The Claude pane is expanded: a list ring's press opens the chat there,
    *  so its hover shows the title caption only, no window-A card. */
   paneOpen?: boolean;
+  /** A favourite's ring whose chat the pane or the Tasks peek already shows
+   *  (rail-peek-lib `favRingRoute` is not "card"): caption only. */
+  chatElsewhere?: boolean;
 }
 
 export function ringMarks(o: RingMarkInput): {
@@ -533,7 +536,7 @@ export function ringMarks(o: RingMarkInput): {
   // While ANY favourite's card is open, every favourite-section ring (and
   // the just-starred one still in the list) shows its caption only.
   const silenced = o.openFavKey !== null && o.favsOn && fav;
-  const hovers = o.peekOn && !silenced && !(o.paneOpen && !o.foot);
+  const hovers = o.peekOn && !silenced && !(o.paneOpen && !o.foot) && !(o.foot && o.chatElsewhere);
   // The caption alone: the ring's hover shows no card — another LIST ring
   // while the list's card is pinned (a favourite's ring is window B's and is
   // never held back by it), the open favourite's ring, a silenced one.

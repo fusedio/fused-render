@@ -834,6 +834,9 @@ describe("ringMarks with the Claude pane open", () => {
     expect(list.hovers).toBe(false);
     expect(list.titleOnly).toBe(true);
     expect(ringMarks({ ...o, key: "a", foot: true, paneOpen: true }).hovers).toBe(true);
+    const held = ringMarks({ ...o, key: "a", foot: true, paneOpen: true, chatElsewhere: true });
+    expect(held.hovers).toBe(false);
+    expect(held.titleOnly).toBe(true);
     expect(ringMarks({ ...o, key: "a", foot: false, paneOpen: false }).hovers).toBe(true);
   });
 });

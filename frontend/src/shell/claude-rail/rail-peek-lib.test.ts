@@ -25,6 +25,7 @@ import {
   FAV_WIDTH,
   PEEK_PLAIN_HEIGHT,
   favCardWish,
+  favRingRoute,
   favMaxHeight,
   listCardWish,
   favChatElsewhere,
@@ -1142,5 +1143,15 @@ describe("the favourite's hover and open cards stand in one place", () => {
     expect(placeClear(rail, rail, row, null, favCardWish(base, null, 900))).toEqual(open);
     // anchoring a hover on its ring is what used to move the card
     expect(placeClear(ring, rail, row, null, wish)).not.toEqual(open);
+  });
+});
+
+describe("favRingRoute (a fav whose chat is already shown has no card)", () => {
+  const fav = { key: "k1", session_id: "s1" };
+  it("pane holds it: press goes to the pane composer; peek holds it: the door; else the card", () => {
+    expect(favRingRoute(fav, ["s1"], null)).toBe("pane");
+    expect(favRingRoute(fav, [], "s1")).toBe("door");
+    expect(favRingRoute(fav, ["other"], "other")).toBe("card");
+    expect(favRingRoute(fav, [], null)).toBe("card");
   });
 });
