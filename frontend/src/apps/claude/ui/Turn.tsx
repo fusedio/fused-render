@@ -240,7 +240,7 @@ export const Turn = memo(function Turn({
               type="button"
               className="turn-breakout"
               aria-label="Breakout from here"
-              data-hint="Breakout from here"
+              data-hint="Breakout from here · Shift-click to pick several"
               onClick={(e) => onBreakout(turn.key, { add: e.shiftKey })}
             >
               <GitBranchPlus size={13} aria-hidden="true" />
@@ -523,7 +523,7 @@ export const Turn = memo(function Turn({
             type="button"
             className="turn-breakout"
             aria-label="Breakout from here"
-            data-hint="Breakout from here"
+            data-hint="Breakout from here · Shift-click to pick several"
             onClick={(e) => onBreakout(turn.key, { add: e.shiftKey })}
           >
             <GitBranchPlus size={13} aria-hidden="true" />

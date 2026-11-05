@@ -26,7 +26,7 @@ describe("Turn breakout button", () => {
     const out = html(base, () => {});
     expect(out).toContain('class="turn-breakout"');
     expect(out).toContain('aria-label="Breakout from here"');
-    expect(out).toContain('data-hint="Breakout from here"');
+    expect(out).toContain('data-hint="Breakout from here · Shift-click to pick several"');
     expect(out.indexOf("turn-breakout")).toBeLessThan(out.indexOf('class="bubble'));
   });
   test("drawn on an assistant turn too, and on a user turn with no uuid", () => {
