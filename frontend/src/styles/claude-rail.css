@@ -1131,14 +1131,9 @@ a.claude-rail-peek-scope:focus-visible {
   max-height: calc(4 * var(--c-fs-read) * var(--c-lh-read));
   overflow: hidden;
 }
-/* The trigger and the folded work sit on the column's left edge, not in a
-   paragraph's corner. */
-.chat-root .agent-peek-prompt .run-trigger:not([aria-expanded="true"]),
-.chat-root .agent-peek-work .run-trigger:not([aria-expanded="true"]) {
+/* The trigger sits on the column's left edge, not in a paragraph's corner. */
+.chat-root .agent-peek-prompt .run-trigger:not([aria-expanded="true"]) {
   padding-left: 0;
-}
-.chat-root .agent-peek-work {
-  margin-bottom: 12px;
 }
 .agent-peek-empty {
   padding: 12px;

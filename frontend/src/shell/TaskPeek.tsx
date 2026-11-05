@@ -98,7 +98,7 @@ import {
   taskHref,
   pageDoorLabel,
 } from "./tasks-lib";
-import { useTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
+import { useChatRecapEnabled } from "@apps/claude/feature-flag";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
 import { MISSING_FOLDER_TOAST, taskFolder } from "./useMissingFolders";
 import { TaskPrChip } from "./TaskPrChip";
@@ -446,9 +446,8 @@ export function TaskPeek({
   const canRun = useCanRunInTerminal();
   // The terminal rows follow the agent's switch (D17); subscribed so a flip repaints.
   useAgentBackends();
-  // The peek's recap fold exists only with the Tasks recap titles on: off, the
-  // peek's chat is exactly what it was before them.
-  const recapOn = useTaskRecapTitlesEnabled();
+  // The peek's recap fold follows the chat recap switch (default on).
+  const recapOn = useChatRecapEnabled();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
   // task that is not here closes the panel and drops the param instead of
   // standing open and empty; one naming a task NUMBER is rewritten to that

@@ -17,7 +17,7 @@ import {
   putProjectQueueEnabled,
   putReaderEnabled,
   putTaskNotifyTerminalSessionsEnabled,
-  putTaskRecapTitlesEnabled,
+  putChatRecapEnabled,
   putTurnClickOpensReplyEnabled,
   putBreakoutEnabled,
   putTaskSummaryTitlesEnabled,
@@ -35,7 +35,7 @@ import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
-  publishTaskRecapTitlesEnabled,
+  publishChatRecapEnabled,
   publishTurnClickOpensReplyEnabled,
   publishBreakoutEnabled,
 } from "@apps/claude/feature-flag";
@@ -80,19 +80,7 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Haiku recaps titling the Tasks rows. Opt-in: one haiku call per turn.
-export function TaskRecapsControl({ prefs, onChange }: PrefControlProps) {
-  return (
-    <PrefToggleRow
-      id="task-recaps"
-      checked={prefs.task_recap?.enabled === true}
-      put={putTaskRecapTitlesEnabled}
-      after={(next) => publishTaskRecapTitlesEnabled(next.task_recap?.enabled === true)}
-      onChange={onChange}
-    />
-  );
-}
-
+// The in-chat recap fold. Default on: one haiku call per recap.
 // A click on a user message opens the folded reply under it.
 export function TurnClickOpensReplyControl({ prefs, onChange }: PrefControlProps) {
   return (
@@ -106,8 +94,20 @@ export function TurnClickOpensReplyControl({ prefs, onChange }: PrefControlProps
   );
 }
 
-// Tasks rows titled only by the stable summary `title`. The row key
-// (`title_mode`) arrives from the server on the next poll, so no publish.
+export function ChatRecapControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="chat-recap"
+      checked={prefs.chat_recap?.enabled !== false}
+      put={putChatRecapEnabled}
+      after={(next) => publishChatRecapEnabled(next.chat_recap?.enabled !== false)}
+      onChange={onChange}
+    />
+  );
+}
+
+// Stable AI titles for tasks, refreshed after each turn. The server names the
+// row itself, so no publish: the next poll carries the new title.
 export function TaskSummaryTitlesControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow

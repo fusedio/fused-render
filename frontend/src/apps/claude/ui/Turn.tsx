@@ -58,6 +58,10 @@ function UserBubbleBody({ turn, notes }: { turn: UserTurn; notes: AnnotationWire
 
 export interface TurnProps {
   turn: TurnRow;
+  /** Draw the reply's rows flat, with no run grouping or `show more` triggers,
+   *  for a caller that wants every row on screen (the agent peek). Passed
+   *  straight to `SegmentView`. */
+  unfolded?: boolean;
   /** The turn a `?msg=` link addressed — a halo that fades (T:1699-1713). */
   anchored?: boolean;
   /** "What was sent": the raw outgoing text, wire blocks and all (T:10970).
@@ -134,6 +138,7 @@ export interface TurnProps {
  *  passed only to the turns that actually hold one (Transcript's `parkedIn`). */
 export const Turn = memo(function Turn({
   turn,
+  unfolded,
   anchored,
   onShowSent,
   onOpenShot,
@@ -507,6 +512,7 @@ export const Turn = memo(function Turn({
               cardsAfter={cardsAfter ?? null}
               live={!!turn.streaming}
               cwd={cwd}
+              unfolded={unfolded}
             >
               {children}
             </SegmentView>

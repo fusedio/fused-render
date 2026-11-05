@@ -7,7 +7,7 @@ import { act, create } from "react-test-renderer";
 import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@apps/claude/agent-peeks";
 import { closeBreakout, consumeBreakoutPrompt, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
 import { AgentPeekCard, Card, HANDOFF_PROMPT } from "./BreakoutCards";
-import AgentPeekLog, { agentPeekTurns, agentPeekWork } from "@apps/claude/ui/AgentPeekLog";
+import AgentPeekLog, { agentPeekTurns } from "@apps/claude/ui/AgentPeekLog";
 import { RunTrigger } from "@apps/claude/ui/RunTrigger";
 
 // Only the chat is stubbed (via the Card `mount` prop); the card chrome and drag logic are the real ones.
@@ -506,41 +506,26 @@ test("a subagent reads as its prompt, then its rows as a reply — live while ru
 const tool = (status: string) => ({ kind: "tool", id: "t", name: "Read", status });
 const text = (t: string) => ({ kind: "text", text: t });
 
-test("a subagent's reply keeps the closing text; the prose and calls before it fold into the work", () => {
+test("a subagent's reply is every row it produced, in order, unfolded", () => {
   const kids = [text("Let me look."), tool("ok"), text("Now the config."), tool("ok"), text("Found it."), text("In a.ts.")];
   const seg = { kind: "tool", id: "tu1", name: "Agent", status: "ok", input: { prompt: "Find it" }, children: kids };
-  expect(agentPeekWork(seg as never)).toEqual<unknown>(kids.slice(0, 4));
   const [, reply] = agentPeekTurns(seg as never);
-  expect((reply as { segments: unknown[] }).segments).toEqual<unknown>(kids.slice(4));
+  expect((reply as { segments: unknown[] }).segments).toEqual<unknown>(kids);
 });
 
-test("a subagent still on a call keeps that call visible with the text after it", () => {
+test("a subagent still on a call keeps every row, running call included", () => {
   const kids = [text("Let me look."), tool("ok"), text("Running it."), tool("running")];
   const seg = { kind: "tool", id: "tu1", name: "Agent", status: "running", children: kids };
-  expect(agentPeekWork(seg as never)).toEqual<unknown>(kids.slice(0, 3));
   const [reply] = agentPeekTurns(seg as never);
-  expect((reply as { segments: unknown[] }).segments).toEqual<unknown>(kids.slice(3));
+  expect((reply as { segments: unknown[] }).segments).toEqual<unknown>(kids);
 });
 
-test("a parallel batch of running calls all stay in the answer", () => {
-  const kids = [text("Reading."), tool("ok"), text("Both at once."), tool("running"), tool("running"), tool("ok")];
-  const seg = { kind: "tool", id: "tu1", name: "Agent", status: "running", children: kids };
-  expect(agentPeekWork(seg as never)).toEqual<unknown>(kids.slice(0, 3));
-  const [reply] = agentPeekTurns(seg as never);
-  expect((reply as { segments: unknown[] }).segments).toEqual<unknown>(kids.slice(3));
-});
-
-test("a subagent with no calls folds nothing; one that is only calls folds them all", () => {
-  const prose = [text("a"), text("b")];
-  expect(agentPeekWork({ kind: "tool", status: "ok", children: prose } as never)).toEqual<unknown>([]);
-  const calls = [tool("ok"), tool("ok")];
-  const seg = { kind: "tool", status: "ok", children: calls };
-  expect(agentPeekWork(seg as never)).toEqual<unknown>(calls);
-  const [reply] = agentPeekTurns(seg as never);
+test("a subagent with no rows has an empty reply", () => {
+  const [reply] = agentPeekTurns({ kind: "tool", status: "ok" } as never);
   expect((reply as { segments: unknown[] }).segments).toEqual([]);
 });
 
-test("opening the work or prompt fold releases the peek's tail-follow", () => {
+test("opening the prompt fold releases the peek's tail-follow", () => {
   const long = "word ".repeat(200);
   const kids = [text("Looking."), tool("ok"), text("Done.")];
   const mk = (n: number) =>
@@ -548,7 +533,9 @@ test("opening the work or prompt fold releases the peek's tail-follow", () => {
   const port = { scrollTop: 0, scrollHeight: 1000, clientHeight: 100 };
   let r!: ReturnType<typeof create>;
   act(() => {
-    r = create(<AgentPeekLog seg={mk(0)} />, { createNodeMock: (el) => (el.props.className === "chat-logwrap" ? port : null) });
+    r = create(<AgentPeekLog seg={mk(0)} />, { createNodeMock: (el) =>
+        el.props.className === "chat-logwrap" ? port : String(el.props.className).includes("agent-peek-prompt-text") ? { scrollHeight: 500, clientHeight: 100 } : null,
+    });
   });
   expect(port.scrollTop).toBe(1000);
   const open = r.root.findAllByType(RunTrigger)[0]!;
@@ -558,6 +545,18 @@ test("opening the work or prompt fold releases the peek's tail-follow", () => {
   expect(port.scrollTop).toBe(0);
   // Unmount: the rows subscribe to the shared minute tick (useMinuteTick), and a
   // peek left mounted keeps that interval alive for every later test file.
+  act(() => r.unmount());
+});
+
+test("the peek's reply is drawn flat: no run trigger, every call chip on screen unclicked", () => {
+  const kids = [text("Let me look."), tool("ok"), text("Now the config."), tool("ok"), tool("ok"), text("Found it.")];
+  const seg = { kind: "tool", id: "tu1", name: "Agent", status: "ok", input: { prompt: "Find it" }, children: kids } as never;
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<AgentPeekLog seg={seg} />, { createNodeMock: (e) => (e.props.className === "chat-logwrap" ? { scrollTop: 0, scrollHeight: 100, clientHeight: 100 } : null) });
+  });
+  expect(r.root.findAllByType(RunTrigger).length).toBe(0);
+  expect(r.root.findAll((n) => typeof n.type === "string" && n.props.className === "toolchip").length).toBe(3);
   act(() => r.unmount());
 });
 

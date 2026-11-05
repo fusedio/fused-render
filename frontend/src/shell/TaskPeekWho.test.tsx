@@ -43,11 +43,16 @@ function render(props: Parameters<typeof TaskPeekWho>[0]) {
 const said = (text: string) =>
   task({ last_message: { role: "user", text, at: 1 } } as Partial<Task>);
 
-test("the header prints the row's line — the newest message, first line only", () => {
+test("the header prints the row's title, not the newest message", () => {
   const v = render({ task: said("Renamed it.\nMore below") });
+  expect(v.text()).toContain("Rename the pane noun");
+  expect(v.text()).not.toContain("Renamed it.");
+});
+
+test("an empty title falls back to the newest message, first line only", () => {
+  const v = render({ task: task({ title: "", last_message: { role: "user", text: "Renamed it.\nMore below", at: 1 } } as Partial<Task>) });
   expect(v.text()).toContain("Renamed it.");
   expect(v.text()).not.toContain("More below");
-  expect(v.text()).not.toContain("Rename the pane noun");
 });
 
 test("nothing said yet: the task's own name, first line only, as the row does", () => {
@@ -171,13 +176,14 @@ async function saveUntouched(
   return { calls, v };
 }
 
-test("not renamed, headline is the last message: saving it unchanged pins it as the name", async () => {
+test("not renamed, headline is the base title: saving it unchanged pins it as the name", async () => {
   const t = task({
+    title: "Base title",
     title_source: "message",
     last_message: { role: "user", text: "Newest message", at: 1 },
   } as Partial<Task>);
   const { calls } = await saveUntouched(t);
-  expect(calls).toEqual(["Newest message"]);
+  expect(calls).toEqual(["Base title"]);
 });
 
 test("renamed: saving the stored name unchanged calls nothing", async () => {
@@ -213,7 +219,7 @@ test("the title input carries the server's 200-character cap", () => {
 test("an over-long prefill is shown and saved at 200 characters", async () => {
   const calls: string[] = [];
   const v = render({
-    task: said("x".repeat(300)),
+    task: task({ title: "x".repeat(300) }),
     rename: async (_k, t) => void calls.push(t),
   });
   act(() => {

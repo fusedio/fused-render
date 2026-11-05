@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -654,44 +655,20 @@ def test_a_killed_recap_run_that_will_not_exit_cannot_hang_the_request(
     assert recap_mod._recap_generate(agent, target, SESSION, backend=backend) == ""
     assert proc.killed
     assert proc.timeouts == [recap_mod._RECAP_TIMEOUT, recap_mod._RECAP_REAP_TIMEOUT]
-# ------------------------------------- task recap titles (task_recap_titles_enabled)
+# ------------------------------------- chat recap flag (chat_recap_enabled)
 
-def test_the_prompt_asks_for_at_most_seven_words():
-    """The one prompt change for task recaps (Akshil, 2026-10-15): the same
-    recap now titles a Tasks row, so both the system prompt and the turn say
-    "maximum 7 words" — and the away fold gets the shorter recap too."""
-    assert "at most 7 words" in recap_mod._RECAP_PROMPT_TITLES
-    assert "AT MOST 7 WORDS" in recap_mod._RECAP_SYSTEM_TITLES
-    # Flag off keeps the fold's own wording.
+def test_the_fold_prompt_is_the_long_form_one():
+    """The recap no longer titles a Tasks row: no 7-word prompt, and the
+    20-char floor refuses a terse answer."""
     assert "7 words" not in recap_mod._RECAP_PROMPT
     assert "7 WORDS" not in recap_mod._RECAP_SYSTEM
     assert recap_mod._RECAP_MIN_CHARS == 20
-
-
-def test_the_prompt_picker_follows_the_flag(monkeypatch):
-    from fused_render.shell import prefs as shell_prefs
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
-    assert recap_mod._recap_prompts() == (recap_mod._RECAP_SYSTEM, recap_mod._RECAP_PROMPT)
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
-    assert recap_mod._recap_prompts() == (recap_mod._RECAP_SYSTEM_TITLES,
-                                          recap_mod._RECAP_PROMPT_TITLES)
-
-
-def test_a_seven_word_recap_is_long_enough(monkeypatch):
-    """`_RECAP_MIN_CHARS` was 20, which refused a terse 7-word recap: with the
-    flag on the floor is lower; off, it is the original 20."""
-    from fused_render.shell import prefs as shell_prefs
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
     assert recap_mod._recap_plain("Fixed login typo") == ""
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
-    assert recap_mod._recap_plain("Fixed login typo") == "Fixed login typo"
-    assert recap_mod._recap_plain("Tests pass, PR ready") == "Tests pass, PR ready"
     assert recap_mod._recap_plain("Done.") == ""
+    assert not hasattr(recap_mod, "_RECAP_PROMPT_TITLES")
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def store(tmp_path, monkeypatch):
     from fused_render import tasks_store
     d = tmp_path / "state"
@@ -700,92 +677,22 @@ def store(tmp_path, monkeypatch):
     return tasks_store
 
 
-def test_a_stored_recap_answers_without_spawning(agent, project, calls, store,
-                                                 monkeypatch):
-    """The Tasks listing's recap (stored on the session record) serves the
-    fold for the same turn; a stored FAILURE does not — the fold keeps its own
-    retry — and a recap older than the caller's `stale_before` is re-asked."""
+def test_a_generated_recap_is_not_written_to_the_session_store(
+        agent, project, calls, store):
+    """The fold's recap is in-memory only: the per-session store cannot tell
+    two copies of a folder apart, and nothing reads it any more."""
     target, write = project
     write(("user", "go"), ("assistant", "done"))
-    from fused_render.shell import prefs as shell_prefs
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
-    store.record_recap(SESSION, FOR_UUID, "Stored recap from the listing", now=100.0)
-    assert recap_mod._recap(agent, target, SESSION, FOR_UUID) == (
-        "Stored recap from the listing")
-    assert _spawns(calls) == []
-
-    store.record_recap(SESSION, "u-failed", "", now=100.0)
-    assert recap_mod._recap(agent, target, SESSION, "u-failed") == (
-        "the recap, long enough to count as one")
-    assert len(_spawns(calls)) == 1
-
-    store.record_recap(SESSION, "u-old", "Taken mid-reply", now=100.0)
-    assert recap_mod._recap(agent, target, SESSION, "u-old",
-                            stale_before=200.0) == (
-        "the recap, long enough to count as one")
-    assert len(_spawns(calls)) == 2
+    assert recap_mod._recap(agent, target, SESSION, "u-2")
+    assert store.session_ai_title(store.settings_state(), SESSION) is None
 
 
-def test_a_generated_recap_is_stored_only_with_the_flag_on(
+def test_a_failed_ask_is_cached_in_memory_and_stale_before_reaches_the_cli(
         agent, project, calls, store, monkeypatch):
+    """The failed ask leaves `""` in memory only; a caller's `stale_before`
+    must reach the CLI, not that cache."""
     target, write = project
     write(("user", "go"), ("assistant", "done"))
-    from fused_render.shell import prefs as shell_prefs
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
-    recap_mod._recap(agent, target, SESSION, FOR_UUID)
-    assert store.session_recap(store.settings_state(), SESSION) is None
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
-    recap_mod._recap(agent, target, SESSION, "u-2")
-    stored = store.session_recap(store.settings_state(), SESSION)
-    assert stored["text"] == "the recap, long enough to count as one"
-    assert stored["for_uuid"] == "u-2"
-
-
-def test_a_warm_cache_hit_is_stored_when_the_flag_is_on(
-        agent, project, calls, store, monkeypatch):
-    """Asked first with the flag off (cached, not stored), then again with it
-    on: the second answer comes from memory but still reaches the store."""
-    target, write = project
-    write(("user", "go"), ("assistant", "done"))
-    from fused_render.shell import prefs as shell_prefs
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
-    recap_mod._recap(agent, target, SESSION, FOR_UUID)
-    assert store.session_recap(store.settings_state(), SESSION) is None
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
-    recap_mod._recap(agent, target, SESSION, FOR_UUID)
-    assert len(_spawns(calls)) == 1
-    assert store.session_recap(store.settings_state(), SESSION)["for_uuid"] == FOR_UUID
-
-
-def test_a_store_failure_does_not_wedge_the_key(
-        agent, project, calls, store, monkeypatch):
-    target, write = project
-    write(("user", "go"), ("assistant", "done"))
-    from fused_render.shell import prefs as shell_prefs
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
-
-    def boom(*a, **k):
-        raise ValueError("bad store")
-
-    monkeypatch.setattr(store, "record_recap", boom)
-    assert recap_mod._recap(agent, target, SESSION, FOR_UUID)
-    assert recap_mod._recap_inflight == {}
-
-
-def test_a_retry_after_a_stored_failure_spawns_again(
-        agent, project, calls, store, monkeypatch):
-    """The failed ask left `""` in memory and in the store; the listing's retry
-    (`stale_before` past the failure) must reach the CLI, not that cache."""
-    target, write = project
-    write(("user", "go"), ("assistant", "done"))
-    from fused_render.shell import prefs as shell_prefs
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
     answers = ["", "A real recap of the turn"]
     spawned = []
 
@@ -794,14 +701,11 @@ def test_a_retry_after_a_stored_failure_spawns_again(
         return answers.pop(0)
 
     monkeypatch.setattr(recap_mod, "_recap_generate", generate)
-    assert recap_mod._recap(agent, target, SESSION, FOR_UUID, ended=True) == ""
-    stored = store.session_recap(store.settings_state(), SESSION)
-    assert stored["text"] == "" and stored["for_uuid"] == FOR_UUID
-
-    assert recap_mod._recap(agent, target, SESSION, FOR_UUID, ended=True) == ""  # cached ""
+    assert recap_mod._recap(agent, target, SESSION, FOR_UUID) == ""
+    assert recap_mod._recap(agent, target, SESSION, FOR_UUID) == ""  # cached ""
     assert len(spawned) == 1
-    assert recap_mod._recap(agent, target, SESSION, FOR_UUID, ended=True,
-                            stale_before=stored["at"]) == "A real recap of the turn"
+    assert recap_mod._recap(agent, target, SESSION, FOR_UUID,
+                            stale_before=time.time()) == "A real recap of the turn"
     assert len(spawned) == 2
 
 
@@ -828,55 +732,38 @@ def test_recap_tail_keeps_an_unanswered_last_user_message():
     assert recap_mod._recap_tail(turns) == ""  # the fold: the reader spoke last
 
 
-def test_an_ended_turn_with_no_prose_is_stored_empty_not_failed(
+def test_an_ended_turn_with_no_prose_is_empty_and_never_spawns(
         agent, project, calls, store, monkeypatch):
     target, write = project
     write(("user", "go"), ("user", "and again"))
-    from fused_render.shell import prefs as shell_prefs
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
     assert recap_mod._recap(agent, target, SESSION, FOR_UUID, ended=True) == ""
-    stored = store.session_recap(store.settings_state(), SESSION)
-    assert stored["empty"] is True and _spawns(calls) == []
-    # A fold under the same transcript stores nothing.
-    recap_mod._recap(agent, target, SESSION, "u-other")
-    assert store.session_recap(store.settings_state(), SESSION)["for_uuid"] == FOR_UUID
+    assert _spawns(calls) == []
 
 
-# --- with `task_recap_titles_enabled` the endpoint only READS the store ---
+# --- `chat_recap_enabled` gates the endpoint; on, it generates on demand ---
 
-def test_flag_on_endpoint_reads_the_store_and_never_spawns(
+def test_flag_default_on_endpoint_generates_on_demand(
+        client, project, calls, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    body = _get(client, target).json()
+    assert body["text"] and "pending" not in body
+    assert not body.get("disabled")
+    assert len(_spawns(calls)) == 1
+
+
+def test_flag_off_endpoint_answers_empty_and_never_spawns(
         client, project, calls, store, monkeypatch):
     target, write = project
     write(("user", "go"), ("assistant", "done"))
     from fused_render.shell import prefs as shell_prefs
 
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    monkeypatch.setattr(shell_prefs, "chat_recap_enabled", lambda: False)
     body = _get(client, target).json()
-    assert body["text"] == "" and body["pending"] is True  # nothing stored yet
-
-    store.record_recap(SESSION, FOR_UUID, "Stored by the worker", now=1.0)
-    body = _get(client, target).json()
-    assert body["text"] == "Stored by the worker" and body["pending"] is False
-
-    store.record_recap(SESSION, FOR_UUID, "", now=2.0, empty=True)
-    body = _get(client, target).json()
-    assert body["text"] == "" and body["pending"] is False
-    store.record_recap(SESSION, FOR_UUID, "", now=3.0)  # a failure: may still land
-    assert _get(client, target).json()["pending"] is True
+    assert body["text"] == "" and body["for_uuid"] == FOR_UUID
+    assert "pending" not in body
+    assert body["disabled"] is True
     assert _spawns(calls) == []
-
-
-def test_flag_off_endpoint_still_generates_with_no_pending_key(
-        client, project, calls, monkeypatch):
-    target, write = project
-    write(("user", "go"), ("assistant", "done"))
-    from fused_render.shell import prefs as shell_prefs
-
-    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
-    body = _get(client, target).json()
-    assert body["text"] and "pending" not in body
-    assert len(_spawns(calls)) == 1
 
 
 # --- stable AI titles: one haiku call for the title (and the recap) ---
@@ -884,79 +771,70 @@ def test_flag_off_endpoint_still_generates_with_no_pending_key(
 _TITLE_REPLY = "TITLE: Fixing the login redirect\nRECAP: Login redirect fixed, tests pass"
 
 
-def test_title_parse_reads_both_lines_and_tolerates_formatting():
+def test_title_parse_reads_the_title_and_tolerates_formatting():
     parse = recap_mod._title_parse
-    assert parse(_TITLE_REPLY, True) == (
-        "Fixing the login redirect", "Login redirect fixed, tests pass")
-    # Title only: a RECAP line nobody asked for is dropped.
-    assert parse(_TITLE_REPLY, False) == ("Fixing the login redirect", "")
-    assert parse("TITLE: Only a title here", True) == ("Only a title here", "")
+    # A RECAP line nobody asked for is its own field and dropped.
+    assert parse(_TITLE_REPLY) == "Fixing the login redirect"
+    assert parse("TITLE: Only a title here") == "Only a title here"
     # Lowercase labels, extra whitespace, markdown and bullets around them.
-    assert parse("  title :   Fix the  login   redirect.  \n- recap: Login redirect fixed now",
-                 True) == ("Fix the login redirect", "Login redirect fixed now")
-    assert parse("**TITLE:** `Fixing login`\n**RECAP:** **Login** fixed, tests pass",
-                 True) == ("Fixing login", "Login fixed, tests pass")
-    assert parse('Title: "Quoted title words"', False)[0] == "Quoted title words"
+    assert parse("  title :   Fix the  login   redirect.  \n- recap: Login redirect fixed now"
+                 ) == "Fix the login redirect"
+    assert parse("**TITLE:** `Fixing login`\n**RECAP:** **Login** fixed, tests pass"
+                 ) == "Fixing login"
+    assert parse('Title: "Quoted title words"') == "Quoted title words"
     # Capped at 80 chars, refused under 3, none when there is no label at all.
-    assert len(parse("TITLE: " + "word " * 40, False)[0]) <= 80
-    assert parse("TITLE: ab", False) == ("", "")
-    assert parse("just some prose", True) == ("", "")
-    assert parse("", True) == ("", "")
-    # A too-short recap is refused by the recap rules, the title survives.
-    assert parse("TITLE: Fixing login\nRECAP: ok", True) == ("Fixing login", "")
+    assert len(parse("TITLE: " + "word " * 40)) <= 80
+    assert parse("TITLE: ab") == ""
+    assert parse("just some prose") == ""
+    assert parse("") == ""
 
 
 def test_title_prompt_carries_the_current_title_first_message_and_tail():
-    system, template = recap_mod._title_prompts(True, "Fix login", "please fix 100% of login")
+    system, template = recap_mod._title_prompts("Fix login", "please fix 100% of login")
     assert "Current title: Fix login" in template
     assert "First message: please fix 100%% of login" in template  # `%`-escaped
-    assert "<transcript>" in template and "TITLE and RECAP" in template
-    assert "DATA" in system and "RECAP:" in system and "TITLE:" in system
+    assert "<transcript>" in template and "TITLE line" in template
+    assert "RECAP" not in template
+    assert "DATA" in system and "TITLE:" in system and "RECAP" not in system
     assert "verbatim" in system
-    assert "RECAP:" not in recap_mod._title_prompts(False, "x", "y")[0]
     out = template % "User: hi\n\nAssistant: hello"
     assert "User: hi" in out and "100% of login" in out
-    assert "(none)" in recap_mod._title_prompts(False, "", "")[1]
+    assert "(none)" in recap_mod._title_prompts("", "")[1]
     # The first message is capped.
-    assert len(recap_mod._title_prompts(False, "t", "x" * 5000)[1]) < 2200
+    assert len(recap_mod._title_prompts("t", "x" * 5000)[1]) < 2200
 
 
-def test_one_call_titles_and_recaps_and_stores_both(
+def test_one_call_titles_the_session_and_stores_only_the_title(
         agent, project, calls, store, monkeypatch):
     target, write = project
     write(("user", "go"), ("assistant", "done"))
     monkeypatch.setenv("RECAP_STUB_OUT", _ok(_TITLE_REPLY))
-    title, recap = recap_mod._title_and_recap(
-        agent, target, SESSION, "u-1", want_recap=True, current="go",
+    title = recap_mod._session_title(
+        agent, target, SESSION, "u-1", current="go",
         first="go and fix it", prompts_seen=5)
-    assert (title, recap) == ("Fixing the login redirect",
-                              "Login redirect fixed, tests pass")
+    assert title == "Fixing the login redirect"
     spawn, = _spawns(calls)
     prompt = _prompt(spawn)
     assert "Current title: go" in prompt and "First message: go and fix it" in prompt
     assert "User: go" in prompt
+    assert "RECAP:" not in prompt
     argv = spawn["argv"]
     assert "--no-session-persistence" in argv and argv[argv.index("--tools") + 1] == ""
     state = store.settings_state()
     assert store.session_ai_title(state, SESSION)["text"] == "Fixing the login redirect"
     assert store.session_ai_title(state, SESSION)["turns"] == 5
-    assert store.session_recap(state, SESSION)["text"] == "Login redirect fixed, tests pass"
 
 
-def test_title_only_call_stores_no_recap_and_a_failure_keeps_the_title(
+def test_a_failed_title_keeps_the_old_one_and_stamps_the_failure(
         agent, project, calls, store, monkeypatch):
     target, write = project
     write(("user", "go"), ("assistant", "done"))
     monkeypatch.setenv("RECAP_STUB_OUT", _ok(_TITLE_REPLY))
-    title, recap = recap_mod._title_and_recap(
-        agent, target, SESSION, "u-1", want_recap=False, prompts_seen=2)
-    assert (title, recap) == ("Fixing the login redirect", "")
-    assert "RECAP:" not in json.loads(_spawns(calls)[0]["stdin"])["message"]["content"][0]["text"]
-    assert store.session_recap(store.settings_state(), SESSION) is None
-
+    assert recap_mod._session_title(agent, target, SESSION, "u-1",
+                                    prompts_seen=2) == "Fixing the login redirect"
     monkeypatch.setenv("RECAP_STUB_OUT", _ok("no labels, just prose"))
-    assert recap_mod._title_and_recap(agent, target, SESSION, "u-1",
-                                      prompts_seen=6) == ("", "")
+    assert recap_mod._session_title(agent, target, SESSION, "u-1",
+                                    prompts_seen=6) == ""
     got = store.session_ai_title(store.settings_state(), SESSION)
     assert got["text"] == "Fixing the login redirect"
     assert got["turns"] == 2 and got["failed_at"] > 0
@@ -987,7 +865,7 @@ def test_every_backend_gets_the_title_prompt_and_its_raw_reply(
     monkeypatch.setattr(agent, "_codex_bin", lambda: "/bin/codex", raising=False)
     raw = recap_mod._recap_generate(
         agent, target, SESSION, ended=True, backend=backend,
-        ask={"want_recap": True, "current": "Cur title", "first": "First msg"})
+        ask={"current": "Cur title", "first": "First msg"})
     assert raw == _TITLE_REPLY  # line structure intact, not folded
     assert "Current title: Cur title" in sent[0]
 
@@ -1009,7 +887,7 @@ def test_a_title_ask_mid_first_turn_titles_from_the_first_message(
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     raw = recap_mod._recap_generate(
         agent, target, SESSION, ended=True,
-        ask={"want_recap": False, "current": "x", "first": "hello world"})
+        ask={"current": "x", "first": "hello world"})
     assert raw == _TITLE_REPLY
     assert "User: hello world" in sent[0]
 
@@ -1022,7 +900,7 @@ def test_a_recap_ask_with_no_prose_still_has_nothing_to_recap(
     with pytest.raises(recap_mod._NothingToRecap):
         recap_mod._recap_generate(
             agent, target, SESSION, ended=True,
-            ask={"want_recap": True, "current": "x", "first": "hello world"})
+            ask={"current": "x", "first": ""})
 
 
 def test_a_switched_off_agent_is_not_asked_but_stamps_the_cooldown(
@@ -1033,8 +911,8 @@ def test_a_switched_off_agent_is_not_asked_but_stamps_the_cooldown(
     from fused_render.agent_backends import registry
 
     monkeypatch.setattr(registry, "is_enabled", lambda backend: False)
-    assert recap_mod._title_and_recap(agent, target, SESSION, "u-1",
-                                      prompts_seen=3) == ("", "")
+    assert recap_mod._session_title(agent, target, SESSION, "u-1",
+                                    prompts_seen=3) == ""
     assert _spawns(calls) == []
     assert store.session_ai_title(store.settings_state(), SESSION)["failed_at"] > 0
 

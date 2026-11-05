@@ -23,6 +23,8 @@ let generation = 0;
 // must not overwrite the fresher one. Breakout-only: the shared `generation`
 // would also discard the queue / recap answers the same read carries.
 let breakoutPublishedAt = 0;
+// The same guard for the chat-recap switch.
+let recapPublishedAt = 0;
 /** The same guard for the click-opens-reply switch. */
 let turnClickPublishedAt = 0;
 
@@ -41,16 +43,15 @@ const queueListeners = new Set<(v: boolean) => void>();
  *  send and decide waited up to 8 s until one succeeded). */
 let settledOnce = false;
 
-/** The Tasks recap titles switch (`prefs.task_recap.enabled`): with it on an
- *  open chat shows its recap fold on open, not only after an absence. Same
- *  shape as `queue` — opt-in, so "not asked yet" and "off" are one answer —
- *  and read by the same single prefs GET. */
-let recapTitles = false;
+/** The chat recap switch (`prefs.chat_recap.enabled`): with it on an open
+ *  chat shows its recap fold on open, not only after an absence. DEFAULT ON
+ *  (unlike `queue`), so "not asked yet" and "on" are one answer; read by the
+ *  same single prefs GET. */
+let recapTitles = true;
 const recapListeners = new Set<(v: boolean) => void>();
 
 /** The click-opens-reply switch (`prefs.turn_click_open.enabled`): a click on
- *  a user message opens the folded reply under it. Opt-in, same shape as
- *  `recapTitles`. */
+ *  a user message opens the folded reply under it. Opt-in (default off). */
 let turnClickOpen = false;
 const turnClickOpenListeners = new Set<(v: boolean) => void>();
 
@@ -111,16 +112,16 @@ function setBreakout(next: boolean) {
   for (const listener of breakoutListeners) listener(next);
 }
 
-function setRecapTitles(next: boolean) {
-  if (recapTitles === next) return;
-  recapTitles = next;
-  for (const listener of recapListeners) listener(next);
-}
-
 function setTurnClickOpen(next: boolean) {
   if (turnClickOpen === next) return;
   turnClickOpen = next;
   for (const listener of turnClickOpenListeners) listener(next);
+}
+
+function setRecapTitles(next: boolean) {
+  if (recapTitles === next) return;
+  recapTitles = next;
+  for (const listener of recapListeners) listener(next);
 }
 
 function setQueue(next: boolean) {
@@ -185,6 +186,7 @@ function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
   const breakoutStamp = breakoutPublishedAt;
+  const recapStamp = recapPublishedAt;
   const turnClickStamp = turnClickPublishedAt;
   // ONE BUDGET FOR THE WHOLE READ, retry included (bugbot, 2026-09-15).
   //
@@ -209,7 +211,7 @@ function read(): Promise<void> {
       // `=== true`: the queue is OPT-IN, so a server with no such field is a
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
-      setRecapTitles(p.task_recap?.enabled === true);
+      if (recapPublishedAt === recapStamp) setRecapTitles(p.chat_recap?.enabled !== false);
       if (turnClickPublishedAt === turnClickStamp) setTurnClickOpen(p.turn_click_open?.enabled === true);
       if (breakoutPublishedAt === breakoutStamp) setBreakout(p.breakout?.enabled === true);
       // A server that predates the field keeps "auto", the server's default.
@@ -268,14 +270,11 @@ export function rereadFlags(): Promise<void> {
  *  keeping the answer it read at load. */
 export const QUEUE_FLAG_BROADCAST_KEY = "fused-render:project-queue";
 
-/** The same announcement for the recap titles switch. */
-export const RECAP_FLAG_BROADCAST_KEY = "fused-render:task-recap-titles";
+/** The same announcement for the chat recap switch. */
+export const RECAP_FLAG_BROADCAST_KEY = "fused-render:chat-recap";
 
 /** The same announcement for the Breakout switch. */
 export const BREAKOUT_FLAG_BROADCAST_KEY = "fused-render:breakout";
-
-/** The same announcement for the click-opens-reply switch. */
-export const TURN_CLICK_BROADCAST_KEY = "fused-render:turn-click-open";
 
 /** Hand over a known-fresh Breakout answer (a PUT's prefs payload). */
 export function publishBreakoutEnabled(next: boolean) {
@@ -288,6 +287,9 @@ export function publishBreakoutEnabled(next: boolean) {
   }
 }
 
+/** The same announcement for the click-opens-reply switch. */
+export const TURN_CLICK_BROADCAST_KEY = "fused-render:turn-click-open";
+
 /** Hand over a known-fresh click-opens-reply answer (a PUT's prefs payload). */
 export function publishTurnClickOpensReplyEnabled(next: boolean) {
   turnClickPublishedAt += 1;
@@ -299,8 +301,9 @@ export function publishTurnClickOpensReplyEnabled(next: boolean) {
   }
 }
 
-/** Hand over a known-fresh recap-titles answer (a PUT's prefs payload). */
-export function publishTaskRecapTitlesEnabled(next: boolean) {
+/** Hand over a known-fresh chat-recap answer (a PUT's prefs payload). */
+export function publishChatRecapEnabled(next: boolean) {
+  recapPublishedAt += 1;
   setRecapTitles(next);
   try {
     localStorage.setItem(RECAP_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
@@ -330,24 +333,28 @@ export function applyQueueFlagBroadcast(key: string | null, newValue: string | n
   }
 }
 
+/** One Breakout `storage` event, as the listener below sees it. Breakout is
+ *  opt-in, so only an explicit `on: true` turns it on. Exported for tests. */
+export function applyBreakoutFlagBroadcast(key: string | null, newValue: string | null): void {
+  if (key !== BREAKOUT_FLAG_BROADCAST_KEY || !newValue) return;
+  try {
+    setBreakout((JSON.parse(newValue) as { on?: unknown }).on === true);
+  } catch {
+    // Malformed: the next focus re-reads.
+  }
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (ev) => applyQueueFlagBroadcast(ev.key, ev.newValue));
   window.addEventListener("storage", (ev) => {
     if (ev.key !== RECAP_FLAG_BROADCAST_KEY || !ev.newValue) return;
     try {
-      setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
+      setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on !== false);
     } catch {
       // Malformed: the next focus re-reads.
     }
   });
-  window.addEventListener("storage", (ev) => {
-    if (ev.key !== BREAKOUT_FLAG_BROADCAST_KEY || !ev.newValue) return;
-    try {
-      setBreakout((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
-    } catch {
-      // Malformed: the next focus re-reads.
-    }
-  });
+  window.addEventListener("storage", (ev) => applyBreakoutFlagBroadcast(ev.key, ev.newValue));
   window.addEventListener("storage", (ev) => {
     if (ev.key !== TURN_CLICK_BROADCAST_KEY || !ev.newValue) return;
     try {
@@ -384,9 +391,9 @@ export function useProjectQueueEnabled(): boolean {
   return current;
 }
 
-/** Subscribe to the recap titles switch (see `recapTitles`). Triggers the one
+/** Subscribe to the chat recap switch (see `recapTitles`). Triggers the one
  *  prefs read, like `useProjectQueueEnabled`. */
-export function useTaskRecapTitlesEnabled(): boolean {
+export function useChatRecapEnabled(): boolean {
   const [current, setCurrent] = useState<boolean>(() => recapTitles);
   useEffect(() => {
     recapListeners.add(setCurrent);
@@ -400,7 +407,7 @@ export function useTaskRecapTitlesEnabled(): boolean {
 }
 
 /** Subscribe to the click-opens-reply switch (see `turnClickOpen`). Triggers
- *  the one prefs read, like `useTaskRecapTitlesEnabled`. */
+ *  the one prefs read, like `useChatRecapEnabled`. */
 export function useTurnClickOpensReplyEnabled(): boolean {
   const [current, setCurrent] = useState<boolean>(() => turnClickOpen);
   useEffect(() => {
@@ -415,7 +422,7 @@ export function useTurnClickOpensReplyEnabled(): boolean {
 }
 
 /** Subscribe to the Breakout switch (see `breakout`). Triggers the one prefs
- *  read, like `useTaskRecapTitlesEnabled`. */
+ *  read, like `useChatRecapEnabled`. */
 export function useBreakoutEnabled(): boolean {
   const [current, setCurrent] = useState<boolean>(() => breakout);
   useEffect(() => {
@@ -448,7 +455,7 @@ export function resetFlagsForTests() {
   generation += 1;
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
-  setRecapTitles(false);
+  setRecapTitles(true);
   setTurnClickOpen(false);
   setBreakout(false);
   setDefaultPermission("auto");

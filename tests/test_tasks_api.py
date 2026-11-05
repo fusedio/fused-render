@@ -5323,14 +5323,14 @@ def test_title_mode_summary_when_summary_titles_on(client, projects_dir, tmp_pat
     assert row["title"]
 
 
-# ------------------------------------- task recap titles (task_recap_titles_enabled)
+# ------------------------------------- the haiku title queue (lanes, feed, worker)
 
 
 @pytest.fixture()
 def recap_on(monkeypatch):
-    """The flag on, and no worker thread: these tests read the queue, and a
-    real worker would run haiku."""
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: True)
+    """Summary titles ON and no worker thread: these tests read the queue, and
+    a real worker would run haiku."""
+    monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
     monkeypatch.setattr(tasks_mod, "_recap_worker", lambda: None)
 
 
@@ -5339,8 +5339,8 @@ def _recap_jobs():
     return [job for _, _, job in sorted(lanes)]
 
 
-def test_recap_flag_off_rows_carry_nothing_new(client, projects_dir, tmp_path):
-    """FLAG OFF IS MAIN: no `recap` key on any row and nothing queued."""
+def test_rows_never_carry_a_recap_and_nothing_queues_with_titles_off(
+        client, projects_dir, tmp_path):
     _write_transcript(projects_dir, "sess-a", str(tmp_path), [
         _user("fix the login bug", T9), _assistant("Fixed it.", T10)])
     row = _tasks(client)[0]
@@ -5350,65 +5350,6 @@ def test_recap_flag_off_rows_carry_nothing_new(client, projects_dir, tmp_path):
     assert row["last_message"]["text"] == "fix the login bug"
     assert tasks_mod._recap_heap == [] and tasks_mod._recap_backfill == []
     assert tasks_mod._recap_seen == set()
-
-
-def test_recap_flag_on_queues_a_finished_turn_once_and_shows_the_stored_one(
-        client, projects_dir, tmp_path, recap_on):
-    records_ = [_user("fix the login bug", T9), _assistant("Fixed it.", T10)]
-    _write_transcript(projects_dir, "sess-a", str(tmp_path), records_)
-    row = _tasks(client)[0]
-    assert row["recap"] is None
-    job, = _recap_jobs()
-    assert (job["session_id"], job["for_uuid"], job["file"]) == (
-        "sess-a", "sess-a-0", str(tmp_path))
-    assert job["key"] == row["key"]
-
-    _tasks(client)  # a second poll of the same turn queues nothing more
-    assert len(_recap_jobs()) == 1
-
-    tasks_store.record_recap("sess-a", "sess-a-0", "Login bug fixed", now=time.time())
-    row = _tasks(client)[0]
-    assert row["recap"] == {"text": "Login bug fixed", "for_uuid": "sess-a-0"}
-    assert row["last_message"]["text"] == "fix the login bug"  # untouched
-
-    # A newer send is a new turn: the old recap stops titling the row.
-    _write_transcript(projects_dir, "sess-a", str(tmp_path),
-                      records_ + [_user("now the logout one", T11)])
-    assert _tasks(client)[0]["recap"] is None
-
-
-def test_recap_candidate_rules(tmp_path):
-    """Running turns are never queued; a stored recap for the turn is shown and
-    not re-asked; one taken before the reply landed is re-asked with
-    `stale_before`; a fresh stored failure is neither shown nor re-asked."""
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-
-    def ask(status, settings, reply="Fixed it."):
-        out = []
-        return tasks_mod._recap_candidate(task, rec, status, reply, settings, out), out
-
-    assert ask("in_progress", {}) == (None, [])
-    assert ask("needs_attention", {}) == (None, [])
-    assert ask("queued", {}, reply=tasks_mod._QUEUED_REPLY)[1] == []
-    # A finished turn with no prose reply (tools only, a limit, an API error)
-    # is asked too: the worker's tail reaches back to the newest prose.
-    assert len(ask("done", {}, reply="")[1]) == 1
-    shown, out = ask("done", {})
-    assert shown is None and out[0]["stale_before"] == 0.0
-
-    def stored(text, at, for_uuid="u1"):
-        return {"s": {"model": "haiku",
-                      "recap": {"text": text, "for_uuid": for_uuid, "at": at}}}
-
-    assert ask("done", stored("Fixed", 60.0)) == (
-        {"text": "Fixed", "for_uuid": "u1"}, [])
-    shown, out = ask("done", stored("Fixed", 40.0))
-    assert shown == {"text": "Fixed", "for_uuid": "u1"}
-    assert out[0]["stale_before"] == 50.0
-    assert ask("done", stored("", time.time())) == (None, [])  # fresh failure: held off
-    shown, out = ask("done", stored("Older turn", 60.0, for_uuid="u0"))
-    assert shown is None and len(out) == 1
 
 
 def test_recap_feed_queues_every_eligible_turn_newest_first(recap_on):
@@ -5424,43 +5365,6 @@ def test_recap_feed_queues_every_eligible_turn_newest_first(recap_on):
     assert jobs[0]["reply_at"] == 24.0  # newest reply first
     tasks_mod._recap_feed(wants)  # already queued
     assert len(_recap_jobs()) == 25
-
-
-def test_recap_candidate_asks_blocked_and_archived_turns(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-    for status in ("done", "blocked", "archived"):
-        out = []
-        tasks_mod._recap_candidate(task, rec, status, "Fixed it.", {}, out)
-        assert len(out) == 1, status
-
-
-def test_recap_run_asks_recap_then_wakes_the_page(monkeypatch, recap_on):
-    asked, woke = [], []
-    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
-    monkeypatch.setattr(sessions_mod, "_recap",
-                        lambda agent, f, sid, uuid, stale_before=0.0, transcript="", ended=False:
-                        asked.append((f, sid, uuid, stale_before, transcript, ended)) or "R")
-    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: woke.append(keys))
-    tasks_mod._recap_run({"key": "k", "file": "/f", "session_id": "s",
-                          "for_uuid": "u", "reply_at": 5.0, "stale_before": 5.0,
-                          "transcript": "/t.jsonl"})
-    assert asked == [("/f", "s", "u", 5.0, "/t.jsonl", True)]
-    assert woke == [{"k", "s"}]
-
-
-def test_recap_candidate_asks_interrupted_and_gone_folder_turns(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-    out = []
-    tasks_mod._recap_candidate(task, rec, "done", tasks_mod._INTERRUPTED_REPLY, {}, out)
-    assert len(out) == 1
-    # A folder the disk has lost: the transcript path rides on the job instead.
-    gone = {"key": "k", "session_id": "s", "project": str(tmp_path / "gone"),
-            "path": "/t/s.jsonl"}
-    out = []
-    tasks_mod._recap_candidate(gone, rec, "done", "Fixed it.", {}, out)
-    assert out[0]["transcript"] == "/t/s.jsonl"
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
@@ -5491,76 +5395,6 @@ def test_recap_seen_is_capped(recap_on):
     tasks_mod._recap_feed([{"key": "k", "file": "/f", "session_id": "new", "for_uuid": "u",
                             "reply_at": 1.0, "stale_before": 0.0}])
     assert len(tasks_mod._recap_seen) == 1
-
-
-def test_recap_candidate_retries_a_stored_failure_after_the_cooldown(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-
-    def ask(at):
-        out = []
-        settings = {"s": {"recap": {"text": "", "for_uuid": "u1", "at": at}}}
-        tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", settings, out)
-        return out
-
-    assert ask(time.time() - 10) == []
-    old = ask(time.time() - tasks_mod._RECAP_RETRY_S - 5)
-    assert len(old) == 1 and old[0]["stale_before"] > 50.0
-
-
-def test_recap_run_unmarks_a_failed_job_only(monkeypatch, recap_on):
-    job = {"key": "k", "file": "/f", "session_id": "s", "for_uuid": "u",
-           "reply_at": 5.0, "stale_before": 0.0}
-    seen = ("s", "u", 5.0)
-    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
-    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
-    for result, kept in (("", False), ("A real recap", True)):
-        tasks_mod._recap_seen.add(seen)
-        monkeypatch.setattr(sessions_mod, "_recap", lambda *a, _r=result, **k: _r)
-        tasks_mod._recap_run(job)
-        assert (seen in tasks_mod._recap_seen) is kept
-
-
-def test_recap_candidate_waits_out_the_settle_minute(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-
-    def ask(age):
-        out = []
-        rec = {"tail": [{"anchor": "u1"}], "reply_at": time.time() - age}
-        tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", {}, out)
-        return out
-
-    young = ask(59.0)  # reported with its `due`, which `_recap_feed` holds back
-    assert len(young) == 1 and young[0]["due"] > time.time()
-    old = ask(61.0)
-    assert len(old) == 1 and "due" not in old[0]
-
-
-def test_recap_candidate_without_a_reply_settles_from_the_message(tmp_path):
-    """A turn whose newest event is the reader's message (no prose answered
-    it yet) is measured from THAT: a message sent 10 s ago is still settling
-    even though the last reply is an hour old — the turn is about to start —
-    and one from 2 min ago is asked, keyed on the message time."""
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-
-    def ask(said_age, settings=None):
-        out = []
-        said_at = time.time() - said_age
-        rec = {"tail": [{"anchor": "u2", "at": said_at}],
-               "reply_at": time.time() - 3600.0}
-        shown = tasks_mod._recap_candidate(task, rec, "done", "", settings or {}, out)
-        return shown, out, said_at
-
-    _, young, _ = ask(10.0)
-    assert len(young) == 1 and young[0]["due"] > time.time()
-    _, old, said_at = ask(120.0)
-    assert len(old) == 1 and "due" not in old[0]
-    assert old[0]["reply_at"] == said_at
-    # Recapped after the message landed: settled, and shown.
-    stored = {"s": {"recap": {"text": "Asked for X, waiting",
-                              "for_uuid": "u2", "at": time.time() - 60.0}}}
-    shown, out, _ = ask(120.0, stored)
-    assert shown == {"text": "Asked for X, waiting", "for_uuid": "u2"} and out == []
 
 
 def _job(sid, reply_at):
@@ -5620,15 +5454,6 @@ def test_recap_backfill_pauses_while_a_task_is_running(lanes):
     tasks_mod._recap_feed([], machine_busy=False)
     with tasks_mod._recap_cond:
         assert tasks_mod._recap_next(t0 + 1e6)[0]["session_id"] == "a"
-
-
-def test_recap_candidate_treats_an_empty_mark_as_settled(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-    out = []
-    settings = {"s": {"recap": {"text": "", "for_uuid": "u1", "at": 100.0, "empty": True}}}
-    tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", settings, out)
-    assert out == []
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
@@ -6197,9 +6022,8 @@ def test_holds_are_not_on_the_list_payload(client, projects_dir, tmp_path):
 
 @pytest.fixture()
 def titles_on(monkeypatch):
-    """Summary flag ON, recap flag OFF, no worker thread: tests read the queue."""
+    """Summary flag ON, no worker thread: tests read the queue."""
     monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: False)
     monkeypatch.setattr(tasks_mod, "_recap_worker", lambda: None)
 
 
@@ -6226,12 +6050,13 @@ def test_title_candidate_first_title_then_waits_three_prompts(tmp_path):
     jobs = _title_job(task, _title_rec(count=1))
     assert len(jobs) == 1
     job = jobs[0]
-    assert job["want_title"] is True and job["want_recap"] is False
+    assert job["want_title"] is True and "want_recap" not in job
     assert job["current_title"] == "fix the login bug"
     assert job["first_message"] == "fix the login bug" and job["prompts"] == 1
 
     def stored(turns, text="Fixing the login bug", failed_at=0.0):
-        return {"s": {"ai_title": {"text": text, "at": 1.0, "turns": turns,
+        # `at` after the turn ended, so only the prompt count can want a refresh.
+        return {"s": {"ai_title": {"text": text, "at": time.time(), "turns": turns,
                                    "failed_at": failed_at}}}
 
     # Titled at 1 prompt: not again at 2 or 3, wanted at 4 (+3).
@@ -6259,16 +6084,8 @@ def test_title_candidate_skips_chosen_names_and_unstarted_turns(tmp_path):
 def test_title_candidate_titles_a_running_session_at_once(tmp_path):
     task = _title_task(tmp_path)
     job, = _title_job(task, _title_rec(age=1.0), status="in_progress", reply="")
-    assert job["want_title"] is True and job["want_recap"] is False
+    assert job["want_title"] is True and "want_recap" not in job
     assert "due" not in job
-
-
-def test_title_candidate_merged_into_a_recap_job_keeps_its_due(tmp_path):
-    task = _title_task(tmp_path)
-    recap = {"session_id": "s", "for_uuid": "u1", "want_recap": True,
-             "want_title": False, "due": 123.0}
-    out = _title_job(task, _title_rec(age=30.0), out=[recap])
-    assert out == [recap] and recap["want_title"] is True and recap["due"] == 123.0
 
 
 def test_title_candidate_retries_a_failure_after_the_cooldown(tmp_path):
@@ -6285,85 +6102,121 @@ def test_title_candidate_retries_a_failure_after_the_cooldown(tmp_path):
     assert _title_job(task, _title_rec(count=9), stored(10, "Old title")) == []
 
 
-def test_a_turn_wanting_both_is_one_merged_job(tmp_path):
-    task = _title_task(tmp_path)
-    rec = _title_rec()
-    out = []
-    tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", {}, out)
-    _title_job(task, rec, out=out)
-    job, = out
-    assert job["want_recap"] is True and job["want_title"] is True
-    # Recap already stored (settled) and a title wanted: a title-only job.
-    settings = {"s": {"recap": {"text": "Done", "for_uuid": "u1", "at": time.time()}}}
-    out = []
-    tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", settings, out)
-    _title_job(task, rec, settings, out=out)
-    job, = out
-    assert job["want_recap"] is False and job["want_title"] is True
-
-
 def _run_job(**over):
     job = {"key": "k", "file": "/f", "session_id": "s", "for_uuid": "u",
            "reply_at": 5.0, "stale_before": 0.0, "transcript": "/t.jsonl",
-           "want_recap": False, "want_title": True, "prompts": 4,
+           "want_title": True, "prompts": 4, "turns": 4,
            "current_title": "cur", "first_message": "first"}
     job.update(over)
     return job
 
 
-def test_recap_run_titles_with_the_recap_flag_off(monkeypatch, titles_on):
+def test_recap_run_asks_for_a_title_only_then_wakes_the_page(monkeypatch, titles_on):
     asked, woke = [], []
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
 
-    def title_and_recap(agent, f, sid, uuid, transcript="", **kw):
+    def session_title(agent, f, sid, uuid, transcript="", **kw):
         asked.append((f, sid, uuid, transcript, kw))
-        return "A fine title", ""
+        return "A fine title"
 
-    monkeypatch.setattr(sessions_mod, "_title_and_recap", title_and_recap)
+    monkeypatch.setattr(sessions_mod, "_session_title", session_title)
     monkeypatch.setattr(sessions_mod, "_recap",
                         lambda *a, **k: pytest.fail("no recap call expected"))
     monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: woke.append(keys))
-    tasks_mod._recap_run(_run_job(want_recap=True))  # a recap wanted, flag off
+    tasks_mod._recap_run(_run_job())
     (f, sid, uuid, transcript, kw), = asked
     assert (f, sid, uuid, transcript) == ("/f", "s", "u", "/t.jsonl")
-    assert kw == {"want_recap": False, "current": "cur", "first": "first",
-                  "prompts_seen": 4}
+    assert isinstance(kw.pop("started_at"), float)
+    assert kw == {"current": "cur", "first": "first", "prompts_seen": 4}
     assert woke == [{"k", "s"}]
 
 
-def test_recap_run_merged_job_asks_once_for_both(monkeypatch):
-    monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: True)
+def _store_title(monkeypatch, **fields):
+    stored = {"text": "Stored", "at": 10.0, "turns": 4, "failed_at": 0.0, **fields}
+    monkeypatch.setattr(tasks_mod.tasks_store, "settings_state", lambda: {})
+    monkeypatch.setattr(tasks_mod.tasks_store, "session_ai_title",
+                        lambda state, sid: stored)
+
+
+def test_recap_run_skips_when_the_same_title_is_already_stored(monkeypatch, titles_on):
+    """Another job already produced this exact title: no model call, no write."""
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
+    monkeypatch.setattr(sessions_mod, "_session_title",
+                        lambda *a, **k: pytest.fail("title already stored"))
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
+    _store_title(monkeypatch, at=10.0, turns=4)
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+
+
+def test_recap_run_still_asks_when_turns_or_time_differ(monkeypatch, titles_on):
     asked = []
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
-    monkeypatch.setattr(sessions_mod, "_title_and_recap",
-                        lambda *a, **k: asked.append(k["want_recap"]) or ("T title", "R recap"))
-    monkeypatch.setattr(sessions_mod, "_recap",
-                        lambda *a, **k: pytest.fail("one call only"))
+    monkeypatch.setattr(sessions_mod, "_session_title",
+                        lambda *a, **k: asked.append(1) or "T")
     monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
-    tasks_mod._recap_run(_run_job(want_recap=True))
-    assert asked == [True]
+    _store_title(monkeypatch, at=10.0, turns=1)  # a 3-prompt refresh
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+    _store_title(monkeypatch, at=1.0, turns=4)   # stored before the reply
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+    _store_title(monkeypatch, at=10.0, turns=4, failed_at=11.0)
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+    assert len(asked) == 3
 
 
-def test_recap_run_gates_each_half_per_flag(monkeypatch):
-    """Title flag off + recap flag on, a merged job: the plain recap call.
-    Both off: never asked, and un-marked so a later listing can queue it."""
-    recapped = []
+def test_title_candidate_jobs_carry_the_prompt_count_as_turns(tmp_path):
+    job, = _title_job(_title_task(tmp_path), _title_rec(count=3))
+    assert job["turns"] == 3
+
+
+def _two_time_rec(count, said_ago=300.0, reply_ago=120.0):
+    now = time.time()
+    return {"tail": [{"anchor": "u1", "at": now - said_ago}], "count": count,
+            "reply_at": now - reply_ago}
+
+
+def test_title_candidate_first_turn_settles_a_title_written_between_prompt_and_reply(tmp_path):
+    """First turn (stored turns <= 1): the first title came from the first
+    message only, so it settles once after the reply; not once it is newer."""
+    task = _title_task(tmp_path)
+    now = time.time()
+    rec = _two_time_rec(1)
+    job, = _title_job(task, rec, _settle_stored(at=now - 200.0, turns=1))
+    assert "due" not in job
+    assert _title_job(task, rec, _settle_stored(at=now - 60.0, turns=1)) == []
+
+
+def test_title_candidate_no_settle_for_a_title_written_mid_turn(tmp_path):
+    """The 3-prompt refresh ran when the 4th prompt was sent and stamped `at`
+    mid-turn: the turn already has its title, so no settle refresh follows."""
+    task = _title_task(tmp_path)
+    rec = _two_time_rec(4)
+    assert _title_job(task, rec, _settle_stored(at=time.time() - 200.0, turns=4)) == []
+
+
+def test_title_candidate_settles_a_title_that_predates_the_turn(tmp_path):
+    task = _title_task(tmp_path)
+    now = time.time()
+    rec = _two_time_rec(5)
+    stored = _settle_stored(at=now - 1000.0, turns=4)
+    job, = _title_job(task, rec, stored)
+    assert "due" not in job
+    rec = _two_time_rec(5, said_ago=100.0, reply_ago=30.0)
+    job, = _title_job(task, rec, stored)
+    assert job["due"] == rec["reply_at"] + tasks_mod._RECAP_SETTLE_S
+
+
+def test_recap_run_with_the_summary_flag_off_never_asks(monkeypatch):
+    """Flag off: never asked, and un-marked so a later listing can queue it."""
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
-    monkeypatch.setattr(sessions_mod, "_recap",
-                        lambda *a, **k: recapped.append(1) or "R recap text")
-    monkeypatch.setattr(sessions_mod, "_title_and_recap",
+    monkeypatch.setattr(sessions_mod, "_session_title",
                         lambda *a, **k: pytest.fail("title flag is off"))
-    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
+    monkeypatch.setattr(sessions_mod, "_recap",
+                        lambda *a, **k: pytest.fail("no recap call expected"))
     monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: False)
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: True)
-    tasks_mod._recap_run(_run_job(want_recap=True))
-    assert recapped == [1]
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: False)
-    job = _run_job(want_recap=True)
+    job = _run_job()
     tasks_mod._recap_seen.add(tasks_mod._job_seen(job))
     tasks_mod._recap_run(job)
-    assert recapped == [1] and tasks_mod._job_seen(job) not in tasks_mod._recap_seen
+    assert tasks_mod._job_seen(job) not in tasks_mod._recap_seen
 
 
 def test_recap_run_unmarks_a_failed_title_job(monkeypatch, titles_on):
@@ -6372,8 +6225,8 @@ def test_recap_run_unmarks_a_failed_title_job(monkeypatch, titles_on):
     monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
     for title, kept in (("", False), ("Real title", True)):
         tasks_mod._recap_seen.add(tasks_mod._job_seen(job))
-        monkeypatch.setattr(sessions_mod, "_title_and_recap",
-                            lambda *a, _t=title, **k: (_t, ""))
+        monkeypatch.setattr(sessions_mod, "_session_title",
+                            lambda *a, _t=title, **k: _t)
         tasks_mod._recap_run(job)
         assert (tasks_mod._job_seen(job) in tasks_mod._recap_seen) is kept
 
@@ -6394,7 +6247,7 @@ def test_listing_titles_rows_by_the_stored_ai_title_only_with_the_flag(
     row = _tasks(client)[0]
     assert (row["title"], row["title_source"]) == ("Login redirect bug fix", "ai")
     assert row["title_mode"] == "summary"
-    assert "recap" not in row  # the recap flag is still off
+    assert "recap" not in row
 
     _rename(client, "sess-a", "My own name")
     row = _tasks(client)[0]
@@ -6408,15 +6261,79 @@ def test_listing_queues_a_title_job_with_only_the_summary_flag(
     row = _tasks(client)[0]
     assert "recap" not in row
     job, = _recap_jobs()
-    assert job["want_title"] is True and job["want_recap"] is False
+    assert job["want_title"] is True and "want_recap" not in job
     assert job["session_id"] == "sess-a" and job["prompts"] == 1
     _tasks(client)  # polled again: still one job
     assert len(_recap_jobs()) == 1
 
 
+def _settle_stored(at, text="Fixing the login bug", turns=1, failed_at=0.0):
+    return {"s": {"ai_title": {"text": text, "at": at, "turns": turns,
+                               "failed_at": failed_at}}}
+
+
+def test_title_candidate_refreshes_a_title_written_before_the_turn_ended(tmp_path):
+    """Settle trigger: an ENDED turn whose stored AI title predates its end is
+    re-titled once the settle minute has passed, without waiting three prompts."""
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    stored = _settle_stored(at=rec["reply_at"] - 500.0)
+    job, = _title_job(task, rec, stored)
+    assert job["want_title"] is True and "due" not in job
+    assert job["current_title"] == "Fixing the login bug"
+    # Every ended status counts; a running one does not.
+    for status in ("blocked", "archived"):
+        assert len(_title_job(task, rec, stored, status=status)) == 1
+    for status in ("in_progress", "needs_attention"):
+        assert _title_job(task, rec, stored, status=status) == []
+
+
+def test_title_candidate_settle_refresh_inside_the_minute_is_held_with_a_due(tmp_path):
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=30.0)
+    job, = _title_job(task, rec, _settle_stored(at=rec["reply_at"] - 500.0))
+    assert job["due"] == rec["reply_at"] + tasks_mod._RECAP_SETTLE_S
+    assert job["due"] > time.time()
+
+
+def test_title_candidate_settle_refresh_once_per_turn(tmp_path):
+    """A title stamped at or after the turn's end is current: not re-asked."""
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    assert _title_job(task, rec, _settle_stored(at=rec["reply_at"])) == []
+    assert _title_job(task, rec, _settle_stored(at=time.time())) == []
+
+
+def test_title_candidate_settle_refresh_respects_the_failure_cooldown(tmp_path):
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    stored = _settle_stored(at=rec["reply_at"] - 500.0, failed_at=time.time() - 10)
+    assert _title_job(task, rec, stored) == []
+
+
+def test_title_candidate_settle_refresh_never_for_chosen_names(tmp_path):
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    stored = _settle_stored(at=rec["reply_at"] - 500.0)
+    for source in ("renamed", "user"):
+        assert _title_job(task, rec, stored, source=source) == []
+
+
+def test_title_candidate_existing_triggers_skip_the_settle_wait(tmp_path):
+    """No stored title, or three more prompts: asked at once, even on a turn
+    that ended seconds ago."""
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=5.0)
+    job, = _title_job(task, rec)
+    assert "due" not in job
+    rec = _title_rec(count=4, age=5.0)
+    job, = _title_job(task, rec, _settle_stored(at=rec["reply_at"] - 500.0, turns=1))
+    assert "due" not in job
+
+
 def test_title_candidate_wants_a_title_after_the_scan_count_resets(tmp_path):
     task = _title_task(tmp_path)
-    stored = {"s": {"ai_title": {"text": "Fixing the login bug", "at": 1.0,
+    stored = {"s": {"ai_title": {"text": "Fixing the login bug", "at": time.time(),
                                  "turns": 12, "failed_at": 0.0}}}
     # The scan record restarted (count 1 < stored turns 12): a reset, so wanted.
     jobs = _title_job(task, _title_rec(count=1), stored)

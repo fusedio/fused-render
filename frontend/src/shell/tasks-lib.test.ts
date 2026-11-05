@@ -183,8 +183,6 @@ import {
   emptyPaneFailed,
   emptyPaneText,
   cardTitleLine,
-  INTERRUPTED_REPLY,
-  recapTitlesOn,
   BACKGROUND_LABEL,
   inFlight,
   taskMatches,
@@ -11444,138 +11442,35 @@ describe("the optimistic queue claim", () => {
   });
 });
 
-describe("cardTitleLine — stable AI titles (title_mode: summary)", () => {
+describe("cardTitleLine — the base title leads (title-first rule)", () => {
   const base = {
     title: "Fix login\nsecond line",
     last_message: { text: "newest message" },
-    last_reply: "Fixed it.",
-    status: "done",
-    recap: { text: "haiku recap", for_uuid: "u1" },
   };
 
-  it("titles by `title` even with a message, a reply and a recap present", () => {
-    expect(cardTitleLine({ ...base, title_mode: "summary" })).toEqual({
+  it("titles by the first line of `title`, whatever the newest message says", () => {
+    expect(cardTitleLine(base)).toEqual({
       text: "Fix login", said: false, kind: "title", hint: "Fix login\nsecond line",
     });
   });
 
-  it("an empty title falls through to the old rules", () => {
-    expect(cardTitleLine({ ...base, title: "", title_mode: "summary" }).kind).toBe("recap");
-    expect(
-      cardTitleLine({ title: "", last_message: { text: "hi" }, title_mode: "summary" }).kind,
-    ).toBe("said");
+  it("is the same with or without any mode, source or status on the row", () => {
+    const want = cardTitleLine(base);
+    expect(cardTitleLine({ ...base, title_mode: "summary", title_source: "renamed", status: "done" } as never)).toEqual(want);
+    expect(cardTitleLine({ ...base, status: "in_progress" } as never)).toEqual(want);
   });
 
-  it("without title_mode the old behaviour is unchanged", () => {
-    expect(cardTitleLine(base).kind).toBe("recap");
-    expect(cardTitleLine({ ...base, recap: undefined }).kind).toBe("said");
-  });
-});
-
-describe("cardTitleLine — a renamed title (title_source: renamed)", () => {
-  const base = {
-    title: "My name\nsecond line",
-    title_source: "renamed",
-    last_message: { text: "newest message" },
-    last_reply: "Fixed it.",
-    status: "done",
-    recap: { text: "haiku recap", for_uuid: "u1" },
-  };
-
-  it("beats summary mode, the recap, the reply and the last message", () => {
-    const want = { text: "My name", said: false, kind: "title" as const, hint: "My name\nsecond line" };
-    expect(cardTitleLine({ ...base, title_mode: "summary" })).toEqual(want);
-    expect(cardTitleLine(base)).toEqual(want);
-    expect(cardTitleLine({ ...base, recap: undefined })).toEqual(want);
-    expect(cardTitleLine({ ...base, recap: undefined, status: "running" })).toEqual(want);
-  });
-
-  it("an empty renamed title falls through to the old rules", () => {
-    expect(cardTitleLine({ ...base, title: "  " }).kind).toBe("recap");
-    expect(cardTitleLine({ ...base, title: "", recap: undefined }).kind).toBe("said");
-  });
-
-  it("another title_source changes nothing", () => {
-    expect(cardTitleLine({ ...base, title_source: "ai" }).kind).toBe("recap");
-  });
-});
-
-describe("cardTitleLine — task recaps (prefs task_recap.enabled)", () => {
-  const base = {
-    title: "ai title",
-    last_message: { text: "fix the login bug\nwith detail" },
-    last_reply: "Fixed it: the token was stale.",
-  };
-
-  it("flag off (no recap key): the reader's newest message, exactly as before", () => {
-    expect(cardTitleLine({ ...base, status: "done" })).toEqual({
-      text: "fix the login bug", said: true, kind: "said", hint: "fix the login bug\nwith detail",
+  it("falls back to the newest message only when the title is empty", () => {
+    expect(cardTitleLine({ ...base, title: "" })).toEqual({
+      text: "newest message", said: true, kind: "said", hint: "newest message",
     });
-    expect(cardTitleLine({ title: "ai title", status: "done", last_reply: "x" })).toEqual({
-      text: "ai title", said: false, kind: "title", hint: "ai title",
-    });
+    expect(cardTitleLine({ ...base, title: "  " }).kind).toBe("said");
+    expect(cardTitleLine({ ...base, title: null }).kind).toBe("said");
   });
 
-  it("a finished turn: the recap once it lands, else the reply's first line", () => {
-    const recap = { text: "Login bug fixed, token refreshed", for_uuid: "u1" };
-    expect(cardTitleLine({ ...base, status: "done", recap })).toMatchObject({
-      text: "Login bug fixed, token refreshed", kind: "recap", hint: recap.text, said: false,
-    });
-    expect(cardTitleLine({ ...base, status: "done", recap: null })).toMatchObject({
-      text: "Fixed it: the token was stale.", kind: "reply", hint: base.last_reply,
-    });
-    expect(cardTitleLine({ ...base, status: "archived", recap: null }).kind).toBe("reply");
-  });
-
-  it("a running or waiting turn keeps the reader's message, recap or not", () => {
-    const recap = { text: "old turn recap", for_uuid: "u0" };
-    for (const status of ["in_progress", "needs_attention", "queued", "upcoming"]) {
-      expect(cardTitleLine({ ...base, status, recap }).kind).toBe("said");
-    }
-  });
-
-  it("no reply (or only the stop marker) falls back to the message", () => {
-    expect(cardTitleLine({ ...base, status: "done", recap: null, last_reply: "" }).kind).toBe("said");
-    expect(
-      cardTitleLine({ ...base, status: "done", recap: null, last_reply: INTERRUPTED_REPLY }).kind,
-    ).toBe("said");
-    expect(cardTitleLine({ ...base, status: "done", recap: { text: "  ", for_uuid: "u" } }).kind)
-      .toBe("reply");
-  });
-});
-
-describe("cardTitleLine — interrupted turn", () => {
-  it("a recap still titles it; the stop marker never does", () => {
-    const row = {
-      title: "ai title",
-      last_message: { text: "fix the login bug" },
-      last_reply: INTERRUPTED_REPLY,
-      status: "done",
-      recap: { text: "Old recap text here", for_uuid: "u1" },
-    };
-    expect(cardTitleLine(row)).toMatchObject({ kind: "recap", text: "Old recap text here" });
-    expect(cardTitleLine({ ...row, recap: null })).toMatchObject({
-      kind: "said", text: "fix the login bug",
-    });
-  });
-});
-
-describe("recapTitlesOn", () => {
-  it("is the presence of the recap key, null or not", () => {
-    expect(recapTitlesOn({})).toBe(false);
-    expect(recapTitlesOn({ recap: null })).toBe(true);
-    expect(recapTitlesOn({ recap: { text: "x", for_uuid: "u" } })).toBe(true);
-  });
-});
-
-describe("cardTitleLine — reply fallback is plain words", () => {
-  it("strips list markers, bold and code from the first line; hint stays raw", () => {
-    const last_reply = "- **Servers killed:** `3131` now\nmore";
-    expect(cardTitleLine({ status: "done", recap: null, last_reply })).toMatchObject({
-      text: "Servers killed: 3131 now", kind: "reply", hint: last_reply,
-    });
-    expect(cardTitleLine({ status: "done", recap: null, last_reply: "## 1.  Done   it" }).text)
-      .toBe("1. Done it");
+  it("is an empty title line when there is neither", () => {
+    expect(cardTitleLine({ title: "", last_message: null })).toMatchObject({ text: "", kind: "title", said: false });
+    expect(cardTitleLine({})).toMatchObject({ text: "", kind: "title" });
   });
 });
 

@@ -3879,20 +3879,18 @@ def _comeback_at(entries: list[dict]) -> float:
     return best
 
 
-# ------------------------------------------------------ turn recaps as titles
+# ---------------------------------------------- stable AI titles (haiku queue)
 #
-# Behind `task_recap_titles_enabled` (default off): every finished Claude turn
-# gets the away fold's short haiku recap (claude_sessions `_recap`), chat open
-# or not, and the row carries it as `recap` for the title line to show
-# (tasks-lib `cardTitleLine`). The recap is stored on the session's record in
-# `session_settings.json`, keyed by the turn's anchor — the uuid of its newest
-# USER prompt, the same `for_uuid` the fold asks with (protocol/recap.ts
-# `recapAnchor`: assistant turns carry no uuid there), so one call serves both.
+# Behind `task_summary_titles_enabled` (default off): a session's stable AI
+# title is (re)written by haiku (claude_sessions `_session_title`) and stored
+# on the session's record in `session_settings.json` (`ai_title`). This queue
+# carries titles ONLY: the in-chat recap fold is produced on demand by the
+# chat itself (`chat_recap_enabled`), never from here, and never titles a row.
 #
-# The listing only FEEDS this: `_recap_candidate` is a dict lookup and an
-# append, the queue push is O(1), and ONE daemon thread runs haiku one turn at
+# The listing only FEEDS this: `_title_candidate` is a dict lookup and an
+# append, the queue push is O(1), and ONE daemon thread runs haiku one job at
 # a time, newest reply first. A turn is asked about once per server life
-# (`_recap_seen`), failures included. EVERY eligible turn is queued, not a
+# (`_recap_seen`), failures included. EVERY eligible session is queued, not a
 # capped few: the queue drains newest-first, so the rows at the top of the list
 # get theirs first and an old backlog trickles in behind them.
 
@@ -3909,9 +3907,8 @@ def _comeback_at(entries: list[dict]) -> float:
 #     while any task on the machine is `in_progress` — a running Claude turn
 #     means the user is working, and the old history can wait.
 
-# A turn is queued only this long after its reply. Someone who answers inside a
-# minute makes the recap stale before anyone reads it, and the row's title shows
-# the reply line meanwhile.
+# A settled-turn title refresh is queued only this long after the turn ended.
+# Someone who answers inside a minute makes it stale before anyone reads it.
 _RECAP_SETTLE_S = 60.0
 _RECAP_FRESH_WINDOW_S = 3600.0
 _RECAP_BACKFILL_DELAY_S = 120.0
@@ -3938,81 +3935,11 @@ _recap_seq = 0
 _recap_thread: threading.Thread | None = None
 
 
-def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
-                     settings: dict | None, out: list) -> dict | None:
-    """The row's `recap` field, and — through `out` — whether this turn still
-    needs one.
-
-    The stored recap is shown only for the turn it is about (`for_uuid` equal
-    to the row's anchor); a newer send makes it `None` until its own lands.
-    A turn wants a recap when it has ended (`done`, `blocked`, `archived`) and
-    the store has nothing for its anchor, or has one taken before the turn's
-    newest event landed (`at < ended_at`: a fold recap asked mid-reply).
-    A REPLY LINE IS NOT REQUIRED (2026-10-19): a turn that ended on tool calls,
-    a usage limit, an API error or a crash has no prose newer than the reader's
-    message (`_last_reply` is ""), and until then it was never asked — the one
-    class of finished turn that titled itself by the reader's own words for
-    good. `_recap_tail(ended=True)` reaches back to the newest prose for
-    exactly these, and a transcript with none anywhere is marked `empty` by
-    the worker rather than refused here. `ended_at` is the newer of the reply
-    and the reader's message, so the settle minute and the "already recapped"
-    test are measured from whatever ended the turn. Decided on the uuid and
-    the clocks, never on the scan record's identity — `_SCAN` is rebuilt from
-    disk on every boot."""
-    sid = task["session_id"]
-    tail = rec["tail"] if rec else []
-    anchor = str(tail[-1].get("anchor") or "") if tail else ""
-    if not sid or not anchor:
-        return None
-    stored = tasks_store.session_recap(settings or {}, sid)
-    same = stored is not None and stored["for_uuid"] == anchor
-    reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
-    said_at = float(tail[-1].get("at") or 0.0)
-    # The reply only counts when it answers THIS message; otherwise the
-    # message is the newest thing that happened (`_last_reply`'s own rule).
-    reply_at = reply_at if reply and reply_at >= said_at else said_at
-    # The transcript path rides on the job, so a task whose folder the disk
-    # has lost is still recapped (`_recap_generate` reads the file directly).
-    folder = task["project"]
-    path = task.get("path") or ""
-    # A real failure (CLI error, timeout) is retried after a cooldown; an
-    # `empty` mark (Claude never said anything in prose) is not a failure and
-    # is final for this turn until a newer reply lands.
-    failed = same and not stored["text"] and not stored["empty"]
-    # Done for this turn: recapped after its reply landed, or failed recently.
-    settled = same and stored["at"] >= reply_at and (
-        not failed or time.time() - stored["at"] < _RECAP_RETRY_S)
-    now = time.time()
-    if (status in ("done", "blocked", "archived") and reply != _QUEUED_REPLY
-            and (folder or path) and not settled):
-        # `stale_before` makes `_recap` skip its in-memory cache entry for the
-        # key, which is where a failed ask's `""` is remembered.
-        job = {"key": task["key"], "file": folder or os.path.dirname(path),
-               "transcript": path, "session_id": sid,
-               "for_uuid": anchor, "reply_at": reply_at,
-               "stale_before": max(reply_at, stored["at"]) if failed
-               else reply_at if same else 0.0,
-               "want_recap": True, "want_title": False}
-        if now - reply_at < _RECAP_SETTLE_S:
-            # Too fresh to ask (`_RECAP_SETTLE_S`): reported with its `due`
-            # time, neither queued nor marked seen. `_recap_feed` keeps the
-            # earliest due time so the worker can wake the page when it passes
-            # — an idle page has no listing rebuild to find it otherwise.
-            job["due"] = reply_at + _RECAP_SETTLE_S
-        out.append(job)
-    if same and stored["text"]:
-        return {"text": stored["text"], "for_uuid": anchor}
-    return None
-
-
 def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
                      settings: dict | None, title: str, source: str,
                      out: list) -> None:
     """Whether this session wants a (re)titled stable AI title, and if so the
-    job goes into `out` — MERGED into the recap job for the same turn when
-    `_recap_candidate` already queued one (matched on session and anchor), so
-    a turn wanting both costs ONE haiku call (`want_recap` / `want_title` say
-    what the call is for).
+    job goes into `out`.
 
     Wanted when: there is a session and an anchor; the name is not one the
     person chose (`renamed` / `user` — never spend a call on it); the turn has
@@ -4021,11 +3948,16 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
     reader's first message, instead of waiting out its first turn) and is not a
     queued reply; and EITHER nothing is stored, or the
     reader has sent `TITLE_REFRESH_PROMPTS` more prompts since the stored one
-    (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed. A
-    failure inside that cooldown holds every trigger off, so a broken CLI is
-    not asked on each listing. A title-only job has no settle minute (that is
-    the recap's, for a reply still being written); merged into a recap job it
-    keeps that job's `due`. The current title handed to the model is the
+    (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed, or
+    the SETTLE trigger: the turn has ended (`done`, `blocked`, `archived`) and
+    the stored title predates the turn's prompt, so the reader need not wait
+    three prompts for a title that follows the finished work. It runs once per
+    turn: a title written mid-turn (the 3-prompt refresh) already covers it,
+    except on the first turn, which settles once after its reply. A failure inside
+    the cooldown holds every trigger off, so a broken CLI is not asked on each
+    listing. Only the settle trigger waits `_RECAP_SETTLE_S` after the turn
+    ended (the job carries a `due` until then; someone who answers inside a
+    minute makes the refresh stale); the others ask at once. The current title handed to the model is the
     stored AI title, else the row's own (`title`: the first message line, a
     slash command, or Claude Code's `ai-title`)."""
     sid = task["session_id"]
@@ -4042,27 +3974,42 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
     stored = tasks_store.session_ai_title(settings or {}, sid)
     prompts = int(rec.get("count") or 0) if rec else 0
     now = time.time()
-    if stored is not None:
-        if stored["failed_at"] and now - stored["failed_at"] < _RECAP_RETRY_S:
-            return
-        if not (not stored["text"] or stored["failed_at"]
-                or prompts < stored["turns"]  # scan record reset
-                or prompts - stored["turns"] >= TITLE_REFRESH_PROMPTS):
-            return
     reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
     said_at = float(tail[-1].get("at") or 0.0)
     reply_at = reply_at if reply and reply_at >= said_at else said_at
-    fields = {"want_title": True, "prompts": prompts,
+    # Settle: once per turn, and only when the stored title predates the turn's
+    # prompt. A title written mid-turn (the 3-prompt refresh runs at once) has
+    # already titled this turn. The FIRST turn is the exception: its title came
+    # from the first message alone, so it settles once after the reply.
+    first_title = stored is not None and stored["turns"] <= 1
+    settle_due = (status in ("done", "blocked", "archived")
+                  and stored is not None and bool(stored["text"])
+                  and (stored["at"] < said_at
+                       or (first_title and stored["at"] < reply_at)))
+    due = 0.0
+    if stored is not None:
+        if stored["failed_at"] and now - stored["failed_at"] < _RECAP_RETRY_S:
+            return
+        existing = (not stored["text"] or stored["failed_at"]
+                    or prompts < stored["turns"]  # scan record reset
+                    or prompts - stored["turns"] >= TITLE_REFRESH_PROMPTS)
+        if not (existing or settle_due):
+            return
+        if not existing and now - reply_at < _RECAP_SETTLE_S:
+            # Wanted only because the turn ended: too fresh to ask. Reported
+            # with its `due` time, neither queued nor marked seen;
+            # `_recap_feed` keeps the earliest so the worker wakes the page
+            # when it passes (an idle page has no listing to find it).
+            due = reply_at + _RECAP_SETTLE_S
+    fields = {"prompts": prompts,
               "current_title": (stored or {}).get("text") or title,
               "first_message": str(task.get("first_prompt") or "")}
-    for job in out:
-        if job["session_id"] == sid and job["for_uuid"] == anchor:
-            job.update(fields)
-            return
     job = {"key": task["key"], "file": folder or os.path.dirname(path),
            "transcript": path, "session_id": sid, "for_uuid": anchor,
-           "reply_at": reply_at, "stale_before": 0.0, "want_recap": False,
-           **fields}
+           "reply_at": reply_at, "stale_before": 0.0, "want_title": True,
+           "turns": prompts, **fields}
+    if due:
+        job["due"] = due
     out.append(job)
 
 
@@ -4070,13 +4017,8 @@ _recap_due = 0.0  # epoch: the earliest settle window still open, 0 = none
 
 
 def _job_seen(job: dict) -> tuple:
-    """The dedupe mark for a job: the turn, plus a `"title"` tag for a job that
-    is ONLY a title, so a title wanted after the same turn's recap job already
-    ran (the flag came on later) is not mistaken for it."""
-    base = (job["session_id"], job["for_uuid"], job["reply_at"])
-    if job.get("want_title") and not job.get("want_recap", True):
-        return base + ("title",)
-    return base
+    """The dedupe mark for a job: the session, its turn anchor and reply time."""
+    return (job["session_id"], job["for_uuid"], job["reply_at"])
 
 
 def _recap_feed(wants: list, machine_busy: bool | None = None,
@@ -4199,60 +4141,44 @@ def _recap_worker() -> None:
 
 
 def _recap_run(job: dict) -> None:
-    """One queued turn: ask haiku, then wake the Tasks page so the row
-    re-titles. What the call is FOR is decided per flag, now, not when the job
-    was queued: the recap half only with `task_recap_titles_enabled` (the job
-    carries `want_recap`), the title half only with
-    `task_summary_titles_enabled` (`want_title`). A job whose flags are both
-    off by now was never asked. With a title wanted the ONE call returns the
-    title and — when the recap is also wanted — the recap (`_title_and_recap`,
-    which stores both); otherwise it is the recap alone (`_recap`). Neither
-    raises."""
+    """One queued job: ask haiku for the session's stable AI title (stored by
+    `_session_title`), then wake the Tasks page so the row re-titles. Only
+    with `task_summary_titles_enabled` NOW, not when the job was queued; with
+    it off the job is never asked and is un-marked so a later listing can queue
+    it. Never raises."""
     agent = _agent_module()
-    want_recap = (bool(job.get("want_recap", True))
-                  and shell_prefs.task_recap_titles_enabled())
-    want_title = (bool(job.get("want_title", False))
-                  and shell_prefs.task_summary_titles_enabled())
-    if agent is None or not (want_recap or want_title):
+    want_title = shell_prefs.task_summary_titles_enabled()
+    if agent is None or not want_title:
         # Never asked: forget it was queued so a later listing can queue it.
         with _recap_cond:
             _recap_seen.discard(_job_seen(job))
         return
     try:
-        if want_title:
-            title, text = sessions._title_and_recap(
-                agent, job["file"], job["session_id"], job["for_uuid"],
-                job.get("transcript", ""), want_recap=want_recap,
-                current=job.get("current_title", ""),
-                first=job.get("first_message", ""),
-                prompts_seen=int(job.get("prompts") or 0))
-            failed = not title or (want_recap and not text)
-        else:
-            text = sessions._recap(agent, job["file"], job["session_id"],
-                                   job["for_uuid"], stale_before=job["stale_before"],
-                                   transcript=job.get("transcript", ""), ended=True)
-            failed = not text
+        stored = tasks_store.session_ai_title(tasks_store.settings_state(),
+                                              job["session_id"])
+        if (stored is not None and stored["text"] and not stored["failed_at"]
+                and "turns" in job and stored["turns"] == job["turns"]
+                and stored["at"] >= job["reply_at"]):
+            return  # another job already produced this exact title
+        started = time.time()
+        title = sessions._session_title(
+            agent, job["file"], job["session_id"], job["for_uuid"],
+            job.get("transcript", ""),
+            current=job.get("current_title", ""),
+            first=job.get("first_message", ""),
+            prompts_seen=int(job.get("prompts") or 0),
+            started_at=started)
+        failed = not title
     except Exception:  # noqa: BLE001 — a title nicety, never a fault
-        logger.debug("tasks recap failed for %s", job["session_id"], exc_info=True)
+        logger.debug("tasks title failed for %s", job["session_id"], exc_info=True)
         return
     if failed:
         # Failed: forget it was asked, so a listing after `_RECAP_RETRY_S` can
-        # queue it again (the stored `""` holds it off until then).
+        # queue it again (the stored failure holds it off until then).
         with _recap_cond:
             _recap_seen.discard(_job_seen(job))
-        # Said out loud: a failure here is otherwise invisible — the row just
-        # keeps its reply line — and "some chats never get a recap" was the
-        # report that had no log to read (2026-10-19). An `empty` mark (no
-        # prose anywhere) is not a failure and stays quiet.
-        try:
-            stored = tasks_store.session_recap(tasks_store.settings_state(),
-                                               job["session_id"])
-        except Exception:  # noqa: BLE001
-            stored = None
-        if not (stored and stored["for_uuid"] == job["for_uuid"] and stored["empty"]):
-            logger.warning("tasks recap/title failed for session %s (turn %s); "
-                           "retry in %ds", job["session_id"], job["for_uuid"],
-                           int(_RECAP_RETRY_S))
+        logger.warning("tasks title failed for session %s (turn %s); retry in %ds",
+                       job["session_id"], job["for_uuid"], int(_RECAP_RETRY_S))
     tasks_watch.notify({job["key"], job["session_id"]})
 
 
@@ -4278,8 +4204,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          last_message: bool = False,
          recaps: list | None = None,
          pending: dict | None = None,
-         summary_titles: bool = False,
-         recap_titles: bool = True) -> dict:
+         summary_titles: bool = False) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
@@ -4812,11 +4737,6 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The peek header's hint and every view's title line read it — see
         # `said` above for where it is decided.
         row["last_message"] = said
-    if recaps is not None and recap_titles:
-        # `task_recap_titles_enabled` only: the key is ABSENT with the flag
-        # off, and the client reads its presence as "the flag is on".
-        row["recap"] = _recap_candidate(task, rec, status, row["last_reply"],
-                                        settings, recaps)
     if summary_titles:
         # `task_summary_titles_enabled` only: the key is ABSENT with the flag
         # off. The client then titles the row by `title` alone.
@@ -6331,14 +6251,10 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # Collected across the loop and written once, after it, so the listing is
     # not doing IO in the middle of building rows.
     revived: list[str] = []
-    # Turns wanting a haiku recap (`_recap_candidate`), or None with
-    # `task_recap_titles_enabled` off — and then no row carries `recap`.
-    # Read once per listing, not per row.
-    recap_titles = shell_prefs.task_recap_titles_enabled()
+    # Sessions wanting a stable AI title (`_title_candidate`), or None with
+    # `task_summary_titles_enabled` off. Read once per listing, not per row.
     summary_titles = shell_prefs.task_summary_titles_enabled()
-    # The same queue also carries the stable AI titles, so it is fed with
-    # EITHER flag on; only the recap flag puts `recap` on the rows.
-    recap_wants = [] if (recap_titles or summary_titles) else None
+    recap_wants = [] if summary_titles else None
     if recap_wants is None:
         _recap_drop_queue()
     t2 = time.monotonic()
@@ -6347,7 +6263,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
                        busy, revived, parked, queue, queue_on,
                        chat_drafts, bound_chips, settings, last_message,
-                       recap_wants, pending, summary_titles, recap_titles)
+                       recap_wants, pending, summary_titles)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)

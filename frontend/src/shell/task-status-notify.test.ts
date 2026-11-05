@@ -21,34 +21,33 @@ function task(over: Partial<TaskPulseTask> = {}): TaskPulseTask {
 }
 
 describe("notice title", () => {
-  test("names the task by the reader's newest message, not the recap", () => {
+  test("names the task by its base title, not the newest message", () => {
     const t = task({
       status: "done",
       title: "hi",
       last_message: { role: "user", text: "fix the login redirect\nthanks", at: 1 },
     });
-    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("fix the login redirect");
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("hi");
   });
-  test("an assistant message never titles the notice", () => {
+  test("an assistant message never titles the notice over a title", () => {
     const t = task({ status: "done", title: "hi", last_message: { role: "assistant", text: "Done!", at: 1 } });
     expect(notificationForTransition("in_progress", t, 0)?.title).toBe("hi");
   });
-  test("needs-input uses the newest user message", () => {
+  test("needs-input uses the base title", () => {
     const t = task({
       status: "needs_attention",
       title: "hi",
       last_message: { role: "user", text: "ship the export\nplease", at: 1 },
     });
-    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("ship the export needs your input");
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("hi needs your input");
   });
 });
 
 describe("notice title edge cases", () => {
-  test("summary mode with an empty title falls back to the newest message", () => {
+  test("an empty title falls back to the newest message", () => {
     const t = task({
       status: "done",
       title: "",
-      title_mode: "summary",
       last_message: { role: "user", text: "fix the login redirect", at: 1 },
     });
     expect(notificationForTransition("in_progress", t, 0)?.title).toBe("fix the login redirect");
@@ -63,7 +62,7 @@ describe("notice title edge cases", () => {
     expect(notificationForTransition("in_progress", t, 0)?.title).toBe("My export");
   });
   test("a long title is cut to one short line", () => {
-    const t = task({ status: "blocked", last_message: { role: "user", text: "x".repeat(300), at: 1 } });
+    const t = task({ status: "blocked", title: "x".repeat(300) });
     const title = notificationForTransition("in_progress", t, 0)?.title ?? "";
     expect(title.length).toBeLessThan(140);
   });
@@ -82,12 +81,12 @@ describe("notice title edge cases", () => {
     expect(notificationForTransition("in_progress", t, 0)?.title).toBe("fix the login redirect");
   });
   test("a whitespace title never reaches the notice", () => {
-    const t = task({ status: "needs_attention", title: "  \n ", title_mode: "summary" });
+    const t = task({ status: "needs_attention", title: "  \n " });
     expect(notificationForTransition("in_progress", t, 0)?.title).toBe("A task needs your input");
   });
   test("the cap is 120 characters, ends in an ellipsis and never splits an emoji", () => {
     const text = "x".repeat(118) + "\u{1F600}" + "tail";
-    const t = task({ status: "blocked", last_message: { role: "user", text, at: 1 } });
+    const t = task({ status: "blocked", title: text });
     const title = (notificationForTransition("in_progress", t, 0)?.title ?? "").replace(" failed", "");
     expect(Array.from(title).length).toBe(120);
     expect(title.endsWith("\u2026")).toBe(true);

@@ -1565,10 +1565,9 @@ export interface Prefs {
   // both the pref's own default and what every server did before this existed,
   // so "not sent" and "off" are honestly the same answer here.
   queue?: { enabled: boolean };
-  // Haiku recaps of every finished turn, titling the Tasks rows
-  // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
-  // Optional like `queue`: absent reads as off.
-  task_recap?: { enabled: boolean };
+  // The in-chat recap fold (`chat_recap_enabled`, shell/prefs.py; DEFAULT ON).
+  // Optional: absent (an older server) reads as on, like the server's default.
+  chat_recap?: { enabled: boolean };
   // A click on a user message opens the reply under it
   // (`turn_click_opens_reply_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
@@ -2137,8 +2136,8 @@ export function putClaudeMaxConcurrentSessions(max: number): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { claude_max_concurrent_sessions: max });
 }
 
-export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_recap_titles_enabled: enabled });
+export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { chat_recap_enabled: enabled });
 }
 
 export function putTurnClickOpensReplyEnabled(enabled: boolean): Promise<Prefs> {
@@ -4121,17 +4120,11 @@ export interface Task {
    */
   last_message?: { role: "user" | "assistant"; text: string; at: number } | null;
   /** First line of Claude's newest reply in this conversation, "" when none.
-   *  The List row prints it after the title; with `recap` present it also
-   *  titles a finished turn until the recap lands (tasks-lib `cardTitleLine`). */
+   *  The List row prints it after the title. */
   last_reply?: string;
   /** Every GitHub PR this session touched, oldest first (the server collects
    *  them from the transcript). `prRefsOf` merges it with what the words name. */
   prs?: { repo: string; number: number; url: string }[];
-  /** The haiku recap of this row's last finished turn (`for_uuid` names the
-   *  turn), or null while it has none. ABSENT unless prefs
-   *  `task_recap.enabled` is on — the client reads the key's presence as
-   *  the flag, so flag-off rows title exactly as before. */
-  recap?: { text: string; for_uuid: string } | null;
   /** "summary" when prefs `task_summary_titles.enabled` is on: the row is
    *  titled by `title` alone. ABSENT otherwise. */
   title_mode?: "summary";
@@ -4336,11 +4329,9 @@ export type TaskPulseTask = Pick<
   | "backend"
   | "canvas"
   | "background_jobs"
-  // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the newest
-  // user message, unless renamed / stable AI titles) — optional, each absent with
-  // its flag off or on an older server. Recap titles are deliberately NOT
-  // here: the notice ignores them, the Tasks cards do not.
-  | "title_mode"
+  // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the server
+  // `title`, the newest message only when it is empty) — optional, absent on an
+  // older server.
   | "last_message"
   | "starred"
   | "starred_open"
