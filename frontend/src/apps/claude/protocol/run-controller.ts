@@ -777,10 +777,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const standing = !cur ? null : cur.via === "agent" ? (cur.prev ?? null) : cur;
     if (hint && hint.via === "exit" && hint.removed && standing && standing.path.startsWith("/") && standing.path !== hint.removed) return;
     let next = hint && hint.via !== "exit" ? hint : null;
+    // Removing the checkout an agent hint's `prev` names drops only `prev`: the
+    // isolated task is still running, so its label stays.
+    if (hint && hint.via === "exit" && hint.removed && cur && cur.via === "agent" && cur.prev && cur.prev.path === hint.removed) {
+      const { prev: _prev, ...rest } = cur;
+      next = rest;
+    }
     // An isolated Task must not make the page forget the worktree the main
     // agent stands in: carry it as `prev` (the server does the same in a window
     // that can see it).
-    if (next && next.via === "agent" && !next.prev && standing && standing.path.startsWith("/") && standing.via !== "exit") {
+    if (hint && hint.via !== "exit" && next && next.via === "agent" && !next.prev && standing && standing.path.startsWith("/") && standing.via !== "exit") {
       next = { ...next, prev: { path: standing.path, branch: standing.branch, via: standing.via } };
     }
     if (

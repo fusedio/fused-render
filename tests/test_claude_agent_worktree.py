@@ -170,10 +170,23 @@ def test_agent_hint_carries_the_standing_worktree_as_prev(agent):
     assert agent._next_worktree_hint(enter, ag)["prev"] == enter
     assert agent._next_worktree_hint({"path": "e", "branch": "", "via": "enter"}, ag) == ag
     assert agent._next_worktree_hint(None, ag) == ag
-    # exit clears; remove of prev clears; remove of another path stands
+    # exit clears; remove of another path stands (remove of prev: see below)
     assert agent._next_worktree_hint(got, dict(agent._WT_EXIT)) is None
-    assert agent._next_worktree_hint(got, {**agent._WT_EXIT, "removed": "/r/wt"}) is None
     assert agent._next_worktree_hint(got, {**agent._WT_EXIT, "removed": "/r/other"}) is got
+
+
+def test_remove_of_prev_under_an_agent_hint_keeps_the_agent_hint(agent):
+    bash = {"path": "/r/wt", "branch": "b", "via": "bash"}
+    ag = {"path": "", "branch": "", "via": "agent", "label": "x"}
+    cur = agent._next_worktree_hint(bash, ag)
+    assert cur["prev"] == bash
+    # removing prev's checkout drops only prev; the isolated task's label stays
+    assert agent._next_worktree_hint(cur, {**agent._WT_EXIT, "removed": "/r/wt"}) == ag
+    # an exit with no `removed` still clears, a remove of another path stands
+    assert agent._next_worktree_hint(cur, dict(agent._WT_EXIT)) is None
+    assert agent._next_worktree_hint(cur, {**agent._WT_EXIT, "removed": "/r/other"}) is cur
+    # a bash hint whose own path is removed still clears
+    assert agent._next_worktree_hint(bash, {**agent._WT_EXIT, "removed": "/r/wt"}) is None
 
 
 def test_poll_exposes_the_latest_worktree_hint(agent, run_dir):

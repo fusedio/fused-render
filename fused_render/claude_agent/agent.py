@@ -8505,6 +8505,11 @@ def _next_worktree_hint(cur: dict | None, hint: dict) -> dict | None:
         if standing is not None and standing["path"] != removed \
                 and (cur.get("via") == "agent" or standing is cur):
             return cur
+        # The isolated task is still running: removing the checkout its `prev`
+        # names drops only `prev`, never the agent hint's label.
+        if standing is not None and standing["path"] == removed \
+                and cur.get("via") == "agent":
+            return {k: v for k, v in cur.items() if k != "prev"}
     return None
 
 
