@@ -37,9 +37,14 @@ _cache_lock = threading.Lock()
 #: one of these, and when the default route goes through one a VPN is hiding
 #: the real network.
 _TUNNEL_PREFIXES = ("utun", "ipsec", "ppp", "tun", "tap", "wg", "gpd", "vpn", "zt", "tailscale")
+#: Virtual adapters (containers, VMs): private addresses a phone cannot
+#: dial either. macOS Internet Sharing's ``bridge100`` is NOT here — phones
+#: tethered through it reach the computer on exactly that address.
+_VIRTUAL_PREFIXES = ("docker", "vmnet", "vboxnet", "virbr", "br-", "veth", "lxc", "lxd", "podman")
 
 
 def _cached(key: str, compute):
+    """``compute()`` at most once per ``_CACHE_TTL_S`` for ``key``."""
     now = time.monotonic()
     with _cache_lock:
         hit = _cache.get(key)
@@ -52,6 +57,7 @@ def _cached(key: str, compute):
 
 
 def reset_cache() -> None:
+    """Forget every cached answer (tests, and a sharing restart)."""
     with _cache_lock:
         _cache.clear()
 
@@ -67,6 +73,7 @@ def _run(args: list[str], timeout: float = 2.0) -> str | None:
 
 
 def _is_mac() -> bool:
+    """macOS, where the tools this module shells out to are the Apple ones."""
     return sys.platform == "darwin"
 
 
@@ -85,6 +92,7 @@ def local_hostname() -> str | None:
 
 
 def _local_hostname() -> str | None:
+    """Uncached ``local_hostname``."""
     if _is_mac():
         out = _run(["scutil", "--get", "LocalHostName"])
         name = (out or "").strip()
@@ -105,6 +113,7 @@ def hostname_resolves(name: str | None) -> bool | None:
 
 
 def _hostname_resolves(name: str) -> bool | None:
+    """Uncached ``hostname_resolves``."""
     mine = set(lan_ips())
     if _is_mac():
         # `dns-sd -G v4 <name>` streams until killed: run it for two seconds
@@ -154,6 +163,7 @@ def interfaces() -> list[tuple[str, str]]:
 
 
 def _interfaces() -> list[tuple[str, str]]:
+    """Uncached ``interfaces``."""
     found: list[tuple[str, str]] = []
     if _is_mac() or sys.platform.startswith(("freebsd", "openbsd")):
         out = _run(["ifconfig", "-a"]) or ""
@@ -189,10 +199,10 @@ def lan_ips() -> list[str]:
 
 def best_ip() -> str | None:
     """The address to put in the pairing code: a private address on a real
-    interface (Wi-Fi/Ethernet), never a tunnel's — a phone cannot reach a
-    VPN address, and ``lan_ip()`` returns exactly that while a VPN owns the
-    default route."""
-    lan = [ip for n, ip in interfaces() if not _is_tunnel(n) and _is_private(ip)]
+    interface (Wi-Fi/Ethernet), never a tunnel's or a virtual adapter's — a
+    phone cannot reach a VPN or a Docker address, and ``lan_ip()`` returns
+    exactly the former while a VPN owns the default route."""
+    lan = [ip for n, ip in interfaces() if _is_lan(n) and _is_private(ip)]
     primary = lan_ip()
     if primary in lan:
         return primary
@@ -202,10 +212,22 @@ def best_ip() -> str | None:
 
 
 def _is_tunnel(name: str) -> bool:
+    """A VPN or other tunnel interface, by name."""
     return name.lower().startswith(_TUNNEL_PREFIXES)
 
 
+def _is_virtual(name: str) -> bool:
+    """A container or VM adapter, by name."""
+    return name.lower().startswith(_VIRTUAL_PREFIXES)
+
+
+def _is_lan(name: str) -> bool:
+    """An interface a phone on the Wi-Fi could reach: neither tunnel nor virtual."""
+    return not _is_tunnel(name) and not _is_virtual(name)
+
+
 def _is_private(ip: str) -> bool:
+    """RFC 1918 / ULA, i.e. a LAN address rather than a public one."""
     try:
         return ipaddress.ip_address(ip).is_private
     except ValueError:
@@ -217,6 +239,7 @@ def default_route_interface() -> str | None:
 
 
 def _default_route_interface() -> str | None:
+    """Uncached ``default_route_interface``."""
     if _is_mac():
         out = _run(["route", "-n", "get", "default"]) or ""
         m = re.search(r"interface:\s*(\S+)", out)
@@ -245,6 +268,7 @@ def firewall(port: int | None = None) -> dict | None:
 
 
 def _firewall(port: int | None) -> dict | None:
+    """Uncached ``firewall``."""
     if sys.platform.startswith("linux"):
         return _firewall_linux(port)
     if not _is_mac() or not os.path.exists(_FW):
@@ -311,6 +335,7 @@ def self_connect(ip: str | None, port: int | None, fingerprint: str | None, time
 
 
 def _self_connect(ip: str, port: int, fingerprint: str, timeout: float) -> bool:
+    """Uncached ``self_connect``."""
     import hashlib
     import ssl
 
@@ -344,7 +369,7 @@ def warnings(*, running: bool, port: int | None, ip: str | None, fingerprint: st
         ifaces = interfaces()
     except Exception:  # noqa: BLE001
         ifaces = []
-    lan_ifaces = [(n, a) for n, a in ifaces if not _is_tunnel(n) and _is_private(a)]
+    lan_ifaces = [(n, a) for n, a in ifaces if _is_lan(n) and _is_private(a)]
     if ifaces and not lan_ifaces:
         out.append({"code": "no_lan", "message":
                     "No Wi-Fi or Ethernet address found. Connect this computer to the network the phone uses."})

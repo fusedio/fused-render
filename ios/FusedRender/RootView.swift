@@ -169,16 +169,21 @@ struct ConnectedView: View {
     @StateObject private var web = WebController()
     @State private var showHomeScreenHelp = false
     @State private var showPair = false
-    /// The host the webview reaches the computer on: the name until the
-    /// probe finds the computer only on its address.
+    /// The host and port the webview reaches the computer on: the name and
+    /// the stored port until the probe finds the computer elsewhere.
     @State private var host: String
+    @State private var port: Int
     @State private var lanState: LanState?
-    @State private var diagnosing = false
     @State private var diagnoseRun = 0
+    /// A navigation died since the last diagnosis: a successful probe on
+    /// the same host then reloads the page rather than only clearing the
+    /// banner.
+    @State private var needsReload = false
 
     init(server: Server) {
         self.server = server
         _host = State(initialValue: server.host)
+        _port = State(initialValue: server.port)
     }
 
     /// Where the webview is, as far as the top bar cares.
@@ -202,7 +207,7 @@ struct ConnectedView: View {
         return .app
     }
 
-    private var baseURL: URL { server.url(host: host) }
+    private var baseURL: URL { server.url(host: host, port: port) }
     private var botsURL: URL { baseURL.appendingPathComponent("bots") }
 
     /// The page's own <title> once it lands; until then (or for a page without
@@ -227,13 +232,14 @@ struct ConnectedView: View {
     }
 
     var body: some View {
-        WebView(server: server, host: host, pairURL: $model.pendingPairURL, controller: web,
+        WebView(server: server, host: host, port: port, pairURL: $model.pendingPairURL, controller: web,
                 onGridLoaded: { landed in
                     model.confirmPairing(host: landed)
-                    model.noteReached(server, host: landed)
-                    lanState = .ok(host: landed)
+                    model.noteReached(server, host: landed, port: port)
+                    lanState = .ok(host: landed, port: port)
+                    needsReload = false
                 },
-                onNavigationFailed: { diagnoseRun += 1 })
+                onNavigationFailed: { needsReload = true; diagnoseRun += 1 })
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showHomeScreenHelp) { HomeScreenHelp() }
@@ -246,7 +252,7 @@ struct ConnectedView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     topBar
-                    if let state = lanState, state != .ok(host: host) {
+                    if let state = lanState, state != .ok(host: host, port: port) {
                         ReachabilityBanner(state: state, server: server, retry: { diagnoseRun += 1 },
                                            scan: { showPair = true })
                     }
@@ -261,30 +267,40 @@ struct ConnectedView: View {
             // A rescan of the same computer under a new name keeps this view
             // (same fingerprint): the chrome's links follow the new host.
             .onChange(of: server.host) { _, fresh in host = fresh }
+            .onChange(of: server.port) { _, fresh in port = fresh }
     }
 
     @MainActor
     private func diagnose() async {
-        guard !diagnosing else { return }
-        diagnosing = true
-        defer { diagnosing = false }
         let state = await Reachability.diagnose(server)
+        // `.task(id:)` cancelled this run for a newer one: its answer is stale.
+        guard !Task.isCancelled else { return }
         lanState = state
-        if case .ok(let reached) = state {
-            model.noteReached(server, host: reached)
-            if reached != host {
-                // Found only on the other host: move the webview there, and
-                // re-send a pairing that never got through on the name.
+        if case .ok(let reached, let reachedPort) = state {
+            // A name that works still leaves its address behind, for the day
+            // it stops resolving.
+            let resolved = Server.looksLikeIP(reached) ? nil : await Reachability.resolvedIPv4(of: reached)
+            guard !Task.isCancelled else { return }
+            model.noteReached(server, host: reached, port: reachedPort, resolvedIP: resolved)
+            if reached != host || reachedPort != port {
+                // Found only elsewhere: move the webview there, and re-send a
+                // pairing that never got through on the name.
                 host = reached
-                model.retryPairing(on: reached)
+                port = reachedPort
+                model.retryPairing(on: reached, port: reachedPort)
             } else if web.location == nil {
                 // Nothing ever landed (the first load died, typically before
                 // Local Network access was allowed). A pairing still pending
                 // goes out again as /pair — loading `/` instead would show the
                 // how-to-pair page and strand the token; with none pending the
                 // grid is the page to ask for.
-                if !model.retryPairing(on: reached) { web.load(baseURL) }
+                if !model.retryPairing(on: reached, port: reachedPort) { web.load(baseURL) }
+            } else if needsReload {
+                // The page died and the computer is back on the same host:
+                // reload it, not just the banner.
+                web.webView?.reload()
             }
+            needsReload = false
         }
     }
 

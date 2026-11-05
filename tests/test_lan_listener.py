@@ -267,3 +267,46 @@ def test_linux_firewall_warns_only_when_active_without_a_rule(monkeypatch):
     assert lan_doctor._firewall(1889) is None
     out = lan_doctor.warnings(running=True, port=1889, ip="192.168.1.20", fingerprint="ab", hostname=None)
     assert "firewall" not in [w["code"] for w in out]
+
+
+def test_status_admits_a_new_address_on_a_running_listener(home, monkeypatch):
+    """A new DHCP lease must be admitted by the Host allowlist without a
+    restart: status() refreshes the list, and _host_ok also reads live."""
+    class Alive:
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(lan._controller, "_thread", Alive())
+    monkeypatch.setattr(lan._controller, "port", 1889)
+    monkeypatch.setattr(lan_doctor, "lan_ips", lambda: ["192.168.1.99"])
+    monkeypatch.setattr(lan_doctor, "best_ip", lambda: "192.168.1.99")
+    monkeypatch.setattr(lan_doctor, "warnings", lambda **kw: [])
+    monkeypatch.setattr(lan._controller, "error", "no network address found")
+    status = lan.status()
+    assert lan._controller.ips == ["192.168.1.99"] and status["error"] is None
+    assert call(lan.LanApp(_inner), "/", host=b"192.168.1.99:1889")[0] == 403
+    # Even before a prefs read refreshes the list, the live read admits it.
+    monkeypatch.setattr(lan._controller, "ips", ["10.0.0.5"])
+    assert call(lan.LanApp(_inner), "/", host=b"192.168.1.99:1889")[0] == 403
+
+
+def test_best_ip_skips_virtual_adapters(monkeypatch):
+    monkeypatch.setattr(lan_doctor, "interfaces", lambda: [("docker0", "172.17.0.1"), ("vboxnet0", "192.168.56.1"),
+                                                           ("bridge100", "192.168.2.1"), ("en0", "192.168.1.20")])
+    monkeypatch.setattr(lan_doctor, "lan_ip", lambda: "172.17.0.1")
+    assert lan_doctor.best_ip() == "192.168.2.1"  # Internet Sharing's bridge counts; Docker's does not
+
+
+def test_a_mismatched_key_pair_is_replaced(home):
+    """A new server.pem beside an older server.key would fail every handshake."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    fp1 = lan_tls.fingerprint()
+    other = ec.generate_private_key(ec.SECP256R1())
+    with open(lan_tls.key_path(), "wb") as f:
+        f.write(other.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                    serialization.NoEncryption()))
+    lan_tls._cert_by_dir.clear()
+    assert lan_tls.fingerprint() != fp1
+    lan_tls.server_ssl_context(lan_tls.cert_path(), lan_tls.key_path())  # the new pair loads

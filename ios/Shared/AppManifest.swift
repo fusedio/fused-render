@@ -37,6 +37,10 @@ struct ManifestApp: Codable, Identifiable, Hashable {
     var recency: Double
     /// Cached preview.png in `previews/`, when the app has one.
     var previewFile: String?
+    /// The computer's certificate fingerprint (AppModel.Server.id): what
+    /// identifies the computer whatever its name or address. Absent in
+    /// manifests older builds wrote.
+    var fingerprint: String?
 
     /// A plain hex digest, not "host:port|/path": AppIntents persists a chosen
     /// entity by its id, and ids carrying "/" and ":" were not round-tripping —

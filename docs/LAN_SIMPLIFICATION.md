@@ -314,9 +314,10 @@ Two details matter:
   is the right computer, and the `.ok(host:)` result is the host the
   WKWebView then loads. The probe and the fallback logic of §3 are the same
   code.
-- A connection that fails with `EHOSTUNREACH` in under 200 ms while step 2
-  did not report the policy error is treated as `.localNetworkDenied` too.
-  Some iOS versions have returned that before the browser reports anything.
+- A connection that fails with `EHOSTUNREACH` in under half a second while
+  step 2 did not report the policy error is treated as `.localNetworkDenied`
+  too. Some iOS versions have returned that before the browser reports
+  anything; a genuinely unreachable address takes seconds to fail.
 
 ### 7.3 The warning
 

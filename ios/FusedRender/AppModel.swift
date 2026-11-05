@@ -34,14 +34,30 @@ struct Server: Identifiable, Codable, Equatable, Hashable {
 
     var baseURL: URL { url(host: host) }
 
-    /// The base URL through `host` — the name, or the fallback address.
-    func url(host: String) -> URL {
+    /// The base URL through `host` — the name, or the fallback address — on
+    /// `port`, the stored one unless the computer was found on another
+    /// (the listener falls back when 1889 is taken; PORT_CANDIDATES in lan.py).
+    func url(host: String, port: Int? = nil) -> URL {
         var c = URLComponents()
         c.scheme = "https"
         c.host = host
-        c.port = port
+        c.port = port ?? self.port
         c.path = "/"
         return c.url!
+    }
+
+    /// The ports the listener may be on: the stored one first, then the
+    /// computer's own fallbacks.
+    var candidatePorts: [Int] {
+        var ports = [port]
+        for p in [1889, 1890, 18890] where !ports.contains(p) { ports.append(p) }
+        return ports
+    }
+
+    /// Does `text` look like an IPv4 address (as opposed to a name)?
+    static func looksLikeIP(_ text: String) -> Bool {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4 && parts.allSatisfy { UInt8($0) != nil }
     }
 
     /// The hosts the computer may answer on, the name first.
@@ -51,8 +67,12 @@ struct Server: Identifiable, Codable, Equatable, Hashable {
         return hosts
     }
 
-    /// Is `host` one of the ways this computer is reached?
-    func reaches(_ host: String) -> Bool { candidateHosts.contains(host) }
+    /// Is `host` one of the ways this computer is reached? Case-insensitive:
+    /// WebKit reports hosts lowercased, and a local name may carry capitals.
+    func reaches(_ host: String) -> Bool {
+        let wanted = host.lowercased()
+        return candidateHosts.contains { $0.lowercased() == wanted }
+    }
 
     enum CodingKeys: String, CodingKey { case name, host, port, fingerprint, lastIP }
 
@@ -146,13 +166,13 @@ final class AppModel: ObservableObject {
                             fingerprint: fingerprint, lastIP: ip)
         unconfirmed = server
         pendingToken = token
-        pendingPairURL = Self.pairURL(server, host: host, token: token)
+        pendingPairURL = Self.pairURL(server, host: host, port: port, token: token)
         current = server
         return true
     }
 
-    private static func pairURL(_ server: Server, host: String, token: String) -> URL {
-        var c = URLComponents(url: server.url(host: host), resolvingAgainstBaseURL: false)!
+    private static func pairURL(_ server: Server, host: String, port: Int, token: String) -> URL {
+        var c = URLComponents(url: server.url(host: host, port: port), resolvingAgainstBaseURL: false)!
         c.path = "/pair"
         c.queryItems = [URLQueryItem(name: "t", value: token)]
         return c.url!
@@ -164,9 +184,9 @@ final class AppModel: ObservableObject {
     /// spent when the server receives it. Returns false when no pairing is
     /// pending.
     @discardableResult
-    func retryPairing(on host: String) -> Bool {
+    func retryPairing(on host: String, port: Int? = nil) -> Bool {
         guard let server = unconfirmed, let token = pendingToken, server.reaches(host) else { return false }
-        pendingPairURL = Self.pairURL(server, host: host, token: token)
+        pendingPairURL = Self.pairURL(server, host: host, port: port ?? server.port, token: token)
         return true
     }
 
@@ -180,13 +200,23 @@ final class AppModel: ObservableObject {
         remember(server)
     }
 
-    /// The computer answered on `host` (Reachability): keep an address that
-    /// worked as the fallback for next time.
-    func noteReached(_ server: Server, host: String) {
-        guard host != server.host, host != server.lastIP,
-              let i = known.firstIndex(of: server) else { return }
-        known[i].lastIP = host
-        if current == server { current = known[i] }
+    /// The computer answered on `host` and `port` (Reachability): keep an
+    /// address that worked as the fallback for next time — the host itself
+    /// when it is an address, or `resolvedIP`, what the name resolved to —
+    /// and the port the listener is actually on.
+    func noteReached(_ server: Server, host: String, port: Int? = nil, resolvedIP: String? = nil) {
+        guard let i = known.firstIndex(of: server) else { return }
+        var changed = false
+        if let port, port != known[i].port {
+            known[i].port = port
+            changed = true
+        }
+        let address = Server.looksLikeIP(host) ? host : resolvedIP
+        if let address, Server.looksLikeIP(address), address != known[i].host, address != known[i].lastIP {
+            known[i].lastIP = address
+            changed = true
+        }
+        if changed, current == server { current = known[i] }
     }
 
     /// A widget or quick action: `fusedrender://open?host&…` naming an app

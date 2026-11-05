@@ -53,9 +53,10 @@ enum ShellIdentity {
 
 struct WebView: UIViewRepresentable {
     let server: Server
-    /// The host to reach the computer on right now: its name, or the fallback
-    /// address Reachability found it on.
+    /// The host and port to reach the computer on right now: its name and
+    /// stored port, or wherever Reachability found it.
     let host: String
+    let port: Int
     @Binding var pairURL: URL?
     let controller: WebController
     /// Fired with the host when the grid finishes loading — AppModel treats it
@@ -116,7 +117,7 @@ struct WebView: UIViewRepresentable {
         // single-use, so the second hit would land on "code expired".
         context.coordinator.lastPending = pairURL
         context.coordinator.host = host
-        context.coordinator.load(pairURL ?? server.url(host: host), pairing: pairURL != nil)
+        context.coordinator.load(pairURL ?? server.url(host: host, port: port), pairing: pairURL != nil)
         return web
     }
 
@@ -124,7 +125,7 @@ struct WebView: UIViewRepresentable {
         context.coordinator.server = server
         context.coordinator.bridge.server = server
         context.coordinator.onNavigationFailed = onNavigationFailed
-        let base = server.url(host: host)
+        let base = server.url(host: host, port: port)
         if let pair = pairURL {
             // A fresh pairing request: load it once, then clear so a SwiftUI
             // re-render does not replay it. Guarded against the same URL being
@@ -141,21 +142,27 @@ struct WebView: UIViewRepresentable {
             }
             DispatchQueue.main.async { pairURL = nil }
         } else if context.coordinator.baseURL != base {
+            // The computer moved (to its address, or another port): carry
+            // the page that was asked for — a deep link's app or bot — onto
+            // the new base rather than dropping to the grid.
+            let previous = context.coordinator.baseURL
             context.coordinator.baseURL = base
             context.coordinator.host = host
-            webLog.info("load base \(base.absoluteString, privacy: .public)")
-            context.coordinator.load(base, pairing: false)
+            let target = context.coordinator.carried(onto: base, from: previous)
+            webLog.info("load on new base \(target.absoluteString, privacy: .public)")
+            context.coordinator.load(target, pairing: false)
         }
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(server: server, host: host, controller: controller, onGridLoaded: onGridLoaded,
+        Coordinator(server: server, host: host, port: port, controller: controller, onGridLoaded: onGridLoaded,
                     onNavigationFailed: onNavigationFailed)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var server: Server
         var host: String
+        var port: Int
         var baseURL: URL
         var lastPending: URL?
         var titleObservation: NSKeyValueObservation?
@@ -181,11 +188,12 @@ struct WebView: UIViewRepresentable {
         /// after a newer one must not navigate last.
         private var loadGeneration = 0
 
-        init(server: Server, host: String, controller: WebController, onGridLoaded: @escaping (String) -> Void,
+        init(server: Server, host: String, port: Int, controller: WebController, onGridLoaded: @escaping (String) -> Void,
              onNavigationFailed: @escaping () -> Void) {
             self.server = server
             self.host = host
-            self.baseURL = server.url(host: host)
+            self.port = port
+            self.baseURL = server.url(host: host, port: port)
             self.controller = controller
             self.onGridLoaded = onGridLoaded
             self.onNavigationFailed = onNavigationFailed
@@ -203,6 +211,20 @@ struct WebView: UIViewRepresentable {
         }
 
         deinit { network.cancel() }
+
+        /// The page to show on `base` after the computer moved there: the
+        /// page last asked for (or shown) when it was this computer's and
+        /// not the pairing page, re-addressed; otherwise the grid.
+        func carried(onto base: URL, from previous: URL) -> URL {
+            guard let current = requestedURL ?? webView?.url,
+                  var c = URLComponents(url: current, resolvingAgainstBaseURL: false),
+                  c.host?.lowercased() == previous.host?.lowercased(),
+                  c.path != "/pair" else { return base }
+            c.scheme = base.scheme
+            c.host = base.host
+            c.port = base.port
+            return c.url ?? base
+        }
 
         /// Load `url` with the pairing cookie installed for its host first
         /// (a no-op before the first pairing), and the device's name on the
@@ -290,6 +312,10 @@ struct WebView: UIViewRepresentable {
 
         private func failed() {
             navigationFailed = true
+            // A pending pairing re-issued on the same URL must load again:
+            // the "already loaded" record is only about not spending a token
+            // twice on a SwiftUI re-render, not about a load that died.
+            lastPending = nil
             onNavigationFailed()
         }
 
@@ -304,15 +330,19 @@ struct WebView: UIViewRepresentable {
             // grid (the how-to-pair page lives at `/` too, for an unpaired
             // phone): then keep the pairing, confirm it, and refresh what the
             // widgets and quick actions know.
-            if let u = webView.url, u.path == "/" || u.path == "/index.html", let landed = u.host {
+            // Only this computer's own hosts: a stray page at `/` elsewhere
+            // must not have its cookie taken for the pairing.
+            if let u = webView.url, u.path == "/" || u.path == "/index.html", let landed = u.host,
+               server.reaches(landed) {
                 let server = self.server
+                let landedPort = u.port ?? server.port
                 Task { @MainActor in
                     guard await PairingSecret.capture(from: webView, server: server, host: landed) else {
                         webLog.info("landed on / without a pairing cookie: not paired")
                         return
                     }
                     onGridLoaded(landed)
-                    ManifestSync.refresh(server: server, host: landed)
+                    ManifestSync.refresh(server: server, host: landed, port: landedPort)
                 }
             }
         }

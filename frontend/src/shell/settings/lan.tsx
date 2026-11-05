@@ -9,7 +9,7 @@
 // computer knows a phone is trying and failing.
 import { useEffect, useState } from "react";
 import qrcode from "qrcode-generator";
-import { getLanDevices, getLanPairToken, putLanEnabled, revokeAllLanDevices, revokeLanDevice, type LanDevice, type LanWarning } from "@platform/lib/api";
+import { getLanDevices, getLanPairToken, getPrefs, putLanEnabled, revokeAllLanDevices, revokeLanDevice, type LanDevice, type LanWarning } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
 import { RowSwitch, SettingRow, type PrefControlProps } from "./SettingRow";
@@ -53,16 +53,28 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
     }
   };
 
-  // While the QR is on screen, watch for the phone to pair: the list grows,
-  // and the spent code is replaced with a fresh one (tokens are single-use).
+  // While the QR is on screen, watch for the phone to pair: the list grows
+  // (and each row's last-seen moves), and the spent code is replaced with a
+  // fresh one (tokens are single-use). Every fourth tick re-reads prefs too,
+  // so the computer-side warnings and the name follow a firewall or network
+  // fix without reopening the panel.
   useEffect(() => {
     if (!pairable) return;
     let alive = true;
+    let ticks = 0;
     const tick = async () => {
+      ticks += 1;
       try {
+        if (ticks % 4 === 0) {
+          const next = await getPrefs();
+          if (!alive) return;
+          onChange(next);
+          setDevices(next.lan?.devices ?? []);
+          return;
+        }
         const { devices: next } = await getLanDevices();
         if (!alive) return;
-        setDevices((prev) => (prev.length === next.length && prev.every((d, i) => d.id === next[i].id) ? prev : next));
+        setDevices(next);
       } catch {
         /* the next tick retries */
       }
@@ -72,7 +84,7 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
       alive = false;
       window.clearInterval(id);
     };
-  }, [pairable]);
+  }, [pairable, onChange]);
 
   const revoke = async (id: string | null) => {
     setError(null);

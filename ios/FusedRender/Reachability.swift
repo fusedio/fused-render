@@ -25,8 +25,8 @@ import os
 private let log = Logger(subsystem: "io.fused.render", category: "reach")
 
 enum LanState: Equatable {
-    /// The computer answered on `host` with the pinned certificate.
-    case ok(host: String)
+    /// The computer answered on `host`:`port` with the pinned certificate.
+    case ok(host: String, port: Int)
     case noWifi
     case localNetworkDenied
     /// Permission and Wi-Fi are fine; nothing answered on any host.
@@ -47,21 +47,26 @@ enum Reachability {
         }
         if await localNetworkDenied(timeout: 1.5) { return .localNetworkDenied }
         var denied = false
-        for host in server.candidateHosts {
-            switch await reach(host: host, port: server.port, fingerprint: server.fingerprint, timeout: 3) {
-            case .reached:
-                return .ok(host: host)
-            case .denied:
-                denied = true
-            case .failed:
-                continue
+        // The stored port on every host first; the computer's fallback ports
+        // only after that (it moves off 1889 only when something else holds
+        // it at the time it starts).
+        for port in server.candidatePorts {
+            for host in server.candidateHosts {
+                switch await reach(host: host, port: port, fingerprint: server.fingerprint, timeout: 3) {
+                case .reached:
+                    return .ok(host: host, port: port)
+                case .denied:
+                    denied = true
+                case .failed:
+                    continue
+                }
             }
         }
         // Some iOS versions fail the connection with "no route to host" at
         // once, before the browser reports anything.
         if denied { return .localNetworkDenied }
         if let found = await scanSubnet(port: server.port, fingerprint: server.fingerprint) {
-            return .ok(host: found)
+            return .ok(host: found, port: server.port)
         }
         return .unreachable(host: server.host)
     }
@@ -133,12 +138,39 @@ enum Reachability {
             let (_, response) = try await session.data(for: req)
             return response is HTTPURLResponse ? .reached : .failed
         } catch {
+            // Half a second: a policy refusal comes back in tens of
+            // milliseconds, a genuinely unreachable address takes seconds
+            // (ARP, then the timeout), and 200 ms proved too tight on a
+            // busy radio to call the refusal every time.
             let quick = Date().timeIntervalSince(started) < 0.5
             if quick && isNoRouteToHost(error) {
                 return .denied
             }
             log.info("reach: \(host, privacy: .public):\(port) did not answer: \(String(describing: error), privacy: .public)")
             return .failed
+        }
+    }
+
+    /// What `host` resolves to right now (IPv4), through the system resolver
+    /// — mDNSResponder for a `.local` name — so a working name still leaves
+    /// an address behind for the day it stops resolving.
+    static func resolvedIPv4(of host: String) async -> String? {
+        await withCheckedContinuation { cont in
+            queue.async {
+                var hints = addrinfo()
+                hints.ai_family = AF_INET
+                hints.ai_socktype = SOCK_STREAM
+                var result: UnsafeMutablePointer<addrinfo>?
+                guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else {
+                    cont.resume(returning: nil)
+                    return
+                }
+                defer { freeaddrinfo(result) }
+                var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                let ok = getnameinfo(first.pointee.ai_addr, first.pointee.ai_addrlen, &buffer,
+                                     socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0
+                cont.resume(returning: ok ? String(cString: buffer) : nil)
+            }
         }
     }
 

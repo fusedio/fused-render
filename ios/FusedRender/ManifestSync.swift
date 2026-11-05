@@ -21,23 +21,24 @@ enum ManifestSync {
 
     /// `host` is the one the grid just loaded on (the name, or the fallback
     /// address): the refresh talks to the computer the same way.
-    static func refresh(server: Server, host: String) {
+    static func refresh(server: Server, host: String, port: Int) {
         // Throttled per computer: switching computers within the window still refreshes.
         guard server.fingerprint != lastHost || Date().timeIntervalSince(lastRefresh) > 5 else { return }
         lastRefresh = Date()
         lastHost = server.fingerprint
         generation += 1
         let gen = generation
-        Task { await run(server: server, host: host, generation: gen) }
+        Task { await run(server: server, host: host, port: port, generation: gen) }
     }
 
-    private static func run(server: Server, host: String, generation gen: Int) async {
+    private static func run(server: Server, host: String, port: Int, generation gen: Int) async {
         guard let cookieHeader = PairingSecret.cookieHeader(for: server) else {
             log.info("manifest refresh skipped (no pairing secret yet)")
             return
         }
         let pinned = PinnedSession(fingerprint: server.fingerprint)
-        var req = URLRequest(url: server.url(host: host).appendingPathComponent("api/lan/apps"))
+        let base = server.url(host: host, port: port)
+        var req = URLRequest(url: base.appendingPathComponent("api/lan/apps"))
         req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
         req.cachePolicy = .reloadIgnoringLocalCacheData
@@ -52,14 +53,21 @@ enum ManifestSync {
         for row in payload.apps {
             var app = ManifestApp(host: server.host, port: server.port, scheme: "https", name: row.name,
                                   title: row.title, path: row.path, url: row.url, tag: row.tag,
-                                  recency: row.recency, previewFile: nil)
+                                  recency: row.recency, previewFile: nil, fingerprint: server.fingerprint)
             if let preview = row.preview {
-                app.previewFile = await cachePreview(preview, for: app, cookieHeader: cookieHeader, session: pinned)
+                // From the host the grid actually loaded on (the name, or the
+                // fallback address), not the record's name.
+                app.previewFile = await cachePreview(preview, for: app, base: base,
+                                                     cookieHeader: cookieHeader, session: pinned)
             }
             apps.append(app)
         }
-        // Keep apps from OTHER computers the phone knows; replace this one's.
-        let others = Manifest.load().filter { !($0.host == server.host && $0.port == server.port) }
+        // Keep apps from OTHER computers the phone knows; replace this one's
+        // (by certificate; by host and port for manifests older builds wrote).
+        let others = Manifest.load().filter { app in
+            if let fp = app.fingerprint { return fp != server.fingerprint }
+            return !(app.host == server.host && app.port == server.port)
+        }
         let merged = (apps + others).sorted { $0.recency > $1.recency }
         Manifest.save(merged)
         WidgetCenter.shared.reloadAllTimelines()
@@ -73,9 +81,9 @@ enum ManifestSync {
     /// Download preview.png once per (app, mtime-less) — re-fetched on every
     /// refresh but only rewritten when the bytes changed; downscaled to widget
     /// size so the container stays small.
-    private static func cachePreview(_ relative: String, for app: ManifestApp, cookieHeader: String,
+    private static func cachePreview(_ relative: String, for app: ManifestApp, base: URL, cookieHeader: String,
                                      session: PinnedSession) async -> String? {
-        guard let url = URL(string: relative, relativeTo: app.baseURL)?.absoluteURL else { return nil }
+        guard let url = URL(string: relative, relativeTo: base)?.absoluteURL else { return nil }
         var req = URLRequest(url: url)
         req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")

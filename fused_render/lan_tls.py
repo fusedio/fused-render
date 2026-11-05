@@ -69,12 +69,44 @@ def _write_private(path: str, data: bytes) -> None:
 def ensure_cert():
     """Load or create the certificate. Returns the ``cryptography`` certificate
     object; the PEM files are at ``cert_path()``/``key_path()``. Memoised for
-    the life of the process (see ``_cert_by_dir``)."""
+    the life of the process (see ``_cert_by_dir``), and serialised across
+    processes sharing the state folder (``_file_lock``): two first starts at
+    once must not interleave their writes into a mismatched pair."""
     folder = _dir()
     with _lock:
         if folder not in _cert_by_dir:
-            _cert_by_dir[folder] = _load_or_create()
+            with _file_lock(folder):
+                _cert_by_dir[folder] = _load_or_create()
         return _cert_by_dir[folder]
+
+
+class _file_lock:
+    """A cross-process lock on ``<folder>/.lock`` (``fcntl.flock`` where it
+    exists; a no-op elsewhere, where one desktop app owns the folder)."""
+
+    def __init__(self, folder: str):
+        self._path = os.path.join(folder, ".lock")
+        self._fh = None
+
+    def __enter__(self):
+        try:
+            import fcntl
+
+            self._fh = open(self._path, "a+")  # noqa: SIM115 — released in __exit__
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            self._fh = None
+        return self
+
+    def __exit__(self, *exc):
+        if self._fh is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except (ImportError, OSError):
+                pass
+            self._fh.close()
 
 
 def _load_or_create():
@@ -89,12 +121,20 @@ def _load_or_create():
             with open(cpath, "rb") as f:
                 cert = x509.load_pem_x509_certificate(f.read())
             with open(kpath, "rb") as f:
-                serialization.load_pem_private_key(f.read(), password=None)
+                key = serialization.load_pem_private_key(f.read(), password=None)
+            # The pair must match, or the listener fails its handshake on
+            # every start until someone deletes the files by hand.
+            if cert.public_key().public_numbers() != key.public_key().public_numbers():
+                raise ValueError("certificate and key do not match")
             # Expiry is not checked by the app (it pins the hash), but a
             # certificate past its date is still worth replacing well ahead:
             # phones must pair again when it changes, so do it once a year
-            # before the end, not the day of.
-            if cert.not_valid_after_utc > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365):
+            # before the end, not the day of. (`not_valid_after_utc` arrived
+            # in cryptography 42; the naive property is UTC on older ones.)
+            expires = getattr(cert, "not_valid_after_utc", None)
+            if expires is None:
+                expires = cert.not_valid_after.replace(tzinfo=_dt.timezone.utc)
+            if expires > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365):
                 return cert
             logger.warning("lan_tls: certificate expires within a year - issuing a new one; phones must pair again")
         except Exception:  # noqa: BLE001 — unreadable files → reissue, and say so

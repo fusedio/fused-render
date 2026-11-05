@@ -492,7 +492,11 @@ def _host_ok(scope) -> bool:
     name = (_controller.hostname or "").lower().rstrip(".")
     if name and host in (name, name.removesuffix(".local")):
         return True
-    return host in (_controller.ips or lan_doctor.lan_ips())
+    # The addresses as last seen by status(), then a live read for an address
+    # the computer only just got (a new lease, before any prefs read): the
+    # read is cached for a few seconds in lan_doctor, so an unpaired peer
+    # hammering the listener cannot turn it into a subprocess per request.
+    return host in _controller.ips or host in lan_doctor.lan_ips()
 
 
 _PAIR_PAGE = """<!doctype html><meta charset="utf-8">
