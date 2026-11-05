@@ -44,7 +44,7 @@ import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { isDraftTask, sortForList, taskColumn } from "@shell/tasks-lib";
 import { canvasPagePath, type WorkbenchEnv } from "@apps/canvases/api";
 import { urlForFsPath } from "@platform/lib/router";
-import { favLike, isBlockedChat } from "./rail-peek-lib";
+import { isBlockedChat } from "./rail-peek-lib";
 
 /** One rail seat: the pulse row (live status) and, once the listing holds it,
  *  the full row the caption is built from. */
@@ -451,11 +451,13 @@ export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<strin
  *  `starred` word `favSeats` reads, off the same pulse rows, so a chat is in
  *  exactly one of the two. Off, the list is untouched (a starred ring is a
  *  ring like any other). Returns the same array when nothing is starred. */
-export function listSeats(seats: RailRow[], favsOn: boolean): RailRow[] {
-  // …and a BLOCKED chat stands above the favourites (`favSeats`, rail-peek-
-  // lib `favLike`), so it leaves the list the same way: one ring per chat.
-  if (!favsOn || !seats.some((s) => favLike(s.pulse))) return seats;
-  return seats.filter((s) => !favLike(s.pulse));
+export function listSeats(seats: RailRow[], _favsOn: boolean): RailRow[] {
+  // THE TWO SECTIONS ARE INDEPENDENT (owner, 2026-11-05, reversing the
+  // 2026-11-04 rule: "normal tasks and fav tasks don't influence each other
+  // in any way … the item also stays in the normal tasks section"): the
+  // list is the place's chats, starred or blocked or not; a favourite's
+  // ring stands in both sections, each with its own window and marks.
+  return seats;
 }
 
 /** THE LIST STEPS ASIDE FOR THE PANE'S HOME (owner, 2026-11-05: "when in
@@ -567,9 +569,12 @@ export function ringMarks(o: RingMarkInput): {
   titleOnly: boolean;
 } {
   const peeked = o.peekOn && (o.foot ? o.favHoverKey === o.key : o.peekKey === o.key);
-  const favRing = o.favsOn && o.openFavKey === o.key;
+  // THE SECTIONS DO NOT SEE EACH OTHER (owner, 2026-11-05): the open
+  // favourite's ring is the one in the FAVOURITES section; a list ring on
+  // the same chat is a list ring, whatever window B shows.
+  const favRing = o.foot && o.favsOn && o.openFavKey === o.key;
   const one = o.favsOn;
-  const fav = o.foot || favRing;
+  const fav = o.foot;
   const classes: string[] = [];
   if (o.sessionHere && (!one || (!o.foot && o.activeList === o.key))) classes.push("active");
   if (peeked) classes.push("peeked");
@@ -585,7 +590,11 @@ export function ringMarks(o: RingMarkInput): {
   // While ANY favourite's card is open, every favourite-section ring (and
   // the just-starred one still in the list) shows its caption only.
   const silenced = o.openFavKey !== null && o.favsOn && fav;
-  const hovers = o.peekOn && !silenced && !(o.paneOpen && !o.foot) && !(o.foot && o.chatElsewhere);
+  // A favourite's ring always hovers (window B), whatever the pane shows:
+  // the chat may stand in the pane and in the card at once (owner,
+  // 2026-11-05). `chatElsewhere` is kept on the input for callers that
+  // still pass it and is no longer read.
+  const hovers = o.peekOn && !silenced && !(o.paneOpen && !o.foot);
   // The caption alone: the ring's hover shows no card — another LIST ring
   // while the list's card is pinned (a favourite's ring is window B's and is
   // never held back by it), the open favourite's ring, a silenced one.

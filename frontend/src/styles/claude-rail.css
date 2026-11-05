@@ -368,10 +368,16 @@
 .claude-rail-bot {
   position: relative;
 }
+/* THE FACE FILLS THE SEAT (owner, 2026-11-05: "icons for bots should be a
+   bit bigger"): the face SVG draws its body in the middle ~76% of its box
+   (apps/bots components/Face: r=38 of 100), so a 28px box shows a 21px
+   face. Drawn at 36px and pulled in by 4px on every side, the body is
+   ~27px — the seat's own size — and the seat still measures 28px. */
 .claude-rail-bot-face {
   display: block;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
+  margin: -4px;
 }
 .claude-rail-bot-face svg {
   display: block;
