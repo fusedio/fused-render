@@ -2351,9 +2351,10 @@ export default function Listing({
           // inner seam pulls the pane open at the width the pointer takes it
           // to (startSideReopenPull, measured from this split). With
           // favourites on it stands past the OPEN pane too, at the split's
-          // right edge (`paneOpen`).
+          // right edge (`paneOpen`) — open on CLAUDE only: a pane showing git
+          // or MCP keeps the rail's glyph and seam, its way into the chat.
           <ClaudeRail
-            paneOpen={paneOpen}
+            paneOpen={paneOpen && paneSide === "claude"}
             place={railPlace}
             newTask={{ target: fsPath, waiting: null, on: null }}
             git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}

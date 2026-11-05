@@ -5,9 +5,11 @@
    sidebar's collapsed column, mirrored: same 48px, same button and dot
    classes (sidebar.css). Rules moved here from canvases.css when the rail
    left the canvases app (2026-11-01). */
-/* ---- The Claude rail (ClaudeRail.tsx): the canvas page's right edge while
-   the Claude pane is shut. The global sidebar's collapsed column, mirrored:
-   same 48px, same button and dot classes (sidebar.css). */
+/* ---- The Claude rail (ClaudeRail.tsx): a page's right edge while the
+   Claude pane is shut — and, favourites on, past the open pane while it has a
+   chat or a favourite to draw (claude-rail-lib `railShown`). The global
+   sidebar's collapsed column, mirrored: same 48px, same button and dot
+   classes (sidebar.css). */
 .claude-rail {
   position: relative;
   flex: 0 0 48px;

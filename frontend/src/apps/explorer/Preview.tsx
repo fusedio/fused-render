@@ -2537,10 +2537,12 @@ function TemplatePreview({
           and the bare edge below, because there would be no chats on the
           other side of a rail.
           WITH FAVOURITES ON it stands past the OPEN column too, at the
-          split's right edge (ClaudeRail `paneOpen`; owner, 2026-11-05). */}
+          split's right edge (ClaudeRail `paneOpen`; owner, 2026-11-05) —
+          open on CLAUDE only: a column showing git keeps the rail's glyph and
+          seam, its way into the chat. */}
       {sideTargetEntry && (!activeSide || railAlways) && railHere && (
           <ClaudeRail
-            paneOpen={!!activeSide}
+            paneOpen={activeSide === "claude"}
             place={railPlace}
             newTask={{ target: fsPath, waiting: null, on: null }}
             git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}

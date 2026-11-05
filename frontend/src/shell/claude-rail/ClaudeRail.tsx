@@ -511,6 +511,8 @@ export function ClaudeRail({
   // subscriptions and measures stay put, and it is back the moment a chat
   // lands. A hidden rail does not register (below), so the favourite's card
   // has no rail to stand beside — there is no favourite to show then anyway.
+  // Beside an open pane the rail may pop in or out as the place's first chat
+  // lands or its last one leaves (accepted, owner 2026-11-05).
   const shown = railShown({ list: allSeats.length, favs: favs.length, paneOpen, always: favsOn }) || card !== null;
   // ONE CHAT, ONE COMPOSER beside the open pane: a chat the pane (or the
   // explorer's sidebar) has mounted is not mounted again in this rail's card

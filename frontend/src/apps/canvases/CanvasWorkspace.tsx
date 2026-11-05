@@ -2698,7 +2698,12 @@ export default function CanvasWorkspace({
       if (ev.pointerId !== e.pointerId) return;
       const rect = row.getBoundingClientRect();
       if (rect.width <= 0) return;
-      const max = rect.width - CANVAS_MIN_W;
+      // ONCE OPEN, the rail may still stand past the pane (favourites on,
+      // rail-peek-lib `railInset`) — the pane ends at its edge, as the seam's
+      // drag above measures it; before the open the rail is what stands under
+      // the pointer, and RAIL_W says so for the threshold alone.
+      const inset = opened ? railInset(row) : 0;
+      const max = rect.width - inset - CANVAS_MIN_W;
       const min = Math.min(PANE_MIN_W, max);
       if (max <= 0) return;
       const implied = rect.right - ev.clientX;
@@ -2708,9 +2713,10 @@ export default function CanvasWorkspace({
         if (open === null) return;
         w = open;
       } else {
-        w = Math.min(max, Math.max(min, implied));
+        w = Math.min(max, Math.max(min, implied - inset));
       }
-      const frac = 1 - w / rect.width;
+      // The canvas takes what the pane and a standing rail leave.
+      const frac = 1 - (w + inset) / rect.width;
       setLeftFrac(frac);
       if (!opened) {
         opened = true;
