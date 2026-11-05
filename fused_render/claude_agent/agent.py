@@ -5057,7 +5057,12 @@ def _start(file: str, message: str, session_id: str, model: str,
             # `breakout=resume` skips the folder gate and runs research-only:
             # only for a session the server recorded as a breakout.
             return {"error": "no such breakout", "reason": "breakout_missing"}
-        fork_at = ""
+        if fork_at:
+            # Dropping it would continue the whole session while the page
+            # shows the forked turns as discarded.
+            return {"error": "a breakout cannot be forked; fork_at is not "
+                             "accepted",
+                    "reason": "breakout_fork_unsupported", "backend": backend}
     elif breakout:
         if backend != "claude":
             return {"error": "breakout is only available for Claude chats",

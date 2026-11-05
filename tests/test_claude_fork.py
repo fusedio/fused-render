@@ -385,6 +385,12 @@ def test_start_breakout_resume_continues_without_forking(agent, start):
     assert meta["resumed_from"] == "BRK"
 
 
+def test_start_breakout_resume_refuses_fork_at(agent, start):
+    out, req, run_dir = start("U1", session_id="BRK", breakout=True,
+                              breakout_resume=True)
+    assert out.get("reason") == "breakout_fork_unsupported", out
+
+
 def test_start_breakout_resume_of_an_unrecorded_session_is_refused(agent, start):
     out, req, run_dir = start("", session_id="ORDINARY", breakout=True,
                               breakout_resume=True)
