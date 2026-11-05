@@ -14,8 +14,9 @@
 // the row's `starred` arrives on the next tasks pulse — seconds on a busy
 // Mac — and a star that stays hollow after its press reads as a dead button.
 // So the press is marked locally before the write leaves, corrected to the
-// server's answer when it lands, dropped as soon as the row's own `starred`
-// agrees, and dropped after STAR_MARK_MS whatever the row says (another
+// server's answer when it lands, dropped once the row's own `starred`
+// agrees AND no write is still out (two quick presses: the first's repaint
+// must not flip the star before the second lands), and dropped after STAR_MARK_MS whatever the row says (another
 // window may have flipped it; the row is then the truth). A failed write
 // drops the mark and says why.
 //
@@ -79,11 +80,15 @@ function TaskStarButton({ task, size = 12, reveal = "always", nested = false, cl
   const seq = useRef(0);
   // One write at a time per star: two fast presses must land in order.
   const chain = useRef<Promise<unknown>>(Promise.resolve());
+  // Writes still out. While any is, the mark stands even if the row already
+  // agrees with it: an earlier write's repaint must not flip the star back
+  // before the later press lands.
+  const [pending, setPending] = useState(0);
 
-  // The row agrees: the mark has done its job.
+  // The row agrees AND no write is out: the mark has done its job.
   useEffect(() => {
-    if (mark && mark.on === starred) setMark(null);
-  }, [mark, starred]);
+    if (mark && pending === 0 && mark.on === starred) setMark(null);
+  }, [mark, starred, pending]);
   // …or it has had its chance to.
   const markSeq = mark?.seq ?? 0;
   useEffect(() => {
@@ -101,16 +106,19 @@ function TaskStarButton({ task, size = 12, reveal = "always", nested = false, cl
     const want = !on;
     const mine = ++seq.current;
     setMark({ on: want, seq: mine });
+    setPending((n) => n + 1);
     chain.current = chain.current
       .catch(() => {})
       .then(() => setTaskFavourite(key, want))
       .then(
         (res) => {
           if (seq.current === mine && res.starred !== want) setMark({ on: res.starred, seq: mine });
+          setPending((n) => n - 1);
           announceTasksChanged();
         },
         (err) => {
           if (seq.current === mine) setMark(null);
+          setPending((n) => n - 1);
           notify({ title: failWords(err), tone: "error" });
         },
       );

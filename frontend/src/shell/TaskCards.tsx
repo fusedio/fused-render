@@ -691,7 +691,7 @@ function TaskCard({
               took the emphasis back out — one weight for the id everywhere. */}
           <TaskAgentMark backend={task.backend} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
-          <TaskStar task={task} reveal="hover" />
+          <TaskStar task={task} reveal="hover" nested />
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}

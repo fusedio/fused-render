@@ -19,10 +19,9 @@
 // when they become a row — the page's column, then this 48px rail.
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { navigateUrl } from "@platform/lib/router";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ClaudeRail, type NewTaskSeed } from "./ClaudeRail";
 import { usePageRailCount } from "./fav-peek-store";
-import { useCanvasRailPeek } from "./rail-peek-flag";
+import { useRailFeatureOn } from "./rail-peek-flag";
 import { fallbackRailUp, type RailPlace } from "./claude-rail-lib";
 
 /** No place (header): a folder no row lives in, so nothing rides the list
@@ -35,9 +34,7 @@ const noPull = (_e: ReactPointerEvent<HTMLDivElement>) => {};
 export function FallbackRail() {
   // The favourites switch AND the card's (ClaudeRail `favsOn`): the star
   // lives on the card.
-  const favourites = useTaskFavourites();
-  const peekOn = useCanvasRailPeek();
-  const favsOn = favourites && peekOn;
+  const favsOn = useRailFeatureOn();
   const pageRails = usePageRailCount();
   if (!fallbackRailUp({ favsOn, pageRails })) return null;
   return (
