@@ -300,6 +300,17 @@ export function applyQueueFlagBroadcast(key: string | null, newValue: string | n
   }
 }
 
+/** One Breakout `storage` event, as the listener below sees it. Breakout is
+ *  opt-in, so only an explicit `on: true` turns it on. Exported for tests. */
+export function applyBreakoutFlagBroadcast(key: string | null, newValue: string | null): void {
+  if (key !== BREAKOUT_FLAG_BROADCAST_KEY || !newValue) return;
+  try {
+    setBreakout((JSON.parse(newValue) as { on?: unknown }).on === true);
+  } catch {
+    // Malformed: the next focus re-reads.
+  }
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (ev) => applyQueueFlagBroadcast(ev.key, ev.newValue));
   window.addEventListener("storage", (ev) => {
@@ -310,14 +321,7 @@ if (typeof window !== "undefined") {
       // Malformed: the next focus re-reads.
     }
   });
-  window.addEventListener("storage", (ev) => {
-    if (ev.key !== BREAKOUT_FLAG_BROADCAST_KEY || !ev.newValue) return;
-    try {
-      setBreakout((JSON.parse(ev.newValue) as { on?: unknown }).on !== false);
-    } catch {
-      // Malformed: the next focus re-reads.
-    }
-  });
+  window.addEventListener("storage", (ev) => applyBreakoutFlagBroadcast(ev.key, ev.newValue));
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") void rereadFlags();
   });

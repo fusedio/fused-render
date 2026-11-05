@@ -15,6 +15,7 @@ const {
   publishProjectQueueEnabled,
   setPrefsDeadlineForTests,
   applyQueueFlagBroadcast,
+  applyBreakoutFlagBroadcast,
   QUEUE_FLAG_BROADCAST_KEY,
   useBreakoutEnabled,
   publishBreakoutEnabled,
@@ -305,6 +306,28 @@ test("a prefs read with breakout.enabled turns the Breakout flag on; an absent f
   answer = async () => ({});
   seen = await breakoutProbe();
   expect(seen[seen.length - 1]).toBe(false);
+});
+
+test("a Breakout broadcast with no `on` field leaves Breakout off (opt-in)", async () => {
+  const seen: boolean[] = [];
+  function Probe() {
+    seen.push(useBreakoutEnabled());
+    return null;
+  }
+  answer = async () => ({});
+  let r!: ReactTestRenderer;
+  await act(async () => {
+    r = create(<Probe />);
+  });
+  mounted.push(r);
+  await act(async () => {
+    await new Promise((done) => setTimeout(done, 0));
+  });
+  expect(seen[seen.length - 1]).toBe(false);
+  await act(async () => applyBreakoutFlagBroadcast(BREAKOUT_FLAG_BROADCAST_KEY, JSON.stringify({ at: 1 })));
+  expect(seen[seen.length - 1]).toBe(false);
+  await act(async () => applyBreakoutFlagBroadcast(BREAKOUT_FLAG_BROADCAST_KEY, JSON.stringify({ on: true, at: 2 })));
+  expect(seen[seen.length - 1]).toBe(true);
 });
 
 test("publishBreakoutEnabled writes the broadcast key", () => {
