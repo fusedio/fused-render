@@ -13,6 +13,10 @@
   --dur-fast: 80ms;
   --dur-med: 150ms;
   --dur-slow: 200ms;
+  /* Both sidebars' open/close (the left #sidebar, the right-hand Claude pane —
+     platform/lib/pane-presence.ts): a step quicker than --dur-slow (owner,
+     2026-11-05: "make transition a bit faster"). */
+  --dur-panel: 160ms;
   --ease-out: ease-out;
 }
 

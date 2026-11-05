@@ -23,6 +23,8 @@ let generation = 0;
 // must not overwrite the fresher one. Breakout-only: the shared `generation`
 // would also discard the queue / recap answers the same read carries.
 let breakoutPublishedAt = 0;
+/** The same guard for the click-opens-reply switch. */
+let turnClickPublishedAt = 0;
 
 /**
  * NOT a tri-state. It gates ONE extra call in front of a send, it DEFAULTS
@@ -183,6 +185,7 @@ function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
   const breakoutStamp = breakoutPublishedAt;
+  const turnClickStamp = turnClickPublishedAt;
   // ONE BUDGET FOR THE WHOLE READ, retry included (bugbot, 2026-09-15).
   //
   // The deadline used to wrap each ATTEMPT, so a wedged server spent 8 s, was
@@ -207,7 +210,7 @@ function read(): Promise<void> {
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
       setRecapTitles(p.task_recap?.enabled === true);
-      setTurnClickOpen(p.turn_click_open?.enabled === true);
+      if (turnClickPublishedAt === turnClickStamp) setTurnClickOpen(p.turn_click_open?.enabled === true);
       if (breakoutPublishedAt === breakoutStamp) setBreakout(p.breakout?.enabled === true);
       // A server that predates the field keeps "auto", the server's default.
       setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
@@ -284,6 +287,7 @@ export function publishBreakoutEnabled(next: boolean) {
 
 /** Hand over a known-fresh click-opens-reply answer (a PUT's prefs payload). */
 export function publishTurnClickOpensReplyEnabled(next: boolean) {
+  turnClickPublishedAt += 1;
   setTurnClickOpen(next);
 }
 

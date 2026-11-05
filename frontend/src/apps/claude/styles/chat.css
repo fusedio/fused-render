@@ -813,6 +813,9 @@
 .chat-root .c-anntools .c-hide-pane {
   flex: none;
   margin-left: -6px;
+  /* The rail's expand button's corner (sidebar.css `.sidebar-rail-btn`):
+     the close and the reopen of one panel share one hover shape. */
+  border-radius: 8px;
 }
 
 /* SIDE-PANE BAR, NARROW: the branch and the PR are the essentials, so the

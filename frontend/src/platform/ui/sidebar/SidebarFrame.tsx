@@ -7,6 +7,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
+import { PANE_SLIDE_MS } from "@platform/lib/pane-presence";
 import { FusedMark } from "@platform/ui/FusedMark";
 import { navigateUrl } from "@platform/lib/router";
 import {
@@ -188,9 +189,9 @@ export function NavItem({
   );
 }
 
-/** How long the expanded panel is held while it tucks away — `--dur-slow`, the
- *  width transition it has to outlast (styles/sidebar.css). */
-const SIDEBAR_TUCK_MS = 200;
+/** How long the expanded panel is held while it tucks away — `--dur-panel`,
+ *  the width transition it has to outlast (styles/sidebar.css). */
+const SIDEBAR_TUCK_MS = PANE_SLIDE_MS;
 
 export function SidebarFrame({
   title,
@@ -499,7 +500,7 @@ export function SidebarFrame({
         </a>
         <button
           type="button"
-          className="icon-btn sidebar-collapse-btn"
+          className="sidebar-rail-btn sidebar-collapse-btn"
           aria-label="Collapse sidebar"
           title="Collapse sidebar"
           onClick={toggleSidebarCollapsed}

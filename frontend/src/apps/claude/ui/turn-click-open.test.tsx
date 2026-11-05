@@ -8,15 +8,15 @@ import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import type { ChatState, Turn as TurnRow } from "../protocol/controller-api";
 const { Transcript } = await import("./Transcript");
-const { resetFlagsForTests } = await import("../feature-flag");
+const { publishTurnClickOpensReplyEnabled, resetFlagsForTests } = await import("../feature-flag");
 
 const realFetch = globalThis.fetch;
-let flagOn = true;
 const mounted: Array<ReturnType<typeof create>> = [];
 beforeEach(() => {
   resetFlagsForTests();
+  // Any prefs read answers "off": only the publish in `mount` turns it on.
   (globalThis as { fetch: unknown }).fetch = async () =>
-    ({ ok: true, json: async () => ({ turn_click_open: { enabled: flagOn } }) }) as unknown as Response;
+    ({ ok: true, json: async () => ({}) }) as unknown as Response;
 });
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
@@ -76,7 +76,7 @@ const actions = {
   addNote: () => {},
 };
 
-async function mount() {
+async function mount(on: boolean) {
   let r!: ReturnType<typeof create>;
   await act(async () => {
     r = create(
@@ -85,14 +85,13 @@ async function mount() {
         actions={actions}
       />,
     );
-    // The flag arrives from an async prefs read: wait for it to land (or, with
-    // the flag off, for a settle) instead of trusting one tick.
-    for (let i = 0; i < 50; i++) {
-      await new Promise((res) => setTimeout(res, 10));
-      const b = byClass(r, "bubble")[0];
-      if (!flagOn || (b?.props as { onClick?: unknown } | undefined)?.onClick) break;
-    }
+    await new Promise((res) => setTimeout(res, 0));
   });
+  // Set the flag the way a Settings PUT does, not through the async prefs read:
+  // that read is process-global and other suites in the same bun run share it,
+  // so its timing is not this test's to rely on. A publish beats any read still
+  // in flight (feature-flag `turnClickPublishedAt`).
+  act(() => publishTurnClickOpensReplyEnabled(on));
   mounted.push(r);
   return r;
 }
@@ -100,13 +99,13 @@ async function mount() {
 const folded = (r: ReturnType<typeof create>) => byClass(r, "turn-collapsed").length;
 const click = (r: ReturnType<typeof create>, i: number) => {
   const onClick = (byClass(r, "bubble")[i]!.props as { onClick?: () => void }).onClick;
-  act(() => onClick?.());
+  expect(onClick).toBeDefined();
+  act(() => onClick!());
 };
 
 describe("a click on a user message", () => {
   test("opens the folded reply under it, and a second click leaves it open", async () => {
-    flagOn = true;
-    const r = await mount();
+    const r = await mount(true);
     expect(folded(r)).toBe(1); // a:1 folded, the newest (a:2) open
     click(r, 0);
     expect(folded(r)).toBe(0);
@@ -115,15 +114,13 @@ describe("a click on a user message", () => {
   });
 
   test("a message whose reply is already open changes nothing", async () => {
-    flagOn = true;
-    const r = await mount();
+    const r = await mount(true);
     click(r, 1);
     expect(folded(r)).toBe(1);
   });
 
   test("with the flag off the bubble is inert", async () => {
-    flagOn = false;
-    const r = await mount();
+    const r = await mount(false);
     expect((byClass(r, "bubble")[0]!.props as { onClick?: unknown }).onClick).toBeUndefined();
     expect(folded(r)).toBe(1);
   });
