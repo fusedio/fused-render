@@ -879,10 +879,17 @@ export function ClaudeRail({
   const heldExtra = useMemo((): RailRow | null => {
     // A favourite's held card (a hover on its ring, then a press inside) has
     // its ring in the favourites section already.
-    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey) || favs.some((s) => s.pulse.key === heldKey)) return null;
+    // …and so has a blocked chat's (at the head of that section, Bugbot).
+    if (
+      !heldKey ||
+      baseSeats.some((s) => s.pulse.key === heldKey) ||
+      blocked.some((s) => s.pulse.key === heldKey) ||
+      favs.some((s) => s.pulse.key === heldKey)
+    )
+      return null;
     const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
     return pulse ? { pulse, row: full.get(heldKey) ?? null } : null;
-  }, [baseSeats, heldKey, rows, full, favs]);
+  }, [baseSeats, blocked, heldKey, rows, full, favs]);
   // Every seat this rail's card may show — the list's, plus the held
   // outsider, plus the favourites (a hover on their rings, header) — for the
   // card's anchors, the kept mounts and the prune; the LIST itself is
