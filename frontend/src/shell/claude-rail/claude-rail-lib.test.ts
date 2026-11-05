@@ -826,3 +826,14 @@ describe("paneHomeHref", () => {
     expect(paneHomeHref("/apps/x?_tab=overview")).toBeNull();
   });
 });
+
+describe("ringMarks with the Claude pane open", () => {
+  const o = { favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null, activeList: null, activeFav: null, sessionHere: false, isLast: false };
+  it("a list ring shows the title only (no window-A hover); a favourite ring still hovers", () => {
+    const list = ringMarks({ ...o, key: "a", foot: false, paneOpen: true });
+    expect(list.hovers).toBe(false);
+    expect(list.titleOnly).toBe(true);
+    expect(ringMarks({ ...o, key: "a", foot: true, paneOpen: true }).hovers).toBe(true);
+    expect(ringMarks({ ...o, key: "a", foot: false, paneOpen: false }).hovers).toBe(true);
+  });
+});

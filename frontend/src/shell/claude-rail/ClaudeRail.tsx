@@ -1627,6 +1627,7 @@ export function ClaudeRail({
                 activeList,
                 activeFav,
                 favHoverKey,
+                paneOpen,
               });
               // The rings' own captions step aside for the card: a hover
               // shows the card, and the card IS the caption. The exception

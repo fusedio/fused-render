@@ -1130,3 +1130,17 @@ describe("dragResize with a height ceiling (the favourite's card)", () => {
     expect(dragResize("t", start, 0, -400, ROW).height).toBe(700);
   });
 });
+
+describe("the favourite's hover and open cards stand in one place", () => {
+  const rail = { left: 1000, top: 100, width: 40, height: 700 };
+  const row = { left: 0, top: 100, width: 1040, height: 700 };
+  const ring = { left: 1004, top: 300, width: 32, height: 32 };
+  const base = { width: 360, maxHeight: 400, align: "bottom" as const };
+  it("both modes use one wish and the rail as anchor: same box, whatever ring is hovered", () => {
+    const wish = favCardWish(base, null, 900);
+    const open = placeClear(rail, rail, row, null, wish);
+    expect(placeClear(rail, rail, row, null, favCardWish(base, null, 900))).toEqual(open);
+    // anchoring a hover on its ring is what used to move the card
+    expect(placeClear(ring, rail, row, null, wish)).not.toEqual(open);
+  });
+});
