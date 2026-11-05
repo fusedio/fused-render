@@ -22,7 +22,7 @@
 // page's `.bots-page` host under <body> (lib/root `portalHost`), as on the page.
 import { useCallback, useEffect, useRef, useState } from "react";
 import "../styles/bots.css";
-import { feedBotQuietly, hydrateBotsPrefs, useBotsSelector } from "../state/store";
+import { feedBotQuietly, useBotsSelector } from "../state/store";
 import { Composer, type ReplyTo } from "./Composer";
 import { ReactionPicker, type ReactionReq } from "./ReactionPicker";
 import { Thread } from "./Thread";
@@ -38,12 +38,12 @@ export interface BotChatProps {
 const noop = () => {};
 
 export default function BotChat({ id, markRead = true }: BotChatProps) {
+  // The page-wide switches (store `hydrateBotsPrefs`: sounds, the clear-
+  // context button, the one-shot seen import) are the PAGE's to hydrate,
+  // not this card's: none of them is read here, and the hydrate joins the
+  // shell's shared prefs read, which a mount in a test with a stubbed fetch
+  // would pin for the whole process (platform/lib/api `dropSharedPrefsRead`).
   useEffect(() => feedBotQuietly(), []);
-  // The page-wide switches (sounds, the clear-context button): once per
-  // document, guarded inside.
-  useEffect(() => {
-    void hydrateBotsPrefs();
-  }, []);
   const b = useBotsSelector((s) => s.bots.find((x) => x.id === id));
   const polled = useBotsSelector((s) => s.bots.length > 0);
   const threadRef = useRef<HTMLDivElement>(null);

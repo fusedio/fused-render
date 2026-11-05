@@ -20,6 +20,7 @@ const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import(
 const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-store");
 const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
+const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 
 const DIR = "/home/me/apps/demo";
@@ -291,6 +292,10 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
     if (!hadGetById) delete doc.getElementById;
     resetBotsPulseForTests();
     loc.pathname = "/";
+    // Nothing mounted here joins the shared prefs read, but a read that this
+    // file's never-settling fetch stub pinned would stay pinned for every
+    // later suite in the process (platform/lib/api): let it go regardless.
+    dropSharedPrefsRead();
   });
   /** A pinned bot, as the pulse carries one (botsPulse `BotPulseRow`). */
   const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
