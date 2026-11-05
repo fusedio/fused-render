@@ -1655,3 +1655,18 @@ def test_an_update_only_call_flips_open_and_closes_the_others(state_dir):
     out = tasks_store.set_favourite("b", None, False)
     assert out == {"starred": True, "open": False, "changed": ["b"]}
     assert tasks_store.favourite_of(tasks_store.favourites_state(), "b") == (True, False)
+
+
+def test_favourite_at_is_the_star_stamp_and_never_a_non_finite_number(state_dir):
+    """The rail sorts favourites by `favourite_at` (newest star first); a
+    record's stamp survives the card's open/close writes, and a NaN / inf
+    stamp on disk reads as None rather than breaking the pulse's JSON."""
+    tasks_store.set_favourite("a", True, now=100.0)
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_at(state, "a") == 100.0
+    assert tasks_store.favourite_at(state, "missing") is None
+    tasks_store.set_favourite("a", None, open=False, now=200.0)
+    assert tasks_store.favourite_at(tasks_store.favourites_state(), "a") == 100.0
+    assert tasks_store.favourite_at({"n": {"at": float("nan")}}, "n") is None
+    assert tasks_store.favourite_at({"i": {"at": float("inf")}}, "i") is None
+    assert tasks_store.favourite_at({"s": {"at": "soon"}}, "s") is None

@@ -1001,7 +1001,9 @@ export function ClaudeRail({
     const el = railRef.current;
     return el && shown ? registerRail(el, hereOf) : undefined;
   }, [hereOf, shown]);
-  useLayoutEffect(() => (shown ? railUp() : undefined), [shown]);
+  // Favourites on only (flag-off parity: the rail of 2026-11-04 moved
+  // nothing).
+  useLayoutEffect(() => (shown && favsOn ? railUp() : undefined), [shown, favsOn]);
   // …and WHERE THE PAGE STANDS, for the favourite card's where-chip (fav-
   // peek-store `setRailPage`): said again on every hop this rail makes in
   // place and every node selected. After the register above, in the same

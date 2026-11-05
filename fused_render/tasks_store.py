@@ -1195,9 +1195,12 @@ def favourite_at(state: dict, key: str) -> float | None:
     if not isinstance(rec, dict):
         return None
     try:
-        return float(rec.get("at"))
+        at = float(rec.get("at"))
     except (TypeError, ValueError):
         return None
+    # NaN / inf would pass `float()` and break the JSON the pulse answers
+    # with (CodeRabbit): unreadable, like a missing stamp.
+    return at if math.isfinite(at) else None
 
 
 def set_favourite(key: str, on: bool | None, open: bool | None = None,

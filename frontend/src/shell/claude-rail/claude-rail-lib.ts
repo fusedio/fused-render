@@ -455,7 +455,9 @@ export function isBlockedChat(t: Pick<TaskPulseTask, "status">): boolean {
  *  moment they are not. */
 export function blockedSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<string, Task>): RailRow[] {
   return rows
-    .filter((t) => isBlockedChat(t) && !t.starred && t.status !== "archived")
+    // …with a door: a row with no session has no ring (`ringOf`), and a
+    // seat that draws nothing must not stand the rail up (CodeRabbit).
+    .filter((t) => isBlockedChat(t) && !t.starred && t.status !== "archived" && !!t.session_id)
     .sort((a, b) => (b.happened_at ?? 0) - (a.happened_at ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     .map((pulse) => ({ pulse, row: full.get(pulse.key) ?? null }));
 }

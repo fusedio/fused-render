@@ -36,7 +36,7 @@
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
-  width: min(300px, calc(100vw - 32px));
+  width: min(300px, calc(100vw - 32px - var(--claude-rail-w, 0px)));
   pointer-events: none;
 }
 
@@ -64,7 +64,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: min(300px, calc(100vw - 24px));
+  width: min(300px, calc(100vw - 24px - var(--claude-rail-w, 0px)));
 }
 
 .native-sync-host > .dl-row {
