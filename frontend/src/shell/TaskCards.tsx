@@ -36,6 +36,7 @@ import { notify } from "@platform/lib/notifications";
 import { ChatFramePlaceholder, ChatMount } from "@apps/claude";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { Modal } from "@platform/ui/modal/Modal";
+import { TaskStar } from "@platform/ui/TaskStar";
 import { folderHref } from "./schedule-lib";
 import {
   discardDraft,
@@ -689,6 +690,7 @@ function TaskCard({
               conversation's last message (design.md §A); Akshil (2026-09-14)
               took the emphasis back out — one weight for the id everywhere. */}
           <TaskAgentMark backend={task.backend} />
+          <TaskStar task={task} nested />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
@@ -1028,6 +1030,7 @@ function TaskPeek({
         <span className="task-peek-title">
           <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} background={liveJobRow(task)} />
           <TaskAgentMark backend={task.backend} />
+          <TaskStar task={task} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}

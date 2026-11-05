@@ -415,6 +415,19 @@
   white-space: pre-wrap;
 }
 
+/* THE CANVAS'S CLAUDE PANE COLUMN (CanvasWorkspace): the chat's floor is the
+   explorer sidebar's (PANE_MIN_W 380); on a row too narrow for both floors the
+   pane yields the rest, so the workbench keeps its 320px (CANVAS_MIN_W). With
+   the Claude rail standing past the open pane (favourites on, ClaudeRail
+   `paneOpen`) the rail's 48px comes off that rest too — app-page.css's
+   `.app-page-claude` rule, for the same row shape. */
+.canvas-workspace-pane {
+  min-width: min(380px, calc(100% - 320px));
+}
+.canvas-workspace-pane:has(~ .claude-rail:not([hidden])) {
+  min-width: min(380px, calc(100% - 320px - 48px));
+}
+
 /* THE SCRIM OVER THE WORKBENCH WHILE A PICTURE IS TAKEN (CanvasWorkspace,
    canvas-shot-scrim.ts). The capture runs inside the cross-origin frame and
    mutates its DOM for seconds; the frame itself shows nothing, so the host
