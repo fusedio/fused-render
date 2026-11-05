@@ -272,6 +272,7 @@ import {
   blockedSeats,
   dotCleared,
   favSeats,
+  inPlace,
   keepMarks,
   listHidden,
   listSeats,
@@ -345,7 +346,7 @@ import type { FaceSubject } from "@apps/bots/lib/face";
  *  fallback never stand together, but the count makes that a fact, not a hope. */
 /** How long after the pane opens an empty pane may still be a chat on its
  *  way, not the home page (`listHidden`). */
-const PANE_HOME_GRACE_MS = 800;
+const PANE_HOME_GRACE_MS = 120;
 
 let railsUp = 0;
 function railUp(): () => void {
@@ -888,8 +889,17 @@ export function ClaudeRail({
     )
       return null;
     const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
-    return pulse ? { pulse, row: full.get(heldKey) ?? null } : null;
-  }, [baseSeats, blocked, heldKey, rows, full, favs]);
+    if (!pulse) return null;
+    // WITH THE FAVOURITES ON the list scrolls, so nothing is "past its room":
+    // the one outsider left is the selected node's neighbour on this canvas.
+    // A chat of ANOTHER place — a blocked chat from elsewhere whose card was
+    // held while it was answered, and which left the section the moment it
+    // unblocked — is not drawn, and its card goes with it (owner, 2026-11-05:
+    // "should close preview and not show up unless the task belongs to the
+    // same view / same page").
+    if (favsOn && !inPlace(pulse, place)) return null;
+    return { pulse, row: full.get(heldKey) ?? null };
+  }, [baseSeats, blocked, heldKey, rows, full, favs, favsOn, place]);
   // Every seat this rail's card may show — the list's, plus the held
   // outsider, plus the favourites (a hover on their rings, header) — for the
   // card's anchors, the kept mounts and the prune; the LIST itself is

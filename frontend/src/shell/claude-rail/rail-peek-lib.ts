@@ -191,6 +191,23 @@ export function peekPlacement(anchor: Box, rail: Box, bounds: Box, wish: number 
  *       ring press opening the pane.
  *  With no favourite's card up, or one wholly below the row, the plain
  *  placement. */
+/** THE ANCHOR STAYS IN ITS SCROLLED BOX (owner, 2026-11-05: "when I open a
+ *  click preview in the collapsed rail of something that can scroll past
+ *  10 items, it should stick at the 1st item and the 10th item — top
+ *  shouldn't go all the way to the bottom or all the way to the top"): a
+ *  ring scrolled out of the list's box (ClaudeRail `.claude-rail-chats`)
+ *  would anchor the card above or below the box; instead the anchor is
+ *  held at the box's first or last seat, so the card stands beside the
+ *  list's edge and follows the ring only while it is in view. No box
+ *  (a favourite's ring, the foot): the ring itself. */
+export function clampAnchor(anchor: Box, scroller: Box | null): Box {
+  if (!scroller) return anchor;
+  const lo = scroller.top;
+  const hi = Math.max(lo, scroller.top + scroller.height - anchor.height);
+  const top = Math.min(hi, Math.max(lo, anchor.top));
+  return top === anchor.top ? anchor : { ...anchor, top };
+}
+
 export function placeClear(anchor: Box, rail: Box, row: Box, avoid: Box | null, wish: number | PeekWish): Box | null {
   if (avoid && avoid.top < row.top + row.height) {
     const above = avoid.top - PEEK_GAP - row.top;
