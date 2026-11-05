@@ -70,6 +70,7 @@ ALLOWED = {
     # ---- lan (phone UI; per-device origin by nature, SPEC §52 BS-5) -----------
     "lan/App.tsx": "display",
     "lan/bots/hooks.ts": "cache",
+    "lan/tasks/TasksList.tsx": "display",           # chip + folder filter of the phone task list (per viewer)
 }
 
 _CATEGORIES = {"signal", "cache", "tab", "display", "import", "dev"}

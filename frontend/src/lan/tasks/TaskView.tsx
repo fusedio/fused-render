@@ -355,7 +355,12 @@ export function TaskView({ taskKey }: { taskKey: string }) {
                 <Skeleton className="h-20 w-3/4 rounded-2xl" />
               </div>
             )}
-            {!task && error && (
+            {!task && error === "Starting…" && (
+              <div className="flex flex-col items-center gap-3 px-8 pt-20 text-center">
+                <p className="text-[15px] text-[var(--fg-muted)]">Starting…</p>
+              </div>
+            )}
+            {!task && error && error !== "Starting…" && (
               <Empty className="mt-16">
                 <EmptyHeader>
                   <EmptyMedia variant="icon">
@@ -403,7 +408,7 @@ export function TaskView({ taskKey }: { taskKey: string }) {
             New
           </button>
         )}
-        {error && task && (
+        {error && error !== "Starting…" && task && (
           <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
             <span className="rounded-full bg-[var(--bg-alt)] px-3 py-1 text-[12px] text-[var(--fg-muted)] shadow">Reconnecting…</span>
           </div>

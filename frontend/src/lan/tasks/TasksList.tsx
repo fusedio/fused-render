@@ -36,7 +36,7 @@ import { TONE_COLOR } from "../bots/lib";
 import { usePoll } from "../bots/hooks";
 import { Sheet } from "../bots/Sheet";
 import { Toaster, toast } from "../bots/Toast";
-import { Link, SectionSwitch, navigate } from "../nav";
+import { HeaderRow, Link, navigate } from "../nav";
 import { api } from "./api";
 import {
   CHIPS,
@@ -137,13 +137,7 @@ export function TasksList() {
   return (
     <main className="lan-bots mx-auto max-w-3xl px-4 pb-[max(24px,env(safe-area-inset-bottom))]">
       <header className="sticky top-0 z-10 -mx-4 bg-[var(--bg)]/92 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-2 backdrop-blur">
-        <div className="flex items-center justify-between gap-3 pb-3">
-          <SectionSwitch active="tasks" badge={data?.attention} />
-          <span className="lan-mono shrink-0 text-xs text-[var(--fg-muted)]">{data ? `${shown}/${data.total}` : ""}</span>
-          <Button variant="outline" size="icon" className="size-10 shrink-0 rounded-xl" aria-label="New task" onClick={() => setCreating("task")} disabled={!data}>
-            <PlusIcon className="size-5" />
-          </Button>
-        </div>
+        <HeaderRow active="tasks" badge={data?.attention} addLabel="New task" onAdd={() => setCreating("task")} addDisabled={!data} />
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-[var(--fg-muted)]" />
           <Input

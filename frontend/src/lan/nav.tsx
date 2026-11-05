@@ -3,6 +3,7 @@
 // plain <a href> that also works on a full reload; a plain left click is turned
 // into history.pushState so the phone never re-downloads the page.
 import { useEffect, useState, type AnchorHTMLAttributes, type MouseEvent } from "react";
+import { PlusIcon } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { parseRoute, type Route } from "./bots/lib";
 
@@ -43,6 +44,37 @@ export function Link({ href, onClick, ...rest }: AnchorHTMLAttributes<HTMLAnchor
 }
 
 export type Section = "apps" | "bots" | "tasks";
+
+/** The title row every lan page shares — the section switch and one "+" — so
+ *  switching tabs never moves anything: same height, same slots, no counts. */
+export function HeaderRow({
+  active,
+  badge,
+  addLabel,
+  onAdd,
+  addDisabled,
+}: {
+  active: Section;
+  badge?: number;
+  addLabel: string;
+  onAdd: () => void;
+  addDisabled?: boolean;
+}) {
+  return (
+    <div className="flex h-10 items-center justify-between gap-3 pb-3 box-content">
+      <SectionSwitch active={active} badge={badge} />
+      <button
+        type="button"
+        aria-label={addLabel}
+        onClick={onAdd}
+        disabled={addDisabled}
+        className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-[var(--sh-border)] bg-[var(--card)] text-[var(--fg)] active:bg-[var(--row-bg-hover)] disabled:opacity-40"
+      >
+        <PlusIcon className="size-5" />
+      </button>
+    </div>
+  );
+}
 
 /** The `Apps | Bots | Tasks` segmented switch at the top of the grid and the
  *  lists. `badge` is the tasks' needs-you count (the Tasks page knows it; the
