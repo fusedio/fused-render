@@ -3084,7 +3084,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
           ...(opts.clientId ? { client_uuid: opts.clientId } : {}),
           // The words as typed, when the composed wire differs from them: the server keeps them for a Stop.
           ...(text && text !== outgoing ? { typed: text } : {}),
-          ...(opts.sendNow ? { send_now: "1" } : {}),
         },
       )) as SendResponse;
       if (res && "respawn" in res && res.respawn) {

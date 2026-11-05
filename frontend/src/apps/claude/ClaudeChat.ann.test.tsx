@@ -2095,7 +2095,7 @@ for (const flagOn of [false, true]) {
     expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
   });
 
-  test(`${tag}: Ctrl+X mid-turn writes the line into the live run with send_now, never a stop, and is journalled until acked`, async () => {
+  test(`${tag}: Ctrl+X mid-turn sends the line as an ordinary follow-up, then ONE send_now interrupt naming it, never a stop, journalled until acked`, async () => {
     const { r } = await liveChat();
     let releaseHeld!: () => void;
     holdSend = new Promise<void>((resolve) => {
@@ -2104,18 +2104,68 @@ for (const flagOn of [false, true]) {
     await typeInBox(r, "Z");
     await pressCtrlXInBox(r);
     await settle(60);
-    // On the wire but not acknowledged yet: a reload would re-send it.
+    // On the wire but not acknowledged yet: a reload would re-send it, and the
+    // interrupt waits for the inbox to hold the line.
     const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
     expect(stored.map((l) => l.text)).toEqual(["Z"]);
+    expect(sendNows()).toHaveLength(0);
     releaseHeld();
     await settle(100);
     const out = sends().filter((c) => String(c.params.message).includes("Z"));
     expect(out).toHaveLength(1);
-    expect(out[0]!.params.send_now).toBe("1");
+    expect(out[0]!.params.send_now).toBeUndefined();
     expect(out[0]!.params.client_uuid).toBe(stored[0]!.id);
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([stored[0]!.id]);
     expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
     expect(started()).toHaveLength(1);
     expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: Ctrl+X with two queued lines and typed words sends all three in order and ONE interrupt, never a stop`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "one");
+    await pressEnterInBox(r);
+    await typeInBox(r, "two");
+    await pressEnterInBox(r);
+    await settle(60);
+    expect(sends()).toHaveLength(2);
+    await typeInBox(r, "three");
+    await pressCtrlXInBox(r);
+    await settle(100);
+    expect(sends().map((c) => c.params.message)).toEqual([
+      expect.stringContaining("one"),
+      expect.stringContaining("two"),
+      expect.stringContaining("three"),
+    ]);
+    expect(sends().some((c) => c.params.send_now !== undefined)).toBe(false);
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([sends()[0]!.params.client_uuid]);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+    expect(started()).toHaveLength(1);
+  });
+
+  test(`${tag}: Ctrl+X while a send is busy parks the line and the interrupt still goes out once it has drained`, async () => {
+    const { r } = await liveChat();
+    // A line whose pane capture is still open holds the door shut.
+    await act(async () => commentSeat(r).props.onClick());
+    await settle();
+    await act(async () => makeNote("this button is too small"));
+    await settle();
+    const open = heldShutter();
+    await typeInBox(r, "first");
+    await pressEnterInBox(r);
+    await typeInBox(r, "second");
+    await pressCtrlXInBox(r);
+    await settle(30);
+    expect(sends()).toHaveLength(0);
+    expect(sendNows()).toHaveLength(0);
+    await act(async () => open());
+    await settle(150);
+    expect(sends().map((c) => c.params.message)).toEqual([
+      expect.stringContaining("first"),
+      expect.stringContaining("second"),
+    ]);
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([sends()[0]!.params.client_uuid]);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
   });
 
   test(`${tag}: Enter while the run is stopping waits for the stop to settle and is sent once after it, never into the dying run`, async () => {

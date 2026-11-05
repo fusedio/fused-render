@@ -451,12 +451,6 @@ export interface SendOptions {
    */
   clientId?: string;
   /**
-   * CTRL+X: deliver this follow-up and have the CLI end the main agent's turn
-   * for it (the `send_now` interrupt). Only `sendFollowUp` carries it; a send
-   * that starts a run has no turn to interrupt.
-   */
-  sendNow?: boolean;
-  /**
    * ADDED (PR3): a user bubble ALREADY on screen that this send's bubble should
    * ADOPT rather than duplicate.
    *
@@ -591,9 +585,9 @@ export interface ChatController {
   /** Stop the live run (T:15870-16023 stopRun). No-op when idle. */
   stopRun(): Promise<void>;
   /**
-   * SEND NOW for lines the live run already holds (empty-box Ctrl+X, a click on
-   * the queued bubble): the `send_now` interrupt naming the oldest of them, so
-   * the CLI ends the MAIN agent's turn and runs them next. No stop: background
+   * SEND NOW, the one interrupt of a Ctrl+X: the `send_now` interrupt naming the
+   * oldest line the run holds, so the CLI ends the MAIN agent's turn and runs
+   * every queued line next. No stop: background
    * subagents, Bash and Monitors keep running. Resolves true when an interrupt
    * was sent, false when no landed line could be named.
    */

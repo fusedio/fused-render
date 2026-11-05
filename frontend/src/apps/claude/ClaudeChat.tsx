@@ -3063,10 +3063,6 @@ function ChatBody(props: ChatBodyProps) {
       // new turn.
       const stoppingRun = !parked && !!text && !sendBusy.current && controller.getState().status === "stopping";
       if (sendBusy.current || stoppingRun) {
-        // A parked line goes out later as an ordinary follow-up: the interrupt
-        // belongs to the turn that was running when Ctrl+X was pressed.
-        const { sendNow: _sendNow, ...parkedOpts } = opts;
-        opts = parkedOpts;
         const bubble = text ? controller.postOptimisticUser(text, "queued") : "";
         // THE TRAY IS ONLY THIS LINE'S ONCE THE SEND IN FLIGHT HAS TAKEN ITS
         // OWN. Before that (`beginSend` still awaiting the notes' photograph),
@@ -3096,6 +3092,7 @@ function ChatBody(props: ChatBodyProps) {
       const optimisticKey = parked ? parked.bubble : text ? controller.postOptimisticUser(text) : "";
       void (async () => {
         let taken = false;
+        let counted = false;
         dispatchingParked.current = parked ?? null;
         if (parked) parkedBySendId.current.set(sendId, parked);
         try {
@@ -3470,6 +3467,10 @@ function ChatBody(props: ChatBodyProps) {
           };
           let ok = true;
           try {
+            if (followUp) {
+              followUpsInFlight.current++;
+              counted = true;
+            }
             const sent = followUp
               ? controller.sendFollowUp(text, wire)
               : controller.sendMessage(text, wire);
@@ -3506,6 +3507,7 @@ function ChatBody(props: ChatBodyProps) {
           if (dispatchingParked.current === parked) dispatchingParked.current = null;
           if (parked?.entryId) dispatching.current.delete(parked.entryId);
           parkedBySendId.current.delete(sendId);
+          if (counted) followUpsInFlight.current--;
           releaseSend(sendId);
           // THE TURN THIS SEND OPENED IS OVER and the controller's own gate is
           // free again: the next held line may go. The status effect saw
@@ -3559,7 +3561,35 @@ function ChatBody(props: ChatBodyProps) {
     },
     [],
   );
+  /** CTRL+X IS OWED ITS INTERRUPT: pressed with lines still parked or in flight,
+   *  the one `send_now` interrupt waits until every one of them has landed in
+   *  the run's inbox (`settleSendNow`), so it can name a line the CLI holds. */
+  const sendNowOwed = useRef(false);
+  /** Follow-ups handed to the controller whose `send` has not answered yet. */
+  const followUpsInFlight = useRef(0);
+  /**
+   * THE ONE INTERRUPT OF A CTRL+X, sent when nothing is left to deliver: the
+   * outbox holds no line that can go, none is in the gap before the controller
+   * or on the wire. Every line then sits in the run's inbox, and the CLI merges
+   * them all into the turn that runs next. A run that is no longer running has
+   * no turn to end, so the interrupt is dropped (the lines went out as a normal
+   * turn); one still starting keeps it owed.
+   */
+  const settleSendNow = useCallback(() => {
+    if (!sendNowOwed.current) return;
+    const status = controller.getState().status;
+    if (status === "starting") return;
+    if (status !== "running") {
+      sendNowOwed.current = false;
+      return;
+    }
+    if (sendBusy.current || dispatching.current.size || followUpsInFlight.current) return;
+    if (outboxRef.current.some((e) => !e.hold && !e.notSent)) return;
+    sendNowOwed.current = false;
+    void controller.sendQueuedNow();
+  }, [controller]);
   const drainOutbox = useCallback(() => {
+    settleSendNow();
     // NEVER into a run that is `stopping` or still `starting` (Bugbot
     // 4121249279): a follow-up into a stopping run is refused; the status
     // effect below drains again once it settles.
@@ -3595,7 +3625,7 @@ function ChatBody(props: ChatBodyProps) {
     if (next.hold && next.payload.opts.clientId) journalAdd(next.payload.opts.clientId, next.text);
     const followUp = status !== "idle";
     dispatchSend(next.text, next.payload.opts, followUp, { ...next.payload, entryId: next.id });
-  }, [controller, dispatchSend, setOutbox, journalAdd]);
+  }, [controller, dispatchSend, setOutbox, journalAdd, settleSendNow]);
   useEffect(() => {
     drainRef.current = drainOutbox;
   }, [drainOutbox]);
@@ -3902,32 +3932,33 @@ function ChatBody(props: ChatBodyProps) {
     },
     [dispatchSend, rcSay],
   );
-  /**
-   * AN ORDINARY FOLLOW-UP, or — with `sendNow` — Claude Code's Ctrl+X: the line
-   * goes into the live run as a follow-up and the CLI is told to end the MAIN
-   * agent's turn for it. Background subagents, Bash and Monitors keep running,
-   * and the run is not stopped: the line has the journal, the outbox and the
-   * bubble of any other follow-up, so a reload loses nothing. Remote Control
-   * takes the words either way.
-   */
-  const sendLine = useCallback(
-    (text: string, sendNow: boolean) => {
+  /** A follow-up into the live run. Remote Control takes the words either way. */
+  const onFollowUp = useCallback(
+    (text: string) => {
       if (rcSay) return rcSay(text);
       dispatchSend(
         text,
-        {
-          model: defaults.model,
-          effort: defaults.effort,
-          permission: defaults.permission,
-          ...(sendNow ? { sendNow: true } : {}),
-        },
+        { model: defaults.model, effort: defaults.effort, permission: defaults.permission },
         true,
       );
     },
     [dispatchSend, defaults.model, defaults.effort, defaults.permission, rcSay],
   );
-  const onFollowUp = useCallback((text: string) => sendLine(text, false), [sendLine]);
-  const onSendNow = useCallback((text: string) => sendLine(text, true), [sendLine]);
+  /**
+   * CTRL+X WITH WORDS: Claude Code's send-now. The line goes in behind
+   * whatever is queued, as an ordinary follow-up, and ONE interrupt follows once
+   * they have all landed (`settleSendNow`): it ends the MAIN agent's turn, and
+   * the CLI runs every queued line next. Background subagents, Bash and
+   * Monitors keep running and the run is not stopped. The intent survives a
+   * busy door: a parked line drains first, then the interrupt goes.
+   */
+  const onSendNow = useCallback(
+    (text: string) => {
+      if (!rcSay) sendNowOwed.current = true;
+      onFollowUp(text);
+    },
+    [onFollowUp, rcSay],
+  );
   /**
    * STOP MEANS STOP, THE OUTBOX INCLUDED (Akshil's R2-12 rule, kept over Claude
    * Code's own Esc, which lets the queue run on). A line parked behind the
@@ -3955,23 +3986,13 @@ function ChatBody(props: ChatBodyProps) {
   /**
    * CTRL+X WITH AN EMPTY BOX (or a click on the queued bubble): send the lines
    * that are waiting NOW, the way a typed Ctrl+X does — never Stop, which ends
-   * background subagents too. A line the outbox still holds goes out as a
-   * send-now follow-up when the drain reaches it; a line the live run already
-   * holds is named to the CLI in a `send_now` interrupt.
+   * background subagents too. Lines the outbox still holds drain as ordinary
+   * follow-ups, then the single `send_now` interrupt goes out.
    */
   const onSendQueuedNow = useCallback(() => {
-    const parked = outboxRef.current.filter((e) => !e.hold && !e.notSent);
-    if (parked.length) {
-      const ids = new Set(parked.map((e) => e.id));
-      setOutbox(
-        outboxRef.current.map((e) =>
-          ids.has(e.id) ? { ...e, payload: { ...e.payload, opts: { ...e.payload.opts, sendNow: true } } } : e,
-        ),
-      );
-      drainRef.current();
-    }
-    void controller.sendQueuedNow();
-  }, [controller, setOutbox]);
+    sendNowOwed.current = true;
+    drainRef.current();
+  }, []);
   /**
    * `sched.reset` — declared HERE, ahead of the hook that fills it, because
    * `onBack` is one of its two callers and is itself declared before the PR4
