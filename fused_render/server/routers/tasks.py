@@ -3950,8 +3950,10 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
     reader has sent `TITLE_REFRESH_PROMPTS` more prompts since the stored one
     (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed, or
     the SETTLE trigger: the turn has ended (`done`, `blocked`, `archived`) and
-    the stored title was written before it ended, so the reader need not wait
-    three prompts for a title that follows the finished work. A failure inside
+    the stored title predates the turn's prompt, so the reader need not wait
+    three prompts for a title that follows the finished work. It runs once per
+    turn: a title written mid-turn (the 3-prompt refresh) already covers it,
+    except on the first turn, which settles once after its reply. A failure inside
     the cooldown holds every trigger off, so a broken CLI is not asked on each
     listing. Only the settle trigger waits `_RECAP_SETTLE_S` after the turn
     ended (the job carries a `due` until then; someone who answers inside a
@@ -3975,11 +3977,15 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
     reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
     said_at = float(tail[-1].get("at") or 0.0)
     reply_at = reply_at if reply and reply_at >= said_at else said_at
-    # The turn has ENDED and the stored title was written before it did (a
-    # title `at` is stamped on every success, so this fires once per turn).
+    # Settle: once per turn, and only when the stored title predates the turn's
+    # prompt. A title written mid-turn (the 3-prompt refresh runs at once) has
+    # already titled this turn. The FIRST turn is the exception: its title came
+    # from the first message alone, so it settles once after the reply.
+    first_title = stored is not None and stored["turns"] <= 1
     settle_due = (status in ("done", "blocked", "archived")
                   and stored is not None and bool(stored["text"])
-                  and stored["at"] < reply_at)
+                  and (stored["at"] < said_at
+                       or (first_title and stored["at"] < reply_at)))
     due = 0.0
     if stored is not None:
         if stored["failed_at"] and now - stored["failed_at"] < _RECAP_RETRY_S:

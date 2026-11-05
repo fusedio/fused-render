@@ -6168,13 +6168,41 @@ def test_title_candidate_jobs_carry_the_prompt_count_as_turns(tmp_path):
     assert job["turns"] == 3
 
 
-def test_title_candidate_settles_a_title_written_between_prompt_and_reply(tmp_path):
+def _two_time_rec(count, said_ago=300.0, reply_ago=120.0):
+    now = time.time()
+    return {"tail": [{"anchor": "u1", "at": now - said_ago}], "count": count,
+            "reply_at": now - reply_ago}
+
+
+def test_title_candidate_first_turn_settles_a_title_written_between_prompt_and_reply(tmp_path):
+    """First turn (stored turns <= 1): the first title came from the first
+    message only, so it settles once after the reply; not once it is newer."""
     task = _title_task(tmp_path)
     now = time.time()
-    rec = {"tail": [{"anchor": "u1", "at": now - 300.0}], "count": 1,
-           "reply_at": now - 120.0}
-    job, = _title_job(task, rec, _settle_stored(at=now - 200.0))
+    rec = _two_time_rec(1)
+    job, = _title_job(task, rec, _settle_stored(at=now - 200.0, turns=1))
     assert "due" not in job
+    assert _title_job(task, rec, _settle_stored(at=now - 60.0, turns=1)) == []
+
+
+def test_title_candidate_no_settle_for_a_title_written_mid_turn(tmp_path):
+    """The 3-prompt refresh ran when the 4th prompt was sent and stamped `at`
+    mid-turn: the turn already has its title, so no settle refresh follows."""
+    task = _title_task(tmp_path)
+    rec = _two_time_rec(4)
+    assert _title_job(task, rec, _settle_stored(at=time.time() - 200.0, turns=4)) == []
+
+
+def test_title_candidate_settles_a_title_that_predates_the_turn(tmp_path):
+    task = _title_task(tmp_path)
+    now = time.time()
+    rec = _two_time_rec(5)
+    stored = _settle_stored(at=now - 1000.0, turns=4)
+    job, = _title_job(task, rec, stored)
+    assert "due" not in job
+    rec = _two_time_rec(5, said_ago=100.0, reply_ago=30.0)
+    job, = _title_job(task, rec, stored)
+    assert job["due"] == rec["reply_at"] + tasks_mod._RECAP_SETTLE_S
 
 
 def test_recap_run_with_the_summary_flag_off_never_asks(monkeypatch):
