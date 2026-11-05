@@ -561,6 +561,23 @@ test("opening the work or prompt fold releases the peek's tail-follow", () => {
   act(() => r.unmount());
 });
 
+test("opening the peek's work fold draws the rows flat: one trigger, no nested fold", () => {
+  const kids = [text("Let me look."), tool("ok"), text("Now the config."), tool("ok"), tool("ok"), text("Found it.")];
+  const seg = { kind: "tool", id: "tu1", name: "Agent", status: "ok", input: { prompt: "Find it" }, children: kids } as never;
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<AgentPeekLog seg={seg} />, { createNodeMock: (e) => (e.props.className === "chat-logwrap" ? { scrollTop: 0, scrollHeight: 100, clientHeight: 100 } : null) });
+  });
+  const workArea = () => r.root.findByProps({ className: "agent-peek-work" });
+  expect(workArea().findAllByType(RunTrigger).length).toBe(1);
+  act(() => workArea().findByType(RunTrigger).props.onToggle());
+  const triggers = workArea().findAllByType(RunTrigger);
+  expect(triggers.length).toBe(1);
+  expect(triggers[0]!.props.open).toBe(true);
+  expect(workArea().findAll((n) => typeof n.type === "string" && n.props.className === "toolchip").length).toBe(3);
+  act(() => r.unmount());
+});
+
 test("closing removes the agent peek", () => {
   const { r, peek } = mountPeek(() => null);
   const close = r.root.findAllByType("button").find((b) => allText(b as never) === "Close")!;

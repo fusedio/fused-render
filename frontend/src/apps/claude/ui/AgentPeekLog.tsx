@@ -72,13 +72,15 @@ function PeekPrompt({ id, text }: { id: string; text: string }) {
   );
 }
 
-/** The folded work, behind one `show more` above the answer. */
+/** The folded work, behind one `show more` above the answer. Opened, it is
+ *  drawn flat (`unfolded`): this trigger is the only fold, so SegmentView must
+ *  not group the same rows behind a second one. */
 function PeekWork({ id, work }: { id: string; work: Segment[] }) {
   const [open, toggle] = useCardOpen("agent-peek-work:" + id);
   return (
     <div className="agent-peek-work">
       <RunTrigger open={open} onToggle={toggle} />
-      {open ? <SegmentView segments={work} /> : null}
+      {open ? <SegmentView segments={work} unfolded /> : null}
     </div>
   );
 }
