@@ -1,0 +1,115 @@
+// The pairing itself, kept by the app rather than only by WebKit's cookie
+// jar. /pair sets the `fused_lan_device` cookie for the host the pairing ran
+// on; cookies are keyed on the host, so a computer reached later by its
+// address instead of its name (a network filtering mDNS), or renamed, would
+// look unpaired to WebKit although the computer still knows the phone. So
+// once the grid lands after /pair, the cookie's value is copied into the
+// Keychain, keyed on the computer's certificate fingerprint (its identity),
+// and set again for whatever host the webview is about to load. The server
+// only ever checks the hash of the value (lan.py `_paired_record`), never
+// the host it arrived under.
+import Foundation
+import Security
+import WebKit
+import os
+
+private let log = Logger(subsystem: "io.fused.render", category: "pairing")
+
+enum PairingSecret {
+    static let cookieName = "fused_lan_device"
+    private static let service = "io.fused.render.pairing"
+
+    static func get(for server: Server) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: server.fingerprint,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// False when the Keychain refused the write: the pairing then is not
+    /// kept, and the caller must not confirm it.
+    @discardableResult
+    static func set(_ secret: String, for server: Server) -> Bool {
+        delete(for: server)
+        let add: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: server.fingerprint,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData as String: Data(secret.utf8),
+        ]
+        let status = SecItemAdd(add as CFDictionary, nil)
+        if status != errSecSuccess { log.error("pairing: keychain write failed (\(status))") }
+        return status == errSecSuccess
+    }
+
+    static func delete(for server: Server) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: server.fingerprint,
+        ]
+        _ = SecItemDelete(query as CFDictionary)
+    }
+
+    /// The `Cookie:` header value for a native request to this computer, or
+    /// nil when the phone has not paired with it.
+    static func cookieHeader(for server: Server) -> String? {
+        get(for: server).map { "\(cookieName)=\($0)" }
+    }
+
+    /// After a page landed on `/`: take the cookie WebKit holds for that host
+    /// and keep it. Returns whether there was one — the how-to-pair page is
+    /// served at `/` too, so a landing there without a cookie is NOT a
+    /// pairing (WebView only confirms one when this says true).
+    @MainActor
+    @discardableResult
+    static func capture(from webView: WKWebView, server: Server, host: String) async -> Bool {
+        let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+        guard let cookie = cookies.first(where: {
+            $0.name == cookieName && $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host
+        }) else { return false }
+        return set(cookie.value, for: server)
+    }
+
+    /// Before loading a page from this computer on `host`: make sure WebKit
+    /// carries the pairing for that host. A no-op when nothing is stored (the
+    /// first pairing) — /pair then sets the cookie itself.
+    @MainActor
+    static func install(into webView: WKWebView, server: Server, host: String) async {
+        guard let secret = get(for: server) else { return }
+        let store = webView.configuration.websiteDataStore.httpCookieStore
+        let existing = await store.allCookies()
+        if existing.contains(where: { $0.name == cookieName && $0.value == secret
+                                && $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host }) {
+            return
+        }
+        // `.originURL` rather than a bare `.domain`: HTTPCookie derives the
+        // domain from it and accepts an IP address that way, which it does
+        // not as a `.domain` value — and the fallback host IS an address.
+        // HttpOnly, as the computer sets it: `HTTPCookiePropertyKey` has no
+        // public case for it, but the "HttpOnly" key is what Foundation reads
+        // (it is how `HTTPCookie.isHTTPOnly` round-trips through
+        // `properties`), so page scripts cannot read the secret back.
+        guard let cookie = HTTPCookie(properties: [
+            .originURL: server.url(host: host),
+            .path: "/",
+            .name: cookieName,
+            .value: secret,
+            .secure: "TRUE",
+            HTTPCookiePropertyKey("HttpOnly"): "TRUE",
+            .expires: Date(timeIntervalSinceNow: 90 * 86400),
+        ]) else {
+            log.error("pairing: could not build the cookie for \(host, privacy: .public)")
+            return
+        }
+        await store.setCookie(cookie)
+    }
+}

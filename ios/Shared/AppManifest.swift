@@ -24,8 +24,9 @@ enum FusedShared {
 struct ManifestApp: Codable, Identifiable, Hashable {
     var host: String
     var port: Int
-    /// "http" or "https" — how the app reaches this computer (TLSTrust.swift).
-    var scheme: String = "http"
+    /// Always "https" now (TLSTrust.swift); kept as a field so manifests
+    /// written by earlier builds still decode.
+    var scheme: String = "https"
     var name: String
     var title: String?
     /// The app folder on the computer.
@@ -36,6 +37,10 @@ struct ManifestApp: Codable, Identifiable, Hashable {
     var recency: Double
     /// Cached preview.png in `previews/`, when the app has one.
     var previewFile: String?
+    /// The computer's certificate fingerprint (AppModel.Server.id): what
+    /// identifies the computer whatever its name or address. Absent in
+    /// manifests older builds wrote.
+    var fingerprint: String?
 
     /// A plain hex digest, not "host:port|/path": AppIntents persists a chosen
     /// entity by its id, and ids carrying "/" and ":" were not round-tripping —

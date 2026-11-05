@@ -201,8 +201,8 @@ fused-render
 The base install (`pip install fused-render`) runs one app with
 `fused-render open <path-or-github-url>` and nothing more. `[cli]` adds the
 full explorer, index, previews, Community and the Hugging Face login, about
-230 MB more. `[all]` adds the native desktop integrations (LAN discovery,
-capture, clipboard). The pieces on their own are `[index]`, `[data]`, `[hf]`,
+230 MB more. `[all]` adds the native desktop integrations (screen capture,
+clipboard). The pieces on their own are `[index]`, `[data]`, `[hf]`,
 `[desktop]` and `[fused]`. Requires Python 3.11+. From a source checkout,
 `pip install -e '.[all]'`; building and the dev loop are in
 [CONTRIBUTING.md](https://github.com/fusedio/fused-render/blob/main/CONTRIBUTING.md).

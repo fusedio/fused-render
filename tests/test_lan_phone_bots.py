@@ -39,12 +39,15 @@ def home(tmp_path, monkeypatch):
     (static / "shell-dist").mkdir()
     (static / "shell-dist" / "lan.html").write_text("<!doctype html><title>lan page</title>")
     monkeypatch.setattr(lan, "_STATIC_DIR", str(static / "lan"))
+    # The Host allowlist admits the computer's own local name (and its
+    # addresses); the OS name is read when the listener starts, so pin one.
+    monkeypatch.setattr(lan._controller, "hostname", "test-mac.local")
     return tmp_path
 
 
 def call(app, path, method="GET", headers=(), body=b"", query=b""):
-    scope = {"type": "http", "path": path, "method": method, "query_string": query, "scheme": "http",
-             "headers": [(b"host", lan.HOSTNAME.encode()), *headers]}
+    scope = {"type": "http", "path": path, "method": method, "query_string": query, "scheme": "https",
+             "headers": [(b"host", b"test-mac.local:1889"), *headers]}
     sent = []
     chunks = [{"type": "http.request", "body": body, "more_body": False}]
 
@@ -63,7 +66,8 @@ def call(app, path, method="GET", headers=(), body=b"", query=b""):
 
 
 def paired_cookie():
-    secret, record = lan._pair_device("Mozilla/5.0 (iPhone) FusedRender-iOS/1.0")
+    secret, record = lan._pair_device("Mozilla/5.0 (iPhone) FusedRender-iOS/1.0", "Vas iPhone")
+    assert record["name"] == "Vas iPhone"
     return (b"cookie", f"{lan.COOKIE}={secret}".encode()), record
 
 
