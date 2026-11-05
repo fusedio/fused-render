@@ -281,7 +281,7 @@ export function Card({
     >
       <div className="claude-rail-peek-chat is-shown">
         <Mount
-          file={card.file}
+          file={card.cwd || card.file}
           breakout
           backend="claude"
           breakoutContext={card.context}

@@ -27,6 +27,7 @@ interface RunCall {
 const runs: RunCall[] = [];
 let historyReads = 0;
 let historyTurns: unknown[] = [];
+let pollHint: unknown = undefined;
 /** Held back so a test can park the boot inside its detection wait: the
  *  agent's `defaults` read never answers. */
 let holdDetection = false;
@@ -107,7 +108,7 @@ function stubFetch(): void {
       }
       if (action === "live_host") return jsonRes({ run_id: "" });
       if (action === "start") return jsonRes({ run_id: "r1" });
-      if (action === "poll") return jsonRes({ done: true, session_id: "s1", text: "ok" });
+      if (action === "poll") return jsonRes({ done: true, session_id: "s1", text: "ok", ...(pollHint === undefined ? {} : { worktree_hint: pollHint }) });
       return jsonRes({});
     }
     return jsonRes({});
@@ -118,6 +119,7 @@ beforeEach(() => {
   runs.length = 0;
   historyReads = 0;
   historyTurns = [];
+  pollHint = undefined;
   holdDetection = false;
   holdPaneStat = false;
   holdSessions = false;
@@ -854,6 +856,34 @@ describe("breakout pick mode", () => {
     const off = await mountChat({ initialSessionId: "sess-abc12345", onBreakout: () => {} });
     await settle(20);
     expect(idleTurns(off.r).length).toBe(0);
+  });
+
+  describe("breakout cwd follows the chat's worktree hint", () => {
+    async function openWith(hint: unknown): Promise<Record<string, unknown>> {
+      pollHint = hint;
+      historyTurns = HISTORY;
+      const opened: Record<string, unknown>[] = [];
+      const { r } = await mountChat({ initialSessionId: "sess-abc12345", initialAsk: "go", onBreakout: (req: Record<string, unknown>) => void opened.push(req) });
+      await settle(20);
+      await act(async () => publishBreakoutEnabled(true));
+      await settle(20);
+      toggle(r);
+      act(() => byClass(r, "breakout-sel-start")[0]!.props.onClick());
+      expect(opened).toHaveLength(1);
+      return opened[0]!;
+    }
+    test("an absolute hint path rides as cwd", async () => {
+      const req = await openWith({ path: "/w/repo/.claude/worktrees/x", branch: "x", via: "bash" });
+      expect(req["cwd"]).toBe("/w/repo/.claude/worktrees/x");
+      expect(req["file"]).toBe(baseProps.file);
+    });
+    test("no hint, an exit hint, or a relative path leaves cwd unset", async () => {
+      for (const hint of [undefined, { path: "", branch: "", via: "exit" }, { path: "wt/x", branch: "", via: "enter" }, { path: "", branch: "", via: "agent", label: "a" }]) {
+        const req = await openWith(hint);
+        expect("cwd" in req).toBe(false);
+        for (const m of mounted.splice(0)) await act(async () => m.unmount());
+      }
+    });
   });
 
   test("Start opens with the picked keys and leaves pick mode; Start is disabled at zero", async () => {

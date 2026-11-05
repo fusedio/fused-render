@@ -590,3 +590,25 @@ test("the card hands its prompt to the chat once; consuming it forgets it, and t
   consumeBreakoutPrompt(id);
   resetBreakouts();
 });
+
+test("the chat mounts on the card's cwd when it has one, else on its file", () => {
+  resetBreakouts();
+  const ctx = { block: "b", count: 1 };
+  let seen: Record<string, unknown> = {};
+  const Spy = (props: Record<string, unknown>) => {
+    seen = props;
+    return null;
+  };
+  const show = (cwd?: string) => {
+    resetBreakouts();
+    openBreakout({ sessionId: "s1", file: "/w/p", ...(cwd ? { cwd } : {}), context: ctx });
+    act(() => {
+      create(<Card card={getBreakouts()[0]!} index={0} mount={Spy as never} />, { createNodeMock: () => el });
+    });
+  };
+  show("/w/p/.claude/worktrees/x");
+  expect(seen["file"]).toBe("/w/p/.claude/worktrees/x");
+  show();
+  expect(seen["file"]).toBe("/w/p");
+  resetBreakouts();
+});

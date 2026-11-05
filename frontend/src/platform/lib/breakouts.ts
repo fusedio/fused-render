@@ -38,6 +38,9 @@ export interface BreakoutContext {
 export interface BreakoutRequest {
   sessionId: string;
   file: string;
+  /** Folder the breakout starts in when it is not the chat's own: the
+   *  worktree the main chat moved into. Absent = `file`'s folder. */
+  cwd?: string;
   context: BreakoutContext;
   /** Dedupe key for the card store: the selected turn keys, sorted and joined. */
   forkKey?: string;
@@ -50,6 +53,8 @@ export interface BreakoutCard {
   /** The PARENT chat's session: what Send back fills. */
   parentSessionId: string;
   file: string;
+  /** See `BreakoutRequest.cwd`. */
+  cwd?: string;
   context: BreakoutContext;
   /** Dedupe key so a second press of the same selection finds the card. */
   forkKey?: string;
@@ -101,6 +106,7 @@ export function openBreakout(req: BreakoutRequest): string {
     id: `breakout-${Date.now().toString(36)}-${seq}`,
     parentSessionId: req.sessionId,
     file: req.file,
+    ...(req.cwd ? { cwd: req.cwd } : {}),
     context: req.context,
     ...(req.forkKey ? { forkKey: req.forkKey } : {}),
     ...(req.prompt ? { prompt: req.prompt } : {}),

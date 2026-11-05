@@ -165,7 +165,7 @@ import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
 import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
 import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
-import { WorktreeHintChip, shownWorktreeHint } from "./ui/WorktreeHintChip";
+import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
@@ -3873,6 +3873,7 @@ function ChatBody(props: ChatBodyProps) {
   const breakoutTitle = useRef<string | undefined>(undefined);
   /** Open a breakout seeded with the turns under `keys`. Unlike the fork it is
    *  allowed while a run is active: the breakout is its own session. */
+  const breakoutCwdRef = useRef<string | undefined>(undefined);
   const openBreakoutFor = useCallback(
     (keys: readonly string[], prompt?: string) => {
       const st = controller.getState();
@@ -3883,6 +3884,7 @@ function ChatBody(props: ChatBodyProps) {
       props.onBreakout({
         sessionId: sid,
         file,
+        ...(breakoutCwdRef.current ? { cwd: breakoutCwdRef.current } : {}),
         context,
         forkKey: [...keys].sort().join("|"),
         ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
@@ -4462,6 +4464,9 @@ function ChatBody(props: ChatBodyProps) {
   const hasQueued = state.queuedKeys.length > 0 || newestQueuedKey !== null;
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
   const shownHint = shownWorktreeHint(state.worktreeHint, state.tasks, chatWorkdir(file, pane.noun) ?? undefined);
+  // A breakout starts in the worktree the header chip names: only an absolute
+  // path (an `enter` hint that carried just a name, or an `agent` hint, has none).
+  breakoutCwdRef.current = breakoutCwdFor(shownHint);
   const worktreeMenu = worktreeTarget && agentCaps.worktrees ? (
     <WorktreeMenu
       key={file as string}

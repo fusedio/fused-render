@@ -47,6 +47,13 @@ export function shownWorktreeHint(
   return h;
 }
 
+/** Where a breakout should start: the shown hint's folder when it is an
+ *  absolute path, else undefined (the chat's own folder). */
+export function breakoutCwdFor(shown: WorktreeHint | null | undefined): string | undefined {
+  if (!shown || shown.via === "exit") return undefined;
+  return shown.path.startsWith("/") ? shown.path : undefined;
+}
+
 const HOW: Record<WorktreeHint["via"], string> = {
   bash: "created with git worktree add",
   enter: "entered",

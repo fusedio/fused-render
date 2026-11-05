@@ -72,6 +72,13 @@ describe("breakout store", () => {
     expect(ticks).toBe(1);
     off();
   });
+  test("cwd round-trips onto the card, and is absent when not given", () => {
+    openBreakout({ ...req, forkKey: "w1", cwd: "/w/x" });
+    openBreakout({ ...req, forkKey: "w2" });
+    const [a, b] = getBreakouts().slice(-2);
+    expect(a!.cwd).toBe("/w/x");
+    expect(b && "cwd" in b).toBe(false);
+  });
   test("close removes", () => {
     const a = openBreakout(req);
     openBreakout({ ...req, forkKey: "k9" });
