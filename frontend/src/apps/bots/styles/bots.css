@@ -906,3 +906,12 @@ div.bots-page.bots-portal-host { position: fixed; top: 0; left: 0; width: 0; hei
 .bots-page ::-webkit-scrollbar-thumb { border: 0; background-clip: border-box; }
 .bots-page #full .tabstrip .tab { max-width: none; border: 0; font-family: inherit; }
 .bots-page #full .tabstrip .tab:hover { color: var(--muted); }
+
+/* ---- THE RAIL'S BOT CARD (shell/claude-rail BotPeek; components/BotChat, 2026-11-05) ----
+   The chat column alone — thread and composer — in the Claude rail's card off any page. Scoped like the page
+   (`.bots-page`), so every message, card and composer rule above applies as on the page; only the frame differs:
+   the root fills the card's body (its parent is the card's absolute, flex-column chat box) and the gutters are the
+   narrow ones a 420px card can afford. The page's own header is not drawn: the card's head is the bot's name. */
+.bots-page.bots-peek { flex: 1 1 auto; min-height: 0; }
+.bots-page.bots-peek .chat { flex: 1 1 auto; min-height: 0; --chatgut: 12px; }
+.bots-page.bots-peek > .empty { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: 16px; color: var(--muted); text-align: center; }

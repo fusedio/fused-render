@@ -492,6 +492,42 @@ export function pinnedBots<B extends { pinned?: boolean; hidden?: boolean }>(bot
   return bots.filter((b) => b.pinned === true && !b.hidden);
 }
 
+/** WHERE A PINNED BOT'S RING GOES (ClaudeRail `ringOf` for bots; owner,
+ *  2026-11-05: "a small overlay that just displays the chat exchange of the
+ *  bot, the same as the task floating box"): its CARD (BotPeek — a hover
+ *  previews, a press pins, as the list's rings do), unless the card is off
+ *  (`canvas_rail_peek_enabled`), the row left no room for one (RailPeek's
+ *  `onNoRoom` rule), or the reader is ON THE BOTS PAGE already — the page
+ *  shows the bot itself, and a second mount of its thread beside the page's
+ *  own would be two threads on one store; there the ring is the page's door,
+ *  as it was. The door is the bot's page (`/bots/<id>`) in every case the
+ *  card is not. */
+export function botRingRoute(o: { onBotsPage: boolean; peekOn: boolean; noRoom: boolean }): "door" | "card" {
+  if (o.onBotsPage || !o.peekOn || o.noRoom) return "door";
+  return "card";
+}
+
+/** THE BOT CARD'S STATUS WORDS (BotPeek's head): the Bots page's own
+ *  vocabulary for the pulse's status string (apps/bots lib/derive
+ *  `statusLabel`, which needs the full row this card does not hold) — one
+ *  name for one state on the ring, in the rail and on the page. */
+export function botStatusWords(status: string): string {
+  switch (status) {
+    case "waiting":
+      return "waiting for you";
+    case "running":
+      return "running";
+    case "paused":
+      return "paused";
+    case "error":
+      return "error";
+    case "idle":
+      return "idle";
+    default:
+      return status;
+  }
+}
+
 /** WHICH RING OF A SECTION WEARS THE ACTIVE WASH (owner, 2026-11-04: "in one
  *  section at a time only one item should be active"): the first of
  *  `wants`, in order, that is one of the section's `keys` — or none. The

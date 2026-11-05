@@ -17,6 +17,8 @@ import {
   listHidden,
   plusShown,
   pinnedBots,
+  botRingRoute,
+  botStatusWords,
   keepMarks,
   listSeats,
   onRail,
@@ -386,6 +388,18 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
       { id: "old" },
     ];
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
+  });
+  it("a pinned bot's ring opens its card, except on the Bots page, with the card off, or with no room (2026-11-05)", () => {
+    expect(botRingRoute({ onBotsPage: false, peekOn: true, noRoom: false })).toBe("card");
+    expect(botRingRoute({ onBotsPage: true, peekOn: true, noRoom: false })).toBe("door");
+    expect(botRingRoute({ onBotsPage: false, peekOn: false, noRoom: false })).toBe("door");
+    expect(botRingRoute({ onBotsPage: false, peekOn: true, noRoom: true })).toBe("door");
+  });
+  it("the bot card's status words are the page's", () => {
+    expect(botStatusWords("waiting")).toBe("waiting for you");
+    expect(botStatusWords("running")).toBe("running");
+    expect(botStatusWords("idle")).toBe("idle");
+    expect(botStatusWords("odd")).toBe("odd");
   });
 });
 

@@ -4,12 +4,17 @@ import type { RefObject } from "react";
 import { setNewCount, useBotsSelector } from "../state/store";
 import { pinToEnd, updateToBottom, viewAll } from "./threadDom";
 
-export interface ToBottomProps { threadRef: RefObject<HTMLDivElement> }
+export interface ToBottomProps {
+  threadRef: RefObject<HTMLDivElement>;
+  /** The bot the thread shows; absent, the store's selection (the page). The rail's bot card names its own
+   *  (components/BotChat): off the page nothing is selected. */
+  botId?: string;
+}
 
-export function ToBottom({ threadRef }: ToBottomProps) {
-  const has = useBotsSelector((s) => !!s.sel && s.bots.some((b) => b.id === s.sel));
+export function ToBottom({ threadRef, botId }: ToBottomProps) {
+  const sel = useBotsSelector((s) => botId ?? s.sel);
+  const has = useBotsSelector((s) => !!sel && s.bots.some((b) => b.id === sel));
   const n = useBotsSelector((s) => s.newCount), pinned = useBotsSelector((s) => s.pinned);
-  const sel = useBotsSelector((s) => s.sel);
   const fresh = has && !!n;
   return (
     <button className={`tobottom${fresh ? " new" : ""}${has && (fresh || !pinned) ? " show" : ""}`} id="tobottom" type="button"

@@ -227,6 +227,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type FocusEvent as ReactFocusEvent,
@@ -277,6 +278,8 @@ import {
   LIST_ROWS_MAX,
   nodeName,
   pinnedBots,
+  botRingRoute,
+  botStatusWords,
   plusShown,
   RAIL_WARM_MS,
   railRemembered,
@@ -331,9 +334,11 @@ import { useRailGit } from "./rail-git";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import { botHasUnread, useBotsRows } from "@platform/lib/botsPulse";
-import { navigateUrl } from "@platform/lib/router";
+import { NAV_EVENT, navigateUrl } from "@platform/lib/router";
 import { Face } from "@apps/bots/components/Face";
 import type { FaceSubject } from "@apps/bots/lib/face";
+import { isBotsPath } from "@apps/bots/routes";
+import { BotPeek, BOT_PEEK_ID, botHref, preloadBotChat, type BotPeekHandle } from "./BotPeek";
 
 /** THE RAIL'S WIDTH, SAID TO THE DOCUMENT (owner, 2026-11-05: "move the
  *  notification modal to the right a little bit so it doesn't cover the mini
@@ -387,6 +392,79 @@ const READ_WAIT_MS = 8000;
 /** How long a press waits for the card's composer to mount before it gives up
  *  putting the keyboard there (a cold chat chunk takes ~1s). */
 const FOCUS_WAIT_MS = 2500;
+
+/** THE WAIT FOR A CARD'S COMPOSER (`focusComposerSoon`, the bot card's too):
+ *  retried by frame until the composer exists and took the keyboard, for
+ *  FOCUS_WAIT_MS at most; over the moment the card no longer shows the chat
+ *  (`still`), the reader moves the keyboard to a control outside the card
+ *  (not the body, not the pressed ring), or does anything themselves — any
+ *  later press, and any later key when `keys` (capture, document-wide).
+ *  Returns the stop. */
+function composerWaitFor(o: {
+  still: () => boolean;
+  cardId: string;
+  focus: () => boolean;
+  ring: () => HTMLElement | null;
+  keys: boolean;
+  onStop: () => void;
+}): () => void {
+  let live = true;
+  let raf = 0;
+  const stop = () => {
+    live = false;
+    cancelAnimationFrame(raf);
+    document.removeEventListener("pointerdown", stop, true);
+    document.removeEventListener("keydown", stop, true);
+    o.onStop();
+  };
+  document.addEventListener("pointerdown", stop, true);
+  if (o.keys) document.addEventListener("keydown", stop, true);
+  const until = performance.now() + FOCUS_WAIT_MS;
+  const attempt = () => {
+    if (!live) return;
+    if (!o.still()) return stop();
+    const card = document.getElementById(o.cardId);
+    const a = document.activeElement;
+    if (a && a !== document.body && !card?.contains(a) && a !== o.ring()) return stop();
+    if (o.focus() && card?.contains(document.activeElement)) return stop();
+    if (performance.now() < until) raf = requestAnimationFrame(attempt);
+    else stop();
+  };
+  raf = requestAnimationFrame(attempt);
+  return stop;
+}
+
+/** Focus into a card once it is drawn (`focusCardSoon`): the class lands a
+ *  frame after the show, and a focus on a `visibility: hidden` box does
+ *  nothing, so try for a few frames rather than guess the one. */
+function cardFocusSoon(cardId: string, focus: () => boolean): void {
+  let tries = 0;
+  const attempt = () => {
+    const card = document.getElementById(cardId);
+    if (focus() && card?.contains(document.activeElement)) return;
+    if (++tries < 12) requestAnimationFrame(attempt);
+  };
+  requestAnimationFrame(attempt);
+}
+
+/** WHETHER THE READER IS ON THE BOTS PAGE (claude-rail-lib `botRingRoute`):
+ *  the path, re-read on every navigation the router announces and on the
+ *  history's own moves. */
+function subscribePath(fn: () => void): () => void {
+  window.addEventListener(NAV_EVENT, fn);
+  window.addEventListener("popstate", fn);
+  window.addEventListener("fused:urlchange", fn);
+  return () => {
+    window.removeEventListener(NAV_EVENT, fn);
+    window.removeEventListener("popstate", fn);
+    window.removeEventListener("fused:urlchange", fn);
+  };
+}
+const onBotsPage = () => typeof location !== "undefined" && isBotsPath(location.pathname);
+const notOnBotsPage = () => false;
+function useOnBotsPage(): boolean {
+  return useSyncExternalStore(subscribePath, onBotsPage, notOnBotsPage);
+}
 
 /** How long the +'s press beside the open pane waits for the pane's home
  *  composer (`paneHomeComposer`): the page may remount its chat first, and
@@ -1238,15 +1316,7 @@ export function ClaudeRail({
   // Focus into the card once it is drawn: the class lands a frame after the
   // show, and a focus on a `visibility: hidden` box does nothing, so try for
   // a few frames rather than guess the one.
-  const focusCardSoon = useCallback(() => {
-    let tries = 0;
-    const attempt = () => {
-      const card = document.getElementById(PEEK_ID);
-      if (peekRef.current?.focusChat() && card?.contains(document.activeElement)) return;
-      if (++tries < 12) requestAnimationFrame(attempt);
-    };
-    requestAnimationFrame(attempt);
-  }, []);
+  const focusCardSoon = useCallback(() => cardFocusSoon(PEEK_ID, () => !!peekRef.current?.focusChat()), []);
   // A PRESS ON A RING PUTS THE KEYBOARD IN THE COMPOSER (owner, 2026-10-31:
   // "instead of opening the sidebar we focus the composer on click, for the
   // user ready to type"). The card is drawn a frame after the show and the
@@ -1265,33 +1335,20 @@ export function ClaudeRail({
     // may be mid-word, and their keys are the reason to finish the move.
     (key: string, keys = true) => {
       composerWait.current?.();
-      let live = true;
-      let raf = 0;
-      const stop = () => {
-        live = false;
-        cancelAnimationFrame(raf);
-        document.removeEventListener("pointerdown", stop, true);
-        document.removeEventListener("keydown", stop, true);
-        if (composerWait.current === stop) composerWait.current = null;
-      };
+      // Focus gone to a control outside the card (not the body, not the
+      // pressed ring): the reader moved on, never pull it back (CodeRabbit
+      // on #2037) — `composerWaitFor`'s own rule.
+      const stop: () => void = composerWaitFor({
+        still: () => intent.current === key,
+        cardId: PEEK_ID,
+        focus: () => !!peekRef.current?.focusComposer(),
+        ring: () => ringEls.current.get(key) ?? null,
+        keys,
+        onStop: () => {
+          if (composerWait.current === stop) composerWait.current = null;
+        },
+      });
       composerWait.current = stop;
-      document.addEventListener("pointerdown", stop, true);
-      if (keys) document.addEventListener("keydown", stop, true);
-      const until = performance.now() + FOCUS_WAIT_MS;
-      const attempt = () => {
-        if (!live) return;
-        if (intent.current !== key) return stop();
-        const card = document.getElementById(PEEK_ID);
-        // Focus went to a control outside the card (not the body, not the
-        // pressed ring): the reader moved on, never pull it back
-        // (CodeRabbit on #2037).
-        const a = document.activeElement;
-        if (a && a !== document.body && !card?.contains(a) && a !== ringEls.current.get(key)) return stop();
-        if (peekRef.current?.focusComposer() && card?.contains(document.activeElement)) return stop();
-        if (performance.now() < until) raf = requestAnimationFrame(attempt);
-        else stop();
-      };
-      raf = requestAnimationFrame(attempt);
     },
     [intent],
   );
@@ -1306,6 +1363,191 @@ export function ClaudeRail({
     else focusCardSoon();
     // The ref is spent on the first run, so a later `seats` change is a no-op.
   }, [peekKey, seats, focusComposerSoon, focusCardSoon]);
+  // THE BOT CARD (BotPeek.tsx; owner, 2026-11-05: "a small overlay that
+  // just displays the chat exchange of the bot — the same exact behavior as
+  // the task floating box"): the pinned bots' rings (the rail's last section,
+  // `bots`) open a card of their own, on their own intent machine
+  // (`botIntent`, the list card's PeekIntent): a hover previews the bot's
+  // chat, a press pins it (held, favourites on — the only way the bots are
+  // drawn), the × / Escape / an outside press close it, Open is the door to
+  // the bot's page. ON THE BOTS PAGE the ring is that door again
+  // (claude-rail-lib `botRingRoute`): the page shows the bot itself, and a
+  // card up when the reader lands there closes. The rules below are the
+  // list card's, one each (the outside press, Escape with the focus nowhere,
+  // the press into the workbench frame), on the bot card's own state.
+  const onBots = useOnBotsPage();
+  const [botKey, setBotKey] = useState<string | null>(null);
+  const [botPinned, setBotPinned] = useState(false);
+  const [botHeld, setBotHeld] = useState(false);
+  const botHeldRef = useRef(false);
+  botHeldRef.current = botHeld;
+  const botIntentRef = useRef<PeekIntent | null>(null);
+  if (!botIntentRef.current) {
+    botIntentRef.current = new PeekIntent({
+      show: setBotKey,
+      pin: (on) => {
+        setBotPinned(on);
+        if (on && favsOnRef.current) setBotHeld(true);
+      },
+      // The chat chunk (BotPeek `preloadBotChat`): the Bots page's thread and
+      // its markdown stack, fetched on the pointer's arrival.
+      warm: () => preloadBotChat(),
+    });
+  }
+  const botIntent = botIntentRef.current;
+  useEffect(() => () => botIntent.dispose(), [botIntent]);
+  useEffect(() => {
+    if (!botKey) setBotHeld(false);
+  }, [botKey]);
+  const botEls = useRef(new Map<string, HTMLElement>());
+  const botAnchorOf = useCallback((id: string) => botEls.current.get(id) ?? null, []);
+  const botPeekRef = useRef<BotPeekHandle | null>(null);
+  // A bot unpinned or hidden under the pointer takes its card with it.
+  const botIds = JSON.stringify(bots.map((b) => b.id));
+  useEffect(() => {
+    botIntent.prune(new Set(JSON.parse(botIds) as string[]));
+  }, [botIds, botIntent]);
+  const botShown = useMemo(() => (peekOn && botKey ? (bots.find((b) => b.id === botKey) ?? null) : null), [peekOn, botKey, bots]);
+  // The flag off, or the Bots page reached with the card up: nothing to show.
+  useEffect(() => {
+    if ((!peekOn || onBots) && botKey) {
+      setBotHeld(false);
+      botIntent.dismiss();
+    }
+  }, [peekOn, onBots, botKey, botIntent]);
+  const botInsidePress = useRef(false);
+  const onBotPressInside = useCallback(() => {
+    botInsidePress.current = true;
+    botIntent.pressStart();
+  }, [botIntent]);
+  // THE OUTSIDE PRESS (the list card's rule above, on this card): a pinned
+  // card exempts the bots' own rings and the bridge; a hover card the whole
+  // rail; a held card nothing closes but its × and Open.
+  useEffect(() => {
+    if (!botKey) return;
+    let tick = 0;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node | null;
+      const el = t instanceof Element ? t : null;
+      if (el?.closest(".claude-rail-peek-bridge")) return;
+      if (botHeldRef.current) return;
+      if (botPinned) {
+        if (el && railRef.current?.querySelector(".claude-rail-bots")?.contains(el)) return;
+      } else if (railRef.current?.contains(t)) return;
+      botInsidePress.current = false;
+      window.clearTimeout(tick);
+      tick = window.setTimeout(() => {
+        if (!botInsidePress.current) botIntent.dismiss();
+      }, 0);
+    };
+    const onUp = () => botIntent.pressEnd();
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+    return () => {
+      window.clearTimeout(tick);
+      document.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+    };
+  }, [botKey, botIntent, botPinned]);
+  // NO ROOM (the list card's `onNoRoom`): the ring is a door until a resize,
+  // and a press that found no room opens the bot's page.
+  const [botNoRoom, setBotNoRoom] = useState(false);
+  const botPressedHref = useRef<string | null>(null);
+  const onBotNoRoom = useCallback(() => {
+    botIntent.dismiss();
+    setBotNoRoom(true);
+    const href = botPressedHref.current;
+    botPressedHref.current = null;
+    if (href) void navigateUrl(href);
+  }, [botIntent]);
+  // …until the window resizes, OR THE ROW GROWS (CodeRabbit on #2143): the
+  // sidebar folding widens the row with no window resize, and the card may
+  // fit then. The observer fires once as it starts (the width as it is), so
+  // only a width PAST that one clears the flag.
+  useEffect(() => {
+    if (!botNoRoom) return;
+    const re = () => setBotNoRoom(false);
+    window.addEventListener("resize", re);
+    const row = rowOf(railRef.current);
+    let was = row?.getBoundingClientRect().width ?? 0;
+    const ro =
+      row && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            const w = row.getBoundingClientRect().width;
+            if (w > was + 1) re();
+            was = Math.max(was, w);
+          })
+        : null;
+    if (row && ro) ro.observe(row);
+    return () => {
+      window.removeEventListener("resize", re);
+      ro?.disconnect();
+    };
+  }, [botNoRoom]);
+  useEffect(() => {
+    setBotNoRoom(false);
+  }, [favBox]);
+  const dismissBotToRing = useCallback(() => {
+    const key = botIntent.current;
+    botIntent.dismiss(true);
+    if (key) botEls.current.get(key)?.focus({ preventScroll: true });
+  }, [botIntent]);
+  const botComposerWait = useRef<(() => void) | null>(null);
+  const focusBotComposerSoon = useCallback(
+    (id: string) => {
+      botComposerWait.current?.();
+      const stop: () => void = composerWaitFor({
+        still: () => botIntent.current === id,
+        cardId: BOT_PEEK_ID,
+        focus: () => !!botPeekRef.current?.focusComposer(),
+        ring: () => botEls.current.get(id) ?? null,
+        keys: true,
+        onStop: () => {
+          if (botComposerWait.current === stop) botComposerWait.current = null;
+        },
+      });
+      botComposerWait.current = stop;
+    },
+    [botIntent],
+  );
+  useEffect(() => () => botComposerWait.current?.(), []);
+  // A ring's press: the card, shown now and pinned, the keyboard on its way
+  // to the composer (the list card's `pressRing`, the card route alone).
+  const pressBotRing = (id: string, href: string) => {
+    botPressedHref.current = href;
+    requestAnimationFrame(() => {
+      botPressedHref.current = null;
+    });
+    botIntent.press(id);
+    hideHint();
+    focusBotComposerSoon(id);
+  };
+  // ESCAPE WITH THE FOCUS NOWHERE closes a pinned bot card (the list card's
+  // rule).
+  useEffect(() => {
+    if (!botPinned || !botKey) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.target !== document.body && e.target !== document.documentElement) return;
+      if (botHeldRef.current) return;
+      e.preventDefault();
+      dismissBotToRing();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [botPinned, botKey, dismissBotToRing]);
+  const onBotRingKey = (id: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      botIntent.showNow(id, true);
+      cardFocusSoon(BOT_PEEK_ID, () => !!botPeekRef.current?.focusChat());
+    } else if (e.key === "Escape" && botIntent.current && !botHeldRef.current) {
+      e.preventDefault();
+      botIntent.dismiss();
+    }
+  };
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned card. The ring (below),
   // the card's head and its chat each take their own Escape; a press that
   // opened the card in an engine that does not focus a link on click (WebKit)
@@ -1328,19 +1570,27 @@ export function ClaudeRail({
   // focus. A blur with the focus anywhere else — another app, another
   // window — keeps the card. Read a tick later: the engines disagree on
   // whether `activeElement` has moved yet when the blur fires.
+  // …AND THE BOT CARD'S (below): one word to the page for either pinned card
+  // (`anyPinned`), and the blur onto the frame closes whichever is pinned
+  // and not held.
   const pinnedUp = pinned && peekKey !== null;
+  const botPinnedUp = botPinned && botKey !== null;
+  const anyPinned = pinnedUp || botPinnedUp;
+  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp });
+  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp };
   const pinnedRef = useRef(onCardPinned);
   pinnedRef.current = onCardPinned;
   useEffect(() => {
-    if (!pinnedUp) return;
+    if (!anyPinned) return;
     pinnedRef.current?.(true);
     let tick = 0;
     const onBlur = () => {
       window.clearTimeout(tick);
       tick = window.setTimeout(() => {
         const a = document.activeElement;
-        if (heldRef.current) return;
-        if (a instanceof HTMLIFrameElement && !document.getElementById(PEEK_ID)?.contains(a)) intent.dismiss();
+        if (!(a instanceof HTMLIFrameElement)) return;
+        if (pinnedNow.current.task && !heldRef.current && !document.getElementById(PEEK_ID)?.contains(a)) intent.dismiss();
+        if (pinnedNow.current.bot && !botHeldRef.current && !document.getElementById(BOT_PEEK_ID)?.contains(a)) botIntent.dismiss();
       }, 0);
     };
     window.addEventListener("blur", onBlur);
@@ -1349,7 +1599,7 @@ export function ClaudeRail({
       window.removeEventListener("blur", onBlur);
       pinnedRef.current?.(false);
     };
-  }, [pinnedUp, intent]);
+  }, [anyPinned, intent, botIntent]);
   const onRingKey = (key: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
     if (e.key === "ArrowLeft") {
       e.preventDefault();
@@ -1409,7 +1659,7 @@ export function ClaudeRail({
   // the unmoved pointer is not a hover (owner, 2026-11-04: "when I
   // unfavourite, a random task from above opens"). In the layout phase: the
   // engine's enter comes after the paint.
-  const ringOrder = JSON.stringify([seats.map((x) => x.pulse.key), favs.map((x) => x.pulse.key)]);
+  const ringOrder = JSON.stringify([seats.map((x) => x.pulse.key), favs.map((x) => x.pulse.key), bots.map((b) => b.id)]);
   const ringsWere = useRef(ringOrder);
   useLayoutEffect(() => {
     if (ringsWere.current === ringOrder) return;
@@ -2202,23 +2452,59 @@ export function ClaudeRail({
             <div className="claude-rail-bots" role="list" aria-label="Pinned bots">
               {bots.map((b) => {
                 const name = b.name || b.id;
-                const href = "/bots/" + encodeURIComponent(b.id);
+                const href = botHref(b.id);
                 const subject = { id: b.id, name, face: (b.face ?? null) as FaceSubject["face"], status: b.status as FaceSubject["status"] };
                 const waiting = b.status === "waiting";
                 const unread = botHasUnread(b);
+                // THE RING'S CARD (BotPeek; claude-rail-lib `botRingRoute`):
+                // a hover previews, a press pins — or, on the Bots page, with
+                // the card off or no room for one, the ring is the page's
+                // door as it was. While the card can stand it is the ring's
+                // caption (an empty hint is the opt-out, as the chats').
+                const card = botRingRoute({ onBotsPage: onBots, peekOn, noRoom: botNoRoom }) === "card";
+                const peeked = card && botKey === b.id;
                 return (
                   <div key={b.id} role="listitem" className="claude-rail-seat">
                     <a
+                      ref={(el) => {
+                        if (el) botEls.current.set(b.id, el);
+                        else botEls.current.delete(b.id);
+                      }}
                       href={href}
-                      className={"sidebar-rail-btn claude-rail-item claude-rail-bot" + (waiting ? " is-waiting" : "")}
-                      aria-label={`${name} — ${waiting ? "waiting for you" : b.status}`}
-                      data-hint={name}
+                      data-bot-id={b.id}
+                      className={
+                        "sidebar-rail-btn claude-rail-item claude-rail-bot" +
+                        (waiting ? " is-waiting" : "") +
+                        (peeked ? " peeked" : "") +
+                        (peeked && botPinned ? " is-pinned" : "")
+                      }
+                      aria-label={`${name} — ${botStatusWords(b.status)}`}
+                      data-hint={card ? "" : name}
+                      data-hint-title={name}
                       data-hint-side="left"
+                      {...(card
+                        ? {
+                            "aria-haspopup": "dialog" as const,
+                            "aria-expanded": peeked,
+                            "aria-keyshortcuts": "ArrowLeft",
+                            ...(peeked ? { "aria-controls": BOT_PEEK_ID } : {}),
+                            onKeyDown: onBotRingKey(b.id),
+                            onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(b.id, e, botIntent),
+                            onFocus: (e: ReactFocusEvent<HTMLAnchorElement>) =>
+                              takeQuietFocus(e.currentTarget) ? botIntent.quietFocus(b.id) : botIntent.enterRing(b.id, "focus"),
+                            onPointerLeave: () => botIntent.leaveRing("pointer"),
+                            onBlur: () => botIntent.leaveRing("focus"),
+                          }
+                        : {})}
                       onClick={(e) => {
                         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                         e.preventDefault();
-                        hideHint();
-                        navigateUrl(href);
+                        if (!card) {
+                          hideHint();
+                          void navigateUrl(href);
+                          return;
+                        }
+                        pressBotRing(b.id, href);
                       }}
                     >
                       <span className="claude-rail-bot-face" aria-hidden="true">
@@ -2272,6 +2558,30 @@ export function ClaudeRail({
             intent.press(key);
             if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key);
           }}
+        />
+      )}
+      {peekOn && bots.length > 0 && (
+        // THE BOT CARD (BotPeek; header): mounted while the rail draws any
+        // pinned bot, so a close fades like the list card's; its chat mounts
+        // only once a bot is shown.
+        <BotPeek
+          ref={botPeekRef}
+          id={BOT_PEEK_ID}
+          shown={botShown}
+          anchorOf={botAnchorOf}
+          railEl={railRef.current}
+          avoid={favBox}
+          onPointerEnter={() => botIntent.enterCard()}
+          onPointerLeave={() => botIntent.leaveCard()}
+          onCone={(inside) => (inside ? botIntent.enterCone() : botIntent.leaveCone())}
+          onPressInside={onBotPressInside}
+          onHold={(on) => botIntent.hold(on)}
+          onDismiss={dismissBotToRing}
+          onNoRoom={onBotNoRoom}
+          onOpen={(href) => void navigateUrl(href)}
+          held={botHeld}
+          onHeld={setBotHeld}
+          pinned={botPinned}
         />
       )}
       {card && (

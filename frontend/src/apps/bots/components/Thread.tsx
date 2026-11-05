@@ -15,7 +15,7 @@ import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
-import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
+import { act, clearScrollSeq, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { approvalParts } from "@platform/lib/approvalParts";
 import { GateCard } from "@platform/ui/GateCard";
@@ -169,8 +169,8 @@ export function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: {
   };
   const openChat = (
     <div className="ft">
-      <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"}
-        onClick={() => { if (getState().bots.some((x) => x.id === h.target)) select(h.target); }}>Open {who}'s chat</button>
+      {/* The thread's own click handler opens it (`data-open-bot`): the host decides where the door goes (ThreadProps `onOpenBot`). */}
+      <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"} data-open-bot={h.target}>Open {who}'s chat</button>
     </div>
   );
   // A relayed APPROVAL is the shared gate card, the same one the bot's own chat shows; this wrapper only adds the door
@@ -457,12 +457,25 @@ export interface ThreadProps {
   onReact: (anchor: Element, seq: number) => void;
   /** A reply button was clicked: quote this message in the composer. */
   onReply: (r: { seq: number; text: string }) => void;
+  /** Whether sitting at the thread's end marks the bot READ (`markSeen`): the page always (the default); the rail's
+   *  bot card only once a press pinned it (shell/claude-rail BotPeek; Bugbot on #2143) — a hover's glance over the
+   *  card must not spend the rail's unread dot. */
+  markRead?: boolean;
+  /** A DOOR TO ANOTHER BOT'S CHAT — a hand-off card's "Open <bot>'s chat", a relayed line's "Read more" (`seq`: the
+   *  message to land on): the page selects the bot (`select` / `jumpTo`, the default); the rail's bot card, which
+   *  shows one bot and selects nothing, goes to the bot's page instead (components/BotChat; CodeRabbit on #2143). */
+  onOpenBot?: (id: string, seq?: number) => void;
 }
 
-export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply }: ThreadProps) {
+export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply, markRead = true, onOpenBot }: ThreadProps) {
   const S = useBots();
   const appsRoot = useAppsRoot();
   const botId = b?.id ?? "";
+  // THE BOT IS THE PROP'S, never the store's selection (2026-11-05): on the page the two are one (ChatPane passes
+  // cur()); in the rail's bot card off the page (shell/claude-rail BotPeek, components/BotChat) nothing is selected
+  // and `b` is the pinned bot. The observers below read it off a ref: their closures are the mount's.
+  const botRef = useRef(b);
+  botRef.current = b;
   const evs = b ? S.events[b.id] || EMPTY : EMPTY;
   const firstSeq = evs.length ? evs[0].seq : 0;
 
@@ -631,7 +644,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // "Viewed" = a message has scrolled into the thread at least once. The .ev wrapper has no box: watch the message inside.
     const io = viewer.current;
     if (io) th.querySelectorAll<HTMLElement>(".ev[data-seq]:not([data-obs])").forEach((el) => { el.dataset.obs = "1"; const m = evBox(el); if (m) io.observe(m); });
-    const c = cur();
+    const c = b;
     // Folded rows never scroll into view; they are behind the marker, not unread. Steps folded behind a result the
     // same: the seed only ever folds what was already seen, and a click that folds is a reader who has read them.
     if (folded && botId) { const set = viewedSet(botId); for (const e of evs.slice(0, ci)) set.add(e.seq); }
@@ -642,7 +655,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // does not draw a New line above messages you already watched arrive. In Stage the thread stays beside the page,
     // except in the narrow fallback (.sfull), where the live view covers it: nothing is seen then.
     const s2 = getState();
-    if (c && !document.hidden && s2.pinned && !(s2.fast && botsRoot().classList.contains("sfull"))) markSeen(c.id, c.seq);
+    if (c && markRead && !document.hidden && s2.pinned && !(s2.fast && botsRoot().classList.contains("sfull"))) markSeen(c.id, c.seq);
   });
 
   // The observer (threshold .4, rooted at the thread) and the ResizeObserver that keeps a pinned thread pinned when its
@@ -651,7 +664,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   useEffect(() => {
     const th = threadRef.current; if (!th) return;
     const io = new IntersectionObserver((entries) => {
-      const c = cur(); if (!c) return;
+      const c = botRef.current; if (!c) return;
       const set = viewedSet(c.id);
       let hit = false;
       for (const en of entries) {
@@ -669,9 +682,19 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
 
   // ---- clicks: react → picker, reply → quote, option → answer, approve / deny ----
   const onClick = (ev: ReactMouseEvent<HTMLDivElement>) => {
-    const t = ev.target as Element, sel = getState().sel;
+    const t = ev.target as Element, sel = botId || null;
     const jump = t.closest<HTMLElement>("[data-jump-bot]");
-    if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
+    if (jump) {
+      const id = jump.dataset.jumpBot || "", seq = Number(jump.dataset.jumpSeq);
+      if (onOpenBot) { if (getState().bots.some((x) => x.id === id)) onOpenBot(id, seq); } else jumpTo(id, seq);
+      return;
+    }
+    const open = t.closest<HTMLElement>("[data-open-bot]");
+    if (open) {
+      const id = open.dataset.openBot || "";
+      if (getState().bots.some((x) => x.id === id)) { if (onOpenBot) onOpenBot(id); else select(id); }
+      return;
+    }
     // Wide-table footer (md.ts): "Show all N rows" toggles the 12-row cap; "Copy as CSV" copies every row, hidden ones too.
     const more = t.closest<HTMLElement>("[data-tmore]");
     if (more) {

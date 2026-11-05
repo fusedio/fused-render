@@ -19,6 +19,9 @@ const { publishTaskFavourites, publishFavouritesParent, resetTaskFavouritesFlagF
 const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import("./rail-peek-flag");
 const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-store");
+const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
+const { dropSharedPrefsRead } = await import("@platform/lib/api");
+const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 
 const DIR = "/home/me/apps/demo";
 
@@ -106,6 +109,12 @@ const measuring: Record<string, unknown> = {
     takeRecords() {
       return [];
     }
+  },
+  // The bot card's thread (apps/bots Thread) watches its rows into view.
+  IntersectionObserver: class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
   },
   getComputedStyle: () => ({ display: "block", paddingTop: "0", paddingBottom: "0", rowGap: "0", getPropertyValue: () => "" }),
 };
@@ -265,4 +274,86 @@ describe("ClaudeRail's card beside the pane", () => {
     expect(r.root.findAllByType(RailPeek)).toHaveLength(0);
   });
 
+});
+
+describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
+  const doc = (globalThis as unknown as { document: Record<string, unknown> }).document;
+  const loc = (globalThis as unknown as { location: { pathname: string } }).location;
+  let hadGetById = false;
+  beforeEach(() => {
+    installPortalContainer();
+    (doc.body as { createNodeMock: unknown }).createNodeMock = () => fakeEl();
+    hadGetById = "getElementById" in doc;
+    doc.getElementById ??= () => null;
+    resetBotsPulseForTests();
+  });
+  afterEach(() => {
+    removePortalContainer();
+    if (!hadGetById) delete doc.getElementById;
+    resetBotsPulseForTests();
+    loc.pathname = "/";
+    // Nothing mounted here joins the shared prefs read, but a read that this
+    // file's never-settling fetch stub pinned would stay pinned for every
+    // later suite in the process (platform/lib/api): let it go regardless.
+    dropSharedPrefsRead();
+  });
+  /** A pinned bot, as the pulse carries one (botsPulse `BotPulseRow`). */
+  const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
+  const ring = (r: ReactTestRenderer) => r.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1");
+  const press = async (r: ReactTestRenderer) => {
+    await act(async () => {
+      ring(r).props.onClick({ preventDefault() {}, stopPropagation() {}, button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, detail: 1, currentTarget: fakeEl() });
+      await new Promise((res) => setTimeout(res, 0));
+    });
+    // The card's chat chunk (BotPeek's lazy BotChat) lands a tick later.
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 30));
+    });
+  };
+
+  test("a pinned bot's ring opens its card: a dialog's door, and the press shows the card on that bot", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: true });
+    await act(async () => {
+      publishBots([BOT]);
+    });
+    expect(ring(r).props["aria-haspopup"]).toBe("dialog");
+    expect(ring(r).props["aria-expanded"]).toBe(false);
+    // The card is the ring's caption while it can stand (an empty hint).
+    expect(ring(r).props["data-hint"]).toBe("");
+    // Mounted with the bots, closed: nothing shown yet.
+    expect(r.root.findAllByType(BotPeek)).toHaveLength(1);
+    expect(r.root.findByType(BotPeek).props.shown).toBeNull();
+    await press(r);
+    expect(r.root.findByType(BotPeek).props.shown?.id).toBe("b1");
+    expect(r.root.findByType(BotPeek).props.pinned).toBe(true);
+    expect(ring(r).props["aria-expanded"]).toBe(true);
+    expect(ring(r).props["aria-controls"]).toBe("claude-rail-bot-peek");
+    expect(ring(r).props.className).toContain("is-pinned");
+    const chats = () => r.root.findAll((n) => n.type === "div" && n.props.className === "claude-rail-peek-chat is-shown");
+    expect(chats()).toHaveLength(1);
+    // The × closes the card; its chat leaves once the fade is done (BotPeek
+    // CHAT_LINGER_MS; Bugbot on #2143) — nothing polls for a closed card.
+    const close = r.root.find((n) => n.type === "button" && n.props.className === "claude-rail-peek-btn claude-rail-peek-close");
+    await act(async () => {
+      close.props.onClick();
+      await new Promise((res) => setTimeout(res, 0));
+    });
+    expect(r.root.findByType(BotPeek).props.shown).toBeNull();
+    expect(chats()).toHaveLength(1);
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, CHAT_LINGER_MS + 50));
+    });
+    expect(chats()).toHaveLength(0);
+  });
+
+  test("on the Bots page the ring is the page's door: no popup, the name as its caption", async () => {
+    loc.pathname = "/bots/b1";
+    const r = await mountRail({ paneOpen: false, favourites: true });
+    await act(async () => {
+      publishBots([BOT]);
+    });
+    expect(ring(r).props["aria-haspopup"]).toBeUndefined();
+    expect(ring(r).props["data-hint"]).toBe("Helper");
+    expect(ring(r).props.href).toBe("/bots/b1");
+  });
 });
