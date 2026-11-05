@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import previewTile from "@assets/canvas-preview-tile.png";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Loader2 } from "lucide-react";
 import {
   generateCanvasName,
   sanitizeCanvasName,
@@ -589,6 +590,19 @@ export default function Canvases() {
       <div className="canvases-inner">
         <div className={"canvases-head" + (creating ? " is-creating" : "")}>
           <h1 className="canvases-title">Workbench Canvases</h1>
+          {/* The disk baseline is on screen while the fresh listing is in
+              flight (stale-while-revalidate): a small non-blocking spinner,
+              never a scrim — the stale cards stay usable. */}
+          {refreshing && (
+            <span
+              className="canvases-refreshing"
+              role="status"
+              aria-label="Refreshing the list"
+              title="Refreshing the list…"
+            >
+              <Loader2 className="canvases-refreshing-icon" aria-hidden />
+            </span>
+          )}
           {/* The picker shows signed out too: each env can be its own login
               (custom's `[auth]`, D1412), so a signed-out pick must still be
               able to switch back. The rest needs that env's login. */}
@@ -702,9 +716,6 @@ export default function Canvases() {
         <p className="canvases-sub">
           Develop workbench canvases locally: pick a canvas, edit its files with
           Claude Code, and every save is pushed back to the hosted workbench.
-          <span className="canvases-refreshing" role="status">
-            {refreshing ? " Refreshing the list…" : ""}
-          </span>
         </p>
         {error && <ErrorBanner>{error}</ErrorBanner>}
         {status && !status.cli_found && (
