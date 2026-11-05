@@ -37,10 +37,22 @@
   font-size: 13px;
 }
 
-/* The disk baseline is on screen; the fresh listing is still in flight. */
+/* The disk baseline is on screen; the fresh listing is still in flight.
+   A small spinner beside the title — non-blocking, the stale cards stay live. */
 .canvases-refreshing {
-  opacity: 0.7;
-  font-style: italic;
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+}
+.canvases-refreshing-icon {
+  width: 16px;
+  height: 16px;
+  animation: canvases-refreshing-spin 0.9s linear infinite;
+}
+@keyframes canvases-refreshing-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .canvases-head-actions {
