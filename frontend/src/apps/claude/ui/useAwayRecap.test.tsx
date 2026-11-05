@@ -287,7 +287,7 @@ test("two chats on one page, one return, ONE model call", async () => {
   expect(h.calls.length).toBe(1);
 });
 
-// ---- THE EAGER ASK (prefs task_recap.enabled): the fold on open, not only on return.
+// ---- THE EAGER ASK (prefs chat_recap.enabled): the fold on open, not only on return.
 
 test("eager: asks once on mount and shows the fold; flag off asks nothing", async () => {
   const off = harness();

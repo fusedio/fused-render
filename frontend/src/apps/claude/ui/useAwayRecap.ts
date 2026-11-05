@@ -43,9 +43,9 @@ export const AWAY_MS = 60_000;
  *  turn"). */
 export const MAX_FAILURES = 2;
 
-/** With the Tasks recap titles on the server only reads what the Tasks worker
- *  stored, and says `pending: true` while it has nothing yet. The chat asks
- *  again this often (a dict lookup on the server), for at most this long. */
+/** Should a server answer `pending: true` (it has nothing yet; the current
+ *  server produces the recap on demand and never does), the chat asks again
+ *  this often, for at most this long. */
 export const POLL_MS = 15_000;
 // Longer than the worker's 10 min failed-recap retry (tasks.py `_RECAP_RETRY_S`),
 // or a first haiku failure would land after the client gave up.
@@ -134,11 +134,10 @@ export interface AwayRecapOptions extends AwayRecapEnv {
    *  the reader opened, not the landing or an embed. */
   enabled: boolean;
   /**
-   * ALSO RECAP ON OPEN (prefs `task_recap.enabled`, the Tasks recap titles).
-   * With it on, a chat that is not mid-turn asks once per position as soon as
-   * it has one, instead of waiting for an absence. Off (the default) is the
-   * away-only behaviour above, untouched. The server call is cheap when the
-   * Tasks listing already stored the recap (`_recap` reads the store first).
+   * ALSO RECAP ON OPEN (prefs `chat_recap.enabled`, default on). With it on,
+   * a chat that is not mid-turn asks once per position as soon as it has one,
+   * instead of waiting for an absence. The server produces the recap on
+   * demand (one Haiku call, cached per position in memory).
    */
   eager?: boolean;
   /** Overrides for `POLL_MS` (tests). */

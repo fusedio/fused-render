@@ -39,11 +39,11 @@ const queueListeners = new Set<(v: boolean) => void>();
  *  send and decide waited up to 8 s until one succeeded). */
 let settledOnce = false;
 
-/** The Tasks recap titles switch (`prefs.task_recap.enabled`): with it on an
- *  open chat shows its recap fold on open, not only after an absence. Same
- *  shape as `queue` — opt-in, so "not asked yet" and "off" are one answer —
- *  and read by the same single prefs GET. */
-let recapTitles = false;
+/** The chat recap switch (`prefs.chat_recap.enabled`): with it on an open
+ *  chat shows its recap fold on open, not only after an absence. DEFAULT ON
+ *  (unlike `queue`), so "not asked yet" and "on" are one answer; read by the
+ *  same single prefs GET. */
+let recapTitles = true;
 const recapListeners = new Set<(v: boolean) => void>();
 
 /** The Breakout switch (`prefs.breakout.enabled`): opt-in beta, off until the
@@ -194,7 +194,7 @@ function read(): Promise<void> {
       // `=== true`: the queue is OPT-IN, so a server with no such field is a
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
-      setRecapTitles(p.task_recap?.enabled === true);
+      setRecapTitles(p.chat_recap?.enabled !== false);
       if (breakoutPublishedAt === breakoutStamp) setBreakout(p.breakout?.enabled === true);
       // A server that predates the field keeps "auto", the server's default.
       setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
@@ -252,8 +252,8 @@ export function rereadFlags(): Promise<void> {
  *  keeping the answer it read at load. */
 export const QUEUE_FLAG_BROADCAST_KEY = "fused-render:project-queue";
 
-/** The same announcement for the recap titles switch. */
-export const RECAP_FLAG_BROADCAST_KEY = "fused-render:task-recap-titles";
+/** The same announcement for the chat recap switch. */
+export const RECAP_FLAG_BROADCAST_KEY = "fused-render:chat-recap";
 
 /** The same announcement for the Breakout switch. */
 export const BREAKOUT_FLAG_BROADCAST_KEY = "fused-render:breakout";
@@ -269,8 +269,8 @@ export function publishBreakoutEnabled(next: boolean) {
   }
 }
 
-/** Hand over a known-fresh recap-titles answer (a PUT's prefs payload). */
-export function publishTaskRecapTitlesEnabled(next: boolean) {
+/** Hand over a known-fresh chat-recap answer (a PUT's prefs payload). */
+export function publishChatRecapEnabled(next: boolean) {
   setRecapTitles(next);
   try {
     localStorage.setItem(RECAP_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
@@ -305,7 +305,7 @@ if (typeof window !== "undefined") {
   window.addEventListener("storage", (ev) => {
     if (ev.key !== RECAP_FLAG_BROADCAST_KEY || !ev.newValue) return;
     try {
-      setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
+      setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on !== false);
     } catch {
       // Malformed: the next focus re-reads.
     }
@@ -313,7 +313,7 @@ if (typeof window !== "undefined") {
   window.addEventListener("storage", (ev) => {
     if (ev.key !== BREAKOUT_FLAG_BROADCAST_KEY || !ev.newValue) return;
     try {
-      setBreakout((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
+      setBreakout((JSON.parse(ev.newValue) as { on?: unknown }).on !== false);
     } catch {
       // Malformed: the next focus re-reads.
     }
@@ -345,9 +345,9 @@ export function useProjectQueueEnabled(): boolean {
   return current;
 }
 
-/** Subscribe to the recap titles switch (see `recapTitles`). Triggers the one
+/** Subscribe to the chat recap switch (see `recapTitles`). Triggers the one
  *  prefs read, like `useProjectQueueEnabled`. */
-export function useTaskRecapTitlesEnabled(): boolean {
+export function useChatRecapEnabled(): boolean {
   const [current, setCurrent] = useState<boolean>(() => recapTitles);
   useEffect(() => {
     recapListeners.add(setCurrent);
@@ -361,7 +361,7 @@ export function useTaskRecapTitlesEnabled(): boolean {
 }
 
 /** Subscribe to the Breakout switch (see `breakout`). Triggers the one prefs
- *  read, like `useTaskRecapTitlesEnabled`. */
+ *  read, like `useChatRecapEnabled`. */
 export function useBreakoutEnabled(): boolean {
   const [current, setCurrent] = useState<boolean>(() => breakout);
   useEffect(() => {
@@ -394,7 +394,7 @@ export function resetFlagsForTests() {
   generation += 1;
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
-  setRecapTitles(false);
+  setRecapTitles(true);
   setBreakout(false);
   setDefaultPermission("auto");
 }

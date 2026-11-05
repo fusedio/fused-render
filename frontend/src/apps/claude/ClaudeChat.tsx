@@ -175,7 +175,7 @@ import {
   queueEnabled,
   queueFlagReady,
   useProjectQueueEnabled,
-  useTaskRecapTitlesEnabled,
+  useChatRecapEnabled,
   useBreakoutEnabled,
 } from "./feature-flag";
 import { WaitingCard, WaitingRow } from "./ui/Waiting";
@@ -5445,10 +5445,11 @@ function ChatBody(props: ChatBodyProps) {
    *  the ref is null on the render that binds the listeners and only the check
    *  runs late enough to have it. */
   const recapRoot = useCallback(() => rootRef.current, [rootRef]);
-  // With the Tasks recap titles on, the fold also shows on open (see
-  // `useAwayRecap` `eager`); off, only after an absence. Subscribed, so
-  // toggling it in Preferences reaches an open chat (storage broadcast).
-  const recapEager = useTaskRecapTitlesEnabled();
+  // The chat recap switch (default on): off means no fold anywhere and no
+  // endpoint call; on, the fold also shows on open (see `useAwayRecap`
+  // `eager`), not only after an absence. Subscribed, so toggling it in
+  // Preferences reaches an open chat (storage broadcast).
+  const recapOn = useChatRecapEnabled();
   const away = useAwayRecap({
     file,
     sessionId: state.sessionId,
@@ -5457,10 +5458,9 @@ function ChatBody(props: ChatBodyProps) {
     hasDraft,
     // TWO facts: this mount being a conversation rather than the landing, and
     // the host having said this is the chat the reader opened (`recap`,
-    // above). The Preferences switch that used to sit in front of these left
-    // on 2026-09-21 — the recap is simply on.
-    enabled: inChat && !!props.recap,
-    eager: recapEager,
+    // above), plus the Preferences switch (default on).
+    enabled: inChat && !!props.recap && recapOn,
+    eager: recapOn,
     root: recapRoot,
   });
   // Heads-up notes (server: claude_agent/headsup.py): a side check polled while

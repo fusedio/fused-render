@@ -28,9 +28,9 @@ export interface RecapResponse {
   for_uuid: string;
   /** ISO-8601, when it was generated. */
   at: string;
-  /** Only with the Tasks recap titles on: the server never generates then (the
-   *  Tasks worker does), so an empty `text` with `pending: true` means "not
-   *  yet — ask again", and `pending: false` means there is nothing to wait for. */
+  /** Legacy: an older server said `pending: true` with an empty `text` for
+   *  "not yet — ask again". The current server generates on demand and never
+   *  sends it; the client still honours it. */
   pending?: boolean;
 }
 

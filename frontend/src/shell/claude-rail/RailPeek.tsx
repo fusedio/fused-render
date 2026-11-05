@@ -142,7 +142,6 @@ import {
   isDraftTask,
   messageStamp,
   nextRunAt,
-  recapTitlesOn,
   relativeWhen,
   taskColumn,
   taskHref,
@@ -243,8 +242,7 @@ interface SeatFacts {
   renamable: boolean;
   /** The title line as the List row builds it (its `hint` is the whole text). */
   line: CardTitle;
-  /** The reply line the List row prints after the title in italics — only
-   *  with task recap titles OFF (with them on, the title IS the recap); ""
+  /** The reply line the List row prints after the title in italics; ""
    *  when the row holds none, or is pulse-only. */
   reply: string;
 }
@@ -277,7 +275,7 @@ function seatFacts(seat: RailRow, place: RailPlace): SeatFacts {
     whenFull: row ? taskWhen(merged as Task).title : messageStamp(t.happened_at || t.last_active || 0),
     renamable: !!t.session_id && !draft && !/^(pending|draft|new):/.test(t.key),
     line,
-    reply: row && !recapTitlesOn(row) ? (row.last_reply || "").trim() : "",
+    reply: row ? (row.last_reply || "").trim() : "",
   };
 }
 
@@ -1495,9 +1493,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   </span>
                   {head.reply && (
                     // THE REPLY LINE: what the List prints after the title in
-                    // italics — the last turn's reply, with task recap titles
-                    // off (on, the title IS the recap — owner, 2026-11-02:
-                    // "show recap … like the Tasks view list"). Same hint as
+                    // italics — the last turn's reply. Same hint as
                     // the title: both lines whole.
                     <span
                       className="claude-rail-peek-reply"
