@@ -2228,9 +2228,10 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
     servers = _plugin_mcp_servers(CLAUDE_DIR) if strict else {}
     with _private_open(path) as fh:
         json.dump({"mcpServers": {**servers, PERMISSION_SERVER: {
-            # sys.executable, matching how the app spawns every other helper
-            # (executor.py): in the packaged .app that is the bundled python.
-            "command": sys.executable,
+            # The CLI re-launches this on respawn, possibly after an app
+            # restart: `_stable_python` is sys.executable except under an
+            # AppImage, whose python lives in a vanishing mount.
+            "command": _stable_python(),
             "args": args,
             "env": server_env,
             # Hard per-call ceiling for this server, and a permission card is a
@@ -3934,7 +3935,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # would also run before the bridge. So a PreToolUse hook enforces the
         # path limit: it runs before the permission system and exit 2 blocks the
         # call. The bridge's `_breakout_policy` stays as defense in depth.
-        hook_argv = [sys.executable, "-I",
+        hook_argv = [_stable_python(), "-I",
                      _permission_server_path(),
                      "--breakout-hook=" + _breakout_handoff_dir(file)]
         hook_cmd = (subprocess.list2cmdline(hook_argv) if os.name == "nt"
@@ -4484,15 +4485,18 @@ def _stable_script(src: str) -> str:
     shell prefix on every Bash call, a PreToolUse hook on every tool call, an
     MCP server on respawn). A path into the package dir is not stable: under
     an AppImage it sits in a `/tmp/.mount_*` that disappears with the app. The
-    copy lives in `~/.fused-render/bin/`, is rewritten only when its bytes
-    differ (tmp file + rename, so a reader never sees half a script) and is
-    executable. Only for stdlib-only, self-contained files."""
+    copy lives in `~/.fused-render/bin/` under a content-hashed name (tmp file
+    + rename, so a reader never sees half a script) and is executable. Only for stdlib-only, self-contained files."""
     try:
         with open(src, "rb") as fh:
             data = fh.read()
     except OSError:
         return ""
-    dst = _state_file("bin", os.path.basename(src))
+    # NAMED BY CONTENT: app versions and worktrees share this directory, and a
+    # live session keeps running the copy it was handed, so each version has its
+    # own file and none is ever rewritten.
+    stem, ext = os.path.splitext(os.path.basename(src))
+    dst = _state_file("bin", "%s-%s%s" % (stem, hashlib.sha256(data).hexdigest()[:12], ext))
     try:
         try:
             with open(dst, "rb") as fh:
@@ -4501,16 +4505,51 @@ def _stable_script(src: str) -> str:
             same = False
         if not same:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            tmp = "%s.%d.tmp" % (dst, os.getpid())
-            with open(tmp, "wb") as fh:
-                fh.write(data)
-            os.chmod(tmp, 0o755)
-            os.replace(tmp, dst)
+            tmp = "%s.%s.tmp" % (dst, os.urandom(4).hex())
+            try:
+                with open(tmp, "wb") as fh:
+                    fh.write(data)
+                os.chmod(tmp, 0o755)
+                os.replace(tmp, dst)
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         elif not os.access(dst, os.X_OK):
             os.chmod(dst, os.stat(dst).st_mode | 0o755)
     except OSError:
         return ""
     return dst
+
+
+#: Where a system python3 usually is, tried after `$PATH`.
+_SYSTEM_PYTHONS = ("/usr/bin/python3", "/usr/local/bin/python3",
+                   "/opt/homebrew/bin/python3")
+
+
+def _vanishing_path(path: str) -> bool:
+    """Whether `path` is inside an AppImage mount (`$APPDIR` or a
+    `/tmp/.mount_*`), which disappears when that app instance exits."""
+    real = os.path.realpath(path)
+    appdir = os.environ.get("APPDIR")
+    if appdir and real.startswith(os.path.realpath(appdir) + os.sep):
+        return True
+    return real.startswith("/tmp/.mount_")
+
+
+def _stable_python() -> str:
+    """The interpreter the CLI re-launches `permission_server.py` with (MCP
+    server, PreToolUse hook): `sys.executable`, except under an AppImage, where
+    that python is in the vanishing mount and a system python3 on `$PATH` or in
+    `_SYSTEM_PYTHONS` is used instead (the server is stdlib-only). With no
+    system python3 the mounted one is returned, as before."""
+    if not _vanishing_path(sys.executable):
+        return sys.executable
+    for cand in (shutil.which("python3"), *_SYSTEM_PYTHONS):
+        if cand and os.access(cand, os.X_OK) and not _vanishing_path(cand):
+            return cand
+    return sys.executable
 
 
 def _permission_server_path() -> str:

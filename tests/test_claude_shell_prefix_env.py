@@ -1,6 +1,7 @@
 """agent.py wires the shell-prefix wrapper into the claude spawn env (POSIX)."""
 import importlib.util
 import os
+import re
 
 import pytest
 
@@ -28,7 +29,7 @@ def test_spawn_env_sets_prefix_and_chat_log(agent, monkeypatch):
     env = agent._spawn_env("chat-123")
     prefix = env["CLAUDE_CODE_SHELL_PREFIX"]
     assert os.path.isabs(prefix) and os.access(prefix, os.X_OK)
-    assert prefix.endswith("claude_shell_prefix.sh")
+    assert re.search(r"claude_shell_prefix-[0-9a-f]{12}\.sh$", prefix)
     log = env["FUSED_CLAUDE_CMD_LOG"]
     assert os.path.basename(log) == "chat-123" and os.path.isdir(log)
     assert (os.stat(log).st_mode & 0o077) == 0
@@ -44,7 +45,7 @@ def test_windows_gets_no_prefix(agent, monkeypatch, tmp_path):
     assert "FUSED_CLAUDE_CMD_LOG" not in env
     monkeypatch.setattr(agent._platform, "IS_WINDOWS", False)
     env = agent._spawn_env("chat-win")
-    assert env["CLAUDE_CODE_SHELL_PREFIX"].endswith("claude_shell_prefix.sh")
+    assert re.search(r"claude_shell_prefix-[0-9a-f]{12}\.sh$", env["CLAUDE_CODE_SHELL_PREFIX"])
     assert "FUSED_CLAUDE_CMD_LOG" in env
 
 
@@ -71,7 +72,7 @@ def test_second_spawn_for_same_chat_keeps_prefix(agent, monkeypatch, tmp_path):
     first = agent._spawn_env("chat-again")
     second = agent._spawn_env("chat-again")
     for env in (first, second):
-        assert env["CLAUDE_CODE_SHELL_PREFIX"].endswith("claude_shell_prefix.sh")
+        assert re.search(r"claude_shell_prefix-[0-9a-f]{12}\.sh$", env["CLAUDE_CODE_SHELL_PREFIX"])
         assert env["FUSED_CLAUDE_CMD_LOG"] == str(tmp_path / "cmds" / "chat-again")
 
 
@@ -117,9 +118,64 @@ def test_scripts_handed_to_the_cli_live_outside_the_package_dir(
         assert os.path.isabs(path) and os.access(path, os.X_OK)
         assert path.startswith(str(home / "bin") + os.sep)
         assert not path.startswith(pkg + os.sep)
-    # Rewritten when the packaged bytes change, left alone otherwise.
-    stale = home / "bin" / "claude_shell_prefix.sh"
-    stale.write_text("stale")
-    agent._shell_prefix_path()
-    with open(os.path.join(pkg, "claude_shell_prefix.sh")) as fh:
-        assert stale.read_text() == fh.read()
+
+
+def test_each_script_version_keeps_its_own_immutable_copy(
+        agent, tmp_path, monkeypatch):
+    """Two app versions (or worktrees) share ~/.fused-render/bin: a copy is
+    named by its content, so one never overwrites the other's live script."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    a, b = tmp_path / "tool.sh", tmp_path / "other" / "tool.sh"
+    b.parent.mkdir()
+    a.write_text("echo one\n")
+    b.write_text("echo two\n")
+    pa, pb = agent._stable_script(str(a)), agent._stable_script(str(b))
+    assert pa != pb and os.path.dirname(pa) == os.path.dirname(pb)
+    assert open(pa).read() == "echo one\n" and open(pb).read() == "echo two\n"
+    assert pa.endswith(".sh") and os.path.basename(pa).startswith("tool-")
+    assert agent._stable_script(str(a)) == pa
+    assert not [n for n in os.listdir(os.path.dirname(pa)) if n.endswith(".tmp")]
+
+
+def test_temp_names_are_unique_per_write(agent, tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    seen = []
+    real = os.replace
+
+    def spy(src, dst):
+        seen.append(src)
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy)
+    for i in range(2):
+        src = tmp_path / ("s%d.sh" % i)
+        src.write_text("echo %d\n" % i)
+        agent._stable_script(str(src))
+    assert len(set(seen)) == 2 and all(str(os.getpid()) not in os.path.basename(t) for t in seen)
+
+
+def test_interpreter_for_the_cli_is_not_under_an_appimage_mount(
+        agent, tmp_path, monkeypatch):
+    """An AppImage's python lives in the same `/tmp/.mount_*` that vanishes on
+    restart, so the CLI is handed a system python3 for the stdlib-only
+    permission server."""
+    appdir = tmp_path / "mnt"
+    (appdir / "usr" / "bin").mkdir(parents=True)
+    inside = appdir / "usr" / "bin" / "python3"
+    inside.write_text("")
+    system = tmp_path / "sys" / "python3"
+    system.parent.mkdir()
+    system.write_text("#!/bin/sh\n")
+    system.chmod(0o755)
+    monkeypatch.setenv("APPDIR", str(appdir))
+    monkeypatch.setattr(agent.sys, "executable", str(inside))
+    monkeypatch.setenv("PATH", "%s%s%s" % (inside.parent, os.pathsep, system.parent))
+    assert agent._stable_python() == str(system)
+    # Nothing outside the mount to use: the mounted one is all there is.
+    monkeypatch.setenv("PATH", str(inside.parent))
+    monkeypatch.setattr(agent, "_SYSTEM_PYTHONS", ())
+    assert agent._stable_python() == str(inside)
+    # Not an AppImage: untouched.
+    monkeypatch.delenv("APPDIR")
+    monkeypatch.setattr(agent.sys, "executable", str(system))
+    assert agent._stable_python() == str(system)
