@@ -659,6 +659,45 @@ def test_gemini_is_off_until_stored_on_and_takes_part_in_the_rule(client):
     assert r.json()["agents"]["default"] == "codex"
 
 
+def _write_claude_settings(**keys):
+    """The global Claude preference the settings page writes, at the path the
+    suite's home guard repointed (`claude_config.lib.SETTINGS_PATH`)."""
+    from fused_render.claude_config import lib
+    os.makedirs(os.path.dirname(lib.SETTINGS_PATH), exist_ok=True)
+    with open(lib.SETTINGS_PATH, "w", encoding="utf-8") as fh:
+        json.dump(keys, fh)
+
+
+def test_the_catalog_default_model_follows_the_claude_preference(client):
+    # Preferences write `model` into ~/.claude/settings.json; the catalog's
+    # Claude `default_model` is that model (collapsed to the short name the
+    # pickers hold) — so the row the embedded workbench opens on is the one
+    # the user set, not the static "sonnet".
+    _write_claude_settings(model="claude-fable-5-1", effortLevel="high")
+    claude = client.get("/api/agent-backends").json()["all"][0]
+    assert claude["id"] == "claude" and claude["default_model"] == "fable"
+    # The same file, the same parse: the New task card reads what the
+    # catalog reads.
+    from fused_render.claude_config import lib
+    assert lib.global_defaults() == ("fable", "high")
+
+
+def test_the_catalog_default_model_ignores_a_preference_it_does_not_offer(client):
+    # A model outside the picker's four (or no file at all) leaves the
+    # static default standing — never "" and never a foreign id.
+    _write_claude_settings(model="gpt-6-luna")
+    claude = client.get("/api/agent-backends").json()["all"][0]
+    assert claude["default_model"] == "sonnet"
+    os.remove(__import__("fused_render.claude_config.lib", fromlist=["x"]).SETTINGS_PATH)
+    claude = client.get("/api/agent-backends").json()["all"][0]
+    assert claude["default_model"] == "sonnet"
+    # Malformed JSON is a hint lost, not a 500.
+    from fused_render.claude_config import lib
+    with open(lib.SETTINGS_PATH, "w", encoding="utf-8") as fh:
+        fh.write("{not json")
+    assert client.get("/api/agent-backends").json()["all"][0]["default_model"] == "sonnet"
+
+
 def test_fused_ai_never_reads_the_default_agent(monkeypatch):
     # The relay is Claude-only and takes no default from any preference, so
     # which agent new chats open on cannot reach it either way.

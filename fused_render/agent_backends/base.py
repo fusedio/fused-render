@@ -117,6 +117,13 @@ class Backend:
     #: gate read through it, so a model the CLI offers is never refused as
     #: another agent's.
     discovered_models: Optional[Callable[[Optional[dict]], Optional[tuple]]] = None
+    #: Lazy: `() -> str`, the model the USER'S OWN preference names as this
+    #: agent's default (Claude: `model` in `~/.claude/settings.json`, the
+    #: pair the Claude settings page writes). The catalog serves it as
+    #: `default_model` when it is one of the offered models, else the static
+    #: `default_model` stands — so the row the embedded workbench's AI
+    #: pickers open on is the one the user set, not the one this file ships.
+    default_model_pref: Optional[Callable[[], str]] = None
 
     def effective_models(self, health: Optional[dict] = None,
                          discovered: bool = True) -> tuple[Model, ...]:
@@ -139,17 +146,32 @@ class Backend:
         old record) passes the foreign-model gate as "on nobody's list"."""
         return tuple(m.id for m in self.effective_models(discovered=discovered))
 
+    def preferred_default_model(self, offered: Optional[tuple] = None) -> str:
+        """`default_model_pref()` when it names one of `offered` (the static
+        list when none is given), else the static `default_model`. A hook
+        that raises reads as "no preference"."""
+        ids = tuple(m.id for m in (offered or self.models))
+        if self.default_model_pref is not None:
+            try:
+                wanted = self.default_model_pref() or ""
+            except Exception:  # noqa: BLE001 - a preference read is never a 500
+                wanted = ""
+            if wanted in ids:
+                return wanted
+        return self.default_model
+
     def to_catalog(self, enabled: bool, health: Optional[dict] = None,
                    models: Optional[tuple] = None) -> dict:
         """The shape `GET /api/agent-backends` serves per backend. `models`
         is the discovered list when the caller has one (registry.catalog
         reads it off the same cached snapshot it hands in as `health`)."""
+        offered = tuple(models or self.models)
         return {
             "id": self.id,
             "label": self.label,
             "enabled": enabled,
-            "models": [m.to_catalog(self.efforts) for m in (models or self.models)],
-            "default_model": self.default_model,
+            "models": [m.to_catalog(self.efforts) for m in offered],
+            "default_model": self.preferred_default_model(offered),
             "efforts": list(self.efforts),
             "modes": list(self.modes),
             "caps": self.caps.__dict__.copy(),

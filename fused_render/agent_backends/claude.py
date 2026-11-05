@@ -38,11 +38,21 @@ def _health_cached():
     return claude_health._public(cached) if cached else None
 
 
+def _preferred_model() -> str:
+    from fused_render.claude_config import lib
+    return lib.global_defaults()[0]
+
+
 CLAUDE = Backend(
     id="claude",
     label="Claude",
     models=MODELS,
     default_model="sonnet",
+    # Preferences (the Claude settings page) write `model` into
+    # ~/.claude/settings.json; the catalog's default follows it
+    # (`Backend.preferred_default_model`), so the embedded workbench's AI
+    # pickers open on the model the user chose rather than on "sonnet".
+    default_model_pref=_preferred_model,
     efforts=EFFORTS,
     modes=MODES,
     caps=Caps(
