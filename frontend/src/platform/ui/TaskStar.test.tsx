@@ -192,3 +192,40 @@ test("reveal=\"hover\" marks the star for the row-hover rule (task-star.css)", a
   const r = await mount(<TaskStar task={task()} reveal="hover" />);
   expect(starOf(r)!.props.className).toContain("task-star--hover");
 });
+
+test("TWO QUICK PRESSES: write 1's repaint does not flip the star; the end state is press 2", async () => {
+  flagOn();
+  const releases: Array<() => void> = [];
+  reply = (body) =>
+    new Promise<Response>((res) => {
+      releases.push(() => res(okReply(body) as unknown as Response));
+    }).then((r) => r);
+  const r = await mount(<TaskStar task={task()} />);
+  act(() => starOf(r)!.props.onClick(fakeEvent().ev));
+  act(() => starOf(r)!.props.onClick(fakeEvent().ev));
+  expect(starOf(r)!.props["aria-pressed"]).toBe(false);
+  // Write 1 lands and its announce repaints the row as starred: the second
+  // press is still out, so the star must not show the intermediate state.
+  await act(async () => {
+    for (let i = 0; i < 5 && releases.length < 1; i++) await new Promise((res) => setTimeout(res, 0));
+    releases[0]!();
+    await new Promise((res) => setTimeout(res, 0));
+  });
+  await act(async () => {
+    r.update(<TaskStar task={task({ starred: true })} />);
+  });
+  expect(starOf(r)!.props["aria-pressed"]).toBe(false);
+  await act(async () => {
+    for (let i = 0; i < 5 && releases.length < 2; i++) await new Promise((res) => setTimeout(res, 0));
+    releases[1]!();
+  });
+  await flush();
+  expect(calls.map((c) => c.body)).toEqual([
+    { key: "k1", on: true },
+    { key: "k1", on: false },
+  ]);
+  await act(async () => {
+    r.update(<TaskStar task={task({ starred: false })} />);
+  });
+  expect(starOf(r)!.props["aria-pressed"]).toBe(false);
+});

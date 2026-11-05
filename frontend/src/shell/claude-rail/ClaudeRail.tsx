@@ -121,8 +121,8 @@
 //
 // FAVOURITES (owner, 2026-11-03): the card's STAR (RailPeek) makes a chat a
 // favourite — server-side, global, so every rail lists the same ones (api
-// `setTaskFavourite`; `starred` on the pulse); the pane lists none — its
-// Recent leaves them out (owner, 2026-11-05). Which favourite's card
+// `setTaskFavourite`; `starred` on the pulse); the rail's normal list leaves
+// them out; the pane's Recent lists them (with their star) (owner, 2026-11-05). Which favourite's card
 // is OPEN is per window (2026-11-04, below). The consequences here:
 //   - THE RAIL'S LAST SECTION HOLDS THEM: under the Git seats, a ring for
 //     every starred chat from ANY place (claude-rail-lib `favSeats` — not
@@ -290,7 +290,7 @@ import {
   statusWords,
 } from "./rail-peek-lib";
 import { usePaneSessions } from "@platform/lib/peek-session";
-import { useCanvasRailPeek } from "./rail-peek-flag";
+import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import {
   focusRail,
   registerPageRail,
@@ -302,7 +302,6 @@ import {
 } from "./fav-peek-store";
 import { FAV_PEEK_ID } from "./FavouritePeek";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useRailGit } from "./rail-git";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
@@ -573,7 +572,7 @@ export function ClaudeRail({
   // without it there is nothing to star with): off, no section, no
   // favourite's card, and a starred ring is a ring in the list like any
   // other.
-  const favsOn = useTaskFavourites() && peekOn;
+  const favsOn = useRailFeatureOn();
   const favsOnRef = useRef(favsOn);
   favsOnRef.current = favsOn;
   const favs = useMemo(() => (favsOn ? favSeats(rows, full) : []), [favsOn, rows, full]);
@@ -1721,7 +1720,7 @@ export function ClaudeRail({
         (favs.length > 0 ? " has-favs" : "") +
         // No glyph above the + (beside the open pane, the fallback): nothing
         // keeps its room (claude-rail.css).
-        (chrome ? "" : " no-glyph") +
+        (favsOn && !chrome ? " no-glyph" : "") +
         (favsOn ? " is-scroll" : "") +
         (favouritesOnly ? " is-fallback" : "")
       }
