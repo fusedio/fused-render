@@ -134,7 +134,7 @@ import { useAppPageGitColumn } from "@shell/useAppPageGitColumn";
 import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { chatDoorOnApp, useAppPageClaudePane } from "./useAppPageClaudePane";
-import { ClaudeRail } from "./claude-rail/ClaudeRail";
+import { ClaudeRail, paneHomeHref } from "./claude-rail/ClaudeRail";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ChatMount } from "@apps/claude";
 import { peekSearch } from "./task-peek-store";
@@ -778,6 +778,9 @@ export default function AppPage({
       navigateUrl(href);
       return;
     }
+    openChatDoor(door);
+  };
+  const openChatDoor = (door: { params: Record<string, string> }) => {
     // THE COMPOSER'S OWN LEAVE GUARD FIRST (platform/lib/router
     // `confirmLeave`, what `navigateUrl` asks): a remount is a leave for the
     // chat on screen, and words typed into it must not go without a word —
@@ -796,6 +799,13 @@ export default function AppPage({
       setClaudeSeq((n) => n + 1);
       claude.show();
     });
+  };
+  // THE RAIL'S + BESIDE THE OPEN PANE (ClaudeRail `onNewChat`): the pane's
+  // home — the chat with no session, remounted behind the same leave guard;
+  // already there, it stays as it is (the rail focuses its composer).
+  const openPaneHome = () => {
+    if (paneHomeHref(location.href) === null) claude.show();
+    else openChatDoor({ params: {} });
   };
   // Where the rail stands (claude-rail-lib `RailPlace`): this app's folder.
   const railPlace = useMemo(() => ({ kind: "folder" as const, dir, word: "App" }), [dir]);
@@ -1241,6 +1251,7 @@ export default function AppPage({
           activeSessionId={new URLSearchParams(location.search).get("session_id")}
           onOpen={claude.show}
           onOpenChat={openChatHere}
+          onNewChat={openPaneHome}
           onPullStart={claude.onRailPull}
         />
       )}

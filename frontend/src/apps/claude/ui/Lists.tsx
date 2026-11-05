@@ -101,17 +101,6 @@ export interface ListsProps {
   onFillDraft?(task: Task): void;
   onNavigate?(url: string): void;
   disabled?: boolean;
-  /**
-   * FAVOURITES LIVE ON THE RAIL ONLY (owner, 2026-11-05: "we remove
-   * favourites from the recent chat stuff — we just don't show those
-   * tasks"): the pane draws no Favourites block, and with this set Recent
-   * leaves every starred chat out — it is the rail's favourites section's
-   * (shell/claude-rail), and back in Recent once unstarred. An ARCHIVED
-   * starred chat stays, as the rail's section leaves it out (claude-rail-lib
-   * `favSeats`): a chat is never in neither. Off (the favourites switch off)
-   * Recent is the array it was handed.
-   */
-  hideStarred?: boolean;
 }
 
 export function Lists({
@@ -123,14 +112,7 @@ export function Lists({
   onFillDraft,
   onNavigate,
   disabled,
-  hideStarred = false,
 }: ListsProps) {
-  // RECENT WITHOUT ITS FAVOURITES (`hideStarred`' note).
-  const recentRows = useMemo(() => {
-    if (!recent || !hideStarred) return recent;
-    const fav = (t: Task) => !!t.starred && t.status !== "archived";
-    return recent.some(fav) ? recent.filter((t) => !fav(t)) : recent;
-  }, [recent, hideStarred]);
   /**
    * Which list is showing is the BLOCK's state rather than the page's: leaving
    * for a chat and coming back keeps the tab you were on (T:18260-18265). This
@@ -181,7 +163,7 @@ export function Lists({
   // how a list stays off the tab bar.
   const snapsOn = useAgent().caps.snapshots;
   const counts: ListCounts = {
-    recent: recentRows === null ? null : recentRows.length,
+    recent: recent === null ? null : recent.length,
     artifacts: artifacts === null ? null : artifacts.length,
     snaps: snapsOn ? snapCount : 0,
     snapsFailed: snapsOn && snapsFailed,
@@ -219,7 +201,7 @@ export function Lists({
    * not. With the queue off every key is `task.key`, exactly as before.
    */
   const queueOn = useProjectQueueEnabled();
-  const rowKeys = useMemo(() => taskListKeys(recentRows ?? [], queueOn), [recentRows, queueOn]);
+  const rowKeys = useMemo(() => taskListKeys(recent ?? [], queueOn), [recent, queueOn]);
 
   /** Up/Down walk the rows and Enter opens — a keyboard's copy of the pointer's
    *  own reach down the list. */
@@ -402,7 +384,7 @@ export function Lists({
 
   const recentPanel = (
     <div ref={listRef} onKeyDown={onRowKeys}>
-      {recentRows === null ? (
+      {recent === null ? (
         <RecentSkeleton />
       ) : (
         // The Tasks page's own frame around the Tasks page's own rows: the
@@ -410,7 +392,7 @@ export function Lists({
         // off it (styles/tasks.css), and without it the rows read as a column
         // of floating lines rather than as one list.
         <div className="tasks-list-frame">
-          {recentRows.map((task, ix) => (
+          {recent.map((task, ix) => (
             <TaskRowItem
               key={rowKeys[ix]}
               task={task}

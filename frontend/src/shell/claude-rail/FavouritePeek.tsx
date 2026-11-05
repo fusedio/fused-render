@@ -15,7 +15,10 @@
 // having nothing to draw (ClaudeRail `shown`) — it hides, the chat kept
 // alive, and shows again on the next rail. The rail stands beside the open
 // pane too (owner, 2026-11-05), so the card keeps its corner pane open or
-// shut. A bit
+// shut — and a page with no rail of its own draws the shell's fallback
+// (FallbackRail: the favourites alone), so with a favourite open there is
+// always a rail to stand beside. Never taller than half the window
+// (RailPeek, rail-peek-lib `favCardWish`). A bit
 // smaller than the list's card (`FAV_SIZE`), and STUCK TO THE BOTTOM RIGHT
 // (owner: "it should stick to bottom so we can have it at bottom right all
 // the time and we can close and open it"): its bottom on the rail's, not on

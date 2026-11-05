@@ -978,11 +978,11 @@ test("two panels standing alone get T's 28px between them and 32px below", () =>
   expect(last?.[1]).toContain("padding-bottom: 32px");
 });
 
-// ---- FAVOURITES ARE THE RAIL'S (owner, 2026-11-05) -------------------------
-// "We remove favourites from the recent chat stuff — we just don't show those
-// tasks": the pane draws no Favourites block; with the switch on Recent
-// leaves a starred chat out (it is the rail's favourites section's), and with
-// it off Recent is the array it was handed.
+// ---- RECENT KEEPS ITS FAVOURITES (owner, 2026-11-05) ----------------------
+// The pane draws no Favourites block, and a starred chat is a Recent row like
+// any other — its star filled beside the id (platform/ui/TaskStar, inside the
+// borrowed row). Only the RAIL's own list leaves a favourite out, for its
+// favourites section (shell/claude-rail).
 
 /** The top-level blocks a mount drew, by class list, in document order. */
 function blocks(r: ReturnType<typeof create>): string[] {
@@ -1000,24 +1000,16 @@ function rowsOf(r: ReturnType<typeof create>) {
   }));
 }
 
-test("NO FAVOURITES BLOCK: one lists block, Recent's heading alone, starred or not", () => {
-  for (const hideStarred of [true, false]) {
-    const r = mount(
-      <Lists
-        file="/repo/x.py"
-        recent={[chat("s1"), chat("fav1", { starred: true })]}
-        artifacts={[]}
-        onOpen={() => {}}
-        hideStarred={hideStarred}
-      />,
-    );
-    expect(blocks(r).length).toBe(1);
-    const root = r.toJSON() as unknown as Json;
-    expect(all(root, "c-head").map((n) => text(n))).toEqual(["Recent chats"]);
-  }
+test("NO FAVOURITES BLOCK: one lists block, Recent's heading alone", () => {
+  const r = mount(
+    <Lists file="/repo/x.py" recent={[chat("s1"), chat("fav1", { starred: true })]} artifacts={[]} onOpen={() => {}} />,
+  );
+  expect(blocks(r).length).toBe(1);
+  const root = r.toJSON() as unknown as Json;
+  expect(all(root, "c-head").map((n) => text(n))).toEqual(["Recent chats"]);
 });
 
-test("FAVOURITES ON: Recent leaves a starred chat out — an archived one stays", () => {
+test("RECENT KEEPS STARRED CHATS: every row it was handed, in order", () => {
   const r = mount(
     <Lists
       file="/repo/x.py"
@@ -1029,35 +1021,39 @@ test("FAVOURITES ON: Recent leaves a starred chat out — an archived one stays"
       ]}
       artifacts={[]}
       onOpen={() => {}}
-      hideStarred
     />,
   );
-  // The archived star is not on the rail's section (claude-rail-lib
-  // `favSeats`), so it keeps its Recent row: a chat is never in neither.
-  expect(rowsOf(r).map((x) => x.key)).toEqual(["s1", "s2", "old"]);
+  expect(rowsOf(r).map((x) => x.key)).toEqual(["s1", "fav1", "s2", "old"]);
 });
 
-test("FAVOURITES OFF: Recent keeps a starred row", () => {
-  for (const hideStarred of [false, undefined]) {
-    const r = mount(
-      <Lists
-        file="/repo/x.py"
-        recent={[chat("s1"), chat("fav1", { starred: true })]}
-        artifacts={[]}
-        onOpen={() => {}}
-        {...(hideStarred === undefined ? {} : { hideStarred })}
-      />,
-    );
-    expect(rowsOf(r).map((x) => x.key)).toEqual(["s1", "fav1"]);
-  }
-});
-
-test("only starred rows on the pane: Recent is empty, no Favourites heading stands in", () => {
-  const r = mount(
-    <Lists file="/repo/x.py" recent={[chat("fav1", { starred: true })]} artifacts={[]} onOpen={() => {}} hideStarred />,
-  );
-  expect(rowsOf(r)).toEqual([]);
+test("only starred rows on the pane: Recent lists them, no Favourites heading", () => {
+  const r = mount(<Lists file="/repo/x.py" recent={[chat("fav1", { starred: true })]} artifacts={[]} onOpen={() => {}} />);
+  expect(rowsOf(r).map((x) => x.key)).toEqual(["fav1"]);
   expect(JSON.stringify(r.toJSON())).not.toContain("Favourites");
+});
+
+test("FAVOURITES ON: a Recent row wears the star after its id — filled when starred", async () => {
+  const { publishTaskFavourites, publishFavouritesParent } = await import(
+    "@platform/lib/favourites-flag"
+  );
+  act(() => {
+    publishTaskFavourites({ enabled: true });
+    publishFavouritesParent({ enabled: true });
+  });
+  try {
+    const r = mount(
+      <Lists file="/repo/x.py" recent={[chat("s1"), chat("fav1", { starred: true })]} artifacts={[]} onOpen={() => {}} />,
+    );
+    const stars = r.root.findAll((n) => n.type === "button" && n.props["data-task-star"] !== undefined);
+    expect(stars.map((n) => [n.props["data-task-star"], n.props["aria-pressed"]])).toEqual([
+      ["s1", false],
+      ["fav1", true],
+    ]);
+  } finally {
+    // Off by publish, not by reset: a reset drops the cached prefs read, and
+    // the next row's star would GET /api/prefs inside a later test's fetch log.
+    act(() => publishTaskFavourites({ enabled: false }));
+  }
 });
 
 test("a Recent press moves the list's last mark, never the rail favourites' own", async () => {

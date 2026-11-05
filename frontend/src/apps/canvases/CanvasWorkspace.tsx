@@ -195,7 +195,7 @@ import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   CanvasOwnedError,
@@ -231,7 +231,7 @@ import {
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
-import { ClaudeRail, railInset } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
 import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
@@ -2765,6 +2765,32 @@ export default function CanvasWorkspace({
   // rail's + is not a door into the pane at all: it opens the New task card
   // over the canvas (ClaudeRail, 2026-10-28).
   const openFromRail = useCallback(() => setSideOpen(true), []);
+  // THE RAIL'S + BESIDE THE OPEN PANE (ClaudeRail `onNewChat`): the pane's
+  // home, a new chat's composer — the node's frame rebooted with no session
+  // (its remembered one forgotten, `nodeSessions`), or the canvas chat
+  // remounted with none on the URL, behind the composer's leave guard.
+  // Already home: nothing to load (the rail focuses the composer).
+  const paneHomeFromRail = () => {
+    setSideOpen(true);
+    if (node) {
+      const key = nodeSessionKey(env, name, node.file);
+      if (!nodeSessions.has(key)) return;
+      nodeSessions.delete(key);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("session_id");
+      window.history.replaceState(window.history.state, "", url);
+      setNodeBootSeq((n) => n + 1);
+      return;
+    }
+    const home = paneHomeHref(window.location.href);
+    if (home === null) return;
+    void confirmLeave().then((ok) => {
+      if (!ok) return;
+      window.history.replaceState(window.history.state, "", home);
+      canvasChatSidRef.current = null;
+      setCanvasChatSeq((n) => n + 1);
+    });
+  };
   // WHERE THE RAIL STANDS (claude-rail-lib `RailPlace`): this canvas, narrowed
   // to the selected node's file while one is selected. Memoised: the rail's
   // seats derive from it.
@@ -3257,6 +3283,7 @@ export default function CanvasWorkspace({
             // it, shows its code); its selection echo sets `node` here.
             onSelectNode={selectFromRail}
             onOpen={openFromRail}
+            onNewChat={paneHomeFromRail}
             onPullStart={onRailPull}
             onCardPinned={(on) => {
               railCardPinnedRef.current = on;

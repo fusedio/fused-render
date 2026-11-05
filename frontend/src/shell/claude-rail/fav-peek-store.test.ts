@@ -12,6 +12,8 @@ import {
   PENDING_FOCUS_MS,
   favPeekState,
   focusRail,
+  pageRailCount,
+  registerPageRail,
   railHere,
   registerRail,
   requestFavFocus,
@@ -353,3 +355,31 @@ describe("useFavOpenRow (the open favourite's verdict)", () => {
   });
 });
 
+
+describe("the page-rail count (the shell's fallback)", () => {
+  it("counts each page rail while mounted, synchronously", () => {
+    const off = registerPageRail();
+    expect(pageRailCount()).toBe(1);
+    const off2 = registerPageRail();
+    expect(pageRailCount()).toBe(2);
+    off();
+    expect(pageRailCount()).toBe(1);
+    off2();
+    expect(pageRailCount()).toBe(0);
+  });
+  it("an answer run twice takes its rail off once", () => {
+    const keep = registerPageRail();
+    const off = registerPageRail();
+    off();
+    off();
+    expect(pageRailCount()).toBe(1);
+    keep();
+  });
+  it("a hop's swap in one commit never reads zero after it: mount, then the old unmount", () => {
+    const old = registerPageRail();
+    const next = registerPageRail();
+    old();
+    expect(pageRailCount()).toBe(1);
+    next();
+  });
+});

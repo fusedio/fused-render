@@ -23,6 +23,11 @@ import {
   railScope,
   railShown,
   readMark,
+  fallbackRailUp,
+  paneHomeHref,
+  paneTakesPinned,
+  plusDoor,
+  ringPress,
   ringMarks,
   type RailPlace,
   type RingMarkInput,
@@ -732,5 +737,85 @@ describe("railShown", () => {
     expect(at(5, 0, true, false)).toBe(false);
     expect(at(0, 3, true, false)).toBe(false);
     expect(at(0, 0, true, false)).toBe(false);
+  });
+});
+
+describe("railShown, the shell's fallback (favouritesOnly)", () => {
+  it("favourites on: only with a favourite to draw — never for a list or a shut pane", () => {
+    expect(railShown({ list: 0, favs: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
+    expect(railShown({ list: 0, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
+    expect(railShown({ list: 4, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
+  });
+  it("favourites off: never", () => {
+    expect(railShown({ list: 0, favs: 2, paneOpen: false, always: false, favouritesOnly: true })).toBe(false);
+  });
+});
+
+// ---- THE SHELL'S FALLBACK RAIL (owner, 2026-11-05) -------------------------
+describe("fallbackRailUp", () => {
+  it("favourites on and no page rail mounted: the fallback is up", () => {
+    expect(fallbackRailUp({ favsOn: true, pageRails: 0 })).toBe(true);
+  });
+  it("a page rail mounted: never both", () => {
+    expect(fallbackRailUp({ favsOn: true, pageRails: 1 })).toBe(false);
+    expect(fallbackRailUp({ favsOn: true, pageRails: 2 })).toBe(false);
+  });
+  it("favourites off: no fallback", () => {
+    expect(fallbackRailUp({ favsOn: false, pageRails: 0 })).toBe(false);
+  });
+});
+
+// ---- THE + AND A RING'S PRESS BY THE PANE (owner, 2026-11-05) --------------
+describe("plusDoor", () => {
+  it("pane open, favourites on, a page that can show its home: the pane", () => {
+    expect(plusDoor({ paneOpen: true, favsOn: true, paneHome: true })).toBe("pane");
+  });
+  it("pane shut: the New task card, as today", () => {
+    expect(plusDoor({ paneOpen: false, favsOn: true, paneHome: true })).toBe("modal");
+  });
+  it("no home to show, or favourites off: the card", () => {
+    expect(plusDoor({ paneOpen: true, favsOn: true, paneHome: false })).toBe("modal");
+    expect(plusDoor({ paneOpen: true, favsOn: false, paneHome: true })).toBe("modal");
+  });
+});
+
+describe("ringPress (a list ring's plain press)", () => {
+  it("pane open, favourites on: the chat opens in the pane — no card", () => {
+    expect(ringPress({ paneOpen: true, favsOn: true, peekOn: true, noRoom: false })).toBe("pane");
+    expect(ringPress({ paneOpen: true, favsOn: true, peekOn: true, noRoom: true })).toBe("pane");
+  });
+  it("pane shut: the card pins, as today", () => {
+    expect(ringPress({ paneOpen: false, favsOn: true, peekOn: true, noRoom: false })).toBe("card");
+  });
+  it("no room for a card, or the card off: the chat's door", () => {
+    expect(ringPress({ paneOpen: false, favsOn: true, peekOn: true, noRoom: true })).toBe("door");
+    expect(ringPress({ paneOpen: false, favsOn: false, peekOn: false, noRoom: false })).toBe("door");
+  });
+});
+
+describe("paneTakesPinned (the pane opening under a pinned list card)", () => {
+  const base = { wasOpen: false, open: true, favsOn: true, pinnedKey: "k", isFav: false, hasSession: true };
+  it("shut to open with a pinned list chat: the pane takes it", () => {
+    expect(paneTakesPinned(base)).toBe(true);
+  });
+  it("the pane shutting, or staying open: nothing forced", () => {
+    expect(paneTakesPinned({ ...base, wasOpen: true, open: false })).toBe(false);
+    expect(paneTakesPinned({ ...base, wasOpen: true, open: true })).toBe(false);
+  });
+  it("no pin, a favourite's ring, no conversation, or favourites off: nothing", () => {
+    expect(paneTakesPinned({ ...base, pinnedKey: null })).toBe(false);
+    expect(paneTakesPinned({ ...base, isFav: true })).toBe(false);
+    expect(paneTakesPinned({ ...base, hasSession: false })).toBe(false);
+    expect(paneTakesPinned({ ...base, favsOn: false })).toBe(false);
+  });
+});
+
+describe("paneHomeHref", () => {
+  it("drops the conversation's params, keeps the rest", () => {
+    expect(paneHomeHref("/apps/x?_tab=overview&session_id=s1&backend=claude#h")).toBe("/apps/x?_tab=overview#h");
+    expect(paneHomeHref("http://127.0.0.1:1880/explorer/view/a?queued=q1")).toBe("/explorer/view/a");
+  });
+  it("no conversation named: home already (null)", () => {
+    expect(paneHomeHref("/apps/x?_tab=overview")).toBeNull();
   });
 });

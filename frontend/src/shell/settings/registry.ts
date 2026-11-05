@@ -539,7 +539,7 @@ const ENTRIES = [
     group: "features",
     section: "Sidebar",
     label: "Favourite chats",
-    description: "A star on the rail's preview card keeps a chat in a Favourites section at the foot of the rail, and its own smaller card open at the bottom right — close it with its ×, reopen it from its ring. With favourites on, the rail stands at the right edge of every app page, explorer view and canvas whether the Claude panel is shown or hidden, as long as it has a chat or a favourite to show; Recent chats leaves starred chats out.",
+    description: "A star beside the id in every list of chats, and on the rail's preview card, keeps a chat in a Favourites section at the foot of the rail, and its own smaller card open at the bottom right — close it with its ×, reopen it from its ring. With favourites on, the rail stands at the right edge of every app page, explorer view and canvas whether the Claude panel is shown or hidden, as long as it has a chat or a favourite to show.",
     keywords: "favourite favorite star pin keep chat rail card bottom always panel",
     renderOnly: true,
     child: true,

@@ -92,7 +92,7 @@ import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
-import { ClaudeRail, RAIL_W } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
@@ -2551,6 +2551,12 @@ function TemplatePreview({
             // A ring's door is this file's own URL with the chat's session
             // (`taskHref`): the sidebar opens on it like any `_side=claude` link.
             onOpenChat={(href) => navigateUrl(href)}
+            // The + beside the open column: this file's chat with no
+            // session, its Recent chats page (already there: nothing to load).
+            onNewChat={() => {
+              const home = paneHomeHref(location.href);
+              if (home) navigateUrl(home);
+            }}
             onPullStart={(e) =>
               startSideReopenPull(e, e.currentTarget.closest<HTMLElement>(".stat-split"), openClaudeSide, RAIL_W)
             }

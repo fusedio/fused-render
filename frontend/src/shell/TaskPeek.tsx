@@ -1206,7 +1206,7 @@ export function TaskPeek({
             </button>
           </div>
           {task ? (
-            <TaskPeekWho task={task} />
+            <TaskPeekWho task={task} star />
           ) : (
             <span className="task-side-peek-idle" aria-hidden />
           )}

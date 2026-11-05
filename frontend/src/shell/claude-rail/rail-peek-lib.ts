@@ -86,6 +86,48 @@ export const PEEK_MAX_WIDTH = 722;
  *  under the list card's. */
 export const FAV_WIDTH = 380;
 export const FAV_HEIGHT = 520;
+/** THE FAVOURITE'S CARD NEVER STANDS TALLER THAN HALF THE WINDOW (owner,
+ *  2026-11-05: a taller one pushed the list's hover card, which keeps clear
+ *  of it, to the far left): on open, on every placement as the window
+ *  shrinks (`favCardWish`), and through a drag (`dragResize`'s `maxHeight`). */
+export const FAV_MAX_SHARE = 0.5;
+
+/** The favourite card's ceiling in a window `viewportH` tall. */
+export function favMaxHeight(viewportH: number): number {
+  return Math.floor(viewportH * FAV_MAX_SHARE);
+}
+
+/** A card's size as the reader last dragged it (ui-layout), or null. */
+export interface StoredSize {
+  width: number;
+  height: number;
+}
+
+/** WHAT SIZE A LIST CARD ASKS FOR (RailPeek `wishFor`). A seat with no
+ *  conversation: the short card. A chat: the remembered size once the card
+ *  is GROWN (a pinned card, after its press) — and, with favourites on
+ *  (`oneSize`; owner, 2026-11-05: "the hover preview and the click preview
+ *  must be the same size"), whatever its state, so a hover is the size a
+ *  click would be. Nothing remembered: the default. */
+export function listCardWish(o: {
+  hasSession: boolean;
+  stored: StoredSize | null;
+  grown: boolean;
+  oneSize: boolean;
+}): PeekWish {
+  if (!o.hasSession) return { maxHeight: PEEK_PLAIN_HEIGHT };
+  const s = o.oneSize || o.grown ? o.stored : null;
+  return s ? { width: s.width, maxHeight: s.height } : { maxHeight: PEEK_MAX_HEIGHT };
+}
+
+/** WHAT SIZE THE FAVOURITE'S CARD ASKS FOR (RailPeek `wishFor`, `size` +
+ *  `resizeKey`): its own remembered size over its fixed wish `base`, its
+ *  height capped at half the window (`favMaxHeight`). */
+export function favCardWish(base: PeekWish, stored: StoredSize | null, viewportH: number): PeekWish {
+  const w = stored ? { ...base, width: stored.width, maxHeight: stored.height } : base;
+  return { ...w, maxHeight: Math.min(w.maxHeight ?? PEEK_MAX_HEIGHT, favMaxHeight(viewportH)) };
+}
+
 /** …and for a seat with no conversation (a draft, a scheduled task): what it
  *  is, its words and its door need no transcript's worth of card. */
 export const PEEK_PLAIN_HEIGHT = 250;
@@ -175,7 +217,16 @@ export type ResizeEdge = "tl" | "bl" | "l" | "t" | "b";
  *  `b`) the width. `maxBottom` (viewport y) is a floor the bottom may not
  *  pass short of the row's own — the favourite's card's top, for the rail's
  *  card standing above it (RailPeek `avoid`). */
-export function dragResize(edge: ResizeEdge, start: Box, dx: number, dy: number, bounds: Box, maxBottom?: number): Box {
+export function dragResize(
+  edge: ResizeEdge,
+  start: Box,
+  dx: number,
+  dy: number,
+  bounds: Box,
+  maxBottom?: number,
+  /** A ceiling on the height (the favourite's card: `favMaxHeight`). */
+  maxHeight?: number,
+): Box {
   // The row wins over the minimums: a row with less room than PEEK_MIN_*
   // (peekPlacement accepts down to 120) must not be pushed past its inset.
   const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
@@ -188,10 +239,10 @@ export function dragResize(edge: ResizeEdge, start: Box, dx: number, dy: number,
   let height: number;
   if (edge === "tl" || edge === "t") {
     const bottom = start.top + start.height;
-    height = clamp(start.height - dy, PEEK_MIN_HEIGHT, bottom - minTop);
+    height = clamp(start.height - dy, PEEK_MIN_HEIGHT, Math.min(bottom - minTop, maxHeight ?? Infinity));
     top = bottom - height;
   } else if (edge === "bl" || edge === "b") {
-    height = clamp(start.height + dy, PEEK_MIN_HEIGHT, floor - start.top);
+    height = clamp(start.height + dy, PEEK_MIN_HEIGHT, Math.min(floor - start.top, maxHeight ?? Infinity));
     top = start.top;
   } else {
     height = start.height;

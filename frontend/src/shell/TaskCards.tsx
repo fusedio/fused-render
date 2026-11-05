@@ -36,6 +36,7 @@ import { notify } from "@platform/lib/notifications";
 import { ChatFramePlaceholder, ChatMount } from "@apps/claude";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { Modal } from "@platform/ui/modal/Modal";
+import { TaskStar } from "@platform/ui/TaskStar";
 import { folderHref } from "./schedule-lib";
 import {
   discardDraft,
@@ -690,6 +691,7 @@ function TaskCard({
               took the emphasis back out — one weight for the id everywhere. */}
           <TaskAgentMark backend={task.backend} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
+          <TaskStar task={task} reveal="hover" />
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}
@@ -1029,6 +1031,7 @@ function TaskPeek({
           <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} background={liveJobRow(task)} />
           <TaskAgentMark backend={task.backend} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
+          <TaskStar task={task} />
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}
           <span className="task-peek-name" data-hint={task.last_message?.text || task.title}>

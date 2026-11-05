@@ -39,6 +39,7 @@ import {
 import type { DragEvent as ReactDragEvent } from "react";
 import { agentLabel, agentNamed, useAgentBackends } from "@platform/lib/agent-backends";
 import { AgentMark } from "@platform/ui/AgentMark";
+import { TaskStar } from "@platform/ui/TaskStar";
 import {
   cancelScheduledMessage,
   forceStart,
@@ -4492,6 +4493,9 @@ function TaskNode({
             way, which is what it is for. */}
         <TaskAgentMark backend={task.backend} />
         <IdChip id={task.task_id} kind="task" />
+        {/* THE FAVOURITE STAR, right after the id (owner, 2026-11-05: "star
+            everywhere") — a row action here, so an off star shows on hover. */}
+        <TaskStar task={task} reveal="hover" />
         {/* THE FOLDER CHIP SITS HERE, between the id and the title (Akshil,
             2026-09-15): the row's left end is where it says what it IS — the id,
             then the folder it belongs to, then the words. It lived at the right
@@ -6634,6 +6638,8 @@ function TaskCard({
               : failedOffLane && <StatusIcon status={lane} failed />}
           <TaskAgentMark backend={task.backend} />
           <IdChip id={task.task_id} kind="task" />
+          {/* The star after the id; a span-button, since the card is a <button>. */}
+          <TaskStar task={task} reveal="hover" nested />
           {/* The draft chip left this head with the List row's (Akshil,
               2026-09-11) and for the same reason — it is a tag now, and the
               tags sit together at the card's other end. It is in the foot,
