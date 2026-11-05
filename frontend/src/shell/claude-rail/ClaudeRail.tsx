@@ -899,7 +899,12 @@ export function ClaudeRail({
     // A favourite's held card (a hover on its ring, then a press inside) has
     // its ring in the favourites section already.
     // …and so has a blocked chat's (at the head of that section, Bugbot).
-    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey) || favs.some((s) => s.pulse.key === heldKey)) return null;
+    // …but with the favourites on a favourite's ring never pins THIS card
+    // (window B's), so a held chat that is also starred is the list's held
+    // outsider like any other (Bugbot): only the list's own seats are
+    // excluded. Favourites off, `favs` is empty.
+    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return null;
+    if (!favsOn && favs.some((s) => s.pulse.key === heldKey)) return null;
     const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
     if (!pulse) return null;
     // WITH THE FAVOURITES ON the list scrolls, so nothing is "past its room":
@@ -1527,7 +1532,9 @@ export function ClaudeRail({
   const openChat = (href: string) => {
     const seat = seatByHref.get(href);
     // A favourite's door (its hover card's Open) moves the favourites' mark.
-    if (seat) (favKeys.has(seat.pulse.key) ? setLastFav : setLastChat)(lastChatId(seat.pulse));
+    // Window A's doors are the LIST's (2026-11-05: a favourite's ring opens
+    // window B, never this card): the list's mark, whatever the chat's star.
+    if (seat) setLastChat(lastChatId(seat.pulse));
     if (seat?.row && isDraftTask(seat.row)) openDraftCard(seat.row, href);
     else onOpenChat(href);
   };
