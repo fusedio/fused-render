@@ -301,7 +301,6 @@ function emptyState(file: string | null): ChatState {
     turns: [],
     fork: null,
     forkClamped: false,
-    breakoutSends: 0,
     permissions: [],
     appState: [],
     canvasShot: [],
@@ -1084,32 +1083,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   /**
    * BREAKOUT POSTURE (`deps.breakout`): this controller drives a research-only
-   * side chat forked from `deps.params`' session. `breakoutSpent` flips once
-   * the fork's `start` has landed; from then on `session_id` is the breakout's
-   * OWN session and every start is `breakout: "resume"` (same policy, no
-   * second fork).
+   * side chat that starts as a fresh session. `breakoutSpent` flips once its
+   * first `start` has landed; that send carries `deps.breakoutContext`, and
+   * from then on `session_id` is the breakout's OWN session and every start is
+   * `breakout: "resume"` (same policy).
    */
   let breakoutSpent = false;
-  /** User sends made in breakout posture. A history refresh swaps the `u:` keys
-   *  for uuid-keyed rows, so the card counts its own turns from the END by this. */
-  let breakoutSends = 0;
   const breakoutMode = (): "" | "1" | "resume" =>
     !deps.breakout ? "" : breakoutSpent ? "resume" : "1";
-
-  /** The card shows the parent up to the chosen message: park that turn and
-   *  everything after it the way `beginFork` does (the send then reads the
-   *  parked uuid as `fork_at`), without handing the words to the composer. */
-  const scopeBreakout = (): void => {
-    const uuid = deps.breakoutAt;
-    if (!deps.breakout || breakoutSpent || !uuid) return;
-    const at = state.turns.findIndex((t) => t.role === "user" && t.uuid === uuid);
-    const turn = state.turns[at];
-    if (at < 0 || !turn) return;
-    emit({
-      turns: state.turns.slice(0, at),
-      fork: { uuid, text: turn.text, hidden: state.turns.slice(at) },
-    });
-  };
 
   /** "Fork from here" — see `ChatController.beginFork`. */
   const beginFork = (turnKey: string): string | null => {
@@ -2713,7 +2694,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // pictures — §D's reading order is state → pane-shot → annotations → text.
     // `composeBlocks` ranks `<live-app-state>` first wherever it arrives from
     // (Bugbot, PR #1064).
-    const outgoing = composeOutgoing(text, composeBlocks(blocks, live ? [live] : []));
+    // A breakout's first start also carries the parent messages it was opened from.
+    const context = breakoutMode() === "1" ? deps.breakoutContext : undefined;
+    const outgoing = composeOutgoing(text, composeBlocks(blocks, live ? [live] : [], context ? [context] : []));
     // The bubble shows what the user TYPED (or the markers for a wordless
     // send); the raw wire rides along for the "what was sent" popover.
     //
@@ -2732,10 +2715,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // A FORK starts a NEW session from the old one's transcript: never a
       // follow-up into the old live host (which, if any, keeps running).
       const forkAt = state.fork?.uuid || "";
-      // A breakout's FIRST start forks the parent (at `forkAt`, or at the tip
-      // when empty): never a follow-up into the parent's live host, so no probe.
       const bk = breakoutMode();
-      if (sessionId && !forkAt && bk !== "1") {
+      if (sessionId && !forkAt) {
         // A session already live for this file absorbs this message into its own
         // held-open `claude` process (Task 6) instead of `start` spawning a
         // second, parallel one against the same session_id. A brand-new chat has
@@ -2835,7 +2816,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
               // on disk, still listed, still on their 14-day TTL — and a send that
               // settles one of those is the only thing that can hand its number
               // on. It costs one short string on a send that has nothing to spend.
-              ...(sessionId ? {} : { draft_key: chatDraftKey(null, FILE) }),
+              // A breakout's first start creates a session but spends no folder
+              // draft: its session is hidden from Tasks, so a number handed to it
+              // would vanish.
+              ...(sessionId || bk ? {} : { draft_key: chatDraftKey(null, FILE) }),
               // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
               // proof this send is the one already counted, so the server gate
               // only looks rather than claiming a second time.
@@ -2856,7 +2840,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // probe — that start provably launched nothing.
           // A fork's `sessionId` is the OLD session, whose live host is not
           // this turn's run: no probe, the fork stays set for a resend.
-          if (!isTimeout(startErr) || forkAt || bk === "1") throw startErr;
+          // A breakout's first start has no session to ask about, and a probe
+          // by file alone would find the PARENT chat's live run: no probe.
+          if (!isTimeout(startErr) || forkAt || breakoutMode() === "1") throw startErr;
           runId = await liveAfterStartTimeout(sessionId);
           if (!runId) throw startErr;
         }
@@ -2889,10 +2875,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
       started = true;
       delivered(opts);
       if (bk === "1") breakoutSpent = true;
-      if (bk) {
-        breakoutSends += 1;
-        emit({ breakoutSends });
-      }
       // The fork has been spent: the new session exists. A failed start never
       // reaches here, so the fork stays set and the hand-back re-offers it.
       if (forkAt && logGen === gen && state.fork) emit({ fork: null });
@@ -3816,7 +3798,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const cached = deps.historyCache?.get(FILE || "", sessionId);
     if (cached) {
       landHistory(cached, true);
-      scopeBreakout();
     }
     try {
       const res = await fetchHistoryVia(sessionId);
@@ -3825,7 +3806,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (landDeleted(res)) return;
       deps.historyCache?.set(FILE || "", sessionId, res);
       landHistory(res, false);
-      scopeBreakout();
     } catch (err) {
       // A failed restore is not a trouble card in T either — it warns and leaves
       // an empty log (T:18057-18059).
@@ -3841,9 +3821,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // restored transcript and telling its host it is ready — neither of which
     // should wait on the answer. A `run` already on the URL is `resumeRun`'s
     // job and the `activeRun` guard inside makes the overlap harmless.
-    // A breakout card shows the PARENT's transcript but is never the parent's
-    // run: adopting its live run would attach this card to it.
-    if (!deps.params.get("run") && !(deps.breakout && !breakoutSpent)) void adoptLiveRun(sessionId);
+    if (!deps.params.get("run")) void adoptLiveRun(sessionId);
   }
 
   /**
@@ -4691,9 +4669,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
   async function refreshHistory(sessionId: string): Promise<void> {
     if (disposed || !sessionId) return;
     if (activeRun || sending) return;
-    // An unspent breakout card shows the parent's scoped transcript; the
-    // parent's own history must not overwrite it.
-    if (deps.breakout && !breakoutSpent) return;
     const gen = logGen;
     // WHAT THE LOG LOOKED LIKE WHEN THIS WAS ASKED (Bugbot 3977975835). A
     // scheduled or adopted repair that starts AND finishes inside the round

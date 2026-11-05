@@ -5,8 +5,8 @@ import { useEffect } from "react";
 import { act, create } from "react-test-renderer";
 
 import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@apps/claude/agent-peeks";
-import { closeBreakout, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
-import { AgentPeekCard, Card } from "./BreakoutCards";
+import { closeBreakout, consumeBreakoutPrompt, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
+import { AgentPeekCard, Card, HANDOFF_PROMPT } from "./BreakoutCards";
 import AgentPeekLog, { agentPeekTurns, agentPeekWork } from "@apps/claude/ui/AgentPeekLog";
 import { RunTrigger } from "@apps/claude/ui/RunTrigger";
 
@@ -71,22 +71,29 @@ const ev = (x: number, y: number, target: unknown = {}) => ({
   currentTarget: { setPointerCapture() {}, releasePointerCapture() {} },
 });
 
-test("the note says when the fork was clamped to the last compaction", () => {
-  const Clamped = (props: { onBreakoutState?: (s: { sessionId: string; turns: []; forkClamped?: boolean }) => void }) => {
-    useEffect(() => {
-      props.onBreakoutState?.({ sessionId: "s", turns: [], forkClamped: true });
-    }, [props]);
+test("the chat mounts fresh: no parent session, the selected messages as context", () => {
+  let seen: Record<string, unknown> = {};
+  const Spy = (props: Record<string, unknown>) => {
+    seen = props;
     return null;
   };
-  let r!: ReturnType<typeof create>;
+  const withContext = {
+    ...(card as object),
+    context: { block: "<breakout-context>\nx\n</breakout-context>", count: 2, title: "Parent" },
+  } as never;
   act(() => {
-    r = create(<Card card={card} index={0} mount={Clamped as never} />, { createNodeMock: () => el });
+    create(<Card card={withContext} index={0} mount={Spy as never} />, { createNodeMock: () => el });
   });
-  const note = r.root.findByProps({ className: "breakout-note" });
-  expect(note.children.join("")).toContain("forked at the last compaction");
-  expect(note.props.title).toContain("last compaction");
-  const plain = mount().r.root.findByProps({ className: "breakout-note" });
-  expect(plain.children.join("")).toBe("research only");
+  expect(seen["sessionId"]).toBeUndefined();
+  expect(seen["breakout"]).toBe(true);
+  // A breakout is Claude-only: it must not inherit a non-Claude catalog default.
+  expect(seen["backend"]).toBe("claude");
+  expect(seen["breakoutContext"]).toEqual({ block: "<breakout-context>\nx\n</breakout-context>", count: 2, title: "Parent" });
+  expect("breakoutAt" in seen).toBe(false);
+});
+
+test("the note reads research only", () => {
+  expect(mount().r.root.findByProps({ className: "breakout-note" }).children.join("")).toBe("research only");
 });
 
 // A mount that reports a fixed breakout state once.
@@ -102,12 +109,11 @@ const reporting = (s: unknown) => () => {
 const closeBtn = (r: ReturnType<typeof create>) =>
   r.root.findAllByType("button").find((b) => (b.children as string[]).join("") === "Close")!;
 
-test("close confirms when the card has sends, even after a refresh swapped the u: keys", () => {
+test("close confirms once the card has a user turn", () => {
   resetBreakouts();
-  const id = openBreakout({ sessionId: "s1", file: "/w/proj" });
+  const id = openBreakout({ sessionId: "s1", file: "/w/proj", context: { block: "b", count: 1 } });
   const refreshed = {
     sessionId: "brk",
-    sends: 1,
     turns: [
       { role: "user", key: "uuid-1", text: "q" },
       { role: "assistant", key: "uuid-2", text: "a" },
@@ -135,50 +141,206 @@ test("close confirms when the card has sends, even after a refresh swapped the u
   }
 });
 
-test("a failed Send back keeps the card open and shows one error line", async () => {
-  resetBreakouts();
-  openBreakout({ sessionId: "s1", file: "/w/proj" });
-  const state = {
-    sessionId: "brk",
-    sends: 1,
-    turns: [
-      { role: "user", key: "uuid-1", text: "q" },
-      { role: "assistant", key: "uuid-2", text: "an answer" },
-    ],
+// A mount whose reported state the test drives, with `send` and `stop` spies.
+function driven() {
+  const calls = { sent: [] as string[], stops: 0 };
+  let push!: (s: Record<string, unknown>) => void;
+  const P = (props: { onBreakoutState?: (s: never) => void }) => {
+    useEffect(() => {
+      push = (s) =>
+        props.onBreakoutState?.({ sessionId: "brk", send: (t: string) => void calls.sent.push(t), stop: () => void calls.stops++, ...s } as never);
+    }, [props]);
+    return null;
   };
+  return { calls, Mount: P as never, report: (s: Record<string, unknown>) => act(() => push(s)) };
+}
+const U1 = { role: "user", key: "u1", text: "q" };
+const A1 = { role: "assistant", key: "a1", text: "an earlier answer" };
+const PU = { role: "user", key: "u2", text: HANDOFF_PROMPT };
+const labelOf = (b: { children: unknown }) => (b.children as string[]).join("");
+const btnNamed = (r: ReturnType<typeof create>, name: string) => r.root.findAllByType("button").find((b) => labelOf(b) === name);
+
+async function setup() {
+  resetBreakouts();
+  openBreakout({ sessionId: "s1", file: "/w/proj", context: { block: "b", count: 1 } });
+  const d = driven();
   let r!: ReturnType<typeof create>;
   act(() => {
-    r = create(<Card card={getBreakouts()[0]!} index={0} mount={reporting(state)()} />, { createNodeMock: () => el });
+    r = create(<Card card={getBreakouts()[0]!} index={0} mount={d.Mount} />, { createNodeMock: () => el });
   });
+  d.report({ turns: [U1, A1], running: false });
+  // The composer event is the parent's seat: a handled event means "draft filed".
+  const drafts: string[] = [];
+  const w = window as unknown as Record<string, unknown>;
+  const prevDispatch = w["dispatchEvent"];
+  w["dispatchEvent"] = (e: { detail?: { text?: string } }) => {
+    drafts.push(e.detail?.text ?? "");
+    return false;
+  };
+  const done = () => {
+    w["dispatchEvent"] = prevDispatch;
+    act(() => r.unmount());
+    resetBreakouts();
+  };
+  return { r, d, drafts, done };
+}
+
+test("Send back sends the fixed prompt, files nothing until the run completes, then drafts the NEW reply", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    expect(d.calls.sent).toEqual([HANDOFF_PROMPT]);
+    expect(btnNamed(r, "Writing handoff…")!.props.disabled).toBe(true);
+    expect(btnNamed(r, "Cancel")).toBeDefined();
+    // Running: still nothing filed, the card stays.
+    d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "partial", streaming: true }], running: true });
+    expect(drafts).toHaveLength(0);
+    expect(getBreakouts()).toHaveLength(1);
+    // Done: the draft is the handoff reply, not the earlier one, and the card closes.
+    await act(async () => {
+      d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "The handoff note." }], running: false });
+      await new Promise((res) => setTimeout(res, 20));
+    });
+    expect(drafts).toEqual(["The handoff note."]);
+    expect(getBreakouts()).toHaveLength(0);
+  } finally {
+    done();
+  }
+});
+
+test("the draft carries the Handoff file line when the handoff run wrote a .md", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    const reply = {
+      role: "assistant",
+      key: "a2",
+      text: "Note.",
+      segments: [{ kind: "tool", id: "t", name: "Write", status: "ok", input: { file_path: "/w/.claude/handoffs/h.md" } }],
+    };
+    await act(async () => {
+      d.report({ turns: [U1, A1, PU], running: true });
+      d.report({ turns: [U1, A1, PU, reply], running: false });
+      await new Promise((res) => setTimeout(res, 20));
+    });
+    expect(drafts[0]).toBe("Note.\n\nHandoff file: /w/.claude/handoffs/h.md");
+  } finally {
+    done();
+  }
+});
+
+test("an empty reply keeps the card open with the inline error and restores the button", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    await act(async () => {
+      d.report({ turns: [U1, A1, PU], running: true });
+      d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "  " }], running: false });
+      await new Promise((res) => setTimeout(res, 20));
+    });
+    expect(drafts).toHaveLength(0);
+    expect(getBreakouts()).toHaveLength(1);
+    const alert = r.root.findAllByProps({ role: "alert" });
+    expect(alert.length).toBeGreaterThan(0);
+    expect(JSON.stringify(alert[0]!.children)).toContain("Couldn't write a handoff. Try again");
+    expect(btnNamed(r, "Send back")!.props.disabled).toBe(false);
+  } finally {
+    done();
+  }
+});
+
+test("a run that errors with no reply after the prompt keeps the card open with the error", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    await act(async () => {
+      d.report({ turns: [U1, A1, PU], running: true });
+      // The earlier reply must not be mistaken for the handoff.
+      d.report({ turns: [U1, A1, PU], running: false });
+      await new Promise((res) => setTimeout(res, 20));
+    });
+    expect(drafts).toHaveLength(0);
+    expect(getBreakouts()).toHaveLength(1);
+    expect(r.root.findAllByProps({ role: "alert" }).length).toBeGreaterThan(0);
+  } finally {
+    done();
+  }
+});
+
+test("Cancel stops the run, restores the button, and a late finish files nothing", async () => {
+  const { r, d, drafts, done } = await setup();
+  try {
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    d.report({ turns: [U1, A1, PU], running: true });
+    act(() => btnNamed(r, "Cancel")!.props.onClick());
+    expect(d.calls.stops).toBe(1);
+    expect(btnNamed(r, "Cancel")).toBeUndefined();
+    d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "late" }], running: false });
+    expect(drafts).toHaveLength(0);
+    expect(btnNamed(r, "Send back")!.props.disabled).toBe(false);
+  } finally {
+    done();
+  }
+});
+
+test("Send back is disabled with a hint while the breakout runs, and before any reply; Close still works", async () => {
+  const { r, d, done } = await setup();
+  try {
+    d.report({ turns: [U1, A1, { role: "user", key: "u3", text: "more" }], running: true });
+    const b = btnNamed(r, "Send back")!;
+    expect(b.props.disabled).toBe(true);
+    expect(b.props["data-hint"]).toBe("Wait for the breakout to finish");
+    act(() => b.props.onClick());
+    expect(d.calls.sent).toHaveLength(0);
+    d.report({ turns: [U1], running: false });
+    expect(btnNamed(r, "Send back")!.props.disabled).toBe(true);
+    // Close mid-writing still closes (and stops the run).
+    d.report({ turns: [U1, A1], running: false });
+    act(() => btnNamed(r, "Send back")!.props.onClick());
+    d.report({ turns: [U1, A1, PU], running: true });
+    const w = window as unknown as Record<string, unknown>;
+    const prev = w["confirm"];
+    w["confirm"] = () => true;
+    try {
+      act(() => closeBtn(r).props.onClick());
+    } finally {
+      w["confirm"] = prev;
+    }
+    expect(d.calls.stops).toBe(1);
+    expect(getBreakouts()).toHaveLength(0);
+  } finally {
+    done();
+  }
+});
+
+test("a draft that cannot be filed keeps the card open and shows one error line", async () => {
+  const { r, d, done } = await setup();
   const w = window as unknown as Record<string, unknown>;
   const g = globalThis as unknown as Record<string, unknown>;
-  const prevDispatch = w["dispatchEvent"];
   const prevFetch = g["fetch"];
   w["dispatchEvent"] = () => true; // nobody handled it: no parent mounted
   g["fetch"] = () => Promise.reject(new Error("offline")); // the draft read fails
   try {
-    const btn = r.root.findAllByType("button").find((b) => (b.children as string[]).join("") === "Send back")!;
+    act(() => btnNamed(r, "Send back")!.props.onClick());
     await act(async () => {
-      btn.props.onClick();
+      d.report({ turns: [U1, A1, PU], running: true });
+      d.report({ turns: [U1, A1, PU, { role: "assistant", key: "a2", text: "note" }], running: false });
       await new Promise((res) => setTimeout(res, 20));
     });
     expect(getBreakouts()).toHaveLength(1);
     expect(r.root.findAllByProps({ role: "alert" }).length).toBeGreaterThan(0);
   } finally {
-    w["dispatchEvent"] = prevDispatch;
     g["fetch"] = prevFetch;
-    act(() => r.unmount());
-    resetBreakouts();
+    done();
   }
 });
 
 test("closing a used card mid-run stops the run once the discard is confirmed", () => {
   resetBreakouts();
-  openBreakout({ sessionId: "s1", file: "/w/proj" });
+  openBreakout({ sessionId: "s1", file: "/w/proj", context: { block: "b", count: 1 } });
   let stops = 0;
   const state = {
     sessionId: "brk",
-    sends: 1,
     running: true,
     stop: () => void stops++,
     turns: [{ role: "user", key: "u:1", text: "q" }],
@@ -206,11 +368,11 @@ test("closing a used card mid-run stops the run once the discard is confirmed", 
 
 test("close does not confirm for an unused card", () => {
   resetBreakouts();
-  openBreakout({ sessionId: "s1", file: "/w/proj" });
+  openBreakout({ sessionId: "s1", file: "/w/proj", context: { block: "b", count: 1 } });
   let r!: ReturnType<typeof create>;
   act(() => {
     r = create(
-      <Card card={getBreakouts()[0]!} index={0} mount={reporting({ sessionId: "", sends: 0, turns: [{ role: "user", key: "h-1", text: "parent" }] })()} />,
+      <Card card={getBreakouts()[0]!} index={0} mount={reporting({ sessionId: "", turns: [] })()} />,
       { createNodeMock: () => el },
     );
   });
@@ -405,4 +567,48 @@ test("closing removes the agent peek", () => {
   act(() => close.props.onClick());
   expect(getAgentPeeks().some((p) => p.id === peek.id)).toBe(false);
   closeAgentPeek(peek.id);
+});
+
+test("the card hands its prompt to the chat once; consuming it forgets it, and the dedupe path never re-adds it", () => {
+  resetBreakouts();
+  const ctx = { block: "b", count: 1 };
+  const req = { sessionId: "s1", file: "/w/p", context: ctx, forkKey: "a|b", prompt: "why?" };
+  const id = openBreakout(req);
+  let seen: Record<string, unknown> = {};
+  const Spy = (props: Record<string, unknown>) => {
+    seen = props;
+    return null;
+  };
+  act(() => {
+    create(<Card card={getBreakouts()[0]!} index={0} mount={Spy as never} />, { createNodeMock: () => el });
+  });
+  expect(seen["breakoutPrompt"]).toBe("why?");
+  (seen["onBreakoutPromptSent"] as () => void)();
+  expect(getBreakouts()[0]!.prompt).toBeUndefined();
+  expect(openBreakout({ ...req, prompt: "again" })).toBe(id);
+  expect(getBreakouts()[0]!.prompt).toBeUndefined();
+  consumeBreakoutPrompt(id);
+  resetBreakouts();
+});
+
+test("the chat mounts on the card's cwd when it has one, else on its file", () => {
+  resetBreakouts();
+  const ctx = { block: "b", count: 1 };
+  let seen: Record<string, unknown> = {};
+  const Spy = (props: Record<string, unknown>) => {
+    seen = props;
+    return null;
+  };
+  const show = (cwd?: string) => {
+    resetBreakouts();
+    openBreakout({ sessionId: "s1", file: "/w/p", ...(cwd ? { cwd } : {}), context: ctx });
+    act(() => {
+      create(<Card card={getBreakouts()[0]!} index={0} mount={Spy as never} />, { createNodeMock: () => el });
+    });
+  };
+  show("/w/p/.claude/worktrees/x");
+  expect(seen["file"]).toBe("/w/p/.claude/worktrees/x");
+  show();
+  expect(seen["file"]).toBe("/w/p");
+  resetBreakouts();
 });

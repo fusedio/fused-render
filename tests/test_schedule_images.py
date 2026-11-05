@@ -500,11 +500,11 @@ def test_a_recurring_occurrence_carries_the_attachments_and_their_names(tmp_path
 
 
 def _chat_wire() -> str:
-    # The native chat's wire vocabulary (the iframe chat page that used to
-    # spell this tag is retired).
+    # The chat's wire tags live in platform/lib/wire-tags.ts (the iframe chat
+    # page that used to spell this tag is retired).
     return open(os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "frontend", "src", "apps", "claude",
-        "protocol", "wire.ts"), encoding="utf-8").read()
+        os.path.abspath(__file__))), "frontend", "src", "platform",
+        "lib", "wire-tags.ts"), encoding="utf-8").read()
 
 
 def test_the_tag_matches_the_page_that_reads_it():

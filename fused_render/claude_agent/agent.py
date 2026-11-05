@@ -3934,20 +3934,32 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # rules beat allow rules, so refuse these tools in the CLI itself. Write
         # needs the handoff .md exception, which a deny rule cannot express (and
         # an allow rule cannot carve out of a deny), and a user `Write` allow rule
-        # would also run before the bridge. So a PreToolUse hook enforces the
-        # path limit: it runs before the permission system and exit 2 blocks the
-        # call. The bridge's `_breakout_policy` stays as defense in depth.
+        # would also run before the bridge, as would a user MCP allow rule. So a
+        # PreToolUse hook enforces the path limit and the MCP allowlist: it runs
+        # before the permission system and exit 2 blocks the call. The
+        # bridge's `_breakout_policy` stays as defense in depth.
         hook_argv = [_stable_python(), "-I",
                      _permission_server_path(),
                      "--breakout-hook=" + _breakout_handoff_dir(file)]
-        hook_cmd = (subprocess.list2cmdline(hook_argv) if os.name == "nt"
-                    else shlex.join(hook_argv))
+        # FAIL CLOSED: the CLI blocks only on exit 2, and a failure outside
+        # `main`'s own guard (a bad interpreter, an import error) exits with
+        # another non-zero code. The wrapper turns every non-zero exit into 2.
+        # The CLI's own hook timeout stays non-blocking; the deny list above
+        # carries every non-MCP build tool regardless.
+        if os.name == "nt":
+            hook_cmd = subprocess.list2cmdline(hook_argv) + " || exit 2"
+        else:
+            hook_cmd = shlex.join(
+                ["sh", "-c", shlex.join(hook_argv) + " || exit 2"])
         cmd += ["--settings", json.dumps({
-            "permissions": {"deny": ["Bash", "Edit", "MultiEdit", "NotebookEdit"]},
+            "permissions": {"deny": [
+                "Bash", "Edit", "MultiEdit", "NotebookEdit", "Agent", "Task",
+                "TodoWrite", "ExitPlanMode", "EnterPlanMode", "Workflow",
+                "Skill"]},
             "hooks": {"PreToolUse": [{
-                "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit|mcp__.*",
                 "hooks": [{"type": "command", "command": hook_cmd,
-                           "timeout": 10, "onFailure": "block"}]}]}})]
+                           "timeout": 10}]}]}})]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id and resume_at and new_session_id:
@@ -3960,11 +3972,6 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # more than one turn, which is the normal case here.
         cmd += ["--resume", session_id, "--resume-session-at", resume_at,
                 "--fork-session", "--session-id", new_session_id]
-    elif session_id and new_session_id and breakout:
-        # A BREAKOUT FORKED AT THE TIP: the whole session, no truncation, into
-        # a new minted id. The parent transcript is untouched.
-        cmd += ["--resume", session_id, "--fork-session",
-                "--session-id", new_session_id]
     elif session_id:
         cmd += ["--resume", session_id]
     elif new_session_id:
@@ -3999,11 +4006,14 @@ def _breakout_handoff_dir(file: str) -> str:
 
 def _breakout_note(file: str) -> str:
     return (
-        " This conversation is a BREAKOUT: a research-only side chat forked "
-        "from the user's main chat. Edits and shell commands are refused by "
-        "policy here (Write, Edit, NotebookEdit and every Bash call), so do "
-        "not try them; skills, MCP tools, Read, Grep, Glob and web access "
-        "work normally. You may write a markdown handoff file (.md only) "
+        " This conversation is a BREAKOUT: a research-only side chat about the "
+        "messages attached to its first message. Answer the user's questions "
+        "about them. Do not plan, implement, write todo lists or start "
+        "subagents; if the user asks you to build something, tell them to use "
+        "Send back and continue in the main chat. Edits, shell commands, "
+        "skills and write tools are refused by policy here, so do not try "
+        "them; Read, Grep, Glob and web access work normally. You may write a "
+        "markdown handoff file (.md only) "
         f"under exactly `{_breakout_handoff_dir(file)}`. The user will send a "
         "summary of this conversation back to the main chat, so end with a "
         "short, self-contained answer.")
@@ -5114,14 +5124,13 @@ def _start(file: str, message: str, session_id: str, model: str,
     fork_parent = ""
     forked_from = ""
     clamped = False
-    # A BREAKOUT is a fork too (research-only, see `_claude_argv`): at a
-    # message when `fork_at` names one, at the TIP when it is empty. Claude
-    # only, and it needs the session to fork.
+    # A BREAKOUT is a fresh, research-only Claude session (see `_claude_argv`):
+    # the selected parent messages ride in its first message, so it names no
+    # session to fork or resume.
     #
     # `breakout_resume` is a LATER turn of a breakout that already exists (its
-    # live host is gone, so the page starts a new one): same policy, but the
-    # session is continued, not forked again.
-    tip_fork = False
+    # live host is gone, so the page starts a new one): same policy, and the
+    # session is continued.
     if breakout and not _breakout_pref():
         return {"error": "Breakout is off — turn it on in Preferences › Chats & tasks",
                 "reason": "breakout_disabled"}
@@ -5133,15 +5142,20 @@ def _start(file: str, message: str, session_id: str, model: str,
             # `breakout=resume` skips the folder gate and runs research-only:
             # only for a session the server recorded as a breakout.
             return {"error": "no such breakout", "reason": "breakout_missing"}
-        fork_at = ""
+        if fork_at:
+            # Dropping it would continue the whole session while the page
+            # shows the forked turns as discarded.
+            return {"error": "a breakout cannot be forked; fork_at is not "
+                             "accepted",
+                    "reason": "breakout_fork_unsupported", "backend": backend}
     elif breakout:
-        if not session_id or backend != "claude":
+        if backend != "claude":
             return {"error": "breakout is only available for Claude chats",
                     "reason": "unsupported", "backend": backend}
-        if _bad_id(session_id):
-            return {"error": "malformed session id"}
-        if not fork_at:
-            tip_fork, forked_from = True, session_id
+        if session_id or fork_at:
+            return {"error": "a breakout starts a fresh session; session_id "
+                             "and fork_at are not accepted",
+                    "reason": "breakout_fresh_only", "backend": backend}
     if fork_at:
         if not session_id or backend != "claude":
             return {"error": "fork is only available for Claude chats",
@@ -5235,7 +5249,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # CLI mints the id, the host announces it on the init row, and `_poll`
     # records it (the `session` file, the `recorded` marker, and — for this
     # case — the settings record below).
-    new_session_id = "" if (session_id and not fork_parent and not tip_fork) \
+    new_session_id = "" if (session_id and not fork_parent) \
         or backend in _SELF_MINTED_ID_BACKENDS else str(uuid.uuid4())
 
     # THE NON-CLAUDE AGENTS' ARGV, READY-MADE, before anything else is
@@ -5272,7 +5286,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # has — `_poll`, `_live_run`, `_send`'s fallback, the queue — and nothing
     # else about a run dir says which CLI is behind it.
     meta = {"file": file, "message": _strip_app_state(message),
-            "resumed_from": "" if (fork_parent or tip_fork) else session_id,
+            "resumed_from": "" if fork_parent else session_id,
             "mode": mode, "backend": backend}
     # A FORK IS NOT A CONTINUATION of the old session, so `resumed_from` stays
     # "" (like a fresh chat): `_live_run`, `_entry_session` and the Tasks

@@ -311,6 +311,14 @@ export interface ComposerCardProps {
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
+  /** Breakout pick mode: the box's hint while exchanges are being picked. */
+  pickPlaceholder?: string;
+  /** BREAKOUT PICK MODE: Send (Enter or the button) starts the breakout instead
+   *  of sending. `canStart` false (nothing picked) refuses and keeps the words;
+   *  `onStart` gets the trimmed words, spent like a sent message. */
+  pickSubmit?: { canStart: boolean; onStart(text: string): void };
+  /** Filled with a function that submits the box, for the selection bar's Start. */
+  pickStartRef?: { current: (() => void) | null };
   /** ONE LINE UNDER THE BOX while `blocked`, for a block the placeholder
    *  cannot say alone — "Copilot is turned off in Preferences." plus the link
    *  (D17). The schedule's block has its own card and passes nothing. */
@@ -568,6 +576,9 @@ export function ComposerCard({
   attachPending,
   blocked,
   blockedPlaceholder,
+  pickPlaceholder,
+  pickSubmit,
+  pickStartRef,
   blockedNote,
   blockedReason,
   navLocked,
@@ -1927,6 +1938,12 @@ export function ComposerCard({
     // single newline ran the reader's draft into the walkthrough's intro and
     // changed what the model reads.
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
+    // PICK MODE: Enter starts the breakout; it never reaches the main session.
+    if (pickSubmit && !pickSubmit.canStart) return false;
+    if (pickSubmit && !message) {
+      pickSubmit.onStart("");
+      return true;
+    }
     // …EXCEPT A WORDLESS ONE. Notes or pictures alone cannot be parked: the
     // notes' photograph is taken at the moment of sending (`beginSend`) and a
     // parked round would photograph a pane that has moved on, and the tray
@@ -1941,7 +1958,7 @@ export function ComposerCard({
     if (!message && !hasAttachments && !hasAttachmentsNow?.()) return false;
     // A LOCAL SLASH COMMAND IS ANSWERED HERE AND NEVER SENT (SPEC C-3). Only a
     // typed line: a programmatic send's seed is never a command.
-    const local = onLocalCommand && !extra ? classifyCommand(message) : null;
+    const local = onLocalCommand && !extra && !pickSubmit ? classifyCommand(message) : null;
     if (local && local.kind === "local") {
       const words = textRef.current;
       clearWords();
@@ -2005,8 +2022,10 @@ export function ComposerCard({
       // draft's key (review, 2026-09-17).
       if (!hasSessionRef.current) onHeldGoneRef.current?.();
     }
+    // PICK MODE: the words are the breakout's first message.
+    if (pickSubmit) pickSubmit.onStart(message);
     // SEND NOW (Ctrl+X while live): the turn is interrupted and this line runs next.
-    if (mode === "now" && running && onSendNow) onSendNow(message);
+    else if (mode === "now" && running && onSendNow) onSendNow(message);
     // HOLD (Ctrl+Enter while live): the line waits for the session to be done.
     else if (mode === "hold" && running && onSendHeld) onSendHeld(message);
     // A live run gets this message DIRECTLY instead of parking it in a
@@ -2043,7 +2062,15 @@ export function ComposerCard({
     boxRef,
     onLocalCommand,
     clearWords,
+    pickSubmit,
   ]);
+  useEffect(() => {
+    if (!pickStartRef) return;
+    pickStartRef.current = () => void submit();
+    return () => {
+      pickStartRef.current = null;
+    };
+  }, [pickStartRef, submit]);
 
   // The seat for the programmatic send. In an EFFECT so a render React throws
   // away (StrictMode's double invoke, a concurrent attempt that loses) cannot
@@ -2238,7 +2265,7 @@ export function ComposerCard({
           // The submit event is the send BUTTON's path (Enter in the box never
           // reaches here): while a run is live the button is a stop button
           // (T:17909-17914).
-          if (running) {
+          if (running && !pickSubmit) {
             onStop();
             return;
           }
@@ -2289,7 +2316,9 @@ export function ComposerCard({
           placeholder={
             blocked && blockedPlaceholder
               ? blockedPlaceholder
-              : variant === "home"
+              : pickPlaceholder
+                ? pickPlaceholder
+                : variant === "home"
                 ? // `homePlaceholderFor` names the KIND once the pane has decided
                   // it ("Ask Claude about this project…"); the markup's own
                   // kind-free wording stands until then (T:5392).
@@ -2480,7 +2509,7 @@ export function ComposerCard({
           <button
             className="c-send"
             type="submit"
-            aria-label={running ? "Stop" : "Send"}
+            aria-label={pickSubmit ? "Start breakout" : running ? "Stop" : "Send"}
             // AND THE SHUTTER WINDOW SAYS SO TOO (Bugbot, PR #1074). With the
       // `disabled` attribute gone (T:4187), the `title` is the one place to
       // say what the window IS — `sendBusy` can run to SECONDS on a large
@@ -2489,7 +2518,9 @@ export function ComposerCard({
       // the window closes (ClaudeChat's outbox), so the tooltip names the
       // wait, not a refusal.
       title={
-        running && (onSendNow || onSendHeld) && text.trim()
+        pickSubmit
+          ? "Start breakout"
+          : running && (onSendNow || onSendHeld) && text.trim()
           ? SEND_NOW_TITLE
           : running
           ? // T:4187's own string, not the shorter one this shipped with
@@ -2555,7 +2586,7 @@ export function ComposerCard({
             // hop is carrying (Bugbot 4034977395).
             {...(sendBlocked || hopFrozen ? { disabled: true } : {})}
           >
-            {running ? (
+            {running && !pickSubmit ? (
               <svg
                 width="14"
                 height="14"

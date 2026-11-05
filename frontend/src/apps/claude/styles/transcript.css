@@ -194,47 +194,55 @@
     transition: none;
   }
 }
-/* BREAKOUT FROM HERE: the fork button's twin, hung one lane further left. Its
-   net flex size is zero too (-48 + 20 + 28), so nothing moves. */
-.chat-root .turn.user .turn-breakout {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  margin: 0 28px 0 -48px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: 0;
-  border-radius: 4px;
-  color: var(--c-faint);
+/* BREAKOUT PICK MODE: each exchange is one click target. The check circle
+   takes the lane the time stamp uses on hover, so the stamp is hidden while
+   picking and the two can never overlap. */
+.chat-root .turn.is-pick {
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 90ms ease-out, color 90ms ease-out;
+  border-radius: 10px;
 }
-.chat-root .turn.user:hover .turn-breakout,
-.chat-root .turn.user .turn-breakout:focus-visible {
-  opacity: 1;
+.chat-root .turn.is-pick:hover {
+  background: color-mix(in srgb, var(--c-fg) 4%, transparent);
 }
-.chat-root .turn.user .turn-breakout:hover,
-.chat-root .turn.user .turn-breakout:focus-visible {
-  color: var(--c-fg);
+.chat-root .turn.is-pick.is-pick-on {
+  background: color-mix(in srgb, var(--c-accent) 9%, transparent);
 }
-.chat-root .turn.user .turn-breakout:focus-visible {
+.chat-root .turn.is-pick.is-pick-locked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat-root .turn.is-pick.is-pick-locked:hover {
+  background: none;
+}
+.chat-root .turn.is-pick .turn-stamp {
+  display: none;
+}
+.chat-root .turn-pick-check {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--c-border-strong);
+  cursor: inherit;
+}
+.chat-root .turn-pick-check svg {
+  stroke-width: 1.5;
+}
+.chat-root .turn.is-pick-on .turn-pick-check {
+  color: var(--c-on-accent);
+}
+.chat-root .turn.is-pick-on .turn-pick-check svg {
+  fill: var(--c-accent);
+  stroke: var(--c-on-accent);
+}
+.chat-root .turn-pick-check:focus-visible {
   outline: 2px solid var(--c-accent);
-  outline-offset: 1px;
-}
-/* A touch screen has no hover, so the per-turn button stays visible. */
-@media (hover: none) {
-  .chat-root .turn.user .turn-breakout {
-    opacity: 1;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-root .turn.user .turn-breakout {
-    transition: none;
-  }
+  outline-offset: 2px;
 }
 .chat-root .turn.user .bubble {
   background: var(--c-bubble-user);
@@ -2550,6 +2558,63 @@
    own does not. */
 .chat-root .annsum .annsum-note .annsum-lbl svg {
   margin-right: 4px;
+}
+/* A breakout's attached messages: a chip that opens onto the quoted text. */
+/* The label fits its column: chevron and count stay, the chat title takes the
+   ellipsis. Without this the nowrap, right-aligned row overflowed the narrow
+   card and was cut off at its left edge. */
+.chat-root .annsum .annsum-lbl.annsum-breakout {
+  display: inline-flex;
+  align-items: baseline;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-root .annsum .annsum-breakout svg {
+  flex: none;
+  align-self: center;
+  margin-right: 4px;
+}
+.chat-root .annsum .annsum-breakout-count {
+  flex: none;
+  white-space: pre;
+}
+.chat-root .annsum .annsum-breakout-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+.chat-root .annsum .annsum-breakout svg {
+  transition: transform 120ms ease;
+}
+.chat-root .annsum .annsum-breakout svg.annsum-breakout-open {
+  transform: rotate(90deg);
+}
+/* Above the composer the chip sits in its own `.annsum` wrapper, at the left
+   edge it shares with the tray. */
+.chat-root .annsum.annsum-composer {
+  margin: 0 0 4px;
+}
+.chat-root .annsum.annsum-composer .annsum-row {
+  justify-content: flex-start;
+}
+.chat-root .annsum.annsum-composer .annsum-breakout-body {
+  align-self: flex-start;
+}
+.chat-root .annsum .annsum-breakout-body {
+  align-self: flex-end;
+  max-width: 100%;
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--c-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 /* A file's receipt glyph is the DOOR into the viewer (D616), so it is a real
    <button> — which arrives wearing the UA's border, background and font. Reset

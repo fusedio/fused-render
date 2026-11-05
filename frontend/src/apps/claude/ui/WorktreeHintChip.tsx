@@ -47,6 +47,13 @@ export function shownWorktreeHint(
   return h;
 }
 
+/** Where a breakout should start: the shown hint's folder when it is an
+ *  absolute path, else undefined (the chat's own folder). */
+export function breakoutCwdFor(shown: WorktreeHint | null | undefined): string | undefined {
+  if (!shown || shown.via === "exit") return undefined;
+  return shown.path.startsWith("/") ? shown.path : undefined;
+}
+
 const HOW: Record<WorktreeHint["via"], string> = {
   bash: "created with git worktree add",
   enter: "entered",
@@ -65,7 +72,16 @@ export function WorktreeHintChip({ hint, currentPath }: { hint: WorktreeHint | n
   return (
     <span className="chat-worktree-btn chat-worktree-hint" title={title}>
       <GitBranch size={12} aria-hidden="true" />
-      <span>{name ? "worktree · " + name : "worktree"}</span>
+      <span className="c-wt-name">
+        {name ? (
+          <>
+            <span className="c-wt-word">worktree · </span>
+            {name}
+          </>
+        ) : (
+          "worktree"
+        )}
+      </span>
     </span>
   );
 }

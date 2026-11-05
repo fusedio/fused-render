@@ -2,12 +2,15 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import {
+  BREAKOUT_CTX_TAG,
   breakoutOpener,
+  buildBreakoutContext,
   buildHandoffDraft,
   closeBreakout,
+  exchangeKeys,
   getBreakouts,
+  liveKeys,
   openBreakout,
-  ownTurns,
   resetBreakouts,
   sendBackBreakout,
   subscribeBreakouts,
@@ -39,16 +42,17 @@ afterAll(() => {
 
 afterEach(() => resetBreakouts());
 
-const req = { sessionId: "s1", file: "/w/proj", forkAt: "u2" };
+const context = { block: "<breakout-context>\nx\n</breakout-context>", count: 2, title: "Parent" };
+const req = { sessionId: "s1", file: "/w/proj", context };
 
 describe("breakout store", () => {
   test("open adds a card with a unique id and the parent's session", () => {
     const a = openBreakout(req);
-    const b = openBreakout({ ...req, forkAt: "u3", forkKey: "k3" });
+    const b = openBreakout({ ...req, forkKey: "k3" });
     expect(a).not.toBe(b);
     const cards = getBreakouts();
     expect(cards.map((c) => c.id)).toEqual([a, b]);
-    expect(cards[0]).toMatchObject({ parentSessionId: "s1", file: "/w/proj", forkAt: "u2" });
+    expect(cards[0]).toMatchObject({ parentSessionId: "s1", file: "/w/proj", context });
   });
   test("a second open of the same message focuses the existing card", () => {
     const a = openBreakout({ ...req, forkKey: "k2" });
@@ -58,7 +62,7 @@ describe("breakout store", () => {
   });
   test("reopening raises the existing card to the end of the list", () => {
     const a = openBreakout({ ...req, forkKey: "k2" });
-    const b = openBreakout({ ...req, forkAt: "u3", forkKey: "k3" });
+    const b = openBreakout({ ...req, forkKey: "k3" });
     let ticks = 0;
     const off = subscribeBreakouts(() => ticks++);
     expect(openBreakout({ ...req, forkKey: "k2" })).toBe(a);
@@ -68,9 +72,16 @@ describe("breakout store", () => {
     expect(ticks).toBe(1);
     off();
   });
+  test("cwd round-trips onto the card, and is absent when not given", () => {
+    openBreakout({ ...req, forkKey: "w1", cwd: "/w/x" });
+    openBreakout({ ...req, forkKey: "w2" });
+    const [a, b] = getBreakouts().slice(-2);
+    expect(a!.cwd).toBe("/w/x");
+    expect(b && "cwd" in b).toBe(false);
+  });
   test("close removes", () => {
     const a = openBreakout(req);
-    openBreakout({ ...req, forkAt: "u9" });
+    openBreakout({ ...req, forkKey: "k9" });
     closeBreakout(a);
     expect(getBreakouts().map((c) => c.id)).not.toContain(a);
     expect(getBreakouts()).toHaveLength(1);
@@ -209,34 +220,141 @@ describe("breakoutOpener", () => {
   });
 });
 
-describe("ownTurns", () => {
-  const parent = [
-    { role: "user", key: "h-1", text: "parent q" },
-    { role: "assistant", key: "h-2", text: "parent answer" },
-  ];
-  test("no sends means no own turns, so no draft", () => {
-    expect(ownTurns(parent, 0)).toEqual([]);
-    expect(buildHandoffDraft(ownTurns(parent, 0))).toBe("");
+describe("exchangeKeys", () => {
+  const turns = [
+    { role: "user", key: "u1", text: "q1" },
+    { role: "assistant", key: "a1", text: "r1" },
+    { role: "user", key: "u2", text: "q2" },
+    { role: "assistant", key: "a2", text: "r2" },
+    { role: "assistant", key: "a3", text: "r3" },
+  ] as const;
+  test("any turn of an exchange selects the prompt and every answer to it", () => {
+    expect(exchangeKeys(turns, "u1")).toEqual(["u1", "a1"]);
+    for (const k of ["u2", "a2", "a3"]) expect(exchangeKeys(turns, k)).toEqual(["u2", "a2", "a3"]);
   });
-  test("slices from the sends-th user turn counted from the end", () => {
-    const all = [
-      ...parent,
-      { role: "user", key: "u:1", text: "side q" },
-      { role: "assistant", key: "h-3", text: "side answer" },
-    ];
-    expect(ownTurns(all, 1).map((t) => t.key)).toEqual(["u:1", "h-3"]);
-    expect(buildHandoffDraft(ownTurns(all, 1))).toBe("side answer");
+  test("assistant turns before any prompt are an exchange of their own", () => {
+    const lead = [{ role: "assistant", key: "x1", text: "a" }, { role: "assistant", key: "x2", text: "b" }, ...turns] as const;
+    expect(exchangeKeys(lead, "x2")).toEqual(["x1", "x2"]);
   });
-  test("survives a history refresh: every row is uuid-keyed", () => {
-    const refreshed = [
-      ...parent,
-      { role: "user", key: "uuid-a", text: "side q1" },
-      { role: "assistant", key: "uuid-b", text: "side a1" },
-      { role: "user", key: "uuid-c", text: "side q2" },
-      { role: "assistant", key: "uuid-d", text: "side a2" },
+  test("an assistant turn with no prompt before it, or an unknown key, stands alone", () => {
+    expect(exchangeKeys([turns[1]!], "a1")).toEqual(["a1"]);
+    expect(exchangeKeys(turns, "nope")).toEqual([]);
+  });
+});
+
+describe("liveKeys", () => {
+  test("keeps only the keys of turns still in the transcript", () => {
+    const turns = [{ key: "a" }, { key: "b" }];
+    expect([...liveKeys(turns, new Set(["a", "gone"]))]).toEqual(["a"]);
+    expect(liveKeys([], new Set(["a"])).size).toBe(0);
+  });
+});
+
+describe("buildBreakoutContext", () => {
+  const turns = [
+    { role: "user", key: "u1", text: "How does the cache work?" },
+    {
+      role: "assistant",
+      key: "a1",
+      text: "It keys on path.",
+      segments: [
+        { kind: "text" },
+        { kind: "tool", name: "Read", input: { file_path: "/w/cache.py" } },
+        { kind: "tool", name: "Read", input: { file_path: "/w/cache.py" } },
+        { kind: "tool", name: "Grep", input: { pattern: "x", path: "/w/src" } },
+        { kind: "tool", name: "NotebookEdit", input: { notebook_path: "/w/n.ipynb" } },
+      ],
+    },
+    { role: "user", key: "u2", text: "And eviction?" },
+    { role: "assistant", key: "a2", text: "LRU.", segments: [{ kind: "tool", name: "Read", input: { file_path: "/w/other.py" } }] },
+  ] as const;
+
+  test("quotes the selected messages in turn order, tool cards dropped", () => {
+    const { block, count } = buildBreakoutContext(turns, ["a1", "u1"], "Cache chat");
+    expect(count).toBe(2);
+    expect(block.startsWith(`<${BREAKOUT_CTX_TAG}>`)).toBe(true);
+    expect(block.endsWith(`</${BREAKOUT_CTX_TAG}>`)).toBe(true);
+    expect(block).toContain("User: How does the cache work?");
+    expect(block).toContain("Assistant: It keys on path.");
+    expect(block.indexOf("User: How")).toBeLessThan(block.indexOf("Assistant: It keys"));
+    expect(block).not.toContain("And eviction?");
+    expect(block).not.toContain('"pattern"');
+  });
+  test("lists the files the selected assistant turns touched, deduped", () => {
+    const { block } = buildBreakoutContext(turns, ["u1", "a1"], "t");
+    expect(block).toContain("Files these messages touched:");
+    expect(block.match(/\/w\/cache\.py/g)).toHaveLength(1);
+    expect(block).toContain("- /w/src");
+    expect(block).toContain("- /w/n.ipynb");
+    expect(block).not.toContain("/w/other.py");
+  });
+  test("the header names the parent title and first prompt; the title is optional", () => {
+    const withTitle = buildBreakoutContext(turns, ["u2", "a2"], "Cache chat").block;
+    expect(withTitle).toContain('"Cache chat"');
+    expect(withTitle).toContain('"How does the cache work?"');
+    expect(buildBreakoutContext(turns, ["u2", "a2"], "Cache chat").title).toBe("Cache chat");
+    expect("title" in buildBreakoutContext(turns, ["u2", "a2"])).toBe(false);
+    const bare = buildBreakoutContext(turns, ["u2", "a2"], undefined).block;
+    expect(bare).not.toContain("titled");
+    expect(bare).toContain('"How does the cache work?"');
+  });
+  test("a long first prompt is cut and a long message is capped", () => {
+    const long = [
+      { role: "user", key: "u0", text: "p".repeat(500) },
+      { role: "assistant", key: "a", text: "x".repeat(9000) },
+    ] as const;
+    const { block } = buildBreakoutContext(long, ["a"], "t");
+    expect(block).not.toContain("p".repeat(250));
+    expect(block).toContain("p".repeat(200) + "…");
+    expect(block).not.toContain("x".repeat(4100));
+    expect(block).toContain("…");
+  });
+  test("the block is capped, keeping the newest messages", () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({
+      role: i % 2 ? "assistant" : "user",
+      key: "k" + i,
+      text: `m${i} ` + "z".repeat(3900),
+    }));
+    const { block, count } = buildBreakoutContext(many, many.map((t) => t.key), "t");
+    expect(block.length).toBeLessThan(21000);
+    expect(count).toBeLessThan(12);
+    expect(block).toContain("m11 ");
+    expect(block).not.toContain("User: m0 ");
+  });
+  test("a tool-only assistant turn still contributes its files, not a message", () => {
+    const t = [
+      { role: "user", key: "u", text: "look" },
+      { role: "assistant", key: "a", text: "", segments: [{ kind: "tool", name: "Read", input: { file_path: "/w/only.py" } }] },
+    ] as const;
+    const { block, count } = buildBreakoutContext(t, ["u", "a"], "t");
+    expect(count).toBe(1);
+    expect(block).toContain("- /w/only.py");
+    expect(block).not.toContain("Assistant:");
+  });
+  test("the cap covers the title and the files list", () => {
+    const segs = Array.from({ length: 200 }, (_, i) => ({ kind: "tool", name: "Read", input: { file_path: "/w/" + "d".repeat(150) + i } }));
+    const t = [
+      { role: "user", key: "u", text: "q".repeat(4000) },
+      { role: "assistant", key: "a", text: "x".repeat(4000), segments: segs },
+      { role: "user", key: "u2", text: "y".repeat(4000) },
+      { role: "assistant", key: "a2", text: "z".repeat(4000) },
+      { role: "user", key: "u3", text: "w".repeat(4000) },
+      { role: "assistant", key: "a3", text: "v".repeat(4000) },
     ];
-    expect(ownTurns(refreshed, 1).map((t) => t.key)).toEqual(["uuid-c", "uuid-d"]);
-    expect(ownTurns(refreshed, 2).map((t) => t.key)).toEqual(["uuid-a", "uuid-b", "uuid-c", "uuid-d"]);
-    expect(ownTurns(refreshed, 9)).toEqual([]);
+    const { block } = buildBreakoutContext(t, t.map((m) => m.key), "T".repeat(5000));
+    expect(block.length).toBeLessThanOrEqual(20000 + 400);
+  });
+  test("an annotations-only prompt quotes its annotations, not the invisible marker", () => {
+    const t = [
+      { role: "user", key: "u", text: "\u2063annotations", raw: "<annotations>\nA: the button is misaligned\n</annotations>" },
+      { role: "user", key: "p", text: "\u2063pane screenshot" },
+    ];
+    const { block } = buildBreakoutContext(t, ["u", "p"], "t");
+    expect(block).toContain("the button is misaligned");
+    expect(block).toContain("sent pane screenshot");
+    expect(block).not.toContain("\u2063");
+  });
+  test("selecting nothing readable yields no messages", () => {
+    expect(buildBreakoutContext(turns, ["nope"], "t").count).toBe(0);
   });
 });

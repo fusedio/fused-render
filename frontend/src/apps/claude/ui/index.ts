@@ -168,7 +168,7 @@ export { AttachTray, ShotThumb } from "./AttachTray";
 export type { AttachTrayProps } from "./AttachTray";
 export { ShotViewer, ShotViewerBody } from "./ShotViewer";
 export type { ShotViewerProps } from "./ShotViewer";
-export { Receipts } from "./Receipts";
+export { BreakoutContextChip, Receipts } from "./Receipts";
 export type { ReceiptsProps } from "./Receipts";
 export { AnnStrip } from "./AnnStrip";
 export { AttachIcon, MarkerText } from "./AttachIcon";

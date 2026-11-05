@@ -4,7 +4,8 @@
 // avatar", the shape claude.ai / v0 / ChatGPT all settled on).
 import { memo, useId, useMemo } from "react";
 
-import { GitBranchPlus, SquareTerminal, Undo2 } from "lucide-react";
+import { SquareTerminal, Undo2 } from "lucide-react";
+import { PickCheck, pickContextHandler, pickRootProps, type TurnPick } from "./TurnPick";
 import { cn } from "@platform/lib/utils";
 import { parseTerminalAsk } from "@platform/lib/terminalFocus";
 
@@ -104,8 +105,11 @@ export interface TurnProps {
    *  re-ask it in the composer. Passed only for a Claude chat that is idle;
    *  absent, no button is drawn. One callback for the log, keyed by the turn. */
   onFork?: (key: string) => void;
-  /** "Breakout from here": open a research-only side chat at this message. */
-  onBreakout?: (key: string) => void;
+  /** Breakout pick mode: the exchange this turn belongs to is a click target. */
+  pick?: TurnPick;
+  /** Right-click on a turn: true when the host took it (breakout), see
+   *  `pickContextHandler`. One stable callback for the log, keyed by the turn. */
+  onBreakoutContext?: (key: string) => boolean;
   /** The chat's working directory, threaded down to `SegmentView`/`ToolChip`/
    *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first. */
@@ -140,7 +144,8 @@ export const Turn = memo(function Turn({
   sendNowHint,
   onSendNow,
   onFork,
-  onBreakout,
+  pick,
+  onBreakoutContext,
   cwd,
   workedFor,
   workedHint,
@@ -194,7 +199,9 @@ export const Turn = memo(function Turn({
     const termDir = termAsk?.cwd ? termAsk.cwd.replace(/\/+$/, "").split("/").pop() || "/" : "";
     return (
       <div
-        className={cn("turn", "user", anchored && "is-anchored", pending && "is-pending")}
+        className={cn("turn", "user", anchored && "is-anchored", pending && "is-pending", ...pickRootProps(pick).cls)}
+        onClick={pickRootProps(pick).onClick}
+        onContextMenu={pickContextHandler(turn.key, onBreakoutContext)}
         // The uuid a `?msg=` link addresses. On the element itself, because the
         // anchor is looked for right after the append (T:13459-13463).
         {...(turn.uuid ? { "data-msg": turn.uuid } : {})}
@@ -211,6 +218,7 @@ export const Turn = memo(function Turn({
             (design.md §C). The receipts stay SIBLINGS of this line — see
             below — so nothing the re-attach probe reads moves. */}
         <div className="turn-line">
+          {pick ? <PickCheck pick={pick} /> : null}
           {stamp ? (
             <span className="turn-stamp" {...(stampTitle(ts) ? { "data-hint": stampTitle(ts)! } : {})}>
               {stamp}
@@ -228,17 +236,6 @@ export const Turn = memo(function Turn({
               onClick={() => onFork(turn.key)}
             >
               <Undo2 size={13} aria-hidden="true" />
-            </button>
-          ) : null}
-          {turn.uuid && onBreakout ? (
-            <button
-              type="button"
-              className="turn-breakout"
-              aria-label="Breakout from here"
-              data-hint="Breakout from here"
-              onClick={() => onBreakout(turn.key)}
-            >
-              <GitBranchPlus size={13} aria-hidden="true" />
             </button>
           ) : null}
         {/* WHAT THE BUBBLE SAYS. An annotated send reads as the comments the
@@ -386,7 +383,11 @@ export const Turn = memo(function Turn({
   const line = folded ? collapsedLine(turn) : null;
   return (
     <>
-      <div className={cn("turn", "assistant", anchored && "is-anchored", folded && "is-folded")}>
+      <div
+        className={cn("turn", "assistant", anchored && "is-anchored", folded && "is-folded", ...pickRootProps(pick).cls)}
+        onClick={pickRootProps(pick).onClick}
+        onContextMenu={pickContextHandler(turn.key, onBreakoutContext)}
+      >
         {/* THE MARK IS THE TOGGLE (design.md §B). The one glyph every assistant
             turn already wears, in the lane the eye runs down when it is looking
             for where a reply begins — so the control for "show me less of this

@@ -308,7 +308,7 @@ test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () =>
   // this menu owns no vocabulary of the annotation subsystem's.
   expect(src).toContain("locked?: boolean");
   expect(src).toContain("lockedReason?: string");
-  const items = src.split("<DropdownMenuItem").slice(5);
+  const items = src.split("<DropdownMenuItem").slice(6);
   // Archive and Delete; full screen, the terminal/copy items and Download
   // transcript are none of them — saving a copy changes nothing.
   expect(items).toHaveLength(2);

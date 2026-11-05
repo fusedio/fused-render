@@ -8,6 +8,7 @@ lives under `meta["forked_from"]`.
 """
 import importlib.util
 import json
+import shlex
 import os
 import re
 
@@ -231,26 +232,10 @@ def test_start_fork_copilot_refused(agent, start, monkeypatch):
 
 # ----------------------------------------------------------------- breakout
 #
-# A breakout is a fork that is read-only by policy and ephemeral: it forks the
-# session (at a message, or at the tip when `fork_at` is empty), runs in
-# `default` permission mode whatever the page asked for, loses the `fused` CLI
-# pre-allowance, and tells the permission bridge where its one writable
-# directory is.
-
-
-def test_argv_breakout_forks_at_tip(agent, tmp_path):
-    argv = _argv(agent, tmp_path, session_id="OLD", new_session_id="NEW",
-                 breakout=True)
-    assert argv[argv.index("--resume") + 1] == "OLD"
-    assert "--fork-session" in argv
-    assert argv[argv.index("--session-id") + 1] == "NEW"
-    assert "--resume-session-at" not in argv
-
-
-def test_argv_breakout_keeps_resume_at_for_a_message(agent, tmp_path):
-    argv = _argv(agent, tmp_path, session_id="OLD", new_session_id="NEW",
-                 resume_at="P", breakout=True)
-    assert argv[argv.index("--resume-session-at") + 1] == "P"
+# A breakout is a fresh session that is read-only by policy and ephemeral: it
+# runs in `default` permission mode whatever the page asked for, loses the
+# `fused` CLI pre-allowance, and tells the permission bridge where its one
+# writable directory is.
 
 
 def test_argv_breakout_forces_default_mode_and_drops_fused_cli(
@@ -271,7 +256,9 @@ def test_argv_breakout_hard_denies_shell_and_edit_tools(agent, tmp_path):
     argv = _argv(agent, tmp_path, breakout=True)
     assert argv.count("--settings") == 1
     deny = json.loads(argv[argv.index("--settings") + 1])["permissions"]["deny"]
-    assert sorted(deny) == ["Bash", "Edit", "MultiEdit", "NotebookEdit"]
+    assert sorted(deny) == sorted([
+        "Bash", "Edit", "MultiEdit", "NotebookEdit", "Agent", "Task",
+        "TodoWrite", "ExitPlanMode", "EnterPlanMode", "Workflow", "Skill"])
     assert "Write" not in deny
 
 
@@ -279,11 +266,17 @@ def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
     argv = _argv(agent, tmp_path, breakout=True)
     settings = json.loads(argv[argv.index("--settings") + 1])
     (entry,) = settings["hooks"]["PreToolUse"]
-    assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit"
+    assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit|mcp__.*"
     (hook,) = entry["hooks"]
-    assert hook["type"] == "command" and hook["onFailure"] == "block"
+    assert hook["type"] == "command" and "onFailure" not in hook
     assert hook["timeout"] == 10
     assert "permission_server-" in hook["command"] and ".py" in hook["command"]
+    # Any non-zero exit of the guard blocks: the CLI blocks only on exit 2.
+    if os.name == "nt":
+        assert hook["command"].endswith(" || exit 2")
+    else:
+        sh = shlex.split(hook["command"])
+        assert sh[:2] == ["sh", "-c"] and sh[2].endswith(" || exit 2")
     handoff = os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs")
     assert "--breakout-hook=" + handoff in hook["command"]
     plain = _argv(agent, tmp_path / "p")
@@ -314,19 +307,27 @@ def test_breakout_prompt_names_the_handoff_dir(agent):
     text = agent._appended_prompt("/tmp/f", False, breakout=True)
     assert "breakout" in text.lower()
     assert os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs") in text
+    assert "do not plan" in text.lower() and "send back" in text.lower()
+    assert "forked" not in text
 
 
-def test_start_breakout_at_tip(agent, start):
-    out, req, run_dir = start("", breakout=True)
+def test_argv_breakout_is_a_fresh_session(agent, tmp_path):
+    argv = _argv(agent, tmp_path, session_id="", new_session_id="NEW",
+                 breakout=True)
+    assert "--resume" not in argv and "--fork-session" not in argv
+    assert argv[argv.index("--session-id") + 1] == "NEW"
+
+
+def test_start_breakout_is_a_fresh_session(agent, start):
+    out, req, run_dir = start("", session_id="", breakout=True)
     assert "error" not in out, out
     new = out["session_id"]
-    assert _UUID4.match(new) and new != "OLD"
-    assert req["session_id"] == "OLD" and "resume_at" not in req
+    assert _UUID4.match(new)
+    assert req["session_id"] == "" and "resume_at" not in req
     assert req["new_session_id"] == new and req["breakout"] is True
     meta = _meta(run_dir)
-    assert meta["breakout"] is True and meta["forked_from"] == "OLD"
+    assert meta["breakout"] is True and "forked_from" not in meta
     assert meta["session_id"] == new and meta["resumed_from"] == ""
-    assert "fork_at" not in meta
 
 
 def test_start_breakout_refused_when_pref_off(agent, start, monkeypatch):
@@ -337,27 +338,18 @@ def test_start_breakout_refused_when_pref_off(agent, start, monkeypatch):
         assert req is None and run_dir == ""
 
 
-def test_start_breakout_at_a_message(agent, start):
-    out, req, run_dir = start("u2", breakout=True)
-    assert "error" not in out, out
-    assert req["resume_at"] == "t2" and req["breakout"] is True
-    assert _meta(run_dir)["breakout"] is True
-
-
 def test_start_without_breakout_leaves_no_flag(agent, start):
     out, req, run_dir = start("u2")
     assert "breakout" not in _meta(run_dir) and "breakout" not in req
 
 
-def test_start_breakout_bad_session_id_is_a_session_error(agent, start):
-    out, _, _ = start("u2", session_id="../x", breakout=True)
-    assert out["error"] == "malformed session id"
-    assert out.get("reason") != "fork_target_missing"
-
-
-def test_start_breakout_needs_a_session(agent, start):
-    out, _, _ = start("", session_id="", breakout=True)
-    assert out["reason"] == "unsupported"
+def test_start_breakout_refuses_a_session_or_fork_at(agent, start):
+    for kw in ({"session_id": "OLD"}, {"session_id": "../x"}):
+        out, _, _ = start("", breakout=True, **kw)
+        assert out["reason"] == "breakout_fresh_only"
+        assert "fresh session" in out["error"]
+    out, _, _ = start("u2", session_id="", breakout=True)
+    assert out["reason"] == "breakout_fresh_only"
     assert not os.path.isdir(agent.RUNS) or not os.listdir(agent.RUNS)
 
 
@@ -391,6 +383,12 @@ def test_start_breakout_resume_continues_without_forking(agent, start):
     meta = _meta(run_dir)
     assert meta["breakout"] is True and "forked_from" not in meta
     assert meta["resumed_from"] == "BRK"
+
+
+def test_start_breakout_resume_refuses_fork_at(agent, start):
+    out, req, run_dir = start("U1", session_id="BRK", breakout=True,
+                              breakout_resume=True)
+    assert out.get("reason") == "breakout_fork_unsupported", out
 
 
 def test_start_breakout_resume_of_an_unrecorded_session_is_refused(agent, start):

@@ -19,7 +19,7 @@ const { ShotViewerBody, ShotViewerFooter, shotViewerTitle } = await import("./Sh
 const { SentPopBody } = await import("./SentPop");
 
 const HERE = dirname(new URL(import.meta.url).pathname);
-const { composeOutgoing, formatAnnotations, paneShotBlock, APP_STATE_TAG } = await import(
+const { composeOutgoing, formatAnnotations, formatBreakoutContext, paneShotBlock, APP_STATE_TAG } = await import(
   "../protocol/wire"
 );
 type UserTurn = import("../protocol/controller-api").UserTurn;
@@ -434,4 +434,47 @@ test("a wordless-caption turn with only an overview draws no empty wrapper", () 
   const r2 = mount(<Receipts turn={noThumb} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
   // The glyph-only failure/no-thumb case keeps its label.
   expect(texts(r2, "annsum-txt")).toEqual(["annotated overview attached"]);
+});
+
+test("a breakout's first turn wears a collapsible chip of the messages it carried", () => {
+  const raw = composeOutgoing("and eviction?", [
+    formatBreakoutContext({
+      title: "Cache chat",
+      messages: [
+        { role: "user", text: "How does it work?" },
+        { role: "assistant", text: "It keys on path." },
+      ],
+      files: [],
+    }),
+  ]);
+  const t: UserTurn = { role: "user", key: "u:9", text: "and eviction?", raw };
+  const r = mount(<Receipts turn={t} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
+  const chip = els(r, "annsum-lbl annsum-breakout")[0]!;
+  expect(chip.props["aria-expanded"]).toBe(false);
+  expect(chip.props.title).toBe("2 messages from Cache chat");
+  expect(els(r, "annsum-breakout-count")[0]!.props.children).toBe("2 messages");
+  expect(els(r, "annsum-breakout-title")[0]!.props.children).toBe(" from Cache chat");
+  expect(els(r, "annsum-breakout-body")).toHaveLength(0);
+  act(() => chip.props.onClick());
+  const body = els(r, "annsum-breakout-body")[0]!;
+  expect(body.props.children).toBe("User: How does it work?\n\nAssistant: It keys on path.");
+});
+
+test("opening the breakout chip holds the follow tail through the card policy", async () => {
+  const { CardPolicyProvider, createCardPolicy } = await import("./cardPolicy");
+  const raw = composeOutgoing("hi", [
+    formatBreakoutContext({ messages: [{ role: "user", text: "q" }], files: [] }),
+  ]);
+  const t: UserTurn = { role: "user", key: "u:10", text: "hi", raw };
+  const policy = createCardPolicy();
+  let held = 0;
+  policy.holdTail = () => held++;
+  const r = mount(
+    <CardPolicyProvider value={policy}>
+      <Receipts turn={t} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />
+    </CardPolicyProvider>,
+  );
+  act(() => els(r, "annsum-lbl annsum-breakout")[0]!.props.onClick());
+  expect(held).toBe(1);
+  expect(els(r, "annsum-breakout-body")).toHaveLength(1);
 });

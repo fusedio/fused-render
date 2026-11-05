@@ -117,3 +117,26 @@ describe("Topbar worktreeHint seat", () => {
     expect(seen({})).toBe(1);
   });
 });
+
+describe("narrow side-pane bar hooks", () => {
+  // The container queries themselves (chat.css, `@container chat-side-bar`)
+  // cannot be asserted in happy-dom, which does no layout or container-query
+  // evaluation. This pins the markup they hide: the classed spans, and the
+  // `c-topbar-side` class that carries `container-type`.
+  test("the pill wraps 'worktree · ' in .c-wt-word and keeps the branch name", () => {
+    const c = chip(mount(<WorktreeHintChip hint={bash} currentPath="/r" />))[0]!;
+    const word = c.findAll((n) => n.props.className === "c-wt-word");
+    expect(word.length).toBe(1);
+    expect(text(word[0]!)).toBe("worktree · ");
+    expect(text(c)).toBe("worktree · feat/foo");
+  });
+  test("a bare Topbar wears c-topbar-side; a full-page one does not", () => {
+    const props = { sessionId: "s1", running: false } as const;
+    const bare = mount(<Topbar {...props} bare />);
+    const full = mount(<Topbar {...props} />);
+    const has = (r: ReactTestRenderer) =>
+      r.root.findAll((n) => typeof n.type === "string" && String(n.props.className ?? "").includes("c-topbar-side")).length;
+    expect(has(bare)).toBe(1);
+    expect(has(full)).toBe(0);
+  });
+});

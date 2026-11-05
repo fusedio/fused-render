@@ -716,6 +716,9 @@ test("the locked ← Chats SAYS WHY, in the title and in its accessible name", a
   expect(back().props.disabled).toBe(false);
   expect(back().props.title).toBeUndefined();
   expect(back().props["aria-label"]).toBe("Back to chats");
+  // The word sits in its own span so the side pane's container query can hide
+  // it (happy-dom cannot evaluate the query itself).
+  expect(byClass(r, "c-back-word").length).toBe(1);
 
   await act(async () => commentSeat(r).props.onClick());
   await settle();

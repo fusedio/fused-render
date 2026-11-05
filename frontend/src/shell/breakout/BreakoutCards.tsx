@@ -2,8 +2,9 @@
 // shell's own overlay so a card outlives whichever page, pane or rail card it
 // was opened from. Chrome follows the rail peek card (claude-rail.css
 // `.claude-rail-peek-card`, `.breakout-card` modifier); body is a plain
-// `ChatMount` in breakout posture: forked from the parent session on its first
-// send, research-only on the server (permission bridge), no queue, no nesting.
+// `ChatMount` in breakout posture: a fresh session that opens with a chip for
+// the parent messages it was seeded with (they ride on its first send),
+// research-only on the server (permission bridge), no queue, no nesting.
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ComponentProps, type ComponentType, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChatMount } from "@apps/claude";
@@ -14,7 +15,7 @@ import { closeAgentPeek, useAgentPeeks, useAgentSegment, type AgentPeek } from "
 import {
   buildHandoffDraft,
   closeBreakout,
-  ownTurns,
+  consumeBreakoutPrompt,
   sendBackBreakout,
   useBreakouts,
   type BreakoutCard,
@@ -23,7 +24,17 @@ import {
 const OFFSET = 28;
 
 /** What a breakout chat reports up (`onBreakoutState`). */
-type BreakoutState = { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number; running?: boolean; stop?: () => void };
+type BreakoutState = {
+  sessionId: string;
+  turns: readonly Turn[];
+  running?: boolean;
+  stop?: () => void;
+  send?: (text: string) => void;
+};
+
+/** What Send back asks the breakout to write before anything reaches the main chat. */
+export const HANDOFF_PROMPT =
+  "Write a handoff note for the main conversation: what we found that matters to it, any decision or recommendation, and open questions. Be concise and self-contained, since the main chat has not seen this breakout. Reply with the note only.";
 
 /** The shared floating-card chrome: the fixed box (draggable by the head row,
  *  clamped to the viewport, stacked by `index`), the head (title, note, spacer,
@@ -178,31 +189,65 @@ export function Card({
 }) {
   const state = useRef<BreakoutState>({ sessionId: "", turns: [] });
   const [canSend, setCanSend] = useState(false);
-  const [clamped, setClamped] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [writing, setWriting] = useState(false);
   const [error, setError] = useState("");
-  const onState = useCallback((s: BreakoutState) => {
-    state.current = s;
-    setClamped(!!s.forkClamped);
-    // Only the breakout's own turns: the parent's restored history is not
-    // something to send back to the parent.
-    setCanSend(ownTurns(s.turns, s.sends ?? 0).some((t) => t.role === "assistant" && !!t.text.trim()));
-  }, []);
+  /** The handoff run in flight: where its turns start, and whether the chat has
+   *  been seen running yet (idle alone means the send has not landed). */
+  const pend = useRef<{ from: number; saw: boolean } | null>(null);
+
+  const finish = useCallback(
+    (turns: readonly Turn[], from: number) => {
+      const slice = turns.slice(from);
+      const reply = [...slice].reverse().find((t) => t.role === "assistant" && !!t.text.trim());
+      setWriting(false);
+      if (!reply) {
+        setError("Couldn't write a handoff. Try again");
+        return;
+      }
+      void sendBackBreakout(card.id, buildHandoffDraft(slice)).then((ok) => {
+        if (!ok) setError("Could not hand the summary back. The card stays open.");
+      });
+    },
+    [card.id],
+  );
+  const onState = useCallback(
+    (s: BreakoutState) => {
+      state.current = s;
+      setCanSend(s.turns.some((t) => t.role === "assistant" && !!t.text.trim()));
+      setRunning(!!s.running);
+      const p = pend.current;
+      if (!p) return;
+      if (s.running) p.saw = true;
+      else if (p.saw) {
+        pend.current = null;
+        finish(s.turns, p.from);
+      }
+    },
+    [finish],
+  );
 
   const close = () => {
-    // `sends` counts this card's own sends; the parent's restored history is not a reason to confirm.
-    const used = (state.current.sends ?? 0) > 0;
+    const used = state.current.turns.some((t) => t.role === "user");
     if (used && !window.confirm("Discard this breakout? The chat is not sent back.")) return;
+    pend.current = null;
     // The card's own research run would otherwise outlive its only view.
     if (state.current.running) state.current.stop?.();
     closeBreakout(card.id);
   };
+  // SEND BACK asks the breakout for a handoff note as a new message; the draft
+  // is built from THAT reply when the run ends (see `onState`).
   const sendBack = () => {
-    const text = buildHandoffDraft(ownTurns(state.current.turns, state.current.sends ?? 0));
-    if (!text) return;
+    if (pend.current || state.current.running || !state.current.send) return;
     setError("");
-    void sendBackBreakout(card.id, text).then((ok) => {
-      if (!ok) setError("Could not hand the summary back. The card stays open.");
-    });
+    pend.current = { from: state.current.turns.length, saw: false };
+    setWriting(true);
+    state.current.send(HANDOFF_PROMPT);
+  };
+  const cancelWriting = () => {
+    pend.current = null;
+    setWriting(false);
+    state.current.stop?.();
   };
 
   return (
@@ -210,33 +255,37 @@ export function Card({
       index={index}
       label="Breakout"
       title="Breakout"
-      note={clamped ? "research only · forked at the last compaction" : "research only"}
-      {...(clamped
-        ? {
-            noteTitle:
-              "The turn you chose is older than this chat's last compaction, so the breakout starts from the compaction summary instead.",
-          }
-        : {})}
+      note="research only"
       actions={
-        <button
-          type="button"
-          className="breakout-btn"
-          onClick={sendBack}
-          disabled={!canSend}
-          data-hint="Draft a summary into the chat's composer"
-        >
-          Send back
-        </button>
+        <>
+          {writing ? (
+            <button type="button" className="breakout-btn" onClick={cancelWriting}>
+              Cancel
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="breakout-btn"
+            onClick={sendBack}
+            disabled={!canSend || running || writing}
+            data-hint={
+              running && !writing ? "Wait for the breakout to finish" : "Have the breakout write a handoff note for the chat's composer"
+            }
+          >
+            {writing ? "Writing handoff…" : "Send back"}
+          </button>
+        </>
       }
       error={error}
       onClose={close}
     >
       <div className="claude-rail-peek-chat is-shown">
         <Mount
-          file={card.file}
-          sessionId={card.parentSessionId}
+          file={card.cwd || card.file}
           breakout
-          {...(card.forkAt ? { breakoutAt: card.forkAt } : {})}
+          backend="claude"
+          breakoutContext={card.context}
+          {...(card.prompt ? { breakoutPrompt: card.prompt, onBreakoutPromptSent: () => consumeBreakoutPrompt(card.id) } : {})}
           onBreakoutState={onState}
           chatOnly
           peek

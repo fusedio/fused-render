@@ -2264,3 +2264,15 @@ test("Ctrl+X on an empty box sends the queued lines now, only while a run is liv
   expect(idle.press("x", { ctrlKey: true })).toBe(false);
   expect(calls).toBe(1);
 });
+
+test("pick mode shows the Start icon, not the Stop square, while a turn runs", () => {
+  const send = (c: ReturnType<typeof mount>) =>
+    c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
+  const hasStopSquare = (c: ReturnType<typeof mount>) => send(c).findAllByType("rect").length > 0;
+  const live = mount({ status: "running" });
+  expect(send(live).props["aria-label"]).toBe("Stop");
+  expect(hasStopSquare(live)).toBe(true);
+  const picking = mount({ status: "running", pickSubmit: { canStart: true, onStart() {} } });
+  expect(send(picking).props["aria-label"]).toBe("Start breakout");
+  expect(hasStopSquare(picking)).toBe(false);
+});

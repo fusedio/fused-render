@@ -32,7 +32,6 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { GitBranchPlus } from "lucide-react";
 
 import { IS_EMBED, confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
@@ -45,12 +44,12 @@ import {
 } from "@platform/lib/drafts";
 import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
-import { COMPOSER_DRAFT_EVENT, type ComposerDraftDetail } from "@platform/lib/breakouts";
+import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type ComposerDraftDetail } from "@platform/lib/breakouts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
-import type { BreakoutRequest, SendOptions, StrandedLine, Turn, UserTurn } from "./protocol/controller-api";
+import type { BreakoutContext, BreakoutRequest, SendOptions, StrandedLine, Turn, UserTurn } from "./protocol/controller-api";
 import type { PermissionMode, TaskRecord } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
@@ -87,7 +86,7 @@ import {
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
 import { terminalHint } from "@platform/lib/terminalFocus";
-import { composeOutgoing, formatAnnotations, isInterruptMark, type AnnotationWire } from "./protocol/wire";
+import { breakoutContextIn, composeOutgoing, formatAnnotations, isInterruptMark, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
   AppPane,
@@ -110,6 +109,7 @@ import {
   AnnStrip,
   ArtStrip,
   AttachTray,
+  BreakoutContextChip,
   Kebab,
   CardPolicyProvider,
   Composer,
@@ -149,6 +149,8 @@ import {
   AgentProvider,
 } from "./ui";
 import { ComposerGate, waitingKind } from "./ui/WaitingBar";
+import { BreakoutSelectionBar } from "./ui/BreakoutSelectionBar";
+import { pickDefault, pickPlan } from "./ui/TurnPick";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import { sessionSeed } from "./ui/useRecentTasks";
@@ -163,7 +165,7 @@ import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
 import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
 import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
-import { WorktreeHintChip, shownWorktreeHint } from "./ui/WorktreeHintChip";
+import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
@@ -251,6 +253,12 @@ export const ASK_DETECTION_TIMEOUT_MS = 1500;
  *  twice a second. */
 export const HOST_PANE_POLL_MS = 500;
 
+export interface BreakoutControl {
+  available: boolean;
+  picking: boolean;
+  toggle: () => void;
+}
+
 export interface ClaudeChatProps {
   /** `_file`: folder | file | null. */
   file: string | null;
@@ -313,18 +321,34 @@ export interface ClaudeChatProps {
    *  sidebar's SideCloseButton, same glyph, same place (the header's left
    *  end, on the seam the pane collapses toward). Absent: no button. */
   onHidePane?: () => void;
-  /** BREAKOUT POSTURE: this chat is a research-only side chat forked from the
-   *  session in `params` (see `ControllerDeps.breakout`). It never joins the
-   *  folder queue and never shows the fork notice. */
+  /** BREAKOUT POSTURE: this chat is a research-only side chat that starts as a
+   *  fresh session (see `ControllerDeps.breakout`). It never joins the folder
+   *  queue and never shows the fork notice. */
   breakout?: boolean;
-  /** With `breakout`: the parent user message's uuid to fork at (absent = tip). */
-  breakoutAt?: string;
+  /** With `breakout`: the parent messages it was opened from. A chip above the
+   *  composer shows them until the first send carries them. */
+  breakoutContext?: BreakoutContext;
+  /** With `breakout`: the first message, auto-sent once on mount. */
+  breakoutPrompt?: string;
+  /** Called once the prompt has gone out, so the card forgets it. */
+  onBreakoutPromptSent?: () => void;
   /** "Breakout from here" / the composer's Breakout button: hand the request
    *  to the shell, which opens the card. Absent: no Breakout seats. */
   onBreakout?: (req: BreakoutRequest) => void;
+  /** Hosts whose own head hides the chat's ⋮ (the Tasks peek) offer Breakout
+   *  from THEIR menu: this reports whether it is available and whether pick
+   *  mode is on, with a stable `toggle`; null on unmount. */
+  onBreakoutControl?: (ctl: BreakoutControl | null) => void;
   /** With `breakout`: the card's window onto this chat — its own session id
    *  (minted by the first send) and transcript, for Send back. */
-  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; forkClamped?: boolean; sends?: number; running?: boolean; stop?: () => void }) => void;
+  onBreakoutState?: (s: {
+    sessionId: string;
+    turns: readonly Turn[];
+    running?: boolean;
+    stop?: () => void;
+    /** Send `text` as a new message in this chat, the way a typed one goes. */
+    send?: (text: string) => void;
+  }) => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -1362,7 +1386,7 @@ function ChatBody(props: ChatBodyProps) {
         file,
         params,
         ...(props.breakout ? { breakout: true } : {}),
-        ...(props.breakout && props.breakoutAt ? { breakoutAt: props.breakoutAt } : {}),
+        ...(props.breakout && props.breakoutContext ? { breakoutContext: props.breakoutContext.block } : {}),
         // The transcript restore takes its own road (owner E2E R1, F5):
         // `/api/claude-sessions/history`. See `fetchHistory`.
         history: (f, s) => fetchHistory(f, s),
@@ -2093,6 +2117,9 @@ function ChatBody(props: ChatBodyProps) {
   const [entered, setEntered] = useState(
     () =>
       !!(
+        // A BREAKOUT CARD IS A CHAT FROM ITS FIRST FRAME: it has no landing to
+        // show, and a Home row would load another conversation into it.
+        props.breakout ||
         params.get("session_id") ||
         // A CHAT THAT HAS NEVER RUN IS STILL A CHAT (`QUEUED_PARAM`): it has a
         // waiting bubble, a task number and a line to be in, and landing on the
@@ -2474,6 +2501,11 @@ function ChatBody(props: ChatBodyProps) {
       }
       annRef.current?.onEscape(ev);
       if (ev.defaultPrevented) return;
+      if (pickingRef.current) {
+        setPicking(false);
+        ev.preventDefault();
+        return;
+      }
       // 4. nothing of the chat's own was open, so the press reaches the host —
       //    which is how TaskPeek closes. Never a stop: Escape has no claim on a
       //    run (T:15947-15978).
@@ -3821,33 +3853,97 @@ function ChatBody(props: ChatBodyProps) {
   /** A breakout card reads this chat's session + transcript through
    *  `onBreakoutState` (Send back builds its draft from it). */
   const { onBreakoutState } = props;
+  /** Set once `onFollowUp` exists (it is defined further down this body). */
+  const breakoutSendRef = useRef<((text: string) => void) | null>(null);
   useEffect(() => {
     if (props.breakout && onBreakoutState) {
       onBreakoutState({
         sessionId: state.sessionId || "",
         turns: state.turns,
-        forkClamped: !!state.forkClamped,
-        sends: state.breakoutSends ?? 0,
         // Closing a card mid-run must end the run (it is the card's own research run).
         running: state.status !== "idle",
         stop: () => void controller.stopRun(),
+        send: (text: string) => breakoutSendRef.current?.(text),
       });
     }
-  }, [props.breakout, onBreakoutState, controller, state.sessionId, state.turns, state.forkClamped, state.breakoutSends, state.status]);
+  }, [props.breakout, onBreakoutState, controller, state.sessionId, state.turns, state.status]);
 
-  /** "Breakout from here" (Transcript `onBreakout`): hand the shell the chosen
-   *  message's uuid, resolved off the controller's turns exactly as the fork
-   *  does. Unlike the fork it is allowed while a run is active — the breakout
-   *  is its own run. */
-  const onBreakoutTurn = useCallback(
-    (turnKey: string) => {
+  /** The title this chat's header names it by, for the breakout chip. Written
+   *  where the header's task row is read. */
+  const breakoutTitle = useRef<string | undefined>(undefined);
+  /** Open a breakout seeded with the turns under `keys`. Unlike the fork it is
+   *  allowed while a run is active: the breakout is its own session. */
+  const breakoutCwdRef = useRef<string | undefined>(undefined);
+  const openBreakoutFor = useCallback(
+    (keys: readonly string[], prompt?: string) => {
       const st = controller.getState();
-      const turn = st.turns.find((t) => t.key === turnKey);
       const sid = st.sessionId || params.get("session_id") || "";
-      if (!props.onBreakout || !sid || !file || !turn || turn.role !== "user" || !turn.uuid) return;
-      props.onBreakout({ sessionId: sid, file, forkAt: turn.uuid, forkKey: turn.key });
+      if (!props.onBreakout || !sid || !file) return;
+      const context = buildBreakoutContext(st.turns, keys, breakoutTitle.current);
+      if (!context.count) return;
+      props.onBreakout({
+        sessionId: sid,
+        file,
+        ...(breakoutCwdRef.current ? { cwd: breakoutCwdRef.current } : {}),
+        context,
+        forkKey: [...keys].sort().join("|"),
+        ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
+      });
     },
     [controller, params, file, props.onBreakout],
+  );
+  /** Breakout pick mode: the top-bar button turns it on, Escape, Start, Cancel,
+   *  the button again and a session change turn it off. */
+  const [picking, setPicking] = useState(false);
+  const pickingRef = useRef(false);
+  /** The composer's submit, for the selection bar's Start (it owns the typed words). */
+  const pickStartRef = useRef<(() => void) | null>(null);
+  pickingRef.current = picking;
+  /** The turns picked for the next breakout (whole exchanges). */
+  const [pickedKeys, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
+  // Only keys of turns still on screen count: a re-keyed transcript or another
+  // session leaves the old keys behind, and they must not size the selection
+  // or reach the context.
+  const breakoutSel = useMemo(() => liveKeys(state.turns, pickedKeys), [pickedKeys, state.turns]);
+  useEffect(() => {
+    setPicking(false);
+    setBreakoutSel((sel) => (sel.size ? new Set() : sel));
+  }, [state.sessionId]);
+  /** A click on an exchange in pick mode toggles all of its turns. */
+  const onPickTurn = useCallback(
+    (turnKey: string) => {
+      const pair = exchangeKeys(controller.getState().turns, turnKey);
+      setBreakoutSel((sel) => {
+        const next = new Set(sel);
+        if (pair.every((k) => sel.has(k))) for (const k of pair) next.delete(k);
+        else for (const k of pair) next.add(k);
+        return next;
+      });
+    },
+    [controller],
+  );
+  /** Right-click on a message: pick mode opens with THAT exchange picked (or,
+   *  already picking, the exchange toggles). False leaves the native menu: not
+   *  under the gate, or the exchange is still streaming or pending. */
+  const gateRef = useRef(false);
+  const onContextTurn = useCallback(
+    (turnKey: string): boolean => {
+      if (!gateRef.current) return false;
+      const turns = controller.getState().turns;
+      if (pickPlan(turns, new Set(), () => {}).get(turnKey)?.locked !== false) return false;
+      if (pickingRef.current) {
+        onPickTurn(turnKey);
+        return true;
+      }
+      setBreakoutSel(new Set(exchangeKeys(turns, turnKey)));
+      setPicking(true);
+      return true;
+    },
+    [controller, onPickTurn],
+  );
+  const pickProp = useMemo(
+    () => (picking ? { keys: breakoutSel, onToggle: onPickTurn } : undefined),
+    [picking, breakoutSel, onPickTurn],
   );
 
   /**
@@ -3944,6 +4040,7 @@ function ChatBody(props: ChatBodyProps) {
     },
     [dispatchSend, defaults.model, defaults.effort, defaults.permission, rcSay],
   );
+  breakoutSendRef.current = onFollowUp;
   /**
    * CTRL+X WITH WORDS: Claude Code's send-now. The line goes in behind
    * whatever is queued, as an ordinary follow-up, and ONE interrupt follows once
@@ -4367,6 +4464,9 @@ function ChatBody(props: ChatBodyProps) {
   const hasQueued = state.queuedKeys.length > 0 || newestQueuedKey !== null;
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
   const shownHint = shownWorktreeHint(state.worktreeHint, state.tasks, chatWorkdir(file, pane.noun) ?? undefined);
+  // A breakout starts in the worktree the header chip names: only an absolute
+  // path (an `enter` hint that carried just a name, or an `agent` hint, has none).
+  breakoutCwdRef.current = breakoutCwdFor(shownHint);
   const worktreeMenu = worktreeTarget && agentCaps.worktrees ? (
     <WorktreeMenu
       key={file as string}
@@ -4973,6 +5073,18 @@ function ChatBody(props: ChatBodyProps) {
   );
   artTick.current = art.poll;
   const [snapNonce, setSnapNonce] = useState(0);
+  // The seeded parent messages, as a chip above the composer until the first
+  // send carries them into the transcript.
+  const breakoutWire = useMemo(
+    () => (props.breakout && props.breakoutContext ? breakoutContextIn(props.breakoutContext.block) : null),
+    [props.breakout, props.breakoutContext],
+  );
+  const breakoutChip =
+    breakoutWire && !state.turns.some((t) => t.role === "user") ? (
+      <div className="annsum annsum-composer">
+        <BreakoutContextChip context={breakoutWire} />
+      </div>
+    ) : null;
   snapInvalidate.current = () => setSnapNonce((n) => n + 1);
 
   /**
@@ -5131,6 +5243,8 @@ function ChatBody(props: ChatBodyProps) {
       // (`shotBusy`/`shotAttachPane`); `capturing` is that flag.
       attachPending: attach.capturing || attach.items.some((a: Attachment) => a.pending),
       chips: (
+        <>
+        {breakoutChip}
         <AttachTray
           items={attach.items}
           paneNoun={pane.paneNoun}
@@ -5143,6 +5257,7 @@ function ChatBody(props: ChatBodyProps) {
               same ✕ (T:927). The tray renders them first. */}
           <AnnChips items={ann.chips} onEdit={ann.editNote} onRemove={ann.removeNote} />
         </AttachTray>
+        </>
       ),
       // T:8505 — whichever composer is mounted hands its send in, for the
       // walkthrough's auto-submit and for ✓ Done.
@@ -5173,6 +5288,20 @@ function ChatBody(props: ChatBodyProps) {
       // worse state than the one this feature prevents.
       // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
       // its own sentence, and the link to the switch under it.
+      ...(picking
+        ? {
+            pickPlaceholder: "Ask the breakout · Enter starts it",
+            pickSubmit: {
+              canStart: breakoutSel.size > 0,
+              onStart: (text: string) => {
+                openBreakoutFor([...breakoutSel], text);
+                setPicking(false);
+                setBreakoutSel(new Set());
+              },
+            },
+            pickStartRef,
+          }
+        : {}),
       blocked: sched.blocked || agentOff || rcConnecting,
       blockedPlaceholder: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
@@ -5198,6 +5327,9 @@ function ChatBody(props: ChatBodyProps) {
       ...(stranded && entered ? { restore: stranded } : {}),
     }),
     [
+      picking,
+      breakoutSel,
+      openBreakoutFor,
       file,
       state.sessionId,
       state.backend,
@@ -5345,6 +5477,17 @@ function ChatBody(props: ChatBodyProps) {
     }),
     [onFollowUp, onSend, defaults.model, defaults.effort, defaults.permission],
   );
+  // A BREAKOUT CARD'S FIRST MESSAGE: typed while picking, sent once on mount
+  // (the context rides on it, as on any first send). The ref holds it across a
+  // strict-mode replay; the store forgets it so a remount cannot resend.
+  const breakoutPromptSent = useRef(false);
+  useEffect(() => {
+    const text = props.breakout ? props.breakoutPrompt : undefined;
+    if (!text || breakoutPromptSent.current) return;
+    breakoutPromptSent.current = true;
+    props.onBreakoutPromptSent?.();
+    onSend(text, { model: defaults.model, effort: defaults.effort, permission: defaults.permission });
+  }, [props.breakout, props.breakoutPrompt, props.onBreakoutPromptSent, onSend, defaults.model, defaults.effort, defaults.permission]);
   const headsup = useHeadsUp({
     runId: state.runId || state.lastRunId || "",
     running,
@@ -5420,6 +5563,7 @@ function ChatBody(props: ChatBodyProps) {
     inChat && showHead ? (state.sessionId ?? null) : null,
     file,
   );
+  breakoutTitle.current = head.task?.title || undefined;
   // The header's last seat: the task's PR chip when the host asked for it (the
   // chip draws nothing for a task that names no pull request), then the
   // host's own node.
@@ -5472,7 +5616,7 @@ function ChatBody(props: ChatBodyProps) {
           aria-disabled={ann.locked ? "true" : "false"}
           onClick={onBack}
         >
-          ← Chats
+          ←<span className="c-back-word"> Chats</span>
         </button>
   );
   // A canvas chat whose strip draws no seats — the node pane (`noAnnTools`),
@@ -5504,25 +5648,66 @@ function ChatBody(props: ChatBodyProps) {
       )}
     </div>
   ) : null;
-  // BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open while a run
-  // is going too (the breakout is its own run). Placed by the strip, or as the
-  // merged head row's tail (that layout has no strip).
-  const breakoutBtn =
-    breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-icon c-breakout"
-        title="Breakout: a research-only side chat from here"
-        aria-label="Breakout"
-        onClick={() => props.onBreakout?.({ sessionId: state.sessionId!, file })}
-      >
-        <GitBranchPlus size={14} aria-hidden="true" />
-      </button>
-    ) : null;
+  // BREAKOUT PICK MODE: the composer-side door toggles it, open while a run is
+  // going too (the breakout is its own run). Entering pre-selects the latest
+  // exchange that is neither streaming nor pending. Placed by the strip, or as
+  // the merged head row's tail (that layout has no strip).
+  const togglePicking = () => {
+    if (picking) {
+      setPicking(false);
+      setBreakoutSel(new Set());
+      return;
+    }
+    const pre = pickDefault(controller.getState().turns);
+    setBreakoutSel(new Set(pre));
+    setPicking(true);
+  };
+  const startBreakout = () => {
+    if (!breakoutSel.size) return;
+    // The composer spends its words into the breakout's first message.
+    if (pickStartRef.current) pickStartRef.current();
+    else {
+      openBreakoutFor([...breakoutSel]);
+      setPicking(false);
+      setBreakoutSel(new Set());
+    }
+  };
+  // The same gate the bar's old button had: the kebab item and the right-click
+  // on a message both start a breakout under it.
+  const breakoutGate = !!(
+    breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file
+  );
+  gateRef.current = breakoutGate;
+  const togglePickingRef = useRef(togglePicking);
+  togglePickingRef.current = togglePicking;
+  const stableToggle = useCallback(() => togglePickingRef.current(), []);
+  const { onBreakoutControl } = props;
+  useEffect(() => {
+    onBreakoutControl?.({ available: breakoutGate, picking, toggle: stableToggle });
+  }, [onBreakoutControl, breakoutGate, picking, stableToggle]);
+  useEffect(() => () => onBreakoutControl?.(null), [onBreakoutControl]);
+  // ESCAPE WHILE PICKING cancels the pick and nothing else: captured on window
+  // so no outer Escape handler (peek, side pane, sidebar) sees it first.
+  useEffect(() => {
+    if (!picking) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const a = document.activeElement as Element | null;
+      if (a?.closest?.("[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      setPicking(false);
+      setBreakoutSel(new Set());
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [picking]);
   const kebabEl = (
     <>
       {canvasShotSeat}
       <Kebab
+        {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
         file={file}
         sessionId={inChat ? (state.sessionId ?? "") : ""}
         btnRef={kebabBtn}
@@ -5668,9 +5853,6 @@ function ChatBody(props: ChatBodyProps) {
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
             {inChat && !mergedHeadRow ? backBtn : null}
-            {/* BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open
-                while a run is going too (the breakout is its own run). */}
-            {breakoutBtn}
             {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
                 `margin-left: auto` (T:255-262, chat.css), which is not the same
                 thing: a spacer is a flex ITEM, so it kept its 12px gap even
@@ -5770,12 +5952,10 @@ function ChatBody(props: ChatBodyProps) {
             {showHead ? (
               <Topbar
                 slim={peek}
+                {...(inSidePane ? { bare: true } : {})}
                 {...(mergedHeadRow
-                  ? { lead: backBtn, tail: <>{breakoutBtn}{kebabEl}</>, noProject: true }
-                  : // The slim peek head has no strip or merged row: it seats the button itself.
-                    peek && breakoutBtn
-                    ? { tail: breakoutBtn }
-                    : {})}
+                  ? { lead: backBtn, tail: kebabEl, noProject: true }
+                  : {})}
                 {...(headerExtra ? { extra: headerExtra } : {})}
                 // The hint names where the work is; the menu would only repeat the
                 // original checkout's branch.
@@ -5837,8 +6017,9 @@ function ChatBody(props: ChatBodyProps) {
               onPullPending={onPullPending}
               sendNowKey={running ? newestQueuedKey : null}
               onSendNow={onSendQueuedNow}
-              {...(chatBackend === "claude" && !running ? { onFork } : {})}
-              {...(chatBackend === "claude" && breakoutOn && props.onBreakout ? { onBreakout: onBreakoutTurn } : {})}
+              {...(chatBackend === "claude" && !running && !props.breakout ? { onFork } : {})}
+              {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}
+              {...(breakoutGate ? { onBreakoutContext: onContextTurn } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
@@ -5991,6 +6172,17 @@ function ChatBody(props: ChatBodyProps) {
                   Cancel
                 </button>
               </div>
+            ) : null}
+            {/* BREAKOUT PICK MODE: the picked exchanges, above the composer. */}
+            {breakoutGate && picking ? (
+              <BreakoutSelectionBar
+                count={state.turns.filter((t) => t.role === "user" && breakoutSel.has(t.key)).length}
+                onStart={startBreakout}
+                onCancel={() => {
+                  setPicking(false);
+                  setBreakoutSel(new Set());
+                }}
+              />
             ) : null}
             {/* A card is READ, not typed into: compact is the one cut that takes
                 the composer away, which is the whole difference from peek

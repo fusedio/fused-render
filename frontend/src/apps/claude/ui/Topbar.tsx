@@ -147,6 +147,9 @@ export interface TopbarProps {
   tail?: ReactNode;
   /** Leave the project name out: the host is already inside that folder. */
   noProject?: boolean;
+  /** The chat in a side pane: the identity drops its ring, mark, task number
+   *  and the agent / model text, so the title gets the width. */
+  bare?: boolean;
 }
 
 export function Topbar({
@@ -166,6 +169,7 @@ export function Topbar({
   lead,
   tail,
   noProject,
+  bare,
 }: TopbarProps) {
   // THE AGENT'S NAME AND MARK (D18): the conversation's own, off the context.
   // Above every early return: a header that moves from the fallback to the
@@ -237,7 +241,7 @@ export function Topbar({
       // tooltip goes on the line itself rather than on a span of its own, so the
       // header spends no width on a string nobody reads on purpose (T:12700).
       <div
-        className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "")}
+        className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "") + (bare ? " c-topbar-side" : "")}
         title={sessionId || undefined}
       >
         {lead}
@@ -245,12 +249,12 @@ export function Topbar({
             `status: "queued"` is what draws it dashed (taskColumn → StatusIcon).
             Nothing queued-specific is passed: the peek block already says what
             this task is doing, and this header only has to stop hiding it. */}
-        <TaskPeekWho task={who} running={line ? false : running} star />
+        <TaskPeekWho task={who} running={line ? false : running} bare={!!bare} star />
         {/* …AND THE PLACE IN THE LINE TRAILS THE TITLE, exactly where a Tasks
             row puts it, rather than at the far end of the header. */}
         {line ? <QueuedCaption line={line} /> : null}
         {noProject ? null : <TaskPeekProject task={who} {...(home ? { home } : {})} />}
-        <TaskPeekAgent task={who} />
+        {bare ? null : <TaskPeekAgent task={who} />}
         {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
             the ring says running or not, and "resumes 4:00 AM" is the one fact
             about this conversation the ring cannot carry. */}
@@ -309,7 +313,7 @@ export function Topbar({
     shortTaskId(taskId || knownTaskId(sessionId) || "") ||
     (sessionId ? sessionId.slice(0, 8) : "");
   return (
-    <div className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "")}>
+    <div className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "") + (bare ? " c-topbar-side" : "")}>
       {lead}
       {/* THE RING TAKES THE MARK'S SEAT rather than sitting beside it: the line
           keeps ONE glyph at its left end, and on a waiting chat the fact worth a

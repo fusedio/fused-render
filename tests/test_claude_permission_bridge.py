@@ -45,6 +45,7 @@ import ast
 import builtins
 import importlib.util
 import inspect
+import io
 import json
 import os
 import subprocess
@@ -3006,6 +3007,30 @@ def test_breakout_denies_non_write_edits_even_on_a_handoff_md(
     assert _no_card(perm_dir)
 
 
+@pytest.mark.parametrize("tool", [
+    "Agent", "Task", "TodoWrite", "Skill", "ExitPlanMode", "EnterPlanMode",
+    "Workflow", "mcp__fused_approvals__terminal_send",
+    "mcp__other__get_thing"])
+def test_breakout_refuses_build_tools_and_unlisted_mcp_without_a_card(
+        breakout, tool):
+    s, perm_dir, _ = breakout
+    payload = _result_payload(_approve(s, tool, {}).result(10))
+    assert payload["behavior"] == "deny"
+    assert "research-only" in payload["message"]
+    assert _no_card(perm_dir)
+
+
+def test_breakout_allows_a_read_only_mcp_tool_through_the_normal_flow(
+        breakout, agent):
+    s, perm_dir, _ = breakout
+    pending = _approve(s, "mcp__fused_approvals__terminal_read", {})
+    req = _wait_for_request(perm_dir)
+    assert req["tool"] == "mcp__fused_approvals__terminal_read"
+    assert agent._write_decision(str(perm_dir), req["id"],
+                                 {"decision": "allow", "scope": "once"})
+    assert _result_payload(pending.result(10))["behavior"] == "allow"
+
+
 def _run_hook(handoff, stdin):
     return subprocess.run(
         [sys.executable, "-I", SERVER, "--breakout-hook=" + str(handoff)],
@@ -3032,6 +3057,33 @@ def test_breakout_hook_lets_a_handoff_note_through(tmp_path):
 
 def test_breakout_hook_fails_closed_on_empty_stdin(tmp_path):
     assert _run_hook(tmp_path, "").returncode == 2
+
+
+@pytest.mark.parametrize("tool", ["mcp__fused_approvals__terminal_send",
+                                  "mcp__other__x", "Skill"])
+def test_breakout_hook_blocks_write_mcp_calls(tmp_path, tool):
+    assert _run_hook(tmp_path, json.dumps(
+        {"tool_name": tool, "tool_input": {}})).returncode == 2
+
+
+def test_breakout_hook_lets_a_read_only_mcp_tool_through(tmp_path):
+    r = _run_hook(tmp_path, json.dumps({
+        "tool_name": "mcp__fused_approvals__terminal_list", "tool_input": {}}))
+    assert r.returncode == 0 and r.stdout == ""
+
+
+def test_breakout_hook_fails_closed_when_the_policy_raises(
+        tmp_path, monkeypatch):
+    ps = _load("permission_server")
+    monkeypatch.setattr(ps, "BREAKOUT_HOOK_DIR", str(tmp_path))
+
+    def boom(*a, **kw):
+        raise RuntimeError("helper import failed")
+
+    monkeypatch.setattr(ps, "_breakout_policy", boom)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
+        {"tool_name": "Write", "tool_input": {"file_path": "/x"}})))
+    assert ps.main() == 2
 
 
 def test_breakout_leaves_reads_and_web_to_the_normal_flow(

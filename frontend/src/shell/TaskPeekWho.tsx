@@ -89,8 +89,11 @@ function renamable(task: Task): boolean {
  * automatic title back. Same draft / busy / error shape as the Current apps
  * rename. `rename` is injectable so a test needs no network.
  */
-export function TaskPeekWho({ task, running = false, rename = renameTask, star = false }: {
+export function TaskPeekWho({ task, running = false, bare = false, rename = renameTask, star = false }: {
   task: Task;
+  /** Title only: no ring, agent mark or task number (the chat in a side pane,
+   *  where the width is the title's). */
+  bare?: boolean;
   /**
    * THE PAGE KNOWS A TURN IS LIVE before the listing does. A chat sent from
    * this app runs `claude -p`, which the server's watcher learns about from
@@ -160,6 +163,8 @@ export function TaskPeekWho({ task, running = false, rename = renameTask, star =
   const background = !running && liveJobRow(task);
   return (
     <div className="task-side-peek-who">
+      {bare ? null : (
+        <>
       <span
         className="task-side-peek-status"
         title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
@@ -173,6 +178,8 @@ export function TaskPeekWho({ task, running = false, rename = renameTask, star =
       <TaskAgentMark backend={task.backend} />
       {star && <TaskStar task={task} />}
       <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
+        </>
+      )}
       {draft === null ? (
         <>
           <span

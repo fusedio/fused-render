@@ -42,7 +42,7 @@ def _queue_target(params: dict) -> str:
 
 
 def _breakout_label(params: dict) -> str:
-    """The `breakout` param, trusted. `"1"` is a fresh fork. `"resume"` only
+    """The `breakout` param, trusted. `"1"` is a fresh session. `"resume"` only
     counts for a session the breakout store records: a client may not skip the
     folder gate by naming an ordinary task's session."""
     label = str(params.get("breakout") or "")

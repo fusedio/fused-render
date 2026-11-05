@@ -130,6 +130,8 @@ import {
   usePeekedKey,
 } from "./task-peek-store";
 import { publishPeekSession } from "@platform/lib/peek-session";
+import type { BreakoutControl } from "@apps/claude/ClaudeChat";
+import { MessagesSquare } from "lucide-react";
 import { breakoutOpener } from "@platform/lib/breakouts";
 
 /** How long an EMPTY task list is given to turn out to be a list that has not
@@ -405,6 +407,20 @@ const ICON_OPEN_DOOR = (
 );
 
 // ---- the panel ---------------------------------------------------------------
+
+/** The menu's Breakout rows (item + separator), from the chat's own report;
+ *  none while the chat says it is unavailable. */
+export function breakoutMenuEntries(ctl: BreakoutControl | null): MenuEntry[] {
+  if (!ctl?.available) return [];
+  return [
+    {
+      label: ctl.picking ? "Cancel breakout pick" : "Breakout…",
+      icon: <MessagesSquare size={16} aria-hidden="true" />,
+      onClick: () => ctl.toggle(),
+    },
+    "separator",
+  ];
+}
 
 export function TaskPeek({
   tasks,
@@ -1002,9 +1018,12 @@ export function TaskPeek({
    * A FOURTH appears only when the header has had to fold its own door away
    * (`headFit`): a hidden control has to be somewhere, and the kebab is where.
    */
+  const [breakoutCtl, setBreakoutCtl] = useState<BreakoutControl | null>(null);
   const menuItems = (): MenuEntry[] => {
     if (!task) return [];
     const items: MenuEntry[] = [];
+    // BREAKOUT, from the chat's own report: the peek's head hides the chat's ⋮.
+    items.push(...breakoutMenuEntries(breakoutCtl));
     if (SHOW_PAGE_DOOR && page && headFit >= PEEK_HEAD_DROPS.length) {
       items.push({ label: pageDoorLabel(task), icon: ICON_OPEN_DOOR, onClick: openAsPage });
       items.push("separator");
@@ -1358,6 +1377,7 @@ export function TaskPeek({
               // remount restarts its wait.
               <ChatMount
                 onBreakout={breakoutOpener()}
+                onBreakoutControl={setBreakoutCtl}
                 key={task.key}
                 file={task.target || task.project}
                 sessionId={task.session_id}

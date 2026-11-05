@@ -65,7 +65,7 @@ export function ProjectQueueControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Breakout side chats: research-only forks of a conversation. Opt-in beta.
+// Breakout side chats: research-only side chats seeded with messages from a conversation. Opt-in beta.
 export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
