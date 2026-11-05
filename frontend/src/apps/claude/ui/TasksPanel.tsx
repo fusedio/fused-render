@@ -181,6 +181,66 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
 
   const nowMs = now();
 
+  // A SHOWN OUTPUT STAYS FRESH: the CLI wants the host to poll `task_output`
+  // while the task runs. A poll replaces the shown text in place (never back
+  // to "Loading…") and a failed poll keeps the last good text.
+  const outputsRef = useRef(outputs);
+  outputsRef.current = outputs;
+  const polling = useRef<Set<string>>(new Set());
+  const poll = useCallback(
+    (taskId: string, force = false) => {
+      const asked = runRef.current;
+      if (!asked || (!force && polling.current.has(taskId))) return;
+      polling.current.add(taskId);
+      const land = (state: OutputState | null) => {
+        polling.current.delete(taskId);
+        if (!state || runRef.current !== asked) return;
+        setOutputs((o) => {
+          const cur = o[taskId];
+          if (!cur) return o; // collapsed meanwhile
+          if (state.phase === "error" && cur.phase === "shown") return o;
+          return { ...o, [taskId]: state };
+        });
+      };
+      fetchOutput(asked, taskId).then(
+        (res) => {
+          if (!res || (typeof res.error === "string" && res.error)) {
+            land({ phase: "error", message: (res && res.error) || "No output." });
+            return;
+          }
+          const ok = res as TaskOutputResponse;
+          land({ phase: "shown", text: typeof ok.output === "string" ? ok.output : "", truncated: !!ok.truncated });
+        },
+        (err: unknown) => land({ phase: "error", message: err instanceof Error ? err.message : String(err) }),
+      );
+    },
+    [fetchOutput],
+  );
+  const pollKey = tasks
+    .filter((t) => isLive(t.status) && (outputs[t.id]?.phase === "shown" || outputs[t.id]?.phase === "error"))
+    .map((t) => t.id)
+    .sort()
+    .join("\n");
+  useEffect(() => {
+    if (!open || !runId || !pollKey) return;
+    const ids = pollKey.split("\n");
+    const timer = window.setInterval(() => ids.forEach((id) => poll(id)), 2000);
+    return () => window.clearInterval(timer);
+  }, [open, runId, pollKey, poll]);
+  // Live → ended while expanded: one last read (the CLI allows it).
+  const wasLive = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const live = new Set(tasks.filter((t) => isLive(t.status)).map((t) => t.id));
+    if (open && runId) {
+      for (const t of tasks) {
+        const o = outputsRef.current[t.id];
+        if (!live.has(t.id) && wasLive.current.has(t.id) && o && o.phase !== "loading") poll(t.id, true);
+      }
+    }
+    wasLive.current = live;
+  }, [tasks, open, runId, poll]);
+
+
   const toggleOutput = useCallback(
     (taskId: string) => {
       const current = outputs[taskId];
@@ -323,11 +383,11 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
                     <div className="chat-task-note">Loading…</div>
                   ) : out?.phase === "shown" ? (
                     <div className="chat-task-out">
-                      {out.truncated ? <div className="chat-task-note">Showing the last 64 KB.</div> : null}
+                      {out.truncated ? <div className="chat-task-note">Showing the end of the output.</div> : null}
                       {out.text ? (
                         <CollapsiblePre text={out.text} what="output" />
                       ) : (
-                        <div className="chat-task-note">No output yet.</div>
+                        <div className="chat-task-note">{isLive(t.status) ? "No output yet." : "No output."}</div>
                       )}
                     </div>
                   ) : out?.phase === "error" ? (
