@@ -210,6 +210,17 @@ export function caption(t: PhoneTask, now: number): string {
   return parts.join(" · ");
 }
 
+/** "in 30s", "in 5 min", "in 3 h", "in 2 days"; "now" once due. */
+export function inWords(at: number, now: number): string {
+  const d = Math.round(at - now);
+  if (d <= 0) return "now";
+  if (d < 60) return `in ${d}s`;
+  if (d < 3600) return `in ${Math.round(d / 60)} min`;
+  if (d < 86400) return `in ${Math.round(d / 3600)} h`;
+  const days = Math.round(d / 86400);
+  return `in ${days} day${days === 1 ? "" : "s"}`;
+}
+
 /** A due stamp (ISO or epoch) as epoch seconds, NaN when unreadable. */
 export function dueEpoch(due: string | number | null | undefined): number {
   if (due == null) return NaN;
@@ -254,10 +265,37 @@ export function cardStatus(c: PhoneCard): { tone: "allow" | "deny" | "expired" |
   }
 }
 
-/** A multi-select's answer list. */
-export function toggleIn(set: ReadonlySet<string>, v: string): Set<string> {
+/** A set with `v` toggled. */
+export function toggleIn<T>(set: ReadonlySet<T>, v: T): Set<T> {
   const n = new Set(set);
   if (n.has(v)) n.delete(v);
   else n.add(v);
   return n;
+}
+
+/** The cards worth drawing under the thread: every one still waiting (live or
+ *  held), plus the most recently settled one so the verdict just given is
+ *  seen; older settled cards fall away rather than pinning under every reply. */
+export function visibleCards(cards: PhoneCard[]): PhoneCard[] {
+  const waiting = cards.filter((c) => c.verdict === "pending" || c.verdict === "held");
+  const settled = cards.filter((c) => c.verdict !== "pending" && c.verdict !== "held");
+  const last = settled.length ? [settled.reduce((a, b) => (b.created_at >= a.created_at ? b : a))] : [];
+  return [...last, ...waiting].sort((a, b) => a.created_at - b.created_at);
+}
+
+/** Does the settled answer name this label? The answer is a label, or the
+ *  ", "-join of labels in option order; matched by construction, not substring. */
+export function answerHas(answer: string | undefined, label: string, labels: string[]): boolean {
+  if (!answer) return false;
+  if (answer === label) return true;
+  // Walk the option list: the answer must be a join of a subset in order.
+  let rest = answer;
+  const picked: string[] = [];
+  for (const l of labels) {
+    if (rest === l || rest.startsWith(l + ", ")) {
+      picked.push(l);
+      rest = rest === l ? "" : rest.slice(l.length + 2);
+    }
+  }
+  return picked.includes(label) && (rest === "" || !labels.includes(rest));
 }

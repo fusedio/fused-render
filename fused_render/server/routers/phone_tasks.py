@@ -126,7 +126,10 @@ def _body(resp):
 def phone_task(row: dict) -> dict:
     """One list row (PhoneTask): the desktop `Task` cut to what the phone draws,
     every string capped. Paths are tilde'd; the labels are basenames."""
-    project = str(row.get("project") or "")
+    # The folder a row is filed under is its project, else its target: the facet
+    # (`phone_tasks`) and the phone's folder filter both read `project`, so the
+    # same fallback is applied here and nowhere else.
+    project = str(row.get("project") or row.get("target") or "")
     target = str(row.get("target") or "")
     lm = row.get("last_message") if isinstance(row.get("last_message"), dict) else None
     att = row.get("attention") if isinstance(row.get("attention"), dict) else None
@@ -522,7 +525,9 @@ def _card(agent, perm: dict) -> dict:
         "held": bool(perm.get("held")),
         "created_at": perm.get("created_at") or 0,
         "questions": questions,
-        "answers": ({_flat(k, 120): _flat(v, 120) for k, v in list(perm.get("answers").items())[:20]}
+        # Keyed by the exact question text and carrying the exact joined labels, as
+        # `questions` above: the phone looks an answer up by the question it drew.
+        "answers": ({str(k): str(v) for k, v in list(perm.get("answers").items())[:20]}
                     if isinstance(perm.get("answers"), dict) else {}),
     }
 

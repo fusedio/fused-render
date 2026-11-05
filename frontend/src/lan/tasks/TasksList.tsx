@@ -459,7 +459,7 @@ function TaskRow({ t, now, onLongPress }: { t: PhoneTask; now: number; onLongPre
         onClick={(e) => {
           if (fired.current) e.preventDefault();
         }}
-        className="lan-press -mx-2 flex min-h-[64px] items-center gap-3 rounded-xl px-2 py-2.5 select-none"
+        className="lan-press -mx-2 flex min-h-[64px] items-center gap-3 rounded-xl px-2 py-2.5 select-none [-webkit-touch-callout:none]"
       >
         <span className={cn("mt-0.5 size-2.5 shrink-0 self-start rounded-full", working && "lan-pulse")} style={{ background: TONE_COLOR[st.tone] }} aria-label={st.word} />
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">

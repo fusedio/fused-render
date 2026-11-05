@@ -23,6 +23,7 @@ import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { cn } from "@platform/lib/utils";
 import { SectionSwitch, navigate } from "./nav";
+import { Toaster } from "./bots/Toast";
 
 // "+" on the grid: the New sheet on its New app tab (describe an app; the
 // computer names, scaffolds and builds it as a task). Lazy, with the task
@@ -288,6 +289,7 @@ export function LanApp() {
           </div>
         </section>
       ))}
+      <Toaster />
       {creating && (
         <Suspense fallback={null}>
           <NewSheet

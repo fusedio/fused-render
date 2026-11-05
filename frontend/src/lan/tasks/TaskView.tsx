@@ -52,26 +52,30 @@ import { Link, navigate } from "../nav";
 import { ApiError, api } from "./api";
 import {
   backendLabel,
+  answerHas,
   cardStatus,
   clock,
   dayBreak,
   dayLabel,
   dueEpoch,
+  inWords,
   isActive,
   markdownLite,
   mergeTurns,
   oneLine,
   queueLine,
   statusOf,
-  timeAgo,
   titleLine,
   toggleIn,
+  visibleCards,
 } from "./lib";
 import type { PhoneCard, PhoneTask, PhoneTurn, Scheduled, TaskDetail } from "./types";
 
 const PAGE = 80;
 const HOLD_MAX_MS = 20_000;
 const END_GAP = 96;
+const FOLLOW_TRIES = 8; // polls a pending key keeps looking for its session row before "gone"
+const READ_EVERY_MS = 4_000;
 const FINE_POINTER = typeof matchMedia !== "undefined" && matchMedia("(pointer: fine)").matches;
 
 export function TaskView({ taskKey }: { taskKey: string }) {
@@ -94,7 +98,8 @@ export function TaskView({ taskKey }: { taskKey: string }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pill, setPill] = useState(false);
   const cursor = useRef<{ since: number; last: string } | null>(null);
-  const readPosted = useRef(false);
+  const readAt = useRef(0);
+  const followMisses = useRef(0);
   const mounted = useRef(true);
   // The entry a freshly created task is followed by, across its rekey (`?entry=`).
   const entryId = useMemo(() => new URLSearchParams(location.search).get("entry") || "", []);
@@ -108,6 +113,7 @@ export function TaskView({ taskKey }: { taskKey: string }) {
   const thread = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
   const prepend = useRef<{ height: number; top: number } | null>(null);
+  const heldRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     document.title = task ? titleLine(task) : "Task";
@@ -123,7 +129,8 @@ export function TaskView({ taskKey }: { taskKey: string }) {
       const row = d.tasks.find((t) => t.entry_id === wanted && t.key !== key);
       if (!row) return false;
       cursor.current = null;
-      readPosted.current = false;
+      readAt.current = 0;
+      followMisses.current = 0;
       setKey(row.key);
       navigate(`/tasks/${encodeURIComponent(row.key)}`, true);
       return true;
@@ -140,13 +147,20 @@ export function TaskView({ taskKey }: { taskKey: string }) {
       apply(d, !c);
       // A pending key answers with its scheduled message until the run mints a session.
       if (key.startsWith("pending:") && d.task.status !== "upcoming" && d.task.status !== "queued") void follow();
-      if (!readPosted.current && d.task.unread) {
-        readPosted.current = true;
+      // Replies that land while the task is on screen are read too: every visible poll, throttled.
+      if (d.task.unread && document.visibilityState === "visible" && Date.now() - readAt.current > READ_EVERY_MS) {
+        readAt.current = Date.now();
         api.op(key, "read").catch(() => {});
       }
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
         if (await follow()) return;
+        // A pending key whose row just rekeyed may be a poll or two ahead of
+        // the listing snapshot: keep looking before calling it gone.
+        if ((entryId || key.startsWith("pending:")) && ++followMisses.current < FOLLOW_TRIES) {
+          setError("Starting…");
+          return;
+        }
         setGone(true);
       }
       setError((e as Error).message);
@@ -167,7 +181,8 @@ export function TaskView({ taskKey }: { taskKey: string }) {
     const lastTurn = d.turns.length ? d.turns[d.turns.length - 1] : null;
     if (lastTurn) cursor.current = { since: d.cursor, last: lastTurn.id };
     else if (!cursor.current || d.reset) cursor.current = { since: d.cursor, last: "" };
-    // The poll that brings a card's verdict releases its local hold.
+    // The poll that brings a card's verdict releases its local hold (the ref too, or taps stay ignored).
+    for (const id of [...heldRef.current]) if (d.card?.request_id !== id) heldRef.current.delete(id);
     setHeld((h) => {
       if (!h.size) return h;
       const n = new Set([...h].filter((id) => d.card?.request_id === id));
@@ -258,7 +273,6 @@ export function TaskView({ taskKey }: { taskKey: string }) {
       return false;
     }
   };
-  const heldRef = useRef<Set<string>>(new Set());
   const release = (id: string) => {
     heldRef.current.delete(id);
     setHeld((h) => {
@@ -307,22 +321,14 @@ export function TaskView({ taskKey }: { taskKey: string }) {
 
   return (
     <div className="lan-bots lan-chat mx-auto max-w-3xl bg-[var(--bg)]">
-      <header className={cn("flex shrink-0 items-center gap-1 px-2 pb-1", IN_APP ? "pt-1" : "pt-[max(8px,env(safe-area-inset-top))]")}>
-        {!IN_APP && (
+      {!IN_APP && (
+        <header className="flex shrink-0 items-center gap-1 px-2 pt-[max(8px,env(safe-area-inset-top))] pb-1">
           <Link href="/tasks" aria-label="All tasks" className="flex size-11 items-center justify-center rounded-full text-[var(--fg)] active:bg-[var(--row-bg-hover)]">
             <ChevronLeftIcon className="size-6" />
           </Link>
-        )}
-        {task ? (
-          <h1 className={cn("min-w-0 flex-1 truncate text-[17px] font-semibold", IN_APP && "sr-only")}>{titleLine(task)}</h1>
-        ) : (
-          <Skeleton className="h-5 w-32 flex-1" />
-        )}
-        {IN_APP && <span className="flex-1" />}
-        <button type="button" onClick={() => setMenu(true)} aria-label="More" disabled={!task} className="flex size-11 items-center justify-center rounded-full active:bg-[var(--row-bg-hover)] disabled:opacity-40">
-          <EllipsisIcon className="size-5" />
-        </button>
-      </header>
+          {task ? <h1 className="min-w-0 flex-1 truncate text-[17px] font-semibold">{titleLine(task)}</h1> : <Skeleton className="h-5 w-32 flex-1" />}
+        </header>
+      )}
 
       {task && st && (
         <Strip
@@ -330,10 +336,12 @@ export function TaskView({ taskKey }: { taskKey: string }) {
           word={st.word}
           color={TONE_COLOR[st.tone]}
           live={live}
+          pending={pending}
           scheduled={scheduled}
           now={now}
           onSkip={() => act(() => api.op(key, "skip"), "Moved to the front of the line")}
           onCancel={() => act(() => api.cancel(key), "Cancelled")}
+          onMenu={() => setMenu(true)}
         />
       )}
 
@@ -375,9 +383,9 @@ export function TaskView({ taskKey }: { taskKey: string }) {
                 </div>
               </div>
             )}
-            {task && !pending && turns.length === 0 && cards.length === 0 && (
+            {task && (!pending || scheduled.length === 0) && turns.length === 0 && cards.length === 0 && (
               <div className="flex flex-col items-center gap-3 px-8 pt-20 text-center">
-                <p className="text-[15px] text-[var(--fg-muted)]">{live ? "Starting…" : "Nothing here yet."}</p>
+                <p className="text-[15px] text-[var(--fg-muted)]">{live || pending ? "Starting…" : "Nothing here yet."}</p>
               </div>
             )}
             {task && (turns.length > 0 || cards.length > 0) && (
@@ -502,19 +510,24 @@ function Strip({
   word,
   color,
   live,
+  pending,
   scheduled,
   now,
   onSkip,
   onCancel,
+  onMenu,
 }: {
   task: PhoneTask;
   word: string;
   color: string;
   live: boolean;
+  /** A `pending:` key: the strip's Cancel cancels the scheduled message (a session key's would stop the run). */
+  pending: boolean;
   scheduled: Scheduled[];
   now: number;
   onSkip: () => void;
   onCancel: () => void;
+  onMenu: () => void;
 }) {
   const agent = [backendLabel(task.backend), task.model].filter(Boolean).join(" · ");
   const queue = queueLine(task);
@@ -532,6 +545,9 @@ function Strip({
           {task.task_id ? ` · ${task.task_id}` : ""}
         </span>
         {task.starred && <StarIcon className="size-3.5 shrink-0 fill-[var(--accent)] text-[var(--accent)]" aria-label="Starred" />}
+        <button type="button" onClick={onMenu} aria-label="More" className="-my-2 -mr-2 flex size-11 shrink-0 items-center justify-center rounded-full active:bg-[var(--row-bg-hover)]">
+          <EllipsisIcon className="size-5" />
+        </button>
       </div>
       {(task.prs.length > 0 || queue || next) && (
         <div className="flex flex-wrap items-center gap-2 text-[13px]">
@@ -541,7 +557,7 @@ function Strip({
               href={p.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex h-7 items-center gap-1 rounded-full border border-[var(--sh-border)] px-2.5 text-[var(--fg)]"
+              className="flex h-9 items-center gap-1 rounded-full border border-[var(--sh-border)] px-3 text-[var(--fg)]"
             >
               <GitPullRequestIcon className="size-3.5" />
               {p.repo.split("/")[1] || p.repo} #{p.number}
@@ -550,18 +566,20 @@ function Strip({
           {queue && (
             <span className="flex items-center gap-2 text-[var(--fg-muted)]">
               {queue}
-              <button type="button" onClick={onSkip} className="h-7 rounded-full border border-[var(--sh-border)] px-2.5 text-[var(--fg)]">
+              <button type="button" onClick={onSkip} className="h-9 rounded-full border border-[var(--sh-border)] px-3 text-[var(--fg)]">
                 Skip the line
               </button>
             </span>
           )}
           {next && !queue && (
             <span className="flex items-center gap-2 text-[var(--fg-muted)]">
-              {Number.isFinite(due) ? `Runs ${due > now ? "in " + timeAgo(now - (due - now), now).replace(" ago", "") : timeAgo(due, now)}` : "Scheduled"}
+              {Number.isFinite(due) ? `Runs ${inWords(due, now)}` : "Scheduled"}
               {next.repeats ? " · repeats" : ""}
-              <button type="button" onClick={onCancel} className="h-7 rounded-full border border-[var(--sh-border)] px-2.5 text-[var(--fg)]">
-                Cancel
-              </button>
+              {pending && (
+                <button type="button" onClick={onCancel} className="h-9 rounded-full border border-[var(--sh-border)] px-3 text-[var(--fg)]">
+                  Cancel
+                </button>
+              )}
             </span>
           )}
         </div>
@@ -619,7 +637,7 @@ function Thread({
     prev = t;
     i++;
   }
-  for (const c of cards) {
+  for (const c of visibleCards(cards)) {
     out.push(<Card key={c.request_id} c={c} live={c.request_id === liveCard && !held.has(c.request_id)} held={held.has(c.request_id)} onDecide={onDecide} onAnswer={onAnswer} />);
   }
   return <div className="flex flex-col gap-1.5 px-3 pt-2 pb-3">{out}</div>;
@@ -662,9 +680,9 @@ function Row({ t }: { t: PhoneTurn }) {
 function Tools({ run, live }: { run: Extract<PhoneTurn, { kind: "tool" }>[]; live: boolean }) {
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState<ReadonlySet<number>>(() => new Set());
-  const short = run.length <= 2;
+  const short = run.length <= 2 || open;
   const last = run[run.length - 1];
-  if (!short && !open) {
+  if (!short) {
     return (
       <button type="button" onClick={() => setOpen(true)} className="lan-press -mx-1 flex min-h-11 items-center gap-2 rounded-xl px-2 py-1.5 text-left text-[13px] text-[var(--fg-muted)]">
         <ChevronRightIcon className="size-3.5 shrink-0" />
@@ -676,19 +694,15 @@ function Tools({ run, live }: { run: Extract<PhoneTurn, { kind: "tool" }>[]; liv
   }
   return (
     <div className="flex flex-col gap-1 py-1 pl-1">
-      {!short && (
-        <button type="button" onClick={() => setOpen(false)} className="flex min-h-9 items-center gap-1.5 text-left text-[13px] text-[var(--fg-muted)]">
+      {run.length > 2 && (
+        <button type="button" onClick={() => setOpen(false)} className="flex min-h-11 items-center gap-1.5 text-left text-[13px] text-[var(--fg-muted)]">
           <ChevronDownIcon className="size-3.5" />
           {run.length} steps
         </button>
       )}
       {run.map((t) => (
         <div key={t.id} className="flex flex-col pl-5 text-[13px] leading-snug">
-          <button
-            type="button"
-            onClick={() => t.detail && setShown((s) => toggleIn(new Set([...s].map(String)), String(t.i)) as unknown as ReadonlySet<number>)}
-            className="flex min-h-7 items-center gap-2 text-left"
-          >
+          <button type="button" onClick={() => t.detail && setShown((s) => toggleIn(s, t.i))} className="flex min-h-11 items-center gap-2 text-left">
             <span
               className={cn(
                 "size-1.5 shrink-0 rounded-full",
@@ -698,7 +712,7 @@ function Tools({ run, live }: { run: Extract<PhoneTurn, { kind: "tool" }>[]; liv
             />
             <span className={cn("min-w-0 flex-1 truncate", t.status === "error" ? "text-[var(--error)]" : "text-[var(--fg)] opacity-80")}>{t.summary}</span>
           </button>
-          {t.detail && (shown as ReadonlySet<unknown>).has(String(t.i)) && (
+          {t.detail && shown.has(t.i) && (
             <pre className="mt-1 max-h-48 overflow-auto rounded-lg bg-[var(--bg-alt)] p-2 text-[12px] leading-snug whitespace-pre-wrap text-[var(--fg-muted)]">{t.detail}</pre>
           )}
         </div>
@@ -725,7 +739,13 @@ function Card({
     return <QuestionCard c={c} live={live} held={held} onAnswer={onAnswer} />;
   }
   const settled = cardStatus(c);
-  const status: GateStatus | undefined = live ? undefined : held ? { tone: "queued", text: "Sending…" } : settled.text ? settled : { tone: "expired", text: "Answered at the computer" };
+  const status: GateStatus | undefined = live
+    ? undefined
+    : held
+      ? { tone: "queued", text: "Sending…" }
+      : settled.text
+        ? settled
+        : { tone: "queued", text: "Waiting: answer the card above first" };
   const plan = c.kind === "plan";
   return (
     <div className="flex flex-col gap-1 pt-1">
@@ -772,8 +792,15 @@ function QuestionCard({
   const [picked, setPicked] = useState<Record<string, ReadonlySet<string>>>({});
   const [other, setOther] = useState<Record<string, string>>({});
   const pickedOf = (q: string) => picked[q] || new Set<string>();
-  const choose = (q: string, label: string, multi: boolean) =>
+  // A single-select is one radio group, Other included: a pick clears the typed line and vice versa.
+  const choose = (q: string, label: string, multi: boolean) => {
     setPicked((p) => ({ ...p, [q]: multi ? toggleIn(pickedOf(q), label) : new Set([label]) }));
+    if (!multi) setOther((o) => (o[q] ? { ...o, [q]: "" } : o));
+  };
+  const type = (q: string, text: string, multi: boolean) => {
+    setOther((o) => ({ ...o, [q]: text }));
+    if (!multi && text) setPicked((p) => (pickedOf(q).size ? { ...p, [q]: new Set<string>() } : p));
+  };
   const complete = qs.every((q) => pickedOf(q.question).size > 0 || (other[q.question] || "").trim());
   const submit = () => {
     const answers: Record<string, string[]> = {};
@@ -794,13 +821,14 @@ function QuestionCard({
       <div className={cn(LEFT, "max-w-[94%]")}>
         {qs.map((q) => {
           const answered = c.answers[q.question];
+          const labels = q.options.map((o) => o.label);
           return (
             <div key={q.question} className="pb-2 last:pb-0">
               {q.header && <div className="lan-mono pb-0.5 text-[11px] tracking-[0.08em] text-[var(--fg-muted)] uppercase">{q.header}</div>}
               <div className="lan-md" dangerouslySetInnerHTML={{ __html: markdownLite(q.question) }} />
-              <div className={cn("mt-2 flex gap-2", q.multiSelect ? "flex-col" : "flex-wrap")}>
+              <div role={q.multiSelect ? "group" : "radiogroup"} aria-label={q.header || "Options"} className={cn("mt-2 flex gap-2", q.multiSelect ? "flex-col" : "flex-wrap")}>
                 {q.options.map((o) => {
-                  const on = live ? pickedOf(q.question).has(o.label) : !!answered && answered.includes(o.label);
+                  const on = live ? pickedOf(q.question).has(o.label) : answerHas(answered, o.label, labels);
                   return (
                     <button
                       key={o.label}
@@ -834,9 +862,10 @@ function QuestionCard({
               {live && (
                 <Input
                   value={other[q.question] || ""}
-                  onChange={(e) => setOther((o) => ({ ...o, [q.question]: e.target.value }))}
+                  onChange={(e) => type(q.question, e.target.value, q.multiSelect)}
                   placeholder="Other…"
-                  className="mt-2 h-10 rounded-xl text-[15px]"
+                  aria-label="Other"
+                  className="mt-2 h-11 rounded-xl text-[16px]"
                 />
               )}
             </div>

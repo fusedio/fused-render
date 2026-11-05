@@ -21,8 +21,18 @@ export function parseRoute(pathname: string): Route {
   const m = /^\/bots\/([A-Za-z0-9_-]+)$/.exec(p);
   if (m) return { name: "bot", id: m[1] };
   if (p === "/tasks") return { name: "tasks" };
-  const t = /^\/tasks\/([A-Za-z0-9_:.-]+)$/.exec(p);
-  if (t) return { name: "task", key: t[1] };
+  const t = /^\/tasks\/([^/]+)$/.exec(p);
+  if (t) {
+    // The pathname keeps a link's percent-encoding (`pending%3A…`): decode,
+    // then admit only what a key is made of.
+    let key = t[1];
+    try {
+      key = decodeURIComponent(key);
+    } catch {
+      return { name: "grid" };
+    }
+    if (/^[A-Za-z0-9_:.-]+$/.test(key)) return { name: "task", key };
+  }
   return { name: "grid" };
 }
 

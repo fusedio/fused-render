@@ -43,7 +43,8 @@ verb is a POST, so DELETE and PUT are 404), through `_AsDevice` like the bots
 door: a copy of the scope with any client `x-fused-device` header dropped and
 `X-Fused-Device: <id>` set from the pairing record. A path with a `.` or `..`
 segment is a 404 before forwarding. `_TASKS_PAGE` (`/tasks` and `/tasks/<one
-segment>`; a `pending:<entry>` key's colon is a plain path character) joins
+segment>`; a `pending:<entry>` key's colon arrives raw from the native shell
+and percent-encoded from the page's own links, and both are one segment) joins
 `/`, `/index.html` and `_BOTS_PAGE` in `_lan_page`: a paired GET serves
 `shell-dist/lan.html` (503 when it is not built), an unpaired one the
 how-to-pair page. On loopback (D3: trusted) the routes answer too; the header

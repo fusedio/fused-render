@@ -7,6 +7,7 @@ import {
   dayBreak,
   dueEpoch,
   group,
+  inWords,
   laneCaption,
   laneOf,
   matches,
@@ -65,6 +66,11 @@ describe("routes", () => {
     expect(parseRoute("/tasks/with space")).toEqual({ name: "grid" });
     expect(routePath({ name: "tasks" })).toBe("/tasks");
     expect(routePath({ name: "task", key: "pending:e1" })).toBe("/tasks/pending%3Ae1");
+    // A link's percent-encoded colon round-trips: the browser keeps it in pathname.
+    expect(parseRoute(routePath({ name: "task", key: "pending:20261105-100000-abc123" }))).toEqual({ name: "task", key: "pending:20261105-100000-abc123" });
+    expect(parseRoute("/tasks/pending%3Ae1")).toEqual({ name: "task", key: "pending:e1" });
+    expect(parseRoute("/tasks/%E2%80%A6")).toEqual({ name: "grid" });
+    expect(parseRoute("/tasks/%zz")).toEqual({ name: "grid" });
     expect(parseRoute("/bots/x")).toEqual({ name: "bot", id: "x" });
   });
 });
@@ -152,6 +158,11 @@ describe("rows", () => {
     expect(queueLine(task({ queue_position: 1 }))).toBe("1st in line");
     expect(queueLine(task())).toBe("");
     expect(caption(task(), 1_700_000_100 + 7200)).toBe("app · Claude · 2h");
+    expect(inWords(100, 70)).toBe("in 30s");
+    expect(inWords(100 + 5 * 60, 100)).toBe("in 5 min");
+    expect(inWords(100 + 3 * 3600, 100)).toBe("in 3 h");
+    expect(inWords(100 + 2 * 86400, 100)).toBe("in 2 days");
+    expect(inWords(100, 200)).toBe("now");
     expect(caption(task({ backend: "", happened_at: null, last_active: null, started: null }), 1)).toBe("app");
   });
   test("dueEpoch reads ISO and epoch stamps", () => {
