@@ -502,8 +502,15 @@ export function poll(): Promise<void> {
 }
 
 export async function pollOnce(): Promise<void> {
+  // OFF THE BOTS PAGE the poll is the rail's bot card's (shell/claude-rail BotPeek; `feedBotQuietly` below, and the
+  // card composer's act()): the rows, the events and the read marks are merged as on the page, and everything the
+  // page does with them — landing the bare door, selecting, toasting, opening Stage, the OS notification, the title
+  // prefix, the `open` call — is not done: a page that is not there does nothing, and `select` would write the URL
+  // (`writeUrl` refuses off `/bots`, but its resets would still run). The page's own poll is unchanged: it only ever
+  // ran mounted.
+  const page = botsMounted();
   try {
-    const r = await api.status({ cursors: S.cursors, shot_for: S.sel || "", fast: S.fast });
+    const r = await api.status({ cursors: S.cursors, shot_for: page ? S.sel || "" : "", fast: page && S.fast });
     batch(() => {
       hideBanner();
       const first = !S.bots.length;
@@ -515,10 +522,10 @@ export async function pollOnce(): Promise<void> {
         if (b.events.length) {
           list = list.concat(b.events);
           cursors[b.id] = b.seq;
-          if (!first) notifyEvents(b, b.events);
+          if (!first && page) notifyEvents(b, b.events);
           // Fresh system notes for the bot on screen surface as a toast; never on first load, never stale ones. Hand-off
           // lines (docs §11) render in the thread instead, so they do not toast as well.
-          if (!first && b.id === S.sel) toast = b.events.filter((e) => e.role === "system" && e.source !== "handoff" && Date.now() / 1000 - e.ts < TOAST_FRESH_S).pop() || toast;
+          if (!first && page && b.id === S.sel) toast = b.events.filter((e) => e.role === "system" && e.source !== "handoff" && Date.now() / 1000 - e.ts < TOAST_FRESH_S).pop() || toast;
         }
         if (!(b.id in cursors)) cursors[b.id] = b.seq;
         if (list.length > EVENT_CAP) list = list.slice(list.length - EVENT_CAP);
@@ -542,6 +549,8 @@ export async function pollOnce(): Promise<void> {
       // The sidebar's Bots entry: while this page polls, it is the one source, and the rail moves on the same tick
       // the list does (publishPulse).
       publishPulse();
+      // The rest is the page's (header): off it, the merge above is the whole poll.
+      if (!page) return;
       if (toast) showToast(toast);
       // Hand-overs: the bot asked for you in its browser (control_by flipped to "bot"; a take-over of yours is "user" and
       // stays quiet). The selected bot opens Stage, any other one gets a toast; chime + OS notification either way. On
@@ -571,7 +580,10 @@ export async function pollOnce(): Promise<void> {
         if (!b || !b.control || b.status === "idle" || b.status === "error" || b.browser?.headed) closeStage();
       }
       // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
-      if (first && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
+      // "First load" is the PAGE's first poll (`pageFirstPoll`, startStore), not the store's first rows: the rail's
+      // quiet feed may have filled the rows before the page mounted.
+      if ((first || pageFirstPoll) && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
+      pageFirstPoll = false;
       // A remount landed on stale rows (startStore): a bot that started waiting, or got a reply, while you were on
       // another page is only known now. After the mark above, so a switch places its own "New" rule. Not while
       // hidden: landing marks the bot read (applySel), and nobody saw it — the flag holds for the poll visibility kicks.
@@ -639,6 +651,39 @@ function kickLoop(): void {
   void loop(loopGen);
 }
 
+// ------------------------------------------------------------------ the rail's quiet feed ----
+// THE BOT CARD OFF THE BOTS PAGE (shell/claude-rail BotPeek, 2026-11-05): a pinned bot's chat shown in a card on any
+// other page needs this store's rows and events, which only the page's loop (startStore) fills. While a card holds a
+// reader, this loop polls in the page's cadence (loopDelay, never `fast`) — and STEPS ASIDE while the page's own loop
+// runs (loopGen > 0: the page is mounted), so the two never poll side by side; the page's poll feeds the same store.
+// pollOnce does only the merge off the page (its `page` guard). Nothing starts until a card asks; the last card
+// leaving stops it.
+let quietReaders = 0, quietGen = 0, quietTimer: ReturnType<typeof setTimeout> | null = null;
+/** The page's next poll is its first since mounting (pollOnce's first-load mark for a URL-picked bot). */
+let pageFirstPoll = false;
+async function quietLoop(gen: number): Promise<void> {
+  if (gen !== quietGen) return;
+  if (loopGen <= 0) await poll();
+  if (gen !== quietGen) return;
+  quietTimer = setTimeout(() => { quietTimer = null; void quietLoop(gen); }, loopDelay());
+}
+/** Hold the store fed for a bot card off the page; the answer releases it. Idempotent across readers: one loop. */
+export function feedBotQuietly(): () => void {
+  quietReaders += 1;
+  if (quietReaders === 1) { quietGen += 1; void quietLoop(quietGen); }
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    quietReaders -= 1;
+    if (quietReaders > 0) return;
+    quietGen += 1;  // a loop mid-await sees the moved generation and stops
+    if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
+  };
+}
+/** Test seam: whether the rail's quiet feed holds any reader. */
+export const quietFeedReaders = (): number => quietReaders;
+
 /** Boot: wire the api hooks and URL listeners, start the loop. Returns the teardown. Call once per mount (App).
  *  The state outlives a remount (leaving /bots and coming back): the URL's `/bots/<id>` wins when it names one, else
  *  the bot that was open goes back onto the URL (a replace: the bare `/bots` becomes its chat). */
@@ -651,6 +696,7 @@ export function startStore(): () => void {
   window.addEventListener("fused:urlchange", syncFromUrl);
   window.addEventListener(OPEN_EVENT, onOpenEvent);
   const urlBot = urlSel();
+  pageFirstPoll = true;
   relandOnPoll = false;  // a flag left by a mount that unmounted before its first poll must not re-land this one (a deep link)
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
   // The bare door from another page (`/bots` itself — not /bots/tasks, apps or preferences, which select nothing):

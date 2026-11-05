@@ -383,6 +383,18 @@
   right: 4px;
   bottom: 4px;
 }
+/* THE BOT WHOSE CARD IS UP (ClaudeRail `.peeked` on a bot's ring; BotPeek,
+   2026-11-05): the hover wash stays while the pointer is over the card, as
+   on a chat's ring — and a step firmer, with a hairline, once a press PINNED
+   it (`.is-pinned`), the chat rings' own marks on the face's seat. */
+.claude-rail-bot.peeked {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.claude-rail-bot.peeked.is-pinned {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
 .claude-rail-chat.is-fav.is-open::after {
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
@@ -834,6 +846,32 @@
   flex: 0 0 auto;
   white-space: nowrap;
   color: var(--fg-muted);
+}
+/* THE BOT CARD'S HEAD (BotPeek, 2026-11-05): one row — ×, the bot's face
+   and name, its status (red while it waits on the reader, the Bots row's
+   tone), Open. The face is the rail's own, a step smaller. */
+.claude-rail-peek-botface {
+  display: block;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+.claude-rail-peek-botface svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.claude-rail-peek-botname {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--fg);
+}
+.claude-rail-peek-words.is-waiting {
+  color: var(--status-failed);
 }
 .claude-rail-peek-btn {
   display: inline-flex;

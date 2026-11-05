@@ -15,7 +15,7 @@ import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
-import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
+import { act, clearScrollSeq, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { approvalParts } from "@platform/lib/approvalParts";
 import { GateCard } from "@platform/ui/GateCard";
@@ -463,6 +463,11 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   const S = useBots();
   const appsRoot = useAppsRoot();
   const botId = b?.id ?? "";
+  // THE BOT IS THE PROP'S, never the store's selection (2026-11-05): on the page the two are one (ChatPane passes
+  // cur()); in the rail's bot card off the page (shell/claude-rail BotPeek, components/BotChat) nothing is selected
+  // and `b` is the pinned bot. The observers below read it off a ref: their closures are the mount's.
+  const botRef = useRef(b);
+  botRef.current = b;
   const evs = b ? S.events[b.id] || EMPTY : EMPTY;
   const firstSeq = evs.length ? evs[0].seq : 0;
 
@@ -631,7 +636,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // "Viewed" = a message has scrolled into the thread at least once. The .ev wrapper has no box: watch the message inside.
     const io = viewer.current;
     if (io) th.querySelectorAll<HTMLElement>(".ev[data-seq]:not([data-obs])").forEach((el) => { el.dataset.obs = "1"; const m = evBox(el); if (m) io.observe(m); });
-    const c = cur();
+    const c = b;
     // Folded rows never scroll into view; they are behind the marker, not unread. Steps folded behind a result the
     // same: the seed only ever folds what was already seen, and a click that folds is a reader who has read them.
     if (folded && botId) { const set = viewedSet(botId); for (const e of evs.slice(0, ci)) set.add(e.seq); }
@@ -651,7 +656,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   useEffect(() => {
     const th = threadRef.current; if (!th) return;
     const io = new IntersectionObserver((entries) => {
-      const c = cur(); if (!c) return;
+      const c = botRef.current; if (!c) return;
       const set = viewedSet(c.id);
       let hit = false;
       for (const en of entries) {
@@ -669,7 +674,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
 
   // ---- clicks: react → picker, reply → quote, option → answer, approve / deny ----
   const onClick = (ev: ReactMouseEvent<HTMLDivElement>) => {
-    const t = ev.target as Element, sel = getState().sel;
+    const t = ev.target as Element, sel = botId || null;
     const jump = t.closest<HTMLElement>("[data-jump-bot]");
     if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
     // Wide-table footer (md.ts): "Show all N rows" toggles the 12-row cap; "Copy as CSV" copies every row, hidden ones too.
