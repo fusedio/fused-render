@@ -263,6 +263,8 @@ export interface ChatMountProps {
   onBreakoutPromptSent?: () => void;
   /** Open a breakout from this chat (its message / composer Breakout seats). */
   onBreakout?: (req: BreakoutRequest) => void;
+  /** The host's ⋮ reads Breakout's availability / pick state from here. */
+  onBreakoutControl?: (ctl: { available: boolean; picking: boolean; toggle: () => void } | null) => void;
   /** With `breakout`: the chat's own session id + transcript, for Send back. */
   onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void }) => void;
   /** `_noopen=1` — do not record an app open (the listing pane). */
@@ -362,6 +364,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.breakoutPrompt ? { breakoutPrompt: props.breakoutPrompt } : {})}
         {...(props.onBreakoutPromptSent ? { onBreakoutPromptSent: props.onBreakoutPromptSent } : {})}
         {...(props.onBreakout ? { onBreakout: props.onBreakout } : {})}
+        {...(props.onBreakoutControl ? { onBreakoutControl: props.onBreakoutControl } : {})}
         {...(props.onBreakoutState ? { onBreakoutState: props.onBreakoutState } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}

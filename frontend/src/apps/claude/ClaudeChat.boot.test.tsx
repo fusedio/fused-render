@@ -965,4 +965,30 @@ describe("breakout pick mode", () => {
     expect(byClass(r, "breakout-sel-bar").length).toBe(0);
     expect(picked(r)).toBe(0);
   });
+  // THE HOST'S MENU READS THE CHAT'S BREAKOUT STATE (the Tasks peek hides the ⋮).
+  test("onBreakoutControl reports available + picking, and its toggle enters pick mode", async () => {
+    const seen: Array<{ available: boolean; picking: boolean; toggle: () => void } | null> = [];
+    historyTurns = HISTORY;
+    const { r } = await mountChat({
+      initialSessionId: "sess-abc12345",
+      onBreakout: () => {},
+      onBreakoutControl: (c: (typeof seen)[number]) => void seen.push(c),
+    });
+    await settle(20);
+    const last = () => seen[seen.length - 1];
+    expect(last()?.available).toBe(false); // flag off
+    await act(async () => publishBreakoutEnabled(true));
+    await settle(20);
+    expect(last()).toMatchObject({ available: true, picking: false });
+    const first = last()!.toggle;
+    act(() => last()!.toggle());
+    expect(last()).toMatchObject({ available: true, picking: true });
+    expect(byClass(r, "breakout-sel-bar").length).toBe(1);
+    expect(last()!.toggle).toBe(first); // stable across renders
+    act(() => last()!.toggle());
+    expect(last()).toMatchObject({ picking: false });
+    await act(async () => r.unmount());
+    mounted.splice(mounted.indexOf(r), 1);
+    expect(last()).toBeNull();
+  });
 });

@@ -253,6 +253,12 @@ export const ASK_DETECTION_TIMEOUT_MS = 1500;
  *  twice a second. */
 export const HOST_PANE_POLL_MS = 500;
 
+export interface BreakoutControl {
+  available: boolean;
+  picking: boolean;
+  toggle: () => void;
+}
+
 export interface ClaudeChatProps {
   /** `_file`: folder | file | null. */
   file: string | null;
@@ -329,6 +335,10 @@ export interface ClaudeChatProps {
   /** "Breakout from here" / the composer's Breakout button: hand the request
    *  to the shell, which opens the card. Absent: no Breakout seats. */
   onBreakout?: (req: BreakoutRequest) => void;
+  /** Hosts whose own head hides the chat's ⋮ (the Tasks peek) offer Breakout
+   *  from THEIR menu: this reports whether it is available and whether pick
+   *  mode is on, with a stable `toggle`; null on unmount. */
+  onBreakoutControl?: (ctl: BreakoutControl | null) => void;
   /** With `breakout`: the card's window onto this chat — its own session id
    *  (minted by the first send) and transcript, for Send back. */
   onBreakoutState?: (s: {
@@ -5757,6 +5767,14 @@ function ChatBody(props: ChatBodyProps) {
     breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file
   );
   gateRef.current = breakoutGate;
+  const togglePickingRef = useRef(togglePicking);
+  togglePickingRef.current = togglePicking;
+  const stableToggle = useCallback(() => togglePickingRef.current(), []);
+  const { onBreakoutControl } = props;
+  useEffect(() => {
+    onBreakoutControl?.({ available: breakoutGate, picking, toggle: stableToggle });
+  }, [onBreakoutControl, breakoutGate, picking, stableToggle]);
+  useEffect(() => () => onBreakoutControl?.(null), [onBreakoutControl]);
   const kebabEl = (
     <>
       {canvasShotSeat}
