@@ -448,6 +448,10 @@ html.side-reopening iframe {
   animation: preview-side-out var(--dur-panel) var(--ease-out) forwards;
   pointer-events: none;
 }
+/* A reopen drag drives the inline basis itself: no entrance animation under it. */
+html.side-reopening .preview-side.is-entering {
+  animation: none;
+}
 @keyframes preview-side-in {
   from {
     flex-basis: 0;

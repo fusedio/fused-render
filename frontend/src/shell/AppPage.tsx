@@ -1206,6 +1206,9 @@ export default function AppPage({
         <div
           className={"app-page-claude" + (pane.phase === "open" ? "" : " is-" + pane.phase)}
           style={{ width: claude.width, ["--pane-w" as string]: claude.width + "px" }}
+          // Leaving: still mounted for the slide, but nothing in it may take
+          // focus or input (a focused composer would still submit).
+          {...(pane.phase === "leaving" ? { inert: true } : {})}
         >
           <div
             // The explorer's seam, reused as-is (preview.css): one hairline

@@ -274,6 +274,9 @@ export const RECAP_FLAG_BROADCAST_KEY = "fused-render:task-recap-titles";
 /** The same announcement for the Breakout switch. */
 export const BREAKOUT_FLAG_BROADCAST_KEY = "fused-render:breakout";
 
+/** The same announcement for the click-opens-reply switch. */
+export const TURN_CLICK_BROADCAST_KEY = "fused-render:turn-click-open";
+
 /** Hand over a known-fresh Breakout answer (a PUT's prefs payload). */
 export function publishBreakoutEnabled(next: boolean) {
   breakoutPublishedAt += 1;
@@ -289,6 +292,11 @@ export function publishBreakoutEnabled(next: boolean) {
 export function publishTurnClickOpensReplyEnabled(next: boolean) {
   turnClickPublishedAt += 1;
   setTurnClickOpen(next);
+  try {
+    localStorage.setItem(TURN_CLICK_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
+  } catch {
+    // Storage may be unavailable; the other tabs still re-read on focus.
+  }
 }
 
 /** Hand over a known-fresh recap-titles answer (a PUT's prefs payload). */
@@ -336,6 +344,15 @@ if (typeof window !== "undefined") {
     if (ev.key !== BREAKOUT_FLAG_BROADCAST_KEY || !ev.newValue) return;
     try {
       setBreakout((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
+    } catch {
+      // Malformed: the next focus re-reads.
+    }
+  });
+  window.addEventListener("storage", (ev) => {
+    if (ev.key !== TURN_CLICK_BROADCAST_KEY || !ev.newValue) return;
+    try {
+      turnClickPublishedAt += 1;
+      setTurnClickOpen((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
     } catch {
       // Malformed: the next focus re-reads.
     }
