@@ -23,6 +23,7 @@ export function NewSheet({
   tab: initialTab,
   projects,
   onCreated,
+  onCreatedWithoutTask,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -31,6 +32,8 @@ export function NewSheet({
   /** The folder facet from the list; null when the sheet opens from the grid, which fetches it. */
   projects: Project[] | null;
   onCreated: (key: string, entryId: string) => void;
+  /** An app was created but its build task could not start: the caller refreshes what it lists. */
+  onCreatedWithoutTask?: () => void;
 }) {
   const [tab, setTab] = useState<NewTab>(initialTab);
   const [prompt, setPrompt] = useState("");
@@ -60,11 +63,13 @@ export function NewSheet({
   }, [open, folders]);
 
   const options = folders ? projectOptions(folders) : [];
+  const folderKnown = options.some((p) => p.path === folder);
+  // A folder that left the list (its last task deleted) is not kept selected.
   useEffect(() => {
-    if (!folder && options.length) setFolder(options[0].path);
-  }, [options, folder]);
+    if (options.length && !folderKnown) setFolder(options[0].path);
+  }, [options, folder, folderKnown]);
 
-  const canRun = !busy && prompt.trim().length > 0 && (tab === "app" || !!folder);
+  const canRun = !busy && prompt.trim().length > 0 && (tab === "app" || folderKnown);
   const submit = async () => {
     if (!canRun) return;
     setBusy(true);
@@ -77,6 +82,7 @@ export function NewSheet({
         if (r.task_error) toast(r.task_error, "error");
         if (!r.key) {
           toast(`${r.app.name} was created, but its build task could not start.`, "error");
+          onCreatedWithoutTask?.();
           onOpenChange(false);
           return;
         }

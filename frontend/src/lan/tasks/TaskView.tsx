@@ -833,7 +833,7 @@ function QuestionCard({
               <div className="lan-md" dangerouslySetInnerHTML={{ __html: markdownLite(q.question) }} />
               <div role={q.multiSelect ? "group" : "radiogroup"} aria-label={q.header || "Options"} className={cn("mt-2 flex gap-2", q.multiSelect ? "flex-col" : "flex-wrap")}>
                 {q.options.map((o) => {
-                  const on = live ? pickedOf(q.question).has(o.label) : answerHas(answered, o.label, labels);
+                  const on = live ? pickedOf(q.question).has(o.label) : answerHas(answered, o.label, labels, q.multiSelect);
                   return (
                     <button
                       key={o.label}

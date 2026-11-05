@@ -204,7 +204,7 @@ the phone would race the queue's onto the disk.
 multiSelect, options: [{label, description (200)}]}]`. `question` and `label`
 go out **exactly as asked**, uncut and unfolded: the agent matches an answer to
 them (`_answers_from`), and a cut would turn every answer into a deny.
-`answers` is the record's own answers, at most 20, keys and values cut to 120.
+`answers` is the record's own answers, at most 20, keyed by the exact question text (the phone looks them up by the question it drew), each value cut to 120.
 
 **Scheduled** (`_scheduled`). `{entry_id, text (600, one line), due, state,
 repeats}`.

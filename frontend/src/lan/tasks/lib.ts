@@ -283,11 +283,13 @@ export function visibleCards(cards: PhoneCard[]): PhoneCard[] {
   return [...last, ...waiting].sort((a, b) => a.created_at - b.created_at);
 }
 
-/** Does the settled answer name this label? The answer is a label, or the
+/** Does the settled answer name this label? A single-select answer is one
+ *  label (or typed text): exact match only. A multi-select answer is the
  *  ", "-join of labels in option order; matched by construction, not substring. */
-export function answerHas(answer: string | undefined, label: string, labels: string[]): boolean {
+export function answerHas(answer: string | undefined, label: string, labels: string[], multiSelect = true): boolean {
   if (!answer) return false;
   if (answer === label) return true;
+  if (!multiSelect) return false;
   // Walk the option list: the answer must be a join of a subset in order.
   let rest = answer;
   const picked: string[] = [];

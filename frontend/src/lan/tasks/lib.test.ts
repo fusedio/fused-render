@@ -5,6 +5,7 @@ import {
   caption,
   chipLanes,
   dayBreak,
+  answerHas,
   dueEpoch,
   group,
   inWords,
@@ -218,5 +219,17 @@ describe("thread", () => {
     expect(cardStatus(card("held")).tone).toBe("queued");
     expect(cardStatus(card("expired")).text).toBe("Expired");
     expect(cardStatus(card("pending"))).toEqual({ tone: "", text: "" });
+  });
+  test("answerHas: exact for a single-select, by construction for a multi-select", () => {
+    const labels = ["A", "A, B", "C, with a comma"];
+    expect(answerHas("A, B", "A", labels, false)).toBe(false);
+    expect(answerHas("A, B", "A, B", labels, false)).toBe(true);
+    expect(answerHas("A, C, with a comma", "C, with a comma", labels, true)).toBe(true);
+    expect(answerHas("A, C, with a comma", "A", labels, true)).toBe(true);
+    expect(answerHas("A, C, with a comma", "A, B", labels, true)).toBe(false);
+    // A single-select never matches by prefix; a multi-select reads the tail as the typed "Other".
+    expect(answerHas("Yes, but later", "Yes", ["Yes", "No"], false)).toBe(false);
+    expect(answerHas("Yes, but later", "Yes", ["Yes", "No"], true)).toBe(true);
+    expect(answerHas(undefined, "A", labels, true)).toBe(false);
   });
 });

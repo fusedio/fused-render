@@ -94,6 +94,7 @@ export function LanApp() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<string>(readFilter);
   const [creating, setCreating] = useState(false);
+  const [reloads, setReloads] = useState(0); // bumped to fetch the grid again (an app created from the "+")
   const now = useMemo(() => Date.now() / 1000, [apps]);
 
   useEffect(() => {
@@ -112,7 +113,7 @@ export function LanApp() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [reloads]);
 
   // Tags in order of how many apps carry them; "Linked" only when something is.
   const tags = useMemo(() => {
@@ -289,6 +290,7 @@ export function LanApp() {
             onOpenChange={setCreating}
             tab="app"
             projects={null}
+            onCreatedWithoutTask={() => setReloads((n) => n + 1)}
             onCreated={(key, entryId) => {
               setCreating(false);
               navigate(`/tasks/${encodeURIComponent(key)}${entryId ? `?entry=${encodeURIComponent(entryId)}` : ""}`);

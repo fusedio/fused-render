@@ -112,6 +112,21 @@ def test_list_limit_and_its_validation(client, agent, projects_dir, state_dir, t
     out = client.get(P, params={"limit": "2"}).json()
     assert len(out["tasks"]) == 2 and out["total"] == 4
     assert client.get(P, params={"limit": "x"}).status_code == 400
+    # The token names the limit: a wider page is never "unchanged".
+    assert client.get(P, params={"limit": "2", "gen": out["generation"]}).json() == {"unchanged": True, "generation": out["generation"]}
+    assert len(client.get(P, params={"limit": "3", "gen": out["generation"]}).json()["tasks"]) == 3
+
+
+def test_needs_you_rows_ride_past_the_cap(client, agent, projects_dir, state_dir, tmp_path):
+    """The badge counts every needs-you row; the list can show each of them even
+    when the cap would have cut it off."""
+    _already_using(state_dir)
+    for i in range(3):
+        _session(agent, projects_dir, tmp_path, f"sess-{i}", "alpha", [_user(f"m{i}", T11), _assistant("ok", T12)])
+    _session(agent, projects_dir, tmp_path, "sess-old", "alpha", [_user("hello", T9), _api_error("Usage limit reached", T10)])
+    out = client.get(P, params={"limit": "2"}).json()
+    assert out["attention"] == 1 and out["total"] == 4
+    assert len(out["tasks"]) == 3 and out["tasks"][-1]["key"] == "sess-old" and out["tasks"][-1]["status"] == "blocked"
 
 
 def test_archived_rows_only_on_request(client, agent, projects_dir, state_dir, tmp_path):
@@ -538,7 +553,7 @@ def test_answer_sends_the_composers_payload(client, agent, projects_dir, tmp_pat
     card = client.get(f"{P}/sess-a").json()["card"]
     assert card["request_id"] == "q1" and [q["question"] for q in card["questions"]] == ["Which one?\nSay.", "Colour"]
     assert [o["label"] for o in card["questions"][0]["options"]] == ["A", "B, with a comma", "C"]
-    body = {"request_id": "q1", "answers": {"Which one?\nSay.": ["C", "mine", "A"], "Colour": "blue"},
+    body = {"request_id": "q1", "answers": {"Which one?\nSay.": ["C", "mine", "B, with a comma", "A"], "Colour": "blue"},
             "custom": {"Which one?\nSay.": "mine"}}
     r = client.post(f"{P}/sess-a/answer", headers=H, json=body)
     assert r.status_code == 200, r.text
@@ -547,7 +562,7 @@ def test_answer_sends_the_composers_payload(client, agent, projects_dir, tmp_pat
     # A list becomes the ", "-join in the card's option order with the typed line last — the string
     # the agent latches. Checked against the agent's own validator, not a copy of its rule.
     answers = json.loads(kw["answers"])
-    assert answers == {"Which one?\nSay.": "A, C, mine", "Colour": "blue"}
+    assert answers == {"Which one?\nSay.": "A, B, with a comma, C, mine", "Colour": "blue"}
     assert agent._answers_from(questions, answers, json.loads(kw["custom"])) == answers
     assert agent._answers_from(questions, {"Which one?\nSay.": ["A"]}, None) is None  # what a list would have been
     for bad in ({"request_id": "q1", "answers": {}}, {"request_id": "q1", "answers": {"Colour": ["blue"]}, "custom": 3},

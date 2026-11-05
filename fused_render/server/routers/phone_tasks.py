@@ -188,15 +188,16 @@ def _activity(row: dict) -> float:
     return 0.0
 
 
-def _token(rows: list[dict], gen: int, archived: bool) -> str:
+def _token(rows: list[dict], gen: int, archived: bool, limit: int = LIMIT_DEFAULT) -> str:
     """The list's change token: the snapshot generation AND a digest of what
     the rows say. The generation alone misses the builder's floor rebuilds
     (every `REBUILD_FLOOR_SEC`, same generation), which are what move the
     time-based fields — `live` off a transcript's age, `next_run`, queue
     positions (tasks.py `_GZ_CACHE` keys on the rows object for the same
-    reason). `archived` is in it so a switch of the view is never "unchanged"."""
+    reason). `archived` and `limit` are in it so a switch of the view, or a
+    wider page, is never "unchanged"."""
     h = hashlib.blake2b(digest_size=8)
-    h.update(b"a" if archived else b"-")
+    h.update(f"{'a' if archived else '-'}{limit}|".encode())
     for r in rows:
         h.update(f"{r.get('key')}|{r.get('row_hash')}|{r.get('status')}|{int(bool(r.get('live')))}|"
                  f"{r.get('next_run')}|{r.get('queue_position')}|{r.get('unread')}\n".encode())
@@ -238,7 +239,7 @@ def phone_tasks(gen: str = Query(default=""), archived: str = Query(default="0")
         return _error(str(exc), 400)
     show_archived = _truthy(archived)
     all_rows, snapshot_gen = _tasks()._listing()
-    generation = _token(all_rows, snapshot_gen, show_archived)
+    generation = _token(all_rows, snapshot_gen, show_archived, lim)
     if gen and gen == generation:
         return {"unchanged": True, "generation": generation}
     rows = _shown(all_rows, show_archived)
@@ -252,7 +253,10 @@ def phone_tasks(gen: str = Query(default=""), archived: str = Query(default="0")
             p = facet.setdefault(project, {"path": _tilde(project), "label": _label(project), "count": 0})
             p["count"] += 1
     projects = sorted(facet.values(), key=lambda p: (-p["count"], p["label"].lower()))
-    return {"tasks": [phone_task(r) for r in rows[:lim]], "total": len(rows),
+    # The first `lim` rows, plus every needs-you row past them: the badge counts
+    # those, so the list (and its "Needs you" chip) must be able to show them.
+    page = rows[:lim] + [r for r in rows[lim:] if r.get("status") in ATTENTION_STATUSES]
+    return {"tasks": [phone_task(r) for r in page], "total": len(rows),
             "generation": generation, "projects": projects, "attention": attention,
             "ts": time.time()}
 
@@ -525,9 +529,10 @@ def _card(agent, perm: dict) -> dict:
         "held": bool(perm.get("held")),
         "created_at": perm.get("created_at") or 0,
         "questions": questions,
-        # Keyed by the exact question text and carrying the exact joined labels, as
-        # `questions` above: the phone looks an answer up by the question it drew.
-        "answers": ({str(k): str(v) for k, v in list(perm.get("answers").items())[:20]}
+        # Keyed by the EXACT question text (the phone looks an answer up by the
+        # question it drew); the values are cut — a typed "Other" can be any length,
+        # and the card rides every poll.
+        "answers": ({str(k): _flat(v, 120) for k, v in list(perm.get("answers").items())[:20]}
                     if isinstance(perm.get("answers"), dict) else {}),
     }
 
