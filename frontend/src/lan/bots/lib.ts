@@ -4,20 +4,41 @@
 import type { BotEvent, BotStatus, PhoneBot } from "./types";
 
 // ---------------------------------------------------------------- routes ----
-export type Route = { name: "grid" } | { name: "bots" } | { name: "bot"; id: string };
+export type Route =
+  | { name: "grid" }
+  | { name: "bots" }
+  | { name: "bot"; id: string }
+  | { name: "tasks" }
+  | { name: "task"; key: string };
 
-/** The lan entry's three pages. lan.py serves lan.html for `/`, `/bots` and
- *  `/bots/<id>` (an id never holds `/`); anything else falls back to the grid. */
+/** The lan entry's pages. lan.py serves lan.html for `/`, `/bots`, `/bots/<id>`,
+ *  `/tasks` and `/tasks/<key>` (an id never holds `/`; a task key is a session
+ *  id or `pending:<entry>`, so the colon is admitted there); anything else
+ *  falls back to the grid. */
 export function parseRoute(pathname: string): Route {
   const p = (pathname || "/").replace(/\/+$/, "") || "/";
   if (p === "/bots") return { name: "bots" };
   const m = /^\/bots\/([A-Za-z0-9_-]+)$/.exec(p);
   if (m) return { name: "bot", id: m[1] };
+  if (p === "/tasks") return { name: "tasks" };
+  const t = /^\/tasks\/([A-Za-z0-9_:.-]+)$/.exec(p);
+  if (t) return { name: "task", key: t[1] };
   return { name: "grid" };
 }
 
 export function routePath(r: Route): string {
-  return r.name === "grid" ? "/" : r.name === "bots" ? "/bots" : `/bots/${encodeURIComponent(r.id)}`;
+  switch (r.name) {
+    case "grid":
+      return "/";
+    case "bots":
+      return "/bots";
+    case "bot":
+      return `/bots/${encodeURIComponent(r.id)}`;
+    case "tasks":
+      return "/tasks";
+    case "task":
+      return `/tasks/${encodeURIComponent(r.key)}`;
+  }
 }
 
 // ---------------------------------------------------------------- status ----

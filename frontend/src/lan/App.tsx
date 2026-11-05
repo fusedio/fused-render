@@ -6,8 +6,8 @@
 // and tag; the filter strip is the set of tags actually present plus "Linked"
 // for folders outside ~/Fused. Recency is the sort key, so the dividers say
 // it out loud (Today / This week / Earlier) instead of decorating.
-import { useEffect, useMemo, useState } from "react";
-import { SearchIcon, XIcon, AppWindowIcon, WifiOffIcon } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { SearchIcon, XIcon, AppWindowIcon, PlusIcon, WifiOffIcon } from "lucide-react";
 import { isRasterIconUrl } from "@platform/lib/app-icon-src";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
@@ -22,7 +22,12 @@ import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { cn } from "@platform/lib/utils";
-import { SectionSwitch } from "./nav";
+import { SectionSwitch, navigate } from "./nav";
+
+// "+" on the grid: the New sheet on its New app tab (describe an app; the
+// computer names, scaffolds and builds it as a task). Lazy, with the task
+// screens' chunk: the grid never pays for it until the button is tapped.
+const NewSheet = lazy(() => import("./tasks/screens").then((m) => ({ default: m.NewSheet })));
 
 interface LanAppRow {
   name: string;
@@ -87,6 +92,7 @@ export function LanApp() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<string>(readFilter);
+  const [creating, setCreating] = useState(false);
   const now = useMemo(() => Date.now() / 1000, [apps]);
 
   useEffect(() => {
@@ -167,6 +173,9 @@ export function LanApp() {
           <span className="lan-mono text-xs text-[var(--fg-muted)]">
             {apps ? `${shown.length}/${apps.length}` : ""}
           </span>
+          <Button variant="outline" size="icon" className="size-10 shrink-0 rounded-xl" aria-label="New app" onClick={() => setCreating(true)}>
+            <PlusIcon className="size-5" />
+          </Button>
         </div>
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-[var(--fg-muted)]" />
@@ -279,6 +288,20 @@ export function LanApp() {
           </div>
         </section>
       ))}
+      {creating && (
+        <Suspense fallback={null}>
+          <NewSheet
+            open={creating}
+            onOpenChange={setCreating}
+            tab="app"
+            projects={null}
+            onCreated={(key, entryId) => {
+              setCreating(false);
+              navigate(`/tasks/${encodeURIComponent(key)}${entryId ? `?entry=${encodeURIComponent(entryId)}` : ""}`);
+            }}
+          />
+        </Suspense>
+      )}
     </main>
   );
 }
