@@ -898,6 +898,8 @@ class _Controller:
                     self._start()
         if self.running:
             self.ips = ips
+            if ips and self.error == "no network address found":
+                self.error = None  # the computer joined a network since
             self.hostname = lan_doctor.local_hostname() or self.hostname
         fingerprint = self.fingerprint() if self.running else None
         devices = list_devices()

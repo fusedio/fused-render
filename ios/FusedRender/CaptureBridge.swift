@@ -279,6 +279,9 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         guard let webView, let pageURL = webView.url, var comps = URLComponents(url: pageURL, resolvingAgainstBaseURL: false) else {
             throw BridgeError("no server to upload to")
         }
+        // Only ever https (the listener is nothing else): the pairing cookie
+        // below must never ride a plain-http page that reached this bridge.
+        guard comps.scheme == "https" else { throw BridgeError("the page is not served over https") }
         comps.path = "/api/fs/upload"
         comps.query = nil
         comps.fragment = nil

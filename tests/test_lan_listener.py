@@ -179,7 +179,7 @@ def test_doctor_is_quiet_while_not_running():
 def test_doctor_names_each_cause(monkeypatch):
     monkeypatch.setattr(lan_doctor, "interfaces", lambda: [("utun3", "10.8.0.2")])
     monkeypatch.setattr(lan_doctor, "default_route_interface", lambda: "utun3")
-    monkeypatch.setattr(lan_doctor, "firewall", lambda: {"on": True, "block_all": False, "stealth": True, "blocked": False})
+    monkeypatch.setattr(lan_doctor, "firewall", lambda port=None: {"kind": "macos", "on": True, "block_all": False, "stealth": True, "blocked": False})
     monkeypatch.setattr(lan_doctor, "hostname_resolves", lambda name: False)
     monkeypatch.setattr(lan_doctor, "self_connect", lambda ip, port, fp: False)
     out = lan_doctor.warnings(running=True, port=1889, ip="10.8.0.2", fingerprint="ab", hostname="studio.local",
@@ -191,7 +191,7 @@ def test_doctor_names_each_cause(monkeypatch):
 def test_doctor_is_silent_when_everything_checks_out(monkeypatch):
     monkeypatch.setattr(lan_doctor, "interfaces", lambda: [("en0", "192.168.1.20"), ("utun3", "10.8.0.2")])
     monkeypatch.setattr(lan_doctor, "default_route_interface", lambda: "en0")
-    monkeypatch.setattr(lan_doctor, "firewall", lambda: {"on": True, "block_all": False, "stealth": False, "blocked": False})
+    monkeypatch.setattr(lan_doctor, "firewall", lambda port=None: {"kind": "macos", "on": True, "block_all": False, "stealth": False, "blocked": False})
     monkeypatch.setattr(lan_doctor, "hostname_resolves", lambda name: True)
     monkeypatch.setattr(lan_doctor, "self_connect", lambda ip, port, fp: True)
     assert lan_doctor.warnings(running=True, port=1889, ip="192.168.1.20", fingerprint="ab",
@@ -231,3 +231,39 @@ def test_self_connect_pins_the_fingerprint(home):
     assert lan_doctor._self_connect("127.0.0.1", port, lan_tls.fingerprint(), 5.0) is True
     assert lan_doctor._self_connect("127.0.0.1", port, "00" * 32, 5.0) is False
     lsock.close()
+
+
+def test_macos_firewall_listapps_numbered_entries(monkeypatch):
+    """`socketfilterfw --listapps` numbers its entries; the running executable
+    inside a blocked .app must still be matched."""
+    exe = "/Applications/Fused Render.app/Contents/MacOS/python"
+    answers = {
+        "--getglobalstate": "Firewall is enabled. (State = 1)\n",
+        "--getblockall": "Block all DISABLED!\n",
+        "--getstealthmode": "Stealth mode disabled\n",
+        "--listapps": "Total number of apps = 2 \n\n1 :  /Applications/Zoom.app \n \t ( Allow incoming connections )\n"
+                      "2 :  /Applications/Fused Render.app \n \t ( Block incoming connections )\n",
+    }
+    monkeypatch.setattr(lan_doctor.sys, "platform", "darwin")
+    monkeypatch.setattr(lan_doctor, "_is_mac", lambda: True)
+    monkeypatch.setattr(lan_doctor.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(lan_doctor, "_run", lambda args, timeout=2.0: answers.get(args[-1]))
+    monkeypatch.setattr(lan_doctor.sys, "executable", exe)
+    monkeypatch.setattr(lan_doctor.os.path, "realpath", lambda p: p)
+    fw = lan_doctor._firewall(1889)
+    assert fw == {"kind": "macos", "on": True, "block_all": False, "stealth": False, "blocked": True}
+
+
+def test_linux_firewall_warns_only_when_active_without_a_rule(monkeypatch):
+    monkeypatch.setattr(lan_doctor.sys, "platform", "linux")
+    monkeypatch.setattr(lan_doctor, "_run", lambda args, timeout=2.0:
+                        "Status: active\n\nTo  Action  From\n22/tcp  ALLOW  Anywhere\n" if args[0] == "ufw" else None)
+    assert lan_doctor._firewall(1889)["blocked"] is True
+    monkeypatch.setattr(lan_doctor, "_run", lambda args, timeout=2.0:
+                        "Status: active\n1889/tcp  ALLOW  Anywhere\n" if args[0] == "ufw" else None)
+    assert lan_doctor._firewall(1889)["blocked"] is False
+    # Not readable (needs root): unknown, never a warning.
+    monkeypatch.setattr(lan_doctor, "_run", lambda args, timeout=2.0: None)
+    assert lan_doctor._firewall(1889) is None
+    out = lan_doctor.warnings(running=True, port=1889, ip="192.168.1.20", fingerprint="ab", hostname=None)
+    assert "firewall" not in [w["code"] for w in out]

@@ -258,6 +258,9 @@ struct ConnectedView: View {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { diagnoseRun += 1 }
             }
+            // A rescan of the same computer under a new name keeps this view
+            // (same fingerprint): the chrome's links follow the new host.
+            .onChange(of: server.host) { _, fresh in host = fresh }
     }
 
     @MainActor

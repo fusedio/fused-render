@@ -70,7 +70,7 @@ struct WebView: UIViewRepresentable {
         config.websiteDataStore = .default()
         // The marker rides on WebKit's own UA from the very first request (the
         // pairing one included).
-        config.applicationNameForUserAgent = "Mobile/15E148 " + Self.userAgentMarker
+        config.applicationNameForUserAgent = "Mobile/15E148 " + ShellIdentity.userAgentMarker
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -177,6 +177,9 @@ struct WebView: UIViewRepresentable {
         /// didFinish would then take for a pairing that succeeded.
         private var requestedURL: URL?
         private let network = NWPathMonitor()
+        /// Bumped per `load`: an older load whose cookie install finishes
+        /// after a newer one must not navigate last.
+        private var loadGeneration = 0
 
         init(server: Server, host: String, controller: WebController, onGridLoaded: @escaping (String) -> Void,
              onNavigationFailed: @escaping () -> Void) {
@@ -208,8 +211,11 @@ struct WebView: UIViewRepresentable {
             guard let web = webView else { return }
             let server = self.server
             let host = url.host ?? self.host
+            loadGeneration += 1
+            let generation = loadGeneration
             Task { @MainActor in
                 await PairingSecret.install(into: web, server: server, host: host)
+                guard generation == self.loadGeneration else { return }
                 var req = URLRequest(url: url)
                 if pairing { req.setValue(ShellIdentity.deviceName, forHTTPHeaderField: "X-Fused-Device-Name") }
                 web.load(req)

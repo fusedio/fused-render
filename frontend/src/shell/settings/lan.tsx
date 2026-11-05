@@ -163,6 +163,7 @@ function LanPairing({ url, deviceCount, warnings }: { url: string; deviceCount: 
       .catch((e) => {
         if (!alive) return;
         setSvg(null);
+        setLink(null);
         setProblem((e as Error).message || "No pairing code — the listener did not answer.");
       });
     return () => {

@@ -33,7 +33,10 @@ enum PairingSecret {
         return String(data: data, encoding: .utf8)
     }
 
-    static func set(_ secret: String, for server: Server) {
+    /// False when the Keychain refused the write: the pairing then is not
+    /// kept, and the caller must not confirm it.
+    @discardableResult
+    static func set(_ secret: String, for server: Server) -> Bool {
         delete(for: server)
         let add: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -42,7 +45,9 @@ enum PairingSecret {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecValueData as String: Data(secret.utf8),
         ]
-        _ = SecItemAdd(add as CFDictionary, nil)
+        let status = SecItemAdd(add as CFDictionary, nil)
+        if status != errSecSuccess { log.error("pairing: keychain write failed (\(status))") }
+        return status == errSecSuccess
     }
 
     static func delete(for server: Server) {
@@ -71,8 +76,7 @@ enum PairingSecret {
         guard let cookie = cookies.first(where: {
             $0.name == cookieName && $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host
         }) else { return false }
-        set(cookie.value, for: server)
-        return true
+        return set(cookie.value, for: server)
     }
 
     /// Before loading a page from this computer on `host`: make sure WebKit
@@ -90,12 +94,17 @@ enum PairingSecret {
         // `.originURL` rather than a bare `.domain`: HTTPCookie derives the
         // domain from it and accepts an IP address that way, which it does
         // not as a `.domain` value — and the fallback host IS an address.
+        // HttpOnly, as the computer sets it: `HTTPCookiePropertyKey` has no
+        // public case for it, but the "HttpOnly" key is what Foundation reads
+        // (it is how `HTTPCookie.isHTTPOnly` round-trips through
+        // `properties`), so page scripts cannot read the secret back.
         guard let cookie = HTTPCookie(properties: [
             .originURL: server.url(host: host),
             .path: "/",
             .name: cookieName,
             .value: secret,
             .secure: "TRUE",
+            HTTPCookiePropertyKey("HttpOnly"): "TRUE",
             .expires: Date(timeIntervalSinceNow: 90 * 86400),
         ]) else {
             log.error("pairing: could not build the cookie for \(host, privacy: .public)")

@@ -233,16 +233,20 @@ def _default_route_interface() -> str | None:
 _FW = "/usr/libexec/ApplicationFirewall/socketfilterfw"
 
 
-def firewall() -> dict | None:
-    """macOS application firewall state, or None off macOS / when the tool is
-    missing: ``{"on", "block_all", "stealth", "blocked"}`` where ``blocked``
-    is True when the running executable (the .app bundle, or the python
-    binary under ``fused serve``) is listed with incoming connections
-    blocked."""
-    return _cached("firewall", _firewall)
+def firewall(port: int | None = None) -> dict | None:
+    """The host firewall's state, or None when there is none to ask:
+    ``{"kind", "on", "block_all", "stealth", "blocked"}``. macOS
+    (``kind: "macos"``): ``blocked`` is True when the running executable (the
+    .app bundle, or the python binary under ``fused serve``) is listed with
+    incoming connections blocked. Linux (``"ufw"`` / ``"firewalld"``):
+    ``blocked`` is True when the firewall is active and no rule names
+    ``port``; ``block_all``/``stealth`` are always False there."""
+    return _cached(f"firewall:{port}", lambda: _firewall(port))
 
 
-def _firewall() -> dict | None:
+def _firewall(port: int | None) -> dict | None:
+    if sys.platform.startswith("linux"):
+        return _firewall_linux(port)
     if not _is_mac() or not os.path.exists(_FW):
         return None
     state = _run([_FW, "--getglobalstate"]) or ""
@@ -262,14 +266,36 @@ def _firewall() -> dict | None:
     # "Allow incoming connections" or "Block incoming connections".
     current: str | None = None
     for line in apps.splitlines():
-        line = line.strip()
+        # Entries are numbered ("1 :  /Applications/Fused Render.app").
+        line = re.sub(r"^\d+\s*:\s*", "", line.strip())
         if line.startswith("/") or ".app" in line:
             current = line.split(" (")[0].strip() if ".app" in line else line
             continue
         if current and "block incoming" in line.lower():
             if exe.startswith(os.path.realpath(current)):
                 blocked = True
-    return {"on": on, "block_all": block_all, "stealth": stealth, "blocked": blocked}
+    return {"kind": "macos", "on": on, "block_all": block_all, "stealth": stealth, "blocked": blocked}
+
+
+def _firewall_linux(port: int | None) -> dict | None:
+    """ufw or firewalld, whichever answers. Both usually need root to list
+    rules, in which case the tool prints nothing useful and this is None
+    (unknown), never a warning."""
+    needle = str(port) if port else None
+    ufw = _run(["ufw", "status"])
+    if ufw and "status: active" in ufw.lower():
+        blocked = bool(needle) and needle not in ufw
+        return {"kind": "ufw", "on": True, "block_all": False, "stealth": False, "blocked": blocked}
+    if ufw and "status: inactive" in ufw.lower():
+        return {"kind": "ufw", "on": False, "block_all": False, "stealth": False, "blocked": False}
+    state = _run(["firewall-cmd", "--state"])
+    if state and "running" in state.lower():
+        ports = _run(["firewall-cmd", "--list-ports"], timeout=3.0)
+        if ports is None:
+            return None  # cannot list: unknown
+        blocked = bool(needle) and needle not in ports
+        return {"kind": "firewalld", "on": True, "block_all": False, "stealth": False, "blocked": blocked}
+    return None
 
 
 # ---- the listener itself -----------------------------------------------------
@@ -336,13 +362,17 @@ def warnings(*, running: bool, port: int | None, ip: str | None, fingerprint: st
                     "The code uses the Wi-Fi address, but the VPN may still block it."})
 
     try:
-        fw = firewall()
+        fw = firewall(port)
     except Exception:  # noqa: BLE001
         fw = None
     if fw and fw["on"] and (fw["block_all"] or fw["stealth"] or fw["blocked"]):
-        out.append({"code": "firewall", "message":
-                    "The macOS firewall may block phones from reaching this computer. Allow incoming "
-                    "connections for Fused Render in System Settings → Network → Firewall."})
+        if fw.get("kind") == "macos":
+            message = ("The macOS firewall may block phones from reaching this computer. Allow incoming "
+                       "connections for Fused Render in System Settings → Network → Firewall.")
+        else:
+            message = (f"The firewall ({fw.get('kind')}) is active and has no rule for port {port}. "
+                       f"Allow incoming TCP on {port} so phones can reach this computer.")
+        out.append({"code": "firewall", "message": message})
 
     try:
         resolves = hostname_resolves(hostname)

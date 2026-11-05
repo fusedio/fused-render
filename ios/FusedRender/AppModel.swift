@@ -135,7 +135,7 @@ final class AppModel: ObservableObject {
         }
         guard comps.scheme == "https",
               let fingerprint = items.first(where: { $0.name == "fp" })?.value?.lowercased(),
-              fingerprint.count == 64 else {
+              fingerprint.count == 64, fingerprint.allSatisfy(\.isHexDigit) else {
             pairProblem = "This code comes from an older Fused Render. Update it on the computer and scan again."
             return false
         }

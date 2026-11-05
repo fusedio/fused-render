@@ -1,7 +1,10 @@
 # LAN connection: audit and simplification proposal
 
 > Status: implemented (D1463). What follows is the audit and the design as
-> proposed; the shipped code matches §3 and §7, with the port at 1889.
+> proposed; the shipped code matches §3 and §7, with the port at 1889, the
+> optional subnet probe of §3 and §7.2 included (it is what finds a computer
+> with a new address on a network that filters mDNS), and the Linux firewall
+> check of §7.4 reading ufw or firewalld where they answer unprivileged.
 
 Requirements, as stated by the owner:
 
