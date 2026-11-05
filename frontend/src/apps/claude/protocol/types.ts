@@ -573,6 +573,10 @@ export interface WorktreeHint {
   /** On `via: "exit"` from `git worktree remove <path>`: the absolute path
    *  removed. A different hint path stays standing. */
   removed?: string;
+  /** On `via: "agent"`: the absolute worktree hint (bash/enter) the main agent
+   *  was standing in when the isolated task started. The chat falls back to it
+   *  once no isolated task is live. */
+  prev?: WorktreeHint;
 }
 export interface ActivityTask {
   id: string;

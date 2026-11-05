@@ -8326,8 +8326,21 @@ def _worktree_hint(name, inp, cwd: str = "") -> dict | None:
     if name == "ExitWorktree":
         return dict(_WT_EXIT)
     if name == "EnterWorktree":
-        return {"path": str(inp.get("path") or inp.get("name") or ""),
-                "branch": "", "via": "enter"}
+        given = str(inp.get("path") or "")
+        wt_name = str(inp.get("name") or "")
+        if given:
+            path = _wt_resolve(given, cwd)
+        elif wt_name:
+            # EnterWorktree usually carries only a name; the tool creates
+            # `<repo root>/.claude/worktrees/<name>`. Walk up to the repo root
+            # (no subprocess, no existence check: the call is finalized before
+            # it runs) so the hint is absolute.
+            root = _git_root_of(cwd)
+            path = (os.path.join(root, ".claude", "worktrees", wt_name)
+                    if root else wt_name)
+        else:
+            path = ""
+        return {"path": path, "branch": "", "via": "enter"}
     if name in ("Agent", "Task") and inp.get("isolation") == "worktree":
         return {"path": "", "branch": "", "via": "agent",
                 "label": str(inp.get("description")
@@ -8387,6 +8400,21 @@ def _shell_segments(command: str) -> list:
     return segs
 
 
+def _git_root_of(cwd: str) -> str:
+    """The nearest ancestor of `cwd` (itself included) holding a `.git` file or
+    directory, or "" when `cwd` is not absolute / none is found."""
+    if not cwd or not os.path.isabs(cwd):
+        return ""
+    cur = os.path.normpath(cwd)
+    while True:
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return ""
+        cur = parent
+
+
 def _wt_resolve(path: str, base: str) -> str:
     """`path` as an absolute normalized path: absolute stays, relative joins
     `base`. With no usable base a relative path is returned as typed."""
@@ -8441,17 +8469,42 @@ def _bash_worktree_hint(command: str, cwd: str = "") -> dict | None:
     return None
 
 
+def _standing_wt(cur: dict | None) -> dict | None:
+    """The absolute worktree hint standing in `cur`: a bash/enter hint with an
+    absolute path, or the `prev` an agent hint carries. None otherwise."""
+    if not cur:
+        return None
+    if cur.get("via") == "agent":
+        prev = cur.get("prev")
+        if isinstance(prev, dict) and os.path.isabs(str(prev.get("path") or "")):
+            return prev
+        return None
+    if cur.get("via") in ("bash", "enter") \
+            and os.path.isabs(str(cur.get("path") or "")):
+        return cur
+    return None
+
+
 def _next_worktree_hint(cur: dict | None, hint: dict) -> dict | None:
-    """The hint state after `hint` lands on `cur`. An exit marker clears it,
-    except `git worktree remove <other path>`: removing a checkout that is not
-    the one the hint names leaves the hint standing."""
+    """The hint state after `hint` lands on `cur`. An agent hint (an isolated
+    Task) does not forget the worktree the main agent is standing in: it
+    carries it as `prev`, so the page can fall back to it once no isolated task
+    is live. An exit marker clears it, except `git worktree remove <other
+    path>`: removing a checkout that is not the one the hint names leaves the
+    hint standing."""
+    if hint.get("via") == "agent":
+        standing = _standing_wt(cur)
+        if standing is None:
+            return hint
+        return {**hint, "prev": dict(standing)}
     if hint.get("via") != "exit":
         return hint
     removed = hint.get("removed")
-    if removed and cur and cur.get("via") == "bash" \
-            and os.path.isabs(str(cur.get("path") or "")) \
-            and cur["path"] != removed:
-        return cur
+    if removed and cur and cur.get("via") in ("bash", "agent"):
+        standing = _standing_wt(cur)
+        if standing is not None and standing["path"] != removed \
+                and (cur.get("via") == "agent" or standing is cur):
+            return cur
     return None
 
 
@@ -10142,7 +10195,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                             kept = _next_worktree_hint(worktree_hint, hint)
                             worktree_hint = kept if kept is not None else hint
                         else:
-                            worktree_hint = hint
+                            worktree_hint = _next_worktree_hint(worktree_hint, hint)
                     if blk["id"] in tools_open:
                         tools_open[blk["id"]]["detail"] = _tool_detail(
                             blk.get("name"), tool_inputs[blk["id"]])
