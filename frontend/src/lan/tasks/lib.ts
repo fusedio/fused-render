@@ -150,12 +150,14 @@ export function projectOptions(projects: Project[]): Project[] {
 }
 
 // ---------------------------------------------------------------- rows ----
-/** The row's title line: the newest user message's first line, else the title
- *  (the desktop's `cardTitleLine` rule), one line. */
+/** The row's title line: the server's title (first line), else the newest user
+ *  message's first line (the desktop's `cardTitleLine` rule), one line. */
 export function titleLine(t: Pick<PhoneTask, "title" | "last_message">): string {
+  const title = firstLine(t.title);
+  if (title) return title;
   const m = t.last_message;
   if (m && m.role === "user" && m.text.trim()) return firstLine(m.text);
-  return firstLine(t.title) || "Untitled";
+  return "Untitled";
 }
 
 export function firstLine(s: string): string {

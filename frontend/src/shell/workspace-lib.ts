@@ -8,7 +8,7 @@
 import type { Task, TaskHold } from "@platform/lib/api";
 import type { PrState } from "@platform/lib/prStatus";
 import { prKey, prRefsOf, type PrRef } from "@platform/lib/task-prs";
-import { BACKGROUND_LABEL, cardTitleLine, isDraftTask, liveJobRow, usageLimitCaption } from "@shell/tasks-lib";
+import { BACKGROUND_LABEL, firstLine, isDraftTask, liveJobRow, usageLimitCaption } from "@shell/tasks-lib";
 
 /** What the rows' markers need beyond the task itself. */
 export interface WorkspaceFacts {
@@ -263,10 +263,11 @@ export function bgJobBadge(task: Task): { label: string; title: string } | null 
   };
 }
 
-/** The card's context line: the newest message (cardTitleLine, the List row's
- *  own rule), or "" when it would only repeat the title the card already shows. */
+/** The card's context line: the newest message's first line, or "" when it
+ *  would only repeat the title the card already shows (cardTitleLine titles by
+ *  the base title and falls back to this very message). */
 export function messagePreview(task: Task): string {
-  const text = cardTitleLine(task).text.trim();
+  const text = firstLine(task.last_message?.text ?? "").trim();
   if (!text) return "";
   return text === (task.title ?? "").trim() ? "" : text;
 }

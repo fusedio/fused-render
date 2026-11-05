@@ -112,7 +112,7 @@ describe("the Preferences switch", () => {
   it("says what it does in the words the page uses, not in the queue's internals", () => {
     // "folder", "Queued" — never "lease" and never "holder". The words are
     // the registry's (label + description), which search matches too.
-    const entry = REGISTRY.slice(REGISTRY.indexOf('id: "project-queue"'), REGISTRY.indexOf('id: "task-recaps"'));
+    const entry = REGISTRY.slice(REGISTRY.indexOf('id: "project-queue"'), REGISTRY.indexOf('id: "chat-recap"'));
     expect(entry).toContain("One task at a time per folder");
     expect(entry).toContain("Queued");
     expect(entry).not.toContain("lease");

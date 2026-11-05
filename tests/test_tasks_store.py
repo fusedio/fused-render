@@ -1059,31 +1059,6 @@ def test_erasing_a_session_erases_what_it_ran_with(state_dir):
     assert tasks_store.session_settings(state, "sess-b") == ("opus", "max")
 
 
-def test_a_recap_rides_on_the_settings_record_and_goes_with_an_erase(state_dir):
-    """The turn recap is one more field on the session's record (Akshil,
-    2026-10-15: "just add a field in json"): it leaves model/effort alone, it
-    is replaced by a newer turn's, and an erase takes the whole record."""
-    tasks_store.record_settings("sess-a", "haiku", "low")
-    tasks_store.record_recap("sess-a", "u-1", "Fixed the login bug", now=10.0)
-    state = tasks_store.settings_state()
-    assert tasks_store.session_settings(state, "sess-a") == ("haiku", "low")
-    assert tasks_store.session_recap(state, "sess-a") == {
-        "text": "Fixed the login bug", "for_uuid": "u-1", "at": 10.0,
-        "empty": False}
-
-    tasks_store.record_recap("sess-a", "u-2", "", now=20.0)  # a failed turn
-    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a") == {
-        "text": "", "for_uuid": "u-2", "at": 20.0, "empty": False}
-    tasks_store.record_recap("sess-a", "u-3", "", now=30.0, empty=True)
-    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a")["empty"] is True
-    assert tasks_store.session_recap(state, "nobody") is None
-    assert tasks_store.record_recap("", "u-1", "x") == {}
-    assert tasks_store.record_recap("sess-a", "", "x") == {}
-
-    tasks_store.forget_session("sess-a")
-    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a") is None
-
-
 def test_an_ai_title_round_trips_and_a_failure_keeps_the_old_text(state_dir):
     """Stable AI titles: the title rides on the session record beside the
     recap. A failed attempt (empty text) must not blank a title the row is
@@ -1113,6 +1088,24 @@ def test_an_ai_title_round_trips_and_a_failure_keeps_the_old_text(state_dir):
 
     tasks_store.forget_session("sess-a")
     assert tasks_store.session_ai_title(tasks_store.settings_state(), "sess-a") is None
+
+
+def test_record_ai_title_started_at_drops_a_write_a_newer_job_beat(state_dir):
+    """A job that started before the stored title was written is stale: a newer
+    job finished first. Older stored row or no guard: written as before."""
+    tasks_store.record_ai_title("s", "Newer title", 5, now=100.0)
+    tasks_store.record_ai_title("s", "Stale title", 3, now=110.0, started_at=90.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "s")
+    assert got["text"] == "Newer title" and got["at"] == 100.0
+
+    tasks_store.record_ai_title("s", "Fresh title", 6, now=120.0, started_at=105.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "s")
+    assert got["text"] == "Fresh title" and got["turns"] == 6
+
+    tasks_store.record_ai_title("s", "Unguarded", 1, now=130.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "s")
+    assert got["text"] == "Unguarded"  # a lower turn count still writes (scan reset)
+
 
 
 # ------------------------------------------------- did the user say anything?
@@ -1397,10 +1390,10 @@ def test_update_writes_through_a_tmp_file_and_replace(state_dir, monkeypatch):
         return real(src, dst)
 
     monkeypatch.setattr(tasks_store.os, "replace", spy)
-    tasks_store.record_recap("sess-a", "u-1", "Fixed the login bug", now=1.0)
+    tasks_store.record_ai_title("sess-a", "Fixed the login bug", 1, now=1.0)
     src, dst, body = seen[-1]
     assert src != dst and src.startswith(dst) and "Fixed the login bug" in body
-    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a")["text"]
+    assert tasks_store.session_ai_title(tasks_store.settings_state(), "sess-a")["text"]
 
 
 def test_record_settings_round_trips_permission():
