@@ -39,6 +39,7 @@ import {
 import type { DragEvent as ReactDragEvent } from "react";
 import { agentLabel, agentNamed, useAgentBackends } from "@platform/lib/agent-backends";
 import { AgentMark } from "@platform/ui/AgentMark";
+import { TaskStar } from "@platform/ui/TaskStar";
 import {
   cancelScheduledMessage,
   forceStart,
@@ -4491,6 +4492,9 @@ function TaskNode({
             or carried to the Tasks page. The title is the element that gives
             way, which is what it is for. */}
         <TaskAgentMark backend={task.backend} />
+        {/* THE FAVOURITE STAR, left of the id (owner, 2026-11-05: "star
+            everywhere", "left of the id") — always shown, one skin. */}
+        <TaskStar task={task} />
         <IdChip id={task.task_id} kind="task" />
         {/* THE FOLDER CHIP SITS HERE, between the id and the title (Akshil,
             2026-09-15): the row's left end is where it says what it IS — the id,
@@ -6633,6 +6637,8 @@ function TaskCard({
               ? <StatusIcon status={status} background />
               : failedOffLane && <StatusIcon status={lane} failed />}
           <TaskAgentMark backend={task.backend} />
+          {/* The star left of the id; a span-button, since the card is a <button>. */}
+          <TaskStar task={task} nested />
           <IdChip id={task.task_id} kind="task" />
           {/* The draft chip left this head with the List row's (Akshil,
               2026-09-11) and for the same reason — it is a tag now, and the

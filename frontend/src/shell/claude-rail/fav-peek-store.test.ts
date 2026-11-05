@@ -7,11 +7,19 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { TaskPulseTask } from "@platform/lib/api";
+import { PEEK_CLOSE_MS, PEEK_OPEN_MS } from "./rail-peek-lib";
 import { favOpen, setFavOpen } from "@platform/lib/last-chat";
 import {
   PENDING_FOCUS_MS,
+  dismissFavHover,
+  favHoverIntent,
+  favHoverKey,
+  resetFavHoverForTests,
   favPeekState,
+  publishFavBoxFor,
   focusRail,
+  pageRailCount,
+  registerPageRail,
   railHere,
   registerRail,
   requestFavFocus,
@@ -26,7 +34,39 @@ import {
 const rail = (name: string) => ({ name, isConnected: true }) as unknown as HTMLElement;
 const settle = () => new Promise<void>((res) => queueMicrotask(res));
 
-afterEach(() => resetFavPeekStoreForTests());
+afterEach(() => {
+  resetFavPeekStoreForTests();
+  resetFavHoverForTests();
+});
+
+describe("window B's hover (favHoverIntent)", () => {
+  const wait = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+  it("a rest on a favourite's ring opens the hover after the dwell; leaving closes it after the grace", async () => {
+    favHoverIntent().enterRing("f");
+    expect(favHoverKey()).toBeNull();
+    await wait(PEEK_OPEN_MS + 60);
+    expect(favHoverKey()).toBe("f");
+    favHoverIntent().leaveRing();
+    expect(favHoverKey()).toBe("f");
+    await wait(PEEK_CLOSE_MS + 60);
+    expect(favHoverKey()).toBeNull();
+  });
+  it("the card's own pointer holds it; a press converts it (dismiss) and nothing lingers", async () => {
+    favHoverIntent().enterRing("f");
+    await wait(PEEK_OPEN_MS + 60);
+    favHoverIntent().leaveRing();
+    favHoverIntent().enterCard();
+    await wait(PEEK_CLOSE_MS + 60);
+    expect(favHoverKey()).toBe("f");
+    dismissFavHover();
+    expect(favHoverKey()).toBeNull();
+  });
+  it("is local: it writes no open key", async () => {
+    favHoverIntent().enterRing("f");
+    await wait(PEEK_OPEN_MS + 60);
+    expect(favOpen()).toBeNull();
+  });
+});
 
 describe("the rail stack", () => {
   it("the last registered rail is the card's", async () => {
@@ -353,3 +393,45 @@ describe("useFavOpenRow (the open favourite's verdict)", () => {
   });
 });
 
+
+describe("the page-rail count (the shell's fallback)", () => {
+  it("counts each page rail while mounted, synchronously", () => {
+    const off = registerPageRail();
+    expect(pageRailCount()).toBe(1);
+    const off2 = registerPageRail();
+    expect(pageRailCount()).toBe(2);
+    off();
+    expect(pageRailCount()).toBe(1);
+    off2();
+    expect(pageRailCount()).toBe(0);
+  });
+  it("an answer run twice takes its rail off once", () => {
+    const keep = registerPageRail();
+    const off = registerPageRail();
+    off();
+    off();
+    expect(pageRailCount()).toBe(1);
+    keep();
+  });
+  it("a hop's swap in one commit never reads zero after it: mount, then the old unmount", () => {
+    const old = registerPageRail();
+    const next = registerPageRail();
+    old();
+    expect(pageRailCount()).toBe(1);
+    next();
+  });
+});
+
+describe("favourite card box (avoid)", () => {
+  it("a hover publishes no box; an open card does", async () => {
+    const box = { left: 10, top: 20, width: 300, height: 200 };
+    publishFavBoxFor(true, box);
+    expect(favPeekState().favBox).toBeNull();
+    publishFavBoxFor(false, box);
+    await settle();
+    expect(favPeekState().favBox).toEqual(box);
+    publishFavBoxFor(true, box);
+    await settle();
+    expect(favPeekState().favBox).toBeNull();
+  });
+});

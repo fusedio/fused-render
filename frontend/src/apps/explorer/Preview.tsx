@@ -92,7 +92,8 @@ import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
-import { ClaudeRail, RAIL_W } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
@@ -1189,6 +1190,10 @@ function TemplatePreview({
   // would be the same thing twice. The bar's Show button and the bare edge
   // stand there, as they did.
   const railHere = !!sideSlot && activeMode !== CHAT_MODE && sideTargets.some((e) => e.mode === "claude");
+  // THE RAIL BESIDE THE OPEN COLUMN (ClaudeRail `paneOpen`; owner,
+  // 2026-11-05): with favourites on it stands whether the column is open (on
+  // any companion) or shut; off, only while it is shut, as before.
+  const railAlways = useTaskFavourites();
   const openClaudeSide = () => setSide("claude");
   // The rail's Git section opens the git companion where this file has one.
   const railGitDoor = sideTargets.some((e) => e.mode === "git") ? () => setSide("git", "git") : undefined;
@@ -2464,9 +2469,16 @@ function TemplatePreview({
           open/close: nothing above `.preview-body` is restructured, so React never
           re-parents the frame, and re-parenting an iframe reloads its document
           (the same rule the held-frame swap keeps for reordering). */}
-      {activeSide &&
-        sideSlot &&
+      {/* ONE PORTAL FOR THE SLOT'S THREE TENANTS, in this order — the column,
+          the rail, the bare reopen edge: two portals into one container
+          append in mount order, so a column opened while the rail stood
+          (favourites on, the rail beside the open column) would land to the
+          rail's RIGHT. One portal keeps the column first and the rail at the
+          window's edge, and the rail in one slot either way (no remount). */}
+      {sideSlot &&
         createPortal(
+          <>
+          {activeSide && (
           <PreviewSidebar
             entries={sidebarMenu.map((t) => ({
               mode: t.mode,
@@ -2510,15 +2522,8 @@ function TemplatePreview({
             }
             onSelect={(m) => setSide(m, m ?? undefined)}
             onClose={() => setSide(null)}
-          />,
-          sideSlot
-        )}
-      {/* The MCP companion's dialog — the kebab's row and Open With → MCP both
-          open it (McpDialog). `mcpSrc` is re-checked here rather than trusted
-          from the click: the parent's verdict can change under an open dialog. */}
-      {mcpOpen && mcpSrc && (
-        <McpDialog src={mcpSrc} folderName={basename(parentDir)} onClose={() => setMcpOpen(false)} />
-      )}
+          />
+          )}
       {/* And when it is SHUT, THE CLAUDE RAIL takes the edge, into the same
           slot (shell/claude-rail — the canvas page's rail, the same on every
           page since 2026-11-01): the way back in (its panel button, which is
@@ -2530,10 +2535,14 @@ function TemplatePreview({
           carry (startSideReopenPull). Only where Claude is a ready companion
           (`railHere`): a file whose column holds git alone keeps the button
           and the bare edge below, because there would be no chats on the
-          other side of a rail. */}
-      {sideTargetEntry && !activeSide && railHere && sideSlot &&
-        createPortal(
+          other side of a rail.
+          WITH FAVOURITES ON it stands past the OPEN column too, at the
+          split's right edge (ClaudeRail `paneOpen`; owner, 2026-11-05) —
+          open on CLAUDE only: a column showing git keeps the rail's glyph and
+          seam, its way into the chat. */}
+      {sideTargetEntry && (!activeSide || railAlways) && railHere && (
           <ClaudeRail
+            paneOpen={activeSide === "claude"}
             place={railPlace}
             newTask={{ target: fsPath, waiting: null, on: null }}
             git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}
@@ -2542,17 +2551,30 @@ function TemplatePreview({
             // A ring's door is this file's own URL with the chat's session
             // (`taskHref`): the sidebar opens on it like any `_side=claude` link.
             onOpenChat={(href) => navigateUrl(href)}
+            // The + beside the open column: this file's chat with no
+            // session, its Recent chats page (already there: nothing to load).
+            onNewChat={() => {
+              const home = paneHomeHref(location.href);
+              if (home) navigateUrl(home);
+            }}
             onPullStart={(e) =>
               startSideReopenPull(e, e.currentTarget.closest<HTMLElement>(".stat-split"), openClaudeSide, RAIL_W)
             }
-          />,
-          sideSlot,
-        )}
+          />
+      )}
       {/* …and with no Claude companion, the seam the shut column left behind
           (SideReopenEdge): drag the split's right edge to pull the column
           back, the way it always was. */}
-      {sideTargetEntry && !activeSide && !railHere && sideSlot &&
-        createPortal(<SideReopenEdge onOpen={toggleSide} />, sideSlot)}
+      {sideTargetEntry && !activeSide && !railHere && <SideReopenEdge onOpen={toggleSide} />}
+          </>,
+          sideSlot,
+        )}
+      {/* The MCP companion's dialog — the kebab's row and Open With → MCP both
+          open it (McpDialog). `mcpSrc` is re-checked here rather than trusted
+          from the click: the parent's verdict can change under an open dialog. */}
+      {mcpOpen && mcpSrc && (
+        <McpDialog src={mcpSrc} folderName={basename(parentDir)} onClose={() => setMcpOpen(false)} />
+      )}
       {fileOps.overlays}
       {/* The App Doctor's dialog, off the file menu's row (useAppActionRows). */}
       {appRows.modal}

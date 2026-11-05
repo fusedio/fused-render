@@ -65,6 +65,7 @@ import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
+import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
 import InstallLinkPage from "@shell/InstallLinkPage";
@@ -1291,7 +1292,16 @@ export default function App({ config }: { config: Config }) {
       <ModelConflictNotifier />
       {!IS_EMBED && sidebar}
       <div id="main">
-        {main}
+        {/* THE SHELL'S FALLBACK RAIL (shell/claude-rail FallbackRail): the
+            favourites' rail on a page that draws no Claude rail of its own.
+            The two wrappers are `display: contents` — the page laid out as
+            ever — until it stands, when they become the page's column and
+            the rail beside it (claude-rail.css). Always in the tree, so the
+            rail coming and going never remounts the page. */}
+        <div className="shell-main-row">
+          <div className="shell-main-col">{main}</div>
+          {!IS_EMBED && <FallbackRail />}
+        </div>
         {/* Three sections, not three surfaces: ModelsDock is the shell's
             wrapper around Models' own chip (it speaks apps/ai_models/lib's
             shared runtime poll, which platform may not import). ActivityDock

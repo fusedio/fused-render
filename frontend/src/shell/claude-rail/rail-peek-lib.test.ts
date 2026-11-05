@@ -21,6 +21,14 @@ import {
   FAV_SETTLE_MS,
   bottomClear,
   dragResize,
+  FAV_HEIGHT,
+  FAV_WIDTH,
+  PEEK_PLAIN_HEIGHT,
+  favCardWish,
+  favRingRoute,
+  favPressClears,
+  favMaxHeight,
+  listCardWish,
   favChatElsewhere,
   favOpenVerdict,
   keepAlive,
@@ -36,6 +44,7 @@ import {
   type StarMark,
   type Timers,
   rowOf,
+  railInset,
 } from "./rail-peek-lib";
 import type { TaskPulseTask } from "@platform/lib/api";
 
@@ -642,123 +651,14 @@ describe("PeekIntent", () => {
       expect(warmed).toEqual(["a"]);
     });
 
-    it("pinned: a pointer rest on an `overPin` ring (a favourite's) swaps the card after the open dwell, still pinned", () => {
+    it("pinned: a pointer rest on any ring (a favourite's included) never swaps the card — the favourites have their own window", () => {
       const { clock, shown, intent } = rig();
       intent.press("a");
       intent.leaveRing();
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS - 1);
-      expect(shown).toEqual(["a"]);
-      clock.tick(1);
-      expect(shown).toEqual(["a", "f"]);
-      expect(intent.isPinned).toBe(true);
-      // The pin moved with it: leaving the ring closes nothing.
-      intent.leaveRing();
-      clock.tick(10_000);
-      expect(shown).toEqual(["a", "f"]);
-    });
-
-    it("pinned: a sweep across an `overPin` ring, or a focus on it, moves nothing", () => {
-      const { clock, shown, intent } = rig();
-      intent.press("a");
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS / 2);
-      intent.leaveRing();
-      intent.enterRing("g", "focus", true);
-      clock.tick(10_000);
-      expect(shown).toEqual(["a"]);
-    });
-
-    it("pinned: an `overPin` rest never swaps while the owner types in the card or a press is down in it", () => {
-      const { clock, shown, warmed, intent } = rig();
-      intent.press("a");
-      intent.leaveRing();
-      intent.hold(true);
-      intent.typed();
-      intent.enterRing("f", "pointer", true);
-      clock.tick(10_000);
-      intent.leaveRing();
-      intent.pressStart();
-      intent.enterRing("g", "pointer", true);
-      clock.tick(10_000);
-      intent.leaveRing();
-      intent.pressEnd();
-      expect(shown).toEqual(["a"]);
-      expect(warmed).toEqual(["a"]);
-      expect(intent.isPinned).toBe(true);
-      // A swap already waiting on its dwell is dropped by a keystroke…
-      intent.hold(false);
-      intent.hold(true);
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS / 2);
-      intent.typed();
-      clock.tick(10_000);
-      expect(shown).toEqual(["a"]);
-      // …and, the focus gone, the hover swaps again.
-      intent.leaveRing();
-      intent.hold(false);
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS);
-      expect(shown).toEqual(["a", "f"]);
-    });
-
-    it("pinned: a focus in the card with no words typed (a ring's press) still lets a favourite's hover swap it", () => {
-      const { clock, shown, intent } = rig();
-      intent.press("a");
-      intent.hold(true);
-      intent.leaveRing();
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS);
-      expect(shown).toEqual(["a", "f"]);
-    });
-
-    it("pinned, the focus on a favourite's ring: the pointer sweeping past it leaves no swap behind", () => {
-      const { clock, shown, intent } = rig();
-      intent.press("a");
-      intent.leaveRing();
-      intent.enterRing("f", "focus", true);
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS / 2);
-      intent.leaveRing("pointer");
+      intent.enterRing("f", "pointer");
       clock.tick(10_000);
       expect(shown).toEqual(["a"]);
       expect(intent.isPinned).toBe(true);
-    });
-
-    it("pinned: `dropSwap` (the card became a held outsider) drops a swap already waiting on its dwell", () => {
-      const { clock, shown, intent } = rig();
-      intent.press("a");
-      intent.leaveRing();
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS / 2);
-      intent.dropSwap();
-      clock.tick(10_000);
-      expect(shown).toEqual(["a"]);
-      expect(intent.isPinned).toBe(true);
-    });
-
-    it("tells the sink when a pinned card cannot be swapped (typing, a press inside), on change only", () => {
-      const clock = new Clock();
-      const blocked: boolean[] = [];
-      const intent = new PeekIntent({ show: () => {}, warm: () => {}, blocked: (on) => blocked.push(on) }, clock);
-      intent.press("a");
-      intent.hold(true);
-      intent.typed();
-      intent.typed();
-      intent.pressStart();
-      intent.hold(false);
-      expect(blocked).toEqual([true]);
-      intent.pressEnd();
-      expect(blocked).toEqual([true, false]);
-      intent.pressStart();
-      intent.dismiss();
-      expect(blocked).toEqual([true, false, true, false]);
-      // A swap to another chat clears the typing with the words' card.
-      intent.press("b");
-      intent.hold(true);
-      intent.typed();
-      intent.press("c");
-      expect(blocked).toEqual([true, false, true, false, true, false]);
     });
 
     it("tells the sink when it pins and unpins", () => {
@@ -1146,3 +1046,122 @@ describe("railOpenFav (the open favourite as the rail counts it)", () => {
   });
 });
 
+
+// ---- THE RAIL BESIDE AN OPEN PANE (owner, 2026-11-05) ----------------------
+// A pane's seam drag measures the pane to the split's right edge; with the
+// rail standing there the pane ends at the rail's edge instead.
+describe("railInset", () => {
+  const box = (left: number, width: number) => ({ left, right: left + width, width });
+  const split = (right: number, rails: { right: number; width: number; hidden?: boolean }[]) =>
+    ({
+      getBoundingClientRect: () => box(0, right),
+      querySelectorAll: () =>
+        rails.map((r) => ({ hidden: !!r.hidden, getBoundingClientRect: () => box(r.right - r.width, r.width) })),
+    }) as unknown as Element;
+
+  it("no split, a stand-in with no DOM, or no rail: nothing", () => {
+    expect(railInset(null)).toBe(0);
+    expect(railInset(undefined)).toBe(0);
+    expect(railInset({ getBoundingClientRect: () => box(0, 900) } as unknown as Element)).toBe(0);
+    expect(railInset(split(900, []))).toBe(0);
+  });
+
+  it("a rail at the split's right edge: its width", () => {
+    expect(railInset(split(900, [{ right: 900, width: 48 }]))).toBe(48);
+  });
+
+  it("a hidden rail (nothing to draw) or one laid out at no width: nothing", () => {
+    expect(railInset(split(900, [{ right: 900, width: 48, hidden: true }]))).toBe(0);
+    expect(railInset(split(900, [{ right: 900, width: 0 }]))).toBe(0);
+  });
+
+  it("a rail that is not at the right edge is not the pane's neighbour", () => {
+    expect(railInset(split(900, [{ right: 600, width: 48 }]))).toBe(0);
+  });
+});
+
+// ---- ONE SIZE PER CARD KIND; THE FAVOURITE'S CEILING (owner, 2026-11-05) ----
+describe("listCardWish (the list's card)", () => {
+  const stored = { width: 500, height: 700 };
+  it("favourites on: the hover card is the remembered size, as the pinned one is", () => {
+    const hover = listCardWish({ hasSession: true, stored, grown: false, oneSize: true });
+    const pinned = listCardWish({ hasSession: true, stored, grown: true, oneSize: true });
+    expect(hover).toEqual({ width: 500, maxHeight: 700 });
+    expect(pinned).toEqual(hover);
+  });
+  it("favourites off: a hover card is the default, a grown (pinned) one the remembered size", () => {
+    expect(listCardWish({ hasSession: true, stored, grown: false, oneSize: false })).toEqual({ maxHeight: PEEK_MAX_HEIGHT });
+    expect(listCardWish({ hasSession: true, stored, grown: true, oneSize: false })).toEqual({ width: 500, maxHeight: 700 });
+  });
+  it("nothing remembered: the default either way", () => {
+    expect(listCardWish({ hasSession: true, stored: null, grown: true, oneSize: true })).toEqual({ maxHeight: PEEK_MAX_HEIGHT });
+  });
+  it("a seat with no conversation: the short card, whatever is remembered", () => {
+    expect(listCardWish({ hasSession: false, stored, grown: true, oneSize: true })).toEqual({ maxHeight: PEEK_PLAIN_HEIGHT });
+  });
+});
+
+describe("favCardWish (the favourite's card, never taller than half the window)", () => {
+  const base = { width: FAV_WIDTH, maxHeight: FAV_HEIGHT, align: "bottom" as const };
+  it("its own remembered size over the fixed wish", () => {
+    expect(favCardWish(base, { width: 400, height: 420 }, 1000)).toEqual({ width: 400, maxHeight: 420, align: "bottom" });
+  });
+  it("capped at half the window on open: a 1400x900 window holds 450", () => {
+    expect(favMaxHeight(900)).toBe(450);
+    expect(favCardWish(base, { width: 400, height: 800 }, 900).maxHeight).toBe(450);
+    // The default 520 is over half of 900 too.
+    expect(favCardWish(base, null, 900).maxHeight).toBe(450);
+  });
+  it("…and again as the window shrinks: 600 tall holds 300", () => {
+    expect(favCardWish(base, { width: 400, height: 420 }, 600)).toEqual({ width: 400, maxHeight: 300, align: "bottom" });
+  });
+});
+
+describe("dragResize with a height ceiling (the favourite's card)", () => {
+  const start = { left: 900, top: 500, width: 380, height: 300 };
+  it("a top drag stops at the ceiling", () => {
+    const box = dragResize("t", start, 0, -400, ROW, undefined, 450);
+    expect(box.height).toBe(450);
+    expect(box.top + box.height).toBe(800);
+  });
+  it("a bottom drag stops at the ceiling", () => {
+    const tall = { ...start, top: 60 };
+    expect(dragResize("b", tall, 0, 700, ROW, undefined, 450).height).toBe(450);
+  });
+  it("no ceiling: as before", () => {
+    expect(dragResize("t", start, 0, -400, ROW).height).toBe(700);
+  });
+});
+
+describe("the favourite's hover and open cards stand in one place", () => {
+  const rail = { left: 1000, top: 100, width: 40, height: 700 };
+  const row = { left: 0, top: 100, width: 1040, height: 700 };
+  const ring = { left: 1004, top: 300, width: 32, height: 32 };
+  const base = { width: 360, maxHeight: 400, align: "bottom" as const };
+  it("both modes use one wish and the rail as anchor: same box, whatever ring is hovered", () => {
+    const wish = favCardWish(base, null, 900);
+    const open = placeClear(rail, rail, row, null, wish);
+    expect(placeClear(rail, rail, row, null, favCardWish(base, null, 900))).toEqual(open);
+    // anchoring a hover on its ring is what used to move the card
+    expect(placeClear(ring, rail, row, null, wish)).not.toEqual(open);
+  });
+});
+
+describe("favRingRoute (a fav whose chat is already shown has no card)", () => {
+  const fav = { key: "k1", session_id: "s1" };
+  it("pane holds it: press goes to the pane composer; peek holds it: the door; else the card", () => {
+    expect(favRingRoute(fav, ["s1"], null)).toBe("pane");
+    expect(favRingRoute(fav, [], "s1")).toBe("door");
+    expect(favRingRoute(fav, ["other"], "other")).toBe("card");
+    expect(favRingRoute(fav, [], null)).toBe("card");
+  });
+});
+
+describe("favPressClears", () => {
+  it("a pane or door press also closes B open on another favourite; a card press clears nothing", () => {
+    expect(favPressClears("pane", "x", "y")).toEqual(["x", "y"]);
+    expect(favPressClears("pane", "x", "x")).toEqual(["x"]);
+    expect(favPressClears("door", "x", null)).toEqual(["x"]);
+    expect(favPressClears("card", "x", "y")).toEqual([]);
+  });
+});

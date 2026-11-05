@@ -1,12 +1,15 @@
 /* THE CLAUDE RAIL (shell/claude-rail/ClaudeRail.tsx) and the card off it
-   (RailPeek.tsx): a page's right edge while its Claude pane is shut — the
-   canvas page, the app page, the explorer's file and folder views. The global
+   (RailPeek.tsx): a page's right edge — the canvas page, the app page, the
+   explorer's file and folder views — while its Claude pane is shut, and with
+   favourites on beside the open pane too (owner, 2026-11-05). The global
    sidebar's collapsed column, mirrored: same 48px, same button and dot
    classes (sidebar.css). Rules moved here from canvases.css when the rail
    left the canvases app (2026-11-01). */
-/* ---- The Claude rail (ClaudeRail.tsx): the canvas page's right edge while
-   the Claude pane is shut. The global sidebar's collapsed column, mirrored:
-   same 48px, same button and dot classes (sidebar.css). */
+/* ---- The Claude rail (ClaudeRail.tsx): a page's right edge while the
+   Claude pane is shut — and, favourites on, past the open pane while it has a
+   chat or a favourite to draw (claude-rail-lib `railShown`). The global
+   sidebar's collapsed column, mirrored: same 48px, same button and dot
+   classes (sidebar.css). */
 .claude-rail {
   position: relative;
   flex: 0 0 48px;
@@ -20,8 +23,61 @@
   background: var(--bg);
   --rail-sep: color-mix(in srgb, var(--fg) 22%, transparent);
 }
+/* A rail with nothing to draw beside the open pane (ClaudeRail `shown`,
+   claude-rail-lib `railShown`) is hidden, not unmounted: the attribute alone
+   loses to `display: flex` above. */
+.claude-rail[hidden] {
+  display: none;
+}
 .claude-rail .sidebar-rail-items {
   width: 100%;
+}
+/* NO GLYPH, NO GAP (owner, 2026-11-05: the open pane's rail kept the hidden
+   glyph's room and its separator above the +): beside the open pane and on
+   the shell's fallback the items column is the rail's first child, so its
+   divider and the room it keeps from the glyph go — the first seat sits on
+   the rail's own top padding (ClaudeRail `.no-glyph`). */
+.claude-rail.no-glyph .sidebar-rail-items {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+/* THE LIST SCROLLS, favourites on (owner, 2026-11-05; ClaudeRail
+   `.is-scroll`): every ring drawn, the list scrolling in its share of the
+   column with its scrollbar hidden — the favourites' own idiom (below) —
+   while the favourites keep their floor (the list still gives way first:
+   its shrink is the full 1 beside their token). Off, it clips (below). */
+.claude-rail.is-scroll .claude-rail-chats {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.claude-rail.is-scroll .claude-rail-chats::-webkit-scrollbar {
+  display: none;
+}
+/* THE SHELL'S FALLBACK RAIL (shell/claude-rail FallbackRail, App.tsx): two
+   wrappers around the page that are no box at all — the page laid out as it
+   always was — until the fallback stands, when they become a row: the page's
+   column (what #main is, restated), then the 48px rail at the right edge,
+   above the status bar. */
+.shell-main-row,
+.shell-main-col {
+  display: contents;
+}
+.shell-main-row:has(> .claude-rail:not([hidden])) {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+.shell-main-row:has(> .claude-rail:not([hidden])) > .shell-main-col {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .claude-rail.has-favs .sidebar-rail-items {
   /* NOTHING DRAWS PAST THE RAIL'S FOOT (under the status bar): the list
@@ -252,21 +308,6 @@
 /* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
    of a pinned chat that is not the selected node's, above the canvas glyph
    and under the hairline, so it reads as "pinned, outside this list". */
-/* A favourite's ring over a pinned card (ClaudeRail `pointerQuiet`): an
-   empty hint over the link's whole hit box (its `::after`), so the pointer's
-   rest — which swaps the card there — draws no caption, while the link's own
-   caption still answers a Tab. */
-.claude-rail-chat-shield {
-  position: absolute;
-  inset: -2px -9px;
-  z-index: 1;
-}
-/* …only while the hover CAN swap: typing in the card or a press inside it
-   blocks the swap (rail-peek-lib `enterRing`), and the ring's caption shows
-   instead of nothing (ClaudeRail's intent sink sets the attribute). */
-.claude-rail[data-swap-blocked] .claude-rail-chat-shield {
-  display: none;
-}
 .claude-rail-held {
   display: flex;
   justify-content: center;

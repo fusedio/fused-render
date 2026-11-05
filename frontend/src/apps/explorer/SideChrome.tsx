@@ -32,6 +32,7 @@ import { reopenWidth } from "@platform/lib/panel-drag";
 import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { CONTENT_MIN_W, MIN_W } from "@apps/explorer/lib/side-width";
 import { setSideWidth } from "@apps/explorer/lib/side-store";
+import { railInset } from "@shell/claude-rail/ClaudeRail";
 import {
   paneSideIconEntry,
   type PaneSide,
@@ -235,17 +236,30 @@ export function startSideReopenPull(
   root.classList.add("side-reopening");
 
   let opened = false;
-  const onMove = (ev: PointerEvent) => {
-    if (ev.pointerId !== e.pointerId) return;
+  // The width the pointer implies, or null while it implies none yet.
+  const widthAt = (ev: PointerEvent): number | null => {
     const rect = split.getBoundingClientRect();
-    const max = rect.width - CONTENT_MIN_W;
-    if (max < MIN_W) return; // container too narrow to express a split
+    // ONCE OPEN, the rail may still stand at the split's right edge (favourites
+    // on: ClaudeRail `paneOpen`, rail-peek-lib `railInset`) — the column ends at
+    // the rail's edge, not the split's, so the width is measured from there and
+    // the column's ceiling is the split less the rail. Before the open the rail
+    // is what stands under the pointer, and `closedWidth` says so for the
+    // threshold alone.
+    const inset = opened ? railInset(split) : 0;
+    const max = rect.width - inset - CONTENT_MIN_W;
+    if (max < MIN_W) return null; // container too narrow to express a split
     // A right-hand panel's implied width grows as the cursor moves LEFT. The
     // pull is measured from the split's own right edge, less what stands
     // there while shut (`closedWidth`: nothing for the bare edge, the rail's
     // 48px for the rail — as the global sidebar passes the width of the rail
     // it leaves behind).
-    const w = reopenWidth(rect.right - ev.clientX, closedWidth, MIN_W, max);
+    const implied = rect.right - ev.clientX;
+    if (!opened) return reopenWidth(implied, closedWidth, MIN_W, max); // null: short of OPEN_PULL
+    return Math.min(max, Math.max(MIN_W, implied - inset));
+  };
+  const onMove = (ev: PointerEvent) => {
+    if (ev.pointerId !== e.pointerId) return;
+    const w = widthAt(ev);
     if (w === null) return; // still short of OPEN_PULL — nothing has happened yet
     // WIDTH BEFORE OPEN, and the order is load-bearing on the first pass:
     // PreviewSidebar seeds its width from this store as it mounts, so writing
@@ -260,6 +274,13 @@ export function startSideReopenPull(
   };
   const onUp = (ev: PointerEvent) => {
     if (ev.pointerId !== e.pointerId) return;
+    // The opening pass could not know whether the rail stays beside the
+    // column it opened; a release with no move after it settles the width
+    // against the rail as it now stands.
+    if (opened) {
+      const w = widthAt(ev);
+      if (w !== null) setSideWidth(w);
+    }
     root.classList.remove("side-reopening");
     try {
       root.releasePointerCapture(e.pointerId);

@@ -1,0 +1,43 @@
+/* THE FAVOURITE STAR LEFT OF A TASK'S ID (TaskStar.tsx): the rail card's star
+   (.claude-rail-peek-star) at the id's size — muted grey ink, filled when on,
+   outlined when off, a quiet wash under the pointer. */
+/* Doubled class: a page's `.prefs-section button` (padding, colour) must not
+   out-specify the star on /tasks. */
+button.task-star,
+.task-star.task-star {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  align-self: center;
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: -2px 0;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  vertical-align: middle;
+  /* Above a row's stretched link (`.tasks-rowlink`, z-index 1), or the link
+     would take the press and open the task. */
+  position: relative;
+  z-index: 2;
+  transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+}
+.task-star:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.task-star.is-on,
+.task-star.is-on:hover {
+  color: var(--fg-muted);
+}
+.task-star:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  color: var(--fg);
+}

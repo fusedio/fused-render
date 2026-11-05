@@ -21,6 +21,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { prKey, prRefsOf } from "@platform/lib/task-prs";
 import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import { PrPopList } from "@platform/ui/TaskPrChip";
+import { TaskStar } from "@platform/ui/TaskStar";
 import { WorkspaceSearch } from "@shell/WorkspaceSearch";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
@@ -346,6 +347,7 @@ function WorkspaceCard({
             </button>
           )}
         </span>
+        <TaskStar task={task} />
         <IdChip id={task.task_id} kind="task" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
         {task.status !== "archived" && (
