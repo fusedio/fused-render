@@ -308,3 +308,17 @@ def test_a_send_now_interrupted_turn_does_not_leave_its_error_on_the_reply(
     poll = agent._poll("run")
     assert poll["done"] is True
     assert poll["error"] == ""
+
+
+def test_a_real_error_followed_by_a_good_turn_still_reports_the_error(
+        agent, run_dir):
+    failed = {"type": "result", "subtype": "success", "is_error": True,
+              "result": "boom", "session_id": "s"}
+    _write(run_dir, [_user_row("turn one"), _text_row("Partial."), failed,
+                      _user_row("now"), _text_row("Answer."),
+                      _result_row("Answer.")])
+    _setup(agent, run_dir)
+
+    poll = agent._poll("run")
+    assert poll["done"] is True
+    assert poll["error"] == "boom"

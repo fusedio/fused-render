@@ -9827,6 +9827,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
+    aborted = False      # `error` is an `error_during_execution` abort
+    stop_marked = os.path.exists(os.path.join(run_dir, "cancelled"))
     quota = None         # the latest `rate_limit_event` — plan window + reset time
     context = None       # the latest API response's own `usage` (`_context_usage`)
     # WHAT THE RUN IS DOING RIGHT NOW, beyond the verb. Every one of these is a
@@ -10103,12 +10105,16 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # Only if the failure arrived DURING a retry. A retry earlier in
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
-            else:
-                # The LAST result is how the run ended: a turn a send-now
-                # aborted writes an error result, and the line it made way for
-                # then answers cleanly in the same window.
+                aborted = row.get("subtype") == "error_during_execution"
+            elif aborted and not stop_marked:
+                # The abort a send-now interrupt writes (`error_during_execution`)
+                # is not how the run ended: the line it made way for answers
+                # cleanly in the same window. A real failure keeps its error
+                # whatever follows, and a Stop's abort keeps its own (the
+                # `cancelled` marker is what tells the two aborts apart).
                 error = ""
                 gave_up = False
+                aborted = False
 
     # A NON-CLAUDE WINDOW SIZE, for the meter: onto this poll's reading as
     # `window` (no model id says it for Copilot's `auto`, and the page's
