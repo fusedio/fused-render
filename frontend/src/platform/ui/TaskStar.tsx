@@ -1,4 +1,4 @@
-// THE FAVOURITE STAR BESIDE A TASK'S ID, in every view that lists tasks
+// THE FAVOURITE STAR LEFT OF A TASK'S ID, ALWAYS SHOWN, in every view that lists tasks
 // (owner, 2026-11-05: "star everywhere") — the pane's Recent rows, the Tasks
 // page's List rows, Board cards, the Detailed view, the Cards wall, the
 // calendar's popover and the side peek's head. The rail card's own star
@@ -40,17 +40,14 @@ import "./task-star.css";
 /** How long a local mark may stand at most (rail-peek-lib's STAR_MARK_MS). */
 export const STAR_MARK_MS = 6000;
 
+/** Glyph size in px — one size in every view. */
+export const STAR_SIZE = 14;
+
 export const STAR_ON_TITLE = "Remove from favourites";
 export const STAR_OFF_TITLE = "Add to favourites";
 
 export interface TaskStarProps {
   task: Pick<Task, "key" | "session_id" | "starred">;
-  /** Glyph size in px (12–14; the id's own line). */
-  size?: number;
-  /** `"hover"`: an OFF star is revealed on the host row's hover or focus,
-   *  as the List's other row actions are (task-star.css); an ON star always
-   *  shows. `"always"` (heads): both always show. */
-  reveal?: "always" | "hover";
   /** Draw as `<span role="button">` — for a host that is a `<button>`. */
   nested?: boolean;
   className?: string;
@@ -74,7 +71,7 @@ export function TaskStar(props: TaskStarProps) {
   return <TaskStarButton {...props} />;
 }
 
-function TaskStarButton({ task, size = 12, reveal = "always", nested = false, className }: TaskStarProps) {
+function TaskStarButton({ task, nested = false, className }: TaskStarProps) {
   const starred = !!task.starred;
   const [mark, setMark] = useState<{ on: boolean; seq: number } | null>(null);
   const seq = useRef(0);
@@ -127,9 +124,8 @@ function TaskStarButton({ task, size = 12, reveal = "always", nested = false, cl
   const cls =
     "task-star" +
     (on ? " is-on" : "") +
-    (reveal === "hover" ? " task-star--hover" : "") +
     (className ? " " + className : "");
-  const glyph = <Star size={size} fill={on ? "currentColor" : "none"} aria-hidden="true" />;
+  const glyph = <Star size={STAR_SIZE} fill={on ? "currentColor" : "none"} aria-hidden="true" />;
   const common = {
     className: cls,
     "aria-pressed": on,

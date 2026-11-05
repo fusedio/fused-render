@@ -1032,7 +1032,7 @@ test("only starred rows on the pane: Recent lists them, no Favourites heading", 
   expect(JSON.stringify(r.toJSON())).not.toContain("Favourites");
 });
 
-test("FAVOURITES ON: a Recent row wears the star after its id — filled when starred", async () => {
+test("FAVOURITES ON: a Recent row wears the star left of its id — filled when starred", async () => {
   const { publishTaskFavourites, publishFavouritesParent } = await import(
     "@platform/lib/favourites-flag"
   );
@@ -1045,6 +1045,14 @@ test("FAVOURITES ON: a Recent row wears the star after its id — filled when st
       <Lists file="/repo/x.py" recent={[chat("s1"), chat("fav1", { starred: true })]} artifacts={[]} onOpen={() => {}} />,
     );
     const stars = r.root.findAll((n) => n.type === "button" && n.props["data-task-star"] !== undefined);
+    // LEFT of the id: in each row's head the star precedes the id chip.
+    for (const s of stars) {
+      let at: typeof s = s;
+      while (at.parent && at.parent.children.length < 2) at = at.parent;
+      const kids = at.parent!.children.filter((c) => typeof c !== "string") as typeof stars;
+      const idAt = kids.findIndex((c) => (c as typeof s).findAll((n) => String(n.props.className ?? "").includes("tasks-id")).length > 0);
+      expect(idAt).toBeGreaterThan(kids.indexOf(at));
+    }
     expect(stars.map((n) => [n.props["data-task-star"], n.props["aria-pressed"]])).toEqual([
       ["s1", false],
       ["fav1", true],

@@ -308,21 +308,6 @@
 /* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
    of a pinned chat that is not the selected node's, above the canvas glyph
    and under the hairline, so it reads as "pinned, outside this list". */
-/* A favourite's ring over a pinned card (ClaudeRail `pointerQuiet`): an
-   empty hint over the link's whole hit box (its `::after`), so the pointer's
-   rest — which swaps the card there — draws no caption, while the link's own
-   caption still answers a Tab. */
-.claude-rail-chat-shield {
-  position: absolute;
-  inset: -2px -9px;
-  z-index: 1;
-}
-/* …only while the hover CAN swap: typing in the card or a press inside it
-   blocks the swap (rail-peek-lib `enterRing`), and the ring's caption shows
-   instead of nothing (ClaudeRail's intent sink sets the attribute). */
-.claude-rail[data-swap-blocked] .claude-rail-chat-shield {
-  display: none;
-}
 .claude-rail-held {
   display: flex;
   justify-content: center;

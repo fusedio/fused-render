@@ -1,7 +1,10 @@
-/* THE FAVOURITE STAR BESIDE A TASK'S ID (TaskStar.tsx): the rail card's star
+/* THE FAVOURITE STAR LEFT OF A TASK'S ID (TaskStar.tsx): the rail card's star
    (.claude-rail-peek-star) at the id's size — muted grey ink, filled when on,
    outlined when off, a quiet wash under the pointer. */
-.task-star {
+/* Doubled class: a page's `.prefs-section button` (padding, colour) must not
+   out-specify the star on /tasks. */
+button.task-star,
+.task-star.task-star {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -12,6 +15,7 @@
   height: 18px;
   padding: 0;
   margin: -2px 0;
+  line-height: 1;
   border: none;
   border-radius: 4px;
   background: transparent;
@@ -36,22 +40,4 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   color: var(--fg);
-}
-
-/* IN A LIST, AN OFF STAR IS A ROW ACTION: revealed on the row's hover, or a
-   keyboard landing on it — a list at rest grows no chrome (`.tasks-act`'s
-   rule, tasks.css). Invisible means intangible: the press comes back with the
-   ink. The slot stays, so the id's line never moves. An ON star always shows:
-   it is a fact about the row, not an action. */
-.task-star--hover:not(.is-on) {
-  opacity: 0;
-  pointer-events: none;
-}
-.tasks-row:hover .task-star--hover,
-.schedule-tv-card:hover .task-star--hover,
-.ws-card:hover .task-star--hover,
-.task-card:hover .task-star--hover,
-.task-star--hover:focus-visible {
-  opacity: 1;
-  pointer-events: auto;
 }

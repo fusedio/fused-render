@@ -5,6 +5,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from "react-test-renderer";
+import { Star } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 
 const { TaskStar, STAR_ON_TITLE, STAR_OFF_TITLE } = await import("./TaskStar");
@@ -187,10 +188,15 @@ test("NESTED (a host that is a <button>): a span with role=button, Enter presses
   expect(calls.length).toBe(1);
 });
 
-test("reveal=\"hover\" marks the star for the row-hover rule (task-star.css)", async () => {
+test("one skin everywhere: 14 px glyph, filled only when on, never hover-hidden", async () => {
   flagOn();
-  const r = await mount(<TaskStar task={task()} reveal="hover" />);
-  expect(starOf(r)!.props.className).toContain("task-star--hover");
+  const off = await mount(<TaskStar task={task()} />);
+  const star = off.root.findByType(Star);
+  expect(star.props.size).toBe(14);
+  expect(star.props.fill).toBe("none");
+  expect(starOf(off)!.props.className).not.toContain("task-star--hover");
+  const on = await mount(<TaskStar task={task({ key: "k2", starred: true })} />);
+  expect(on.root.findByType(Star).props.fill).toBe("currentColor");
 });
 
 test("TWO QUICK PRESSES: write 1's repaint does not flip the star; the end state is press 2", async () => {

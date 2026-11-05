@@ -770,8 +770,8 @@ function ChipPopover({
           aria-hidden="true"
         />
         <TaskAgentMark backend={task.backend} />
-        <span className="schedule-cal-pop-id">{shortTaskId(task.task_id)}</span>
         <TaskStar task={task} />
+        <span className="schedule-cal-pop-id">{shortTaskId(task.task_id)}</span>
         {/* No ↻ glyph beside the id any more (Akshil, 2026-08-19). It was
             decorative by its own admission — the recurrence is spelled out in
             words two lines down — and a glyph whose label is already printed

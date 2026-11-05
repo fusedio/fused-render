@@ -338,11 +338,6 @@ export interface IntentSink {
   pin?(on: boolean): void;
   /** `key` is about to be wanted: mount it now. Called on every arrival. */
   warm(key: string): void;
-  /** A pinned card can (`false`) or cannot (`true`) be swapped by a
-   *  favourite's hover now — the owner is typing in it or pressing inside it
-   *  (`enterRing`). Called only on change: ClaudeRail draws the ring's quiet
-   *  shield only while a swap can happen. */
-  blocked?(on: boolean): void;
 }
 
 /** How a ring came to be "entered": the pointer resting on it, or the
@@ -361,9 +356,6 @@ export class PeekIntent {
   private closeTimer = 0;
   /** Which ring the pointer / the focus rests on (null = none). */
   private pointerKey: string | null = null;
-  /** The ring under the pointer may swap a PINNED card (`enterRing`'s
-   *  `overPin`): kept beside `pointerKey` for the re-entry `leaveCone` makes. */
-  private pointerOverPin = false;
   private focusKey: string | null = null;
   private overCard = false;
   /** The pointer is in the safe cone or on the bridge: on its way to the
@@ -372,14 +364,9 @@ export class PeekIntent {
   private coneTimer = 0;
   /** The card holds the keyboard focus. */
   private held = false;
-  /** The owner typed in the card since its focus arrived (`typed`): a
-   *  favourite's hover must not swap the card out from under the words. */
-  private typing = false;
   /** A pointer is down inside the card (a text selection, a scrollbar drag)
    *  — it may leave the card mid-gesture and must not close it. */
   private pressing = false;
-  /** `typing || pressing` as last told to the sink (`syncBlocked`). */
-  private blockedSent = false;
   /** Set by `dismiss(true)`: the focus that comes straight back to the ring
    *  (Escape hands it there) must not reopen what Escape just closed. Cleared
    *  by the next pointer arrival, the next focus LEAVING a ring (Tab moving
@@ -404,17 +391,12 @@ export class PeekIntent {
     return this.pinned;
   }
 
-  /** The pointer (or the keyboard focus) arrived on ring `key`. `overPin`:
-   *  a POINTER rest on this ring swaps even a pinned card, and the pin moves
-   *  with it (a favourite's ring, claude-rail-lib `ringMarks`; owner,
-   *  2026-11-05: "when I have a preview open in the non-fav section and I
-   *  hover over items of the fav section it should show me the hover
-   *  preview"). The swap waits the first-open dwell, not the swap's, so a
-   *  pointer sweeping past the favourites does not move a pinned card. */
-  enterRing(key: string, via: Via = "pointer", overPin = false): void {
+  /** The pointer (or the keyboard focus) arrived on ring `key`. A pinned card
+   *  moves for no hover: only a ring's press does (owner, 2026-11-05: a
+   *  favourite's ring is the OTHER window's — its hover opens that one). */
+  enterRing(key: string, via: Via = "pointer"): void {
     if (via === "pointer") {
       this.pointerKey = key;
-      this.pointerOverPin = overPin;
       this.muteFocus = false;
       // Crossing a ring INSIDE the cone is not a hover of it: the swap waits
       // until the pointer leaves the cone still on that ring (`leaveCone`).
@@ -427,12 +409,8 @@ export class PeekIntent {
       if (this.muteFocus) return;
     }
     // A pinned card: a hover (or a Tab) on another ring moves nothing — that
-    // ring's press does (header) — bar a favourite's ring under the pointer,
-    // and never while the owner is typing in the card or pressing inside it
-    // (`typing`, not `held`: a ring's press puts the focus in the composer
-    // by itself, and that card still swaps on a favourite's hover).
-    const swapPinned = this.pinned && via === "pointer" && overPin && !this.typing && !this.pressing;
-    if (this.pinned && !swapPinned) return;
+    // ring's press does (header).
+    if (this.pinned) return;
     this.cancelClose();
     if (this.shown === key) {
       this.cancelOpen();
@@ -454,20 +432,14 @@ export class PeekIntent {
         this.pendingKey = null;
         this.set(key);
       },
-      this.shown === null || swapPinned ? PEEK_OPEN_MS : PEEK_SWAP_MS,
+      this.shown === null ? PEEK_OPEN_MS : PEEK_SWAP_MS,
     );
   }
 
   /** The pointer (or focus) left the ring it was on. */
   leaveRing(via: Via = "pointer"): void {
     if (via === "pointer") {
-      // A PINNED card's swap is the pointer's alone (`enterRing`: a focus
-      // never swaps it): the pointer leaving the ring the swap was for drops
-      // it, even with the keyboard focus on that same ring — else a sweep
-      // past it moves the pinned card a beat later (Bugbot on #2122).
-      if (this.pinned && this.pendingKey !== null && this.pendingKey === this.pointerKey) this.cancelOpen();
       this.pointerKey = null;
-      this.pointerOverPin = false;
     } else {
       this.focusKey = null;
       this.muteFocus = false;
@@ -485,7 +457,6 @@ export class PeekIntent {
    *  and pin it, since a click on the card is a click (header). */
   pressStart(): void {
     this.pressing = true;
-    this.syncBlocked();
     this.cancelClose();
     if (this.shown !== null) this.setPinned(true);
   }
@@ -494,7 +465,6 @@ export class PeekIntent {
   pressEnd(): void {
     if (!this.pressing) return;
     this.pressing = false;
-    this.syncBlocked();
     this.scheduleClose();
   }
 
@@ -510,10 +480,8 @@ export class PeekIntent {
       // The card's composer may have held the focus; its unmount fires no
       // blur in every engine, so the hold is dropped here.
       this.held = false;
-      this.typing = false;
-      this.pressing = false;
-      this.syncBlocked();
-      this.setPinned(false);
+        this.pressing = false;
+        this.setPinned(false);
       this.set(null);
       return;
     }
@@ -550,7 +518,7 @@ export class PeekIntent {
     this.inCone = false;
     if (!settle) return;
     if (this.pointerKey !== null && this.pointerKey !== this.shown && this.pendingKey !== this.pointerKey) {
-      this.enterRing(this.pointerKey, "pointer", this.pointerOverPin);
+      this.enterRing(this.pointerKey, "pointer");
       return;
     }
     this.scheduleClose();
@@ -566,30 +534,8 @@ export class PeekIntent {
    *  never closes on a pointer leave. */
   hold(on: boolean): void {
     this.held = on;
-    if (!on) this.typing = false;
-    this.syncBlocked();
     if (on) this.cancelClose();
     else this.scheduleClose();
-  }
-
-  /** The owner typed in the card (an input inside it): until its focus goes,
-   *  no favourite's hover swaps it (`enterRing`), and a swap already waiting
-   *  on its dwell is dropped — a pinned card only ever waits on that. */
-  typed(): void {
-    this.typing = true;
-    this.syncBlocked();
-    if (this.pinned && this.pendingKey !== null) this.cancelOpen();
-  }
-
-  /** The pinned card became a HELD OUTSIDER (ClaudeRail `heldExtra`): no
-   *  favourite's hover may swap it any more (claude-rail-lib `ringMarks`
-   *  `heldOutsider`), so a swap already waiting on its dwell — started while
-   *  the card was still swappable — is dropped, and the ring under the
-   *  pointer stops counting as one that may swap (`leaveCone`'s re-entry). */
-  dropSwap(): void {
-    if (!this.pinned) return;
-    this.cancelOpen();
-    this.pointerOverPin = false;
   }
 
   /** The keyboard was HANDED to ring `key` (fav-peek-store `focusRail`, a
@@ -637,9 +583,7 @@ export class PeekIntent {
     this.cancelClose();
     this.leaveCone(false);
     this.held = false;
-    this.typing = false;
     this.pressing = false;
-    this.syncBlocked();
     this.setPinned(false);
     // The card goes pointer-events: none under the pointer; no leave fires.
     this.overCard = false;
@@ -663,16 +607,7 @@ export class PeekIntent {
   private set(key: string | null): void {
     if (this.shown === key) return;
     this.shown = key;
-    this.typing = false;
-    this.syncBlocked();
     this.sink.show(key);
-  }
-
-  private syncBlocked(): void {
-    const on = this.typing || this.pressing;
-    if (on === this.blockedSent) return;
-    this.blockedSent = on;
-    this.sink.blocked?.(on);
   }
 
   private get kept(): boolean {
@@ -739,6 +674,20 @@ export function starMarkStep(mark: StarMark, t: TaskPulseTask | undefined): Star
   if (t === mark.pulse) return mark;
   if (mark.seen >= 1) return null;
   return { ...mark, pulse: t, seen: mark.seen + 1 };
+}
+
+/** WINDOW B'S HOVER ROW (FavouritePeek hover mode; owner, 2026-11-05): the
+ *  pulse row of the hovered favourite — only while NO favourite's card is
+ *  open in this window (an open card is pressed, and its other rings speak
+ *  by their caption alone), only for a live star with a conversation. */
+export function favHoverRow(
+  hoverKey: string | null,
+  openKey: string | null,
+  rows: readonly TaskPulseTask[],
+): TaskPulseTask | null {
+  if (!hoverKey || openKey) return null;
+  const t = rows.find((r) => r.key === hoverKey);
+  return t && t.starred && t.status !== "archived" && t.session_id ? t : null;
 }
 
 /** What a card does once the server has answered its star (RailPeek

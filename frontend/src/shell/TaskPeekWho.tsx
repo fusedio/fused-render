@@ -101,8 +101,8 @@ export function TaskPeekWho({ task, running = false, rename = renameTask, star =
    */
   running?: boolean;
   rename?: (key: string, title: string) => Promise<unknown>;
-  /** The favourite star after the id (platform/ui/TaskStar) — the side
-   *  peek's head asks for it; the chat's own header does not. */
+  /** The favourite star left of the id (platform/ui/TaskStar), in the side
+   *  peek's head and the chat's own header. */
   star?: boolean;
 }) {
   // THE SAME LINE THE LIST ROW PRINTS. With "Title a task by your last message"
@@ -171,8 +171,8 @@ export function TaskPeekWho({ task, running = false, rename = renameTask, star =
         />
       </span>
       <TaskAgentMark backend={task.backend} />
-      <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
       {star && <TaskStar task={task} />}
+      <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
       {draft === null ? (
         <>
           <span
