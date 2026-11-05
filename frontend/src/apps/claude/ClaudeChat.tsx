@@ -4040,7 +4040,16 @@ function ChatBody(props: ChatBodyProps) {
     },
     [dispatchSend, defaults.model, defaults.effort, defaults.permission, rcSay],
   );
-  breakoutSendRef.current = onFollowUp;
+  // SEND BACK routes like the composer: a fresh turn when the chat is idle (the
+  // card only offers it once the breakout has stopped, so there is no run to
+  // follow up into), a follow-up when a run is live.
+  breakoutSendRef.current = (text: string) => {
+    if (controller.getState().status === "idle") {
+      onSend(text, { model: defaults.model, effort: defaults.effort, permission: defaults.permission });
+    } else {
+      onFollowUp(text);
+    }
+  };
   /**
    * CTRL+X WITH WORDS: Claude Code's send-now. The line goes in behind
    * whatever is queued, as an ordinary follow-up, and ONE interrupt follows once
