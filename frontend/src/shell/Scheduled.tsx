@@ -1769,6 +1769,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               home={home}
               onReload={reload}
               onNewTask={() => openForm("blank", null)}
+              onOpenDraft={openDraft}
             />
           ) : view === "cards" ? (
             <TaskCards

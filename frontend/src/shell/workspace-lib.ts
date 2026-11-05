@@ -24,13 +24,12 @@ export interface WorkspaceFacts {
   prStates: Record<string, PrState | null | undefined>;
 }
 
-/** Every task but drafts (archived ones too: the page's Status filter decides
- *  whether they reach `tasks`), newest first by CREATION time (`started`).
- *  Creation never changes, so a row never moves when its status does. */
+/** Every task, drafts included (archived ones too: the page's Status filter
+ *  decides whether they reach `tasks`), newest first by CREATION time
+ *  (`started`). Creation never changes, so a row never moves when its status
+ *  does. */
 export function workspaceTasks(tasks: readonly Task[]): Task[] {
-  return tasks
-    .filter((t) => !isDraftTask(t))
-    .sort((a, b) => (b.started ?? 0) - (a.started ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return [...tasks].sort((a, b) => (b.started ?? 0) - (a.started ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
 /** The reader has to look: parked on a card, or stopped (failed, usage limit). */
@@ -43,7 +42,7 @@ export function needsYou(task: Pick<Task, "status">): boolean {
 export function statusWord(task: Task): string {
   switch (task.status) {
     case "upcoming":
-      return "Upcoming";
+      return isDraftTask(task) ? "Draft" : "Upcoming";
     case "queued":
       return "Queued";
     case "in_progress":
@@ -170,12 +169,12 @@ export function nextNeedingYou(rows: readonly Task[], key: string | null): strin
 const norm = (s: string): string => s.toLowerCase().replace(/[\s-]+/g, "");
 
 /** ⌘K / `/`: every task, open or closed, by title or T-number. Open ones first
- *  and closed ones after, each group newest first. Drafts are never results. */
+ *  and closed ones after, each group newest first. */
 export function searchTasks(tasks: readonly Task[], query: string): Task[] {
   const q = norm(query);
   const hit = (t: Task): boolean =>
     q === "" || norm(t.title).includes(q) || (t.task_id !== "" && norm(t.task_id).includes(q));
-  const real = tasks.filter((t) => !isDraftTask(t) && hit(t));
+  const real = tasks.filter(hit);
   const byNew = (a: Task, b: Task): number => (b.started ?? 0) - (a.started ?? 0);
   const open = real.filter((t) => t.status !== "archived").sort(byNew);
   const closed = real.filter((t) => t.status === "archived").sort(byNew);
@@ -306,7 +305,8 @@ export function isUpcoming(task: Pick<Task, "status" | "next_run">): boolean {
 }
 
 /** The first group that matches: archived (closed), needs you (waiting, failed,
- *  usage limit), working (running, queued or bg jobs), upcoming (a run still to
+ *  usage limit, or an unfinished New task draft — the reader has to come back to
+ *  it), working (running, queued or bg jobs), upcoming (a run still to
  *  come — its own section rather than a "run pending" chip under Working,
  *  Akshil 2026-11-02), PR open (a PR known open or draft), safe to archive
  *  (idle at least ARCHIVE_IDLE_SECONDS and no blocking holds), and otherwise
@@ -314,7 +314,7 @@ export function isUpcoming(task: Pick<Task, "status" | "next_run">): boolean {
  *  idle. */
 export function workspaceGroup(task: Task, facts: WorkspaceFacts, now: number): WorkspaceGroupKey {
   if (task.status === "archived") return "archived";
-  if (needsYou(task)) return "needs";
+  if (needsYou(task) || isDraftTask(task)) return "needs";
   if (
     task.status === "in_progress" ||
     task.status === "queued" ||

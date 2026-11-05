@@ -45,14 +45,14 @@ const facts = (over: Partial<WorkspaceFacts> = {}): WorkspaceFacts => ({
 });
 
 describe("workspaceTasks", () => {
-  test("every non-draft task (archived included), newest creation first", () => {
+  test("every task, drafts and archived included, newest creation first", () => {
     const rows = workspaceTasks([
       task({ key: "a", started: 10 }),
       task({ key: "b", started: 30 }),
       task({ key: "c", started: 20, status: "archived" }),
       task({ key: "d", started: 40, kind: "draft" }),
     ]);
-    expect(rows.map((t) => t.key)).toEqual(["b", "c", "a"]);
+    expect(rows.map((t) => t.key)).toEqual(["d", "b", "c", "a"]);
   });
   test("a status change never moves a row", () => {
     const a = workspaceTasks([task({ key: "a", started: 1, status: "done" }), task({ key: "b", started: 2 })]);
@@ -69,6 +69,8 @@ describe("statusWord", () => {
   test("today's words", () => {
     expect(statusWord(task({ status: "in_progress" }))).toBe("Running");
     expect(statusWord(task({ status: "needs_attention" }))).toBe("Needs attention");
+    expect(statusWord(task({ status: "upcoming", kind: "draft" }))).toBe("Draft");
+    expect(statusWord(task({ status: "upcoming" }))).toBe("Upcoming");
     expect(statusWord(task({ status: "done" }))).toBe("Done");
     const jobs = { count: 1, jobs: [{ id: "b", title: "poll", kind: "bash" }] } as never;
     expect(statusWord(task({ status: "done", background_jobs: jobs }))).toBe("Background");
@@ -203,17 +205,17 @@ describe("searchTasks", () => {
     task({ key: "d", task_id: "", title: "login draft", started: 4, kind: "draft" }),
   ];
   test("title match lists open tasks before closed ones", () => {
-    expect(searchTasks(all, "login").map((t) => t.key)).toEqual(["b", "a"]);
+    expect(searchTasks(all, "login").map((t) => t.key)).toEqual(["d", "b", "a"]);
   });
   test("a T-number finds its task, with or without the T", () => {
     expect(searchTasks(all, "T123").map((t) => t.key)).toEqual(["a"]);
     expect(searchTasks(all, "123").map((t) => t.key)).toEqual(["a"]);
   });
   test("empty query lists everything, open first then closed, newest first", () => {
-    expect(searchTasks(all, "").map((t) => t.key)).toEqual(["c", "b", "a"]);
+    expect(searchTasks(all, "").map((t) => t.key)).toEqual(["d", "c", "b", "a"]);
   });
-  test("drafts are never results", () => {
-    expect(searchTasks(all, "draft")).toEqual([]);
+  test("a draft is a result, ranked with the open tasks", () => {
+    expect(searchTasks(all, "draft").map((t) => t.key)).toEqual(["d"]);
   });
 });
 
@@ -317,6 +319,12 @@ describe("workspaceGroup / groupTasks", () => {
     expect(g(task({ unread: 2, ...idle }))).toBe("clear");
     expect(g(task({ last_active: NOW - 3600 }))).toBe("turn");
     expect(g(task({ status: "archived" }))).toBe("archived");
+  });
+  test("an unfinished draft needs you, ahead of upcoming, working and idle rules", () => {
+    // A draft row arrives as status "upcoming" with kind "draft".
+    expect(g(task({ status: "upcoming", kind: "draft", ...idle }))).toBe("needs");
+    expect(g(task({ status: "upcoming" }))).toBe("upcoming");
+    expect(g(task({ status: "archived", kind: "draft" }))).toBe("archived");
   });
   test("done, an hour idle, nothing holding it: your turn", () => {
     expect(g(task({ last_active: NOW - 3600 }))).toBe("turn");
