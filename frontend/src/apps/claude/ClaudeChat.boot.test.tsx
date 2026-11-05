@@ -807,6 +807,71 @@ describe("breakout pick mode", () => {
     expect(byClass(r, "breakout-sel-start")[0]!.props.disabled).toBe(true);
   });
 
+  // Enter while picking is the Start button: the words become the breakout's first
+  // message and never reach the main session.
+  const box = (r: ReturnType<typeof create>) => r.root.findAllByType("textarea")[0]!;
+  const type = (r: ReturnType<typeof create>, value: string) =>
+    act(() => box(r).props.onChange({ currentTarget: { value, selectionStart: value.length, selectionEnd: value.length, style: {} }, target: { value } }));
+  const enter = (r: ReturnType<typeof create>) =>
+    act(() => box(r).props.onKeyDown({ key: "Enter", shiftKey: false, ctrlKey: false, metaKey: false, keyCode: 13, nativeEvent: {}, preventDefault() {}, stopPropagation() {} }));
+
+  test("Enter while picking starts the breakout with the typed text and posts nothing to the main chat", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    expect(box(r).props.placeholder).toBe("Ask the breakout · Enter starts it");
+    type(r, "  why is it slow?  ");
+    enter(r);
+    await settle(20);
+    expect(opened).toHaveLength(1);
+    expect((opened[0] as { prompt?: string }).prompt).toBe("why is it slow?");
+    expect(started()).toHaveLength(0);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    expect(box(r).props.value).toBe("");
+  });
+
+  test("Enter with nothing picked sends nothing and keeps the words", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    click(r, 2);
+    expect(picked(r)).toBe(0);
+    type(r, "hello");
+    enter(r);
+    await settle(20);
+    expect(opened).toHaveLength(0);
+    expect(started()).toHaveLength(0);
+    expect(box(r).props.value).toBe("hello");
+  });
+
+  test("the Start button carries the typed text; the send button is named Start breakout", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    const send = byClass(r, "c-send")[0]!;
+    expect(send.props["aria-label"]).toBe("Start breakout");
+    expect(send.props.title).toBe("Start breakout");
+    type(r, "q?");
+    act(() => byClass(r, "breakout-sel-start")[0]!.props.onClick());
+    expect(opened).toHaveLength(1);
+    expect((opened[0] as { prompt?: string }).prompt).toBe("q?");
+    expect(started()).toHaveLength(0);
+  });
+
+  test("Start with an empty composer opens without a prompt", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    act(() => byClass(r, "breakout-sel-start")[0]!.props.onClick());
+    expect(opened).toHaveLength(1);
+    expect("prompt" in opened[0]!).toBe(false);
+  });
+
+  test("a breakout card sends its prompt once as the first message", async () => {
+    const sent: string[] = [];
+    await mountChat({ breakout: true, breakoutPrompt: "first q", onBreakoutPromptSent: () => void sent.push("x") });
+    await settle(40);
+    expect(started()).toHaveLength(1);
+    expect(started()[0]!.params["prompt"] ?? JSON.stringify(started()[0])).toContain("first q");
+    expect(sent).toHaveLength(1);
+  });
+
   test("Cancel leaves pick mode without opening", async () => {
     const { r, opened } = await mountParent();
     toggle(r);

@@ -15,6 +15,7 @@ import { closeAgentPeek, useAgentPeeks, useAgentSegment, type AgentPeek } from "
 import {
   buildHandoffDraft,
   closeBreakout,
+  consumeBreakoutPrompt,
   sendBackBreakout,
   useBreakouts,
   type BreakoutCard,
@@ -225,6 +226,7 @@ export function Card({
           file={card.file}
           breakout
           breakoutContext={card.context}
+          {...(card.prompt ? { breakoutPrompt: card.prompt, onBreakoutPromptSent: () => consumeBreakoutPrompt(card.id) } : {})}
           onBreakoutState={onState}
           chatOnly
           peek

@@ -5,7 +5,7 @@ import { useEffect } from "react";
 import { act, create } from "react-test-renderer";
 
 import { closeAgentPeek, getAgentPeeks, openAgentPeek, publishPeekTurns, resetAgentPeeks } from "@apps/claude/agent-peeks";
-import { closeBreakout, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
+import { closeBreakout, consumeBreakoutPrompt, getBreakouts, openBreakout, resetBreakouts } from "@platform/lib/breakouts";
 import { AgentPeekCard, Card } from "./BreakoutCards";
 import AgentPeekLog, { agentPeekTurns, agentPeekWork } from "@apps/claude/ui/AgentPeekLog";
 import { RunTrigger } from "@apps/claude/ui/RunTrigger";
@@ -404,4 +404,26 @@ test("closing removes the agent peek", () => {
   act(() => close.props.onClick());
   expect(getAgentPeeks().some((p) => p.id === peek.id)).toBe(false);
   closeAgentPeek(peek.id);
+});
+
+test("the card hands its prompt to the chat once; consuming it forgets it, and the dedupe path never re-adds it", () => {
+  resetBreakouts();
+  const ctx = { block: "b", count: 1 };
+  const req = { sessionId: "s1", file: "/w/p", context: ctx, forkKey: "a|b", prompt: "why?" };
+  const id = openBreakout(req);
+  let seen: Record<string, unknown> = {};
+  const Spy = (props: Record<string, unknown>) => {
+    seen = props;
+    return null;
+  };
+  act(() => {
+    create(<Card card={getBreakouts()[0]!} index={0} mount={Spy as never} />, { createNodeMock: () => el });
+  });
+  expect(seen["breakoutPrompt"]).toBe("why?");
+  (seen["onBreakoutPromptSent"] as () => void)();
+  expect(getBreakouts()[0]!.prompt).toBeUndefined();
+  expect(openBreakout({ ...req, prompt: "again" })).toBe(id);
+  expect(getBreakouts()[0]!.prompt).toBeUndefined();
+  consumeBreakoutPrompt(id);
+  resetBreakouts();
 });

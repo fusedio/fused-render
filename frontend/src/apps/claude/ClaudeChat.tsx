@@ -322,6 +322,10 @@ export interface ClaudeChatProps {
   /** With `breakout`: the parent messages it was opened from. A chip above the
    *  composer shows them until the first send carries them. */
   breakoutContext?: BreakoutContext;
+  /** With `breakout`: the first message, auto-sent once on mount. */
+  breakoutPrompt?: string;
+  /** Called once the prompt has gone out, so the card forgets it. */
+  onBreakoutPromptSent?: () => void;
   /** "Breakout from here" / the composer's Breakout button: hand the request
    *  to the shell, which opens the card. Absent: no Breakout seats. */
   onBreakout?: (req: BreakoutRequest) => void;
@@ -3855,7 +3859,7 @@ function ChatBody(props: ChatBodyProps) {
   /** Open a breakout seeded with the turns under `keys`. Unlike the fork it is
    *  allowed while a run is active: the breakout is its own session. */
   const openBreakoutFor = useCallback(
-    (keys: readonly string[]) => {
+    (keys: readonly string[], prompt?: string) => {
       const st = controller.getState();
       const sid = st.sessionId || params.get("session_id") || "";
       if (!props.onBreakout || !sid || !file) return;
@@ -3866,6 +3870,7 @@ function ChatBody(props: ChatBodyProps) {
         file,
         context,
         forkKey: [...keys].sort().join("|"),
+        ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
       });
     },
     [controller, params, file, props.onBreakout],
@@ -3874,6 +3879,8 @@ function ChatBody(props: ChatBodyProps) {
    *  the button again and a session change turn it off. */
   const [picking, setPicking] = useState(false);
   const pickingRef = useRef(false);
+  /** The composer's submit, for the selection bar's Start (it owns the typed words). */
+  const pickStartRef = useRef<(() => void) | null>(null);
   pickingRef.current = picking;
   /** The turns picked for the next breakout (whole exchanges). */
   const [pickedKeys, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
@@ -5330,7 +5337,20 @@ function ChatBody(props: ChatBodyProps) {
       // worse state than the one this feature prevents.
       // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
       // its own sentence, and the link to the switch under it.
-      ...(picking ? { pickPlaceholder: "First question for the breakout (optional)…" } : {}),
+      ...(picking
+        ? {
+            pickPlaceholder: "Ask the breakout · Enter starts it",
+            pickSubmit: {
+              canStart: breakoutSel.size > 0,
+              onStart: (text: string) => {
+                openBreakoutFor([...breakoutSel], text);
+                setPicking(false);
+                setBreakoutSel(new Set());
+              },
+            },
+            pickStartRef,
+          }
+        : {}),
       blocked: sched.blocked || agentOff || rcConnecting,
       blockedPlaceholder: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
@@ -5357,6 +5377,8 @@ function ChatBody(props: ChatBodyProps) {
     }),
     [
       picking,
+      breakoutSel,
+      openBreakoutFor,
       file,
       state.sessionId,
       state.backend,
@@ -5504,6 +5526,17 @@ function ChatBody(props: ChatBodyProps) {
     }),
     [onFollowUp, onSend, defaults.model, defaults.effort, defaults.permission],
   );
+  // A BREAKOUT CARD'S FIRST MESSAGE: typed while picking, sent once on mount
+  // (the context rides on it, as on any first send). The ref holds it across a
+  // strict-mode replay; the store forgets it so a remount cannot resend.
+  const breakoutPromptSent = useRef(false);
+  useEffect(() => {
+    const text = props.breakout ? props.breakoutPrompt : undefined;
+    if (!text || breakoutPromptSent.current) return;
+    breakoutPromptSent.current = true;
+    props.onBreakoutPromptSent?.();
+    onSend(text, { model: defaults.model, effort: defaults.effort, permission: defaults.permission });
+  }, [props.breakout, props.breakoutPrompt, props.onBreakoutPromptSent, onSend, defaults.model, defaults.effort, defaults.permission]);
   const headsup = useHeadsUp({
     runId: state.runId || state.lastRunId || "",
     running,
@@ -5692,9 +5725,14 @@ function ChatBody(props: ChatBodyProps) {
     setPicking(true);
   };
   const startBreakout = () => {
-    if (breakoutSel.size) openBreakoutFor([...breakoutSel]);
-    setPicking(false);
-    setBreakoutSel(new Set());
+    if (!breakoutSel.size) return;
+    // The composer spends its words into the breakout's first message.
+    if (pickStartRef.current) pickStartRef.current();
+    else {
+      openBreakoutFor([...breakoutSel]);
+      setPicking(false);
+      setBreakoutSel(new Set());
+    }
   };
   const breakoutBtn =
     breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (

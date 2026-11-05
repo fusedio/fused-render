@@ -258,6 +258,9 @@ export interface ChatMountProps {
    *  opened from; they ride on its first send. See ClaudeChat. */
   breakout?: boolean;
   breakoutContext?: BreakoutContext;
+  /** With `breakout`: sent once as the first message on mount. */
+  breakoutPrompt?: string;
+  onBreakoutPromptSent?: () => void;
   /** Open a breakout from this chat (its message / composer Breakout seats). */
   onBreakout?: (req: BreakoutRequest) => void;
   /** With `breakout`: the chat's own session id + transcript, for Send back. */
@@ -356,6 +359,8 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.onHidePane ? { onHidePane: props.onHidePane } : {})}
         {...(props.breakout ? { breakout: true } : {})}
         {...(props.breakoutContext ? { breakoutContext: props.breakoutContext } : {})}
+        {...(props.breakoutPrompt ? { breakoutPrompt: props.breakoutPrompt } : {})}
+        {...(props.onBreakoutPromptSent ? { onBreakoutPromptSent: props.onBreakoutPromptSent } : {})}
         {...(props.onBreakout ? { onBreakout: props.onBreakout } : {})}
         {...(props.onBreakoutState ? { onBreakoutState: props.onBreakoutState } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}

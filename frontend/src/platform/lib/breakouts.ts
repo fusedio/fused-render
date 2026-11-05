@@ -41,6 +41,8 @@ export interface BreakoutRequest {
   context: BreakoutContext;
   /** Dedupe key for the card store: the selected turn keys, sorted and joined. */
   forkKey?: string;
+  /** The breakout's first message, typed in the composer while picking. */
+  prompt?: string;
 }
 
 export interface BreakoutCard {
@@ -51,6 +53,8 @@ export interface BreakoutCard {
   context: BreakoutContext;
   /** Dedupe key so a second press of the same selection finds the card. */
   forkKey?: string;
+  /** Sent once as the card's first message; `consumeBreakoutPrompt` drops it. */
+  prompt?: string;
 }
 
 /** The window event Send back raises; `ClaudeChat` listens for its own chat. */
@@ -99,6 +103,7 @@ export function openBreakout(req: BreakoutRequest): string {
     file: req.file,
     context: req.context,
     ...(req.forkKey ? { forkKey: req.forkKey } : {}),
+    ...(req.prompt ? { prompt: req.prompt } : {}),
   };
   emit([...cards, card]);
   return card.id;
@@ -109,6 +114,15 @@ export function openBreakout(req: BreakoutRequest): string {
  *  card (so no Breakout seat should exist there). */
 export function breakoutOpener(embed: boolean = IS_EMBED): typeof openBreakout | undefined {
   return embed ? undefined : openBreakout;
+}
+
+/** The card's chat has sent its first message: forget it so a remount cannot
+ *  send it again. */
+export function consumeBreakoutPrompt(id: string): void {
+  const c = cards.find((x) => x.id === id);
+  if (!c || c.prompt === undefined) return;
+  const { prompt: _drop, ...rest } = c;
+  emit(cards.map((x) => (x === c ? rest : x)));
 }
 
 export function closeBreakout(id: string): void {
