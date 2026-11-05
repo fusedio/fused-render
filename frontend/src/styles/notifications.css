@@ -25,7 +25,11 @@
    card like "Path copied" used to sit in. */
 .notif-host {
   position: fixed;
-  right: 16px;
+  /* OFF THE CLAUDE RAIL (owner, 2026-11-05: "move the notification modal to
+     the right a little bit so it doesn't cover the mini sidebar"): the rail
+     says its width on the document while it stands (ClaudeRail `railUp`,
+     `--claude-rail-w`); none stands, nothing moves. */
+  right: calc(16px + var(--claude-rail-w, 0px));
   bottom: 16px;
   z-index: 2000;
   display: flex;
@@ -55,7 +59,7 @@
 .native-sync-host {
   position: fixed;
   top: 12px;
-  right: 12px;
+  right: calc(12px + var(--claude-rail-w, 0px));
   z-index: 2000;
   display: flex;
   flex-direction: column;

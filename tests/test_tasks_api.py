@@ -511,8 +511,9 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # Held background work (2026-10-21): the sidebar paints such a row as
         # running, like the Tasks page, and needs the list to know.
         "background_jobs",
-        # The rail's favourites (2026-11-03): the card star and its open card.
-        "starred", "starred_open",
+        # The rail's favourites (2026-11-03): the card star and its open card
+        # — and when it was starred (2026-11-05), the favourites' sort key.
+        "starred", "starred_open", "starred_at",
     )
     # What the finished/needs-input notice titles a task by (the newest user
     # message unless renamed): riding only when the row has them.
@@ -6473,6 +6474,13 @@ def test_starring_a_task_puts_the_star_on_the_row_and_the_pulse(client,
     assert (row["starred"], row["starred_open"]) == (True, True)
     pulse = {t["key"]: t for t in _pulse(client)}["sess-a"]
     assert (pulse["starred"], pulse["starred_open"]) == (True, True)
+    # When it was starred rides too (the rail sorts newest star first), and
+    # survives the card's open/close writes; unstarred it is None.
+    assert isinstance(pulse["starred_at"], float) and pulse["starred_at"] == row["starred_at"]
+    _favourite(client, "sess-a", on=None, open=False)
+    assert {t["key"]: t for t in _pulse(client)}["sess-a"]["starred_at"] == pulse["starred_at"]
+    _favourite(client, "sess-a", on=False)
+    assert {t["key"]: t for t in _pulse(client)}["sess-a"]["starred_at"] is None
 
 
 def test_opening_a_second_favourite_closes_the_first(client, projects_dir):

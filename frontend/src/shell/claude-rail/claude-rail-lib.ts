@@ -425,6 +425,37 @@ export function keepMarks(
 export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<string, Task>): RailRow[] {
   return rows
     .filter((t) => t.starred && t.status !== "archived")
+    // NEWEST STAR FIRST (owner, 2026-11-05: "sort order for fav tasks will
+    // be new favourites on top"): by when it was starred (`starred_at`, the
+    // server's record), the chat's own activity breaking ties — and
+    // standing in for an older server that sends no stamp.
+    .sort(
+      (a, b) =>
+        (b.starred_at ?? 0) - (a.starred_at ?? 0) ||
+        (b.happened_at ?? 0) - (a.happened_at ?? 0) ||
+        (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+    )
+    .map((pulse) => ({ pulse, row: full.get(pulse.key) ?? null }));
+}
+
+/** A BLOCKED CHAT (owner, 2026-11-05: "blocked tasks will also be added on
+ *  top of favourites, so we know something is blocked — even a non-fav
+ *  task"): one the Tasks page files in its Blocked lane — waiting on a card
+ *  nobody answered (`needs_attention`) or a run that broke (`blocked`),
+ *  schedule-lib `laneOf`. */
+export function isBlockedChat(t: Pick<TaskPulseTask, "status">): boolean {
+  return t.status === "needs_attention" || t.status === "blocked";
+}
+
+/** THE BLOCKED, ABOVE THE FAVOURITES (owner, 2026-11-05): every blocked,
+ *  un-archived chat from anywhere that is NOT starred (a starred one is a
+ *  favourite already, in its place among them), newest activity first.
+ *  They are not favourites — no star, no favourite's card; they stand in
+ *  the favourites' section only because they are blocked, and leave it the
+ *  moment they are not. */
+export function blockedSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<string, Task>): RailRow[] {
+  return rows
+    .filter((t) => isBlockedChat(t) && !t.starred && t.status !== "archived")
     .sort((a, b) => (b.happened_at ?? 0) - (a.happened_at ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     .map((pulse) => ({ pulse, row: full.get(pulse.key) ?? null }));
 }
@@ -437,8 +468,42 @@ export function favSeats(rows: readonly TaskPulseTask[], full: ReadonlyMap<strin
  *  exactly one of the two. Off, the list is untouched (a starred ring is a
  *  ring like any other). Returns the same array when nothing is starred. */
 export function listSeats(seats: RailRow[], favsOn: boolean): RailRow[] {
-  if (!favsOn || !seats.some((s) => s.pulse.starred)) return seats;
-  return seats.filter((s) => !s.pulse.starred);
+  // …and a BLOCKED chat stands above the favourites (`blockedSeats`), so
+  // it leaves the list the same way: one ring per chat.
+  if (!favsOn || !seats.some((s) => s.pulse.starred || isBlockedChat(s.pulse))) return seats;
+  return seats.filter((s) => !s.pulse.starred && !isBlockedChat(s.pulse));
+}
+
+/** THE LIST STEPS ASIDE FOR THE PANE'S HOME (owner, 2026-11-05: "when in
+ *  new chat [list in view] we don't show the normal tasks in the sidebar
+ *  rail"): beside the open pane on its home page — its Recent list is the
+ *  list, drawn large — the rail's own list of the place's chats is not
+ *  drawn; the blocked and the favourites still are. Favourites off: the
+ *  rail of 2026-11-04, nothing hidden (the rail is not beside an open pane
+ *  then anyway). */
+export function listHidden(o: { paneOpen: boolean; favsOn: boolean; paneHome: boolean }): boolean {
+  return o.paneOpen && o.favsOn && o.paneHome;
+}
+
+/** WHERE THE + STANDS (owner, 2026-11-05: "plus icon should only be in
+ *  explorer, app and canvas view — for other views we don't show it"): on a
+ *  page's own rail, never on the shell's fallback (home, Bots, Tasks, …).
+ *  Favourites off there is no fallback at all, so nothing changes. */
+export function plusShown(o: { favouritesOnly: boolean }): boolean {
+  return !o.favouritesOnly;
+}
+
+/** HOW MANY RINGS THE LIST SHOWS AT ONCE (owner, 2026-11-05: "max 10 tasks
+ *  visible and it is scrollable"): the list's box is at most this many
+ *  seats tall; past it the list scrolls (claude-rail.css `.is-scroll`). */
+export const LIST_ROWS_MAX = 10;
+
+/** THE PINNED BOTS (owner, 2026-11-05: "have the right sidebar go all the
+ *  way and have bots below it — pinned bots show up there"): every pinned,
+ *  un-hidden bot, in the pulse's order (the Bots page's own: pinned first).
+ *  An older server's pulse carries no `pinned`: none. */
+export function pinnedBots<B extends { pinned?: boolean; hidden?: boolean }>(bots: readonly B[]): B[] {
+  return bots.filter((b) => b.pinned === true && !b.hidden);
 }
 
 /** WHICH RING OF A SECTION WEARS THE ACTIVE WASH (owner, 2026-11-04: "in one
@@ -565,13 +630,18 @@ export function railShown(o: {
   favs: number;
   paneOpen: boolean;
   always: boolean;
-  /** The shell's fallback rail (`fallbackRailUp`): the + and its favourites. */
+  /** The shell's fallback rail (`fallbackRailUp`): its blocked, favourites
+   *  and pinned bots — no + (`plusShown`), so with none of those it has
+   *  nothing to draw and does not stand. */
   favouritesOnly?: boolean;
+  /** Pinned bots drawn under the favourites (`pinnedBots`). */
+  bots?: number;
 }): boolean {
-  if (o.favouritesOnly) return o.always;
+  const foot = o.favs + (o.bots ?? 0);
+  if (o.favouritesOnly) return o.always && foot > 0;
   if (!o.paneOpen) return true;
   if (!o.always) return false;
-  return o.list > 0 || o.favs > 0;
+  return o.list > 0 || foot > 0;
 }
 
 /** THE SHELL'S FALLBACK RAIL (shell/claude-rail/FallbackRail; owner,

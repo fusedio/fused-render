@@ -14,6 +14,11 @@ import {
   chipPlace,
   dotCleared,
   favSeats,
+  blockedSeats,
+  isBlockedChat,
+  listHidden,
+  plusShown,
+  pinnedBots,
   keepMarks,
   listSeats,
   onRail,
@@ -312,6 +317,72 @@ describe("favSeats", () => {
     const b = pulse(task({ key: "b", happened_at: 5 }), { starred: true });
     const a = pulse(task({ key: "a", happened_at: 5 }), { starred: true });
     expect(favSeats([b, a], new Map()).map((s) => s.pulse.key)).toEqual(["a", "b"]);
+  });
+
+  // Owner, 2026-11-05: "sort order for fav tasks will be new favourites on top".
+  it("the newest STAR stands first, whatever the chats' own activity", () => {
+    const busy = pulse(task({ key: "busy", happened_at: 900 }), { starred: true, starred_at: 10 });
+    const quiet = pulse(task({ key: "quiet", happened_at: 100 }), { starred: true, starred_at: 20 });
+    expect(favSeats([busy, quiet], new Map()).map((s) => s.pulse.key)).toEqual(["quiet", "busy"]);
+  });
+
+  it("an older server with no stamp: activity order, as before", () => {
+    const busy = pulse(task({ key: "busy", happened_at: 900 }), { starred: true });
+    const quiet = pulse(task({ key: "quiet", happened_at: 100 }), { starred: true });
+    expect(favSeats([quiet, busy], new Map()).map((s) => s.pulse.key)).toEqual(["busy", "quiet"]);
+  });
+});
+
+// Owner, 2026-11-05: "blocked tasks will also be added on top of favourites
+// … even a non-fav task if it is blocked … they shouldn't be fav, they just
+// show up here because they are blocked".
+describe("blockedSeats", () => {
+  it("every blocked, un-archived, UNSTARRED chat, newest activity first", () => {
+    const waiting = pulse(task({ key: "w", status: "needs_attention", happened_at: 100 }));
+    const broke = pulse(task({ key: "b", status: "blocked", happened_at: 200 }));
+    const starredBlocked = pulse(task({ key: "sb", status: "blocked", happened_at: 300 }), { starred: true });
+    const running = pulse(task({ key: "r", status: "in_progress", happened_at: 400 }));
+    const archived = pulse(task({ key: "x", status: "archived", happened_at: 500 }));
+    const seats = blockedSeats([waiting, broke, starredBlocked, running, archived], new Map());
+    expect(seats.map((s) => s.pulse.key)).toEqual(["b", "w"]);
+    expect(seats.every((s) => !s.pulse.starred)).toBe(true);
+  });
+  it("isBlockedChat: the Blocked lane's two statuses", () => {
+    expect(isBlockedChat({ status: "blocked" })).toBe(true);
+    expect(isBlockedChat({ status: "needs_attention" })).toBe(true);
+    expect(isBlockedChat({ status: "in_progress" })).toBe(false);
+    expect(isBlockedChat({ status: "done" })).toBe(false);
+  });
+  it("the list leaves a blocked chat out too (one ring per chat), favourites on", () => {
+    const rows = [
+      pulse(task({ key: "a", happened_at: 300 })),
+      pulse(task({ key: "blk", status: "blocked", happened_at: 200 })),
+      pulse(task({ key: "b", happened_at: 100 })),
+    ];
+    expect(listSeats(railRows(rows, new Map(), PLACE), true).map((s) => s.pulse.key)).toEqual(["a", "b"]);
+    expect(listSeats(railRows(rows, new Map(), PLACE), false).map((s) => s.pulse.key)).toEqual(["blk", "a", "b"]);
+  });
+});
+
+describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
+  it("the list hides beside the open pane on its home, favourites on, and only then", () => {
+    expect(listHidden({ paneOpen: true, favsOn: true, paneHome: true })).toBe(true);
+    expect(listHidden({ paneOpen: true, favsOn: true, paneHome: false })).toBe(false);
+    expect(listHidden({ paneOpen: false, favsOn: true, paneHome: true })).toBe(false);
+    expect(listHidden({ paneOpen: true, favsOn: false, paneHome: true })).toBe(false);
+  });
+  it("the + is a page rail's, never the fallback's", () => {
+    expect(plusShown({ favouritesOnly: false })).toBe(true);
+    expect(plusShown({ favouritesOnly: true })).toBe(false);
+  });
+  it("pinned bots: pinned and not hidden, in the pulse's order; an old pulse has none", () => {
+    const bots = [
+      { id: "a", pinned: true },
+      { id: "h", pinned: true, hidden: true },
+      { id: "u", pinned: false },
+      { id: "old" },
+    ];
+    expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
   });
 });
 
@@ -723,9 +794,13 @@ describe("railShown", () => {
 });
 
 describe("railShown, the shell's fallback (favouritesOnly)", () => {
-  it("favourites on: always shown (the + alone with no favourite)", () => {
+  it("favourites on: shown with a favourite, a blocked chat or a pinned bot to draw — not empty (no +, 2026-11-05)", () => {
     expect(railShown({ list: 0, favs: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
-    expect(railShown({ list: 0, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
+    expect(railShown({ list: 0, favs: 0, bots: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
+    expect(railShown({ list: 0, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
+  });
+  it("the pane open on a page rail: a pinned bot is enough to stand", () => {
+    expect(railShown({ list: 0, favs: 0, bots: 1, paneOpen: true, always: true })).toBe(true);
   });
   it("favourites off: never", () => {
     expect(railShown({ list: 0, favs: 2, paneOpen: false, always: false, favouritesOnly: true })).toBe(false);

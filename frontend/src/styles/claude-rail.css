@@ -52,6 +52,28 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
+  /* AT MOST TEN RINGS TALL (owner, 2026-11-05; ClaudeRail `--list-rows`,
+     claude-rail-lib LIST_ROWS_MAX): ten 28px seats, nine 4px gaps, the 4px
+     of wash padding — past that the list scrolls. */
+  max-height: calc(var(--list-rows, 10) * 28px + (var(--list-rows, 10) - 1) * 4px + 4px);
+  /* MORE ABOVE / BELOW (owner, 2026-11-05: "subtle indicators … you can
+     scroll up and down"): the rings fade out at the edge there is more past
+     (ClaudeRail `listEdges` sets the two lengths; 0 = no fade). A mask, not
+     an overlay: nothing is drawn over the rings, they thin into the rail. */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top, 0px),
+    #000 calc(100% - var(--fade-bottom, 0px)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top, 0px),
+    #000 calc(100% - var(--fade-bottom, 0px)),
+    transparent 100%
+  );
 }
 .claude-rail.is-scroll .claude-rail-chats::-webkit-scrollbar {
   display: none;
@@ -282,6 +304,56 @@
    last section, on the edge. Without them the rail keeps its padding. */
 .claude-rail.has-favs {
   padding-bottom: 4px;
+}
+/* A BLOCKED CHAT AT THE HEAD OF THE FAVOURITES (ClaudeRail `.is-blocked`;
+   owner, 2026-11-05): a list ring in the favourites' box — its ring is
+   already the Blocked lane's red; nothing more is drawn, so it reads as
+   "blocked", not "starred". */
+.claude-rail-chat.is-blocked {
+  position: relative;
+}
+/* THE PINNED BOTS (ClaudeRail `.claude-rail-bots`; owner, 2026-11-05):
+   under the favourites, the rail's last section — a 24px face in the 28px
+   seat, the Bots row's dots at the seat's corner. Scrolls like the
+   favourites when the column is short; its floor is two faces. */
+.claude-rail-bots {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0.0001 auto;
+  min-height: 0;
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 2px 0;
+  margin: -2px 0;
+}
+.claude-rail-bots::-webkit-scrollbar {
+  display: none;
+}
+.claude-rail-bots > .claude-rail-seat {
+  flex: 0 0 auto;
+}
+.claude-rail-bot {
+  position: relative;
+}
+.claude-rail-bot-face {
+  display: block;
+  width: 24px;
+  height: 24px;
+}
+.claude-rail-bot-face svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.claude-rail-bot .sidebar-rail-dot {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
 }
 .claude-rail-chat.is-fav.is-open::after {
   background: rgba(var(--tint), 0.14);

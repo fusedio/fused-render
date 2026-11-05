@@ -337,8 +337,12 @@ def bots_pulse():
             n = b._count_events()
             # `news_seq`: the newest message row, system notes and delivery rows skipped — what `seen_seq` is read
             # against (bot.news_seq). The line count is passed so a stale cache rescans for lines nobody lifted.
+            # `pinned`, `name` and `face` (2026-11-05): the Claude rail draws
+            # the pinned bots under its favourites, face and all, and must
+            # not fetch `/api/bots` for three fields.
             row = {"id": b.id, "status": m.get("status") or "idle", "seq": max(b.seq, n), "news_seq": b.news_seq(n),
-                   "hidden": bool(m.get("hidden"))}
+                   "hidden": bool(m.get("hidden")), "pinned": bool(m.get("pinned")),
+                   "name": str(m.get("name") or b.id), "face": m.get("face") if isinstance(m.get("face"), dict) else None}
             if isinstance(m.get("seen_seq"), int):
                 row["seen_seq"] = m["seen_seq"]
             out.append(row)

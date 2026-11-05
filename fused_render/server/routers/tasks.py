@@ -2923,7 +2923,7 @@ def _new_task(key: str, session_id: str, path: str | None,
     # it. 0.0 everywhere else, which reads as "not filed".
     return {"key": key, "session_id": session_id, "path": path, "entries": [],
             "backend": backend, "key_filed_at": 0.0,
-            "starred": False, "starred_open": False}
+            "starred": False, "starred_open": False, "starred_at": None}
 
 
 def _entry_session(entry: dict, by_id: dict | None = None) -> str:
@@ -3194,6 +3194,7 @@ def _collect() -> dict[str, dict]:
             task["key_filed_at"] = tasks_store.archived_at(archived, key)
         task["starred"], task["starred_open"] = tasks_store.favourite_of(
             favourites, key)
+        task["starred_at"] = tasks_store.favourite_at(favourites, key)
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
             and not _breakout(task, breakouts)
@@ -4567,6 +4568,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # card (`tasks_store.favourite_of`). Global, so every row answers.
         "starred": bool(task.get("starred")),
         "starred_open": bool(task.get("starred_open")),
+        # When it was starred (`tasks_store.favourite_at`): the rail's
+        # favourites stand newest star first. None unstarred.
+        "starred_at": task.get("starred_at"),
         # THE LEADER ENTRY BEHIND A TASK THAT HAS NO CONVERSATION YET, and ""
         # for every task that has a session. A `pending:<entry>` row is a chat
         # whose first message is still waiting: there is no transcript to open
@@ -6954,7 +6958,7 @@ _PULSE_FIELDS = (
     "background_jobs",
     # The rail's favourites (`_row`): the Claude rail paints its star list off
     # the pulse, so the two booleans ride it.
-    "starred", "starred_open",
+    "starred", "starred_open", "starred_at",
 )
 
 

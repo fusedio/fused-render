@@ -24,6 +24,13 @@ export interface BotPulseRow {
    *  the same contract apps/bots/lib/unread.unreadOf keeps. */
   seen_seq?: number | null;
   hidden?: boolean;
+  /** THE CLAUDE RAIL'S PINNED BOTS (2026-11-05): a pinned bot's face stands
+   *  under the rail's favourites, its name the caption. Absent on an older
+   *  server: no pinned bot, no face. `face` is the Bots page's own record
+   *  (apps/bots lib/face `Face`), passed through untyped here. */
+  pinned?: boolean;
+  name?: string;
+  face?: unknown;
 }
 
 export interface BotsPulse {
@@ -117,6 +124,10 @@ const ACTIVE_MS = 10_000;
 const IDLE_MS = 30_000;
 
 let pulse: BotsPulse = EMPTY_BOTS_PULSE;
+/** The rows the summary was made from — the Claude rail's pinned bots read
+ *  them (`useBotsRows`); hidden bots are left in, as the page leaves them. */
+let rows: BotPulseRow[] = [];
+const rowListeners = new Set<(r: BotPulseRow[]) => void>();
 let timer: number | null = null;
 let inFlight = false;
 /** Bumped by every publish; a self-poll that departed before a fresher
@@ -127,7 +138,9 @@ let generation = 0;
 let feeders = 0;
 const listeners = new Set<(p: BotsPulse) => void>();
 
-function recompute(rows: BotPulseRow[]) {
+function recompute(next_rows: BotPulseRow[]) {
+  rows = next_rows;
+  for (const l of rowListeners) l(rows);
   const next = botsPulse(rows);
   if (sameBotsPulse(pulse, next)) return;
   pulse = next;
@@ -165,7 +178,7 @@ async function poll() {
 function schedule() {
   if (timer !== null) window.clearTimeout(timer);
   timer = null;
-  if (listeners.size === 0 || feeders > 0) return;
+  if (listeners.size + rowListeners.size === 0 || feeders > 0) return;
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
 }
 
@@ -222,9 +235,30 @@ export function useBotsPulse(enabled: boolean = true): BotsPulse {
   return current;
 }
 
+/** Subscribe to the ROWS (the Claude rail's pinned bots): the same poll as
+ *  the summary, the same feeder rule; hidden bots are in the answer. */
+export function useBotsRows(enabled: boolean = true): BotPulseRow[] {
+  const [current, setCurrent] = useState<BotPulseRow[]>(rows);
+  useEffect(() => {
+    if (!enabled) return;
+    rowListeners.add(setCurrent);
+    setCurrent(rows);
+    if (feeders === 0) void poll();
+    else schedule();
+    return () => {
+      rowListeners.delete(setCurrent);
+      schedule();
+    };
+  }, [enabled]);
+  return enabled ? current : EMPTY_ROWS;
+}
+const EMPTY_ROWS: BotPulseRow[] = [];
+
 /** Test seam: forget every answer and owner. */
 export function resetBotsPulseForTests() {
   pulse = EMPTY_BOTS_PULSE;
+  rows = [];
+  rowListeners.clear();
   generation = 0;
   feeders = 0;
   inFlight = false;
