@@ -23,6 +23,8 @@ let generation = 0;
 // must not overwrite the fresher one. Breakout-only: the shared `generation`
 // would also discard the queue / recap answers the same read carries.
 let breakoutPublishedAt = 0;
+// The same guard for the chat-recap switch.
+let recapPublishedAt = 0;
 
 /**
  * NOT a tri-state. It gates ONE extra call in front of a send, it DEFAULTS
@@ -171,6 +173,7 @@ function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
   const breakoutStamp = breakoutPublishedAt;
+  const recapStamp = recapPublishedAt;
   // ONE BUDGET FOR THE WHOLE READ, retry included (bugbot, 2026-09-15).
   //
   // The deadline used to wrap each ATTEMPT, so a wedged server spent 8 s, was
@@ -194,7 +197,7 @@ function read(): Promise<void> {
       // `=== true`: the queue is OPT-IN, so a server with no such field is a
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
-      setRecapTitles(p.chat_recap?.enabled !== false);
+      if (recapPublishedAt === recapStamp) setRecapTitles(p.chat_recap?.enabled !== false);
       if (breakoutPublishedAt === breakoutStamp) setBreakout(p.breakout?.enabled === true);
       // A server that predates the field keeps "auto", the server's default.
       setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
@@ -271,6 +274,7 @@ export function publishBreakoutEnabled(next: boolean) {
 
 /** Hand over a known-fresh chat-recap answer (a PUT's prefs payload). */
 export function publishChatRecapEnabled(next: boolean) {
+  recapPublishedAt += 1;
   setRecapTitles(next);
   try {
     localStorage.setItem(RECAP_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));

@@ -20,6 +20,8 @@ const {
   useBreakoutEnabled,
   publishBreakoutEnabled,
   BREAKOUT_FLAG_BROADCAST_KEY,
+  useChatRecapEnabled,
+  publishChatRecapEnabled,
 } = await import("./feature-flag");
 
 let calls = 0;
@@ -369,4 +371,30 @@ test("a Breakout publish that lands while a prefs read is in flight is not overw
     await new Promise((done) => setTimeout(done, 0));
   });
   expect(seen[seen.length - 1]).toBe(true);
+});
+
+test("a chat-recap publish that lands while a prefs read is in flight is not overwritten by it", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  // The read departs now and answers late, with the value from BEFORE the toggle.
+  answer = async () => {
+    await gate;
+    return { chat_recap: { enabled: true }, queue: { enabled: true } };
+  };
+  const seen: boolean[] = [];
+  function Probe() {
+    seen.push(useChatRecapEnabled());
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  await act(async () => {
+    r = create(<Probe />);
+  });
+  mounted.push(r);
+  await act(async () => publishChatRecapEnabled(false));
+  await act(async () => {
+    release();
+    await new Promise((done) => setTimeout(done, 0));
+  });
+  expect(seen[seen.length - 1]).toBe(false);
 });
