@@ -123,7 +123,7 @@ with key '<key>'`).
 | `cancel` | — | `api_task_cancel` → `{cancelled: true}` |
 | `decide` | `{request_id, decision, note?}` | `api_queue_decide` with `scope: "once"` → `{held, decided}` (§7) |
 | `answer` | `{request_id, answers, custom?, note?}` | `api_queue_decide`, decision `allow`, `scope: "once"` (§7) |
-| `archive` | — | `api_task_archive`; 409 `Stop the run first` (`RUN_BLOCKED_HINT`) while the row is live |
+| `archive` | — | `api_task_archive`; 409 `Stop the run first` (`RUN_BLOCKED_HINT`) while the row is `in_progress` (the desktop's own gate, `eraseBlocked`); a parked `needs_attention` row is filed after its run is stopped, as the desktop does |
 | `unarchive` | — | `api_task_unarchive` |
 | `rename` | `{title}` | `api_task_rename` |
 | `favourite` | `{on: true\|false}` | `api_task_favourite`; a non-boolean `on` is a 400 |

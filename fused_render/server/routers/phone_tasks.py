@@ -577,7 +577,12 @@ def _guarded(fn):
 
 
 def _running(row: dict) -> bool:
-    return bool(row.get("live"))
+    """Is a turn in flight? The row's STATUS, as the desktop's own gate reads it
+    (`tasks-lib.eraseBlocked`: the in-progress column), not `live`, which is
+    transcript freshness — off during a long tool call, on for a while after
+    a parked card. A `needs_attention` row is filed: `archive_task` stops the
+    parked run first (`_stop_parked_run`), as delete does."""
+    return str(row.get("status") or "") == "in_progress"
 
 
 RUN_BLOCKED_HINT = "Stop the run first"  # platform/lib/task-actions.ts, the same words

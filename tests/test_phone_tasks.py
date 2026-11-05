@@ -446,9 +446,14 @@ def test_archive_refuses_a_running_task_with_the_desktops_words(client, agent, p
     _already_using(state_dir)
     _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9), _assistant("ok", T10)])
     real_row = phone_tasks._row
-    monkeypatch.setattr(phone_tasks, "_row", lambda key: {**real_row(key), "live": True})  # the listing says a turn is running
+    # The gate is the row's STATUS, the desktop's own rule (eraseBlocked): a turn in flight refuses…
+    monkeypatch.setattr(phone_tasks, "_row", lambda key: {**real_row(key), "status": "in_progress", "live": False})
     r = client.post(f"{P}/sess-a/archive", headers=H)
     assert r.status_code == 409 and r.json() == {"error": "Stop the run first"}
+    # …while a parked card (needs_attention) and a merely fresh transcript (live) are filed.
+    monkeypatch.setattr(phone_tasks, "_row", lambda key: {**real_row(key), "status": "needs_attention", "live": True})
+    assert client.post(f"{P}/sess-a/archive", headers=H).status_code == 200
+    assert client.post(f"{P}/sess-a/unarchive", headers=H).status_code == 200
     monkeypatch.setattr(phone_tasks, "_row", real_row)
     assert client.post(f"{P}/sess-a/archive", headers=H).status_code == 200
     assert [t["status"] for t in client.get(P, params={"archived": "1"}).json()["tasks"]] == ["archived"]
