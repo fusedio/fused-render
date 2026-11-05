@@ -85,14 +85,17 @@ struct ManifestApp: Codable, Identifiable, Hashable {
 }
 
 /// `fusedrender://open?host=…` plus one of: `path=<entry html>` (an app page,
-/// `/render?path=…`), `page=bots` (the bots list, `/bots`) or `bot=<id>` (one
-/// bot's chat, `/bots/<id>`). Port and scheme ride along on app links but the
-/// app ignores them (AppModel.open(deepLink:)).
+/// `/render?path=…`), `page=bots` (the bots list, `/bots`), `bot=<id>` (one
+/// bot's chat, `/bots/<id>`), `page=tasks` (the tasks list, `/tasks`) or
+/// `task=<key>` (one task, `/tasks/<key>`). Port and scheme ride along on app
+/// links but the app ignores them (AppModel.open(deepLink:)).
 struct DeepLink {
     enum Target: Equatable {
         case app(path: String)
         case bots
         case bot(id: String)
+        case tasks
+        case task(key: String)
     }
 
     let host: String
@@ -106,14 +109,21 @@ struct DeepLink {
               let host = items.first(where: { $0.name == "host" })?.value, !host.isEmpty
         else { return nil }
         let value: (String) -> String? = { name in items.first(where: { $0.name == name })?.value }
-        // A bot id becomes a path segment: anything outside [A-Za-z0-9_-]
-        // refuses the whole link rather than being cleaned up into another id.
+        // A bot id or task key becomes a path segment: anything outside its
+        // charset ([A-Za-z0-9_-], [A-Za-z0-9_:.-]) refuses the whole link
+        // rather than being cleaned up into another id.
         if let bot = value("bot") {
             guard Self.isBotID(bot) else { return nil }
             self.target = .bot(id: bot)
+        } else if let task = value("task") {
+            guard Self.isTaskKey(task) else { return nil }
+            self.target = .task(key: task)
         } else if let page = value("page") {
-            guard page == "bots" else { return nil }
-            self.target = .bots
+            switch page {
+            case "bots": self.target = .bots
+            case "tasks": self.target = .tasks
+            default: return nil
+            }
         } else if let path = value("path"), !path.isEmpty {
             self.target = .app(path: path)
         } else {
@@ -131,6 +141,15 @@ struct DeepLink {
         !id.isEmpty && id.count <= 128 && id.unicodeScalars.allSatisfy { botIDCharacters.contains($0) }
     }
 
+    /// A task key is a session uuid or `pending:<entry id>`: the bot charset
+    /// plus `:` and `.`.
+    private static let taskKeyCharacters = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.-")
+
+    static func isTaskKey(_ key: String) -> Bool {
+        !key.isEmpty && key.count <= 128 && key.unicodeScalars.allSatisfy { taskKeyCharacters.contains($0) }
+    }
+
     /// `fusedrender://open?host=…&page=bots` — the "Bots" quick action.
     static func bots(host: String) -> URL {
         link(host: host, [.init(name: "page", value: "bots")])
@@ -140,6 +159,17 @@ struct DeepLink {
     static func bot(_ id: String, host: String) -> URL? {
         guard isBotID(id) else { return nil }
         return link(host: host, [.init(name: "bot", value: id)])
+    }
+
+    /// `fusedrender://open?host=…&page=tasks` — the "Tasks" quick action.
+    static func tasks(host: String) -> URL {
+        link(host: host, [.init(name: "page", value: "tasks")])
+    }
+
+    /// `fusedrender://open?host=…&task=<key>`; nil for a key the parser would refuse.
+    static func task(_ key: String, host: String) -> URL? {
+        guard isTaskKey(key) else { return nil }
+        return link(host: host, [.init(name: "task", value: key)])
     }
 
     private static func link(host: String, _ extra: [URLQueryItem]) -> URL {

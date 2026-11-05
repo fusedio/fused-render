@@ -1,7 +1,7 @@
 // Screens: pick a computer (paired before) or pair one by QR (or a pasted URL,
-// the simulator's only way) → the grid, the bots pages and the apps in a
-// webview, with a banner above it saying why the computer cannot be reached
-// when it cannot (Reachability.swift).
+// the simulator's only way) → the grid, the bots and tasks pages and the apps
+// in a webview, with a banner above it saying why the computer cannot be
+// reached when it cannot (Reachability.swift).
 //
 // Bots on the phone: `/bots` (the list) and `/bots/<id>` (one bot's chat) are
 // web pages the paired computer's LAN listener serves from the same lan entry
@@ -9,6 +9,11 @@
 // `fusedrender://open?host=…&page=bots` / `&bot=<id>` open them (AppModel),
 // and the first Home Screen quick action is "Bots" (ManifestSync). Photos for
 // a bot ride the page's own <input type=file>, i.e. the webview's picker.
+//
+// Tasks the same way: `/tasks` (the list) and `/tasks/<key>` (one task) come
+// from the same lan page; deep links `&page=tasks` / `&task=<key>` open them,
+// and "Tasks" is the quick action after "Bots". A task key is a session uuid
+// or `pending:<entry id>`, so it may hold `:` and `.`.
 import SwiftUI
 
 struct RootView: View {
@@ -160,7 +165,7 @@ struct PairView: View {
     }
 }
 
-// MARK: - Connected: the grid, the bots and the apps
+// MARK: - Connected: the grid, the bots, the tasks and the apps
 
 struct ConnectedView: View {
     @EnvironmentObject var model: AppModel
@@ -194,6 +199,10 @@ struct ConnectedView: View {
         case bots
         /// `/bots/<id>`, one bot's chat.
         case bot
+        /// `/tasks`, the tasks list.
+        case tasks
+        /// `/tasks/<key>`, one task.
+        case task
         /// Anything else: an app page.
         case app
     }
@@ -204,11 +213,14 @@ struct ConnectedView: View {
         if path == "/" || path == "/index.html" || path == "/pair" { return .grid }
         if path == "/bots" || path == "/bots/" { return .bots }
         if path.hasPrefix("/bots/") { return .bot }
+        if path == "/tasks" || path == "/tasks/" { return .tasks }
+        if path.hasPrefix("/tasks/") { return .task }
         return .app
     }
 
     private var baseURL: URL { server.url(host: host, port: port) }
     private var botsURL: URL { baseURL.appendingPathComponent("bots") }
+    private var tasksURL: URL { baseURL.appendingPathComponent("tasks") }
 
     /// The page's own <title> once it lands; until then (or for a page without
     /// one) the app's name from the manifest, else its folder name.
@@ -227,6 +239,8 @@ struct ConnectedView: View {
         case .grid: return "Apps"
         case .bots: return "Bots"
         case .bot: return web.title.isEmpty ? "Bot" : web.title  // the page sets it to the bot's name
+        case .tasks: return "Tasks"
+        case .task: return web.title.isEmpty ? "Task" : web.title  // the page sets it to the task's own title
         case .app: return appTitle
         }
     }
@@ -244,9 +258,10 @@ struct ConnectedView: View {
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showHomeScreenHelp) { HomeScreenHelp() }
             .sheet(isPresented: $showPair) { PairView() }
-            // One top bar, on the grid, the bots pages and inside apps alike
-            // (owner's call — no floating button). Left: the computer (grid),
-            // the bots list (a bot's chat) or home (bots list, app). Middle:
+            // One top bar, on the grid, the bots and tasks pages and inside
+            // apps alike (owner's call — no floating button). Left: the
+            // computer (grid), the bots list (a bot's chat), the tasks list (a
+            // task) or home (bots list, tasks list, app). Middle:
             // where you are. Right: the few actions. Under it, the reason the
             // computer cannot be reached, when it cannot.
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -317,7 +332,12 @@ struct ConnectedView: View {
                 Label("Bots", systemImage: "chevron.left").labelStyle(.iconOnly)
             }
             .accessibilityLabel("Bots")
-        case .bots, .app:
+        case .task:
+            Button { web.load(tasksURL) } label: {
+                Label("Tasks", systemImage: "chevron.left").labelStyle(.iconOnly)
+            }
+            .accessibilityLabel("Tasks")
+        case .bots, .tasks, .app:
             Button { web.load(baseURL) } label: {
                 Label("All apps", systemImage: "house").labelStyle(.iconOnly)
             }
@@ -341,6 +361,7 @@ struct ConnectedView: View {
             Menu {
                 Button("Reload", systemImage: "arrow.clockwise") { web.webView?.reload() }
                 Button("Bots", systemImage: "sparkles") { web.load(botsURL) }
+                Button("Tasks", systemImage: "checklist") { web.load(tasksURL) }
                 Button("Add an app to the Home Screen", systemImage: "plus.square.on.square") { showHomeScreenHelp = true }
                 Divider()
                 Button("Switch computer", systemImage: "desktopcomputer") { model.disconnect() }

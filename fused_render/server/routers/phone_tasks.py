@@ -658,7 +658,7 @@ def phone_create(body: dict = Body(...), x_fused: str | None = Header(default=No
                  x_fused_device: str | None = Header(default=None)):
     """Start a task: `{prompt, target}` -> `{key, entry_id, task_id}`. `target`
     is a folder the listing knows or one under the workspace (`_known_folder`);
-    anything else is 400. Stored `origin: "phone"`, `permission_mode` default,
+    anything else is 400. Stored `origin: "phone"`, in the asking mode ("prompt"),
     the Preferences default agent, no model or effort. The key is
     `pending:<entry>` until the run mints a session; the phone follows
     `entry_id` across the rekey."""

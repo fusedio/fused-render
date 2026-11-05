@@ -220,14 +220,16 @@ final class AppModel: ObservableObject {
     }
 
     /// A widget or quick action: `fusedrender://open?host&…` naming an app
-    /// (`path`), the bots list (`page=bots`) or one bot (`bot=<id>`). Go to
+    /// (`path`), the bots list (`page=bots`), one bot (`bot=<id>`), the tasks
+    /// list (`page=tasks`) or one task (`task=<key>`). Go to
     /// that computer and straight to the page, skipping the grid.
     ///
     /// Only a computer this phone already paired with. Any app can open a
     /// fusedrender:// URL; one naming a stranger's host would put the webview
     /// — bridge and all — on that host's page. The link's port/scheme are
     /// ignored too: the known record decides how the computer is reached. A
-    /// bot id is a path segment, so DeepLink refuses any outside [A-Za-z0-9_-].
+    /// bot id or task key is a path segment, so DeepLink refuses a bot id
+    /// outside [A-Za-z0-9_-] and a task key outside [A-Za-z0-9_:.-].
     func open(deepLink url: URL) -> Bool {
         guard let link = DeepLink(url),
               let server = known.first(where: { $0.reaches(link.host) }) else { return false }
@@ -243,6 +245,10 @@ final class AppModel: ObservableObject {
             c.path = "/bots"
         case .bot(let id):
             c.path = "/bots/\(id)"
+        case .tasks:
+            c.path = "/tasks"
+        case .task(let key):
+            c.path = "/tasks/\(key)"
         }
         pendingPairURL = c.url  // the webview's "load this next" slot
         current = server

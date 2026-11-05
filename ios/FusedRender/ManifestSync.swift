@@ -2,7 +2,7 @@
 // grid loads, fetch the same /api/lan/apps the grid shows — with the pairing
 // cookie from the Keychain (PairingSecret) over the pinned session — cache
 // each preview.png, write apps.json, and tell WidgetKit and the
-// Home Screen quick actions (Bots first, then the apps). Best-effort
+// Home Screen quick actions (Bots and Tasks first, then the apps). Best-effort
 // throughout: a failed refresh leaves the last manifest in place.
 import Foundation
 import UIKit
@@ -16,7 +16,7 @@ enum ManifestSync {
     private static var lastRefresh: Date = .distantPast
     private static var lastHost = ""
     /// Bumped per refresh; a run that finished for an earlier one must not put its
-    /// host's Bots shortcut back over the computer the user has since switched to.
+    /// host's Bots and Tasks shortcuts back over the computer the user has since switched to.
     private static var generation = 0
 
     /// `host` is the one the grid just loaded on (the name, or the fallback
@@ -71,7 +71,7 @@ enum ManifestSync {
         let merged = (apps + others).sorted { $0.recency > $1.recency }
         Manifest.save(merged)
         WidgetCenter.shared.reloadAllTimelines()
-        // The manifest is right for any computer; the Bots shortcut names ONE, the current one.
+        // The manifest is right for any computer; the Bots and Tasks shortcuts name ONE, the current one.
         if gen == generation {
             installQuickActions(merged, host: server.host)
         }
@@ -103,9 +103,10 @@ enum ManifestSync {
         return name
     }
 
-    /// Long-press the app icon → "Bots" (the bots list on `host`, the computer
-    /// whose grid just loaded — the most recent one), then the three most
-    /// recent apps. No host, no Bots item: the link would have nowhere to go.
+    /// Long-press the app icon → "Bots" and "Tasks" (the bots and tasks lists
+    /// on `host`, the computer whose grid just loaded — the most recent one),
+    /// then the three most recent apps. No host, no Bots or Tasks item: the
+    /// link would have nowhere to go.
     private static func installQuickActions(_ apps: [ManifestApp], host: String?) {
         var items: [UIApplicationShortcutItem] = []
         if let host, !host.isEmpty {
@@ -115,6 +116,13 @@ enum ManifestSync {
                 localizedSubtitle: nil,
                 icon: UIApplicationShortcutIcon(systemImageName: "sparkles"),
                 userInfo: ["url": DeepLink.bots(host: host).absoluteString as NSSecureCoding]
+            ))
+            items.append(UIApplicationShortcutItem(
+                type: "io.fused.render.tasks",
+                localizedTitle: "Tasks",
+                localizedSubtitle: nil,
+                icon: UIApplicationShortcutIcon(systemImageName: "checklist"),
+                userInfo: ["url": DeepLink.tasks(host: host).absoluteString as NSSecureCoding]
             ))
         }
         items += apps.prefix(3).map { app in
