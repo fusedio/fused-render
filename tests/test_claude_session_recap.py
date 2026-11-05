@@ -684,7 +684,7 @@ def test_a_generated_recap_is_not_written_to_the_session_store(
     target, write = project
     write(("user", "go"), ("assistant", "done"))
     assert recap_mod._recap(agent, target, SESSION, "u-2")
-    assert store.session_recap(store.settings_state(), SESSION) is None
+    assert store.session_ai_title(store.settings_state(), SESSION) is None
 
 
 def test_a_failed_ask_is_cached_in_memory_and_stale_before_reaches_the_cli(
@@ -821,7 +821,6 @@ def test_one_call_titles_the_session_and_stores_only_the_title(
     state = store.settings_state()
     assert store.session_ai_title(state, SESSION)["text"] == "Fixing the login redirect"
     assert store.session_ai_title(state, SESSION)["turns"] == 5
-    assert store.session_recap(state, SESSION) is None
 
 
 def test_a_failed_title_keeps_the_old_one_and_stamps_the_failure(

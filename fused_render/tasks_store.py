@@ -1385,57 +1385,6 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
     return _update(SETTINGS_FILE, mutate)
 
 
-# THE TURN RECAP rides on the same per-session record (Akshil, 2026-10-15:
-# "just add a field in json"), under its own key so `session_settings` and
-# `record_settings` never see it:
-#
-#     {"<session-id>": {"model": …, "recap": {"text": "…", "for_uuid": "…", "at": …}}}
-#
-# `for_uuid` is the turn the recap is about. NOTHING WRITES THIS ANY MORE: the
-# away fold's recap (claude_sessions `_recap`) is produced on demand and cached
-# in memory only, keyed on the file too (a copied folder shares session ids,
-# which this per-session record cannot tell apart). Records written by older
-# builds are inert; the helpers below stay for them.
-
-
-def session_recap(state: dict, session_id: str) -> dict | None:
-    """The stored recap for one session — `{"text", "for_uuid", "at"}` — or
-    None when there is none (or the record is not that shape)."""
-    rec = state.get(str(session_id or ""))
-    recap = rec.get("recap") if isinstance(rec, dict) else None
-    if not isinstance(recap, dict) or not isinstance(recap.get("for_uuid"), str):
-        return None
-    return {"text": str(recap.get("text") or ""),
-            "for_uuid": recap["for_uuid"],
-            "at": float(recap.get("at") or 0.0),
-            "empty": recap.get("empty") is True}
-
-
-def record_recap(session_id: str, for_uuid: str, text: str,
-                 now: float | None = None, empty: bool = False) -> dict:
-    """Store one turn's recap (or `""` for a failed one) on the session's
-    record, beside whatever model/effort it already holds. Nothing for an empty
-    session id or turn uuid — there is nothing to key it on."""
-    session_id = str(session_id or "").strip()
-    for_uuid = str(for_uuid or "").strip()
-    if not session_id or not for_uuid:
-        return {}
-    recap = {"text": str(text or ""), "for_uuid": for_uuid,
-             "at": time.time() if now is None else float(now)}
-    if empty:
-        # Claude said nothing in prose anywhere: not a failure, so not retried.
-        recap["empty"] = True
-
-    def mutate(state: dict):
-        rec = state.get(session_id)
-        rec = dict(rec) if isinstance(rec, dict) else {}
-        rec["recap"] = recap
-        state[session_id] = rec
-        return recap, True
-
-    return _update(SETTINGS_FILE, mutate)
-
-
 # THE STABLE AI TITLE (prefs `task_summary_titles_enabled`) is one more field
 # on the same record, under `ai_title`:
 #

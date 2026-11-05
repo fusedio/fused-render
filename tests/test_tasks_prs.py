@@ -236,7 +236,7 @@ def test_session_prs_drops_malformed_entries():
 def test_other_writers_keep_the_prs():
     tasks_store.record_prs("s1", [{"repo": "a/b", "number": 1, "url": ""}])
     tasks_store.record_settings("s1", model="opus")
-    tasks_store.record_recap("s1", "u1", "text")
+    tasks_store.record_ai_title("s1", "text", 1)
     tasks_store.record_title("s1", "mine")
     got = tasks_store.session_prs(tasks_store.settings_state(), "s1")
     assert _numbers(got) == [("a/b", 1)]
