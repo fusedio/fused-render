@@ -725,6 +725,21 @@ export interface TurnBreak {
   segments: number;
   /** Number of `text` characters before the seam. */
   text: number;
+  /**
+   * The message the span after this seam answers, when the seam IS its echo
+   * (a line steered into a running tool call, a genuine turn boundary —
+   * agent.py `_seam`). Absent on a fold-in's seam, which is a `result`. A page
+   * with no bubble of its own for these words draws one from here
+   * (run-controller `placeReply`); an older agent.py never sends it.
+   */
+  user?: TurnBreakUser;
+}
+
+/** `TurnBreak.user`: the echoed words, as the wire carried them (blocks and
+ *  all — the page strips them), and the echo row's uuid when it has one. */
+export interface TurnBreakUser {
+  text: string;
+  uuid?: string;
 }
 
 /** The narrow early-exit body: unknown run_id / another target (agent.py:3802,3824). */

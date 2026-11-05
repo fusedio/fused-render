@@ -103,6 +103,16 @@ const unknownRunPoll = () => ({
 });
 /** The text of a segment the test built, for asserting on a rendered span. */
 const bodyOf = (sg: Segment): string => (sg as { text?: string }).text || "";
+/** A settled tool call, the segment a steered line lands after. */
+const toolSeg = (id: string): Segment => ({
+  kind: "tool",
+  id,
+  name: "Bash",
+  input: { command: "sleep" },
+  status: "ok",
+  output: "",
+  images: [],
+});
 
 function makeController(
   handlers: Record<string, Handler>,
@@ -1649,6 +1659,184 @@ describe("follow-ups (T:16024, D687)", () => {
     // B survived: the last reply did not land on top of it.
     expect(reply[2]!.text).toBe(C1.text);
     expect(reply.map((t) => !!t.streaming)).toEqual([false, false, false]);
+  });
+
+  // Akshil, 2026-11-05: two lines typed while a tool ran were answered ABOVE
+  // their own bubbles. The CLI injects a line typed mid-tool straight after the
+  // `tool_result`, the model's next output answers it, and no `result` lands
+  // between — so agent.py now cuts at the echo (`_absorbed_turn_breaks`,
+  // "steered") and the seam carries the words. This page sent both lines, so
+  // both bubbles are already up when the seams arrive: each reply has to go
+  // under ITS bubble (slot n → follow-up n), not after the last one.
+  test("a reply to a line steered into a tool call opens under that line's own bubble", async () => {
+    let controller!: ChatController;
+    const A1 = text("Checking. ");
+    const T1 = toolSeg("t1");
+    const B1 = text("Reading 74 and 75.");
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A1, T1], text: A1.text });
+        if (n === 1) {
+          await controller.sendFollowUp("read these");
+          await controller.sendFollowUp("and this one");
+          return poll({ segments: [A1, T1], text: A1.text });
+        }
+        // Both echoes landed on the one `tool_result`: two seams at the same
+        // offsets, each with its words, and the reply after them answers both.
+        if (n === 2) {
+          return poll({
+            segments: [A1, T1, B1],
+            text: A1.text + B1.text,
+            turn_breaks: [
+              { segments: 2, text: A1.text.length, user: { text: "read these", uuid: "e1" } },
+              { segments: 2, text: A1.text.length, user: { text: "and this one", uuid: "e2" } },
+            ],
+          });
+        }
+        return poll({
+          done: true,
+          segments: [A1, T1, B1],
+          text: A1.text + B1.text,
+          turn_breaks: [
+            { segments: 2, text: A1.text.length, user: { text: "read these", uuid: "e1" } },
+            { segments: 2, text: A1.text.length, user: { text: "and this one", uuid: "e2" } },
+          ],
+        });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+
+    const turns = controller.getState().turns;
+    expect(turns.map((t) => t.role)).toEqual(["user", "assistant", "user", "user", "assistant"]);
+    // No bubble was drawn twice from the seam's words: these are the page's own.
+    expect(users(controller).map((t) => t.text)).toEqual(["go", "read these", "and this one"]);
+    const reply = assistants(controller);
+    // The tool call stays in the first reply; the answer to both lines is its own.
+    expect(reply.map((t) => (t.segments || []).map((sg) => sg.kind))).toEqual([["text", "tool"], ["text"]]);
+    expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([[A1.text, ""], [B1.text]]);
+    expect(reply.map((t) => !!t.streaming)).toEqual([false, false]);
+  });
+
+  // Two lines steered at two DIFFERENT tool boundaries, both typed before the
+  // first was answered: the first reply belongs between the two bubbles. Pushed
+  // to the end of the log (what every reply did before `placeReply`) it sat
+  // under the second bubble, answering a question it had not been asked yet.
+  test("a reply to the first of two steered lines goes between their bubbles", async () => {
+    let controller!: ChatController;
+    const A1 = text("Checking. ");
+    const T1 = toolSeg("t1");
+    const B1 = text("Reading 74. ");
+    const T2 = toolSeg("t2");
+    const C1 = text("Reading 73.");
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A1, T1], text: A1.text });
+        if (n === 1) {
+          await controller.sendFollowUp("read 74");
+          await controller.sendFollowUp("and 73");
+          return poll({ segments: [A1, T1], text: A1.text });
+        }
+        // The first echo landed on t1 and is being answered; the second is
+        // still queued behind the tool that answer is now running.
+        if (n === 2) {
+          return poll({
+            segments: [A1, T1, B1, T2],
+            text: A1.text + B1.text,
+            turn_breaks: [{ segments: 2, text: A1.text.length, user: { text: "read 74", uuid: "e1" } }],
+          });
+        }
+        const both = [
+          { segments: 2, text: A1.text.length, user: { text: "read 74", uuid: "e1" } },
+          { segments: 4, text: A1.text.length + B1.text.length, user: { text: "and 73", uuid: "e2" } },
+        ];
+        if (n === 3) {
+          return poll({ segments: [A1, T1, B1, T2, C1], text: A1.text + B1.text + C1.text, turn_breaks: both });
+        }
+        return poll({ done: true, segments: [A1, T1, B1, T2, C1], text: A1.text + B1.text + C1.text, turn_breaks: both });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+
+    const turns = controller.getState().turns;
+    expect(turns.map((t) => (t.role === "user" ? `u:${t.text}` : t.role))).toEqual([
+      "u:go",
+      "assistant",
+      "u:read 74",
+      "assistant",
+      "u:and 73",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([[A1.text, ""], [B1.text, ""], [C1.text]]);
+  });
+
+  // A line queued while the model was still thinking (no body yet) went up as
+  // a bubble before the reply had a row — and the reply, pushed to the end of
+  // the log when its first body arrived, streamed UNDER that bubble (headless
+  // run, 2026-11-05). The turn's own reply belongs above the next follow-up.
+  test("a reply whose body arrives after a follow-up went up still opens above that bubble", async () => {
+    let controller!: ChatController;
+    const A1 = text("Reply A.");
+    const B1 = text("Reply B.");
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("and this");
+          return poll({ segments: [], text: "" });
+        }
+        if (n === 1) return poll({ segments: [A1], text: A1.text });
+        const seam = [{ segments: 1, text: A1.text.length }];
+        if (n === 2) return poll({ segments: [A1, B1], text: A1.text + B1.text, turn_breaks: seam });
+        return poll({ done: true, segments: [A1, B1], text: A1.text + B1.text, turn_breaks: seam });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(controller.getState().turns.map((t) => (t.role === "user" ? `u:${t.text}` : t.role))).toEqual([
+      "u:go",
+      "assistant",
+      "u:and this",
+      "assistant",
+    ]);
+    expect(assistants(controller).map((t) => (t.segments || []).map(bodyOf))).toEqual([[A1.text], [B1.text]]);
+  });
+
+  // The same seam on a page that did NOT send the line (a reload, a second
+  // window): nothing had drawn the words — the inbox row left when the CLI took
+  // it, the transcript has no user row for a steered line until the turn ends —
+  // so the seam's words become the bubble, in their place, once.
+  test("a steered line's words are drawn from the seam on a page that did not send it", async () => {
+    const A1 = text("Checking. ");
+    const B1 = text("Reading 73.");
+    const seam = [{ segments: 1, text: A1.text.length, user: { text: "<live-app-state>x</live-app-state>\n\nand 73", uuid: "e1" } }];
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A1], text: A1.text });
+        if (n === 1) return poll({ segments: [A1, B1], text: A1.text + B1.text, turn_breaks: seam });
+        if (n === 2) return poll({ segments: [A1, B1], text: A1.text + B1.text, turn_breaks: seam });
+        return poll({ done: true, segments: [A1, B1], text: A1.text + B1.text, turn_breaks: seam });
+      },
+    });
+    await made.controller.sendMessage("go");
+
+    const turns = made.controller.getState().turns;
+    expect(turns.map((t) => t.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    // The words, stripped of the wire's blocks, keyed by the echo's uuid.
+    expect(users(made.controller).map((t) => [t.text, t.uuid])).toEqual([
+      ["go", undefined],
+      ["and 73", "e1"],
+    ]);
+    const reply = assistants(made.controller);
+    expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([[A1.text], [B1.text]]);
   });
 
   // Owner E2E R1, F6 (2026-09-10). "I queued a message, it streamed the response

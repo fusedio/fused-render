@@ -195,6 +195,113 @@ def test_a_reply_still_streaming_reports_nothing_yet(agent):
     assert agent._absorbed_turn_breaks(rows) == []
 
 
+def _tool_use_row(tool_id):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": tool_id, "name": "Bash",
+         "input": {"command": "sleep 1"}}]}}
+
+
+def _bookkeeping_rows():
+    """What the CLI writes between a steered echo and the reply to it
+    (measured live, 2.1.3xx): none of it moves the model."""
+    return [{"type": "command_lifecycle", "uuid": "x"},
+            {"type": "system", "subtype": "status", "status": None}]
+
+
+def test_a_message_steered_into_a_tool_call_is_a_seam_at_the_echo(agent):
+    """Akshil, 2026-11-05: a line typed while a tool ran was answered ABOVE
+    its own bubble. The CLI injects such a line right after the `tool_result`
+    and the model's next output answers it, with no `result` between — so
+    the echo is where the previous answer ends, and the seam carries the
+    words for a page that has no bubble of its own for them."""
+    rows = [
+        _user_row("look"), _text_row("Checking. "),
+        _tool_use_row("t1"), _tool_result_user_row("t1"),
+        {**_user_row("and read PR 73 too"), "uuid": "echo-1"},  # steered
+        *_bookkeeping_rows(),
+        _text_row("Reading PR 73."),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert len(breaks) == 1
+    before = agent._segments_from_rows(rows[:4])
+    assert breaks[0]["segments"] == len(before)
+    assert breaks[0]["text"] == len("Checking. ")
+    assert breaks[0]["user"] == {"text": "and read PR 73 too", "uuid": "echo-1"}
+    # The cut is a segment boundary of the full payload too: the text after
+    # the echo is its own segment, never merged into the one before.
+    whole = agent._segments_from_rows(rows)
+    assert [seg["kind"] for seg in whole] == ["text", "tool", "text"]
+    assert whole[2]["text"] == "Reading PR 73."
+    # The turn's own `result` closes it as usual — no second seam.
+    assert len(agent._absorbed_turn_breaks(
+        rows + [_result_row("Reading PR 73.")])) == 1
+
+
+def test_two_lines_steered_at_one_tool_boundary_are_two_seams(agent):
+    """Both echoes land on the same `tool_result` (the second one's
+    predecessor is the first echo, not a tool answer) and the reply after
+    them answers both: two seams at the same offsets, each with its words."""
+    rows = [
+        _user_row("look"), _text_row("Checking. "),
+        _tool_use_row("t1"), _tool_result_user_row("t1"),
+        _user_row("read these"), _user_row("and this one"),
+        _text_row("Reading both."),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert [b["user"]["text"] for b in breaks] == ["read these", "and this one"]
+    assert [(b["segments"], b["text"]) for b in breaks] == [(2, 10), (2, 10)]
+
+
+def test_a_skills_injected_text_after_a_tool_answer_is_not_a_steered_line(agent):
+    """A skill's content arrives as an `isMeta` user row with words, right
+    after its `tool_result` — the steered shape to the letter — and the page
+    must not draw it as the reader's bubble. `_segments_from_rows` skips
+    synthetic rows; so does the seam scan."""
+    rows = [
+        _user_row("look"), _text_row("Checking. "),
+        _tool_use_row("t1"), _tool_result_user_row("t1"),
+        {**_user_row("<skill>...</skill>"), "isMeta": True},
+        _text_row("Done."),
+    ]
+    assert agent._absorbed_turn_breaks(rows) == []
+
+
+def test_a_steered_line_after_a_fold_ins_result_is_still_a_seam(agent):
+    """`seen_result` stays set after a fold-in's `result`; the tool answer
+    right before a later echo outranks it — the steer is still cut at the
+    echo, with its words, rather than read as a genuine boundary with no
+    `result` adjacent to it (and so no seam at all)."""
+    rows = [
+        _user_row("q1"), _text_row("A."), _user_row("q2"), _result_row("A."),
+        _text_row("B. "), _tool_use_row("t1"), _tool_result_user_row("t1"),
+        _user_row("q3"), _text_row("C."),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert [b.get("user", {}).get("text") for b in breaks] == [None, "q3"]
+    assert breaks[1]["text"] == len("A.B. ")
+
+
+def test_a_line_read_mid_stream_is_still_cut_at_the_result(agent):
+    """The #9 shape is unchanged: an echo inside a streaming answer, with no
+    tool answer before it, is folded in and cut at that answer's `result`."""
+    rows = [
+        _user_row("q1"), _text_row("A, first half. "),
+        _user_row("q2"), _text_row("A, second half."),
+        _result_row("A, first half. A, second half."), _text_row("B."),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert len(breaks) == 1
+    assert breaks[0]["text"] == len("A, first half. A, second half.")
+    assert "user" not in breaks[0]
+    # A reply that streamed after the tool answer and BEFORE the echo is the
+    # same shape: the model was mid-answer, not at a boundary.
+    rows = [
+        _user_row("q1"), _tool_use_row("t1"), _tool_result_user_row("t1"),
+        _text_row("A. "), _user_row("q2"), _text_row("Still A."),
+    ]
+    assert agent._absorbed_turn_breaks(rows) == []
+
+
 def test_a_genuinely_new_turn_IS_a_seam(agent):
     """A `result` closed the turn before this echo, so `_read_current_turn` is
     about to advance the cursor past it — and it is reported ANYWAY.
@@ -218,7 +325,10 @@ def test_a_genuinely_new_turn_IS_a_seam(agent):
     ]
     breaks = agent._absorbed_turn_breaks(rows)
     segs = agent._segments_from_rows(rows)
-    assert breaks == [{"segments": 1, "text": len("A.")}]
+    # A genuine boundary's seam is the echo, so it carries the words too —
+    # the bubble a second window draws where the new reply opens.
+    assert breaks == [{"segments": 1, "text": len("A."),
+                       "user": {"text": "q2", "uuid": ""}}]
     assert [seg["text"] for seg in segs] == ["A.", "B."], (
         "and the seam falls between the segments, never inside one")
 
@@ -629,7 +739,8 @@ def test_the_clis_turn_preamble_between_result_and_echo_is_still_a_seam(agent):
         {"type": "system", "subtype": "status", "session_id": "s"},
         _user_row("q2"), _text_row("B."),
     ]
-    assert agent._absorbed_turn_breaks(rows) == [{"segments": 1, "text": len("A.")}]
+    assert agent._absorbed_turn_breaks(rows) == [
+        {"segments": 1, "text": len("A."), "user": {"text": "q2", "uuid": ""}}]
     assert [seg["text"] for seg in agent._segments_from_rows(rows)] == ["A.", "B."]
 
 
