@@ -2043,7 +2043,8 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
 
     config = json.loads(open(cmd[cmd.index("--mcp-config") + 1]).read())
     entry = config["mcpServers"][agent.PERMISSION_SERVER]
-    assert os.path.basename(entry["args"][0]) == "permission_server.py"
+    assert entry["args"][0] == agent._permission_server_path()
+    assert os.path.basename(entry["args"][0]).startswith("permission_server-")
     assert os.path.isfile(entry["args"][0])
     assert entry["args"][1] == agent._perm_dir(os.path.join(agent.RUNS, run_id))
     # The per-call ceiling has to clear the server's own wait, or the CLI cuts
