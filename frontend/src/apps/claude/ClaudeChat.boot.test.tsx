@@ -991,4 +991,43 @@ describe("breakout pick mode", () => {
     mounted.splice(mounted.indexOf(r), 1);
     expect(last()).toBeNull();
   });
+
+  test("Escape while picking: a capture listener on window cancels the pick and stops outer handlers", async () => {
+    const win = window as unknown as { addEventListener: (t: string, f: (e: unknown) => void, o?: unknown) => void; removeEventListener: (t: string, f: (e: unknown) => void, o?: unknown) => void };
+    const prevAdd = win.addEventListener;
+    const prevRemove = win.removeEventListener;
+    const caps: Array<(e: unknown) => void> = [];
+    win.addEventListener = (t, f, o) => void (t === "keydown" && (o === true || (o as { capture?: boolean } | undefined)?.capture) && caps.push(f));
+    win.removeEventListener = (t, f) => void (t === "keydown" && caps.includes(f) && caps.splice(caps.indexOf(f), 1));
+    try {
+      const { r } = await mountParent();
+      const outer: unknown[] = [];
+      const press = async () => {
+        let stopped = false;
+        const ev = { key: "Escape", defaultPrevented: false, target: null,
+          preventDefault() { this.defaultPrevented = true; }, stopPropagation() { stopped = true; }, stopImmediatePropagation() { stopped = true; } };
+        await act(async () => {
+          for (const f of [...caps]) f(ev);
+          if (!stopped) outer.push(ev); // the bubble listener on document
+        });
+        return ev;
+      };
+      // Not picking: no listener, the press reaches the outer handler untouched.
+      expect(caps).toHaveLength(0);
+      const idle = await press();
+      expect(idle.defaultPrevented).toBe(false);
+      expect(outer).toHaveLength(1);
+      toggle(r);
+      expect(kebabOf(r).props.breakout.picking).toBe(true);
+      expect(caps).toHaveLength(1);
+      const ev = await press();
+      expect(ev.defaultPrevented).toBe(true);
+      expect(outer).toHaveLength(1); // not called again
+      expect(kebabOf(r).props.breakout.picking).toBe(false);
+      expect(caps).toHaveLength(0); // listener removed
+    } finally {
+      win.addEventListener = prevAdd;
+      win.removeEventListener = prevRemove;
+    }
+  });
 });

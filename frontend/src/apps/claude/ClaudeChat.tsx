@@ -5775,6 +5775,23 @@ function ChatBody(props: ChatBodyProps) {
     onBreakoutControl?.({ available: breakoutGate, picking, toggle: stableToggle });
   }, [onBreakoutControl, breakoutGate, picking, stableToggle]);
   useEffect(() => () => onBreakoutControl?.(null), [onBreakoutControl]);
+  // ESCAPE WHILE PICKING cancels the pick and nothing else: captured on window
+  // so no outer Escape handler (peek, side pane, sidebar) sees it first.
+  useEffect(() => {
+    if (!picking) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const a = document.activeElement as Element | null;
+      if (a?.closest?.("[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      setPicking(false);
+      setBreakoutSel(new Set());
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [picking]);
   const kebabEl = (
     <>
       {canvasShotSeat}
