@@ -23,6 +23,31 @@
   background: var(--bg);
   --rail-sep: color-mix(in srgb, var(--fg) 22%, transparent);
 }
+/* THE RAIL REACHES THE WINDOW'S BOTTOM (owner, 2026-11-05: "like the left
+   sidebar, it goes all the way to the bottom"): the rail is laid out above
+   the status bar — the page's row ends where the bar begins — so its column
+   is continued through the bar's strip by this box: the rail's own
+   background and left hairline, one status bar tall, hung off its foot. The
+   bar itself ends at the rail (notifications.css `--status-bar-end`), so
+   nothing of the bar is covered. Favourites on only (`railUp` says the
+   width then; the rail of 2026-11-04 is as it was), and never over an open
+   terminal drawer, which stands between the rail's foot and the bar. Above
+   the bar (a positioned sibling later in the tree) by its z-index; the
+   rail's cards are portaled to the body and are not in this context. */
+.claude-rail.is-scroll:not([hidden]) {
+  z-index: 3;
+}
+#main:not(:has(> .term-drawer)) .claude-rail.is-scroll:not([hidden])::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: -1px;
+  right: 0;
+  height: var(--status-bar-h, 22px);
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  pointer-events: none;
+}
 /* A rail with nothing to draw beside the open pane (ClaudeRail `shown`,
    claude-rail-lib `railShown`) is hidden, not unmounted: the attribute alone
    loses to `display: flex` above. */
