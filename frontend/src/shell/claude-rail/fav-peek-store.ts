@@ -35,14 +35,30 @@
 // canvas the page stands on selects it in place, as the rail's own card's
 // does (claude-rail-lib `chipDoor`). Read at the press (`railHere`), never
 // held: the page's selection moves without the store hearing of it.
+//
+// …AND WHERE THE PAGE STANDS (`page`, `setRailPage`): its place's root and
+// its selected node, as the top rail last said. The favourite's where-chip
+// goes nowhere — plain text, no fill — when it names that very place
+// (claude-rail-lib `chipDoor`'s `pageRoot`), so the card hears a hop the
+// rail makes in place (the explorer keeps one rail from folder to file) and
+// a node selected on the canvas.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TaskPulseTask } from "@platform/lib/api";
 import { clearFavOpen, favOpenedAtMs, useFavOpen } from "@platform/lib/last-chat";
 import type { RailHere } from "./claude-rail-lib";
 import { FAV_SETTLE_MS, favOpenVerdict, type Box } from "./rail-peek-lib";
 
+/** Where the page a rail stands on is (header): its `placeRoot`, and the
+ *  canvas's selected node file (null: none, or not a canvas). */
+export interface RailPage {
+  root: string;
+  node: string | null;
+}
+
 export interface FavPeekState {
   rail: HTMLElement | null;
+  /** The top rail's page (header); null with no rail, or one that never said. */
+  page: RailPage | null;
   favBox: Box | null;
   /** The favourite whose card should take the keyboard when it stands. */
   pendingFocus: string | null;
@@ -51,7 +67,7 @@ export interface FavPeekState {
 /** How long a keyboard press's wish to focus the card outlives the press. */
 export const PENDING_FOCUS_MS = 10_000;
 
-let live: FavPeekState = { rail: null, favBox: null, pendingFocus: null };
+let live: FavPeekState = { rail: null, page: null, favBox: null, pendingFocus: null };
 /** Every rail registered and not yet gone, oldest first (header). */
 let rails: HTMLElement[] = [];
 let pendingAt = 0;
@@ -67,9 +83,20 @@ function sameBox(a: Box | null, b: Box | null): boolean {
   return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
 }
 
+function samePage(a: RailPage | null, b: RailPage | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.root === b.root && a.node === b.node;
+}
+
 function flush(): void {
   dirty = false;
-  if (live.rail === seen.rail && sameBox(live.favBox, seen.favBox) && live.pendingFocus === seen.pendingFocus) {
+  if (
+    live.rail === seen.rail &&
+    samePage(live.page, seen.page) &&
+    sameBox(live.favBox, seen.favBox) &&
+    live.pendingFocus === seen.pendingFocus
+  ) {
     // Back where it started: nothing to say.
     live = seen;
     return;
@@ -94,13 +121,16 @@ function topRail(): HTMLElement | null {
   return null;
 }
 
-function settleRail(): void {
-  const top = topRail();
-  if (live.rail !== top) mark({ ...live, rail: top });
-}
-
 /** Each rail's page canvas, as its rail answers it (header). */
 const heres = new WeakMap<HTMLElement, () => RailHere | null>();
+/** Each rail's page, as its rail last said (header). */
+const pages = new WeakMap<HTMLElement, RailPage>();
+
+function settleRail(): void {
+  const top = topRail();
+  const page = (top && pages.get(top)) ?? null;
+  if (live.rail !== top || !samePage(live.page, page)) mark({ ...live, rail: top, page });
+}
 
 /** A rail mounted: it goes on top of the stack (header). The answer takes it
  *  off again — itself only, wherever it stands in the stack. `here`: the
@@ -113,8 +143,17 @@ export function registerRail(el: HTMLElement, here?: () => RailHere | null): () 
   return () => {
     rails = rails.filter((r) => r !== el);
     heres.delete(el);
+    pages.delete(el);
     settleRail();
   };
+}
+
+/** Where `el`'s page stands now (header): a rail says so as it mounts and on
+ *  every hop or node selection it makes in place. Null forgets it. */
+export function setRailPage(el: HTMLElement, page: RailPage | null): void {
+  if (page) pages.set(el, page);
+  else pages.delete(el);
+  settleRail();
 }
 
 /** The page canvas `rail` registered with (header), now; null for a rail
@@ -238,7 +277,7 @@ export function useFavPeekState(): FavPeekState {
 }
 
 export function resetFavPeekStoreForTests(): void {
-  live = { rail: null, favBox: null, pendingFocus: null };
+  live = { rail: null, page: null, favBox: null, pendingFocus: null };
   seen = live;
   dirty = false;
   rails = [];

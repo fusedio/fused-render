@@ -252,6 +252,21 @@
 /* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
    of a pinned chat that is not the selected node's, above the canvas glyph
    and under the hairline, so it reads as "pinned, outside this list". */
+/* A favourite's ring over a pinned card (ClaudeRail `pointerQuiet`): an
+   empty hint over the link's whole hit box (its `::after`), so the pointer's
+   rest — which swaps the card there — draws no caption, while the link's own
+   caption still answers a Tab. */
+.claude-rail-chat-shield {
+  position: absolute;
+  inset: -2px -9px;
+  z-index: 1;
+}
+/* …only while the hover CAN swap: typing in the card or a press inside it
+   blocks the swap (rail-peek-lib `enterRing`), and the ring's caption shows
+   instead of nothing (ClaudeRail's intent sink sets the attribute). */
+.claude-rail[data-swap-blocked] .claude-rail-chat-shield {
+  display: none;
+}
 .claude-rail-held {
   display: flex;
   justify-content: center;
@@ -760,34 +775,45 @@
   border: 1px solid var(--border);
   color: var(--fg-muted);
 }
-.claude-rail-peek-scope.is-node {
+/* The where-chip FILLS ONLY WHEN IT IS A DOOR (RailPeek; owner, 2026-11-05:
+   "filled background only when a click navigates or does something"): a
+   link to another folder, file or canvas, or a node of this canvas to
+   select (`.is-door`, claude-rail-lib `chipDoor`). A chip naming the place
+   the page already stands on is a plain-text span — the outline alone, the
+   muted ink, the default cursor. The door: no underline, ink, the fill, and
+   a firmer wash on hover.
+   FAVOURITES OFF (favourites-flag; the card without `.favs-on`): the chip as
+   it was — always a link, the ink and the fill on a node's chip alone. */
+.claude-rail-peek:not(.favs-on) .claude-rail-peek-scope.is-node {
   color: var(--fg);
   background: rgba(var(--tint), 0.06);
 }
-/* The where-chip is a LINK (RailPeek; owner, 2026-11-04: "click on the tag
-   — we should go to the page/node, wherever we have"): the same chip, no
-   underline, and a hover wash like the head's other seats. The chip naming
-   the page's own selection is `aria-disabled` and stays still. */
-a.claude-rail-peek-scope,
-a.claude-rail-peek-scope:hover {
+a.claude-rail-peek-scope.is-door,
+a.claude-rail-peek-scope.is-door:hover {
   text-decoration: none;
 }
-a.claude-rail-peek-scope {
+a.claude-rail-peek-scope.is-door {
   display: inline-block;
   cursor: pointer;
   transition:
     background-color 0.12s ease,
     border-color 0.12s ease;
 }
-a.claude-rail-peek-scope[aria-disabled="true"] {
+.claude-rail-peek.favs-on a.claude-rail-peek-scope.is-door {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
+/* Favourites off: a chip naming the page's own place is a link that goes
+   nowhere (`aria-disabled`, claude-rail-lib `chipDoor` `current`) — the
+   default cursor, no hover or press wash. */
+a.claude-rail-peek-scope.is-door[aria-disabled="true"] {
   cursor: default;
 }
-a.claude-rail-peek-scope:not([aria-disabled="true"]):hover {
-  color: var(--fg);
+.claude-rail-peek a.claude-rail-peek-scope.is-door:not([aria-disabled="true"]):hover {
   background: rgba(var(--tint), 0.14);
   border-color: rgba(var(--tint), 0.35);
 }
-a.claude-rail-peek-scope:not([aria-disabled="true"]):active {
+.claude-rail-peek a.claude-rail-peek-scope.is-door:not([aria-disabled="true"]):active {
   background: rgba(var(--tint), 0.2);
 }
 a.claude-rail-peek-scope:focus-visible {
