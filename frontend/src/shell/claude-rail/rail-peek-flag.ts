@@ -10,6 +10,7 @@
 // default, so a rail never grows a card the reader turned off because a GET
 // was still out.
 import { useEffect, useState } from "react";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { dropSharedPrefsRead, getPrefsShared, onPrefsWrittenElsewhere, type Prefs } from "@platform/lib/api";
 
 let answer: boolean | null = null;
@@ -81,4 +82,12 @@ export function resetCanvasRailPeekFlagForTests() {
   generation += 1;
   answer = null;
   for (const listener of listeners) listener(false);
+}
+
+/** THE ONE GATE for everything the favourites rail adds (ClaudeRail's
+ *  `favsOn`, FallbackRail): the favourites switch AND the preview card's. */
+export function useRailFeatureOn(): boolean {
+  const favourites = useTaskFavourites();
+  const peekOn = useCanvasRailPeek();
+  return favourites && peekOn;
 }

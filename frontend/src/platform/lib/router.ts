@@ -537,13 +537,18 @@ export async function confirmLeave(): Promise<boolean> {
  * unmount save: Back out of a chat with words in the box and they are written,
  * not lost — silently, which is the trade this door is stuck with.
  */
-function guarded(go: () => void): void {
+function guarded(go: () => void): Promise<boolean> {
   if (!leaveGuards.size) {
     go();
-    return;
+    return Promise.resolve(true);
   }
-  void confirmLeave().then((ok) => {
+  // Settles once the push has run (`true`) or been refused (`false`): a
+  // caller waiting on the hop (the Claude rail's where-chip, rail-peek-lib
+  // `onHop`) learns the refusal instead of waiting on a navigate that never
+  // comes.
+  return confirmLeave().then((ok) => {
     if (ok) go();
+    return ok;
   });
 }
 
@@ -730,7 +735,7 @@ export function navigate(
   // THE URL IS BUILT NOW AND PUSHED WHEN THE GUARD ANSWERS: everything above
   // reads `location.search`, which is still this page's while the question is up.
   const href = urlForFsPath(fsPath, search);
-  guarded(() => {
+  void guarded(() => {
     pushHistory(state, href);
     notifyNavigate();
   });
@@ -811,7 +816,7 @@ export function spaLinkProps(
   };
 }
 
-export function navigateUrl(url: string, opts?: { isDir?: boolean; replace?: boolean }): void {
+export function navigateUrl(url: string, opts?: { isDir?: boolean; replace?: boolean }): Promise<boolean> {
   // Like navigate(), but preserves the full url (incl. query string) — used
   // when opening a bookmark, whose url carries saved view params. Callers
   // that know the target's kind (e.g. Home's post-create hop into the app
@@ -819,12 +824,14 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean; replace?: boo
   // destination paints the right scaffold instead of the file one.
   // `replace` swaps the current history entry instead of adding one (in-page
   // tab switches, where Back should leave the page); the nav event still fires.
+  // Resolves `true` once pushed (the nav event already dispatched), `false`
+  // when the leave guard refused the hop (`guarded`).
   const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
   // Stored urls (bookmarks, recents) may predate the
   // /explorer prefix rename; an in-app push skips the module-init rewrite, so
   // map here or the dispatcher won't recognize the path.
   const href = rewriteLegacyUrl(url);
-  guarded(() => {
+  return guarded(() => {
     if (opts?.replace) history.replaceState(state ?? history.state, "", href);
     else pushHistory(state, href);
     notifyNavigate();

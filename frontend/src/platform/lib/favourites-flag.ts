@@ -1,8 +1,9 @@
 // Whether chats can be FAVOURITED (owner, 2026-11-03: "make sure this is
 // under flag") — the `task_favourites_enabled` preference (shell/prefs.py),
 // default OFF. Off, there is no star on the rail's card, no favourites
-// section on the rail, no favourite's card (FavouritePeek) and no Favourites
-// block in the pane; the server keeps the stars either way. The shape of
+// section on the rail, no favourite's card (FavouritePeek), no rail beside
+// the open pane, and the pane's Recent keeps starred chats; the server keeps
+// the stars either way. The shape of
 // shell/claude-rail/rail-peek-flag.ts, which it is a child of in Settings;
 // here in platform because the pane (apps/claude) reads it too.
 //

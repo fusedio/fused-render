@@ -86,6 +86,48 @@ export const PEEK_MAX_WIDTH = 722;
  *  under the list card's. */
 export const FAV_WIDTH = 380;
 export const FAV_HEIGHT = 520;
+/** THE FAVOURITE'S CARD NEVER STANDS TALLER THAN HALF THE WINDOW (owner,
+ *  2026-11-05: a taller one pushed the list's hover card, which keeps clear
+ *  of it, to the far left): on open, on every placement as the window
+ *  shrinks (`favCardWish`), and through a drag (`dragResize`'s `maxHeight`). */
+export const FAV_MAX_SHARE = 0.5;
+
+/** The favourite card's ceiling in a window `viewportH` tall. */
+export function favMaxHeight(viewportH: number): number {
+  return Math.floor(viewportH * FAV_MAX_SHARE);
+}
+
+/** A card's size as the reader last dragged it (ui-layout), or null. */
+export interface StoredSize {
+  width: number;
+  height: number;
+}
+
+/** WHAT SIZE A LIST CARD ASKS FOR (RailPeek `wishFor`). A seat with no
+ *  conversation: the short card. A chat: the remembered size once the card
+ *  is GROWN (a pinned card, after its press) — and, with favourites on
+ *  (`oneSize`; owner, 2026-11-05: "the hover preview and the click preview
+ *  must be the same size"), whatever its state, so a hover is the size a
+ *  click would be. Nothing remembered: the default. */
+export function listCardWish(o: {
+  hasSession: boolean;
+  stored: StoredSize | null;
+  grown: boolean;
+  oneSize: boolean;
+}): PeekWish {
+  if (!o.hasSession) return { maxHeight: PEEK_PLAIN_HEIGHT };
+  const s = o.oneSize || o.grown ? o.stored : null;
+  return s ? { width: s.width, maxHeight: s.height } : { maxHeight: PEEK_MAX_HEIGHT };
+}
+
+/** WHAT SIZE THE FAVOURITE'S CARD ASKS FOR (RailPeek `wishFor`, `size` +
+ *  `resizeKey`): its own remembered size over its fixed wish `base`, its
+ *  height capped at half the window (`favMaxHeight`). */
+export function favCardWish(base: PeekWish, stored: StoredSize | null, viewportH: number): PeekWish {
+  const w = stored ? { ...base, width: stored.width, maxHeight: stored.height } : base;
+  return { ...w, maxHeight: Math.min(w.maxHeight ?? PEEK_MAX_HEIGHT, favMaxHeight(viewportH)) };
+}
+
 /** …and for a seat with no conversation (a draft, a scheduled task): what it
  *  is, its words and its door need no transcript's worth of card. */
 export const PEEK_PLAIN_HEIGHT = 250;
@@ -175,7 +217,16 @@ export type ResizeEdge = "tl" | "bl" | "l" | "t" | "b";
  *  `b`) the width. `maxBottom` (viewport y) is a floor the bottom may not
  *  pass short of the row's own — the favourite's card's top, for the rail's
  *  card standing above it (RailPeek `avoid`). */
-export function dragResize(edge: ResizeEdge, start: Box, dx: number, dy: number, bounds: Box, maxBottom?: number): Box {
+export function dragResize(
+  edge: ResizeEdge,
+  start: Box,
+  dx: number,
+  dy: number,
+  bounds: Box,
+  maxBottom?: number,
+  /** A ceiling on the height (the favourite's card: `favMaxHeight`). */
+  maxHeight?: number,
+): Box {
   // The row wins over the minimums: a row with less room than PEEK_MIN_*
   // (peekPlacement accepts down to 120) must not be pushed past its inset.
   const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
@@ -188,10 +239,10 @@ export function dragResize(edge: ResizeEdge, start: Box, dx: number, dy: number,
   let height: number;
   if (edge === "tl" || edge === "t") {
     const bottom = start.top + start.height;
-    height = clamp(start.height - dy, PEEK_MIN_HEIGHT, bottom - minTop);
+    height = clamp(start.height - dy, PEEK_MIN_HEIGHT, Math.min(bottom - minTop, maxHeight ?? Infinity));
     top = bottom - height;
   } else if (edge === "bl" || edge === "b") {
-    height = clamp(start.height + dy, PEEK_MIN_HEIGHT, floor - start.top);
+    height = clamp(start.height + dy, PEEK_MIN_HEIGHT, Math.min(floor - start.top, maxHeight ?? Infinity));
     top = start.top;
   } else {
     height = start.height;
@@ -340,7 +391,9 @@ export class PeekIntent {
     return this.pinned;
   }
 
-  /** The pointer (or the keyboard focus) arrived on ring `key`. */
+  /** The pointer (or the keyboard focus) arrived on ring `key`. A pinned card
+   *  moves for no hover: only a ring's press does (owner, 2026-11-05: a
+   *  favourite's ring is the OTHER window's — its hover opens that one). */
   enterRing(key: string, via: Via = "pointer"): void {
     if (via === "pointer") {
       this.pointerKey = key;
@@ -385,8 +438,9 @@ export class PeekIntent {
 
   /** The pointer (or focus) left the ring it was on. */
   leaveRing(via: Via = "pointer"): void {
-    if (via === "pointer") this.pointerKey = null;
-    else {
+    if (via === "pointer") {
+      this.pointerKey = null;
+    } else {
       this.focusKey = null;
       this.muteFocus = false;
     }
@@ -426,8 +480,8 @@ export class PeekIntent {
       // The card's composer may have held the focus; its unmount fires no
       // blur in every engine, so the hold is dropped here.
       this.held = false;
-      this.pressing = false;
-      this.setPinned(false);
+        this.pressing = false;
+        this.setPinned(false);
       this.set(null);
       return;
     }
@@ -622,6 +676,20 @@ export function starMarkStep(mark: StarMark, t: TaskPulseTask | undefined): Star
   return { ...mark, pulse: t, seen: mark.seen + 1 };
 }
 
+/** WINDOW B'S HOVER ROW (FavouritePeek hover mode; owner, 2026-11-05): the
+ *  pulse row of the hovered favourite — only while NO favourite's card is
+ *  open in this window (an open card is pressed, and its other rings speak
+ *  by their caption alone), only for a live star with a conversation. */
+export function favHoverRow(
+  hoverKey: string | null,
+  openKey: string | null,
+  rows: readonly TaskPulseTask[],
+): TaskPulseTask | null {
+  if (!hoverKey || openKey) return null;
+  const t = rows.find((r) => r.key === hoverKey);
+  return t && t.starred && t.status !== "archived" && t.session_id ? t : null;
+}
+
 /** What a card does once the server has answered its star (RailPeek
  *  `toggleStar`): the rail hears it (`onStarred`), and an UNSTAR shuts the
  *  card only where the card is the favourite's own (`dismissOnUnstar`,
@@ -649,6 +717,64 @@ export function railOnStarred(
     letGo(key);
     open(key);
   };
+}
+
+/** The rail's side of a WHERE-CHIP LEAVING THE PAGE (ClaudeRail
+ *  `onChipLeave`): the rail's card, showing a live favourite's chat (a hover
+ *  on its ring), hands it to the favourite's card in this window as the hop
+ *  goes (`onHop`: only once the router's leave guard let it) — `letGo` first
+ *  (the draft flushed, one composer per draft), then `open` (the per-window
+ *  open key, sessionStorage: it survives the hop), told whether the press
+ *  was the keyboard's (the favourite's card then takes the focus on arrival,
+ *  as a ring's keyboard press does). Anything else (favourites off, a list
+ *  chat, a favourite with no session) just goes. */
+export function railOnChipLeave(
+  favsOn: () => boolean,
+  liveFav: (key: string) => boolean,
+  letGo: (key: string) => void,
+  open: (key: string, keyboard: boolean) => void,
+): (key: string, keyboard?: boolean) => void {
+  return (key, keyboard = false) => {
+    if (!favsOn() || !liveFav(key)) return;
+    letGo(key);
+    open(key, keyboard);
+  };
+}
+
+/** What `onHop` listens on (the window). */
+export interface HopTarget {
+  addEventListener(type: string, fn: () => void): void;
+  removeEventListener(type: string, fn: () => void): void;
+}
+
+/** THE HOP, ONLY WHEN IT HAPPENS: `go` starts a navigation the router's
+ *  leave guard may refuse (router `guarded`: a question first, the push only
+ *  on a yes) and settles once it is decided (router `navigateUrl`: `true`
+ *  pushed, `false` refused). `then` runs once the hop is real — on the
+ *  router's navigate `event`, which the router dispatches synchronously
+ *  inside the push (router `navigateUrl` → `notifyNavigate`, after
+ *  `pushHistory`), so with no guard it runs before `go` returns, and on a
+ *  guard's yes as the answer lands, before the page repaints. The listener
+ *  lives exactly as long as the question: once `go` settles (the push, if
+ *  any, has fired the event by then) it is removed — a refused hop hands
+ *  nothing over, and never answers a later navigation either (Bugbot on
+ *  #2122: a stale listener used to run its hand-over on the next hop to the
+ *  same page, one more per refused press). `arrived` double-checks the
+ *  event was this hop's. */
+export function onHop(
+  win: HopTarget,
+  event: string,
+  arrived: () => boolean,
+  then: () => void,
+  go: () => Promise<boolean>,
+): void {
+  const heard = () => {
+    win.removeEventListener(event, heard);
+    if (arrived()) then();
+  };
+  win.addEventListener(event, heard);
+  const drop = () => win.removeEventListener(event, heard);
+  go().then(drop, drop);
 }
 
 /** The words a refused favourite write says: the server's own `detail` (a
@@ -736,6 +862,29 @@ export function favChatElsewhere(
   return null;
 }
 
+/** WHAT A FAVOURITE'S RING DOES (ClaudeRail; owner, 2026-11-05: a card with
+ *  only a note must never show): `"pane"` when the pane's composer already
+ *  holds its chat (a press focuses that composer, no card, the hover shows
+ *  the title only), `"door"` when the Tasks peek holds it (a press opens the
+ *  chat, no card), else `"card"` (window B as always). */
+export function favRingRoute(
+  fav: { key: string; session_id?: string | null } | null,
+  paneSessions: readonly string[],
+  peekSession: string | null,
+): "pane" | "door" | "card" {
+  const where = favChatElsewhere(fav, paneSessions, peekSession);
+  return where === "pane" ? "pane" : where === "peek" ? "door" : "card";
+}
+
+/** THE OPEN KEYS A FAVOURITE'S PRESS LETS GO (ClaudeRail): a press that goes
+ *  to the pane or the door opens no card, and window B open on ANOTHER
+ *  favourite would show the wrong task beside the pane — so both the pressed
+ *  key and the open one are cleared. A card press clears nothing here. */
+export function favPressClears(route: "pane" | "door" | "card", pressed: string, open: string | null): string[] {
+  if (route === "card") return [];
+  return open && open !== pressed ? [pressed, open] : [pressed];
+}
+
 /** THE ROW THE RAIL STANDS IN — the box the card is placed against and
  *  watched for resizes: the rail's nearest ancestor that HAS a box. The
  *  explorer's file view portals the rail into `.stat-side-slot`, which is
@@ -747,4 +896,23 @@ export function rowOf(rail: HTMLElement | null): HTMLElement | null {
   let el = rail?.parentElement ?? null;
   while (el && getComputedStyle(el).display === "contents") el = el.parentElement;
   return el;
+}
+
+/** THE RAIL BESIDE AN OPEN PANE (ClaudeRail `paneOpen`; owner, 2026-11-05):
+ *  how much of `split`'s right edge a standing rail takes — 0 with none, or
+ *  a hidden one. A pane's seam drag measures the pane as the distance from
+ *  the pointer to the split's right edge; with the rail at that edge the pane
+ *  ends 48px short of it, and the seam would trail the pointer by the rail.
+ *  Only a rail AT the right edge counts (the explorer portals its rail into a
+ *  `display: contents` slot, so it is a descendant, not always a child). */
+export function railInset(split: Element | null | undefined): number {
+  // A stand-in with no DOM behind it (a test's rect-only split) has no rail.
+  if (!split || typeof split.querySelectorAll !== "function") return 0;
+  const right = split.getBoundingClientRect().right;
+  for (const rail of split.querySelectorAll<HTMLElement>(".claude-rail")) {
+    if (rail.hidden) continue;
+    const box = rail.getBoundingClientRect();
+    if (box.width > 0 && Math.abs(box.right - right) <= 1) return box.width;
+  }
+  return 0;
 }

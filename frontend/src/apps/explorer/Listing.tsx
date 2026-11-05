@@ -121,7 +121,8 @@ import {
 } from "@platform/lib/pending-claude-ask";
 import { SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
-import { ClaudeRail, RAIL_W } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { canonFsPath } from "@platform/lib/path-url";
 import { McpDialog } from "@apps/explorer/McpDialog";
@@ -1070,6 +1071,10 @@ export default function Listing({
   // rings would be a lie). A folder with no Claude companion keeps the search
   // row's Show button.
   const railHere = paneSides.includes("claude");
+  // THE RAIL BESIDE THE OPEN PANE (ClaudeRail `paneOpen`; owner,
+  // 2026-11-05): with favourites on it stands whether the pane is open (on
+  // any companion) or shut; off, only while it is shut, as before.
+  const railAlways = useTaskFavourites();
   const openClaudeSide = () => setSide({ open: true, mode: "claude" });
   // The rail's Git section opens the git companion where this folder has one.
   const railGitDoor = paneSides.includes("git") ? () => setSide({ open: true, mode: "git" }, "git") : undefined;
@@ -2333,7 +2338,7 @@ export default function Listing({
             </div>
           </>
         )}
-        {pane.on && !sideState.open && railHere && (
+        {pane.on && (!sideState.open || railAlways) && railHere && (
           // THE PANE SHUT, Claude a ready companion (`railHere`): the Claude
           // rail takes the split's edge
           // (shell/claude-rail — the canvas page's rail, the same on every
@@ -2344,14 +2349,24 @@ export default function Listing({
           // the List's order — what the shut pane's Claude mode was showing
           // (claude-rail-lib `folder`: the pane's own Recent-list rule). Its
           // inner seam pulls the pane open at the width the pointer takes it
-          // to (startSideReopenPull, measured from this split).
+          // to (startSideReopenPull, measured from this split). With
+          // favourites on it stands past the OPEN pane too, at the split's
+          // right edge (`paneOpen`) — open on CLAUDE only: a pane showing git
+          // or MCP keeps the rail's glyph and seam, its way into the chat.
           <ClaudeRail
+            paneOpen={paneOpen && paneSide === "claude"}
             place={railPlace}
             newTask={{ target: fsPath, waiting: null, on: null }}
             git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}
             activeSessionId={new URLSearchParams(location.search).get("session_id")}
             onOpen={openClaudeSide}
             onOpenChat={(href) => navigateUrl(href)}
+            // The + beside the open pane: this folder's chat with no session,
+            // its Recent chats page (already there: nothing to load).
+            onNewChat={() => {
+              const home = paneHomeHref(location.href);
+              if (home) navigateUrl(home);
+            }}
             onPullStart={(e) =>
               startSideReopenPull(e, e.currentTarget.closest<HTMLElement>(".listing-split"), openClaudeSide, RAIL_W)
             }

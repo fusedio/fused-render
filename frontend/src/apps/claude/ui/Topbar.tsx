@@ -249,7 +249,7 @@ export function Topbar({
             `status: "queued"` is what draws it dashed (taskColumn → StatusIcon).
             Nothing queued-specific is passed: the peek block already says what
             this task is doing, and this header only has to stop hiding it. */}
-        <TaskPeekWho task={who} running={line ? false : running} bare={!!bare} />
+        <TaskPeekWho task={who} running={line ? false : running} bare={!!bare} star />
         {/* …AND THE PLACE IN THE LINE TRAILS THE TITLE, exactly where a Tasks
             row puts it, rather than at the far end of the header. */}
         {line ? <QueuedCaption line={line} /> : null}

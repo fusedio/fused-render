@@ -21,6 +21,7 @@
 import { useRef, useState } from "react";
 import { Pencil } from "lucide-react";
 import { renameTask, type Task } from "@platform/lib/api";
+import { TaskStar } from "@platform/ui/TaskStar";
 import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { columnLabel } from "./schedule-lib";
 import { pokeTasks } from "./tasksPulse";
@@ -88,7 +89,7 @@ function renamable(task: Task): boolean {
  * automatic title back. Same draft / busy / error shape as the Current apps
  * rename. `rename` is injectable so a test needs no network.
  */
-export function TaskPeekWho({ task, running = false, bare = false, rename = renameTask }: {
+export function TaskPeekWho({ task, running = false, bare = false, rename = renameTask, star = false }: {
   task: Task;
   /** Title only: no ring, agent mark or task number (the chat in a side pane,
    *  where the width is the title's). */
@@ -103,6 +104,9 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
    */
   running?: boolean;
   rename?: (key: string, title: string) => Promise<unknown>;
+  /** The favourite star left of the id (platform/ui/TaskStar), in the side
+   *  peek's head and the chat's own header. */
+  star?: boolean;
 }) {
   // THE SAME LINE THE LIST ROW PRINTS. With "Title a task by your last message"
   // on, the row under this header shows the reader's newest message; a header still
@@ -172,6 +176,7 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
         />
       </span>
       <TaskAgentMark backend={task.backend} />
+      {star && <TaskStar task={task} />}
       <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
         </>
       )}

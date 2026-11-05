@@ -1583,8 +1583,8 @@ export interface Prefs {
   canvas_rail_peek?: { enabled: boolean };
   // Favourite chats (`task_favourites_enabled`, shell/prefs.py; off by
   // default): the star on the rail card, the rail's favourites section, the
-  // favourite's own card, the pane's Favourites block. Optional: absent
-  // (older server) reads as off.
+  // favourite's own card, the rail beside the open pane, the star beside the
+  // id in every task list. Optional: absent (older server) reads as off.
   task_favourites?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.

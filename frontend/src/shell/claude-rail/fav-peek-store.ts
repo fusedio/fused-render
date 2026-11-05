@@ -35,14 +35,40 @@
 // canvas the page stands on selects it in place, as the rail's own card's
 // does (claude-rail-lib `chipDoor`). Read at the press (`railHere`), never
 // held: the page's selection moves without the store hearing of it.
+//
+// …AND WHERE THE PAGE STANDS (`page`, `setRailPage`): its place's root and
+// its selected node, as the top rail last said. The favourite's where-chip
+// goes nowhere — plain text, no fill — when it names that very place
+// (claude-rail-lib `chipDoor`'s `pageRoot`), so the card hears a hop the
+// rail makes in place (the explorer keeps one rail from folder to file) and
+// a node selected on the canvas.
+//
+// HOW MANY PAGE RAILS ARE MOUNTED (`registerPageRail`, `usePageRailCount`):
+// the shell's fallback rail (FallbackRail; owner, 2026-11-05) stands only
+// while no page draws a rail of its own — one count, read in one place, so
+// the two never stand together. Every page rail counts from its mount to its
+// unmount, shown or hidden (a hidden page rail has no favourite to draw, and
+// neither would the fallback). Said SYNCHRONOUSLY, not coalesced like the
+// rest of this store, and from the rails' layout phase: a hop unmounts one
+// page and mounts the next in one commit, and the fallback's re-render lands
+// before that commit paints — no frame with two rails, or none.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TaskPulseTask } from "@platform/lib/api";
 import { clearFavOpen, favOpenedAtMs, useFavOpen } from "@platform/lib/last-chat";
 import type { RailHere } from "./claude-rail-lib";
-import { FAV_SETTLE_MS, favOpenVerdict, type Box } from "./rail-peek-lib";
+import { FAV_SETTLE_MS, PeekIntent, favOpenVerdict, type Box } from "./rail-peek-lib";
+
+/** Where the page a rail stands on is (header): its `placeRoot`, and the
+ *  canvas's selected node file (null: none, or not a canvas). */
+export interface RailPage {
+  root: string;
+  node: string | null;
+}
 
 export interface FavPeekState {
   rail: HTMLElement | null;
+  /** The top rail's page (header); null with no rail, or one that never said. */
+  page: RailPage | null;
   favBox: Box | null;
   /** The favourite whose card should take the keyboard when it stands. */
   pendingFocus: string | null;
@@ -51,7 +77,7 @@ export interface FavPeekState {
 /** How long a keyboard press's wish to focus the card outlives the press. */
 export const PENDING_FOCUS_MS = 10_000;
 
-let live: FavPeekState = { rail: null, favBox: null, pendingFocus: null };
+let live: FavPeekState = { rail: null, page: null, favBox: null, pendingFocus: null };
 /** Every rail registered and not yet gone, oldest first (header). */
 let rails: HTMLElement[] = [];
 let pendingAt = 0;
@@ -67,9 +93,20 @@ function sameBox(a: Box | null, b: Box | null): boolean {
   return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
 }
 
+function samePage(a: RailPage | null, b: RailPage | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.root === b.root && a.node === b.node;
+}
+
 function flush(): void {
   dirty = false;
-  if (live.rail === seen.rail && sameBox(live.favBox, seen.favBox) && live.pendingFocus === seen.pendingFocus) {
+  if (
+    live.rail === seen.rail &&
+    samePage(live.page, seen.page) &&
+    sameBox(live.favBox, seen.favBox) &&
+    live.pendingFocus === seen.pendingFocus
+  ) {
     // Back where it started: nothing to say.
     live = seen;
     return;
@@ -94,13 +131,16 @@ function topRail(): HTMLElement | null {
   return null;
 }
 
-function settleRail(): void {
-  const top = topRail();
-  if (live.rail !== top) mark({ ...live, rail: top });
-}
-
 /** Each rail's page canvas, as its rail answers it (header). */
 const heres = new WeakMap<HTMLElement, () => RailHere | null>();
+/** Each rail's page, as its rail last said (header). */
+const pages = new WeakMap<HTMLElement, RailPage>();
+
+function settleRail(): void {
+  const top = topRail();
+  const page = (top && pages.get(top)) ?? null;
+  if (live.rail !== top || !samePage(live.page, page)) mark({ ...live, rail: top, page });
+}
 
 /** A rail mounted: it goes on top of the stack (header). The answer takes it
  *  off again — itself only, wherever it stands in the stack. `here`: the
@@ -113,14 +153,29 @@ export function registerRail(el: HTMLElement, here?: () => RailHere | null): () 
   return () => {
     rails = rails.filter((r) => r !== el);
     heres.delete(el);
+    pages.delete(el);
     settleRail();
   };
+}
+
+/** Where `el`'s page stands now (header): a rail says so as it mounts and on
+ *  every hop or node selection it makes in place. Null forgets it. */
+export function setRailPage(el: HTMLElement, page: RailPage | null): void {
+  if (page) pages.set(el, page);
+  else pages.delete(el);
+  settleRail();
 }
 
 /** The page canvas `rail` registered with (header), now; null for a rail
  *  with none (a folder's, a file's) or no rail. */
 export function railHere(rail: HTMLElement | null): RailHere | null {
   return (rail && heres.get(rail)?.()) ?? null;
+}
+
+/** What the favourite's card tells the rail's own card (`avoid`): its box
+ *  when OPEN, nothing for a hover — a hover overlaps, never shrinks it. */
+export function publishFavBoxFor(hovering: boolean, box: Box | null): void {
+  publishFavBox(hovering ? null : box);
 }
 
 /** Where the favourite's card stands (null while closed). */
@@ -220,6 +275,92 @@ export function focusRail(
   quiet.delete(target);
 }
 
+// WINDOW B'S HOVER (owner, 2026-11-05: two sections, two windows): a hover on
+// a favourite's ring — with no favourite's card open in this window — shows
+// the favourite's card (FavouritePeek) in a HOVER MODE, bottom right at the
+// card's own size. Local, never persisted: `hoverKey` lives here and nowhere
+// else. The timings are the rail's own (PeekIntent, one instance for the
+// shell: only one rail stands at a time). A press on the ring, or inside the
+// card, converts the hover to this window's open key (`openFavFromHover`).
+let hoverKey: string | null = null;
+const hoverSubs = new Set<() => void>();
+
+function setHoverKey(key: string | null): void {
+  if (hoverKey === key) return;
+  hoverKey = key;
+  for (const fn of [...hoverSubs]) fn();
+}
+
+/** The favourite whose hover card is up now, or null. */
+export function favHoverKey(): string | null {
+  return hoverKey;
+}
+
+function subscribeHover(fn: () => void): () => void {
+  hoverSubs.add(fn);
+  return () => {
+    hoverSubs.delete(fn);
+  };
+}
+
+export function useFavHoverKey(): string | null {
+  return useSyncExternalStore(subscribeHover, favHoverKey, favHoverKey);
+}
+
+let hoverIntent: PeekIntent | null = null;
+
+/** The hover-intent machine of window B (header): the favourites' rings
+ *  report their pointer and focus to it, the card reports its own. */
+export function favHoverIntent(): PeekIntent {
+  if (!hoverIntent) hoverIntent = new PeekIntent({ show: setHoverKey, warm: () => {} });
+  return hoverIntent;
+}
+
+/** Drop the hover now (a press converted it, the rail went, the card was
+ *  closed): no grace, nothing left pending. */
+export function dismissFavHover(): void {
+  hoverIntent?.dismiss();
+  setHoverKey(null);
+}
+
+export function resetFavHoverForTests(): void {
+  hoverIntent?.dispose();
+  hoverIntent = null;
+  hoverKey = null;
+}
+
+let pageRails = 0;
+const pageSubs = new Set<() => void>();
+
+/** A page's rail mounted (header): counted until the answer runs, once. */
+export function registerPageRail(): () => void {
+  pageRails += 1;
+  for (const fn of [...pageSubs]) fn();
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    pageRails -= 1;
+    for (const fn of [...pageSubs]) fn();
+  };
+}
+
+export function pageRailCount(): number {
+  return pageRails;
+}
+
+function subscribePages(fn: () => void): () => void {
+  pageSubs.add(fn);
+  return () => {
+    pageSubs.delete(fn);
+  };
+}
+
+/** How many page rails are mounted now (header), re-rendering on each. */
+export function usePageRailCount(): number {
+  return useSyncExternalStore(subscribePages, pageRailCount, pageRailCount);
+}
+
 export function favPeekState(): FavPeekState {
   return seen;
 }
@@ -238,11 +379,12 @@ export function useFavPeekState(): FavPeekState {
 }
 
 export function resetFavPeekStoreForTests(): void {
-  live = { rail: null, favBox: null, pendingFocus: null };
+  live = { rail: null, page: null, favBox: null, pendingFocus: null };
   seen = live;
   dirty = false;
   rails = [];
   pendingAt = 0;
+  pageRails = 0;
 }
 
 /** THIS WINDOW'S OPEN FAVOURITE, checked against the pulse's stars

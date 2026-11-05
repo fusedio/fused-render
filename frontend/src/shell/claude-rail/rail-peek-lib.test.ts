@@ -21,11 +21,21 @@ import {
   FAV_SETTLE_MS,
   bottomClear,
   dragResize,
+  FAV_HEIGHT,
+  FAV_WIDTH,
+  PEEK_PLAIN_HEIGHT,
+  favCardWish,
+  favRingRoute,
+  favPressClears,
+  favMaxHeight,
+  listCardWish,
   favChatElsewhere,
   favOpenVerdict,
   keepAlive,
   peekPlacement,
   placeClear,
+  railOnChipLeave,
+  onHop,
   railOnStarred,
   railOpenFav,
   starMarkStep,
@@ -34,6 +44,7 @@ import {
   type StarMark,
   type Timers,
   rowOf,
+  railInset,
 } from "./rail-peek-lib";
 import type { TaskPulseTask } from "@platform/lib/api";
 
@@ -640,6 +651,16 @@ describe("PeekIntent", () => {
       expect(warmed).toEqual(["a"]);
     });
 
+    it("pinned: a pointer rest on any ring (a favourite's included) never swaps the card — the favourites have their own window", () => {
+      const { clock, shown, intent } = rig();
+      intent.press("a");
+      intent.leaveRing();
+      intent.enterRing("f", "pointer");
+      clock.tick(10_000);
+      expect(shown).toEqual(["a"]);
+      expect(intent.isPinned).toBe(true);
+    });
+
     it("tells the sink when it pins and unpins", () => {
       const clock = new Clock();
       const pins: boolean[] = [];
@@ -781,6 +802,137 @@ describe("starOutcome (dismissOnUnstar)", () => {
   });
 });
 
+describe("railOnChipLeave (a favourite's chat leaving by the rail card's where-chip)", () => {
+  it("a live favourite: let go first, then open its card in this window — before the hop", () => {
+    const calls: string[] = [];
+    const leave = railOnChipLeave(
+      () => true,
+      (k) => k === "f",
+      (k) => calls.push("letGo:" + k),
+      (k, kbd) => calls.push(`open:${k}:${kbd}`),
+    );
+    leave("f");
+    leave("f", true);
+    expect(calls).toEqual(["letGo:f", "open:f:false", "letGo:f", "open:f:true"]);
+  });
+
+  it("a list chat, or favourites off: nothing — the chip just goes", () => {
+    const calls: string[] = [];
+    const sink = (k: string) => calls.push(k);
+    railOnChipLeave(() => true, (k) => k === "f", sink, sink)("a");
+    railOnChipLeave(() => false, () => true, sink, sink)("f");
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("onHop (the chip's hand-over waits for the router's yes)", () => {
+  class Win {
+    fns = new Map<string, Set<() => void>>();
+    addEventListener(t: string, fn: () => void) {
+      if (!this.fns.has(t)) this.fns.set(t, new Set());
+      this.fns.get(t)!.add(fn);
+    }
+    removeEventListener(t: string, fn: () => void) {
+      this.fns.get(t)?.delete(fn);
+    }
+    fire(t: string) {
+      for (const fn of [...(this.fns.get(t) ?? [])]) fn();
+    }
+    count(t: string) {
+      return this.fns.get(t)?.size ?? 0;
+    }
+  }
+
+  /** A router's `navigateUrl` in miniature: with no guard, push now; with
+   *  one, push on `answer(true)`, settle `false` on `answer(false)`. */
+  function router(win: Win, loc: { at: string }) {
+    let asking: ((ok: boolean) => void) | null = null;
+    const push = (to: string) => {
+      loc.at = to;
+      win.fire("nav");
+    };
+    return {
+      push,
+      free: (to: string) => () => {
+        push(to);
+        return Promise.resolve(true);
+      },
+      guarded: (to: string) => () =>
+        new Promise<boolean>((resolve) => {
+          asking = (ok) => {
+            if (ok) push(to);
+            resolve(ok);
+          };
+        }),
+      answer: (ok: boolean) => asking?.(ok),
+    };
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it("no guard: the push is heard in the same tick — the hand-over runs before `go` returns", async () => {
+    const win = new Win();
+    const log: string[] = [];
+    const loc = { at: "/a" };
+    const r = router(win, loc);
+    onHop(win, "nav", () => loc.at === "/b", () => log.push("hand"), () => {
+      const went = r.free("/b")();
+      log.push("pushed");
+      return went;
+    });
+    expect(log).toEqual(["hand", "pushed"]);
+    expect(win.count("nav")).toBe(0);
+    await tick();
+    expect(win.count("nav")).toBe(0);
+  });
+
+  it("a guard that says no: nothing is handed over, the listener goes, and a later hop to the same page runs nothing", async () => {
+    const win = new Win();
+    const log: string[] = [];
+    const loc = { at: "/a" };
+    const r = router(win, loc);
+    onHop(win, "nav", () => loc.at === "/b", () => log.push("hand"), r.guarded("/b"));
+    expect(win.count("nav")).toBe(1);
+    r.answer(false);
+    await tick();
+    expect(win.count("nav")).toBe(0);
+    // A later navigation — to that very page, by another door — hands nothing over.
+    r.push("/b");
+    r.push("/c");
+    expect(log).toEqual([]);
+  });
+
+  it("refused presses never stack: each one's listener goes with its answer", async () => {
+    const win = new Win();
+    const log: string[] = [];
+    const loc = { at: "/a" };
+    const r = router(win, loc);
+    for (let i = 0; i < 3; i++) {
+      onHop(win, "nav", () => loc.at === "/b", () => log.push("hand"), r.guarded("/b"));
+      r.answer(false);
+    }
+    await tick();
+    expect(win.count("nav")).toBe(0);
+    r.push("/b");
+    expect(log).toEqual([]);
+  });
+
+  it("a guard that says yes later: the hand-over runs at the push, once", async () => {
+    const win = new Win();
+    const log: string[] = [];
+    const loc = { at: "/a" };
+    const r = router(win, loc);
+    onHop(win, "nav", () => loc.at === "/b", () => log.push("hand"), r.guarded("/b"));
+    await tick();
+    expect(log).toEqual([]);
+    r.answer(true);
+    expect(log).toEqual(["hand"]);
+    await tick();
+    expect(win.count("nav")).toBe(0);
+    r.push("/b");
+    expect(log).toEqual(["hand"]);
+  });
+});
+
 describe("railOnStarred (onStarred wiring)", () => {
   it("a star pressed on lets the rail's card go of that chat at once, favourites on", () => {
     const gone: string[] = [];
@@ -894,3 +1046,122 @@ describe("railOpenFav (the open favourite as the rail counts it)", () => {
   });
 });
 
+
+// ---- THE RAIL BESIDE AN OPEN PANE (owner, 2026-11-05) ----------------------
+// A pane's seam drag measures the pane to the split's right edge; with the
+// rail standing there the pane ends at the rail's edge instead.
+describe("railInset", () => {
+  const box = (left: number, width: number) => ({ left, right: left + width, width });
+  const split = (right: number, rails: { right: number; width: number; hidden?: boolean }[]) =>
+    ({
+      getBoundingClientRect: () => box(0, right),
+      querySelectorAll: () =>
+        rails.map((r) => ({ hidden: !!r.hidden, getBoundingClientRect: () => box(r.right - r.width, r.width) })),
+    }) as unknown as Element;
+
+  it("no split, a stand-in with no DOM, or no rail: nothing", () => {
+    expect(railInset(null)).toBe(0);
+    expect(railInset(undefined)).toBe(0);
+    expect(railInset({ getBoundingClientRect: () => box(0, 900) } as unknown as Element)).toBe(0);
+    expect(railInset(split(900, []))).toBe(0);
+  });
+
+  it("a rail at the split's right edge: its width", () => {
+    expect(railInset(split(900, [{ right: 900, width: 48 }]))).toBe(48);
+  });
+
+  it("a hidden rail (nothing to draw) or one laid out at no width: nothing", () => {
+    expect(railInset(split(900, [{ right: 900, width: 48, hidden: true }]))).toBe(0);
+    expect(railInset(split(900, [{ right: 900, width: 0 }]))).toBe(0);
+  });
+
+  it("a rail that is not at the right edge is not the pane's neighbour", () => {
+    expect(railInset(split(900, [{ right: 600, width: 48 }]))).toBe(0);
+  });
+});
+
+// ---- ONE SIZE PER CARD KIND; THE FAVOURITE'S CEILING (owner, 2026-11-05) ----
+describe("listCardWish (the list's card)", () => {
+  const stored = { width: 500, height: 700 };
+  it("favourites on: the hover card is the remembered size, as the pinned one is", () => {
+    const hover = listCardWish({ hasSession: true, stored, grown: false, oneSize: true });
+    const pinned = listCardWish({ hasSession: true, stored, grown: true, oneSize: true });
+    expect(hover).toEqual({ width: 500, maxHeight: 700 });
+    expect(pinned).toEqual(hover);
+  });
+  it("favourites off: a hover card is the default, a grown (pinned) one the remembered size", () => {
+    expect(listCardWish({ hasSession: true, stored, grown: false, oneSize: false })).toEqual({ maxHeight: PEEK_MAX_HEIGHT });
+    expect(listCardWish({ hasSession: true, stored, grown: true, oneSize: false })).toEqual({ width: 500, maxHeight: 700 });
+  });
+  it("nothing remembered: the default either way", () => {
+    expect(listCardWish({ hasSession: true, stored: null, grown: true, oneSize: true })).toEqual({ maxHeight: PEEK_MAX_HEIGHT });
+  });
+  it("a seat with no conversation: the short card, whatever is remembered", () => {
+    expect(listCardWish({ hasSession: false, stored, grown: true, oneSize: true })).toEqual({ maxHeight: PEEK_PLAIN_HEIGHT });
+  });
+});
+
+describe("favCardWish (the favourite's card, never taller than half the window)", () => {
+  const base = { width: FAV_WIDTH, maxHeight: FAV_HEIGHT, align: "bottom" as const };
+  it("its own remembered size over the fixed wish", () => {
+    expect(favCardWish(base, { width: 400, height: 420 }, 1000)).toEqual({ width: 400, maxHeight: 420, align: "bottom" });
+  });
+  it("capped at half the window on open: a 1400x900 window holds 450", () => {
+    expect(favMaxHeight(900)).toBe(450);
+    expect(favCardWish(base, { width: 400, height: 800 }, 900).maxHeight).toBe(450);
+    // The default 520 is over half of 900 too.
+    expect(favCardWish(base, null, 900).maxHeight).toBe(450);
+  });
+  it("…and again as the window shrinks: 600 tall holds 300", () => {
+    expect(favCardWish(base, { width: 400, height: 420 }, 600)).toEqual({ width: 400, maxHeight: 300, align: "bottom" });
+  });
+});
+
+describe("dragResize with a height ceiling (the favourite's card)", () => {
+  const start = { left: 900, top: 500, width: 380, height: 300 };
+  it("a top drag stops at the ceiling", () => {
+    const box = dragResize("t", start, 0, -400, ROW, undefined, 450);
+    expect(box.height).toBe(450);
+    expect(box.top + box.height).toBe(800);
+  });
+  it("a bottom drag stops at the ceiling", () => {
+    const tall = { ...start, top: 60 };
+    expect(dragResize("b", tall, 0, 700, ROW, undefined, 450).height).toBe(450);
+  });
+  it("no ceiling: as before", () => {
+    expect(dragResize("t", start, 0, -400, ROW).height).toBe(700);
+  });
+});
+
+describe("the favourite's hover and open cards stand in one place", () => {
+  const rail = { left: 1000, top: 100, width: 40, height: 700 };
+  const row = { left: 0, top: 100, width: 1040, height: 700 };
+  const ring = { left: 1004, top: 300, width: 32, height: 32 };
+  const base = { width: 360, maxHeight: 400, align: "bottom" as const };
+  it("both modes use one wish and the rail as anchor: same box, whatever ring is hovered", () => {
+    const wish = favCardWish(base, null, 900);
+    const open = placeClear(rail, rail, row, null, wish);
+    expect(placeClear(rail, rail, row, null, favCardWish(base, null, 900))).toEqual(open);
+    // anchoring a hover on its ring is what used to move the card
+    expect(placeClear(ring, rail, row, null, wish)).not.toEqual(open);
+  });
+});
+
+describe("favRingRoute (a fav whose chat is already shown has no card)", () => {
+  const fav = { key: "k1", session_id: "s1" };
+  it("pane holds it: press goes to the pane composer; peek holds it: the door; else the card", () => {
+    expect(favRingRoute(fav, ["s1"], null)).toBe("pane");
+    expect(favRingRoute(fav, [], "s1")).toBe("door");
+    expect(favRingRoute(fav, ["other"], "other")).toBe("card");
+    expect(favRingRoute(fav, [], null)).toBe("card");
+  });
+});
+
+describe("favPressClears", () => {
+  it("a pane or door press also closes B open on another favourite; a card press clears nothing", () => {
+    expect(favPressClears("pane", "x", "y")).toEqual(["x", "y"]);
+    expect(favPressClears("pane", "x", "x")).toEqual(["x"]);
+    expect(favPressClears("door", "x", null)).toEqual(["x"]);
+    expect(favPressClears("card", "x", "y")).toEqual([]);
+  });
+});

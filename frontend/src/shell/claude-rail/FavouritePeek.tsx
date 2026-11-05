@@ -11,8 +11,14 @@
 // remount its chat on every hop. This one is the shell's: the chat mounts
 // once and stays; the card stands beside whatever rail is on the page now
 // (fav-peek-store, where each rail registers itself and its favourite
-// rings), and while no rail is up — the pane expanded, a page with no rail —
-// it hides, the chat kept alive, and shows again on the next rail. A bit
+// rings), and while no rail is up — a page with no rail, a rail hidden for
+// having nothing to draw (ClaudeRail `shown`) — it hides, the chat kept
+// alive, and shows again on the next rail. The rail stands beside the open
+// pane too (owner, 2026-11-05), so the card keeps its corner pane open or
+// shut — and a page with no rail of its own draws the shell's fallback
+// (FallbackRail: the favourites alone), so with a favourite open there is
+// always a rail to stand beside. Never taller than half the window
+// (RailPeek, rail-peek-lib `favCardWish`). A bit
 // smaller than the list's card (`FAV_SIZE`), and STUCK TO THE BOTTOM RIGHT
 // (owner: "it should stick to bottom so we can have it at bottom right all
 // the time and we can close and open it"): its bottom on the rail's, not on
@@ -35,6 +41,14 @@
 // `onDismiss("door")`) and is back when the rail is. A rail with no room for
 // it (a window shrunk to nothing) hides it until the window, the rail or the
 // row it stands in changes shape, or the next rail stands.
+//
+// A HOVER MODE (owner, 2026-11-05: two sections, two windows): with NO
+// favourite open, resting on a favourite's ring previews it HERE — bottom
+// right, this card's own size — never in the rail's card. The hover key is
+// local and not persisted (fav-peek-store `favHoverIntent`, the list's own
+// timings: dwell, grace, cone); leaving the ring and the card closes it; a
+// press on the ring or inside the card converts it to the open key and it
+// stays. With one open, a hover on another favourite's ring is its caption.
 //
 // AN UNSTAR HERE shuts the card at once (RailPeek `dismissOnUnstar`).
 //
@@ -61,13 +75,17 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { type Task, type TaskPulseTask } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
-import { clearFavOpen } from "@platform/lib/last-chat";
+import { clearFavOpen, setFavOpen } from "@platform/lib/last-chat";
 import { RailPeek } from "./RailPeek";
 import {
+  dismissFavHover,
+  favHoverIntent,
   focusRail,
   publishFavBox,
+  publishFavBoxFor,
   railHere,
   takeFavFocus,
+  useFavHoverKey,
   useFavOpenRow,
   useFavPeekState,
   withdrawFavFocusOn,
@@ -79,6 +97,7 @@ import {
   FAV_HEIGHT,
   FAV_WIDTH,
   favChatElsewhere,
+  favHoverRow,
   rowOf,
   type PeekWish,
 } from "./rail-peek-lib";
@@ -118,7 +137,7 @@ export function FavouritePeek() {
       if (!ev.failed) setListing(ev.rows);
     });
   }, [on]);
-  const { rail, pendingFocus } = useFavPeekState();
+  const { rail, page, pendingFocus } = useFavPeekState();
   // No room beside this rail (RailPeek `onNoRoom`): hidden until the window
   // or the rail changes shape, or another rail stands.
   const [noRoom, setNoRoom] = useState(false);
@@ -145,17 +164,43 @@ export function FavouritePeek() {
   // stars — closed (the key cleared) once an unstar, an erase or an archive
   // reaches the pulse (fav-peek-store `useFavOpenRow`).
   const open = useFavOpenRow(on, rows);
+  // …or, with none open, the one a hover wants (header): a live favourite only.
+  const hoverKey = useFavHoverKey();
+  const hoverRow = useMemo(() => (on && !open ? favHoverRow(hoverKey, null, rows) : null), [on, open, hoverKey, rows]);
+  const hovering = !open && !!hoverRow;
+  const shownRow = open ?? hoverRow;
   const seat = useMemo((): RailRow | null => {
-    if (!open) return null;
-    return { pulse: open, row: listing?.find((t) => t.key === open.key) ?? null };
-  }, [open, listing]);
-  const shown = on && seat && rail && !noRoom ? seat : null;
-  // A mounted pane chat on this very session (header), or the Tasks side
-  // peek showing it: no chat here. Never the URL alone — a shut pane leaves
-  // `session_id` in it and shows nothing.
+    if (!shownRow) return null;
+    return { pulse: shownRow, row: listing?.find((t) => t.key === shownRow.key) ?? null };
+  }, [shownRow, listing]);
+  // A hover never outlives its cause: the open key taking over (a press),
+  // the feature going off, or another rail standing.
+  useEffect(() => {
+    if (open || !on) dismissFavHover();
+  }, [open, on]);
+  useEffect(() => {
+    dismissFavHover();
+  }, [rail]);
+  // A hover on a key the pulse no longer holds (unstarred, gone): forgotten.
+  const hoverLive = useMemo(() => new Set(rows.filter((r) => r.starred).map((r) => r.key)), [rows]);
+  useEffect(() => {
+    if (on) favHoverIntent().prune(hoverLive);
+  }, [on, hoverLive]);
+  // …and a favourite whose chat the pane or the Tasks peek already shows has
+  // NO card (an empty one with a note must never stand): its open key and
+  // hover are let go, its ring is a caption and a door (`favRingRoute`).
   const paneSids = usePaneSessions();
   const peekSid = usePeekSession();
   const elsewhere = favChatElsewhere(seat?.pulse ?? null, paneSids, peekSid);
+  useEffect(() => {
+    if (!elsewhere) return;
+    dismissFavHover();
+    if (open) clearFavOpen(open.key);
+  }, [elsewhere, open]);
+  const shown = on && seat && rail && !noRoom && !elsewhere ? seat : null;
+  // A mounted pane chat on this very session (header), or the Tasks side
+  // peek showing it: no chat here. Never the URL alone — a shut pane leaves
+  // `session_id` in it and shows nothing.
   const kept = useMemo(() => (seat && !elsewhere ? [seat] : []), [seat, elsewhere]);
 
   // FOCUS NEVER FALLS TO THE BODY (header). Whether the keyboard was last
@@ -226,9 +271,15 @@ export function FavouritePeek() {
     };
     focusWait.current = requestAnimationFrame(attempt);
   }, [shownKey, pendingFocus]);
-  // The rail itself is the anchor: with `align: "bottom"` the card's bottom
-  // lands on the rail's, clamped inside the row — the bottom right, always.
+  // The rail itself is the anchor, hover or open: with `align: "bottom"` the
+  // card's bottom lands on the rail's, clamped inside the row — the bottom
+  // right, always, so a press never moves it (`favCardWish` for both).
   const anchorOf = useCallback(() => rail, [rail]);
+  // A hover's cone starts at its own ring.
+  const coneOf = useCallback(
+    (key: string) => rail?.querySelector<HTMLElement>(`.claude-rail-favs [data-task-key="${CSS.escape(key)}"]`) ?? rail,
+    [rail],
+  );
   // The page's canvas, off the rail this card stands beside (header).
   const here = useCallback(() => railHere(rail), [rail]);
   const place = useMemo(() => (seat ? placeOf(seat.pulse, seat.row) : null), [seat]);
@@ -237,12 +288,25 @@ export function FavouritePeek() {
   const close = useCallback(
     (why?: "door" | "unstar") => {
       // The Open door is not a close: the pane takes over, the card stays open.
+      if (hovering) {
+        dismissFavHover();
+        return;
+      }
       if (why === "door" || !open) return;
       if (why === "unstar") unstarred.current = open.key;
       clearFavOpen(open.key);
     },
-    [open],
+    [open, hovering],
   );
+  // A press inside the hover card keeps it: the hover becomes the open key.
+  const pressInside = useCallback(() => {
+    if (!hovering || !hoverRow) return;
+    setFavOpen(hoverRow.key);
+    dismissFavHover();
+  }, [hovering, hoverRow]);
+  // Only an OPEN card makes the rail's own card give way (`avoid`); a hover
+  // overlaps it and publishes nothing.
+  const onBox = useCallback((b: Parameters<typeof publishFavBox>[0]) => publishFavBoxFor(hovering, b), [hovering]);
   useEffect(() => () => publishFavBox(null), []);
   if (!on || !seat || !place) return null;
   return (
@@ -251,25 +315,26 @@ export function FavouritePeek() {
       shown={shown}
       kept={kept}
       anchorOf={anchorOf}
+      coneOf={coneOf}
       railEl={rail}
       place={place}
       size={FAV_SIZE}
       resizeKey="canvasRailFav"
-      onBox={publishFavBox}
+      onBox={onBox}
       onReload={refreshListing}
-      onPointerEnter={noop}
-      onPointerLeave={noop}
-      onCone={noop}
-      onPressInside={noop}
-      onHold={noop}
+      onPointerEnter={hovering ? () => favHoverIntent().enterCard() : noop}
+      onPointerLeave={hovering ? () => favHoverIntent().leaveCard() : noop}
+      onCone={hovering ? (inside) => (inside ? favHoverIntent().enterCone() : favHoverIntent().leaveCone()) : noop}
+      onPressInside={pressInside}
+      onHold={hovering ? (on) => favHoverIntent().hold(on) : noop}
       onDismiss={close}
       dismissOnUnstar
-      bodyNote={elsewhere === "peek" ? "Open in the Tasks peek" : elsewhere ? "Open in the Claude panel" : null}
       onNoRoom={() => setNoRoom(true)}
       onOpenChat={(href) => navigateUrl(href)}
       here={here}
+      pageRoot={page?.root ?? null}
       onPin={noop}
-      held
+      held={!hovering}
       onHeld={noop}
       pinned={false}
     />
