@@ -146,6 +146,8 @@ describe("rows", () => {
     expect(titleLine(task({ title: "", last_message: { role: "user", text: "  also the tests\nplease", at: 1 } }))).toBe("also the tests");
     expect(titleLine(task({ last_message: { role: "assistant", text: "ok", at: 1 } }))).toBe("Fix the build");
     expect(titleLine(task({ title: "", last_message: null }))).toBe("Untitled");
+    // A multiline title yields its first non-blank line, trimmed.
+    expect(titleLine(task({ title: "\n  Fix the build  \nsecond line" }))).toBe("Fix the build");
   });
   test("statusOf words and tones", () => {
     expect(statusOf(task({ status: "needs_attention" }))).toEqual({ word: "Needs you", tone: "needs" });
