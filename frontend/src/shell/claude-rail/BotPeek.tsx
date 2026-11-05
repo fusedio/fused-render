@@ -54,6 +54,7 @@ import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import type { BotPulseRow } from "@platform/lib/botsPulse";
 import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
+import { ChatChunkBoundary } from "@apps/claude/ChatMount";
 import { Face } from "@apps/bots/components/Face";
 import type { FaceSubject } from "@apps/bots/lib/face";
 import { botStatusWords } from "./claude-rail-lib";
@@ -515,9 +516,14 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
           <div className="claude-rail-peek-body">
             {chatKey && (
               <div key={chatKey} className="claude-rail-peek-chat is-shown">
-                <Suspense fallback={<p className="claude-rail-peek-note">Loading…</p>}>
-                  <BotChat id={chatKey} markRead={pinned} />
-                </Suspense>
+                {/* A chunk that fails to load (an app updated under this window) fails HERE — the rail card's own
+                    boundary, with its reload card — not at the shell's, which would replace the whole page; the
+                    head and its Open door stand above it (CodeRabbit on #2143). */}
+                <ChatChunkBoundary>
+                  <Suspense fallback={<p className="claude-rail-peek-note">Loading…</p>}>
+                    <BotChat id={chatKey} markRead={pinned} />
+                  </Suspense>
+                </ChatChunkBoundary>
               </div>
             )}
           </div>

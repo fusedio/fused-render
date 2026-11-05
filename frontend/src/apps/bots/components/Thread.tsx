@@ -169,8 +169,8 @@ export function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: {
   };
   const openChat = (
     <div className="ft">
-      <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"}
-        onClick={() => { if (getState().bots.some((x) => x.id === h.target)) select(h.target); }}>Open {who}'s chat</button>
+      {/* The thread's own click handler opens it (`data-open-bot`): the host decides where the door goes (ThreadProps `onOpenBot`). */}
+      <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"} data-open-bot={h.target}>Open {who}'s chat</button>
     </div>
   );
   // A relayed APPROVAL is the shared gate card, the same one the bot's own chat shows; this wrapper only adds the door
@@ -461,9 +461,13 @@ export interface ThreadProps {
    *  bot card only once a press pinned it (shell/claude-rail BotPeek; Bugbot on #2143) — a hover's glance over the
    *  card must not spend the rail's unread dot. */
   markRead?: boolean;
+  /** A DOOR TO ANOTHER BOT'S CHAT — a hand-off card's "Open <bot>'s chat", a relayed line's "Read more" (`seq`: the
+   *  message to land on): the page selects the bot (`select` / `jumpTo`, the default); the rail's bot card, which
+   *  shows one bot and selects nothing, goes to the bot's page instead (components/BotChat; CodeRabbit on #2143). */
+  onOpenBot?: (id: string, seq?: number) => void;
 }
 
-export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply, markRead = true }: ThreadProps) {
+export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply, markRead = true, onOpenBot }: ThreadProps) {
   const S = useBots();
   const appsRoot = useAppsRoot();
   const botId = b?.id ?? "";
@@ -680,7 +684,17 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
   const onClick = (ev: ReactMouseEvent<HTMLDivElement>) => {
     const t = ev.target as Element, sel = botId || null;
     const jump = t.closest<HTMLElement>("[data-jump-bot]");
-    if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
+    if (jump) {
+      const id = jump.dataset.jumpBot || "", seq = Number(jump.dataset.jumpSeq);
+      if (onOpenBot) { if (getState().bots.some((x) => x.id === id)) onOpenBot(id, seq); } else jumpTo(id, seq);
+      return;
+    }
+    const open = t.closest<HTMLElement>("[data-open-bot]");
+    if (open) {
+      const id = open.dataset.openBot || "";
+      if (getState().bots.some((x) => x.id === id)) { if (onOpenBot) onOpenBot(id); else select(id); }
+      return;
+    }
     // Wide-table footer (md.ts): "Show all N rows" toggles the 12-row cap; "Copy as CSV" copies every row, hidden ones too.
     const more = t.closest<HTMLElement>("[data-tmore]");
     if (more) {

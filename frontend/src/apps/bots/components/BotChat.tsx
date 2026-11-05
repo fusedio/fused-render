@@ -22,7 +22,9 @@
 // page's `.bots-page` host under <body> (lib/root `portalHost`), as on the page.
 import { useCallback, useEffect, useRef, useState } from "react";
 import "../styles/bots.css";
-import { feedBotQuietly, useBotsSelector } from "../state/store";
+import { navigateUrl } from "@platform/lib/router";
+import { botHref } from "../routes";
+import { feedBotQuietly, jumpTo, useBotsSelector } from "../state/store";
 import { Composer, type ReplyTo } from "./Composer";
 import { ReactionPicker, type ReactionReq } from "./ReactionPicker";
 import { Thread } from "./Thread";
@@ -46,6 +48,9 @@ export default function BotChat({ id, markRead = true }: BotChatProps) {
   useEffect(() => feedBotQuietly(), []);
   const b = useBotsSelector((s) => s.bots.find((x) => x.id === id));
   const polled = useBotsSelector((s) => s.bots.length > 0);
+  // The feed's last failure (store `showBanner` in pollOnce's catch: "Worker unreachable: …"), for a card with no
+  // rows to show — "Loading…" alone would stand for as long as the worker is down (CodeRabbit on #2143).
+  const banner = useBotsSelector((s) => s.banner);
   const threadRef = useRef<HTMLDivElement>(null);
   const [reply, setReply] = useState<ReplyTo | null>(null);
   const [pick, setPick] = useState<ReactionReq | null>(null);
@@ -55,10 +60,17 @@ export default function BotChat({ id, markRead = true }: BotChatProps) {
     setReply(null);
     setPick(null);
   }, [id]);
+  // A DOOR TO ANOTHER BOT'S CHAT (Thread `onOpenBot`): this card shows one bot and selects nothing, so the door is
+  // the bot's page — landing on the message asked for, where there is one (`jumpTo` sets the store's scrollSeq
+  // and selects without writing a URL off the page; the page's mount follows the URL).
+  const openBot = useCallback((target: string, seq?: number) => {
+    if (seq !== undefined && Number.isFinite(seq)) jumpTo(target, seq);
+    void navigateUrl(botHref(target));
+  }, []);
   if (!b) {
     return (
       <div className="bots-page bots-peek">
-        <div className="empty">{polled ? "This bot is gone." : "Loading…"}</div>
+        <div className="empty">{polled ? "This bot is gone." : banner.show ? banner.text : "Loading…"}</div>
       </div>
     );
   }
@@ -66,7 +78,7 @@ export default function BotChat({ id, markRead = true }: BotChatProps) {
     <div className="bots-page bots-peek">
       <section className="chat">
         <div className="tw">
-          <Thread b={b} threadRef={threadRef} searchQ="" onSearchCount={noop} onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} markRead={markRead} />
+          <Thread b={b} threadRef={threadRef} searchQ="" onSearchCount={noop} onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} markRead={markRead} onOpenBot={openBot} />
           <ToBottom threadRef={threadRef} botId={b.id} />
         </div>
         <Composer b={b} reply={reply} setReply={setReply} threadRef={threadRef} />

@@ -582,7 +582,9 @@ export async function pollOnce(): Promise<void> {
       // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
       // "First load" is the PAGE's first poll (`pageFirstPoll`, startStore), not the store's first rows: the rail's
       // quiet feed may have filled the rows before the page mounted.
-      if ((first || pageFirstPoll) && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
+      // …and only ON THE CHAT ROUTE: a remount at /bots/tasks or /bots/apps keeps `sel` with its chat off screen, and
+      // marking it read there would clear a dot over news nobody saw (CodeRabbit on #2143).
+      if ((first || (pageFirstPoll && parseBotsPath(location.pathname).kind === "bot")) && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
       pageFirstPoll = false;
       // A remount landed on stale rows (startStore): a bot that started waiting, or got a reply, while you were on
       // another page is only known now. After the mark above, so a switch places its own "New" rule. Not while

@@ -1462,11 +1462,29 @@ export function ClaudeRail({
     botPressedHref.current = null;
     if (href) void navigateUrl(href);
   }, [botIntent]);
+  // …until the window resizes, OR THE ROW GROWS (CodeRabbit on #2143): the
+  // sidebar folding widens the row with no window resize, and the card may
+  // fit then. The observer fires once as it starts (the width as it is), so
+  // only a width PAST that one clears the flag.
   useEffect(() => {
     if (!botNoRoom) return;
     const re = () => setBotNoRoom(false);
     window.addEventListener("resize", re);
-    return () => window.removeEventListener("resize", re);
+    const row = rowOf(railRef.current);
+    let was = row?.getBoundingClientRect().width ?? 0;
+    const ro =
+      row && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            const w = row.getBoundingClientRect().width;
+            if (w > was + 1) re();
+            was = Math.max(was, w);
+          })
+        : null;
+    if (row && ro) ro.observe(row);
+    return () => {
+      window.removeEventListener("resize", re);
+      ro?.disconnect();
+    };
   }, [botNoRoom]);
   useEffect(() => {
     setBotNoRoom(false);
