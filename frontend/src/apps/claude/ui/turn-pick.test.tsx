@@ -10,7 +10,7 @@ import { act, create } from "react-test-renderer";
 const { Turn } = await import("./Turn");
 
 import type { AssistantTurn, UserTurn } from "../protocol/controller-api";
-import { pickPlan, type TurnPick } from "./TurnPick";
+import { pickDefault, pickPlan, type TurnPick } from "./TurnPick";
 
 const base: UserTurn = { role: "user", key: "k1", text: "hello", uuid: "u1" };
 const answer: AssistantTurn = { role: "assistant", key: "k2", text: "hi there" };
@@ -89,5 +89,20 @@ describe("pickPlan", () => {
   test("a pending prompt locks its exchange", () => {
     const plan = pickPlan([{ key: "u", role: "user", text: "x", pending: true }], new Set(), () => {});
     expect(plan.get("u")!.locked).toBe(true);
+  });
+});
+
+describe("pickDefault", () => {
+  test("the latest settled exchange with a reply wins; streaming, pending and reply-less are skipped", () => {
+    const turns = [
+      { key: "u1", role: "user", text: "one" },
+      { key: "a1", role: "assistant", text: "answer" },
+      { key: "u2", role: "user", text: "two" },
+      { key: "a2", role: "assistant", text: "  " },
+      { key: "u3", role: "user", text: "three" },
+      { key: "a3", role: "assistant", text: "partial", streaming: true },
+    ];
+    expect(pickDefault(turns)).toEqual(["u1", "a1"]);
+    expect(pickDefault([{ key: "u", role: "user", text: "x" }])).toEqual([]);
   });
 });

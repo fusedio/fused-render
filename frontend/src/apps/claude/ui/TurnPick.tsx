@@ -96,3 +96,19 @@ export function pickPlan(
   }
   return out;
 }
+
+/** The exchange pick mode opens with: the latest one that is neither streaming
+ *  nor pending AND whose assistant reply has text. An interrupted run with no
+ *  reply is skipped. Returns the keys of that exchange, or none. */
+export function pickDefault(turns: readonly PlanTurn[]): string[] {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i]!.role !== "user") continue;
+    let end = i + 1;
+    while (end < turns.length && turns[end]!.role !== "user") end++;
+    const group = turns.slice(i, end).filter((t) => t.role === "user" || t.role === "assistant");
+    if (group.some((t) => !!t.streaming || !!t.pending)) continue;
+    if (!group.some((t) => t.role === "assistant" && !!(t.text ?? "").trim())) continue;
+    return group.map((t) => t.key);
+  }
+  return [];
+}

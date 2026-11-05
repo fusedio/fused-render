@@ -151,6 +151,7 @@ import {
 } from "./ui";
 import { ComposerGate, waitingKind } from "./ui/WaitingBar";
 import { BreakoutSelectionBar } from "./ui/BreakoutSelectionBar";
+import { pickDefault } from "./ui/TurnPick";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import { sessionSeed } from "./ui/useRecentTasks";
@@ -5707,20 +5708,7 @@ function ChatBody(props: ChatBodyProps) {
       setBreakoutSel(new Set());
       return;
     }
-    const turns = controller.getState().turns;
-    let pre: string[] = [];
-    for (let i = turns.length - 1; i >= 0; i--) {
-      if (turns[i]!.role !== "user") continue;
-      const ex = exchangeKeys(turns, turns[i]!.key);
-      const busy = ex.some((k) => {
-        const t = turns.find((x) => x.key === k) as { streaming?: boolean; pending?: boolean } | undefined;
-        return !!t?.streaming || !!t?.pending;
-      });
-      if (!busy) {
-        pre = ex;
-        break;
-      }
-    }
+    const pre = pickDefault(controller.getState().turns);
     setBreakoutSel(new Set(pre));
     setPicking(true);
   };

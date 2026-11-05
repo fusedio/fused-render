@@ -863,6 +863,12 @@ describe("breakout pick mode", () => {
     expect("prompt" in opened[0]!).toBe(false);
   });
 
+  test("an interrupted exchange with no reply text is not the default pick", async () => {
+    const { r } = await mountParent([...HISTORY, { role: "user", text: "third question", uuid: "u3" }, { role: "assistant", text: "", uuid: "a3" }]);
+    toggle(r);
+    expect(picked(r)).toBe(2);
+  });
+
   test("a breakout card sends its prompt once as the first message", async () => {
     const sent: string[] = [];
     await mountChat({ breakout: true, breakoutPrompt: "first q", onBreakoutPromptSent: () => void sent.push("x") });
