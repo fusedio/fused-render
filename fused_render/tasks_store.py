@@ -1445,8 +1445,11 @@ def record_recap(session_id: str, for_uuid: str, text: str,
 #
 # `turns` is how many of the reader's prompts the session had when the title
 # was written (even when haiku repeated the old one), so the next refresh waits
-# for more prompts. `failed_at` is the last failed attempt; it never blanks
-# `text`, because the row is already showing that title.
+# for more prompts. `at` is stamped on every success too, and a turn that ENDED
+# after `at` is re-titled once it has settled a minute (tasks `_title_candidate`),
+# so the title follows the finished work without waiting three prompts.
+# `failed_at` is the last failed attempt; it never blanks `text`, because the
+# row is already showing that title.
 
 
 def session_ai_title(state: dict, session_id: str) -> dict | None:

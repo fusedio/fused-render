@@ -6055,7 +6055,8 @@ def test_title_candidate_first_title_then_waits_three_prompts(tmp_path):
     assert job["first_message"] == "fix the login bug" and job["prompts"] == 1
 
     def stored(turns, text="Fixing the login bug", failed_at=0.0):
-        return {"s": {"ai_title": {"text": text, "at": 1.0, "turns": turns,
+        # `at` after the turn ended, so only the prompt count can want a refresh.
+        return {"s": {"ai_title": {"text": text, "at": time.time(), "turns": turns,
                                    "failed_at": failed_at}}}
 
     # Titled at 1 prompt: not again at 2 or 3, wanted at 4 (+3).
@@ -6192,9 +6193,73 @@ def test_listing_queues_a_title_job_with_only_the_summary_flag(
     assert len(_recap_jobs()) == 1
 
 
+def _settle_stored(at, text="Fixing the login bug", turns=1, failed_at=0.0):
+    return {"s": {"ai_title": {"text": text, "at": at, "turns": turns,
+                               "failed_at": failed_at}}}
+
+
+def test_title_candidate_refreshes_a_title_written_before_the_turn_ended(tmp_path):
+    """Settle trigger: an ENDED turn whose stored AI title predates its end is
+    re-titled once the settle minute has passed, without waiting three prompts."""
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    stored = _settle_stored(at=rec["reply_at"] - 500.0)
+    job, = _title_job(task, rec, stored)
+    assert job["want_title"] is True and "due" not in job
+    assert job["current_title"] == "Fixing the login bug"
+    # Every ended status counts; a running one does not.
+    for status in ("blocked", "archived"):
+        assert len(_title_job(task, rec, stored, status=status)) == 1
+    for status in ("in_progress", "needs_attention"):
+        assert _title_job(task, rec, stored, status=status) == []
+
+
+def test_title_candidate_settle_refresh_inside_the_minute_is_held_with_a_due(tmp_path):
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=30.0)
+    job, = _title_job(task, rec, _settle_stored(at=rec["reply_at"] - 500.0))
+    assert job["due"] == pytest.approx(rec["reply_at"] + tasks_mod._RECAP_SETTLE_S)
+    assert job["due"] > time.time()
+
+
+def test_title_candidate_settle_refresh_once_per_turn(tmp_path):
+    """A title stamped at or after the turn's end is current: not re-asked."""
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    assert _title_job(task, rec, _settle_stored(at=rec["reply_at"])) == []
+    assert _title_job(task, rec, _settle_stored(at=time.time())) == []
+
+
+def test_title_candidate_settle_refresh_respects_the_failure_cooldown(tmp_path):
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    stored = _settle_stored(at=rec["reply_at"] - 500.0, failed_at=time.time() - 10)
+    assert _title_job(task, rec, stored) == []
+
+
+def test_title_candidate_settle_refresh_never_for_chosen_names(tmp_path):
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    stored = _settle_stored(at=rec["reply_at"] - 500.0)
+    for source in ("renamed", "user"):
+        assert _title_job(task, rec, stored, source=source) == []
+
+
+def test_title_candidate_existing_triggers_skip_the_settle_wait(tmp_path):
+    """No stored title, or three more prompts: asked at once, even on a turn
+    that ended seconds ago."""
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=5.0)
+    job, = _title_job(task, rec)
+    assert "due" not in job
+    rec = _title_rec(count=4, age=5.0)
+    job, = _title_job(task, rec, _settle_stored(at=rec["reply_at"] - 500.0, turns=1))
+    assert "due" not in job
+
+
 def test_title_candidate_wants_a_title_after_the_scan_count_resets(tmp_path):
     task = _title_task(tmp_path)
-    stored = {"s": {"ai_title": {"text": "Fixing the login bug", "at": 1.0,
+    stored = {"s": {"ai_title": {"text": "Fixing the login bug", "at": time.time(),
                                  "turns": 12, "failed_at": 0.0}}}
     # The scan record restarted (count 1 < stored turns 12): a reset, so wanted.
     jobs = _title_job(task, _title_rec(count=1), stored)

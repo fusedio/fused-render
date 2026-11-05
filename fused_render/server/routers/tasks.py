@@ -3948,9 +3948,14 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
     reader's first message, instead of waiting out its first turn) and is not a
     queued reply; and EITHER nothing is stored, or the
     reader has sent `TITLE_REFRESH_PROMPTS` more prompts since the stored one
-    (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed. A
-    failure inside that cooldown holds every trigger off, so a broken CLI is
-    not asked on each listing. A title job has no settle minute. The current title handed to the model is the
+    (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed, or
+    the SETTLE trigger: the turn has ended (`done`, `blocked`, `archived`) and
+    the stored title was written before it ended, so the reader need not wait
+    three prompts for a title that follows the finished work. A failure inside
+    the cooldown holds every trigger off, so a broken CLI is not asked on each
+    listing. Only the settle trigger waits `_RECAP_SETTLE_S` after the turn
+    ended (the job carries a `due` until then; someone who answers inside a
+    minute makes the refresh stale); the others ask at once. The current title handed to the model is the
     stored AI title, else the row's own (`title`: the first message line, a
     slash command, or Claude Code's `ai-title`)."""
     sid = task["session_id"]
@@ -3967,16 +3972,29 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
     stored = tasks_store.session_ai_title(settings or {}, sid)
     prompts = int(rec.get("count") or 0) if rec else 0
     now = time.time()
-    if stored is not None:
-        if stored["failed_at"] and now - stored["failed_at"] < _RECAP_RETRY_S:
-            return
-        if not (not stored["text"] or stored["failed_at"]
-                or prompts < stored["turns"]  # scan record reset
-                or prompts - stored["turns"] >= TITLE_REFRESH_PROMPTS):
-            return
     reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
     said_at = float(tail[-1].get("at") or 0.0)
     reply_at = reply_at if reply and reply_at >= said_at else said_at
+    # The turn has ENDED and the stored title was written before it did (a
+    # title `at` is stamped on every success, so this fires once per turn).
+    settle_due = (status in ("done", "blocked", "archived")
+                  and stored is not None and bool(stored["text"])
+                  and stored["at"] < reply_at)
+    due = 0.0
+    if stored is not None:
+        if stored["failed_at"] and now - stored["failed_at"] < _RECAP_RETRY_S:
+            return
+        existing = (not stored["text"] or stored["failed_at"]
+                    or prompts < stored["turns"]  # scan record reset
+                    or prompts - stored["turns"] >= TITLE_REFRESH_PROMPTS)
+        if not (existing or settle_due):
+            return
+        if not existing and now - reply_at < _RECAP_SETTLE_S:
+            # Wanted only because the turn ended: too fresh to ask. Reported
+            # with its `due` time, neither queued nor marked seen;
+            # `_recap_feed` keeps the earliest so the worker wakes the page
+            # when it passes (an idle page has no listing to find it).
+            due = reply_at + _RECAP_SETTLE_S
     fields = {"prompts": prompts,
               "current_title": (stored or {}).get("text") or title,
               "first_message": str(task.get("first_prompt") or "")}
@@ -3984,6 +4002,8 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
            "transcript": path, "session_id": sid, "for_uuid": anchor,
            "reply_at": reply_at, "stale_before": 0.0, "want_title": True,
            **fields}
+    if due:
+        job["due"] = due
     out.append(job)
 
 
