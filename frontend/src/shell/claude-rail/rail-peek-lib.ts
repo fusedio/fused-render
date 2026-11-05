@@ -43,6 +43,25 @@
 import type { TaskPulseTask } from "@platform/lib/api";
 import { inFlight, liveJobRow, taskColumn } from "@shell/tasks-lib";
 
+/** A BLOCKED CHAT (owner, 2026-11-05: "blocked tasks will also be added on
+ *  top of favourites, so we know something is blocked — even a non-fav
+ *  task"): one the Tasks page files in its Blocked lane — waiting on a card
+ *  nobody answered (`needs_attention`) or a run that broke (`blocked`),
+ *  schedule-lib `laneOf`. */
+export function isBlockedChat(t: { status: string }): boolean {
+  return t.status === "needs_attention" || t.status === "blocked";
+}
+
+/** A FAVOURITE AS THE RAIL COUNTS ONE (owner, 2026-11-05: a blocked chat
+ *  "is technically a temporary favourite without showing it to the user"):
+ *  starred, or blocked — the favourites' section, window B's hover card,
+ *  the favourite's open card, the pane hand-over, all of it, bar the star
+ *  itself. Unblocked and unstarred, it is a chat like any other again, and
+ *  its open card closes (`favOpenVerdict`). */
+export function favLike(t: { status: string; starred?: boolean } | undefined | null): boolean {
+  return !!t && (!!t.starred || isBlockedChat(t));
+}
+
 /** The pointer rests this long on a ring before its chat is MOUNTED (the
  *  warm-up): a sweep down the rail must not mount every chat it crosses. */
 export const PEEK_WARM_MS = 60;
@@ -704,7 +723,7 @@ export function favHoverRow(
 ): TaskPulseTask | null {
   if (!hoverKey || openKey) return null;
   const t = rows.find((r) => r.key === hoverKey);
-  return t && t.starred && t.status !== "archived" && t.session_id ? t : null;
+  return t && favLike(t) && t.status !== "archived" && t.session_id ? t : null;
 }
 
 /** What a card does once the server has answered its star (RailPeek
@@ -836,7 +855,7 @@ export function favOpenVerdict(
   now: number,
 ): "show" | "wait" | "close" {
   if (row?.status === "archived") return "close";
-  if (row?.starred) return "show";
+  if (favLike(row)) return "show";
   if (seenLive) return "close";
   if (openedAt !== null && now - openedAt < FAV_SETTLE_MS) return row ? "show" : "wait";
   return loaded ? "close" : "wait";

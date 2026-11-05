@@ -73,9 +73,10 @@
 // THE RAIL'S FOOT, 2026-11-05 (owner): the LIST is at most ten rings tall
 // and scrolls, its edges fading where there is more (`listEdges`); a new
 // place starts it at the top, and the active ring is scrolled into view
-// without reordering anything. The BLOCKED chats (claude-rail-lib
-// `blockedSeats`) stand at the head of the favourites' section as list
-// rings — no star, window A's card. The favourites stand newest star first.
+// without reordering anything. The BLOCKED chats (rail-peek-lib `favLike`,
+// claude-rail-lib `favSeats`) stand at the head of the favourites' section
+// as favourites in all but the star — temporary favourites. The starred
+// stand newest star first.
 // The PINNED BOTS (`pinnedBots`, platform/lib/botsPulse `useBotsRows`) stand
 // under them, each a door to its page. Beside the open pane on its HOME the
 // list is not drawn (`listHidden`). The + is a page rail's only
@@ -269,7 +270,6 @@ import { draftHref, preloadChat } from "@apps/claude";
 import { hideHint } from "@platform/lib/hints";
 import {
   activeRing,
-  blockedSeats,
   dotCleared,
   favSeats,
   inPlace,
@@ -303,6 +303,7 @@ import {
   FAV_SETTLE_MS,
   PeekIntent,
   favChatElsewhere,
+  favLike,
   favRingRoute,
   favPressClears,
   keepAlive,
@@ -344,10 +345,6 @@ import type { FaceSubject } from "@apps/bots/lib/face";
  *  shadcn menus and popovers (platform/lib/rail-gutter `railGutter`) — keeps
  *  off it. A hidden rail says nothing. Counted: a page's rail and the shell's
  *  fallback never stand together, but the count makes that a fact, not a hope. */
-/** How long after the pane opens an empty pane may still be a chat on its
- *  way, not the home page (`listHidden`). */
-const PANE_HOME_GRACE_MS = 120;
-
 let railsUp = 0;
 function railUp(): () => void {
   // A test renderer's document has no root element: nothing to say it to.
@@ -633,11 +630,12 @@ export function ClaudeRail({
   const favsOnRef = useRef(favsOn);
   favsOnRef.current = favsOn;
   const favs = useMemo(() => (favsOn ? favSeats(rows, full) : []), [favsOn, rows, full]);
-  // THE BLOCKED, ABOVE THE FAVOURITES (claude-rail-lib `blockedSeats`; owner,
-  // 2026-11-05): drawn at the head of the favourites' section, but LIST
-  // rings — this rail's hover card (window A), no star, no favourite's card
-  // — there only because they are blocked.
-  const blocked = useMemo(() => (favsOn ? blockedSeats(rows, full) : []), [favsOn, rows, full]);
+  // THE BLOCKED ARE AT THEIR HEAD (claude-rail-lib `favSeats`, rail-peek-lib
+  // `favLike`; owner, 2026-11-05): favourites in every way bar the star —
+  // window B's hover, the favourite's card, the pane hand-over — drawn with
+  // `.is-blocked` and no star. How many, for the rail's standing (`railShown`:
+  // the fallback never stands for them alone).
+  const blockedCount = useMemo(() => favs.filter((s) => !s.pulse.starred).length, [favs]);
   // THE PINNED BOTS, UNDER THE FAVOURITES (claude-rail-lib `pinnedBots`;
   // owner, 2026-11-05): their faces, each a door to the bot's page.
   const botRows = useBotsRows(favsOn);
@@ -647,9 +645,11 @@ export function ClaudeRail({
     [rows, full, seatPlace, favsOn, favouritesOnly],
   );
   // THE LIST STEPS ASIDE FOR THE PANE'S HOME (claude-rail-lib `listHidden`):
-  // whether the open pane is on its home — no session mounted in it, past
-  // the hold a chat gets to mount (`paneWas`'s own clock, below).
-  const [paneHome, setPaneHome] = useState(false);
+  // the pane is home when the page's URL names no session (`activeSessionId`
+  // — every page's pane routes by `session_id`: present, that chat; absent,
+  // the home page) — known the moment the pane opens, no wait on a mount
+  // (owner, 2026-11-05: "there is still some delay").
+  const paneHome = !activeSessionId;
   // The +'s New task card (`openNewTask`, below) — declared up here because
   // an open one keeps the rail standing (`shown`).
   const [card, setCard] = useState<Card | null>(null);
@@ -669,7 +669,8 @@ export function ClaudeRail({
   const shown =
     railShown({
       list: hideList ? 0 : allSeats.length,
-      favs: favs.length + blocked.length,
+      favs: favs.length - blockedCount,
+      blocked: blockedCount,
       bots: bots.length,
       paneOpen,
       always: favsOn,
@@ -881,13 +882,7 @@ export function ClaudeRail({
     // A favourite's held card (a hover on its ring, then a press inside) has
     // its ring in the favourites section already.
     // …and so has a blocked chat's (at the head of that section, Bugbot).
-    if (
-      !heldKey ||
-      baseSeats.some((s) => s.pulse.key === heldKey) ||
-      blocked.some((s) => s.pulse.key === heldKey) ||
-      favs.some((s) => s.pulse.key === heldKey)
-    )
-      return null;
+    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey) || favs.some((s) => s.pulse.key === heldKey)) return null;
     const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
     if (!pulse) return null;
     // WITH THE FAVOURITES ON the list scrolls, so nothing is "past its room":
@@ -899,19 +894,16 @@ export function ClaudeRail({
     // same view / same page").
     if (favsOn && !inPlace(pulse, place)) return null;
     return { pulse, row: full.get(heldKey) ?? null };
-  }, [baseSeats, blocked, heldKey, rows, full, favs, favsOn, place]);
+  }, [baseSeats, heldKey, rows, full, favs, favsOn, place]);
   // Every seat this rail's card may show — the list's, plus the held
   // outsider, plus the favourites (a hover on their rings, header) — for the
   // card's anchors, the kept mounts and the prune; the LIST itself is
   // `baseSeats`, the outsider draws in the foot and the favourites in their
   // own section (below). A favourite's OPEN card is the shell's
   // (FavouritePeek), never this one.
-  // The blocked stand with the list's rings for every list purpose (the
-  // card, the active mark, the pane's take and give-back): `listLike`.
-  const listLike = useMemo(() => (blocked.length > 0 ? [...blocked, ...baseSeats] : baseSeats), [blocked, baseSeats]);
   const seats = useMemo(
-    () => (heldExtra || favs.length > 0 ? [...listLike, ...(heldExtra ? [heldExtra] : []), ...favs] : listLike),
-    [listLike, heldExtra, favs],
+    () => (heldExtra || favs.length > 0 ? [...baseSeats, ...(heldExtra ? [heldExtra] : []), ...favs] : baseSeats),
+    [baseSeats, heldExtra, favs],
   );
   const favKeys = useMemo(() => new Set(favs.map((s) => s.pulse.key)), [favs]);
   // Read at the moment, not at the render that made the callback: the chip's
@@ -1078,7 +1070,9 @@ export function ClaudeRail({
   // `pendingFocus`).
   const openFavourite = useCallback(
     (t: TaskPulseTask, href: string) => {
-      if (!t.starred || t.status === "archived" || !t.session_id) {
+      // A favourite as the rail counts one — starred or blocked (rail-peek-
+      // lib `favLike`); anything else goes through the chat's door.
+      if (!favLike(t) || t.status === "archived" || !t.session_id) {
         requestFavFocus(null);
         openChatRef.current(href);
         return;
@@ -1616,49 +1610,33 @@ export function ClaudeRail({
   // Recent / home page remembers nothing, so nothing comes back. Declared
   // before the restore: this runs first on every commit.
   const paneKey = useRef<{ key: string | null; holdUntil: number }>({ key: null, holdUntil: 0 });
-  // THE PANE'S HOME IS CALLED ONLY AFTER A GRACE (`listHidden`): a pane
-  // that just opened onto a chat mounts it a moment later, and an empty
-  // pane in that moment is not home — the list would blink out and back.
-  const homeGrace = useRef(0);
   const paneSidsKey = paneSidsLive.join("\n");
   useLayoutEffect(() => {
     if (!paneOpen) return;
-    homeGrace.current = Date.now() + PANE_HOME_GRACE_MS;
-  }, [paneOpen]);
-  useLayoutEffect(() => {
-    if (!paneOpen) return;
-    const listKeys = new Set(listLike.map((s) => s.pulse.key));
+    const listKeys = new Set(baseSeats.map((s) => s.pulse.key));
     const inPane = new Set(paneSidsKey ? paneSidsKey.split("\n") : []);
-    const hit = listLike.find((s) => s.pulse.session_id && inPane.has(s.pulse.session_id));
+    const hit = baseSeats.find((s) => s.pulse.session_id && inPane.has(s.pulse.session_id));
     const settle = () => {
-      const now = Date.now();
       paneKey.current.key = paneWas({
         paneOpen,
         paneKey: hit && listKeys.has(hit.pulse.key) ? hit.pulse.key : null,
         anySession: inPane.size > 0,
         remembered: paneKey.current.key,
         holdUntil: paneKey.current.holdUntil,
-        now,
+        now: Date.now(),
       });
-      // Home: nothing mounted, and no chat on its way (the hold spent, the
-      // opening's grace past).
-      setPaneHome(inPane.size === 0 && now >= paneKey.current.holdUntil && now >= homeGrace.current);
     };
     settle();
     // The chat mounted: the hold is spent, so a later visit home counts.
     paneKey.current.holdUntil = paneHoldAfter(paneKey.current.holdUntil, inPane.size > 0);
-    // Still holding with an empty pane: look again once the hold (or the
-    // opening's grace) runs out.
-    const wait = Math.max(paneKey.current.holdUntil, inPane.size === 0 ? homeGrace.current : 0) - Date.now();
+    // Still holding with an empty pane: look again once the hold runs out.
+    const wait = paneKey.current.holdUntil - Date.now();
     if (wait <= 0) return;
     const t = window.setTimeout(settle, wait + 1);
     return () => window.clearTimeout(t);
-  }, [paneOpen, paneSidsKey, listLike]);
-  useEffect(() => {
-    if (!paneOpen) setPaneHome(false);
-  }, [paneOpen]);
-  const baseSeatsRef = useRef(listLike);
-  baseSeatsRef.current = listLike;
+  }, [paneOpen, paneSidsKey, baseSeats]);
+  const baseSeatsRef = useRef(baseSeats);
+  baseSeatsRef.current = baseSeats;
   const restoreWasOpen = useRef(paneOpen);
   useLayoutEffect(() => {
     const wasOpen = restoreWasOpen.current;
@@ -1719,7 +1697,7 @@ export function ClaudeRail({
   // ONE ACTIVE RING PER SECTION (header; rail-peek-lib `activeRing`). The
   // list's section is its rings plus the held outsider in the foot. With the
   // favourites off the list keeps every mark it had (flag-off parity).
-  const listSection = heldExtra ? [...listLike, heldExtra] : listLike;
+  const listSection = heldExtra ? [...baseSeats, heldExtra] : baseSeats;
   const activeList = activeRing(
     listSection.map((s) => s.pulse.key),
     [
@@ -1757,7 +1735,7 @@ export function ClaudeRail({
   }, [place, activeList, measureEdges, hideList]);
 
   // ONE RING, as the list draws it — and as the foot draws the held outsider.
-  const ringOf = ({ pulse: t, row }: RailRow, foot = false, blockedRing = false) => {
+  const ringOf = ({ pulse: t, row }: RailRow, foot = false) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
               // Hollow since the press, until the pulse agrees (header).
@@ -1837,7 +1815,9 @@ export function ClaudeRail({
                   // Found again by key when a card shuts under the keyboard
                   // (fav-peek-store `focusRail`).
                   data-task-key={t.key}
-                  className={["sidebar-rail-btn", "claude-rail-chat", ...wears.classes, ...(blockedRing ? ["is-blocked"] : [])].join(" ")}
+                  // A blocked, unstarred favourite wears `.is-blocked`
+                  // (rail-peek-lib `favLike`): the section's ring, no star.
+                  className={["sidebar-rail-btn", "claude-rail-chat", ...wears.classes, ...(foot && !t.starred ? ["is-blocked"] : [])].join(" ")}
                   aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the
                   // title's line, then the reply's — what the row clamps.
@@ -1954,7 +1934,7 @@ export function ClaudeRail({
       ref={railRef}
       className={
         "claude-rail" +
-        (favs.length + blocked.length + bots.length > 0 ? " has-favs" : "") +
+        (favs.length + bots.length > 0 ? " has-favs" : "") +
         // No glyph above the + (beside the open pane, the fallback): nothing
         // keeps its room (claude-rail.css).
         (favsOn && !chrome ? " no-glyph" : "") +
@@ -2186,7 +2166,7 @@ export function ClaudeRail({
             The list's rings plus this box are still what the list could
             grow into: Git between them is fixed height. */}
         <div ref={roomRef} className="claude-rail-room" aria-hidden="true" />
-        {favs.length + blocked.length > 0 && (
+        {favs.length > 0 && (
           // THE FAVOURITES, LAST (owner, 2026-11-03: "favourite should be
           // below git"): past their own hairline, one ring per starred chat
           // from anywhere — the chat the shell's favourite card stands
@@ -2201,11 +2181,10 @@ export function ClaudeRail({
             <div
               className="claude-rail-favs"
               role="list"
-              aria-label={blocked.length > 0 ? "Blocked and favourite chats" : "Favourite chats"}
+              aria-label={blockedCount > 0 ? "Blocked and favourite chats" : "Favourite chats"}
               // Its floor (claude-rail.css): three rings, or every star when fewer.
-              style={{ "--fav-floor": Math.min(favs.length + blocked.length, 3) } as CSSProperties}
+              style={{ "--fav-floor": Math.min(favs.length, 3) } as CSSProperties}
             >
-              {blocked.map((seat) => ringOf(seat, false, true))}
               {favs.map((seat) => ringOf(seat, true))}
             </div>
           </>
@@ -2218,7 +2197,7 @@ export function ClaudeRail({
           // its door. The red dot is the Bots row's (GlobalSidebar): the bot
           // waits on the reader; the green one, news past their mark.
           <>
-            {(favs.length + blocked.length > 0 || !favouritesOnly) && (
+            {(favs.length > 0 || !favouritesOnly) && (
               <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
             )}
             <div className="claude-rail-bots" role="list" aria-label="Pinned bots">

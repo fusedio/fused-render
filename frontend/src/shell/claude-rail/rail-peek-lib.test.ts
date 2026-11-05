@@ -1185,3 +1185,13 @@ describe("clampAnchor", () => {
   });
 });
 
+// Owner, 2026-11-05: a blocked chat is a temporary favourite — its open card
+// shows like a starred one's and closes once it is neither.
+describe("favOpenVerdict on a blocked chat", () => {
+  it("blocked and unstarred: shown; unblocked and unstarred after being seen live: closed", () => {
+    expect(favOpenVerdict({ status: "needs_attention" }, true, false, null, 0)).toBe("show");
+    expect(favOpenVerdict({ status: "blocked" }, true, false, null, 0)).toBe("show");
+    expect(favOpenVerdict({ status: "done" }, true, true, null, 0)).toBe("close");
+  });
+});
+

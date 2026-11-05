@@ -14,8 +14,6 @@ import {
   chipPlace,
   dotCleared,
   favSeats,
-  blockedSeats,
-  isBlockedChat,
   listHidden,
   plusShown,
   pinnedBots,
@@ -39,6 +37,7 @@ import {
   type RailPlace,
   type RingMarkInput,
 } from "./claude-rail-lib";
+import { favLike, isBlockedChat } from "./rail-peek-lib";
 
 
 
@@ -334,24 +333,29 @@ describe("favSeats", () => {
 });
 
 // Owner, 2026-11-05: "blocked tasks will also be added on top of favourites
-// … even a non-fav task if it is blocked … they shouldn't be fav, they just
-// show up here because they are blocked".
-describe("blockedSeats", () => {
-  it("every blocked, un-archived, UNSTARRED chat, newest activity first", () => {
+// … even a non-fav task if it is blocked … it is technically a temporary
+// favourite without showing it to the user".
+describe("favSeats: the blocked at the head", () => {
+  it("every blocked, un-archived, UNSTARRED chat with a session stands first, newest activity first; then the starred", () => {
     const waiting = pulse(task({ key: "w", status: "needs_attention", happened_at: 100 }));
     const broke = pulse(task({ key: "b", status: "blocked", happened_at: 200 }));
-    const starredBlocked = pulse(task({ key: "sb", status: "blocked", happened_at: 300 }), { starred: true });
+    const starredBlocked = pulse(task({ key: "sb", status: "blocked", happened_at: 300 }), { starred: true, starred_at: 5 });
+    const star = pulse(task({ key: "s", happened_at: 50 }), { starred: true, starred_at: 9 });
     const running = pulse(task({ key: "r", status: "in_progress", happened_at: 400 }));
     const archived = pulse(task({ key: "x", status: "archived", happened_at: 500 }));
-    const seats = blockedSeats([waiting, broke, starredBlocked, running, archived], new Map());
-    expect(seats.map((s) => s.pulse.key)).toEqual(["b", "w"]);
-    expect(seats.every((s) => !s.pulse.starred)).toBe(true);
+    const doorless = pulse(task({ key: "d", status: "blocked", happened_at: 600, session_id: "" }));
+    const seats = favSeats([waiting, broke, starredBlocked, star, running, archived, doorless], new Map());
+    expect(seats.map((s) => s.pulse.key)).toEqual(["b", "w", "s", "sb"]);
+    expect(seats.filter((s) => !s.pulse.starred).map((s) => s.pulse.key)).toEqual(["b", "w"]);
   });
-  it("isBlockedChat: the Blocked lane's two statuses", () => {
+  it("isBlockedChat / favLike: the Blocked lane's two statuses, or a star", () => {
     expect(isBlockedChat({ status: "blocked" })).toBe(true);
     expect(isBlockedChat({ status: "needs_attention" })).toBe(true);
     expect(isBlockedChat({ status: "in_progress" })).toBe(false);
-    expect(isBlockedChat({ status: "done" })).toBe(false);
+    expect(favLike({ status: "done", starred: true })).toBe(true);
+    expect(favLike({ status: "blocked" })).toBe(true);
+    expect(favLike({ status: "done" })).toBe(false);
+    expect(favLike(undefined)).toBe(false);
   });
   it("the list leaves a blocked chat out too (one ring per chat), favourites on", () => {
     const rows = [
@@ -794,13 +798,15 @@ describe("railShown", () => {
 });
 
 describe("railShown, the shell's fallback (favouritesOnly)", () => {
-  it("favourites on: shown with a favourite, a blocked chat or a pinned bot to draw — not empty (no +, 2026-11-05)", () => {
+  it("favourites on: shown for a STARRED favourite or a pinned bot — never for a blocked chat alone, never empty (no +, 2026-11-05)", () => {
     expect(railShown({ list: 0, favs: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
     expect(railShown({ list: 0, favs: 0, bots: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
+    expect(railShown({ list: 0, favs: 0, blocked: 2, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
     expect(railShown({ list: 0, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
   });
-  it("the pane open on a page rail: a pinned bot is enough to stand", () => {
+  it("the pane open on a page rail: a pinned bot or a blocked chat is enough to stand", () => {
     expect(railShown({ list: 0, favs: 0, bots: 1, paneOpen: true, always: true })).toBe(true);
+    expect(railShown({ list: 0, favs: 0, blocked: 1, paneOpen: true, always: true })).toBe(true);
   });
   it("favourites off: never", () => {
     expect(railShown({ list: 0, favs: 2, paneOpen: false, always: false, favouritesOnly: true })).toBe(false);

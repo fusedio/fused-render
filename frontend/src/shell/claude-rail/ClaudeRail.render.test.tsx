@@ -141,7 +141,15 @@ afterEach(() => {
   saved.clear();
 });
 
-async function mountRail(o: { paneOpen: boolean; favourites: boolean; chats?: Task[]; onOpenChat?: (href: string) => void }) {
+async function mountRail(o: {
+  paneOpen: boolean;
+  favourites: boolean;
+  chats?: Task[];
+  onOpenChat?: (href: string) => void;
+  /** The session the page's URL names — beside the open pane, the chat it
+   *  shows; null is the pane's home (2026-11-05, `listHidden`). */
+  activeSessionId?: string | null;
+}) {
   // The card's flag and the favourites' pair, as Settings would publish them.
   publishCanvasRailPeek({ enabled: true });
   publishFavouritesParent({ enabled: true });
@@ -156,7 +164,7 @@ async function mountRail(o: { paneOpen: boolean; favourites: boolean; chats?: Ta
         paneOpen={o.paneOpen}
         place={{ kind: "folder", dir: DIR }}
         newTask={{ target: DIR, waiting: null, on: null }}
-        activeSessionId={null}
+        activeSessionId={o.activeSessionId ?? null}
         onOpen={() => {}}
         onOpenChat={o.onOpenChat ?? (() => {})}
         onPullStart={() => {}}
@@ -204,8 +212,14 @@ describe("ClaudeRail beside the pane", () => {
     expect(favPeekState().rail).toBeNull();
   });
 
-  test("pane open, favourites on, a chat here: standing and registered, still no glyph or seam", async () => {
+  test("pane open on its HOME, favourites on, a chat here: the list steps aside and, with nothing else to draw, the rail hides (2026-11-05)", async () => {
     const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a")] });
+    expect(aside(r).props.hidden).toBe(true);
+    expect(favPeekState().rail).toBeNull();
+  });
+
+  test("pane open, favourites on, a chat here: standing and registered, still no glyph or seam", async () => {
+    const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a")], activeSessionId: chat("a").session_id });
     expect(glyph(r)).toBe(0);
     expect(seam(r)).toBe(0);
     expect(aside(r).props.hidden).toBeUndefined();
@@ -239,7 +253,13 @@ describe("ClaudeRail's card beside the pane", () => {
 
   test("beside the open pane a ring press opens the chat in the pane: no card is pinned", async () => {
     const opened: string[] = [];
-    const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a")], onOpenChat: (h) => opened.push(h) });
+    const r = await mountRail({
+      paneOpen: true,
+      favourites: true,
+      chats: [chat("a"), chat("b")],
+      onOpenChat: (h) => opened.push(h),
+      activeSessionId: chat("b").session_id,
+    });
     await press(r, "a");
     expect(opened).toHaveLength(1);
     expect(r.root.findAllByType(RailPeek)).toHaveLength(0);

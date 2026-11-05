@@ -153,6 +153,28 @@ function recompute(next_rows: BotPulseRow[]) {
  *  to a wedged owner is what the bound is for. */
 const REQUEST_MS = 15_000;
 
+/** AN OLDER OWNER'S PULSE carries no `pinned` (the bots are served by the
+ *  process that owns them — the desktop app, which may run older code than
+ *  this page): the pin, name and face are read once per poll off the full
+ *  `/api/bots` listing instead, `fast=1` (no screenshots), and merged by
+ *  id. A pulse that carries the field is taken as is. */
+async function withPins(rows: BotPulseRow[]): Promise<BotPulseRow[]> {
+  if (rows.length === 0 || rows.some((b) => typeof b.pinned === "boolean")) return rows;
+  try {
+    const full = await getJson<{ bots: { id: string; pinned?: boolean; name?: string; face?: unknown }[] }>(
+      "/api/bots?fast=1",
+      { signal: AbortSignal.timeout(REQUEST_MS) },
+    );
+    const byId = new Map((full.bots ?? []).map((b) => [b.id, b]));
+    return rows.map((b) => {
+      const f = byId.get(b.id);
+      return f ? { ...b, pinned: !!f.pinned, name: f.name, face: f.face ?? null } : b;
+    });
+  } catch {
+    return rows;
+  }
+}
+
 export function getBotsPulse(): Promise<{ bots: BotPulseRow[] }> {
   return getJson<{ bots: BotPulseRow[] }>("/api/bots/pulse", { signal: AbortSignal.timeout(REQUEST_MS) });
 }
@@ -163,7 +185,8 @@ async function poll() {
   const departed = generation;
   try {
     const r = await getBotsPulse();
-    if (feeders === 0 && generation === departed) publishBots(r.bots ?? []);
+    const rows = await withPins(r.bots ?? []);
+    if (feeders === 0 && generation === departed) publishBots(rows);
   } catch {
     // Bots off, no owner (503), or a restart mid-poll: not news. The row keeps
     // its last answer rather than blanking a dot over one lost request; the

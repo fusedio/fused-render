@@ -167,6 +167,7 @@ import {
   inSafeCone,
   onHop,
   clampAnchor,
+  favLike,
   placeClear,
   rowOf,
   starMarkStep,
@@ -1037,7 +1038,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     starSeq.current += 1;
     setStarMark({ key: t.key, on: res.starred, pulse: t, seen: 0, seq: starSeq.current });
     onStarred?.(t.key, res.starred);
-    if (starOutcome(res.starred, t.key, shownKeyRef.current, dismissOnUnstar).dismiss) {
+    // Unstarred but still blocked: still a favourite as the rail counts one
+    // (rail-peek-lib `favLike`), so its card stays.
+    if (starOutcome(favLike({ status: t.status, starred: res.starred }), t.key, shownKeyRef.current, dismissOnUnstar).dismiss) {
       onHeld(false);
       onDismiss("unstar");
     }
