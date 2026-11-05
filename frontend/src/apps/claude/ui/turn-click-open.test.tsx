@@ -85,7 +85,13 @@ async function mount() {
         actions={actions}
       />,
     );
-    await new Promise((res) => setTimeout(res, 0));
+    // The flag arrives from an async prefs read: wait for it to land (or, with
+    // the flag off, for a settle) instead of trusting one tick.
+    for (let i = 0; i < 50; i++) {
+      await new Promise((res) => setTimeout(res, 10));
+      const b = byClass(r, "bubble")[0];
+      if (!flagOn || (b?.props as { onClick?: unknown } | undefined)?.onClick) break;
+    }
   });
   mounted.push(r);
   return r;
