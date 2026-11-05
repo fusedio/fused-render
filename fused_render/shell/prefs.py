@@ -488,17 +488,13 @@ def project_queue_enabled() -> bool:
     return read_prefs().get("project_queue_enabled") is True
 
 
-def task_recap_titles_enabled() -> bool:
-    """Whether every finished Claude turn gets a short haiku recap that titles
-    its Tasks row (default off — opt-in beta: it spends one haiku call per
-    finished turn, chat open or not).
-
-    Same idiom as `project_queue_enabled`: only a stored `true` is on. Off, the
-    listing carries no `recap` field, nothing is queued for haiku, and the
-    away fold's recap is never written to `session_settings.json` — the rows
-    and the fold are main's, byte for byte.
+def chat_recap_enabled() -> bool:
+    """Whether the in-chat recap fold ("while you were away" and on open, in the
+    chat and the Tasks peek) is shown (default ON — only a stored `false` is
+    off). The recap is produced on demand, one haiku call per recap. It does
+    not affect Tasks titles. The old `task_recap_titles_enabled` key is ignored.
     """
-    return read_prefs().get("task_recap_titles_enabled") is True
+    return read_prefs().get("chat_recap_enabled") is not False
 
 
 def breakout_enabled() -> bool:
@@ -515,7 +511,7 @@ def canvas_shot_slow_fallback_enabled() -> bool:
     5–30 s with the canvas locked. Default off on macOS, where the fix is the
     grant (the canvas page refuses with that sentence instead); Windows and
     Linux fall back regardless of this flag, having no grant to point at.
-    Same idiom as `task_recap_titles_enabled`: only a stored `true` is on.
+    Same idiom as `project_queue_enabled`: only a stored `true` is on.
     """
     return read_prefs().get("canvas_shot_slow_fallback_enabled") is True
 
@@ -544,8 +540,8 @@ def task_favourites_enabled() -> bool:
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
-    few prompts, else Claude Code's `ai-title`, else the first line of the
-    first message) — never by the newest message, the haiku recap or
+    few prompts and again a minute after each turn settles, else Claude Code's `ai-title`, else the first line of the
+    first message) — never by the newest message or
     Claude's reply (default off; only a stored `true` is on). Shown as
     "Stable AI titles"; the key predates that name.
     Rows then carry `title_mode: "summary"`; the key is absent when off."""
@@ -898,7 +894,7 @@ def auto_download_updates_enabled() -> bool:
 
 def index_low_impact_enabled() -> bool:
     """Whether the file index runs in *low-impact* mode (default OFF — opt-in
-    like `task_recap_titles_enabled`).
+    like `project_queue_enabled`).
 
     On, the index trades freshness for a quiet machine: one watcher owner per
     Mac (a machine-wide lease the installed :1777 app wins), longer and
@@ -1235,9 +1231,9 @@ def _prefs_response() -> dict:
         # No `forced_by` twin — there is no env override to report; see
         # `project_queue_enabled`.
         "queue": {"enabled": project_queue_enabled()},
-        # Whether finished turns are recapped by haiku and the Tasks rows
-        # titled by it (opt-in beta, `task_recap_titles_enabled`).
-        "task_recap": {"enabled": task_recap_titles_enabled()},
+        # Whether the in-chat recap fold is shown (default on,
+        # `chat_recap_enabled`). Does not touch Tasks titles.
+        "chat_recap": {"enabled": chat_recap_enabled()},
         # Breakout side chats (opt-in beta, `breakout_enabled`).
         "breakout": {"enabled": breakout_enabled()},
         # The slow in-canvas screenshot fallback on a Mac
@@ -1574,12 +1570,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["project_queue_enabled"] = value
             changed = True
-        if "task_recap_titles_enabled" in body:
-            value = body.get("task_recap_titles_enabled")
+        if "chat_recap_enabled" in body:
+            value = body.get("chat_recap_enabled")
             if not isinstance(value, bool):
-                return JSONResponse({"error": "'task_recap_titles_enabled' must be a boolean"},
+                return JSONResponse({"error": "'chat_recap_enabled' must be a boolean"},
                                     status_code=400)
-            prefs["task_recap_titles_enabled"] = value
+            prefs["chat_recap_enabled"] = value
             changed = True
         if "breakout_enabled" in body:
             value = body.get("breakout_enabled")
@@ -1928,7 +1924,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
-                          "'task_recap_titles_enabled', 'breakout_enabled', "
+                          "'chat_recap_enabled', 'breakout_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
                           "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
                           "'task_summary_titles_enabled', "
