@@ -6,7 +6,7 @@
 // and tag; the filter strip is the set of tags actually present plus "Linked"
 // for folders outside ~/Fused. Recency is the sort key, so the dividers say
 // it out loud (Today / This week / Earlier) instead of decorating.
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { SearchIcon, XIcon, AppWindowIcon, WifiOffIcon } from "lucide-react";
 import { isRasterIconUrl } from "@platform/lib/app-icon-src";
 import { Badge } from "@platform/shadcn/ui/badge";
@@ -22,7 +22,13 @@ import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { cn } from "@platform/lib/utils";
-import { SectionSwitch } from "./nav";
+import { HeaderRow, navigate } from "./nav";
+import { Toaster } from "./bots/Toast";
+
+// "+" on the grid: the New sheet on its New app tab (describe an app; the
+// computer names, scaffolds and builds it as a task). Lazy, with the task
+// screens' chunk: the grid never pays for it until the button is tapped.
+const NewSheet = lazy(() => import("./tasks/screens").then((m) => ({ default: m.NewSheet })));
 
 interface LanAppRow {
   name: string;
@@ -87,6 +93,8 @@ export function LanApp() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<string>(readFilter);
+  const [creating, setCreating] = useState(false);
+  const [reloads, setReloads] = useState(0); // bumped to fetch the grid again (an app created from the "+")
   const now = useMemo(() => Date.now() / 1000, [apps]);
 
   useEffect(() => {
@@ -105,7 +113,7 @@ export function LanApp() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [reloads]);
 
   // Tags in order of how many apps carry them; "Linked" only when something is.
   const tags = useMemo(() => {
@@ -162,12 +170,7 @@ export function LanApp() {
       <header className="sticky top-0 z-10 -mx-4 bg-[var(--bg)]/92 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-3 backdrop-blur">
         {/* The section switch is the page's title row, in the browser and
             inside the native shell alike (whose top bar reads <title>). */}
-        <div className="flex items-center justify-between gap-3 pb-3">
-          <SectionSwitch active="apps" />
-          <span className="lan-mono text-xs text-[var(--fg-muted)]">
-            {apps ? `${shown.length}/${apps.length}` : ""}
-          </span>
-        </div>
+        <HeaderRow active="apps" addLabel="New app" onAdd={() => setCreating(true)} />
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-[var(--fg-muted)]" />
           <Input
@@ -279,6 +282,22 @@ export function LanApp() {
           </div>
         </section>
       ))}
+      <Toaster />
+      {creating && (
+        <Suspense fallback={null}>
+          <NewSheet
+            open={creating}
+            onOpenChange={setCreating}
+            tab="app"
+            projects={null}
+            onCreatedWithoutTask={() => setReloads((n) => n + 1)}
+            onCreated={(key, entryId) => {
+              setCreating(false);
+              navigate(`/tasks/${encodeURIComponent(key)}${entryId ? `?entry=${encodeURIComponent(entryId)}` : ""}`);
+            }}
+          />
+        </Suspense>
+      )}
     </main>
   );
 }

@@ -6,7 +6,7 @@ import { BotIcon, ChevronRightIcon, PlusIcon, StarIcon, TriangleAlertIcon, WifiO
 import { Button } from "@platform/shadcn/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@platform/shadcn/ui/empty";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
-import { Link, SectionSwitch, navigate } from "../nav";
+import { HeaderRow, Link, navigate } from "../nav";
 import { api } from "./api";
 import { CreateBotSheet } from "./CreateBotSheet";
 import { BotFace } from "./Face";
@@ -60,19 +60,9 @@ export function BotsList() {
 
   return (
     <main className="lan-bots mx-auto max-w-3xl px-4 pb-[max(24px,env(safe-area-inset-bottom))]">
-      <header className="sticky top-0 z-10 -mx-4 bg-[var(--bg)]/92 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-3 backdrop-blur">
-        <div className="flex items-center justify-between gap-3">
-          <SectionSwitch active="bots" />
-          <Button
-            variant="outline"
-            className="h-10 rounded-xl px-3 text-[15px]"
-            onClick={() => setCreating(true)}
-            disabled={!data}
-          >
-            <PlusIcon className="size-4" />
-            New bot
-          </Button>
-        </div>
+      <header className="sticky top-0 z-10 -mx-4 bg-[var(--bg)]/92 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-2 backdrop-blur">
+        {/* The same row as the Apps grid and the Tasks list (lan/nav.tsx HeaderRow): the switch and a "+". */}
+        <HeaderRow active="bots" addLabel="New bot" onAdd={() => setCreating(true)} addDisabled={!data} />
       </header>
 
       {claudeMissing && (

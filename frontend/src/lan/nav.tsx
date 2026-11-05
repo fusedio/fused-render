@@ -3,6 +3,7 @@
 // plain <a href> that also works on a full reload; a plain left click is turned
 // into history.pushState so the phone never re-downloads the page.
 import { useEffect, useState, type AnchorHTMLAttributes, type MouseEvent } from "react";
+import { PlusIcon } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { parseRoute, type Route } from "./bots/lib";
 
@@ -42,29 +43,73 @@ export function Link({ href, onClick, ...rest }: AnchorHTMLAttributes<HTMLAnchor
   return <a href={href} onClick={click} {...rest} />;
 }
 
-/** The `Apps | Bots` segmented switch at the top of the grid and the list. */
-export function SectionSwitch({ active, className }: { active: "apps" | "bots"; className?: string }) {
-  const item = (key: "apps" | "bots", href: string, label: string) => (
+export type Section = "apps" | "bots" | "tasks";
+
+/** The title row every lan page shares — the section switch and one "+" — so
+ *  switching tabs never moves anything: same height, same slots, no counts. */
+export function HeaderRow({
+  active,
+  badge,
+  addLabel,
+  onAdd,
+  addDisabled,
+}: {
+  active: Section;
+  badge?: number;
+  addLabel: string;
+  onAdd: () => void;
+  addDisabled?: boolean;
+}) {
+  return (
+    <div className="flex h-10 items-center justify-between gap-3 pb-3 box-content">
+      <SectionSwitch active={active} badge={badge} />
+      <button
+        type="button"
+        aria-label={addLabel}
+        onClick={onAdd}
+        disabled={addDisabled}
+        className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-[var(--sh-border)] bg-[var(--card)] text-[var(--fg)] active:bg-[var(--row-bg-hover)] disabled:opacity-40"
+      >
+        <PlusIcon className="size-5" />
+      </button>
+    </div>
+  );
+}
+
+/** The `Apps | Bots | Tasks` segmented switch at the top of the grid and the
+ *  lists. `badge` is the tasks' needs-you count (the Tasks page knows it; the
+ *  others leave it out). */
+export function SectionSwitch({ active, badge, className }: { active: Section; badge?: number; className?: string }) {
+  const item = (key: Section, href: string, label: string, count?: number) => (
     <Link
       href={href}
       aria-current={active === key ? "page" : undefined}
       className={cn(
-        "flex h-full flex-1 items-center justify-center rounded-[10px] text-[15px] font-medium transition-colors",
+        "flex h-full flex-1 items-center justify-center gap-1.5 rounded-[10px] text-[15px] font-medium transition-colors",
         active === key
           ? "lan-seg-on text-[var(--fg)]"
           : "text-[var(--fg-muted)] active:text-[var(--fg)]",
       )}
     >
       {label}
+      {count ? (
+        <span
+          className="lan-mono flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--warning)] px-1 text-[11px] font-semibold text-white"
+          aria-label={`${count} need you`}
+        >
+          {count > 99 ? "99+" : count}
+        </span>
+      ) : null}
     </Link>
   );
   return (
     <nav
       aria-label="Section"
-      className={cn("flex h-10 w-full max-w-[260px] gap-1 rounded-xl bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] p-1", className)}
+      className={cn("flex h-10 w-full max-w-[330px] gap-1 rounded-xl bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] p-1", className)}
     >
       {item("apps", "/", "Apps")}
       {item("bots", "/bots", "Bots")}
+      {item("tasks", "/tasks", "Tasks", badge)}
     </nav>
   );
 }

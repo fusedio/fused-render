@@ -1250,6 +1250,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The iOS app's door (bots/phone.py, docs/bots.md §14): `/api/phone/bots/*`, an owned prefix like the two
     # above, and the one bots prefix the LAN listener forwards (lan.py) for a paired phone.
     app.include_router(phone_bots_router)
+    # The iOS app's Tasks door (server/routers/phone_tasks.py, docs/phone-tasks.md): `/api/phone/tasks/*`,
+    # trimmed rows and a reduced transcript over the tasks router's own listing and handlers, and the one
+    # tasks prefix the LAN listener forwards for a paired phone. The desktop's `/api/tasks/*` stays off the LAN.
+    from fused_render.server.routers.phone_tasks import router as phone_tasks_router
+    app.include_router(phone_tasks_router)
     # One owner per machine (bots/registry.py module docstring): the process holding the bots flock serves
     # `/api/bots/*` itself, every other one forwards there. A lean `open` never elects: it forwards when an
     # owner exists and answers 503 otherwise, instead of building Bots and running engines beside the app's.

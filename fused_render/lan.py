@@ -287,6 +287,22 @@ _PHONE_BOTS = "/api/phone/bots"
 _PHONE_BOTS_METHODS = frozenset({"GET", "POST", "DELETE"})
 #: The lan page's own routes beside ``/``: the bots list and one bot's chat.
 _BOTS_PAGE = re.compile(r"^/bots(?:/[^/]+)?$")
+#: The phone tasks door (server/routers/phone_tasks.py, docs/phone-tasks.md):
+#: the agent tasks as the iOS app shows them — trimmed rows, a reduced
+#: transcript, the live card, a fixed set of verbs. Forwarded like the bots
+#: door, device stamped. The desktop's ``/api/tasks/*`` and
+#: ``/api/claude/agent`` stay a 404 here: they carry erase, worktree removal,
+#: terminal hand-off and the whole listing.
+_PHONE_TASKS = "/api/phone/tasks"
+_PHONE_TASKS_METHODS = frozenset({"GET", "POST"})
+#: The lan page's tasks routes: the list and one task. A key is a session id
+#: or ``pending:<entry>``; the colon is a plain path character.
+_TASKS_PAGE = re.compile(r"^/tasks(?:/[^/]+)?$")
+
+
+def _lan_page(path: str) -> bool:
+    """Is ``path`` one of the lan page's own routes (the grid, bots, tasks)?"""
+    return path in ("/", "/index.html") or bool(_BOTS_PAGE.match(path)) or bool(_TASKS_PAGE.match(path))
 
 
 def _not_found() -> Response:
@@ -519,7 +535,7 @@ def _pair_page(title: str, line: str, hint: str = "") -> Response:
 def _unauthorized(scope) -> Response:
     """An unpaired request: the grid explains how to pair; everything else is a
     bare 401 (a page's fetches must not get an HTML document back)."""
-    if scope["path"] in ("/", "/index.html") or _BOTS_PAGE.match(scope["path"]):
+    if _lan_page(scope["path"]):
         return _pair_page(
             "Scan to pair this phone",
             "On the computer, open Preferences → Phone access and scan the QR code "
@@ -620,12 +636,13 @@ class LanApp:
         if device is None:
             return _unauthorized(scope)
 
-        if path == "/" or path == "/index.html" or (method == "GET" and _BOTS_PAGE.match(path)):
+        if path == "/" or path == "/index.html" or (method == "GET" and _lan_page(path)):
             # The grid is a second Vite page (frontend/lan.html → shell-dist/
             # lan.html); its assets resolve under /static/shell-dist/, which the
             # /static/ prefix below already forwards. `/bots` and `/bots/<id>`
             # are the same page: its own router draws the bots list and a chat
-            # (docs/bots.md §14).
+            # (docs/bots.md §14); `/tasks` and `/tasks/<key>` likewise
+            # (docs/phone-tasks.md).
             page = os.path.join(os.path.dirname(_STATIC_DIR), "shell-dist", "lan.html")
             if not os.path.isfile(page):
                 return PlainTextResponse(
@@ -640,6 +657,14 @@ class LanApp:
             # (bots/routes.forward_middleware), whose client normalises the URL,
             # so `/api/phone/bots/../../bots/<id>/takeover` would land on the
             # desktop door.
+            if any(seg in (".", "..") for seg in path.split("/")):
+                return _not_found()
+            return _AsDevice(self.inner, str(device.get("id") or ""))
+        if (path == _PHONE_TASKS or path.startswith(_PHONE_TASKS + "/")) and method in _PHONE_TASKS_METHODS:
+            # The phone tasks door (server/routers/phone_tasks.py): the same
+            # device stamping and the same dot-segment refusal as the bots door
+            # above; the desktop's `/api/tasks/*` is not in `_EXACT`, so it
+            # stays a 404 below.
             if any(seg in (".", "..") for seg in path.split("/")):
                 return _not_found()
             return _AsDevice(self.inner, str(device.get("id") or ""))

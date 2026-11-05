@@ -17,7 +17,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.10"
-    MARKETING_VERSION: "0.1.4"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "5"
     # The Fused developer team (Apple Development identity in the keychain):
     # signs simulator and device builds alike; the App Group entitlement the
@@ -67,7 +67,8 @@ targets:
         # the scene delegate is handed over by AppDelegate (SceneDelegate.swift).
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
-        # fusedrender://open?host=…&port=…&path=… (or &page=bots, &bot=<id>)
+        # fusedrender://open?host=…&port=…&path=… (or &page=bots, &bot=<id>,
+        # &page=tasks, &task=<key>)
         # — what widgets and quick actions open (Shared/AppManifest.swift
         # builds and parses it).
         CFBundleURLTypes:
