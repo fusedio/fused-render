@@ -2416,6 +2416,35 @@ def _row_after(line: bytes, at: float, floor: float) -> bool | None:
     return None
 
 
+def holds_conversation(path: str) -> bool:
+    """Does this transcript carry at least one conversation row (a row with a
+    `uuid`)?
+
+    The bookkeeping rows Claude Code appends on exit (`cost-state`,
+    `last-prompt`, `ai-title`, `mode`, `atis-latch`, `bridge-session`) carry
+    none, and the CLI writes them under the session's ORIGINAL cwd even after
+    EnterWorktree moved the conversation into a worktree's project dir. That
+    leaves two `<sid>.jsonl` files, one of them a handful of lines with nothing
+    to show; this is how a reader tells them apart. Stops at the first hit,
+    which in a real transcript is a few lines in. `agent.py` keeps its own copy
+    (`_holds_conversation`): it is loaded by path and imports nothing of
+    fused_render."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if '"uuid"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict) and obj.get("uuid"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def user_row_after(path: str, at: float) -> bool:
     """Did the user say something in this transcript after `at`?
 

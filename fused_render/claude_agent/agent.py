@@ -1525,26 +1525,59 @@ def _munge(path: str) -> str:
     return _agent_roots.munge(path)
 
 
+def _holds_conversation(path: str) -> bool:
+    """Does this Claude transcript carry at least one conversation row (a row
+    with a `uuid`)? The CLI's exit bookkeeping rows (`cost-state`,
+    `last-prompt`, `ai-title`, `mode`, `atis-latch`, `bridge-session`) carry
+    none. Stops at the first hit, which in a real transcript is a few lines
+    in; a bookkeeping-only file is a handful of short lines."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if '"uuid"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict) and obj.get("uuid"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def _session_transcript_path(workdir: str, session_id: str) -> str:
     """Where this session's transcript is: `<root>/<munge(workdir)>/<sid>.jsonl`
     under whichever backend's root holds it (`_transcript_roots`, Claude's
     first), unless the CLI MOVED it. Claude Code's EnterWorktree tool relocates
     the file into the worktree's own project dir (`<root>/.claude/worktrees/<name>`
-    munges to `<munge(root)>--claude-worktrees-<name>`) and leaves nothing
-    behind, so a read from the original folder alone finds no conversation.
-    The original wins when it exists; else the newest `<sid>.jsonl` under a
+    munges to `<munge(root)>--claude-worktrees-<name>`), so a read from the
+    original folder alone finds no conversation. The CLI can still write its
+    exit bookkeeping rows to the ORIGINAL path afterwards, re-creating a file
+    there with no conversation in it (`_holds_conversation`).
+    The original wins when it holds a conversation; else the newest `<sid>.jsonl` under a
     worktrees sibling of the workdir OR OF ANY ANCESTOR (the worktree lives
     under the repo root, and the chat may be in a subfolder or on a file) —
     Claude's root only, no other host ever
     relocates (EnterWorktree is Claude Code's tool); else the original
-    (missing) Claude path, so a caller's not-found handling is unchanged.
-    `session_id` is `_bad_id`-checked by callers."""
+    Claude path (missing, or bookkeeping only), so a caller's not-found
+    handling is unchanged. `session_id` is `_bad_id`-checked by callers."""
     munged = _munge(workdir)
     mine = os.path.join(PROJECTS, munged, session_id + ".jsonl")
     for _backend, root in _transcript_roots():
         cand = os.path.join(root, munged, session_id + ".jsonl")
-        if os.path.isfile(cand):
+        if not os.path.isfile(cand):
+            continue
+        if root != PROJECTS or _holds_conversation(cand):
             return cand
+        # A Claude file with no conversation row is the CLI's exit
+        # bookkeeping (`cost-state`, `last-prompt`, `ai-title`, `mode`, ...),
+        # written under the session's ORIGINAL cwd after EnterWorktree moved
+        # the conversation away. It stays the answer only when no worktree
+        # copy turns up below.
+        mine = cand
+        break
     prefixes = []
     a = os.path.abspath(workdir)
     while True:

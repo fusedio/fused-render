@@ -6719,3 +6719,21 @@ def test_erasing_a_favourite_drops_its_record(client, projects_dir, state_dir):
     r = client.post("/api/tasks/erase", headers=_FUSED, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert "sess-a" not in json.loads((state_dir / "favourites.json").read_text())
+
+
+def test_thread_reads_the_relocated_transcript_not_the_exit_stub(client, projects_dir):
+    """EnterWorktree moved the conversation into the worktree's bucket, and the
+    CLI's exit bookkeeping re-created the original bucket's `<sid>.jsonl` with
+    no conversation in it. The stub's bucket sorts AFTER the worktree's (`-` <
+    `/`), so a last-wins pass filed the task on the stub and the thread came
+    back empty."""
+    _write_transcript(projects_dir, "sess-a", "/repo", [
+        _user("fix the CORS error", T9, uuid="a1"),
+        _user("is it done?", T10, uuid="a2"),
+    ], encoded="-repo--claude-worktrees-wt")
+    stub = projects_dir / "-repo" / "sess-a.jsonl"
+    stub.parent.mkdir(parents=True)
+    stub.write_text("\n".join(json.dumps(r) for r in _EXIT_ROWS) + "\n")
+
+    messages = client.get("/api/tasks/sess-a/messages").json()["messages"]
+    assert [m["body"] for m in messages] == ["is it done?", "fix the CORS error"]
