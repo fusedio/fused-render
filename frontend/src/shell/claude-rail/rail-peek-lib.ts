@@ -876,6 +876,15 @@ export function favRingRoute(
   return where === "pane" ? "pane" : where === "peek" ? "door" : "card";
 }
 
+/** THE OPEN KEYS A FAVOURITE'S PRESS LETS GO (ClaudeRail): a press that goes
+ *  to the pane or the door opens no card, and window B open on ANOTHER
+ *  favourite would show the wrong task beside the pane — so both the pressed
+ *  key and the open one are cleared. A card press clears nothing here. */
+export function favPressClears(route: "pane" | "door" | "card", pressed: string, open: string | null): string[] {
+  if (route === "card") return [];
+  return open && open !== pressed ? [pressed, open] : [pressed];
+}
+
 /** THE ROW THE RAIL STANDS IN — the box the card is placed against and
  *  watched for resizes: the rail's nearest ancestor that HAS a box. The
  *  explorer's file view portals the rail into `.stat-side-slot`, which is
