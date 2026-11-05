@@ -90,8 +90,32 @@ function fakeEl(): Record<string, unknown> {
 
 const realFetch = globalThis.fetch;
 const g = globalThis as Record<string, unknown>;
-const saved = { ResizeObserver: g.ResizeObserver, MutationObserver: g.MutationObserver, getComputedStyle: g.getComputedStyle };
+// The measuring globals, stated outright for every test: bun runs every file
+// in one process, and an earlier suite may leave its own behind (row-fit's
+// `getComputedStyle` answers `node.__style` — undefined for these nodes), so
+// a `??=` here would keep the stranger's. Whatever stood before goes back after.
+const MISSING = Symbol("missing");
+const saved = new Map<string, unknown>();
+const measuring: Record<string, unknown> = {
+  ResizeObserver: class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+  MutationObserver: class {
+    observe() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  },
+  getComputedStyle: () => ({ display: "block", paddingTop: "0", paddingBottom: "0", rowGap: "0", getPropertyValue: () => "" }),
+};
 beforeEach(() => {
+  for (const [name, stub] of Object.entries(measuring)) {
+    saved.set(name, name in g ? g[name] : MISSING);
+    g[name] = stub;
+  }
   resetTaskFavouritesFlagForTests();
   resetCanvasRailPeekFlagForTests();
   resetFavPeekStoreForTests();
@@ -100,19 +124,6 @@ beforeEach(() => {
   // Nothing from the server: every read waits forever, so only what a test
   // publishes is ever on screen.
   (globalThis as { fetch: unknown }).fetch = () => new Promise<Response>(() => {});
-  g.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  };
-  g.MutationObserver ??= class {
-    observe() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  };
-  g.getComputedStyle ??= () => ({ display: "block", getPropertyValue: () => "" });
 });
 
 const mounted: ReactTestRenderer[] = [];
@@ -125,7 +136,11 @@ afterEach(() => {
   resetTaskFavouritesFlagForTests();
   resetCanvasRailPeekFlagForTests();
   (globalThis as { fetch: unknown }).fetch = realFetch;
-  for (const [k, v] of Object.entries(saved)) if (v === undefined) delete g[k];
+  for (const [name, was] of saved) {
+    if (was === MISSING) delete g[name];
+    else g[name] = was;
+  }
+  saved.clear();
 });
 
 async function mountRail(o: { paneOpen: boolean; favourites: boolean; chats?: Task[] }) {

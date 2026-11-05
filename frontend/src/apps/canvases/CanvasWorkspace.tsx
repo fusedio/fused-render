@@ -190,7 +190,6 @@ import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { getSideHidden, setSideHidden } from "@platform/lib/side-hidden";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, SyntheticEvent } from "react";
-import { reopenWidth } from "@platform/lib/panel-drag";
 import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
@@ -233,6 +232,7 @@ import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import { ClaudeRail, railInset } from "@shell/claude-rail/ClaudeRail";
+import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
   mergeLogEvents,
@@ -2632,13 +2632,17 @@ export default function CanvasWorkspace({
       // past that floor by a hand's width the pane SHUTS — the explorer's
       // own gesture (SideChrome) — and the rail takes the edge. The canvas
       // keeps the explorer's content floor on its side.
+      // On a row too narrow for both floors the pane's yields, as its
+      // column's CSS floor does (`.canvas-workspace-pane`): the canvas keeps
+      // CANVAS_MIN_W beside the pane and a standing rail.
+      const paneFloor = Math.max(0, Math.min(PANE_MIN_W, rect.width - inset - CANVAS_MIN_W));
       const paneW = rect.right - inset - e.clientX;
-      if (paneW < PANE_MIN_W - 60) {
+      if (paneW < paneFloor - 60) {
         setDragging(false);
         setSideOpen(false);
         return;
       }
-      const maxFrac = rect.width > 0 ? Math.max(0, (rect.width - inset - PANE_MIN_W) / rect.width) : 0.85;
+      const maxFrac = rect.width > 0 ? Math.max(0, (rect.width - inset - paneFloor) / rect.width) : 0.85;
       const minFrac = rect.width > 0 ? Math.min(maxFrac, CANVAS_MIN_W / rect.width) : 0.15;
       const frac = Math.min(maxFrac, Math.max(minFrac, (e.clientX - rect.left) / rect.width));
       setLeftFrac(frac);
@@ -2694,29 +2698,23 @@ export default function CanvasWorkspace({
     root.classList.add("side-reopening");
     let opened = false;
     let prevFrac: number | null = null;
-    const onMove = (ev: PointerEvent) => {
-      if (ev.pointerId !== e.pointerId) return;
+    // One pass of the pull at the pointer (rail-pull `railPullAt`). ONCE OPEN,
+    // the rail may still stand past the pane (favourites on, rail-peek-lib
+    // `railInset`) — the pane ends at its edge, as the seam's drag above
+    // measures it; before the open the rail is what stands under the pointer,
+    // and RAIL_W says so for the threshold alone.
+    const pass = (ev: PointerEvent) => {
       const rect = row.getBoundingClientRect();
-      if (rect.width <= 0) return;
-      // ONCE OPEN, the rail may still stand past the pane (favourites on,
-      // rail-peek-lib `railInset`) — the pane ends at its edge, as the seam's
-      // drag above measures it; before the open the rail is what stands under
-      // the pointer, and RAIL_W says so for the threshold alone.
-      const inset = opened ? railInset(row) : 0;
-      const max = rect.width - inset - CANVAS_MIN_W;
-      const min = Math.min(PANE_MIN_W, max);
-      if (max <= 0) return;
-      const implied = rect.right - ev.clientX;
-      let w: number;
-      if (!opened) {
-        const open = reopenWidth(implied, RAIL_W, min, max);
-        if (open === null) return;
-        w = open;
-      } else {
-        w = Math.min(max, Math.max(min, implied - inset));
-      }
-      // The canvas takes what the pane and a standing rail leave.
-      const frac = 1 - (w + inset) / rect.width;
+      const at = railPullAt(ev.clientX, opened, {
+        right: rect.right,
+        width: rect.width,
+        inset: opened ? railInset(row) : 0,
+        closedWidth: RAIL_W,
+        paneMin: PANE_MIN_W,
+        canvasMin: CANVAS_MIN_W,
+      });
+      if (!at) return;
+      const { frac } = at;
       setLeftFrac(frac);
       if (!opened) {
         opened = true;
@@ -2734,8 +2732,17 @@ export default function CanvasWorkspace({
       }
       prevFrac = frac;
     };
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      pass(ev);
+    };
     const onUp = (ev: PointerEvent) => {
       if (ev.pointerId !== e.pointerId) return;
+      // The opening pass could not know whether the rail stays beside the
+      // pane it opened (it measured with no inset); a release with no move
+      // after it settles the split against the rail as it now stands, as
+      // SideChrome's `startSideReopenPull` does.
+      if (opened) pass(ev);
       root.classList.remove("side-reopening");
       try {
         root.releasePointerCapture(e.pointerId);
@@ -3099,19 +3106,19 @@ export default function CanvasWorkspace({
         {!embedded && sideOpen && (
           <div
             // The right pane's column: the seam and the pane, the rest of
-            // the row past the canvas's share.
+            // the row past the canvas's share. Its floor is
+            // `.canvas-workspace-pane` (canvases.css): the chat's (see the
+            // drag above) — a window resize that leaves the split under it
+            // shrinks the canvas, not the chat — down to the canvas's own
+            // floor, less a rail standing past the pane (favourites on), so
+            // the canvas keeps CANVAS_MIN_W whatever stands at the edge.
+            className="canvas-workspace-pane"
             style={{
               // Basis 0, not auto: the pane is what the canvas's share leaves.
               // With `auto` its basis was the chat's content width (a long
               // transcript is wide), and once the canvas could shrink too the
               // two split the squeeze — a drag to the floor stopped at ~580px.
               flex: "1 1 0px",
-              // The chat's floor (see the drag above): a window resize that
-              // leaves the split under it shrinks the canvas, not the chat —
-              // down to the canvas's own floor. On a row too narrow for both
-              // (under PANE_MIN_W + CANVAS_MIN_W) the pane yields the rest, so
-              // the canvas never collapses to nothing.
-              minWidth: `min(${PANE_MIN_W}px, calc(100% - ${CANVAS_MIN_W}px))`,
               display: "flex",
               flexDirection: "row",
               background: "var(--bg)",
