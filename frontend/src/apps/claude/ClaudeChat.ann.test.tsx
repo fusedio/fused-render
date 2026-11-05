@@ -1726,13 +1726,6 @@ test("Back with a line still PARKED empties the outbox: no bubble, no hint carri
   expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
 });
 
-/** The messages that went out, in order, whichever road each took. */
-function sentOut(): string[] {
-  return runs
-    .filter((c) => c.action === "start" || c.action === "send")
-    .map((c) => String(c.params.message ?? ""));
-}
-
 /** Ctrl+X with words in the box: send now. */
 function pressCtrlXInBox(r: Chat): Promise<void> {
   return act(async () => {
@@ -1750,41 +1743,6 @@ function pressCtrlEnterInBox(r: Chat): Promise<void> {
       .props.onKeyDown({ key: "Enter", ctrlKey: true, shiftKey: false, preventDefault() {} });
   });
 }
-
-test("Stop during a send-now's wait wins: the line stays not-sent and nothing is sent", async () => {
-  // Bugbot 4122407431: the Ctrl+X line sits in the outbox so a Stop can
-  // retag it, but `onSendNow` used to lift it out and dispatch it once the run
-  // settled anyway — a "not sent" bubble that sent. Now a stop wins.
-  pollLive = true;
-  stickyLive = true;
-  const { r } = await mountChat();
-  await typeInBox(r, "first message");
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle(60);
-  await typeInBox(r, "Z");
-  await pressCtrlXInBox(r);
-  await settle(150);
-  // The chord's interrupt went out; the run is slow to settle.
-  expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
-  expect(byClass(r, "is-pending")).toHaveLength(1);
-  // Stop while the chord waits.
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle(60);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "not sent · click to edit",
-  ]);
-  // Now the run settles: the chord finds its line retagged and steps back.
-  stickyLive = false;
-  await settle(1200);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "not sent · click to edit",
-  ]);
-  expect(sentOut()).toEqual(["first message"]);
-});
 
 test("the run going live opens the door without waiting for the turn to end", async () => {
   // The latch cannot simply be held for the whole turn: a follow-up has to be
@@ -2088,49 +2046,6 @@ for (const flagOn of [false, true]) {
     expect(storeCells.get(PENDING_KEY)).toBeUndefined();
   });
 
-  test(`${tag}: Ctrl+X on an empty box with a queued line is taken and never leaves it not-sent; a plain Stop after still does`, async () => {
-    const { r } = await liveChat();
-    // A Ctrl+X line waits in the outbox while the run is slow to settle:
-    // a queued bubble exists, so the empty-box chord is armed.
-    stickyLive = true;
-    await typeInBox(r, "Z");
-    await pressCtrlXInBox(r);
-    await settle(150);
-    expect(byClass(r, "is-pending")).toHaveLength(1);
-    // The run is live: the newest queued bubble's tag IS the hint, no "queued".
-    expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-      "(Ctrl+X to send now)",
-    ]);
-    let prevented = 0;
-    await act(async () => {
-      r.root.findByType("textarea").props.onKeyDown({
-        key: "x",
-        ctrlKey: true,
-        shiftKey: false,
-        preventDefault() {
-          prevented += 1;
-        },
-      });
-    });
-    expect(prevented).toBe(1);
-    stickyLive = false;
-    await settle(1500);
-    expect([...sends(), ...started()].filter((c) => String(c.params.message).includes("Z"))).toHaveLength(1);
-    expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).not.toContain(
-      "not sent · click to edit",
-    );
-    // A plain Stop afterwards still yields "not sent".
-    holdSend = new Promise<void>(() => {});
-    await typeInBox(r, "later");
-    await pressEnterInBox(r);
-    await settle(60);
-    await act(async () => {
-      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-    });
-    await settle(200);
-    expect(byClass(r, "bubble").map((n) => String(n.props.children))).toContain("later");
-  });
-
   const ctrlX = (r: Chat) =>
     act(async () => {
       r.root.findByType("textarea").props.onKeyDown({
@@ -2174,19 +2089,26 @@ for (const flagOn of [false, true]) {
     expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
   });
 
-  test(`${tag}: send-now line is journalled while the stop settles (a reload then re-sends it), and dropped once acked`, async () => {
+  test(`${tag}: Ctrl+X mid-turn writes the line into the live run with send_now, never a stop, and is journalled until acked`, async () => {
     const { r } = await liveChat();
-    stickyLive = true;
+    let releaseHeld!: () => void;
+    holdSend = new Promise<void>((resolve) => {
+      releaseHeld = resolve;
+    });
     await typeInBox(r, "Z");
     await pressCtrlXInBox(r);
-    await settle(150);
+    await settle(60);
+    // On the wire but not acknowledged yet: a reload would re-send it.
     const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
     expect(stored.map((l) => l.text)).toEqual(["Z"]);
-    stickyLive = false;
-    await settle(1500);
-    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("Z"));
+    releaseHeld();
+    await settle(100);
+    const out = sends().filter((c) => String(c.params.message).includes("Z"));
     expect(out).toHaveLength(1);
+    expect(out[0]!.params.send_now).toBe("1");
     expect(out[0]!.params.client_uuid).toBe(stored[0]!.id);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+    expect(started()).toHaveLength(1);
     expect(storeCells.get(PENDING_KEY)).toBeUndefined();
   });
 
@@ -2271,22 +2193,6 @@ for (const flagOn of [false, true]) {
     const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
     expect(stored.map((l) => l.text)).toEqual(["keep going"]);
     expect(stored[0]!.id).not.toBe(first);
-  });
-
-  test(`${tag}: empty-box Ctrl+X during a send-now's wait leaves the send-now line to go, not "not sent"`, async () => {
-    const { r } = await liveChat();
-    stickyLive = true;
-    await typeInBox(r, "Z");
-    await pressCtrlXInBox(r);
-    await settle(150);
-    expect(byClass(r, "is-pending")).toHaveLength(1);
-    await ctrlX(r);
-    await settle(100);
-    stickyLive = false;
-    await settle(1500);
-    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("Z"));
-    expect(out).toHaveLength(1);
-    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
   });
 
   test(`${tag}: once the CLI has taken a live follow-up its hint is gone`, async () => {

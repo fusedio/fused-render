@@ -63,7 +63,8 @@ for line in sys.stdin:
         req = row["request"]
         resp = {{"request_id": row["request_id"], "subtype": "success"}}
         if req["subtype"] == "interrupt":
-            resp["response"] = {{"still_queued": []}}
+            resp["response"] = {{"still_queued": [], **{{
+                k: v for k, v in req.items() if k != "subtype"}}}}
         else:
             resp["response"] = {{k: v for k, v in req.items() if k != "subtype"}}
         send({{"type": "control_response", "response": resp}})
@@ -156,6 +157,35 @@ def test_cancel_against_a_live_host_writes_an_interrupt_and_leaves_it_alive(
     assert os.path.exists(os.path.join(run_dir, "interrupted_offset")), \
         "the offset the interrupt was requested at, so a later poll can " \
         "tell a genuinely new turn apart from this one's own error result"
+
+
+def test_send_now_queues_the_line_and_names_it_in_a_send_now_interrupt(
+        agent, monkeypatch, stub_cli, target):
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
+    assert _wait_for(lambda: agent._host_alive(run_dir))
+
+    result = agent._send(run_id, "now please", client_uuid="send-now-1",
+                         send_now=True)
+    assert result == {"sent": True}
+
+    def answered():
+        for row in _out_rows(run_dir):
+            if row.get("type") != "control_response":
+                continue
+            resp = row["response"].get("response") or {}
+            if resp.get("send_now") is True:
+                return resp
+        return None
+
+    assert _wait_for(lambda: answered() is not None), _out_rows(run_dir)
+    assert answered()["message_uuid"] == "send-now-1"
+    assert _wait_for(lambda: any(
+        r.get("type") == "echo" and r.get("text") == "now please"
+        for r in _out_rows(run_dir)))
+    # Not a stop: nothing a Stop leaves behind, and the host is untouched.
+    assert not os.path.exists(os.path.join(run_dir, "cancelled"))
+    assert not os.path.exists(os.path.join(run_dir, "interrupted_offset"))
+    assert agent._host_alive(run_dir)
 
 
 def test_cancel_with_no_host_still_tree_kills(agent, tmp_path):

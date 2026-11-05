@@ -451,6 +451,12 @@ export interface SendOptions {
    */
   clientId?: string;
   /**
+   * CTRL+X: deliver this follow-up and have the CLI end the main agent's turn
+   * for it (the `send_now` interrupt). Only `sendFollowUp` carries it; a send
+   * that starts a run has no turn to interrupt.
+   */
+  sendNow?: boolean;
+  /**
    * ADDED (PR3): a user bubble ALREADY on screen that this send's bubble should
    * ADOPT rather than duplicate.
    *

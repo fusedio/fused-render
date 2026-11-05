@@ -291,3 +291,20 @@ def test_a_repeated_message_landing_in_the_tail_is_not_matched_to_its_older_echo
     poll = agent._poll("run")
     assert poll["done"] is True
     assert poll["text"] == "Turn one answer.Turn two answer."
+
+
+def test_a_send_now_interrupted_turn_does_not_leave_its_error_on_the_reply(
+        agent, run_dir):
+    # Ctrl+X: the CLI aborts the running turn (an `error_during_execution`
+    # result with no text) and runs the queued line next. The next turn's own
+    # clean result is what the page is told the run ended with.
+    aborted = {"type": "result", "subtype": "error_during_execution",
+               "is_error": True, "session_id": "s"}
+    _write(run_dir, [_user_row("turn one"), _text_row("Partial."), aborted,
+                      _user_row("now"), _text_row("Answer."),
+                      _result_row("Answer.")])
+    _setup(agent, run_dir)
+
+    poll = agent._poll("run")
+    assert poll["done"] is True
+    assert poll["error"] == ""

@@ -278,7 +278,7 @@ export const Turn = memo(function Turn({
           <button
             type="button"
             className="turn-pending"
-            title="Waiting for the current turn. Click to stop it and send now."
+            title="Waiting for the current turn. Click to interrupt it and send now."
             onClick={onSendNow}
             disabled={!onSendNow}
           >

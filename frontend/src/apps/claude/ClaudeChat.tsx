@@ -1227,10 +1227,6 @@ function ChatBody(props: ChatBodyProps) {
    *  must leave the tray alone — those pictures belong to the send that is
    *  still photographing (Bugbot, PR #1323). */
   const trayTakenRef = useRef(false);
-  /** "SEND NOW" IS IN FLIGHT: the ordinary drain stands down until it has
-   *  dispatched its own line, so nothing goes out as a follow-up into a run
-   *  that is still stopping (Bugbot, PR #1323). */
-  const sendNowInFlight = useRef(false);
   const releaseSend = useCallback((id: string) => {
     if (sendHolder.current !== id) return;
     sendHolder.current = "";
@@ -3099,6 +3095,10 @@ function ChatBody(props: ChatBodyProps) {
       // new turn.
       const stoppingRun = !parked && !!text && !sendBusy.current && controller.getState().status === "stopping";
       if (sendBusy.current || stoppingRun) {
+        // A parked line goes out later as an ordinary follow-up: the interrupt
+        // belongs to the turn that was running when Ctrl+X was pressed.
+        const { sendNow: _sendNow, ...parkedOpts } = opts;
+        opts = parkedOpts;
         const bubble = text ? controller.postOptimisticUser(text, "queued") : "";
         // THE TRAY IS ONLY THIS LINE'S ONCE THE SEND IN FLIGHT HAS TAKEN ITS
         // OWN. Before that (`beginSend` still awaiting the notes' photograph),
@@ -3592,14 +3592,11 @@ function ChatBody(props: ChatBodyProps) {
     [],
   );
   const drainOutbox = useCallback(() => {
-    // Not while "send now" is between its stop and its own dispatch: a line
-    // drained here would go out as a follow-up into a run that is still
-    // stopping and be refused (Bugbot, PR #1323). `onSendNow` drains itself
-    // once its line is out. And NEVER into a run that is `stopping` or still
-    // `starting` (Bugbot 4121249279): a follow-up into a stopping run is
-    // refused; the status effect below drains again once it settles.
+    // NEVER into a run that is `stopping` or still `starting` (Bugbot
+    // 4121249279): a follow-up into a stopping run is refused; the status
+    // effect below drains again once it settles.
     const status = controller.getState().status;
-    if (sendBusy.current || sendNowInFlight.current) return;
+    if (sendBusy.current) return;
     if (status === "stopping" || status === "starting") return;
     // A HELD line is sendable only when the session is done: idle, nothing the
     // live run still holds, and no restore still deciding whether a live run
@@ -3856,96 +3853,26 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   /**
-   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the turn, then
-   * the typed line goes FIRST, ahead of anything parked, and the outbox drains
-   * behind it once the run has settled to idle.
-   *
-   * The wait is a poll on the controller's status: `stopRun` resolves when the
-   * cancel is acknowledged, not when `pollLoop` has exited, and a `sendMessage`
-   * into a `stopping` run is refused. Bounded — a stop that never settles is a
-   * run the reader can still Stop again; the line stays parked with its tag.
+   * SEND NOW — Claude Code's Ctrl+X: the line goes into the live run as an
+   * ordinary follow-up and the CLI is told (`sendNow`) to end the MAIN agent's
+   * turn for it. Background subagents, Bash and Monitors keep running, and the
+   * run is not stopped: the line has the journal, the outbox and the bubble of
+   * any other follow-up, so a reload loses nothing.
    */
   const onSendNow = useCallback(
     (text: string) => {
-      const bubble = text ? controller.postOptimisticUser(text, "queued") : "";
-      // The same tray rule as parking: only once the send in flight has taken
-      // its own pictures is the tray this line's (Bugbot, PR #1323).
-      const took = trayTakenRef.current;
-      const entryId = `o${++outboxSeq.current}`;
-      // JOURNALLED FROM THE MOMENT IT EXISTS (Bugbot, PR #2097): `dispatchSend`
-      // journals only direct sends, so a send-now line parked here for the stop
-      // to settle would vanish on a reload in that window. Dropped on every
-      // path a parked line's id already is (ack, Stop, pull-back).
-      const clientId = text ? newClientId() : "";
-      if (clientId) journalAdd(clientId, text);
-      const payload: OutboxPayload = {
-        opts: {
+      dispatchSend(
+        text,
+        {
           model: defaults.model,
           effort: defaults.effort,
           permission: defaults.permission,
-          ...(clientId ? { clientId } : {}),
+          sendNow: true,
         },
-        bubble,
-        entryId,
-        taken: took ? takeAttachments() : NO_TAKEN,
-        ...(took ? {} : { takeLater: true }),
-      };
-      // IN THE OUTBOX FROM THE FIRST PAINT (Bugbot 4121249288): its "queued"
-      // tag is a door like any parked line's, and a click during the stop
-      // must find the entry. At the tail for now; it moves to the front once
-      // the stop has settled and it is about to go first.
-      setOutbox(pushBack(outboxRef.current, { id: entryId, text, payload }));
-      // THE ORDINARY DRAIN STANDS DOWN from here until this line is out, or
-      // has given up: `releaseSend` fires when the stopped send's latch opens,
-      // and a drain then would send a parked line into a run still stopping.
-      sendNowInFlight.current = true;
-      void (async () => {
-        let settled = false;
-        try {
-          await controller.stopRun();
-          // BOUNDED: `stopRun` resolves on the cancel's acknowledgement, not on
-          // `pollLoop` exiting, and a send into a `stopping` run is refused.
-          for (let i = 0; i < 80 && controller.getState().status !== "idle"; i++) {
-            await new Promise((r) => setTimeout(r, 100));
-          }
-          settled = controller.getState().status === "idle" && !sendBusy.current;
-          // Pulled back meanwhile (a click, ↑)? Then it is the reader's again.
-          // STOPPED meanwhile (Bugbot 4122407431)? The stop retagged the line
-          // "not sent" in place; a stop wins over a send-now, so it stays.
-          const mine = takeById(outboxRef.current, entryId);
-          if (!mine.entry || mine.entry.notSent) return;
-          if (!settled) {
-            // The run never settled. NOTHING IS DROPPED: this line waits as a
-            // "not sent" bubble the reader can pull, ahead of the rest.
-            if (bubble) controller.setOptimisticPending(bubble, "notSent");
-            setOutbox(pushFront(mine.rest, { ...mine.entry, notSent: true }));
-            return;
-          }
-          // THIS LINE FIRST, straight through the send road — a fresh turn,
-          // since the run is idle — and the outbox drains behind it when this
-          // send's latch opens (`releaseSend` → `drainRef`).
-          setOutbox(mine.rest);
-          dispatching.current.add(entryId);
-          dispatchSend(text, payload.opts, false, payload);
-        } finally {
-          sendNowInFlight.current = false;
-          // Only a SETTLED run takes the rest (Bugbot 4121249279): after a
-          // timed-out wait the lines stay parked as "not sent" and the status
-          // effect drains once the run is idle again.
-          if (settled && !sendBusy.current) drainRef.current();
-        }
-      })();
+        true,
+      );
     },
-    [
-      controller,
-      dispatchSend,
-      takeAttachments,
-      setOutbox,
-      defaults.model,
-      defaults.effort,
-      defaults.permission,
-      journalAdd,
-    ],
+    [dispatchSend, defaults.model, defaults.effort, defaults.permission],
   );
 
   /**
@@ -4069,11 +3996,6 @@ function ChatBody(props: ChatBodyProps) {
     // An empty-box Ctrl+X (`keepOutbox`) keeps every line: the one in the gap
     // is sent, not retagged.
     if (!keepOutbox) for (const id of dispatching.current) cancelledDispatch.current.add(id);
-    // …AND A SEND-NOW STILL WAITING FOR THE RUN TO SETTLE (Bugbot 4122407431):
-    // its line was just retagged above and `onSendNow` steps back from a
-    // "not sent" entry; the drain may look again as soon as the run settles.
-    // A send-now line is kept by an empty-box Ctrl+X, so it stays in flight.
-    if (!keepOutbox) sendNowInFlight.current = false;
     void controller.stopRun().finally(() => {
       sendQueuedNow.current = false;
       // The re-sent lines may have been pushed while the run was still

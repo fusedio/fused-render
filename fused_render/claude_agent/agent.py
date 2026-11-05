@@ -4818,7 +4818,7 @@ _CLIENT_UUID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 
 def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "",
-                       typed: str = "") -> None:
+                       typed: str = "") -> str:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
     `_send` (every follow-up) write from.
@@ -4835,7 +4835,11 @@ def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "",
     the tab's sessionStorage until this write is acknowledged, and after a reload
     the page asks the history whether an entry with THAT id is already here
     (inbox rows and transcript turns both carry `uuid`) before sending it again.
-    Identity, never text: two "go on"s are two ids."""
+    Identity, never text: two "go on"s are two ids.
+
+    Returns the uuid the entry was stamped with — the page's own when it was a
+    well-formed one, else the one minted here — for a caller (send-now) that has
+    to name the entry to the CLI."""
     entry_uuid = client_uuid if _CLIENT_UUID_RE.match(client_uuid or "") else str(uuid.uuid4())
     _inbox_time_record(run_dir, entry_uuid)
     if typed:
@@ -4843,6 +4847,7 @@ def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "",
     _write_inbox_row(run_dir, {"type": "user", "uuid": entry_uuid, "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
+    return entry_uuid
 
 
 def _write_control_request(run_dir: str, subtype: str, **fields) -> str:
@@ -6285,7 +6290,8 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
          effort: str = "", permission_mode: str = "",
-         terminal_hint: str = "", client_uuid: str = "", typed: str = "") -> dict:
+         terminal_hint: str = "", client_uuid: str = "", typed: str = "",
+         send_now: bool = False) -> dict:
     """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
     process for it.
 
@@ -6322,6 +6328,17 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     needs the CLI's answer to answer ITS OWN caller, only the eventual
     `system/init`-style row the CLI writes on its own, which the page already
     reads for other reasons.
+
+    `send_now` is Ctrl+X: after the line is queued, an `interrupt` naming it
+    with `send_now: true` follows it into the inbox. The CLI then ends the main
+    agent's turn and runs that line next; background subagents, background
+    Bash and Monitors keep running (a Stop's plain `interrupt` ends them too).
+    It is NOT a stop: no `cancelled` / `interrupted_offset` marker, no
+    tree-kill, nothing discarded, and the run stays a live run. A CLI with no
+    turn open, or one that has not admitted the line yet, answers that it is
+    delivering and the line is simply an ordinary follow-up. Claude only — the
+    other backends' hosts read an `interrupt` as a stop — so there it is the
+    ordinary follow-up too.
     """
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
@@ -6478,8 +6495,12 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     if client_uuid and any(r.get("uuid") == client_uuid
                            for r in _inbox_waiting(run_dir)):
         return {"sent": True}
-    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid,
-                       typed=typed or message)
+    entry_uuid = _write_inbox_entry(
+        run_dir, _compose_turn(message, terminal_hint), client_uuid,
+        typed=typed or message)
+    if send_now and backend == "claude":
+        _write_control_request(run_dir, "interrupt", send_now=True,
+                               message_uuid=entry_uuid)
     return {"sent": True}
 
 
@@ -9990,6 +10011,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # Only if the failure arrived DURING a retry. A retry earlier in
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
+            else:
+                # The LAST result is how the run ended: a turn a send-now
+                # aborted writes an error result, and the line it made way for
+                # then answers cleanly in the same window.
+                error = ""
+                gave_up = False
 
     # A NON-CLAUDE WINDOW SIZE, for the meter: onto this poll's reading as
     # `window` (no model id says it for Copilot's `auto`, and the page's
@@ -12829,7 +12856,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
          terminal_hint: str = "", task_id: str = "", backend: str = "",
          fork_at: str = "", tool_use_id: str = "",
-         client_uuid: str = "", breakout: str = "", typed: str = "") -> dict:
+         client_uuid: str = "", breakout: str = "", typed: str = "",
+         send_now: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -12979,7 +13007,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         # itself decides which of the three (if any) actually changed, and
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
-                    permission_mode, terminal_hint, client_uuid, typed)
+                    permission_mode, terminal_hint, client_uuid, typed,
+                    send_now == "1")
     if action == "set_mode":
         # The Approvals pill changed on a live chat: apply it now, with no
         # message and no turn (`_send` only applies it piggybacked on a send).
