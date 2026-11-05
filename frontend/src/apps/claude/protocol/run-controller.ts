@@ -1009,6 +1009,51 @@ export function createChatController(deps: ControllerDeps): ChatController {
   const dropTurn = (key: string) => emit({ turns: state.turns.filter((t) => t.key !== key) });
 
   /**
+   * THE WORDS A SEAM CARRIES, DRAWN ONCE, where this page has no bubble for them.
+   *
+   * A page that did NOT send follow-up `slot` has no bubble for it — the inbox
+   * row left when the CLI took the line, and the transcript has no user row
+   * for a steered line until the turn ends (the CLI persists it only as an
+   * attachment `_history` reads later) — so the words the seam carries
+   * (`TurnBreak.user`, agent.py `_seam`) go up as a user turn here, before the
+   * reply that answers them. Called for EVERY seam, including one whose span
+   * is empty (two lines steered at one tool boundary give two seams at the
+   * same offsets, and the reply after them answers both): the words are not
+   * the reply's to draw, so an empty span must not skip them (Bugbot #2145).
+   *
+   * Never twice: this page's own bubble (`followupKeys[base + slot - 1]`), a
+   * row with the echo's uuid, or a uuid-less row with the same words (a live
+   * bubble — this page's optimistic row, or one drawn here) all count as
+   * drawn. A restored turn carries its record's uuid, so a "yes" typed an
+   * hour ago never stands in for this "yes".
+   */
+  const drawSeamUser = (slot: number, seamUser: TurnBreakUser | undefined, base: number): void => {
+    if (slot <= 0 || !seamUser) return;
+    const own = followupKeys[base + slot - 1];
+    const words = stripBlocks(seamUser.text || "").trim();
+    const uuid = seamUser.uuid || "";
+    if (!words) return;
+    const drawn = state.turns.some(
+      (t) =>
+        t.role === "user" &&
+        (t.key === own ||
+          (!!uuid && t.uuid === uuid) ||
+          (!t.uuid && stripBlocks(t.text).trim() === words)),
+    );
+    if (drawn) return;
+    pushTurn({
+      role: "user",
+      key: nextKey("u"),
+      text: words,
+      // WHEN, off the echo row's own clock where the run stamped one, so the
+      // hover reads as it will after a reload; the wall clock only for a row
+      // that has none (live `out.jsonl` echoes mostly do).
+      ts: typeof seamUser.at === "number" ? seamUser.at : wallClock() / 1000,
+      ...(uuid ? { uuid } : {}),
+    });
+  };
+
+  /**
    * A REPLY LANDS ABOVE THE NEXT FOLLOW-UP'S BUBBLE (Akshil, 2026-11-05: two
    * lines typed into a running tool call were answered ABOVE their own
    * bubbles; and a reply whose first body arrived after a follow-up had gone
@@ -1019,41 +1064,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * already in the log — appending put the first reply under the second
    * bubble, and slot 0 (the turn's own reply) under a line queued while the
    * model was still thinking. With no such bubble the reply simply follows
-   * the log.
-   *
-   * A page that did NOT send follow-up n has no bubble for it — the inbox
-   * row left when the CLI took the line, and the transcript has no user row
-   * for a steered line until the turn ends (the CLI persists it only as an
-   * attachment `_history` reads later) — so the words the seam carries
-   * (`TurnBreak.user`, agent.py `_seam`) are drawn here as a user turn, once,
-   * before the reply. Words already on screen are never drawn twice.
+   * the log, which is where `drawSeamUser` has just put the words it answers
+   * on a page with no bubble of its own.
    */
-  const placeReply = (slot: number, turn: AssistantTurn, seamUser: TurnBreakUser | undefined, base: number): void => {
-    if (slot > 0 && seamUser) {
-      const own = followupKeys[base + slot - 1];
-      const words = stripBlocks(seamUser.text || "").trim();
-      const uuid = seamUser.uuid || "";
-      // By the echo's uuid where one is known; by the words only against a
-      // row with NO uuid — a live bubble (this page's own optimistic row, or
-      // one drawn here) — never against a restored turn, which carries its
-      // record's uuid: a "yes" typed an hour ago is not this "yes".
-      const drawn = state.turns.some(
-        (t) =>
-          t.role === "user" &&
-          (t.key === own ||
-            (!!uuid && t.uuid === uuid) ||
-            (!t.uuid && !!words && stripBlocks(t.text).trim() === words)),
-      );
-      if (!drawn && words) {
-        pushTurn({
-          role: "user",
-          key: nextKey("u"),
-          text: words,
-          ts: wallClock() / 1000,
-          ...(uuid ? { uuid } : {}),
-        });
-      }
-    }
+  const placeReply = (slot: number, turn: AssistantTurn, base: number): void => {
     const next = followupKeys[base + slot];
     const at = next ? state.turns.findIndex((t) => t.key === next && t.role === "user") : -1;
     if (at < 0) pushTurn(turn);
@@ -2347,6 +2361,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // text→segments→text (agent.py replaying without segments) still has
           // a body to restore.
           const pollFlat = body.mode === "text" ? body.text : chunk.flatText;
+          // The seam's words go up whether or not this span has a body yet.
+          if (j > 0) drawSeamUser(slot, breaks[j - 1]?.user, keysBase);
           if (body.mode === "empty") continue;
           if (!chunk.seq) chunk.seq = ++cardSeq;
           if (!chunk.key) {
@@ -2360,7 +2376,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 streaming: true,
                 followup: slot,
               },
-              j > 0 ? breaks[j - 1]?.user : undefined,
               keysBase,
             );
             // THE PLAN LIMIT IS OVER THE MOMENT THE RETRY'S REPLY OPENS — a
@@ -2493,6 +2508,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 to ? allText.slice(from.text, to.text) : allText.slice(from.text),
                 ++cardSeq,
               );
+              if (j > 0) drawSeamUser(chunkOffset + j, spans[j - 1]?.user, keysBase);
               if (view.mode === "empty") continue;
               placeReply(
                 chunkOffset + j,
@@ -2504,7 +2520,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
                   followup: chunkOffset + j,
                   endedAt,
                 },
-                j > 0 ? spans[j - 1]?.user : undefined,
                 keysBase,
               );
             }
@@ -3241,8 +3256,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // the CLI never received it (`stopRun`).
       entry.landed = true;
       delivered(opts);
-      recordFollowup(bubble.key);
-      followupSeq++;
+      // A log this send no longer belongs to (a new chat opened meanwhile)
+      // gets neither the ledger row nor the seam: its bubble is gone with it.
+      if (logGen === gen) {
+        recordFollowup(bubble.key);
+        followupSeq++;
+      }
     } catch (err) {
       // A 504 MAY STILL LAND (`SEND_TIMEOUT_PROBES`), so it does not hand the
       // words back for a second send that would say them twice. A run still
@@ -4379,6 +4398,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
             to ? probeText.slice(from.text, to.text) : probeText.slice(from.text),
             ++cardSeq,
           );
+          // The words each seam carries, before the reply that answers them —
+          // a repair has no bubble of its own for a steered line either.
+          if (j > 0) drawSeamUser(j, probeSpans[j - 1]?.user, followupKeys.length);
           if (view.mode === "empty") continue;
           pushTurn({
             role: "assistant",

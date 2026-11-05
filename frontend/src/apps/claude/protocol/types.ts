@@ -740,6 +740,9 @@ export interface TurnBreak {
 export interface TurnBreakUser {
   text: string;
   uuid?: string;
+  /** Epoch seconds the echo row was stamped with, when the run stamped it
+   *  (agent.py `_row_ts`); absent on a live echo with no clock. */
+  at?: number;
 }
 
 /** The narrow early-exit body: unknown run_id / another target (agent.py:3802,3824). */

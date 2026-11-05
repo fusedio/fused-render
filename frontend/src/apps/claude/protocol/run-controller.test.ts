@@ -1776,6 +1776,38 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([[A1.text, ""], [B1.text, ""], [C1.text]]);
   });
 
+  // Bugbot on #2145: two lines steered at ONE tool boundary are two seams at
+  // the same offsets, so the span between them is empty — and a page with no
+  // bubble of its own for either line must still draw BOTH, in order, above
+  // the one reply that answers them.
+  test("both lines of a same-boundary pair are drawn from their seams on a page that did not send them", async () => {
+    const A1 = text("Checking. ");
+    const B1 = text("Reading both.");
+    const seams = [
+      { segments: 1, text: A1.text.length, user: { text: "read these", uuid: "e1", at: 1_700_000_000 } },
+      { segments: 1, text: A1.text.length, user: { text: "and this one", uuid: "e2" } },
+    ];
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A1], text: A1.text });
+        if (n === 1) return poll({ segments: [A1, B1], text: A1.text + B1.text, turn_breaks: seams });
+        return poll({ done: true, segments: [A1, B1], text: A1.text + B1.text, turn_breaks: seams });
+      },
+    });
+    await made.controller.sendMessage("go");
+    expect(made.controller.getState().turns.map((t) => (t.role === "user" ? `u:${t.text}` : t.role))).toEqual([
+      "u:go",
+      "assistant",
+      "u:read these",
+      "u:and this one",
+      "assistant",
+    ]);
+    // The echo's own clock where the run stamped one.
+    expect(users(made.controller).map((t) => t.ts)).toEqual([expect.any(Number), 1_700_000_000, expect.any(Number)]);
+    expect(assistants(made.controller).map((t) => (t.segments || []).map(bodyOf))).toEqual([[A1.text], [B1.text]]);
+  });
+
   // A line queued while the model was still thinking (no body yet) went up as
   // a bubble before the reply had a row — and the reply, pushed to the end of
   // the log when its first body arrived, streamed UNDER that bubble (headless

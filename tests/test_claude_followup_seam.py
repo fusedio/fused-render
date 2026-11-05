@@ -227,6 +227,11 @@ def test_a_message_steered_into_a_tool_call_is_a_seam_at_the_echo(agent):
     assert breaks[0]["segments"] == len(before)
     assert breaks[0]["text"] == len("Checking. ")
     assert breaks[0]["user"] == {"text": "and read PR 73 too", "uuid": "echo-1"}
+    # ...stamped with the echo row's own clock where it has one.
+    stamped = list(rows)
+    stamped[4] = {**stamped[4], "timestamp": "2026-11-05T10:00:00.000Z"}
+    assert agent._absorbed_turn_breaks(stamped)[0]["user"]["at"] == \
+        agent._row_ts(stamped[4])
     # The cut is a segment boundary of the full payload too: the text after
     # the echo is its own segment, never merged into the one before.
     whole = agent._segments_from_rows(rows)

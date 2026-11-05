@@ -9822,6 +9822,8 @@ def _seam(breaks: list, rows: list, end: int, shape: tuple,
     words = _inbox_text(echo) if echo is not None else ""
     if words.strip():
         entry["user"] = {"text": words, "uuid": str(echo.get("uuid") or "")}
+        if _row_ts(echo) is not None:
+            entry["user"]["at"] = _row_ts(echo)
     breaks.append(entry)
 
 
