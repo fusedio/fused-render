@@ -547,7 +547,7 @@ def compact_state(body: dict) -> dict:
         if not server_id:
             new_files.append({"file": file, "body": text})
         elif file.endswith(EMBED_BODY_SUFFIXES):
-            bodies[slug] = text
+            bodies[slug] = normalize_newlines(text)
     base_raw = body.get("base_nodes")
     base_nodes = (
         {n for n in base_raw if isinstance(n, str)} if isinstance(base_raw, list) else None
@@ -572,7 +572,7 @@ def _dump_toml(data: dict) -> str:
 
 def _write_atomic(path: str, text: str) -> None:
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
         fh.write(text)
     os.replace(tmp, path)
 
@@ -940,8 +940,8 @@ def apply_snapshot(
         if not file or not file.endswith(EMBED_BODY_SUFFIXES):
             continue
         fpath = os.path.join(clone_dir, file)
-        current = _read_bytes(fpath)
-        if current is not None and current.decode("utf-8", "replace") == text:
+        current = read_body(fpath)
+        if current == text:
             continue
         if current is not None:
             trash(file)
@@ -1089,10 +1089,17 @@ def body_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+def normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def body_text(data: bytes | None) -> str | None:
+    return None if data is None else normalize_newlines(data.decode("utf-8", "replace"))
+
+
 def read_body(path: str) -> str | None:
     """A source file as the body channel reads it (None when missing)."""
-    data = _read_bytes(path)
-    return None if data is None else data.decode("utf-8", "replace")
+    return body_text(_read_bytes(path))
 
 
 def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None) -> dict:
