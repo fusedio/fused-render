@@ -65,6 +65,10 @@ export interface SegmentViewProps {
   /** The chat's working directory, threaded down to `MarkdownView`/`ToolChip`
    *  so a shell fence's or a Bash chip's "run" button `cd`'s there first. */
   cwd?: string | null;
+  /** The caller already folded these rows behind its own trigger, so draw every
+   *  row flat: no run grouping, no triggers. Not passed on to a nested
+   *  subagent's rows, which keep their normal folding. */
+  unfolded?: boolean;
 }
 
 /** MEMOIZED for the same reason `Turn` is, and this is where it pays: a settled
@@ -78,6 +82,7 @@ export const SegmentView = memo(function SegmentView({
   cardsAfter,
   live = false,
   cwd,
+  unfolded = false,
 }: SegmentViewProps) {
   const seqRef = useRef<number | null>(null);
   if (seqRef.current === null) seqRef.current = ++segSeq;
@@ -87,8 +92,11 @@ export const SegmentView = memo(function SegmentView({
   // index it had in `segments`, because `cardKey`, `cardsAfter` and the
   // streaming tail are all keyed by where a segment sits in the TURN.
   const rows = useMemo(
-    () => groupCollapsibles(segments, cardsAfter, live),
-    [segments, cardsAfter, live],
+    () =>
+      unfolded
+        ? segments.flatMap((seg, index) => (seg ? [{ kind: "seg" as const, index, seg }] : []))
+        : groupCollapsibles(segments, cardsAfter, live),
+    [segments, cardsAfter, live, unfolded],
   );
   // ONE READER AND ONE TOGGLE for every run in this turn: the trigger and the
   // members it opens are two positions in the list below, and a hook per run
