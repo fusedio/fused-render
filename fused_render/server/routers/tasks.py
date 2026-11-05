@@ -10657,6 +10657,15 @@ def api_task_create(body: dict = Body(...),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    return _create_task(body, x_fused_page)
+
+
+def _create_task(body: dict, x_fused_page: str | None, origin: str = "page"):
+    """`api_task_create`'s body, past the `X-Fused` guard: validate, store and
+    dispatch. `origin` is stamped on the entry — "page" for the desktop's own
+    door, "phone" for the iOS app's (`routers/phone_tasks.py`), which is why
+    this is a seam and not a body field: a page must not be able to claim it
+    is the phone."""
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _error("prompt: required", status=400)
@@ -10734,7 +10743,7 @@ def api_task_create(body: dict = Body(...),
         entry = schedule.create(
             resolved, prompt, when, immediate=immediate,
             title=fields["title"] or None, model=fields["model"],
-            effort=fields["effort"], permission_mode=mode, origin="page",
+            effort=fields["effort"], permission_mode=mode, origin=origin,
             bot=fields["bot"], backend=fields["backend"])
     except schedule.BackendRefused as exc:
         return JSONResponse(exc.body, status_code=400)

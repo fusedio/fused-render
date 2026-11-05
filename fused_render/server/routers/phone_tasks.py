@@ -22,18 +22,23 @@ verb the phone never gets 404, a POST without `X-Fused: 1` 403.
 """
 from __future__ import annotations
 
+import asyncio
+import datetime as _dt
+import hashlib
 import json
+import logging
 import os
 import re
 import time
 
-from fastapi import APIRouter, Body, Header, Query
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter, Body, Header, HTTPException, Query
+from fastapi.responses import Response
 
 from fused_render import schedule, tasks_store
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 PREFIX = "/api/phone/tasks"
 TEXT_MAX = 200        # a row's title / last line
@@ -45,10 +50,8 @@ TURNS_MAX = 400
 _DEVICE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # bots/phone.py's, the same pairing records
 #: Row statuses that are "needs you" on the phone (the badge on the Tasks segment).
 ATTENTION_STATUSES = ("needs_attention", "blocked")
-#: The verbs the phone never gets. Named so the 404 is deliberate, not a typo.
-DESKTOP_ONLY = frozenset({"erase", "export", "worktrees", "ports", "holds", "running", "idle",
-                          "settings", "admit", "force", "pr-status", "seen", "ui", "snapshot",
-                          "terminal", "revert"})
+TEXT_CAP = 20000      # a prompt or a reply: the phone draws it whole, but never a megabyte
+_NO_AGENT = object()  # `_turns(agent=…)`: "look the module up" is the default; None is "there is none"
 
 
 def _tasks():
@@ -58,6 +61,22 @@ def _tasks():
 
 def _flat(text, n=TEXT_MAX) -> str:
     return " ".join(str(text or "").split())[:n]
+
+
+def _cut(text, n=DETAIL_MAX) -> str:
+    """A cut that keeps line breaks (a tool's output, a prompt): CRs dropped,
+    runs of blank lines folded, trailing space off each line, then `n` chars."""
+    lines = [ln.rstrip() for ln in str(text or "").replace("\r", "").split("\n")]
+    out, blank = [], False
+    for ln in lines:
+        if not ln:
+            if not blank:
+                out.append("")
+            blank = True
+        else:
+            out.append(ln)
+            blank = False
+    return "\n".join(out).strip()[:n]
 
 
 def _device(x_fused_device) -> str:
@@ -129,7 +148,8 @@ def phone_task(row: dict) -> dict:
         "project": _tilde(project),
         "project_label": _label(project),
         "target_label": _label(target),
-        "entry": bool(row.get("entry")),  # the folder opens as an app
+        # The folder opens as an app: the grid's own door to its entry page, "" otherwise.
+        "entry_url": ("/render?path=" + _q(str(row.get("entry")))) if row.get("entry") else "",
         "repo": str(row.get("repo") or ""),
         "prs": prs,
         "backend": str(row.get("backend") or ""),
@@ -165,13 +185,27 @@ def _activity(row: dict) -> float:
     return 0.0
 
 
-def _rows(archived: bool) -> tuple[list[dict], int]:
-    """The listing's rows the phone lists (drafts dropped, archived on request),
-    newest activity first, and the snapshot generation they stand for."""
-    rows, gen = _tasks()._listing()
+def _token(rows: list[dict], gen: int, archived: bool) -> str:
+    """The list's change token: the snapshot generation AND a digest of what
+    the rows say. The generation alone misses the builder's floor rebuilds
+    (every `REBUILD_FLOOR_SEC`, same generation), which are what move the
+    time-based fields — `live` off a transcript's age, `next_run`, queue
+    positions (tasks.py `_GZ_CACHE` keys on the rows object for the same
+    reason). `archived` is in it so a switch of the view is never "unchanged"."""
+    h = hashlib.blake2b(digest_size=8)
+    h.update(b"a" if archived else b"-")
+    for r in rows:
+        h.update(f"{r.get('key')}|{r.get('row_hash')}|{r.get('status')}|{int(bool(r.get('live')))}|"
+                 f"{r.get('next_run')}|{r.get('queue_position')}|{r.get('unread')}\n".encode())
+    return f"{gen}.{h.hexdigest()}"
+
+
+def _shown(rows: list[dict], archived: bool) -> list[dict]:
+    """The rows the phone lists (drafts dropped, archived on request), newest
+    activity first."""
     out = [r for r in rows if not _is_draft(r) and (archived or r.get("status") != "archived")]
     out.sort(key=_activity, reverse=True)
-    return out, gen
+    return out
 
 
 def _row(key: str) -> dict | None:
@@ -188,17 +222,23 @@ def _row(key: str) -> dict | None:
 @router.get(PREFIX)
 def phone_tasks(gen: str = Query(default=""), archived: str = Query(default="0"),
                 limit: str = Query(default="")):
-    """The list: `{tasks, generation, projects, attention, ts}`, or
-    `{unchanged: true, generation}` when `gen` is the snapshot's own generation
-    (the poll then costs one comparison). `projects` is the folder facet with
-    counts over the rows shown; `attention` the needs-you count for the badge."""
+    """The list: `{tasks, total, generation, projects, attention, ts}`, or
+    `{unchanged: true, generation}` when `gen` is the token the last answer
+    carried (`_token`: the snapshot generation plus a digest of the rows, so a
+    floor rebuild that moved `live` or `next_run` is a change too). The
+    unchanged answer costs the digest and nothing else: no filter, no sort, no
+    row trimming. `projects` is the folder facet with counts over the rows
+    shown; `attention` the needs-you count for the badge."""
     try:
         lim = min(LIMIT_MAX, max(1, _int(limit, LIMIT_DEFAULT, "limit")))
     except ValueError as exc:
         return _error(str(exc), 400)
-    rows, generation = _rows(_truthy(archived))
-    if gen and gen == str(generation):
+    show_archived = _truthy(archived)
+    all_rows, snapshot_gen = _tasks()._listing()
+    generation = _token(all_rows, snapshot_gen, show_archived)
+    if gen and gen == generation:
         return {"unchanged": True, "generation": generation}
+    rows = _shown(all_rows, show_archived)
     facet: dict[str, dict] = {}
     attention = 0
     for r in rows:
@@ -215,79 +255,82 @@ def phone_tasks(gen: str = Query(default=""), archived: str = Query(default="0")
 
 
 @router.get(PREFIX + "/{key}")
-def phone_task_detail(key: str, since: str = Query(default=""), limit: str = Query(default="")):
-    """One task and its conversation: `{task, turns, cursor, first, live, run_id,
-    cards, card, scheduled, ts, deleted?}`.
+def phone_task_detail(key: str, since: str = Query(default=""), last: str = Query(default=""),
+                      before: str = Query(default=""), limit: str = Query(default="")):
+    """One task and its conversation: `{task, turns, cursor, first, total,
+    reset, live, run_id, cards, card, scheduled, ts}`.
 
-    `turns` are the transcript's (`_turns`), each stamped with its index `i`.
-    With no `since`, the last `limit` turns; with `since=<cursor>`, every turn
-    from `cursor - 1` on — the last turn the phone holds is re-sent, so a reply
-    still streaming grows in place (the phone replaces by `i`). `cards` are the
-    live run's permission and question records, every poll (they carry their
-    own verdicts, and they are few); `card` is the one whose buttons are live.
+    `turns` are the transcript's (`_turns`), each with its index `i` and a
+    stable `id`. With no `since`, the last `limit` turns. With
+    `since=<cursor>&last=<id>`, every turn from `cursor - 1` on, capped at
+    `limit` — the last turn the phone holds is re-sent so a reply still
+    streaming grows in place (the phone replaces by `i`) — UNLESS the turn at
+    `cursor - 1` is not the one the phone named (`_history` drops a resolved
+    error turn, a "Stopped" mark moves on, the list may be shorter): then
+    `reset: true` and the last `limit` turns, and the phone starts over. With
+    `before=<i>`, the `limit` turns before that index ("Load earlier").
+    `cursor` is the index after the last turn sent; `total` the count.
+
+    `cards` are the live run's permission and question records, every poll
+    (they carry their own verdicts, and they are few); `card` is the one whose
+    buttons are live — the oldest undecided one the queue is not holding.
     `scheduled` are this session's messages not yet run. A `pending:` key has
-    the scheduled message as its only turn and no conversation."""
+    the scheduled message and no conversation."""
     try:
         lim = min(TURNS_MAX, max(1, _int(limit, TURNS_DEFAULT, "limit")))
         cur = _int(since, -1, "since")
+        upto = _int(before, -1, "before")
     except ValueError as exc:
         return _error(str(exc), 400)
     row = _row(key)
     if row is None:
         return _error(f"no task with key {key!r}", 404)
     out = {"task": phone_task(row), "ts": time.time(), "live": False, "run_id": "",
-           "cards": [], "card": None, "scheduled": [], "first": 0, "cursor": 0, "turns": []}
-    entry_id = tasks_store.pending_entry(key)
-    if entry_id:
-        entry = _entry(entry_id)
-        if entry is not None:
-            out["scheduled"] = [_scheduled(entry)]
-        return out
+           "cards": [], "card": None, "scheduled": [], "first": 0, "cursor": 0, "total": 0,
+           "reset": False, "turns": []}
     tasks = _tasks()
-    task = tasks._collect().get(key)
-    if task is None:
-        return out
-    session = str(task.get("session_id") or key)
-    tasks._place(task)
-    target = str(task.get("target") or task.get("project") or "")
-    out["scheduled"] = [_scheduled(e) for e in task.get("entries") or []
+    out["scheduled"] = [_scheduled(e) for e in tasks._entries_for({key}).get(key, [])
                         if str(e.get("state") or "") == schedule.PENDING]
+    if tasks_store.pending_entry(key):
+        return out
+    session = str(row.get("session_id") or key)
+    target = str(row.get("target") or row.get("project") or "")
     agent = tasks._agent_module()
     if agent is None or not target:
         return out
     try:
-        hist = agent._history(target, session)
+        # `_history` ends with `_history_live`'s own keys (live_run, permissions): one read, not two.
+        hist = agent._history(target, session, inbox=False)
     except Exception:  # noqa: BLE001 — a transcript we cannot read is an empty conversation, not a 500
+        logger.debug("phone task %s: history failed", key, exc_info=True)
         hist = {}
     if not isinstance(hist, dict):
         hist = {}
-    turns = _turns(hist.get("turns") or [])
-    if hist.get("deleted") or (not turns and tasks_store.erased(session)):
-        out["deleted"] = True
+    turns = _turns(hist.get("turns") or [], agent=agent)
     n = len(turns)
-    start = max(0, cur - 1) if cur >= 0 else max(0, n - lim)
-    out["turns"] = turns[start:]
+    if upto >= 0:
+        start, end = max(0, min(upto, n) - lim), min(upto, n)
+    elif cur >= 0:
+        start = max(0, cur - 1)
+        stale = cur > n or (last and (start >= n or turns[start]["id"] != last))
+        if stale:
+            out["reset"] = True
+            start = max(0, n - lim)
+        end = min(n, start + lim)
+    else:
+        start, end = max(0, n - lim), n
+    out["turns"] = turns[start:end]
     out["first"] = start
-    out["cursor"] = n
-    try:
-        live = agent._history_live(target, session, inbox=False)
-    except Exception:  # noqa: BLE001
-        live = {}
-    run_id = str((live or {}).get("live_run") or "")
+    out["cursor"] = n if upto >= 0 else end  # Load earlier never moves the forward cursor back
+    out["total"] = n
+    run_id = str(hist.get("live_run") or "")
     out["live"] = bool(run_id)
     out["run_id"] = run_id
     if run_id:
-        cards = [_card(agent, p) for p in (live.get("permissions") or []) if isinstance(p, dict)]
+        cards = [_card(agent, p) for p in (hist.get("permissions") or []) if isinstance(p, dict)]
         out["cards"] = cards
         out["card"] = next((c for c in cards if c["verdict"] == "pending"), None)
     return out
-
-
-def _entry(entry_id: str) -> dict | None:
-    for e in schedule.list_entries():
-        if str(e.get("id") or "") == entry_id:
-            return e
-    return None
 
 
 def _scheduled(entry: dict) -> dict:
@@ -321,7 +364,7 @@ def _tool_summary(agent, name: str, inp: dict) -> str:
         elif name in ("Agent", "Task"):
             detail = str(inp.get("description") or inp.get("prompt") or "")
     detail = _flat(detail, 120)
-    return f"{name}: {detail}" if detail and not detail.startswith(name) else (detail or name)
+    return f"{name}: {detail}" if detail and not detail.startswith(name + ":") else (detail or name)
 
 
 def _seg_text(seg: dict) -> str:
@@ -331,9 +374,11 @@ def _seg_text(seg: dict) -> str:
     return str(t or "")
 
 
-def _turns(hist_turns: list, agent=None) -> list[dict]:
+def _turns(hist_turns: list, agent=_NO_AGENT) -> list[dict]:
     """The history's turns reduced to the phone's vocabulary (PhoneTurn), each
-    stamped with its index `i`:
+    stamped with its index `i` and a stable `id` (the transcript record's uuid
+    and the segment's place in it; an error turn, which has no uuid, by its
+    text):
 
     user       a prompt — `text`, `at`
     assistant  reply prose (markdown-lite on the phone) — `text`, `at`
@@ -343,39 +388,43 @@ def _turns(hist_turns: list, agent=None) -> list[dict]:
     An assistant turn whose segments interleave prose and tool calls becomes
     one phone turn per run of prose and one per tool call, in order. Thinking,
     subagent children, images and context meters are dropped. `agent` is the
-    agent module for the desktop's tool summaries, None in a unit test."""
+    agent module for the desktop's tool summaries (looked up when not given);
+    None means there is none, and the fallback summaries answer."""
     out: list[dict] = []
-    if agent is None:
+    if agent is _NO_AGENT:
         try:
             agent = _tasks()._agent_module()
         except Exception:  # noqa: BLE001
             agent = None
 
-    def push(kind: str, **fields):
-        out.append({"i": len(out), "kind": kind, **fields})
+    def push(kind: str, uid: str, **fields):
+        out.append({"i": len(out), "id": uid or f"n{len(out)}", "kind": kind, **fields})
 
     for t in hist_turns:
         if not isinstance(t, dict):
             continue
         role = t.get("role")
         ts = t.get("ts")
+        uid = str(t.get("uuid") or "")
         if role == "user":
-            push("user", text=str(t.get("text") or ""), at=ts)
+            push("user", uid, text=_cut(t.get("text"), TEXT_CAP), at=ts)
         elif role == "assistant":
             segs = t.get("segments") if isinstance(t.get("segments"), list) else None
             if not segs:
-                text = str(t.get("text") or "")
-                if text.strip():
-                    push("assistant", text=text, at=ts)
+                text = _cut(t.get("text"), TEXT_CAP)
+                if text:
+                    push("assistant", uid, text=text, at=ts)
                 continue
             prose: list[str] = []
             prose_at = None
+            k = 0  # the segment-run counter inside this record: part of the id
 
             def flush():
-                nonlocal prose, prose_at
-                text = "".join(prose)
-                if text.strip():
-                    push("assistant", text=text, at=prose_at)
+                nonlocal prose, prose_at, k
+                text = _cut("".join(prose), TEXT_CAP)
+                if text:
+                    push("assistant", f"{uid}#{k}", text=text, at=prose_at)
+                    k += 1
                 prose, prose_at = [], None
 
             for seg in segs:
@@ -392,30 +441,35 @@ def _turns(hist_turns: list, agent=None) -> list[dict]:
                     inp = seg.get("input") if isinstance(seg.get("input"), dict) else {}
                     status = str(seg.get("status") or "running")
                     output = seg.get("output")
-                    push("tool", name=name, summary=_tool_summary(agent, name, inp),
+                    push("tool", f"{uid}#{k}", name=name, summary=_tool_summary(agent, name, inp),
                          status=status if status in ("running", "ok", "error") else "ok",
-                         detail=_flat(output, DETAIL_MAX) if isinstance(output, str) else "",
+                         detail=_cut(output) if isinstance(output, str) else "",
                          at=seg.get("ts") or ts)
+                    k += 1
                 elif kind == "notice":
                     flush()
-                    push("system", text=_flat(seg.get("text"), DETAIL_MAX),
+                    push("system", f"{uid}#{k}", text=_flat(seg.get("text"), DETAIL_MAX),
                          tone=str(seg.get("status") or "info"), at=seg.get("ts") or ts)
+                    k += 1
                 # thinking and anything newer: dropped
             flush()
             if t.get("stopped"):
-                push("system", text="Stopped", tone="info", at=ts)
+                push("system", f"{uid}#stop", text="Stopped", tone="info", at=ts)
         elif role == "error":
-            push("system", text=_flat(t.get("text"), DETAIL_MAX), tone="error", at=ts)
+            text = _flat(t.get("text"), DETAIL_MAX)
+            push("system", "err:" + hashlib.blake2b(text.encode(), digest_size=6).hexdigest(),
+                 text=text, tone="error", at=ts)
         elif role == "compact":
-            push("system", text="Context compacted", tone="info", at=ts)
+            push("system", uid or "compact", text="Context compacted", tone="info", at=ts)
     return out
 
 
 def _card(agent, perm: dict) -> dict:
     """A permission record as a phone card (PhoneCard). `kind` is "question" for
     AskUserQuestion (its `questions` ride along), "plan" for ExitPlanMode (the
-    plan is the detail), else "permission". `verdict` is allow, deny or pending;
-    `held` means the project queue is holding the run's answer."""
+    plan is the detail), else "permission". `verdict` is allow, deny, expired,
+    held or pending: a held card is ANSWERED (the project queue is holding the
+    answer until the folder frees), so it is never the live one."""
     tool = str(perm.get("tool") or "")
     inp = perm.get("input") if isinstance(perm.get("input"), dict) else {}
     tasks = _tasks()
@@ -427,14 +481,19 @@ def _card(agent, perm: dict) -> dict:
     plan_tool = getattr(agent, "PLAN_TOOL", "ExitPlanMode")
     kind = "question" if tool == answerable else "plan" if tool == plan_tool else "permission"
     decision = str(perm.get("decision") or "")
-    verdict = decision if decision in ("allow", "deny") else ("expired" if decision else "pending")
+    if decision in ("allow", "deny"):
+        verdict = decision
+    elif decision:
+        verdict = "expired"
+    else:
+        verdict = "held" if perm.get("held") else "pending"
     detail = ""
     if kind == "plan":
-        detail = _flat(inp.get("plan"), DETAIL_MAX)
+        detail = _cut(inp.get("plan"))
     elif tool == "Bash":
-        detail = _flat(inp.get("command"), DETAIL_MAX)
+        detail = _cut(inp.get("command"))
     elif tool in _FILE_TOOLS:
-        detail = str(inp.get("file_path") or "")
+        detail = _flat(_tilde(inp.get("file_path")), DETAIL_MAX)
     questions = None
     if kind == "question":
         questions = []
@@ -460,5 +519,338 @@ def _card(agent, perm: dict) -> dict:
         "held": bool(perm.get("held")),
         "created_at": perm.get("created_at") or 0,
         "questions": questions,
-        "answers": perm.get("answers") if isinstance(perm.get("answers"), dict) else {},
+        "answers": ({_flat(k, 120): _flat(v, 120) for k, v in list(perm.get("answers").items())[:20]}
+                    if isinstance(perm.get("answers"), dict) else {}),
     }
+
+
+# --------------------------------------------------------------- writes ---
+#: The naming prompt the desktop hero sends to the relay (apps/builder/HomeHero.tsx
+#: NAME_SYSTEM_PROMPT), here so the phone makes one call. Keep the two the same.
+NAME_NONE = "none"
+NAME_MODEL = "haiku"
+NAME_SYSTEM_PROMPT = (
+    "You name software projects. Given a description of an app, reply with a "
+    "short folder name for it in kebab-case: 2-3 lowercase words joined by "
+    "hyphens, letters and digits only, at most 4 words when 3 cannot say it.\n"
+    "Rules:\n"
+    "- Lead with the subject (what it is about), then what it does: "
+    "\"expense-tracker\", not \"track-expenses\".\n"
+    "- Use words from the description or plain words for what the app does. "
+    "Never invent brand words or puns.\n"
+    "- No filler: never app, tool, my, simple, new, basic, project, helper, "
+    "manager (unless the thing IS a manager), or the user's name.\n"
+    "- If the description names the app itself, use that name, kebab-cased.\n"
+    "- If the text is not a description of an app to build, reply with "
+    "exactly: " + NAME_NONE + "\n"
+    "Examples:\n"
+    "\"a page that shows my monthly spending by category\" -> spending-by-category\n"
+    "\"something to track which plants I watered and when\" -> plant-watering-log\n"
+    "\"a kanban board for my reading list, call it Shelf\" -> shelf\n"
+    "\"hello, what can you do?\" -> " + NAME_NONE + "\n"
+    "Reply with ONLY the name — no quotes, no prose, no explanation."
+)
+_KEBAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_NAME_TIMEOUT_S = 12.0
+
+
+def _guarded(fn):
+    """Run a desktop handler for the phone: its `HTTPException` (the tasks
+    router's own 400/404/409 and their sentences) becomes the door's
+    `{"error": sentence}` with the same status, and anything else is handed
+    through as it came (a dict, or a JSONResponse carrying its own error)."""
+    try:
+        return fn()
+    except HTTPException as exc:
+        detail = exc.detail
+        if isinstance(detail, dict):
+            detail = detail.get("error") or json.dumps(detail)
+        return _error(str(detail), exc.status_code)
+
+
+def _running(key: str) -> bool:
+    row = _row(key)
+    return bool(row and row.get("live"))
+
+
+RUN_BLOCKED_HINT = "Stop the run first"  # platform/lib/task-actions.ts, the same words
+
+
+def _kebab(text: str) -> str:
+    words = [w for w in re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-").split("-") if w]
+    return "-".join(words[:4])
+
+
+async def _suggest_name(prompt: str) -> str:
+    """A kebab-case folder name for the app `prompt` describes, through the AI
+    relay on haiku (the hero's own call, server-side), or "" when the relay is
+    down, slow, or answers prose. The caller then falls back to a dated slug."""
+    try:
+        from fused_render.server import ai as ai_mod
+        resp = await asyncio.wait_for(
+            ai_mod._ai_relay({"prompt": prompt, "systemPrompt": NAME_SYSTEM_PROMPT, "model": NAME_MODEL}),
+            _NAME_TIMEOUT_S)
+        status, data = _body(resp)
+        if status != 200:
+            return ""
+        text = str(((data.get("result") or {}).get("text")) or "").strip().lower().rstrip(". ")
+    except Exception:  # noqa: BLE001 — naming is best effort; the slug below is the answer then
+        logger.debug("phone new-app: naming failed", exc_info=True)
+        return ""
+    if not text or text == NAME_NONE or not _KEBAB_RE.match(text):
+        return ""
+    return _kebab(text)
+
+
+def _dated_slug() -> str:
+    return "app-" + _dt.datetime.now().strftime("%Y%m%d-%H%M")
+
+
+def _free_name(name: str) -> str:
+    """`name`, or `name-2`, `name-3`, … — the first the workspace does not hold.
+    Only for a name the phone did NOT type: a typed one that is taken is a 409
+    with the desktop's sentence, so the person can pick another."""
+    from fused_render.shell.seed import fused_dir
+    root = os.path.join(fused_dir(), "app")
+    if not os.path.exists(os.path.join(root, name)):
+        return name
+    for i in range(2, 100):
+        if not os.path.exists(os.path.join(root, f"{name}-{i}")):
+            return f"{name}-{i}"
+    return name
+
+
+def _known_folder(target: str) -> str | None:
+    """The absolute folder `target` names if the phone may start a task there:
+    a project of a row the listing knows, or a folder under the workspace
+    (`fused_dir()`). Tilde'd paths are expanded; anything else is None. The
+    phone picks from a list, it never types a path."""
+    from fused_render.shell.seed import fused_dir
+    t = str(target or "").strip()
+    if not t:
+        return None
+    path = os.path.realpath(os.path.expanduser(t))
+    if not os.path.isdir(path):
+        return None
+    root = os.path.realpath(fused_dir())
+    if path == root or path.startswith(root + os.sep):
+        return path
+    rows, _gen = _tasks()._listing()
+    for r in rows:
+        p = str(r.get("project") or "")
+        if p and os.path.realpath(p) == path:
+            return path
+    return None
+
+
+@router.post(PREFIX)
+def phone_create(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                 x_fused_device: str | None = Header(default=None)):
+    """Start a task: `{prompt, target}` -> `{key, entry_id, task_id}`. `target`
+    is a folder the listing knows or one under the workspace (`_known_folder`);
+    anything else is 400. Stored `origin: "phone"`, `permission_mode` default,
+    the Preferences default agent, no model or effort. The key is
+    `pending:<entry>` until the run mints a session; the phone follows
+    `entry_id` across the rekey."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _error("prompt: required", 400)
+    folder = _known_folder(body.get("target"))
+    if folder is None:
+        return _error("target: pick a folder from the list", 400)
+    tasks = _tasks()
+    resp = _guarded(lambda: tasks._create_task(
+        {"prompt": prompt, "target": folder, "permission_mode": "default"}, None, origin="phone"))
+    status, data = _body(resp)
+    if status != 200:
+        return resp
+    key = str(data.get("key") or "")
+    row = _row(key)
+    logger.info("phone task %s created from device %r", key, _device(x_fused_device))
+    return {"key": key, "entry_id": str(data.get("entry_id") or ""),
+            "task_id": str((row or {}).get("task_id") or "")}
+
+
+@router.post(PREFIX + "/new-app")
+async def phone_new_app(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                        x_fused_device: str | None = Header(default=None)):
+    """Describe an app: `{prompt, name?}` -> `{key, entry_id, task_id, app: {name,
+    path, url}}`. With no `name` the relay names it (`_suggest_name`), else a
+    dated slug. Then the desktop's own `api_new_app`: copy the starter, git
+    init, stamp the app id, start the build task on the entry html with the
+    default agent. 409 with the desktop's sentence when the name is taken."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _error("prompt: required", 400)
+    name = body.get("name")
+    if name is not None and not isinstance(name, str):
+        return _error("name must be a string", 400)
+    name = (name or "").strip()
+    from fused_render.server.routers import apps
+    if not name:
+        name = _free_name(await _suggest_name(prompt) or _dated_slug())
+    err = apps._app_name_error(name)
+    if err is not None:
+        return _error(err, 400)
+    # `api_new_app` waits for the task's send to resolve (up to 20 s): off the
+    # event loop, like any sync route.
+    resp = await asyncio.to_thread(
+        _guarded, lambda: apps.api_new_app({"name": name, "prompt": prompt, "backend": ""}, x_fused="1"))
+    status, data = _body(resp)
+    if status != 200:
+        return resp
+    task = data.get("task") if isinstance(data.get("task"), dict) else {}
+    entry_id = str(task.get("id") or "")
+    session = str(task.get("claude_session_id") or "")
+    key = session or (tasks_store.pending_key(entry_id) if entry_id else "")
+    row = _row(key) if key else None
+    path = str(data.get("path") or "")
+    out = {"key": key, "entry_id": entry_id, "task_id": str((row or {}).get("task_id") or ""),
+           "app": {"name": name, "path": _tilde(path),
+                   "url": "/render?path=" + _q(str(data.get("entry_html") or ""))}}
+    if data.get("task_error"):
+        out["task_error"] = str(data["task_error"])
+    logger.info("phone new app %r (%s) from device %r", name, key, _device(x_fused_device))
+    return out
+
+
+def _q(s: str) -> str:
+    from urllib.parse import quote
+    return quote(s, safe="/")
+
+
+def _send(key, body, _device):
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text: required")
+    tasks = _tasks()
+    return tasks.api_task_send(key, {"text": text}, x_fused="1")  # no model, effort or backend from the phone
+
+
+def _cancel(key, _body, _device):
+    return _tasks().api_task_cancel(key, x_fused="1")
+
+
+def _live_card_ids(key: str) -> tuple[str, str, set[str]]:
+    """`(run_id, session_id, {pending request ids})` of the key's live run."""
+    tasks = _tasks()
+    task = tasks._collect().get(key)
+    if task is None:
+        raise ValueError("that card is not waiting on an answer")
+    session = str(task.get("session_id") or key)
+    tasks._place(task)
+    target = str(task.get("target") or task.get("project") or "")
+    agent = tasks._agent_module()
+    if agent is None or not target:
+        raise ValueError("that card is not waiting on an answer")
+    live = agent._history_live(target, session, inbox=False) or {}
+    run_id = str(live.get("live_run") or "")
+    pending = {str(p.get("id") or "") for p in (live.get("permissions") or [])
+               if isinstance(p, dict) and not p.get("decision")}
+    return run_id, session, pending
+
+
+def _decide_with(key, body, decision, answers=None, custom=None):
+    request_id = str(body.get("request_id") or "")
+    run_id, session, pending = _live_card_ids(key)
+    if not run_id or request_id not in pending:
+        raise ValueError("that card is not waiting on an answer")
+    raw = {"run_id": run_id, "request_id": request_id, "session_id": session,
+           "decision": decision, "scope": "once", "note": str(body.get("note") or "")}
+    if answers is not None:
+        raw["answers"] = json.dumps(answers)
+    if custom is not None:
+        raw["custom"] = json.dumps(custom)
+    return _tasks().api_queue_decide(raw, x_fused="1")
+
+
+def _decide(key, body, _device):
+    """Allow once or deny the permission card the detail served. `scope` is
+    forced to `once`: "for this session" and "always" are desktop decisions."""
+    decision = body.get("decision")
+    if decision not in ("allow", "deny"):
+        raise ValueError("decision must be allow or deny")
+    return _decide_with(key, body, decision)
+
+
+def _answer(key, body, _device):
+    """Answer a question card: `{request_id, answers: {question: [labels]},
+    custom?: {question: typed}}`, the desktop composer's own payload."""
+    answers = body.get("answers")
+    if not isinstance(answers, dict) or not answers:
+        raise ValueError("answers: required")
+    custom = body.get("custom")
+    if custom is not None and not isinstance(custom, dict):
+        raise ValueError("custom must be an object")
+    return _decide_with(key, body, "allow", answers=answers, custom=custom)
+
+
+def _archive(key, _body, _device):
+    if _running(key):
+        return _error(RUN_BLOCKED_HINT, 409)
+    tasks = _tasks()
+    return tasks.api_task_archive(tasks.ArchivePatch(key=key), x_fused="1")
+
+
+def _unarchive(key, _body, _device):
+    tasks = _tasks()
+    return tasks.api_task_unarchive(tasks.UnarchivePatch(key=key), x_fused="1")
+
+
+def _rename(key, body, _device):
+    tasks = _tasks()
+    title = body.get("title", "")
+    return tasks.api_task_rename(tasks.RenamePatch(key=key, title=title), x_fused="1")
+
+
+def _favourite(key, body, _device):
+    on = body.get("on")
+    if not isinstance(on, bool):
+        raise ValueError("on must be true or false")
+    tasks = _tasks()
+    return tasks.api_task_favourite(tasks.FavouritePatch(key=key, on=on), x_fused="1")
+
+
+def _delete(key, _body, _device):
+    tasks = _tasks()
+    return tasks.api_task_delete(tasks.DeletePatch(key=key), x_fused="1")  # 409 while running, its own words
+
+
+def _read(key, _body, _device):
+    tasks = _tasks()
+    return tasks.api_task_read(tasks.ReadPatch(key=key, all=True), x_fused="1")
+
+
+def _skip(key, _body, _device):
+    return _tasks().api_queue_skip({"key": key}, x_fused="1")
+
+
+#: Everything the phone may do to a task. Not here on purpose (docs/phone-tasks.md):
+#: erase, export, worktrees, ports, holds, running/idle marks, settings, queue admit
+#: and force, pr-status, seen, ui, snapshots, the terminal.
+_OPS = {"send": _send, "cancel": _cancel, "decide": _decide, "answer": _answer,
+        "archive": _archive, "unarchive": _unarchive, "rename": _rename,
+        "favourite": _favourite, "delete": _delete, "read": _read, "skip": _skip}
+
+
+@router.post(PREFIX + "/{key}/{op}")
+def phone_op(key: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None),
+             x_fused_device: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    fn = _OPS.get(op)
+    if fn is None:
+        return _error(f"unknown task action {op!r}", 404)
+    if _row(key) is None:
+        return _error(f"no task with key {key!r}", 404)
+    try:
+        return _guarded(lambda: fn(key, body if isinstance(body, dict) else {}, _device(x_fused_device)))
+    except (ValueError, RuntimeError) as exc:
+        return _error(str(exc) or exc.__class__.__name__, 400)

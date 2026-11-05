@@ -75,11 +75,12 @@ def test_list_is_trimmed_rows_newest_first_with_the_facet_and_the_badge(client, 
     out = r.json()
     assert set(out) == {"tasks", "total", "generation", "projects", "attention", "ts"}
     rows = out["tasks"]
-    assert [t["key"] for t in rows][:2] == ["sess-b", "sess-c"] or rows[0]["key"] in ("sess-b", "sess-c")
+    # Newest activity first: b (T12), then c and a (both T10, the server's own tie order).
+    assert rows[0]["key"] == "sess-b" and {rows[1]["key"], rows[2]["key"]} == {"sess-a", "sess-c"}
     a = next(t for t in rows if t["key"] == "sess-a")
     # Exactly the phone's keys, and nothing from the desktop's wide row.
     assert set(a) == {"key", "task_id", "title", "title_source", "status", "failed", "blocked_reason", "attention",
-                      "live", "unread", "starred", "project", "project_label", "target_label", "entry", "repo", "prs",
+                      "live", "unread", "starred", "project", "project_label", "target_label", "entry_url", "repo", "prs",
                       "backend", "model", "last_message", "last_reply", "started", "last_active", "happened_at",
                       "message_count", "next_run", "next_run_repeats", "queue_position", "queue_ahead_title",
                       "entry_id", "bot"}
@@ -88,18 +89,21 @@ def test_list_is_trimmed_rows_newest_first_with_the_facet_and_the_badge(client, 
     assert a["project_label"] == "alpha" and a["project"].endswith("alpha")
     b = next(t for t in rows if t["key"] == "sess-b")
     assert len(b["title"]) <= phone_tasks.TEXT_MAX
-    assert b["last_message"] is None or len(b["last_message"]["text"]) <= phone_tasks.TEXT_MAX
+    assert b["last_message"]["role"] == "user" and len(b["last_message"]["text"]) == phone_tasks.TEXT_MAX
     # The facet counts the rows shown; the badge counts the needs-you rows.
     facet = {p["label"]: p["count"] for p in out["projects"]}
     assert facet == {"alpha": 2, "beta": 1}
     assert out["projects"][0]["label"] == "alpha"  # most tasks first
     c = next(t for t in rows if t["key"] == "sess-c")
-    assert out["attention"] == sum(1 for t in rows if t["status"] in ("needs_attention", "blocked"))
-    assert c["status"] in ("blocked", "needs_attention", "done")
-    # The poll with the snapshot's own generation costs nothing.
+    assert c["status"] == "blocked" and c["blocked_reason"] == "usage_limit"  # the API-error row: needs you
+    assert out["attention"] == 1
+    # The poll with the last answer's token costs nothing; the token is the
+    # generation PLUS what the rows say, so the view switch is a change too.
     again = client.get(P, params={"gen": out["generation"]}).json()
     assert again == {"unchanged": True, "generation": out["generation"]}
+    assert isinstance(out["generation"], str) and "." in out["generation"]
     assert client.get(P, params={"gen": "nope"}).json()["tasks"]
+    assert client.get(P, params={"gen": out["generation"], "archived": "1"}).json()["tasks"]
 
 
 def test_list_limit_and_its_validation(client, agent, projects_dir, state_dir, tmp_path):
@@ -150,7 +154,7 @@ def test_detail_reduces_the_transcript_to_phone_turns(client, agent, projects_di
     r = client.get(f"{P}/sess-a")
     assert r.status_code == 200, r.text
     out = r.json()
-    assert set(out) == {"task", "turns", "cursor", "first", "live", "run_id", "cards", "card", "scheduled", "ts"}
+    assert set(out) == {"task", "turns", "cursor", "first", "total", "reset", "live", "run_id", "cards", "card", "scheduled", "ts"}
     assert out["task"]["key"] == "sess-a" and out["live"] is False and out["card"] is None and out["cards"] == []
     kinds = [(t["kind"], t["i"]) for t in out["turns"]]
     assert [k for k, _ in kinds] == ["user", "assistant", "tool", "tool", "assistant", "system"]
@@ -164,13 +168,26 @@ def test_detail_reduces_the_transcript_to_phone_turns(client, agent, projects_di
     assert reply["text"] == "Fixed it."
     assert err["tone"] == "error" and "Usage limit" in err["text"]
     for t in out["turns"]:
-        assert "segments" not in t and "uuid" not in t and "thinking" not in t
+        assert "segments" not in t and "uuid" not in t and "thinking" not in t and t["id"]
+    assert len({t["id"] for t in out["turns"]}) == 6
+    assert out["cursor"] == 6 and out["total"] == 6 and out["reset"] is False
     # `since=<cursor>` re-sends the last turn (a reply still streaming grows in place) and nothing before it.
-    tail = client.get(f"{P}/sess-a", params={"since": "6"}).json()
-    assert [t["i"] for t in tail["turns"]] == [5] and tail["cursor"] == 6 and tail["first"] == 5
+    tail = client.get(f"{P}/sess-a", params={"since": "6", "last": err["id"]}).json()
+    assert [t["i"] for t in tail["turns"]] == [5] and tail["cursor"] == 6 and tail["first"] == 5 and tail["reset"] is False
+    # The phone names a turn that is not there any more (or a cursor past the end): start over.
+    for params in ({"since": "6", "last": "gone"}, {"since": "9"}, {"since": "3", "last": user["id"]}):
+        again = client.get(f"{P}/sess-a", params={**params, "limit": "2"}).json()
+        assert again["reset"] is True and [t["i"] for t in again["turns"]] == [4, 5], params
+    # A cursor far behind is paged, not dumped: `limit` turns from it, and `cursor` says where to go on.
+    page = client.get(f"{P}/sess-a", params={"since": "1", "last": user["id"], "limit": "2"}).json()
+    assert [t["i"] for t in page["turns"]] == [0, 1] and page["cursor"] == 2 and page["reset"] is False
     # A window: the last `limit` turns, `first` says where they start.
     win = client.get(f"{P}/sess-a", params={"limit": "2"}).json()
     assert [t["i"] for t in win["turns"]] == [4, 5] and win["first"] == 4
+    # Load earlier: the `limit` turns before an index.
+    earlier = client.get(f"{P}/sess-a", params={"before": "4", "limit": "2"}).json()
+    assert [t["i"] for t in earlier["turns"]] == [2, 3] and earlier["first"] == 2 and earlier["cursor"] == 6
+    assert client.get(f"{P}/sess-a", params={"before": "1", "limit": "5"}).json()["turns"][0]["i"] == 0
     assert client.get(f"{P}/sess-a", params={"since": "x"}).status_code == 400
 
 
@@ -200,7 +217,8 @@ def test_detail_carries_the_live_cards_and_names_the_one_that_is_live(client, ag
     out = client.get(f"{P}/sess-a").json()
     assert out["live"] is True and out["run_id"] == "run-1"
     assert [c["request_id"] for c in out["cards"]] == ["r1", "r2", "r3"]
-    assert [c["verdict"] for c in out["cards"]] == ["allow", "pending", "pending"]
+    # A held card is ANSWERED (the queue holds the answer until the folder frees): not pending, never live.
+    assert [c["verdict"] for c in out["cards"]] == ["allow", "held", "pending"]
     assert [c["kind"] for c in out["cards"]] == ["permission", "question", "permission"]
     q = out["cards"][1]
     assert q["held"] is True and q["questions"] == [{"header": "Scope", "question": "Which one?", "multiSelect": False,
@@ -208,8 +226,9 @@ def test_detail_carries_the_live_cards_and_names_the_one_that_is_live(client, ag
     push = out["cards"][2]
     assert push["detail"] == "git push --force" and push["risk"] == {"severity": "high", "summary": "Rewrites remote history"}
     assert out["cards"][0]["risk"] is None
-    # The live card is the OLDEST undecided one — the one the run is blocked on.
-    assert out["card"]["request_id"] == "r2"
+    # The live card is the oldest undecided one the queue is not holding — the one the run is blocked on.
+    assert out["card"]["request_id"] == "r3"
+    assert push["detail"] == "git push --force"
     for c in out["cards"]:
         assert "input" not in c and "tool_use_id" not in c
 
@@ -250,11 +269,14 @@ def test_turns_reducer_on_fixture_segments():
     out = phone_tasks._turns(turns, agent=None)
     assert [t["kind"] for t in out] == ["user", "assistant", "tool", "assistant", "system", "system", "system", "system"]
     assert [t["i"] for t in out] == list(range(8))
-    assert out[1]["text"] == "A " and out[3]["text"] == "B" and out[3]["at"] == 2.0
+    assert out[1]["text"] == "A" and out[3]["text"] == "B" and out[3]["at"] == 2.0
     tool = out[2]
     assert tool["name"] == "Read" and tool["summary"] == "Read: z.py" and tool["status"] == "ok"
     assert len(tool["detail"]) == phone_tasks.DETAIL_MAX
-    assert out[4] == {"i": 4, "kind": "system", "text": "Interrupted", "tone": "interrupted", "at": None}
+    assert out[4] == {"i": 4, "id": "a1#3", "kind": "system", "text": "Interrupted", "tone": "interrupted", "at": None}
+    # Ids are stable across the list's own indexes: the record uuid plus the segment run.
+    assert [t["id"] for t in out[:4]] == ["u1", "a1#0", "a1#1", "a1#2"] and out[5]["id"] == "a1#stop"
+    assert out[6]["id"] == "c1" and out[7]["id"].startswith("err:")
     assert out[5]["text"] == "Stopped" and out[6]["text"] == "Context compacted"
     assert out[7]["tone"] == "error" and out[7]["text"] == "Wi-Fi off"
     assert phone_tasks._turns([], agent=None) == []
@@ -269,4 +291,221 @@ def test_tool_summary_falls_back_per_tool():
     assert s(None, "WebFetch", {"url": "https://x.y/z"}) == "WebFetch: https://x.y/z"
     assert s(None, "Agent", {"description": "Review the diff"}) == "Agent: Review the diff"
     assert s(None, "Mystery", {}) == "Mystery"
+    assert s(None, "Read", {"file_path": "/x/Readme.md"}) == "Read: Readme.md"  # a detail that starts with the name keeps its prefix
     assert len(s(None, "Bash", {"command": "x" * 500})) <= 130
+
+
+# ================================================================ the write side ---
+@pytest.fixture
+def workspace(tmp_path, monkeypatch):
+    fdir = tmp_path / "Fused"
+    (fdir / "app").mkdir(parents=True)
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(fdir))
+    return fdir
+
+
+def test_every_write_needs_the_fused_header(client, agent, projects_dir, tmp_path):
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9)])
+    for path, body in ((P, {"prompt": "go", "target": "~/x"}), (P + "/new-app", {"prompt": "an app"}),
+                       (P + "/sess-a/send", {"text": "hi"}), (P + "/sess-a/archive", {}),
+                       (P + "/sess-a/decide", {"request_id": "r", "decision": "allow"})):
+        assert client.post(path, json=body).status_code == 403, path
+
+
+def test_desktop_only_verbs_and_unknown_keys_are_404(client, agent, projects_dir, tmp_path):
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9)])
+    for op in ("erase", "export", "worktrees", "settings", "admit", "force", "pr-status", "seen", "ui", "nope"):
+        r = client.post(f"{P}/sess-a/{op}", headers=H, json={})
+        assert r.status_code == 404 and r.json()["error"], op
+    r = client.post(f"{P}/missing/send", headers=H, json={"text": "hi"})
+    assert r.status_code == 404 and "missing" in r.json()["error"]
+    # The desktop's own doors are not reachable through the prefix either.
+    assert client.post(f"{P}/sess-a/erase", headers=H, json={}).status_code == 404
+
+
+def test_create_from_a_known_folder_stamps_the_phone_origin(client, agent, projects_dir, workspace, tmp_path, monkeypatch):
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9)])
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    alpha = str(tmp_path / "alpha")
+    # A typed path the listing does not know, and one that is not a folder: refused.
+    for bad in ("/etc", str(tmp_path / "nowhere"), "", None, "~/elsewhere"):
+        r = client.post(P, headers=H, json={"prompt": "go", "target": bad})
+        assert r.status_code == 400 and "folder" in r.json()["error"], bad
+    assert client.post(P, headers=H, json={"prompt": " ", "target": alpha}).status_code == 400
+    # A row's own folder, tilde'd the way the list hands it out.
+    tilded = client.get(P).json()["projects"][0]["path"]
+    r = client.post(P, headers=H, json={"prompt": "do the thing", "target": tilded, "permission_mode": "auto",
+                                        "model": "opus", "backend": "codex"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert set(out) == {"key", "entry_id", "task_id"}
+    assert out["key"] == tasks_store.pending_key(out["entry_id"]) and out["task_id"].startswith("TASK-")
+    [entry] = [e for e in schedule.list_entries() if e["id"] == out["entry_id"]]
+    assert entry["origin"] == "phone" and entry["target"] == alpha and entry["message"] == "do the thing"
+    assert entry["permission_mode"] == "prompt" and not entry.get("model")  # the body's own mode and model are ignored
+    # A folder under the workspace is fine too, with no row behind it.
+    new = workspace / "local" / "fresh"
+    new.mkdir(parents=True)
+    r = client.post(P, headers=H, json={"prompt": "start here", "target": str(new)})
+    assert r.status_code == 200, r.text
+    assert client.get(f"{P}/{r.json()['key']}").json()["scheduled"][0]["text"] == "start here"
+
+
+def test_new_app_names_scaffolds_and_answers_the_task_key(client, agent, workspace, monkeypatch):
+    from fused_render.server.routers import apps as apps_mod
+    calls = []
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda entry, prompt, *rest: calls.append((entry, prompt)) or
+                        ({"id": "e-new", "claude_session_id": "", "state": schedule.PENDING}, None))
+
+    async def relay(body, **kw):
+        calls.append(("relay", body["prompt"], body["model"]))
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"ok": True, "result": {"text": "Plant-Watering-Log.\n"}})
+    from fused_render.server import ai as ai_mod
+    monkeypatch.setattr(ai_mod, "_ai_relay", relay)
+
+    r = client.post(P + "/new-app", headers=H, json={"prompt": "track which plants I watered"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    dest = workspace / "app" / "plant-watering-log"
+    assert out["app"]["name"] == "plant-watering-log" and dest.is_dir() and (dest / "index.html").is_file()
+    assert out["app"]["url"] == "/render?path=" + str(dest / "index.html")
+    assert out["key"] == tasks_store.pending_key("e-new") and out["entry_id"] == "e-new"
+    assert calls[0] == ("relay", "track which plants I watered", "haiku")
+    assert calls[1] == (str(dest / "index.html"), "track which plants I watered")
+    # A taken name: the desktop's own 409 and sentence.
+    r = client.post(P + "/new-app", headers=H, json={"prompt": "again", "name": "plant-watering-log"})
+    assert r.status_code == 409 and "already exists" in r.json()["error"]
+    # A bad typed name: the desktop's validator, as a 400.
+    assert client.post(P + "/new-app", headers=H, json={"prompt": "x", "name": "../up"}).status_code == 400
+    assert client.post(P + "/new-app", headers=H, json={"prompt": ""}).status_code == 400
+
+
+def test_new_app_falls_back_to_a_dated_slug_when_the_relay_is_down(client, agent, workspace, monkeypatch):
+    from fused_render.server.routers import apps as apps_mod
+    monkeypatch.setattr(apps_mod, "_create_app_task", lambda entry, prompt, *rest: ({"id": "e1", "claude_session_id": "sess-x"}, None))
+
+    async def down(body, **kw):
+        raise RuntimeError("relay down")
+    from fused_render.server import ai as ai_mod
+    monkeypatch.setattr(ai_mod, "_ai_relay", down)
+    r = client.post(P + "/new-app", headers=H, json={"prompt": "a thing"})
+    assert r.status_code == 200, r.text
+    assert r.json()["app"]["name"].startswith("app-20") and r.json()["key"] == "sess-x"
+
+    async def prose(body, **kw):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"ok": True, "result": {"text": "Sure! How about expense tracker?"}})
+    monkeypatch.setattr(ai_mod, "_ai_relay", prose)
+    second = client.post(P + "/new-app", headers=H, json={"prompt": "b thing"}).json()["app"]["name"]
+    # The same minute's slug is taken by the first: a suffix, never a 409 for a name nobody typed.
+    assert second.startswith("app-20") and second.endswith("-2")
+
+
+def test_send_cancel_and_the_pending_refusals_go_through_the_desktop_handlers(client, agent, projects_dir, tmp_path, monkeypatch):
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9), _assistant("ok", T10)])
+    seen = []
+    monkeypatch.setattr(tasks_mod, "api_task_send", lambda key, body, x_fused=None: seen.append(("send", key, body, x_fused)) or {"queued": False, "key": key})
+    monkeypatch.setattr(tasks_mod, "api_task_cancel", lambda key, x_fused=None: seen.append(("cancel", key)) or {"cancelled": True})
+    r = client.post(f"{P}/sess-a/send", headers=H, json={"text": "more", "model": "opus", "backend": "codex"})
+    assert r.status_code == 200 and r.json() == {"queued": False, "key": "sess-a"}
+    assert seen[-1] == ("send", "sess-a", {"text": "more"}, "1")  # model and backend never leave the phone
+    assert client.post(f"{P}/sess-a/send", headers=H, json={"text": " "}).status_code == 400
+    assert client.post(f"{P}/sess-a/cancel", headers=H).json() == {"cancelled": True}
+    assert seen[-1] == ("cancel", "sess-a")
+
+
+def test_archive_refuses_a_running_task_with_the_desktops_words(client, agent, projects_dir, state_dir, tmp_path, monkeypatch):
+    _already_using(state_dir)
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9), _assistant("ok", T10)])
+    monkeypatch.setattr(phone_tasks, "_running", lambda key: True)
+    r = client.post(f"{P}/sess-a/archive", headers=H)
+    assert r.status_code == 409 and r.json() == {"error": "Stop the run first"}
+    monkeypatch.setattr(phone_tasks, "_running", lambda key: False)
+    assert client.post(f"{P}/sess-a/archive", headers=H).status_code == 200
+    assert [t["status"] for t in client.get(P, params={"archived": "1"}).json()["tasks"]] == ["archived"]
+    assert client.post(f"{P}/sess-a/unarchive", headers=H).status_code == 200
+    assert [t["status"] for t in client.get(P).json()["tasks"]] == ["done"]
+
+
+def test_rename_star_read_and_delete(client, agent, projects_dir, state_dir, tmp_path):
+    _already_using(state_dir)
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9), _assistant("ok", T10)])
+    assert client.post(f"{P}/sess-a/rename", headers=H, json={"title": "  My task "}).status_code == 200
+    row = client.get(P).json()["tasks"][0]
+    assert row["title"] == "My task" and row["title_source"] == "renamed" and row["unread"] >= 1
+    assert client.post(f"{P}/sess-a/rename", headers=H, json={"title": 7}).status_code == 400
+    assert client.post(f"{P}/sess-a/favourite", headers=H, json={"on": True}).status_code == 200
+    assert client.get(P).json()["tasks"][0]["starred"] is True
+    assert client.post(f"{P}/sess-a/favourite", headers=H, json={"on": "yes"}).status_code == 400
+    assert client.post(f"{P}/sess-a/read", headers=H).status_code == 200
+    assert client.get(P).json()["tasks"][0]["unread"] == 0
+    assert client.post(f"{P}/sess-a/delete", headers=H).status_code == 200
+    assert client.get(P).json()["tasks"] == []
+    assert client.post(f"{P}/sess-a/delete", headers=H).status_code == 404
+
+
+def test_delete_while_running_is_the_desktops_409(client, agent, projects_dir, tmp_path, monkeypatch):
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9)])
+    from fastapi import HTTPException
+
+    def refuse(patch, x_fused=None):
+        raise HTTPException(status_code=409, detail="the task is running; stop it first")
+    monkeypatch.setattr(tasks_mod, "api_task_delete", refuse)
+    r = client.post(f"{P}/sess-a/delete", headers=H)
+    assert r.status_code == 409 and r.json() == {"error": "the task is running; stop it first"}
+
+
+def test_decide_forces_once_and_refuses_a_card_that_is_not_live(client, agent, projects_dir, tmp_path, monkeypatch):
+    from fused_render import project_queue
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9), _assistant("ok", T10)])
+    perms = [{"id": "r1", "tool": "Bash", "input": {"command": "ls"}, "decision": "", "held": False, "answers": {}},
+             {"id": "r0", "tool": "Bash", "input": {"command": "pwd"}, "decision": "allow", "held": False, "answers": {}}]
+    live = {"live_run": "run-1", "permissions": perms, "mode": "", "inbox": []}
+    monkeypatch.setattr(agent, "_history_live", lambda file, session_id, inbox=True: live)
+    decided = []
+    monkeypatch.setattr(agent, "_decide", lambda **kw: decided.append(kw) or {"decided": kw["request_id"]})
+    monkeypatch.setattr(project_queue, "agent_module", lambda: agent)
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
+    r = client.post(f"{P}/sess-a/decide", headers=H, json={"request_id": "r1", "decision": "deny", "scope": "session",
+                                                            "mode": "acceptEdits", "note": "no"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"held": False, "decided": "r1"}
+    assert decided == [{"run_id": "run-1", "request_id": "r1", "decision": "deny", "scope": "once", "mode": "",
+                        "answers": "", "note": "no", "custom": ""}]
+    # The decided card, a stranger's id, a bad decision, a run that ended: refused before anything is written.
+    for body in ({"request_id": "r0", "decision": "allow"}, {"request_id": "zzz", "decision": "allow"},
+                 {"request_id": "r1", "decision": "maybe"}, {"request_id": "../x", "decision": "allow"}):
+        r = client.post(f"{P}/sess-a/decide", headers=H, json=body)
+        assert r.status_code == 400, body
+    live["live_run"] = ""
+    assert client.post(f"{P}/sess-a/decide", headers=H, json={"request_id": "r1", "decision": "allow"}).status_code == 400
+    assert len(decided) == 1
+
+
+def test_answer_sends_the_composers_payload(client, agent, projects_dir, tmp_path, monkeypatch):
+    from fused_render import project_queue
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9), _assistant("ok", T10)])
+    perms = [{"id": "q1", "tool": "AskUserQuestion", "input": {"questions": [{"question": "Which?", "options": [{"label": "A"}]}]},
+              "decision": "", "held": False, "answers": {}}]
+    monkeypatch.setattr(agent, "_history_live", lambda file, session_id, inbox=True: {"live_run": "run-1", "permissions": perms, "mode": "", "inbox": []})
+    decided = []
+    monkeypatch.setattr(agent, "_decide", lambda **kw: decided.append(kw) or {"ok": True})
+    monkeypatch.setattr(project_queue, "agent_module", lambda: agent)
+    monkeypatch.setattr(project_queue, "enabled", lambda: False)
+    r = client.post(f"{P}/sess-a/answer", headers=H, json={"request_id": "q1", "answers": {"Which?": ["A"]}, "custom": {"Which?": "mine"}})
+    assert r.status_code == 200, r.text
+    [kw] = decided
+    assert kw["decision"] == "allow" and kw["scope"] == "once"
+    assert json.loads(kw["answers"]) == {"Which?": ["A"]} and json.loads(kw["custom"]) == {"Which?": "mine"}
+    assert client.post(f"{P}/sess-a/answer", headers=H, json={"request_id": "q1", "answers": {}}).status_code == 400
+    assert client.post(f"{P}/sess-a/answer", headers=H, json={"request_id": "q1", "answers": {"Which?": ["A"]}, "custom": 3}).status_code == 400
+
+
+def test_skip_goes_to_the_queue_door(client, agent, projects_dir, tmp_path, monkeypatch):
+    _session(agent, projects_dir, tmp_path, "sess-a", "alpha", [_user("one", T9)])
+    seen = []
+    monkeypatch.setattr(tasks_mod, "api_queue_skip", lambda body, x_fused=None: seen.append((body, x_fused)) or {"ok": True, "position": 1})
+    assert client.post(f"{P}/sess-a/skip", headers=H).json() == {"ok": True, "position": 1}
+    assert seen == [({"key": "sess-a"}, "1")]

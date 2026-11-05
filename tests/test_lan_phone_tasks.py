@@ -6,8 +6,6 @@ pairing record (a client-sent one dropped), and the desktop's `/api/tasks` and
 recording inner app, the test_lan_phone_bots.py pattern."""
 import json
 
-import pytest
-
 from fused_render import lan
 from test_lan_phone_bots import Inner, call, home, paired_cookie  # noqa: F401 — the fixture and helpers
 
