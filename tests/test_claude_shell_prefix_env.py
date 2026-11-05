@@ -103,3 +103,23 @@ def test_spawn_env_strips_bundle_python_vars(agent, monkeypatch):
             assert name not in env
         assert env["PATH"].split(os.pathsep)[:2] == ["/usr/bin", "/bin"]
         assert "/opt/homebrew/bin" in env["PATH"].split(os.pathsep)
+
+
+def test_scripts_handed_to_the_cli_live_outside_the_package_dir(
+        agent, tmp_path, monkeypatch):
+    """The CLI re-launches these paths for as long as the session lives, which
+    can be past an app restart; an AppImage's package dir is a `/tmp/.mount_*`
+    that does not survive one. So the CLI gets a copy under the state dir."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    pkg = os.path.dirname(os.path.dirname(os.path.abspath(agent.__file__)))
+    for path in (agent._shell_prefix_path(), agent._permission_server_path()):
+        assert os.path.isabs(path) and os.access(path, os.X_OK)
+        assert path.startswith(str(home / "bin") + os.sep)
+        assert not path.startswith(pkg + os.sep)
+    # Rewritten when the packaged bytes change, left alone otherwise.
+    stale = home / "bin" / "claude_shell_prefix.sh"
+    stale.write_text("stale")
+    agent._shell_prefix_path()
+    with open(os.path.join(pkg, "claude_shell_prefix.sh")) as fh:
+        assert stale.read_text() == fh.read()

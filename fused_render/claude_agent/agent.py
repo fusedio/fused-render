@@ -2180,7 +2180,7 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
     would otherwise drop them; ours wins a key collision. Non-strict runs leave
     the CLI to load plugin servers itself — adding them would start each twice."""
     path = os.path.join(run_dir, "mcp.json")
-    server = os.path.join(HERE, "permission_server.py")
+    server = _permission_server_path()
     args = [server, _perm_dir(run_dir)]
     if pane:
         args.append(_state_dir(run_dir))
@@ -3935,7 +3935,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # path limit: it runs before the permission system and exit 2 blocks the
         # call. The bridge's `_breakout_policy` stays as defense in depth.
         hook_argv = [sys.executable, "-I",
-                     os.path.join(HERE, "permission_server.py"),
+                     _permission_server_path(),
                      "--breakout-hook=" + _breakout_handoff_dir(file)]
         hook_cmd = (subprocess.list2cmdline(hook_argv) if os.name == "nt"
                     else shlex.join(hook_argv))
@@ -4475,19 +4475,58 @@ def _gh_token(gh: str, env: dict | None = None) -> str:
         return token
 
 
-def _shell_prefix_path() -> str:
-    """Absolute path of the packaged CLAUDE_CODE_SHELL_PREFIX wrapper, made
-    executable if a packaging step dropped the bit. "" when unavailable."""
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "claude_shell_prefix.sh")
-    if not os.path.isfile(path):
+def _stable_script(src: str) -> str:
+    """Path of a per-user copy of the package file `src`, "" when it cannot be
+    made.
+
+    A session host and the `claude` under it outlive an app restart or update,
+    and so does everything the CLI re-launches from a path we handed it (the
+    shell prefix on every Bash call, a PreToolUse hook on every tool call, an
+    MCP server on respawn). A path into the package dir is not stable: under
+    an AppImage it sits in a `/tmp/.mount_*` that disappears with the app. The
+    copy lives in `~/.fused-render/bin/`, is rewritten only when its bytes
+    differ (tmp file + rename, so a reader never sees half a script) and is
+    executable. Only for stdlib-only, self-contained files."""
+    try:
+        with open(src, "rb") as fh:
+            data = fh.read()
+    except OSError:
         return ""
-    if not os.access(path, os.X_OK):
+    dst = _state_file("bin", os.path.basename(src))
+    try:
         try:
-            os.chmod(path, os.stat(path).st_mode | 0o755)
+            with open(dst, "rb") as fh:
+                same = fh.read() == data
         except OSError:
-            return ""
-    return path
+            same = False
+        if not same:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            tmp = "%s.%d.tmp" % (dst, os.getpid())
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, dst)
+        elif not os.access(dst, os.X_OK):
+            os.chmod(dst, os.stat(dst).st_mode | 0o755)
+    except OSError:
+        return ""
+    return dst
+
+
+def _permission_server_path() -> str:
+    """The MCP permission server / breakout hook script, as a `_stable_script`
+    copy (it is stdlib-only); the packaged file itself when no copy can be
+    made."""
+    packaged = os.path.join(HERE, "permission_server.py")
+    return _stable_script(packaged) or packaged
+
+
+def _shell_prefix_path() -> str:
+    """Absolute path of the CLAUDE_CODE_SHELL_PREFIX wrapper (`_stable_script`
+    copy of the packaged one). "" when unavailable."""
+    return _stable_script(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "claude_shell_prefix.sh"))
 
 
 # Same tuple as supervisor/paths.py STRIPPED_ENV_VARS (kept local: this module
