@@ -24,7 +24,30 @@ import { onPrefsReread } from "./prefs-reread";
 
 type Half = "favs" | "peek";
 // `null` = not asked yet, which reads as off (both flags' default).
-const known: Record<Half, boolean | null> = { favs: null, peek: null };
+/** THE LAST ANSWER, REMEMBERED ACROSS A RELOAD (owner, 2026-11-05: "when I
+ *  reload the sidebar pops up a little late"): the rail could not stand
+ *  until this GET answered, so every reload drew the page without it and
+ *  then popped it in. The pair's last answer is kept in sessionStorage and
+ *  read as the starting point; the GET corrects it (a switch flipped in
+ *  Settings lands within the second). Nothing but a boolean is kept. */
+const MEMO_KEY = "fused-render:favourites-on";
+function memoRead(): boolean | null {
+  try {
+    const v = sessionStorage.getItem(MEMO_KEY);
+    return v === "1" ? true : v === "0" ? false : null;
+  } catch {
+    return null;
+  }
+}
+function memoWrite(v: boolean): void {
+  try {
+    sessionStorage.setItem(MEMO_KEY, v ? "1" : "0");
+  } catch {
+    /* no storage: nothing remembered */
+  }
+}
+const remembered = memoRead();
+const known: Record<Half, boolean | null> = { favs: remembered, peek: remembered };
 // One generation PER HALF: a publish of one switch must not void an in-flight
 // read's answer for the other.
 const generation: Record<Half, number> = { favs: 0, peek: 0 };
@@ -45,6 +68,7 @@ function set(half: Half, next: boolean) {
   const before = answer();
   known[half] = next;
   const after = answer();
+  if (known.favs !== null && known.peek !== null) memoWrite(after);
   if (after !== before) for (const listener of listeners) listener(after);
 }
 
@@ -120,6 +144,11 @@ export function useTaskFavourites(): boolean {
  *  Drops the SHARED prefs read too (api.ts): in one bun process another
  *  flag module's in-flight GET would otherwise answer for this one. */
 export function resetTaskFavouritesFlagForTests() {
+  try {
+    sessionStorage.removeItem(MEMO_KEY);
+  } catch {
+    /* no storage */
+  }
   dropSharedPrefsRead();
   reading = null;
   // The next read subscribes again (a test may have reset the prefs channel,

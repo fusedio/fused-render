@@ -614,22 +614,44 @@ export function railShown(o: {
   favs: number;
   paneOpen: boolean;
   always: boolean;
-  /** The shell's fallback rail (`fallbackRailUp`): its favourites and
-   *  pinned bots — no + (`plusShown`). It stands for a STARRED favourite or
-   *  a pinned bot only (owner, 2026-11-05: "blocked chats count as
-   *  something to show for the fallback rail? NO — it should show blocked
-   *  tasks and not give the fallback rail"): the blocked are drawn in it
-   *  when it stands, never the reason it does. */
+  /** The shell's fallback rail (`fallbackRailUp`): its favourites, blocked
+   *  chats and pinned bots — no + (`plusShown`). It stands for any of the
+   *  three (owner, 2026-11-05, final word: "blocked chats trigger open of
+   *  the rail in all views"). */
   favouritesOnly?: boolean;
   /** Blocked chats drawn at the head of the favourites (`favSeats`). */
   blocked?: number;
   /** Pinned bots drawn under the favourites (`pinnedBots`). */
   bots?: number;
 }): boolean {
-  if (o.favouritesOnly) return o.always && o.favs + (o.bots ?? 0) > 0;
+  const foot = o.favs + (o.blocked ?? 0) + (o.bots ?? 0);
+  if (o.favouritesOnly) return o.always && foot > 0;
   if (!o.paneOpen) return true;
   if (!o.always) return false;
-  return o.list > 0 || o.favs + (o.blocked ?? 0) + (o.bots ?? 0) > 0;
+  return o.list > 0 || foot > 0;
+}
+
+/** THE RAIL REMEMBERED ACROSS A RELOAD (ClaudeRail; owner, 2026-11-05:
+ *  "when I reload the sidebar pops up a little late"): whether a rail stood
+ *  in this window last, kept in sessionStorage. On mount a rail that stood
+ *  stands again at once — its column, before its rings — for `RAIL_WARM_MS`
+ *  at most, by when the pulse and the bots have answered; if they say there
+ *  is nothing to draw, it goes then. */
+export const RAIL_WARM_MS = 3000;
+const RAIL_KEY = "fused-render:rail-up";
+export function railRemembered(): boolean {
+  try {
+    return sessionStorage.getItem(RAIL_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+export function rememberRail(up: boolean): void {
+  try {
+    sessionStorage.setItem(RAIL_KEY, up ? "1" : "0");
+  } catch {
+    /* no storage: nothing remembered */
+  }
 }
 
 /** THE SHELL'S FALLBACK RAIL (shell/claude-rail/FallbackRail; owner,

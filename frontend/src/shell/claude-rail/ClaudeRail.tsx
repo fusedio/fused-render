@@ -280,6 +280,9 @@ import {
   nodeName,
   pinnedBots,
   plusShown,
+  RAIL_WARM_MS,
+  railRemembered,
+  rememberRail,
   collapseRestore,
   paneTakesPinned,
   paneHoldAfter,
@@ -666,7 +669,7 @@ export function ClaudeRail({
   // never on the shell's fallback (no pane to show).
   const chrome = !paneOpen && !favouritesOnly;
   const hideList = listHidden({ paneOpen, favsOn, paneHome });
-  const shown =
+  const stands =
     railShown({
       list: hideList ? 0 : allSeats.length,
       favs: favs.length - blockedCount,
@@ -676,6 +679,25 @@ export function ClaudeRail({
       always: favsOn,
       favouritesOnly,
     }) || card !== null;
+  // STANDING FROM THE FIRST PAINT after a reload (claude-rail-lib
+  // `railRemembered`): a rail that stood in this window last stands again
+  // at once, empty, until the pulse and the bots say what it holds — or,
+  // past `RAIL_WARM_MS`, that it holds nothing. The flag itself is
+  // remembered the same way (favourites-flag), or the fallback could not
+  // mount at all.
+  const [warming, setWarming] = useState(() => favsOn && railRemembered());
+  useEffect(() => {
+    if (!warming) return;
+    const t = window.setTimeout(() => setWarming(false), RAIL_WARM_MS);
+    return () => window.clearTimeout(t);
+  }, [warming]);
+  useEffect(() => {
+    if (stands) {
+      setWarming(false);
+      rememberRail(true);
+    } else if (!warming) rememberRail(false);
+  }, [stands, warming]);
+  const shown = stands || warming;
   // ONE CHAT, ONE COMPOSER beside the open pane: a chat the pane (or the
   // explorer's sidebar) has mounted is not mounted again in this rail's card
   // — the card says where it is instead (`bodyNote`), as the favourite's card

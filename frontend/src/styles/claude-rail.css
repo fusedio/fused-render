@@ -328,7 +328,7 @@
    "a bit of padding below which needs to be removed"): they are the rail's
    last section, on the edge. Without them the rail keeps its padding. */
 .claude-rail.has-favs {
-  padding-bottom: 4px;
+  padding-bottom: 2px;
 }
 /* A BLOCKED CHAT AT THE HEAD OF THE FAVOURITES (ClaudeRail `.is-blocked`;
    owner, 2026-11-05): a list ring in the favourites' box — its ring is
@@ -367,8 +367,8 @@
 }
 .claude-rail-bot-face {
   display: block;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
 }
 .claude-rail-bot-face svg {
   display: block;

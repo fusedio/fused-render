@@ -798,10 +798,10 @@ describe("railShown", () => {
 });
 
 describe("railShown, the shell's fallback (favouritesOnly)", () => {
-  it("favourites on: shown for a STARRED favourite or a pinned bot — never for a blocked chat alone, never empty (no +, 2026-11-05)", () => {
+  it("favourites on: shown for a favourite, a blocked chat or a pinned bot — never empty (no +, 2026-11-05)", () => {
     expect(railShown({ list: 0, favs: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
     expect(railShown({ list: 0, favs: 0, bots: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
-    expect(railShown({ list: 0, favs: 0, blocked: 2, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
+    expect(railShown({ list: 0, favs: 0, blocked: 2, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
     expect(railShown({ list: 0, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
   });
   it("the pane open on a page rail: a pinned bot or a blocked chat is enough to stand", () => {
