@@ -45,6 +45,7 @@ import { getSideWidth, setSideWidth, subscribeSideWidth } from "@apps/explorer/l
 import { startSideReopenPull } from "@apps/explorer/SideChrome";
 import { getSideHidden, setSideHidden } from "@platform/lib/side-hidden";
 import { RAIL_W } from "./claude-rail/ClaudeRail";
+import { railInset } from "./claude-rail/rail-peek-lib";
 
 /** The URL's word for a shut pane (`?side=off`); absent = open. */
 export const SIDE_PARAM = "side";
@@ -156,7 +157,9 @@ export function useAppPageClaudePane(splitRef: RefObject<HTMLElement | null>): A
         if (ev.pointerId !== e.pointerId) return;
         const rect = splitRef.current?.getBoundingClientRect();
         if (!rect || rect.width <= 0) return;
-        const implied = rect.right - ev.clientX;
+        // Less the rail standing past the pane (favourites on, rail-peek-lib
+        // `railInset`): the pane's edge is the rail's, not the split's.
+        const implied = rect.right - railInset(splitRef.current) - ev.clientX;
         // Past the floor by a hand's width: the pane SHUTS and the rail
         // takes the edge (the canvas page's gesture).
         if (implied < MIN_W - CLOSE_UNDER) {

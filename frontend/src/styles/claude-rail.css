@@ -1,6 +1,7 @@
 /* THE CLAUDE RAIL (shell/claude-rail/ClaudeRail.tsx) and the card off it
-   (RailPeek.tsx): a page's right edge while its Claude pane is shut — the
-   canvas page, the app page, the explorer's file and folder views. The global
+   (RailPeek.tsx): a page's right edge — the canvas page, the app page, the
+   explorer's file and folder views — while its Claude pane is shut, and with
+   favourites on beside the open pane too (owner, 2026-11-05). The global
    sidebar's collapsed column, mirrored: same 48px, same button and dot
    classes (sidebar.css). Rules moved here from canvases.css when the rail
    left the canvases app (2026-11-01). */
@@ -19,6 +20,12 @@
   border-left: 1px solid var(--border);
   background: var(--bg);
   --rail-sep: color-mix(in srgb, var(--fg) 22%, transparent);
+}
+/* A rail with nothing to draw beside the open pane (ClaudeRail `shown`,
+   claude-rail-lib `railShown`) is hidden, not unmounted: the attribute alone
+   loses to `display: flex` above. */
+.claude-rail[hidden] {
+  display: none;
 }
 .claude-rail .sidebar-rail-items {
   width: 100%;

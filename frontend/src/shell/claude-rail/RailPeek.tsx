@@ -82,7 +82,7 @@
 // head's first two seats are the × — always there, it is the one way to shut a
 // card a click has held, bar the Open door — and the STAR, which makes the
 // chat a favourite (`setTaskFavourite`; the server keeps the stars, so every
-// rail and pane lists the same ones). Starred, the star is filled in the
+// rail lists the same ones). Starred, the star is filled in the
 // accent. A favourite's card is the one that may stay open between visits:
 // which favourite is open is PER WINDOW (platform/lib/last-chat
 // `useFavOpen`; the server's `starred_open` is followed by no card since

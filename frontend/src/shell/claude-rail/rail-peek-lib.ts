@@ -874,3 +874,22 @@ export function rowOf(rail: HTMLElement | null): HTMLElement | null {
   while (el && getComputedStyle(el).display === "contents") el = el.parentElement;
   return el;
 }
+
+/** THE RAIL BESIDE AN OPEN PANE (ClaudeRail `paneOpen`; owner, 2026-11-05):
+ *  how much of `split`'s right edge a standing rail takes — 0 with none, or
+ *  a hidden one. A pane's seam drag measures the pane as the distance from
+ *  the pointer to the split's right edge; with the rail at that edge the pane
+ *  ends 48px short of it, and the seam would trail the pointer by the rail.
+ *  Only a rail AT the right edge counts (the explorer portals its rail into a
+ *  `display: contents` slot, so it is a descendant, not always a child). */
+export function railInset(split: Element | null | undefined): number {
+  // A stand-in with no DOM behind it (a test's rect-only split) has no rail.
+  if (!split || typeof split.querySelectorAll !== "function") return 0;
+  const right = split.getBoundingClientRect().right;
+  for (const rail of split.querySelectorAll<HTMLElement>(".claude-rail")) {
+    if (rail.hidden) continue;
+    const box = rail.getBoundingClientRect();
+    if (box.width > 0 && Math.abs(box.right - right) <= 1) return box.width;
+  }
+  return 0;
+}

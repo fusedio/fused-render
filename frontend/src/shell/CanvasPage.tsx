@@ -85,6 +85,7 @@ import { CanvasGlyph } from "@apps/canvases/glyph";
 import { ChatMount } from "@apps/claude";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { ClaudeRail } from "./claude-rail/ClaudeRail";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { chatDoorOnApp, chatDoorOnCanvas, useAppPageClaudePane } from "./useAppPageClaudePane";
 
 /** The Files tab always reads the LIVE clone: no version picker on this page,
@@ -286,6 +287,10 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
   // (CanvasWorkspace `embedded`), so the two never double up.
   const claudeSplitRef = useRef<HTMLDivElement | null>(null);
   const claude = useAppPageClaudePane(claudeSplitRef);
+  // THE RAIL BESIDE THE OPEN PANE (ClaudeRail `paneOpen`; owner,
+  // 2026-11-05): with favourites on the rail stands whether the pane is open
+  // or shut; off, only while it is shut, as before.
+  const railAlways = useTaskFavourites();
   // A ring's door: the CANVAS chat opens in this pane (`chatDoorOnCanvas`;
   // a queued row's explorer door on the clone folder too, `chatDoorOnApp`),
   // behind the composer's leave guard; a NODE's chat, or anything else,
@@ -452,7 +457,7 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
       </div>
     </div>
     </div>
-      {claude.open ? (
+      {claude.open && (
         <div className="app-page-claude" style={{ width: claude.width }}>
           <div
             className={"preview-side-divider" + (claude.dragging ? " dragging" : "")}
@@ -483,8 +488,12 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
             )}
           </div>
         </div>
-      ) : (
+      )}
+      {(!claude.open || railAlways) && (
+        // Past the pane, at the window's right edge (`paneOpen`); the same
+        // slot either way, so the pane opening does not remount the rail.
         <ClaudeRail
+          paneOpen={claude.open}
           place={railPlace}
           // The + makes a task on the clone (the editor's own seed with no
           // node selected); held until the clone folder is known.

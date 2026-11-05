@@ -232,7 +232,8 @@ import {
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
-import { ClaudeRail } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, railInset } from "@shell/claude-rail/ClaudeRail";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
   mergeLogEvents,
   noWatcher,
@@ -633,6 +634,10 @@ export default function CanvasWorkspace({
   // workbench's edge chips, or `side=off` on the URL. Hiding it leaves the selection alone: the canvas goes on
   // selecting, and the pane opens on whatever node is selected by then.
   const [sideOpen, setSideOpen] = useState<boolean>(() => sideOpenFromUrl());
+  // THE RAIL BESIDE THE OPEN PANE (ClaudeRail `paneOpen`; owner,
+  // 2026-11-05): with favourites on the rail stands whether the pane is open
+  // or shut; off, only while it is shut, as before.
+  const railAlways = useTaskFavourites();
   // Bumped when the node pane must REBOOT on a session for the node already
   // shown (a Recent row's hop onto the selected node, below): the frame's src
   // is otherwise frozen per node and tab (`nodeBootSrc`).
@@ -2619,18 +2624,21 @@ export default function CanvasWorkspace({
       const row = rowRef.current;
       if (!row) return;
       const rect = row.getBoundingClientRect();
+      // The rail standing past the pane (favourites on, rail-peek-lib
+      // `railInset`): the pane ends at its edge, not the row's.
+      const inset = railInset(row);
       // THE PANE'S FLOOR IS THE EXPLORER SIDEBAR'S (PANE_MIN_W): the
       // same chat, and below it the composer and the header clip. Dragged
       // past that floor by a hand's width the pane SHUTS — the explorer's
       // own gesture (SideChrome) — and the rail takes the edge. The canvas
       // keeps the explorer's content floor on its side.
-      const paneW = rect.right - e.clientX;
+      const paneW = rect.right - inset - e.clientX;
       if (paneW < PANE_MIN_W - 60) {
         setDragging(false);
         setSideOpen(false);
         return;
       }
-      const maxFrac = rect.width > 0 ? Math.max(0, (rect.width - PANE_MIN_W) / rect.width) : 0.85;
+      const maxFrac = rect.width > 0 ? Math.max(0, (rect.width - inset - PANE_MIN_W) / rect.width) : 0.85;
       const minFrac = rect.width > 0 ? Math.min(maxFrac, CANVAS_MIN_W / rect.width) : 0.15;
       const frac = Math.min(maxFrac, Math.max(minFrac, (e.clientX - rect.left) / rect.width));
       setLeftFrac(frac);
@@ -3199,11 +3207,13 @@ export default function CanvasWorkspace({
         </div>
           </div>
         )}
-        {!embedded && !sideOpen && (
+        {!embedded && (!sideOpen || railAlways) && (
           // The pane shut: the rail takes its edge (ClaudeRail.tsx) — the way
           // back in, plus Claude's state on this canvas, which is what the
-          // pane was showing.
+          // pane was showing. With favourites on it stands past the OPEN pane
+          // too, at the row's right edge (`paneOpen`).
           <ClaudeRail
+            paneOpen={sideOpen}
             place={railPlace}
             // The + makes a task on the clone — on the node's file under it
             // while a node is selected — said as the canvas and the node
