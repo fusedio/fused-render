@@ -1385,58 +1385,6 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
     return _update(SETTINGS_FILE, mutate)
 
 
-# THE TURN RECAP rides on the same per-session record (Akshil, 2026-10-15:
-# "just add a field in json"), under its own key so `session_settings` and
-# `record_settings` never see it:
-#
-#     {"<session-id>": {"model": …, "recap": {"text": "…", "for_uuid": "…", "at": …}}}
-#
-# `for_uuid` is the turn the recap is about — the same key the away fold's
-# `/api/claude-sessions/recap` takes — so the fold and the Tasks row title share
-# one haiku call. `text: ""` is a stored FAILURE: the turn was tried and haiku
-# said nothing usable, and the listing does not ask again. One recap per
-# session: a newer turn's replaces it. Written only while
-# `task_recap_titles_enabled` is on (claude_sessions `_recap`).
-
-
-def session_recap(state: dict, session_id: str) -> dict | None:
-    """The stored recap for one session — `{"text", "for_uuid", "at"}` — or
-    None when there is none (or the record is not that shape)."""
-    rec = state.get(str(session_id or ""))
-    recap = rec.get("recap") if isinstance(rec, dict) else None
-    if not isinstance(recap, dict) or not isinstance(recap.get("for_uuid"), str):
-        return None
-    return {"text": str(recap.get("text") or ""),
-            "for_uuid": recap["for_uuid"],
-            "at": float(recap.get("at") or 0.0),
-            "empty": recap.get("empty") is True}
-
-
-def record_recap(session_id: str, for_uuid: str, text: str,
-                 now: float | None = None, empty: bool = False) -> dict:
-    """Store one turn's recap (or `""` for a failed one) on the session's
-    record, beside whatever model/effort it already holds. Nothing for an empty
-    session id or turn uuid — there is nothing to key it on."""
-    session_id = str(session_id or "").strip()
-    for_uuid = str(for_uuid or "").strip()
-    if not session_id or not for_uuid:
-        return {}
-    recap = {"text": str(text or ""), "for_uuid": for_uuid,
-             "at": time.time() if now is None else float(now)}
-    if empty:
-        # Claude said nothing in prose anywhere: not a failure, so not retried.
-        recap["empty"] = True
-
-    def mutate(state: dict):
-        rec = state.get(session_id)
-        rec = dict(rec) if isinstance(rec, dict) else {}
-        rec["recap"] = recap
-        state[session_id] = rec
-        return recap, True
-
-    return _update(SETTINGS_FILE, mutate)
-
-
 # THE STABLE AI TITLE (prefs `task_summary_titles_enabled`) is one more field
 # on the same record, under `ai_title`:
 #
@@ -1445,8 +1393,11 @@ def record_recap(session_id: str, for_uuid: str, text: str,
 #
 # `turns` is how many of the reader's prompts the session had when the title
 # was written (even when haiku repeated the old one), so the next refresh waits
-# for more prompts. `failed_at` is the last failed attempt; it never blanks
-# `text`, because the row is already showing that title.
+# for more prompts. `at` is stamped on every success too, and a turn that ENDED
+# after `at` is re-titled once it has settled a minute (tasks `_title_candidate`),
+# so the title follows the finished work without waiting three prompts.
+# `failed_at` is the last failed attempt; it never blanks `text`, because the
+# row is already showing that title.
 
 
 def session_ai_title(state: dict, session_id: str) -> dict | None:
@@ -1464,10 +1415,16 @@ def session_ai_title(state: dict, session_id: str) -> dict | None:
 
 
 def record_ai_title(session_id: str, text: str, turns: int,
-                    now: float | None = None) -> dict:
+                    now: float | None = None,
+                    started_at: float | None = None) -> dict:
     """Store a title (or, for an empty `text`, a failed attempt) on the
     session's record. A failure keeps the previous text/at/turns and only sets
-    `failed_at`; a success clears it. Nothing for an empty session id."""
+    `failed_at`; a success clears it. Nothing for an empty session id.
+
+    `started_at` (when the job began) guards a success against a stale
+    overwrite: if the stored title was written after the job started, a newer
+    job finished first and this write is dropped. Fewer turns is NOT grounds to
+    drop (a scan reset legitimately restarts the count)."""
     session_id = str(session_id or "").strip()
     if not session_id:
         return {}
@@ -1478,6 +1435,8 @@ def record_ai_title(session_id: str, text: str, turns: int,
         rec = state.get(session_id)
         rec = dict(rec) if isinstance(rec, dict) else {}
         old = rec.get("ai_title") if isinstance(rec.get("ai_title"), dict) else {}
+        if text and started_at is not None and float(old.get("at") or 0.0) > started_at:
+            return dict(old), False
         if text:
             title = {"text": text, "at": stamp, "turns": int(turns), "failed_at": 0.0}
         else:

@@ -1633,27 +1633,34 @@ def test_project_queue_junk_value_reads_as_off(tmp_path, monkeypatch):
     assert prefs_mod.project_queue_enabled() is False
 
 
-# -- task recap titles (beta) flag ---------------------------------------------
+# -- chat recap flag ----------------------------------------------------------
 
 
-def test_task_recap_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """Same opt-in idiom as `project_queue_enabled`: only a stored `true` is on,
-    and the PUT takes booleans only."""
+def test_chat_recap_defaults_on_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Default ON: only a stored `false` is off; the PUT takes booleans only; the
+    old `task_recap_titles_enabled` key is ignored."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["task_recap"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"task_recap_titles_enabled": True},
+    assert client.get("/api/prefs").json()["chat_recap"] == {"enabled": True}
+    assert prefs_mod.chat_recap_enabled() is True
+    body = client.put("/api/prefs", json={"chat_recap_enabled": False},
                       headers=FUSED).json()
-    assert body["task_recap"]["enabled"] is True
+    assert body["chat_recap"]["enabled"] is False
     stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_recap_titles_enabled"] is True
-    assert prefs_mod.task_recap_titles_enabled() is True
-    bad = client.put("/api/prefs", json={"task_recap_titles_enabled": "yes"},
+    assert stored["chat_recap_enabled"] is False
+    assert prefs_mod.chat_recap_enabled() is False
+    bad = client.put("/api/prefs", json={"chat_recap_enabled": "yes"},
                      headers=FUSED)
     assert bad.status_code == 400
-    assert "task_recap_titles_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"task_recap_titles_enabled": 1}),
+    assert "chat_recap_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"chat_recap_enabled": 0}),
                                      encoding="utf-8")
-    assert prefs_mod.task_recap_titles_enabled() is False
+    assert prefs_mod.chat_recap_enabled() is True
+    (home / "prefs.json").write_text(
+        json.dumps({"task_recap_titles_enabled": True}), encoding="utf-8")
+    assert prefs_mod.chat_recap_enabled() is True
+    (home / "prefs.json").write_text(
+        json.dumps({"task_recap_titles_enabled": False}), encoding="utf-8")
+    assert prefs_mod.chat_recap_enabled() is True
 
 
 def test_breakout_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
@@ -1740,7 +1747,7 @@ def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkey
 
 
 def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """Same opt-in idiom as the recap flag: only a stored `true` is on."""
+    """Same opt-in idiom as `project_queue_enabled`: only a stored `true` is on."""
     client, home = _client(tmp_path, monkeypatch)
     assert client.get("/api/prefs").json()["task_summary_titles"] == {"enabled": False}
     body = client.put("/api/prefs", json={"task_summary_titles_enabled": True},

@@ -83,18 +83,6 @@ export function firstLine(text: string): string {
   return text.split("\n").map((s) => s.trim()).find(Boolean) ?? text.trim();
 }
 
-/** One line of plain words from Claude's markdown reply — the client's twin of
- *  the server's `_recap_plain` (routers/claude_sessions.py): a leading list
- *  marker, heading or quote mark goes, as do `**`, `__` and backticks, and
- *  whitespace collapses. */
-function plainLine(text: string): string {
-  return firstLine(text)
-    .replace(/^\s*(?:[#>]+|[-*+]|\d+[.)])\s+/, "")
-    .replace(/\*\*|__|`/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 /** What a task's title row draws, and whether it is a message. */
 export interface CardTitle {
   /** The one line to print. "" when the task has neither a message nor a title,
@@ -105,9 +93,8 @@ export interface CardTitle {
    *  The caption follows it (the message, not the title, is what the one-line
    *  clamp is hiding); nothing else on the row changes with it. */
   said: boolean;
-  /** Where `text` came from. `recap` and `reply` only ever appear with prefs
-   *  `task_recap.enabled` on (the row then carries a `recap` key). */
-  kind: "recap" | "reply" | "said" | "title";
+  /** Where `text` came from. */
+  kind: "said" | "title";
   /** The whole of what `text` is one line of — the title's `data-hint`. */
   hint: string | undefined;
 }
@@ -117,74 +104,26 @@ export interface CardTitle {
  *  a row. */
 export const INTERRUPTED_REPLY = "Interrupted by you";
 
-/** The statuses whose turn has ENDED — the ones a recap or a reply may title.
- *  Every other status is work in flight or still ahead, and keeps the reader's
- *  own words. */
-const TURN_ENDED = new Set(["done", "blocked", "archived"]);
-
-/** Whether task recap titles are on, as the row itself says it: the server
- *  puts a `recap` key on a row (null until one lands) ONLY with
- *  `task_recap_titles_enabled` on (routers/tasks.py `_row`), and leaves it off
- *  otherwise. With it on, the title carries the words and the italic reply
- *  sub-line is not drawn. */
-export function recapTitlesOn(task: { recap?: unknown }): boolean {
-  return task.recap !== undefined;
-}
-
 /** THE ONE LINE EVERY VIEW TITLES A TASK BY — the List row, the Board card,
- *  the Cards wall and the peek header: the reader's newest message in the
- *  conversation, first line only, or the task's own title for a task nothing
- *  has been said in yet (a task that has never run, a server that predates
- *  the field). Always on since 2026-09-20 (Akshil: removing a Preferences
- *  switch means the feature is on by default) — until then it was the
- *  `task_card_last_message` experiment. The fallback is not a nicety: a wall
- *  where some cards carried a message and others were simply blank would read
- *  as a wall of broken cards.
- *
- *  STABLE AI TITLES (prefs `task_summary_titles.enabled`; the server puts
- *  `title_mode: "summary"` on every row with it on) beat everything below:
- *  the row is titled by the server's stable `title` alone (user-set title,
- *  else the app's own AI title, else Claude Code's ai-title, else the first
- *  message), never by the
- *  newest message, the recap or the reply. An empty title falls through.
- *
- *  A RENAMED TASK beats all of it (`title_source: "renamed"`: the server's
- *  `title` is then what the reader typed in the peek header, stored on the
- *  session). It is the reader's own name for the task, so no mode — summary,
- *  recap or newest message — gets to retitle it. An empty one falls through. */
+ *  the Cards wall and the peek header: the server's base `title` (user-set
+ *  title, else the app's own AI title, else Claude Code's ai-title, else the
+ *  first message), first line only. Only a task whose `title` is empty (a
+ *  server that predates the field, a task nothing has titled) falls back to
+ *  the conversation's newest message, and then to an empty title, which is
+ *  the view's own cue to print "(untitled)". The newest message never
+ *  retitles a task that has a title: a wall whose cards rename themselves
+ *  with every reply reads as churn, and the List row's sub-line already
+ *  carries the latest reply. */
 export function cardTitleLine(task: {
   title?: string | null;
-  title_mode?: string;
-  title_source?: string;
   last_message?: { text: string } | null;
-  status?: string;
-  last_reply?: string;
-  recap?: { text: string; for_uuid: string } | null;
 }): CardTitle {
-  if (task.title_source === "renamed") {
-    const renamed = firstLine(task.title ?? "");
-    if (renamed) return { text: renamed, said: false, kind: "title", hint: task.title ?? undefined };
-  }
-  if (task.title_mode === "summary") {
-    const title = firstLine(task.title ?? "");
-    if (title) return { text: title, said: false, kind: "title", hint: task.title ?? undefined };
-  }
-  // TASK RECAPS (prefs `task_recap.enabled`; the server sends `recap` — even
-  // as null — only with it on). A finished turn is titled by its haiku recap
-  // once it lands, and by the first line of Claude's reply until then (or for
-  // good, if haiku failed). A running turn keeps the rule below.
-  if (recapTitlesOn(task) && TURN_ENDED.has(task.status ?? "")) {
-    const recap = (task.recap?.text ?? "").trim();
-    if (recap) return { text: firstLine(recap), said: false, kind: "recap", hint: recap };
-    const reply = plainLine(task.last_reply ?? "");
-    if (reply && reply !== INTERRUPTED_REPLY) {
-      return { text: reply, said: false, kind: "reply", hint: task.last_reply };
-    }
-  }
+  const title = firstLine(task.title ?? "");
+  if (title) return { text: title, said: false, kind: "title", hint: task.title ?? undefined };
   const said = firstLine(task.last_message?.text ?? "");
   return said
     ? { text: said, said: true, kind: "said", hint: task.last_message?.text }
-    : { text: firstLine(task.title ?? ""), said: false, kind: "title", hint: task.title ?? undefined };
+    : { text: "", said: false, kind: "title", hint: task.title ?? undefined };
 }
 
 /** A path as a person reads it: $HOME collapsed to "~". */
@@ -5446,18 +5385,11 @@ export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
 // test that does not need a DOM — the same split repo-updates-lib.ts makes for
 // its own rows.
 
-/** What a notice calls the task: the reader's OWN newest message, so the card
- *  names the thing they remember asking for, and stays put until they say
- *  something new (a recap or reply line lands later and reads as a title that
- *  changed under them). A renamed task, stable AI titles and a task nothing
- *  has been said in yet keep the server `title` — `cardTitleLine` already
- *  answers those. One short line. */
+/** What a notice calls the task: the same line every view titles it by
+ *  (`cardTitleLine` — the server `title`, the newest message only when that
+ *  is empty). One short line. */
 export function taskNoticeTitle(task: TaskPulseTask): string {
-  const line = cardTitleLine({ ...task, last_message: null, recap: undefined }).text;
-  const said = task.last_message?.role === "user" ? firstLine(task.last_message.text ?? "") : "";
-  const keepsTitle = task.title_source === "renamed" || task.title_mode === "summary";
-  // A kept title that is EMPTY falls through to the message, never to "A task".
-  const text = (keepsTitle && line) || said || line || "A task";
+  const text = cardTitleLine(task).text || "A task";
   const chars = Array.from(text);
   return chars.length > 120 ? chars.slice(0, 119).join("").trimEnd() + "\u2026" : text;
 }

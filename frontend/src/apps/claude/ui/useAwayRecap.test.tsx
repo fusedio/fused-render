@@ -287,7 +287,7 @@ test("two chats on one page, one return, ONE model call", async () => {
   expect(h.calls.length).toBe(1);
 });
 
-// ---- THE EAGER ASK (prefs task_recap.enabled): the fold on open, not only on return.
+// ---- THE EAGER ASK (prefs chat_recap.enabled): the fold on open, not only on return.
 
 test("eager: asks once on mount and shows the fold; flag off asks nothing", async () => {
   const off = harness();
@@ -329,6 +329,44 @@ test("eager: not under a half-typed message", async () => {
   const h = harness({ eager: true, draft: "half a thought" });
   await act(async () => {});
   expect(h.calls).toEqual([]);
+});
+
+test("turning the pref off hides a shown fold, and a late answer is not shown", async () => {
+  const h = harness({ eager: true });
+  await act(async () => {});
+  expect(h.recap()?.text).toBe(ANSWER.text);
+  await h.set({ enabled: false });
+  expect(h.recap()).toBe(null);
+
+  let release!: (r: RecapResponse) => void;
+  const h2 = harness({ eager: true, forUuid: "u1" });
+  h2.hang(new Promise<RecapResponse>((res) => (release = res)));
+  await h2.set({ forUuid: "u2" });
+  await h2.set({ forUuid: "u1", enabled: false });
+  await act(async () => release(ANSWER));
+  expect(h2.recap()).toBe(null);
+});
+
+test("a disabled answer does not spend the position; enabling re-asks", async () => {
+  const h = harness({ eager: true, answer: { text: "", for_uuid: "u1", at: "", disabled: true } });
+  await act(async () => {});
+  expect(h.calls.length).toBe(1);
+  expect(h.recap()).toBe(null);
+  await h.set({ enabled: false });
+  await h.set({ enabled: true, answer: ANSWER });
+  await act(async () => {});
+  expect(h.calls.length).toBe(2);
+  expect(h.recap()?.text).toBe(ANSWER.text);
+});
+
+test("a disabled answer on a return does not spend the position", async () => {
+  const h = harness({ answer: { text: "", for_uuid: "u1", at: "", disabled: true } });
+  await h.away();
+  expect(h.calls.length).toBe(1);
+  await h.set({ answer: ANSWER });
+  await h.away();
+  expect(h.calls.length).toBe(2);
+  expect(h.recap()?.text).toBe(ANSWER.text);
 });
 
 // ---- THE PENDING POLL (the server only reads what the Tasks worker stored).

@@ -235,7 +235,6 @@ import {
   isChatDraftTask,
   isDraftTask,
   liveJobRow,
-  recapTitlesOn,
   taskColumn,
   taskHref,
 } from "@shell/tasks-lib";
@@ -1612,7 +1611,7 @@ export function ClaudeRail({
               // Hollow since the press, until the pulse agrees (header).
               const unread = t.unread > 0 && !dotCleared(marks.get(t.key), t);
               const line = cardTitleLine(merged);
-              const reply = row && !recapTitlesOn(row) ? row.last_reply || "" : "";
+              const reply = row ? row.last_reply || "" : "";
               const label = line.text || t.title || "Chat";
               // A DRAFT'S DOOR is the New task card (`draftHref`, as the List's
               // row press); every other row's is the chat's (`taskHref`). A

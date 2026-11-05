@@ -154,7 +154,6 @@ import {
   taskUnread,
   taskUnreadLabel,
   cardTitleLine,
-  recapTitlesOn,
   taskWhenFor,
   type TaskSortBy,
   threadView,
@@ -4549,14 +4548,11 @@ function TaskNode({
              the row's own styles (hints.ts `renderTaskHint`, Akshil,
              2026-09-19): what the row clamps is what the reader is missing. */
           data-hint-title={line.hint}
-          data-hint-reply={recapTitlesOn(task) ? "" : task.last_reply || ""}
+          data-hint-reply={task.last_reply || ""}
         >
           {label}
         </span>
-        {/* Never with task recap titles on (`recapTitlesOn`: the server sends a
-            `recap` key only then): the title carries the words, and the full
-            reply stays in the hover (`data-hint-reply`). */}
-        {task.last_reply && !recapTitlesOn(task) ? (
+        {task.last_reply ? (
           <span
             className="tasks-title-reply"
             data-hint={task.last_reply}
