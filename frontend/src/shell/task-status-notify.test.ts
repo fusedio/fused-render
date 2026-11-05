@@ -1,7 +1,7 @@
 // The decision table behind §5's "interactive turns and needs-input" moments
 // — pure, no DOM (task-status-notify.ts's own header explains the split).
 import { describe, expect, test } from "bun:test";
-import { notificationForTransition, taskDestination } from "./task-status-notify";
+import { noticeColumn, notificationForTransition, taskDestination } from "./task-status-notify";
 import type { TaskPulseTask } from "@platform/lib/api";
 
 function task(over: Partial<TaskPulseTask> = {}): TaskPulseTask {
@@ -406,6 +406,25 @@ describe("notificationForTransition", () => {
   test("falls back to a generic noun when the task has no title", () => {
     const n = notificationForTransition("in_progress", task({ status: "blocked", title: "" }), 0);
     expect(n?.title).toBe("A task failed");
+  });
+});
+
+describe("a finished task that still holds background jobs", () => {
+  const jobs = { count: 1, jobs: [{ id: "b", title: "poll", kind: "bash" }] } as never;
+
+  test("raises no Task finished notice; it reads as still in progress", () => {
+    const t = task({ status: "done", background_jobs: jobs });
+    expect(noticeColumn(t)).toBe("in_progress");
+    expect(notificationForTransition("in_progress", t, 0)).toBeNull();
+    // A fresh sighting after the watch started is not news either.
+    expect(notificationForTransition(undefined, { ...t, happened_at: 5 }, 1)).toBeNull();
+  });
+
+  test("raises it when the last job drains", () => {
+    const running = task({ status: "done", background_jobs: jobs });
+    const drained = task({ status: "done", background_jobs: { count: 0, jobs: [] } as never });
+    expect(noticeColumn(drained)).toBe("done");
+    expect(notificationForTransition(noticeColumn(running), drained, 0)).not.toBeNull();
   });
 });
 

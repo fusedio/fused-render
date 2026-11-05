@@ -8,7 +8,7 @@
 import type { Task, TaskHold } from "@platform/lib/api";
 import type { PrState } from "@platform/lib/prStatus";
 import { prKey, prRefsOf, type PrRef } from "@platform/lib/task-prs";
-import { cardTitleLine, isDraftTask, usageLimitCaption } from "@shell/tasks-lib";
+import { BACKGROUND_LABEL, cardTitleLine, isDraftTask, liveJobRow, usageLimitCaption } from "@shell/tasks-lib";
 
 /** What the rows' markers need beyond the task itself. */
 export interface WorkspaceFacts {
@@ -38,7 +38,8 @@ export function needsYou(task: Pick<Task, "status">): boolean {
   return task.status === "needs_attention" || task.status === "blocked";
 }
 
-/** The status in today's words. */
+/** The status in today's words; a finished task whose chat still holds a live
+ *  background job says "Background" (`liveJobRow`, as the Tasks pill does). */
 export function statusWord(task: Task): string {
   switch (task.status) {
     case "upcoming":
@@ -56,7 +57,7 @@ export function statusWord(task: Task): string {
     case "archived":
       return "Archived";
     default:
-      return "Done";
+      return liveJobRow(task) ? BACKGROUND_LABEL : "Done";
   }
 }
 

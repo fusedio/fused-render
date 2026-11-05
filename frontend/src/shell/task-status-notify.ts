@@ -63,7 +63,7 @@ import type { NotificationInput } from "@platform/lib/notifications";
 import { labelForSource } from "@platform/lib/format";
 import { rootedFsPath } from "@platform/lib/path-url";
 import { agentLabel, agentNamed } from "@platform/lib/agent-backends";
-import { taskColumn, taskNoticeTitle as noticeTitle } from "@shell/tasks-lib";
+import { liveJobRow, taskColumn, taskNoticeTitle as noticeTitle } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
 
@@ -177,6 +177,16 @@ function titleWithoutCaption(title: string, caption: string): string {
  * on a question at first sighting stays silent here regardless of timing;
  * `attentionRows` is its permanent, always-current row.
  */
+/**
+ * The column a task counts as for NOTICES. `taskColumn`, except a finished task
+ * whose chat still holds a live background job: still In Progress. "Task
+ * finished" is raised when the work is over, so the in_progress -> done
+ * transition lands when the last job drains, not when the turn ends.
+ */
+export function noticeColumn(task: Parameters<typeof liveJobRow>[0]): ReturnType<typeof taskColumn> {
+  return liveJobRow(task) ? "in_progress" : taskColumn(task);
+}
+
 export function notificationForTransition(
   previous: string | undefined,
   task: TaskPulseTask,
@@ -221,7 +231,7 @@ export function notificationForTransition(
   // unchanged.
   isDestinationOpen: (page: string) => boolean = () => false,
 ): NotificationInput | null {
-  const column = taskColumn(task);
+  const column = noticeColumn(task);
   if (previous === undefined) {
     if ((column === "done" || column === "blocked") && (task.happened_at ?? 0) > watchStartS) {
       previous = "in_progress";

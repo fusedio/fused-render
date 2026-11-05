@@ -70,6 +70,10 @@ describe("statusWord", () => {
     expect(statusWord(task({ status: "in_progress" }))).toBe("Running");
     expect(statusWord(task({ status: "needs_attention" }))).toBe("Needs attention");
     expect(statusWord(task({ status: "done" }))).toBe("Done");
+    const jobs = { count: 1, jobs: [{ id: "b", title: "poll", kind: "bash" }] } as never;
+    expect(statusWord(task({ status: "done", background_jobs: jobs }))).toBe("Background");
+    expect(statusWord(task({ status: "done", background_jobs: { count: 0, jobs: [] } as never }))).toBe("Done");
+    expect(statusWord(task({ status: "archived", background_jobs: jobs }))).toBe("Archived");
     expect(statusWord(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Failed");
     expect(statusWord(task({ status: "blocked", blocked_reason: "usage_limit" }))).toContain("Usage limit");
     expect(statusWord(task({ status: "blocked" }))).toBe("Blocked");
