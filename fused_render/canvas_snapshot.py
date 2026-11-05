@@ -1093,10 +1093,13 @@ def normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def body_text(data: bytes | None) -> str | None:
+    return None if data is None else normalize_newlines(data.decode("utf-8", "replace"))
+
+
 def read_body(path: str) -> str | None:
     """A source file as the body channel reads it (None when missing)."""
-    data = _read_bytes(path)
-    return None if data is None else normalize_newlines(data.decode("utf-8", "replace"))
+    return body_text(_read_bytes(path))
 
 
 def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None) -> dict:

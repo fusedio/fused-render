@@ -2863,8 +2863,8 @@ class _SyncManager:
             return None
         return path
 
-    def _backup_to(self, trash: str | None, rel: str, data: bytes | None) -> None:
-        if trash is None or data is None:
+    def _backup_to(self, trash: str | None, rel: str, data: bytes) -> None:
+        if trash is None:
             return
         dest = os.path.join(trash, rel)
         try:
@@ -4626,7 +4626,8 @@ class _SyncManager:
             return {"ok": False, "code": "fenced", "node": node, "file": file}
         path = os.path.join(self.dir, file)
         text = canvas_snapshot.normalize_newlines(text)
-        current = canvas_snapshot.read_body(path)
+        raw = canvas_snapshot._read_bytes(path)
+        current = canvas_snapshot.body_text(raw)
         current_hash = canvas_snapshot.body_hash(current if current is not None else "")
         if current_hash != base_hash:
             self.log_event("embed_to_disk", "body stale",
@@ -4644,7 +4645,7 @@ class _SyncManager:
             # Not the frame's own previous text: keep a copy, as a note body
             # overwrite does.
             trash = self._new_trash_dir()
-            self._backup_to(trash, file, canvas_snapshot._read_bytes(path))
+            self._backup_to(trash, file, raw)
         # Re-read right before the replace: the trash copy above took time,
         # and Claude writes without _op_lock. A write that landed in between
         # is answered stale like any other, instead of being overwritten
