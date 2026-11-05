@@ -25,7 +25,9 @@ import {
   readMark,
   fallbackRailUp,
   paneHomeHref,
+  collapseRestore,
   paneTakesPinned,
+  paneWas,
   plusDoor,
   ringPress,
   ringMarks,
@@ -473,54 +475,37 @@ describe("ringMarks (what each ring wears, per section)", () => {
     expect(s.classes).not.toContain("is-fav");
   });
 
-  it("a hover swapped the pinned card onto a favourite: its ring wears the pin; the open favourite's never does", () => {
-    const pinned = rail({ list: ["A"], favs: ["F"], peekKey: "F", pinned: true, held: true });
-    expect(pinned.find((r) => r.key === "F")!.classes).toEqual(["peeked", "is-pinned", "is-fav"]);
-    const open = rail({ list: ["A", "S"], favs: ["F"], peekKey: "S", pinned: true, openFavKey: "S" });
-    expect(open.find((r) => r.key === "S")!.classes).not.toContain("is-pinned");
-    // The list's pinned ring keeps its firmer wash.
+  it("a favourite's ring never wears the list's pin; the list's pinned ring does", () => {
+    const rings = rail({ list: ["A"], favs: ["F"], peekKey: "F", pinned: true, held: true });
+    expect(rings.find((r) => r.key === "F")!.classes).toEqual(["is-fav"]);
     const listPinned = rail({ list: ["A"], favs: ["F"], peekKey: "A", pinned: true });
     expect(listPinned.find((r) => r.key === "A")!.classes).toContain("is-pinned");
   });
 
-  it("a list card pinned, no favourite open: favourite rings hover over the pin; list rings stay caption-only", () => {
+  it("a list card pinned, no favourite open: favourite rings hover in window B, untouched by the pin; list rings stay caption-only", () => {
     const rings = rail({ list: ["A", "B"], favs: ["F", "G"], peekKey: "A", pinned: true, held: true });
     const by = (k: string) => rings.find((r) => r.key === k)!;
-    // The favourites swap the pinned card (the pin moves with the hover) —
-    // under the POINTER, which hears no caption (`pointerQuiet`); a Tab onto
-    // one swaps nothing, so the focus keeps the caption (`titleOnly`).
+    // A favourite's ring hovers (its own card) and keeps its caption's rule:
+    // the list's pin is not its business.
     for (const k of ["F", "G"]) {
       expect(by(k).hovers).toBe(true);
-      expect(by(k).overPin).toBe(true);
-      expect(by(k).titleOnly).toBe(true);
-      expect(by(k).pointerQuiet).toBe(true);
+      expect(by(k).titleOnly).toBe(false);
+      expect(by(k).classes).not.toContain("is-pinned");
     }
-    // Nothing pinned: a favourite's hover is its card, for both.
-    const free = rail({ list: ["A"], favs: ["F"] }).find((r) => r.key === "F")!;
-    expect([free.titleOnly, free.pointerQuiet]).toEqual([false, false]);
     // Another list ring: "click only" — its hover is its caption.
-    expect(by("B").overPin).toBe(false);
     expect(by("B").titleOnly).toBe(true);
     // The pinned ring itself is no caption-only ring.
     expect(by("A").titleOnly).toBe(false);
-    expect(by("A").pointerQuiet).toBe(false);
   });
 
-  it("the card held on an outsider (clipped out of the list): no favourite ring swaps it away", () => {
-    const r = ringMarks({
-      ...base,
-      key: "F",
-      foot: true,
-      sessionHere: false,
-      isLast: false,
-      peekKey: "X",
-      pinned: true,
-      held: true,
-      heldOutsider: true,
-    });
-    expect(r.overPin).toBe(false);
-    expect(r.pointerQuiet).toBe(false);
-    expect(r.titleOnly).toBe(true);
+  it("window B's hover washes only the hovered favourite's ring (`favHoverKey`)", () => {
+    const r = ringMarks({ ...base, key: "F", foot: true, sessionHere: false, isLast: false, favHoverKey: "F" });
+    expect(r.classes).toContain("peeked");
+    const other = ringMarks({ ...base, key: "G", foot: true, sessionHere: false, isLast: false, favHoverKey: "F" });
+    expect(other.classes).not.toContain("peeked");
+    // The list's peekKey never washes a favourite's ring.
+    const viaList = ringMarks({ ...base, key: "F", foot: true, sessionHere: false, isLast: false, peekKey: "F" });
+    expect(viaList.classes).not.toContain("peeked");
   });
 
   it("a list card pinned AND a favourite card open: favourite rings stay caption-only", () => {
@@ -528,7 +513,6 @@ describe("ringMarks (what each ring wears, per section)", () => {
     for (const k of ["F", "G"]) {
       const r = rings.find((x) => x.key === k)!;
       expect(r.hovers).toBe(false);
-      expect(r.overPin).toBe(false);
       expect(r.titleOnly).toBe(true);
     }
   });
@@ -544,9 +528,7 @@ describe("ringMarks (what each ring wears, per section)", () => {
       peekKey: "A",
       pinned: true,
     });
-    expect(r.overPin).toBe(false);
-    expect(r.titleOnly).toBe(true);
-    expect(r.pointerQuiet).toBe(false);
+    expect(r.titleOnly).toBe(false);
   });
 
   it("favourites off: every mark as before, the held accent included", () => {
@@ -807,6 +789,31 @@ describe("paneTakesPinned (the pane opening under a pinned list card)", () => {
     expect(paneTakesPinned({ ...base, isFav: true })).toBe(false);
     expect(paneTakesPinned({ ...base, hasSession: false })).toBe(false);
     expect(paneTakesPinned({ ...base, favsOn: false })).toBe(false);
+  });
+});
+
+describe("paneWas / collapseRestore (the pane collapsing gives the list's card back)", () => {
+  const was = { paneOpen: true, paneKey: null, anySession: false, remembered: null, holdUntil: 0, now: 100 };
+  it("the pane on a list chat remembers it; on home, nothing", () => {
+    expect(paneWas({ ...was, paneKey: "k" })).toBe("k");
+    expect(paneWas({ ...was, remembered: "k" })).toBeNull();
+  });
+  it("a session that is no list ring (a favourite's) is not pinnable", () => {
+    expect(paneWas({ ...was, anySession: true, remembered: "k" })).toBeNull();
+  });
+  it("the pane taking a pinned chat is held until it mounts; shut, it keeps its answer", () => {
+    expect(paneWas({ ...was, remembered: "k", holdUntil: 500 })).toBe("k");
+    expect(paneWas({ ...was, remembered: "k", holdUntil: 50 })).toBeNull();
+    expect(paneWas({ ...was, paneOpen: false, remembered: "k" })).toBe("k");
+  });
+  const c = { wasOpen: true, open: false, favsOn: true, key: "k", isList: true };
+  it("open to shut on a list chat: pin it; on home, a favourite, or favourites off: nothing", () => {
+    expect(collapseRestore(c)).toBe("k");
+    expect(collapseRestore({ ...c, key: null })).toBeNull();
+    expect(collapseRestore({ ...c, isList: false })).toBeNull();
+    expect(collapseRestore({ ...c, favsOn: false })).toBeNull();
+    expect(collapseRestore({ ...c, wasOpen: false })).toBeNull();
+    expect(collapseRestore({ ...c, open: true })).toBeNull();
   });
 });
 

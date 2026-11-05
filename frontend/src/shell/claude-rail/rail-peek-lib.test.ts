@@ -649,123 +649,14 @@ describe("PeekIntent", () => {
       expect(warmed).toEqual(["a"]);
     });
 
-    it("pinned: a pointer rest on an `overPin` ring (a favourite's) swaps the card after the open dwell, still pinned", () => {
+    it("pinned: a pointer rest on any ring (a favourite's included) never swaps the card — the favourites have their own window", () => {
       const { clock, shown, intent } = rig();
       intent.press("a");
       intent.leaveRing();
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS - 1);
-      expect(shown).toEqual(["a"]);
-      clock.tick(1);
-      expect(shown).toEqual(["a", "f"]);
-      expect(intent.isPinned).toBe(true);
-      // The pin moved with it: leaving the ring closes nothing.
-      intent.leaveRing();
-      clock.tick(10_000);
-      expect(shown).toEqual(["a", "f"]);
-    });
-
-    it("pinned: a sweep across an `overPin` ring, or a focus on it, moves nothing", () => {
-      const { clock, shown, intent } = rig();
-      intent.press("a");
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS / 2);
-      intent.leaveRing();
-      intent.enterRing("g", "focus", true);
-      clock.tick(10_000);
-      expect(shown).toEqual(["a"]);
-    });
-
-    it("pinned: an `overPin` rest never swaps while the owner types in the card or a press is down in it", () => {
-      const { clock, shown, warmed, intent } = rig();
-      intent.press("a");
-      intent.leaveRing();
-      intent.hold(true);
-      intent.typed();
-      intent.enterRing("f", "pointer", true);
-      clock.tick(10_000);
-      intent.leaveRing();
-      intent.pressStart();
-      intent.enterRing("g", "pointer", true);
-      clock.tick(10_000);
-      intent.leaveRing();
-      intent.pressEnd();
-      expect(shown).toEqual(["a"]);
-      expect(warmed).toEqual(["a"]);
-      expect(intent.isPinned).toBe(true);
-      // A swap already waiting on its dwell is dropped by a keystroke…
-      intent.hold(false);
-      intent.hold(true);
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS / 2);
-      intent.typed();
-      clock.tick(10_000);
-      expect(shown).toEqual(["a"]);
-      // …and, the focus gone, the hover swaps again.
-      intent.leaveRing();
-      intent.hold(false);
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS);
-      expect(shown).toEqual(["a", "f"]);
-    });
-
-    it("pinned: a focus in the card with no words typed (a ring's press) still lets a favourite's hover swap it", () => {
-      const { clock, shown, intent } = rig();
-      intent.press("a");
-      intent.hold(true);
-      intent.leaveRing();
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS);
-      expect(shown).toEqual(["a", "f"]);
-    });
-
-    it("pinned, the focus on a favourite's ring: the pointer sweeping past it leaves no swap behind", () => {
-      const { clock, shown, intent } = rig();
-      intent.press("a");
-      intent.leaveRing();
-      intent.enterRing("f", "focus", true);
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS / 2);
-      intent.leaveRing("pointer");
+      intent.enterRing("f", "pointer");
       clock.tick(10_000);
       expect(shown).toEqual(["a"]);
       expect(intent.isPinned).toBe(true);
-    });
-
-    it("pinned: `dropSwap` (the card became a held outsider) drops a swap already waiting on its dwell", () => {
-      const { clock, shown, intent } = rig();
-      intent.press("a");
-      intent.leaveRing();
-      intent.enterRing("f", "pointer", true);
-      clock.tick(PEEK_OPEN_MS / 2);
-      intent.dropSwap();
-      clock.tick(10_000);
-      expect(shown).toEqual(["a"]);
-      expect(intent.isPinned).toBe(true);
-    });
-
-    it("tells the sink when a pinned card cannot be swapped (typing, a press inside), on change only", () => {
-      const clock = new Clock();
-      const blocked: boolean[] = [];
-      const intent = new PeekIntent({ show: () => {}, warm: () => {}, blocked: (on) => blocked.push(on) }, clock);
-      intent.press("a");
-      intent.hold(true);
-      intent.typed();
-      intent.typed();
-      intent.pressStart();
-      intent.hold(false);
-      expect(blocked).toEqual([true]);
-      intent.pressEnd();
-      expect(blocked).toEqual([true, false]);
-      intent.pressStart();
-      intent.dismiss();
-      expect(blocked).toEqual([true, false, true, false]);
-      // A swap to another chat clears the typing with the words' card.
-      intent.press("b");
-      intent.hold(true);
-      intent.typed();
-      intent.press("c");
-      expect(blocked).toEqual([true, false, true, false, true, false]);
     });
 
     it("tells the sink when it pins and unpins", () => {

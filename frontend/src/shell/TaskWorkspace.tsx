@@ -348,8 +348,8 @@ function WorkspaceCard({
             </button>
           )}
         </span>
+        <TaskStar task={task} />
         <IdChip id={task.task_id} kind="task" />
-        <TaskStar task={task} reveal="hover" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
         {task.status !== "archived" && !isDraftTask(task) && (
           <button

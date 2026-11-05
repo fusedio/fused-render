@@ -56,7 +56,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import type { TaskPulseTask } from "@platform/lib/api";
 import { clearFavOpen, favOpenedAtMs, useFavOpen } from "@platform/lib/last-chat";
 import type { RailHere } from "./claude-rail-lib";
-import { FAV_SETTLE_MS, favOpenVerdict, type Box } from "./rail-peek-lib";
+import { FAV_SETTLE_MS, PeekIntent, favOpenVerdict, type Box } from "./rail-peek-lib";
 
 /** Where the page a rail stands on is (header): its `placeRoot`, and the
  *  canvas's selected node file (null: none, or not a canvas). */
@@ -267,6 +267,60 @@ export function focusRail(
   // Heard synchronously (focus events fire inside `focus()`); a focus that
   // did not land leaves no mark for a later, real one to be muted by.
   quiet.delete(target);
+}
+
+// WINDOW B'S HOVER (owner, 2026-11-05: two sections, two windows): a hover on
+// a favourite's ring — with no favourite's card open in this window — shows
+// the favourite's card (FavouritePeek) in a HOVER MODE, bottom right at the
+// card's own size. Local, never persisted: `hoverKey` lives here and nowhere
+// else. The timings are the rail's own (PeekIntent, one instance for the
+// shell: only one rail stands at a time). A press on the ring, or inside the
+// card, converts the hover to this window's open key (`openFavFromHover`).
+let hoverKey: string | null = null;
+const hoverSubs = new Set<() => void>();
+
+function setHoverKey(key: string | null): void {
+  if (hoverKey === key) return;
+  hoverKey = key;
+  for (const fn of [...hoverSubs]) fn();
+}
+
+/** The favourite whose hover card is up now, or null. */
+export function favHoverKey(): string | null {
+  return hoverKey;
+}
+
+function subscribeHover(fn: () => void): () => void {
+  hoverSubs.add(fn);
+  return () => {
+    hoverSubs.delete(fn);
+  };
+}
+
+export function useFavHoverKey(): string | null {
+  return useSyncExternalStore(subscribeHover, favHoverKey, favHoverKey);
+}
+
+let hoverIntent: PeekIntent | null = null;
+
+/** The hover-intent machine of window B (header): the favourites' rings
+ *  report their pointer and focus to it, the card reports its own. */
+export function favHoverIntent(): PeekIntent {
+  if (!hoverIntent) hoverIntent = new PeekIntent({ show: setHoverKey, warm: () => {} });
+  return hoverIntent;
+}
+
+/** Drop the hover now (a press converted it, the rail went, the card was
+ *  closed): no grace, nothing left pending. */
+export function dismissFavHover(): void {
+  hoverIntent?.dismiss();
+  setHoverKey(null);
+}
+
+export function resetFavHoverForTests(): void {
+  hoverIntent?.dispose();
+  hoverIntent = null;
+  hoverKey = null;
 }
 
 let pageRails = 0;

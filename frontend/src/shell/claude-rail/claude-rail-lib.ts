@@ -474,13 +474,13 @@ export function activeRing(keys: readonly string[], wants: readonly (string | nu
  *     it to the foot — the open one still in the list (rail-peek-lib
  *     `railOpenFav`). Their hover is the caption. With none open they hover
  *     like list rings. List rings are unchanged;
- *   - …AND WITH NONE OPEN, A FAVOURITE'S RING HOVERS EVEN OVER A PINNED CARD
- *     (`overPin`; owner, 2026-11-05: "when I have a preview open in the
- *     non-fav section and I hover over items of the fav section it should
- *     show me the hover preview"): the rail's card, pinned on a list chat,
- *     swaps to the favourite's chat and stays pinned there — the pin moves
- *     with the hover (rail-peek-lib `PeekIntent.enterRing`). A LIST ring over
- *     a pinned card still shows its caption alone ("click only", `titleOnly`). */
+ *   - …AND WITH NONE OPEN, A FAVOURITE'S RING HOVERS IN WINDOW B (owner,
+ *     2026-11-05: two sections, two windows): its hover opens the favourites'
+ *     card (FavouritePeek's hover mode, `favHoverKey`), never the rail's —
+ *     so a card pinned on a list chat is untouched by it, and a list ring's
+ *     hover never touches an open favourite's card. A list ring over a pinned
+ *     card still shows its caption alone ("click only", `titleOnly`); a
+ *     favourite's ring never does for the list's pin. */
 export interface RingMarkInput {
   key: string;
   /** In the favourites section. */
@@ -500,30 +500,25 @@ export interface RingMarkInput {
   isLast: boolean;
   activeList: string | null;
   activeFav: string | null;
-  /** The rail's card is HELD on a chat clipped out of the list (ClaudeRail
-   *  `heldExtra`): its ring stands only while the card shows it, so no hover
-   *  may swap it away (`overPin` is off). */
-  heldOutsider?: boolean;
+  /** The favourite whose HOVER card (window B) is up: its ring wears the
+   *  hover wash (`.peeked`). */
+  favHoverKey?: string | null;
 }
 
 export function ringMarks(o: RingMarkInput): {
   classes: string[];
   hovers: boolean;
   favRing: boolean;
-  overPin: boolean;
   titleOnly: boolean;
-  pointerQuiet: boolean;
 } {
-  const peeked = o.peekOn && o.peekKey === o.key;
+  const peeked = o.peekOn && (o.foot ? o.favHoverKey === o.key : o.peekKey === o.key);
   const favRing = o.favsOn && o.openFavKey === o.key;
   const one = o.favsOn;
   const fav = o.foot || favRing;
   const classes: string[] = [];
   if (o.sessionHere && (!one || (!o.foot && o.activeList === o.key))) classes.push("active");
   if (peeked) classes.push("peeked");
-  // A favourite's ring wears the pin too once a hover swapped the pinned
-  // card onto it (`overPin`) — never the open favourite's (`favRing`).
-  if (peeked && o.pinned && !favRing) classes.push("is-pinned");
+  if (peeked && o.pinned && !o.foot && !favRing) classes.push("is-pinned");
   if (peeked && o.held && !o.favsOn) classes.push("is-held");
   if (o.foot) classes.push("is-fav");
   if (o.foot && o.openFavKey === o.key) classes.push("is-open");
@@ -536,19 +531,12 @@ export function ringMarks(o: RingMarkInput): {
   // the just-starred one still in the list) shows its caption only.
   const silenced = o.openFavKey !== null && o.favsOn && fav;
   const hovers = o.peekOn && !silenced;
-  // A favourite's ring hovers over a PINNED card too (header): the card
-  // swaps to it and the pin moves with it.
-  const overPin = hovers && o.favsOn && o.foot && !o.heldOutsider;
-  // The caption alone: the ring's hover shows no card — another ring while a
-  // card is pinned, the open favourite's ring, a silenced one.
-  const pinnedElsewhere = o.peekOn && o.pinned && o.peekKey !== null && o.peekKey !== o.key;
+  // The caption alone: the ring's hover shows no card — another LIST ring
+  // while the list's card is pinned (a favourite's ring is window B's and is
+  // never held back by it), the open favourite's ring, a silenced one.
+  const pinnedElsewhere = !o.foot && o.peekOn && o.pinned && o.peekKey !== null && o.peekKey !== o.key;
   const titleOnly = pinnedElsewhere || favRing || (o.peekOn && !hovers);
-  // …but a POINTER on an `overPin` ring over a pinned card swaps the card
-  // there: the caption is for the keyboard's focus only (a Tab never swaps a
-  // pinned card), and the pointer's hover stays quiet — the card is its
-  // caption (ClaudeRail's shield over the ring).
-  const pointerQuiet = pinnedElsewhere && overPin;
-  return { classes, hovers, favRing, overPin, titleOnly, pointerQuiet };
+  return { classes, hovers, favRing, titleOnly };
 }
 
 /** WHETHER THE RAIL STANDS (ClaudeRail; owner, 2026-11-05: "we show the rail
@@ -628,6 +616,50 @@ export function paneTakesPinned(o: {
   hasSession: boolean;
 }): boolean {
   return !o.wasOpen && o.open && o.favsOn && o.pinnedKey !== null && !o.isFav && o.hasSession;
+}
+
+/** WHERE THE PANE LAST SHOWED (ClaudeRail `paneWas`; owner, 2026-11-05: a
+ *  pinned list card, the pane expanded over it, then collapsed — the card
+ *  comes back on the chat the pane was on, unless the pane stood on its
+ *  Recent / home page): the key of the list chat the pane shows now, or
+ *  null for home. Read only while the pane is open — shut, it keeps what it
+ *  had. `paneKey`: the list chat whose session a pane chat holds; `anySession`:
+ *  a pane chat holds some session (a chat that is no list ring: a
+ *  favourite's, another place's — nothing to pin); `remembered`: the last
+ *  answer; `holdUntil`: the pane taking a pinned chat has not mounted it yet,
+ *  so an empty pane is not "home" until then. */
+export function paneWas(o: {
+  paneOpen: boolean;
+  paneKey: string | null;
+  anySession: boolean;
+  remembered: string | null;
+  holdUntil: number;
+  now: number;
+}): string | null {
+  if (!o.paneOpen) return o.remembered;
+  if (o.paneKey) return o.paneKey;
+  if (o.anySession) return null;
+  return o.now < o.holdUntil ? o.remembered : null;
+}
+
+/** The hold on an empty pane ends the moment a pane chat holds a session:
+ *  the chat mounted, so a later empty pane is the home page. */
+export function paneHoldAfter(holdUntil: number, anySession: boolean): number {
+  return anySession ? 0 : holdUntil;
+}
+
+/** THE PANE COLLAPSING (owner, 2026-11-05): the list's card comes back,
+ *  pinned, on the chat the pane was showing — on the turn from open to shut
+ *  only, favourites on, a list chat (not a favourite's: that is window B's)
+ *  with a conversation; the pane on its home page restores nothing. */
+export function collapseRestore(o: {
+  wasOpen: boolean;
+  open: boolean;
+  favsOn: boolean;
+  key: string | null;
+  isList: boolean;
+}): string | null {
+  return o.wasOpen && !o.open && o.favsOn && o.key !== null && o.isList ? o.key : null;
 }
 
 /** The params that name the pane chat's conversation on a page's URL: a
