@@ -179,12 +179,14 @@ function titleWithoutCaption(title: string, caption: string): string {
  */
 /**
  * The column a task counts as for NOTICES. `taskColumn`, except a finished task
- * whose chat still holds a live background job: still In Progress. "Task
+ * whose chat still holds a live background SUBAGENT: still In Progress. "Task
  * finished" is raised when the work is over, so the in_progress -> done
- * transition lands when the last job drains, not when the turn ends.
+ * transition lands when the last subagent drains, not when the turn ends. A
+ * dev server or a Monitor can run for ever and never gates it.
  */
 export function noticeColumn(task: Parameters<typeof liveJobRow>[0]): ReturnType<typeof taskColumn> {
-  return liveJobRow(task) ? "in_progress" : taskColumn(task);
+  const subagents = liveJobRow(task) && task.background_jobs!.jobs.some((j) => j.agent);
+  return subagents ? "in_progress" : taskColumn(task);
 }
 
 export function notificationForTransition(

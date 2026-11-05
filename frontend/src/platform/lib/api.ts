@@ -3896,11 +3896,12 @@ export interface TaskMessage {
 
 /** `Task.background_jobs` — the jobs a live session host is still holding
  *  for a chat whose reply is over. `title` is the CLI's own description ("" when
- *  it sent none). */
+ *  it sent none). `agent` is true for a background subagent, false for a Bash,
+ *  a Monitor or any other job (absent from an older server: not a subagent). */
 export interface TaskBackgroundJobs {
   count: number;
   run_id: string;
-  jobs: Array<{ id: string; title: string }>;
+  jobs: Array<{ id: string; title: string; agent?: boolean }>;
 }
 
 export interface Task {
