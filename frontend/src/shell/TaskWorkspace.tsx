@@ -33,6 +33,7 @@ import {
   type FilingIntent,
   basename,
   filingIntent,
+  isDraftTask,
   liveJobRow,
   openThreadIntent,
   peekOpenable,
@@ -348,7 +349,7 @@ function WorkspaceCard({
         </span>
         <IdChip id={task.task_id} kind="task" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
-        {task.status !== "archived" && (
+        {task.status !== "archived" && !isDraftTask(task) && (
           <button
             type="button"
             className={"ws-pin" + (pinned ? " is-pinned" : "")}
@@ -448,6 +449,7 @@ export function TaskWorkspace({
   peekOn,
   onReload,
   onNewTask,
+  onOpenDraft,
   home = "",
 }: {
   home?: string;
@@ -461,6 +463,9 @@ export function TaskWorkspace({
   peekOn: boolean;
   onReload: () => void;
   onNewTask: () => void;
+  /** A draft row's press: reopens the New task form it was saved from (the
+   *  Board's and the List's `onOpenDraft`). */
+  onOpenDraft?: (task: Task) => void;
 }) {
   const peekedKey = usePeekedKey();
   const [selected, setSelected] = useState<string | null>(null);
@@ -635,11 +640,17 @@ export function TaskWorkspace({
   }, [tasks]);
 
   const open = useCallback((task: Task): void => {
+    // A draft has no conversation to open: its press is the form it was saved
+    // from, in every view.
+    if (isDraftTask(task)) {
+      onOpenDraft?.(task);
+      return;
+    }
     if (!peekOpenable(task)) return;
     if (peekOn && openPeek(task.key)) return;
     const intent = openThreadIntent(task);
     if (intent) navigateUrl(intent.href);
-  }, [peekOn]);
+  }, [peekOn, onOpenDraft]);
 
   const archiveAsk = useArchiveConfirm();
   const doClose = useCallback(
@@ -739,13 +750,13 @@ export function TaskWorkspace({
           if (st.selection.size > 0) {
             e.preventDefault();
             st.archiveSelected();
-          } else if (sel) {
+          } else if (sel && !isDraftTask(sel)) {
             e.preventDefault();
             close(sel);
           }
           return;
         case "pin":
-          if (sel && sel.status !== "archived") {
+          if (sel && sel.status !== "archived" && !isDraftTask(sel)) {
             e.preventDefault();
             togglePin(sel.key);
           }

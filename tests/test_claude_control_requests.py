@@ -63,7 +63,8 @@ for line in sys.stdin:
         req = row["request"]
         resp = {{"request_id": row["request_id"], "subtype": "success"}}
         if req["subtype"] == "interrupt":
-            resp["response"] = {{"still_queued": []}}
+            resp["response"] = {{"still_queued": [], **{{
+                k: v for k, v in req.items() if k != "subtype"}}}}
         else:
             resp["response"] = {{k: v for k, v in req.items() if k != "subtype"}}
         send({{"type": "control_response", "response": resp}})
@@ -156,6 +157,77 @@ def test_cancel_against_a_live_host_writes_an_interrupt_and_leaves_it_alive(
     assert os.path.exists(os.path.join(run_dir, "interrupted_offset")), \
         "the offset the interrupt was requested at, so a later poll can " \
         "tell a genuinely new turn apart from this one's own error result"
+
+
+def test_queued_lines_then_one_send_now_interrupt_naming_the_first(
+        agent, monkeypatch, stub_cli, target):
+    # Ctrl+X with several lines queued: each is delivered as an ordinary
+    # follow-up, then ONE `send_now` interrupt names the oldest. No stop.
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
+    assert _wait_for(lambda: agent._host_alive(run_dir))
+
+    for n, text in enumerate(("one", "two", "three"), 1):
+        assert agent._send(run_id, text, client_uuid=f"queued-line-{n}") \
+            == {"sent": True}
+    assert agent.main(action="send_now", run_id=run_id,
+                      client_uuid="queued-line-1") == {"sent": True}
+
+    def answers():
+        out = []
+        for row in _out_rows(run_dir):
+            if row.get("type") != "control_response":
+                continue
+            resp = row["response"].get("response") or {}
+            if resp.get("send_now") is True:
+                out.append(resp)
+        return out
+
+    assert _wait_for(lambda: len(answers()) >= 1), _out_rows(run_dir)
+    assert _wait_for(lambda: sum(
+        1 for r in _out_rows(run_dir) if r.get("type") == "echo"
+        and r.get("text") in ("one", "two", "three")) == 3)
+    assert [a["message_uuid"] for a in answers()] == ["queued-line-1"]
+    # Not a stop: nothing a Stop leaves behind, and the host is untouched.
+    assert not os.path.exists(os.path.join(run_dir, "cancelled"))
+    assert not os.path.exists(os.path.join(run_dir, "interrupted_offset"))
+    assert os.path.exists(os.path.join(run_dir, "send_now"))
+    assert agent._host_alive(run_dir)
+
+
+def test_send_now_for_a_queued_line_only_sends_the_interrupt(
+        agent, monkeypatch, stub_cli, target):
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
+    assert _wait_for(lambda: agent._host_alive(run_dir))
+
+    assert agent.main(action="send_now", run_id=run_id,
+                      client_uuid="queued-line-1") == {"sent": True}
+
+    def answered():
+        for row in _out_rows(run_dir):
+            if row.get("type") != "control_response":
+                continue
+            resp = row["response"].get("response") or {}
+            if resp.get("send_now") is True:
+                return resp
+        return None
+
+    assert _wait_for(lambda: answered() is not None), _out_rows(run_dir)
+    assert answered()["message_uuid"] == "queued-line-1"
+    # No new line, and nothing a Stop leaves behind.
+    assert not any(r.get("type") == "echo" for r in _out_rows(run_dir)[1:]
+                   if r.get("text") == "queued-line-1")
+    assert not os.path.exists(os.path.join(run_dir, "cancelled"))
+    assert not os.path.exists(os.path.join(run_dir, "interrupted_offset"))
+    assert agent._host_alive(run_dir)
+
+
+def test_send_now_for_a_queued_line_needs_a_live_host_and_a_uuid(
+        agent, tmp_path):
+    run_dir = os.path.join(agent.RUNS, "20260901-140000-ddd")
+    os.makedirs(run_dir)
+    assert "error" in agent.main(action="send_now", run_id="20260901-140000-ddd",
+                                 client_uuid="queued-line-1")
+    assert "error" in agent.main(action="send_now", run_id="20260901-140000-ddd")
 
 
 def test_cancel_with_no_host_still_tree_kills(agent, tmp_path):

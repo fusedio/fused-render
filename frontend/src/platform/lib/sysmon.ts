@@ -76,7 +76,7 @@ export interface ClaudeTaskTree {
   /** What the strip says: "running", "waiting" (on a card / blocked),
    *  "done" (the task is done, its tree still alive), "idle" (any other
    *  status — queued, upcoming… — with its tree alive), "" (no task). */
-  state: "running" | "waiting" | "done" | "idle" | "";
+  state: "running" | "waiting" | "background" | "done" | "idle" | "";
   bg_jobs: { id: string; description: string }[];
   /** The tree's top process — what Stop names. */
   root_pid: number;

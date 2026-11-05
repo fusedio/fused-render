@@ -283,7 +283,7 @@ def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
     (hook,) = entry["hooks"]
     assert hook["type"] == "command" and hook["onFailure"] == "block"
     assert hook["timeout"] == 10
-    assert "permission_server.py" in hook["command"]
+    assert "permission_server-" in hook["command"] and ".py" in hook["command"]
     handoff = os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs")
     assert "--breakout-hook=" + handoff in hook["command"]
     plain = _argv(agent, tmp_path / "p")

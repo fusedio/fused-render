@@ -8,7 +8,7 @@
 import type { Task, TaskHold } from "@platform/lib/api";
 import type { PrState } from "@platform/lib/prStatus";
 import { prKey, prRefsOf, type PrRef } from "@platform/lib/task-prs";
-import { cardTitleLine, isDraftTask, usageLimitCaption } from "@shell/tasks-lib";
+import { BACKGROUND_LABEL, cardTitleLine, isDraftTask, liveJobRow, usageLimitCaption } from "@shell/tasks-lib";
 
 /** What the rows' markers need beyond the task itself. */
 export interface WorkspaceFacts {
@@ -24,25 +24,28 @@ export interface WorkspaceFacts {
   prStates: Record<string, PrState | null | undefined>;
 }
 
-/** Every task but drafts (archived ones too: the page's Status filter decides
- *  whether they reach `tasks`), newest first by CREATION time (`started`).
- *  Creation never changes, so a row never moves when its status does. */
+/** Every task, drafts included (archived ones too: the page's Status filter
+ *  decides whether they reach `tasks`), newest first by CREATION time
+ *  (`started`). Creation never changes, so a row never moves when its status
+ *  does. */
 export function workspaceTasks(tasks: readonly Task[]): Task[] {
-  return tasks
-    .filter((t) => !isDraftTask(t))
-    .sort((a, b) => (b.started ?? 0) - (a.started ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return [...tasks].sort((a, b) => (b.started ?? 0) - (a.started ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
-/** The reader has to look: parked on a card, or stopped (failed, usage limit). */
-export function needsYou(task: Pick<Task, "status">): boolean {
-  return task.status === "needs_attention" || task.status === "blocked";
+/** The reader has to look: parked on a card, stopped (failed, usage limit), or
+ *  an unfinished New task draft they have to come back to. The "Needs you"
+ *  group, the `n` key and the row's `data-needs-you` all ask this. */
+export function needsYou(task: Pick<Task, "status" | "kind">): boolean {
+  if (task.status === "archived") return false;
+  return task.status === "needs_attention" || task.status === "blocked" || isDraftTask(task);
 }
 
-/** The status in today's words. */
+/** The status in today's words; a finished task whose chat still holds a live
+ *  background job says "Background" (`liveJobRow`, as the Tasks pill does). */
 export function statusWord(task: Task): string {
   switch (task.status) {
     case "upcoming":
-      return "Upcoming";
+      return isDraftTask(task) ? "Draft" : "Upcoming";
     case "queued":
       return "Queued";
     case "in_progress":
@@ -56,7 +59,7 @@ export function statusWord(task: Task): string {
     case "archived":
       return "Archived";
     default:
-      return "Done";
+      return liveJobRow(task) ? BACKGROUND_LABEL : "Done";
   }
 }
 
@@ -169,12 +172,12 @@ export function nextNeedingYou(rows: readonly Task[], key: string | null): strin
 const norm = (s: string): string => s.toLowerCase().replace(/[\s-]+/g, "");
 
 /** ⌘K / `/`: every task, open or closed, by title or T-number. Open ones first
- *  and closed ones after, each group newest first. Drafts are never results. */
+ *  and closed ones after, each group newest first. */
 export function searchTasks(tasks: readonly Task[], query: string): Task[] {
   const q = norm(query);
   const hit = (t: Task): boolean =>
     q === "" || norm(t.title).includes(q) || (t.task_id !== "" && norm(t.task_id).includes(q));
-  const real = tasks.filter((t) => !isDraftTask(t) && hit(t));
+  const real = tasks.filter(hit);
   const byNew = (a: Task, b: Task): number => (b.started ?? 0) - (a.started ?? 0);
   const open = real.filter((t) => t.status !== "archived").sort(byNew);
   const closed = real.filter((t) => t.status === "archived").sort(byNew);
@@ -305,7 +308,8 @@ export function isUpcoming(task: Pick<Task, "status" | "next_run">): boolean {
 }
 
 /** The first group that matches: archived (closed), needs you (waiting, failed,
- *  usage limit), working (running, queued or bg jobs), upcoming (a run still to
+ *  usage limit, or an unfinished New task draft — the reader has to come back to
+ *  it), working (running, queued or bg jobs), upcoming (a run still to
  *  come — its own section rather than a "run pending" chip under Working,
  *  Akshil 2026-11-02), PR open (a PR known open or draft), safe to archive
  *  (idle at least ARCHIVE_IDLE_SECONDS and no blocking holds), and otherwise

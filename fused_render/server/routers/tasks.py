@@ -1917,7 +1917,9 @@ _BG_COLD_TAIL = 16 * 1024 * 1024
 
 def _bg_pending_since(path: str, offset: int, jobs: tuple) -> tuple:
     """`(new offset, jobs)` after parsing `path` from `offset` on — `jobs` the
-    CLI's background list as `((task_id, description), ...)`, () for none.
+    CLI's background list as `((task_id, description, is_subagent), ...)`, ()
+    for none. `is_subagent` is the CLI's `task_type == "local_agent"` — a
+    background Agent, as against a Bash, a Monitor or a workflow.
 
     INCREMENTAL, because a background Agent streams rows into `out.jsonl` for
     as long as it runs and `agent._turn_state` re-parses the whole file: only
@@ -1960,7 +1962,8 @@ def _bg_pending_since(path: str, offset: int, jobs: tuple) -> tuple:
                 # long is not one a row could print anyway.
                 jobs = tuple(
                     (str(x["task_id"])[:200],
-                     str(x.get("description") or "")[:200])
+                     str(x.get("description") or "")[:200],
+                     x.get("task_type") == "local_agent")
                     for x in arr
                     if isinstance(x, dict) and x.get("task_id"))[:_BG_JOBS_CAP]
     return offset, jobs
@@ -2303,12 +2306,14 @@ def _background_jobs(held: tuple | None) -> dict | None:
 
     `run_id` is the run dir's own name — the id the agent's `task_stop` takes
     beside a job's `id` — so the row's Stop needs no second lookup. `title` is
-    the CLI's own description of the job ("" when it sent none)."""
+    the CLI's own description of the job ("" when it sent none). `agent` is
+    True for a background subagent (`_bg_pending_since`)."""
     if not held or not held[2]:
         return None
     run_dir, _offset, jobs = held
     return {"count": len(jobs), "run_id": os.path.basename(run_dir),
-            "jobs": [{"id": tid, "title": title} for tid, title in jobs]}
+            "jobs": [{"id": tid, "title": title, "agent": agent}
+                     for tid, title, agent in jobs]}
 
 
 def _held_requests(run: dict) -> set:
@@ -4673,7 +4678,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "live": live,
         # A live session host is still holding background work for this
         # conversation — a `run_in_background` Bash, a background Agent, a
-        # Monitor (`_hosted_runs`): `{count, run_id, jobs: [{id, title}]}`,
+        # Monitor (`_hosted_runs`): `{count, run_id, jobs: [{id, title, agent}]}`,
         # or None. A badge, never a status: the status reads the messages as
         # before (`_status` rule 2) and stays `done`; the UI draws it In Progress
         # (tasks-lib `liveJobRow`). `run_id` +

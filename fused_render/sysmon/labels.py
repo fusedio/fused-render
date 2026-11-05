@@ -279,9 +279,12 @@ def _task_info(row: dict | None, run: dict, hostj: dict, folder: str,
     where = str(row.get("project") or row.get("target") or folder or "")
     status = str(row.get("status") or "")
     attention = bool(row.get("attention")) or status in ("blocked", "needs_attention")
+    bg_jobs = _bg_jobs(run["run_dir"], row)
     # A matched task that is neither running nor waiting on you, with its tree
-    # still up: "done" for a finished one, "idle" for any other status
-    # (queued, upcoming, …). Both read as "still alive" — the kill candidates.
+    # still up: "background" while a job it started is still running (the
+    # tree is working, not a kill candidate), else "done" for a finished one
+    # and "idle" for any other status (queued, upcoming, …). The last two
+    # read as "still alive" — the kill candidates.
     return {
         "run_id": run["run_id"],
         "session_id": str(row.get("session_id") or next((s for s in sessions if s), "")),
@@ -298,8 +301,9 @@ def _task_info(row: dict | None, run: dict, hostj: dict, folder: str,
         "status": status,
         "state": ("" if not row else "waiting" if attention
                   else "running" if status == "in_progress"
+                  else "background" if bg_jobs
                   else "done" if status in ("done", "archived") else "idle"),
-        "bg_jobs": _bg_jobs(run["run_dir"], row),
+        "bg_jobs": bg_jobs,
     }
 
 

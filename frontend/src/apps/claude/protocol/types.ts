@@ -28,6 +28,7 @@ export type Action =
   | "cancel"
   | "live_host"
   | "send"
+  | "send_now"
   | "set_mode"
   | "commands"
   | "task_output"
@@ -263,6 +264,8 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
+  /** Ctrl+X on a line the run already holds: the `send_now` interrupt naming it. */
+  send_now: { run_id: string; client_uuid: string };
   /** The pill changed on a live run: apply the mode now, no message, no turn. */
   set_mode: { run_id: string; permission_mode: string };
   commands: CommandsRequest;
@@ -1139,6 +1142,7 @@ export interface AgentResponses {
   cancel: CancelResponse;
   live_host: RunIdResponse | ErrorOnly;
   send: SendResponse;
+  send_now: { sent: boolean } | ErrorOnly;
   set_mode: SetModeResponse;
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;

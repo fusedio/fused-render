@@ -748,8 +748,8 @@ export function draftRing(task: Task): boolean {
 //
 // THE API STATUS STAYS `done`, and so does `taskColumn`. Only PLACEMENT and
 // TONE move: Bots' build watch waits on `done`, the project queue reads the
-// folder as free (the turn is over — `inFlight` stays false), the status toasts
-// read `taskColumn` (no second "finished" when the job ends), and the drag /
+// folder as free (the turn is over — `inFlight` stays false), the "Task
+// finished" notice waits for the jobs (`noticeColumn`), and the drag /
 // archive / erase rules keep reading a finished task. ONE PREDICATE gates the
 // look and the placement: `liveJobRow`.
 

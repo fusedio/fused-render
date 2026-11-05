@@ -67,12 +67,13 @@ function serve() {
   return posts;
 }
 
-async function render(tasks: Task[], onReload = () => {}) {
+async function render(tasks: Task[], onReload = () => {}, onOpenDraft?: (t: Task) => void) {
   let r!: ReturnType<typeof create>;
   await act(async () => {
     r = create(
       createElement(TaskWorkspace, {
         tasks, allTasks: tasks, emptyLabel: "Nothing.", peekOn: false, onReload, onNewTask: () => {},
+        ...(onOpenDraft ? { onOpenDraft } : {}),
       }),
     );
   });
@@ -89,6 +90,25 @@ test("rows run newest first, archived ones included", async () => {
   ]);
   const rows = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
   expect(rows.map((n) => n.props["data-key"])).toEqual(["b", "a", "c"]);
+});
+
+test("a draft row sits under Needs you, opens its form on a press, and cannot be pinned or archived", async () => {
+  const posts = serve();
+  const opened: string[] = [];
+  const draft = task({
+    key: "draft:1", task_id: "", title: "half-written task", session_id: "", status: "upcoming",
+    kind: "draft", draft_id: "1", started: 5,
+  });
+  const r = await render([draft, task({ key: "a", started: 1 })], () => {}, (t) => opened.push(t.key));
+  const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
+  expect(heads.map((h) => text(h))).toEqual(["Needs you1", "Safe to archive1Select all"]);
+  const card = r.root.findByProps({ "data-key": "draft:1" });
+  expect(text(within(card, "ws-title")[0] as { children: unknown[] })).toBe("half-written task");
+  expect(within(card, "ws-pin")).toHaveLength(0);
+  expect(within(card, "tasks-act")).toHaveLength(0);
+  await press(card);
+  expect(opened).toEqual(["draft:1"]);
+  expect(posts.filter((p) => p.url === "/api/tasks/archive")).toEqual([]);
 });
 
 test("an archived card wears no hold markers and its group has no checkbox", async () => {
