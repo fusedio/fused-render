@@ -2816,7 +2816,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
               // on disk, still listed, still on their 14-day TTL — and a send that
               // settles one of those is the only thing that can hand its number
               // on. It costs one short string on a send that has nothing to spend.
-              ...(sessionId ? {} : { draft_key: chatDraftKey(null, FILE) }),
+              // A breakout's first start creates a session but spends no folder
+              // draft: its session is hidden from Tasks, so a number handed to it
+              // would vanish.
+              ...(sessionId || bk ? {} : { draft_key: chatDraftKey(null, FILE) }),
               // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
               // proof this send is the one already counted, so the server gate
               // only looks rather than claiming a second time.

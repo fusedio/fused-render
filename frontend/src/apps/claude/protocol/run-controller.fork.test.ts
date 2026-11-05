@@ -211,6 +211,12 @@ describe("breakout posture", () => {
     expect(r.controller.getState().sessionId).toBe("brk");
   });
 
+  test("the first send spends no folder draft", async () => {
+    const r = fresh();
+    await r.controller.sendMessage("what is this?");
+    expect("draft_key" in r.of("start")[0]!.fields).toBe(false);
+  });
+
   test("the bubble shows what was typed; the context rides in raw", async () => {
     const r = fresh();
     await r.controller.sendMessage("what is this?");
