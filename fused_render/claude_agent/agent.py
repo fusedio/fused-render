@@ -1246,13 +1246,15 @@ def _blocked_note(backend: str = "") -> str:
         "them. If the thing you need is approval for an action, call the "
         "tool that takes the action and let the permission prompt stop the "
         f"turn. Use `{ANSWERABLE_TOOL}` only when you truly cannot proceed "
-        "without the answer. If the user replies to a card with a question or "
-        "a request for information instead of a choice, answer it in plain "
-        "text first, in the same turn, then call "
-        f"`{ANSWERABLE_TOOL}` again with the choice that is still open: text "
-        "before a card does not end the turn. Do not end that plain-text "
-        "answer with a question, and do not repeat a choice they have "
-        "already made."
+        "without the answer. Pacing a conversation the user steers ('next?', "
+        "a quiz) is not that: end your reply with that question in plain "
+        "text, the one closing question allowed. If the "
+        "user replies to a card with a question or a request for information "
+        "instead of a choice, answer it in plain text first, in the same "
+        f"turn, then call `{ANSWERABLE_TOOL}` again with the choice that is "
+        "still open: text before a card does not end the turn. Do not end "
+        "that plain-text answer with a question, and do not repeat a choice "
+        "they have already made."
     )
 
 
@@ -2180,7 +2182,7 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
     would otherwise drop them; ours wins a key collision. Non-strict runs leave
     the CLI to load plugin servers itself — adding them would start each twice."""
     path = os.path.join(run_dir, "mcp.json")
-    server = os.path.join(HERE, "permission_server.py")
+    server = _permission_server_path()
     args = [server, _perm_dir(run_dir)]
     if pane:
         args.append(_state_dir(run_dir))
@@ -2228,9 +2230,10 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
     servers = _plugin_mcp_servers(CLAUDE_DIR) if strict else {}
     with _private_open(path) as fh:
         json.dump({"mcpServers": {**servers, PERMISSION_SERVER: {
-            # sys.executable, matching how the app spawns every other helper
-            # (executor.py): in the packaged .app that is the bundled python.
-            "command": sys.executable,
+            # The CLI re-launches this on respawn, possibly after an app
+            # restart: `_stable_python` is sys.executable except under an
+            # AppImage, whose python lives in a vanishing mount.
+            "command": _stable_python(),
             "args": args,
             "env": server_env,
             # Hard per-call ceiling for this server, and a permission card is a
@@ -3935,8 +3938,8 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # PreToolUse hook enforces the path limit and the MCP allowlist: it runs
         # before the permission system and exit 2 blocks the call. The
         # bridge's `_breakout_policy` stays as defense in depth.
-        hook_argv = [sys.executable, "-I",
-                     os.path.join(HERE, "permission_server.py"),
+        hook_argv = [_stable_python(), "-I",
+                     _permission_server_path(),
                      "--breakout-hook=" + _breakout_handoff_dir(file)]
         # FAIL CLOSED: the CLI blocks only on exit 2, and a failure outside
         # `main`'s own guard (a bad interpreter, an import error) exits with
@@ -4485,19 +4488,96 @@ def _gh_token(gh: str, env: dict | None = None) -> str:
         return token
 
 
-def _shell_prefix_path() -> str:
-    """Absolute path of the packaged CLAUDE_CODE_SHELL_PREFIX wrapper, made
-    executable if a packaging step dropped the bit. "" when unavailable."""
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "claude_shell_prefix.sh")
-    if not os.path.isfile(path):
+def _stable_script(src: str) -> str:
+    """Path of a per-user copy of the package file `src`, "" when it cannot be
+    made.
+
+    A session host and the `claude` under it outlive an app restart or update,
+    and so does everything the CLI re-launches from a path we handed it (the
+    shell prefix on every Bash call, a PreToolUse hook on every tool call, an
+    MCP server on respawn). A path into the package dir is not stable: under
+    an AppImage it sits in a `/tmp/.mount_*` that disappears with the app. The
+    copy lives in `~/.fused-render/bin/` under a content-hashed name (tmp file
+    + rename, so a reader never sees half a script) and is executable. Only for stdlib-only, self-contained files."""
+    try:
+        with open(src, "rb") as fh:
+            data = fh.read()
+    except OSError:
         return ""
-    if not os.access(path, os.X_OK):
+    # NAMED BY CONTENT: app versions and worktrees share this directory, and a
+    # live session keeps running the copy it was handed, so each version has its
+    # own file and none is ever rewritten.
+    stem, ext = os.path.splitext(os.path.basename(src))
+    dst = _state_file("bin", "%s-%s%s" % (stem, hashlib.sha256(data).hexdigest()[:12], ext))
+    try:
         try:
-            os.chmod(path, os.stat(path).st_mode | 0o755)
+            with open(dst, "rb") as fh:
+                same = fh.read() == data
         except OSError:
-            return ""
-    return path
+            same = False
+        if not same:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            tmp = "%s.%s.tmp" % (dst, os.urandom(4).hex())
+            try:
+                with open(tmp, "wb") as fh:
+                    fh.write(data)
+                os.chmod(tmp, 0o755)
+                os.replace(tmp, dst)
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        elif not os.access(dst, os.X_OK):
+            os.chmod(dst, os.stat(dst).st_mode | 0o755)
+    except OSError:
+        return ""
+    return dst
+
+
+#: Where a system python3 usually is, tried after `$PATH`.
+_SYSTEM_PYTHONS = ("/usr/bin/python3", "/usr/local/bin/python3",
+                   "/opt/homebrew/bin/python3")
+
+
+def _vanishing_path(path: str) -> bool:
+    """Whether `path` is inside an AppImage mount (`$APPDIR` or a
+    `/tmp/.mount_*`), which disappears when that app instance exits."""
+    real = os.path.realpath(path)
+    appdir = os.environ.get("APPDIR")
+    if appdir and real.startswith(os.path.realpath(appdir) + os.sep):
+        return True
+    return real.startswith("/tmp/.mount_")
+
+
+def _stable_python() -> str:
+    """The interpreter the CLI re-launches `permission_server.py` with (MCP
+    server, PreToolUse hook): `sys.executable`, except under an AppImage, where
+    that python is in the vanishing mount and a system python3 on `$PATH` or in
+    `_SYSTEM_PYTHONS` is used instead (the server is stdlib-only). With no
+    system python3 the mounted one is returned, as before."""
+    if not _vanishing_path(sys.executable):
+        return sys.executable
+    for cand in (shutil.which("python3"), *_SYSTEM_PYTHONS):
+        if cand and os.access(cand, os.X_OK) and not _vanishing_path(cand):
+            return cand
+    return sys.executable
+
+
+def _permission_server_path() -> str:
+    """The MCP permission server / breakout hook script, as a `_stable_script`
+    copy (it is stdlib-only); the packaged file itself when no copy can be
+    made."""
+    packaged = os.path.join(HERE, "permission_server.py")
+    return _stable_script(packaged) or packaged
+
+
+def _shell_prefix_path() -> str:
+    """Absolute path of the CLAUDE_CODE_SHELL_PREFIX wrapper (`_stable_script`
+    copy of the packaged one). "" when unavailable."""
+    return _stable_script(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "claude_shell_prefix.sh"))
 
 
 # Same tuple as supervisor/paths.py STRIPPED_ENV_VARS (kept local: this module
@@ -4828,7 +4908,7 @@ _CLIENT_UUID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 
 def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "",
-                       typed: str = "") -> None:
+                       typed: str = "") -> str:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
     `_send` (every follow-up) write from.
@@ -4845,7 +4925,11 @@ def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "",
     the tab's sessionStorage until this write is acknowledged, and after a reload
     the page asks the history whether an entry with THAT id is already here
     (inbox rows and transcript turns both carry `uuid`) before sending it again.
-    Identity, never text: two "go on"s are two ids."""
+    Identity, never text: two "go on"s are two ids.
+
+    Returns the uuid the entry was stamped with — the page's own when it was a
+    well-formed one, else the one minted here — for a caller (send-now) that has
+    to name the entry to the CLI."""
     entry_uuid = client_uuid if _CLIENT_UUID_RE.match(client_uuid or "") else str(uuid.uuid4())
     _inbox_time_record(run_dir, entry_uuid)
     if typed:
@@ -4853,6 +4937,7 @@ def _write_inbox_entry(run_dir: str, message: str, client_uuid: str = "",
     _write_inbox_row(run_dir, {"type": "user", "uuid": entry_uuid, "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
+    return entry_uuid
 
 
 def _write_control_request(run_dir: str, subtype: str, **fields) -> str:
@@ -5673,7 +5758,8 @@ _STOPPED_TASK_STATUSES = frozenset({"stopped", "killed"})
 def _not_a_turn_row(row: dict) -> bool:
     """Whether `row` is one of the shapes that never opens or reopens a turn
     (`_NOT_A_TURN_ROW`, `_BOOKKEEPING_SYSTEM_ROWS`, and a stopped job's
-    `task_notification` — `_STOPPED_TASK_STATUSES`)."""
+    `task_notification` — `_STOPPED_TASK_STATUSES`). A background subagent's own
+    job rows need the caller's owned-id set, so they are `_subagent_job_row`'s."""
     t = row.get("type")
     if t in _NOT_A_TURN_ROW:
         return True
@@ -5683,6 +5769,77 @@ def _not_a_turn_row(row: dict) -> bool:
     if sub == "task_notification":
         return str(row.get("status") or "") in _STOPPED_TASK_STATUSES
     return sub in _BOOKKEEPING_SYSTEM_ROWS
+
+
+def _subagent_started_id(row: dict) -> str:
+    """The task id of a `task_started` row a background subagent owns, else ""."""
+    if (row.get("type") == "system" and row.get("subtype") == "task_started"
+            and row.get("owned_by_subagent") and row.get("task_id")):
+        return str(row["task_id"])
+    return ""
+
+
+def _subagent_job_row(row: dict, owned: set) -> bool:
+    """Whether `row` belongs to a job a background SUBAGENT started (its own
+    Bash calls surface as top-level rows with no `parent_tool_use_id`). Only
+    the `task_started` carries `owned_by_subagent`; its `task_notification`
+    names just the `task_id`, so `owned` (the caller's running set of those
+    ids, mutated here) is what ties the two together; the notification is the
+    last row of the job, so its id leaves the set. A parent-owned job's
+    `task_notification` is not one of these: the CLI wakes the model for it."""
+    if row.get("type") != "system":
+        return False
+    sub = row.get("subtype")
+    tid = row.get("task_id")
+    if sub == "task_started":
+        started = _subagent_started_id(row)
+        if started:
+            owned.add(started)
+            return True
+        return False
+    if sub == "task_notification" and str(tid) in owned:
+        owned.discard(str(tid))
+        return True
+    return False
+
+
+# `run_dir -> (offset, frozenset of task ids)`: every background-subagent job
+# started so far in this run's out.jsonl. `_poll` reads a window that can begin
+# after a job's `task_started`, so it asks here instead of folding the ids
+# itself. Incremental (only appended bytes are read) and capped like
+# `_echo_cache`.
+_subagent_ids_cache: dict = {}
+
+
+def _subagent_task_ids(run_dir: str) -> frozenset:
+    """Ids of the jobs a background subagent started anywhere in this run's
+    out.jsonl (`_subagent_job_row`'s `task_started` rule), independent of any
+    poll window."""
+    with _ECHO_LOCK:
+        offset, ids = _subagent_ids_cache.get(run_dir, (0, frozenset()))
+    found = set(ids)
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            if os.fstat(fh.fileno()).st_size < offset:
+                offset, found = 0, set()
+            fh.seek(offset)
+            for raw in fh:
+                if not raw.endswith(b"\n"):
+                    break
+                offset += len(raw)
+                if b"owned_by_subagent" not in raw:
+                    continue
+                try:
+                    row = json.loads(raw.decode("utf-8", errors="replace"))
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and _subagent_started_id(row):
+                    found.add(_subagent_started_id(row))
+    except OSError:
+        return frozenset(found)
+    result = frozenset(found)
+    _remember_capped(_subagent_ids_cache, run_dir, (offset, result))
+    return result
 
 
 def _turn_preamble_row(row: dict) -> bool:
@@ -5797,13 +5954,13 @@ def _turn_state_row(row: dict, state: dict) -> None:
         if isinstance(arr, list):
             state["tasks"] = {str(x.get("task_id")): True
                               for x in arr if isinstance(x, dict) and x.get("task_id")}
-    if _not_a_turn_row(row):
+    if _subagent_job_row(row, state["sub_jobs"]) or _not_a_turn_row(row):
         return
     state["idle"] = t == "result"
 
 
 def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple:
-    """`_turn_state`, resumable: `cursor` (`{"offset", "idle", "tasks"}`, a dict
+    """`_turn_state`, resumable: `cursor` (`{"offset", "idle", "tasks", "sub_jobs"}`, a dict
     the caller owns and this mutates) remembers how far into `out.jsonl` the
     fold has read, so each call parses only the bytes appended since the last
     one. The session host calls `_turn_state` every 0.2s whenever the file
@@ -5819,10 +5976,11 @@ def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple
     cursor.setdefault("offset", 0)
     cursor.setdefault("idle", False)
     cursor.setdefault("tasks", {})
+    cursor.setdefault("sub_jobs", set())
     try:
         with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
             if os.fstat(fh.fileno()).st_size < cursor["offset"]:
-                cursor.update(offset=0, idle=False, tasks={})
+                cursor.update(offset=0, idle=False, tasks={}, sub_jobs=set())
             fh.seek(cursor["offset"])
             trailing = b""
             for raw in fh:
@@ -5845,7 +6003,8 @@ def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple
         except ValueError:
             row = None
         if isinstance(row, dict):
-            scratch = {"idle": idle, "tasks": tasks}
+            scratch = {"idle": idle, "tasks": tasks,
+                       "sub_jobs": set(cursor["sub_jobs"])}
             _turn_state_row(row, scratch)
             idle, tasks = scratch["idle"], scratch["tasks"]
     return not idle, bool(tasks)
@@ -6492,9 +6651,91 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     if client_uuid and any(r.get("uuid") == client_uuid
                            for r in _inbox_waiting(run_dir)):
         return {"sent": True}
-    _write_inbox_entry(run_dir, _compose_turn(message, terminal_hint), client_uuid,
-                       typed=typed or message)
+    _write_inbox_entry(
+        run_dir, _compose_turn(message, terminal_hint), client_uuid,
+        typed=typed or message)
     return {"sent": True}
+
+
+def _send_now_queued(run_id: str, message_uuid: str) -> dict:
+    """Ctrl+X: ONE `send_now` interrupt naming a line the live run already
+    holds (a follow-up the inbox took, or the CLI queued). It ends the MAIN
+    agent's turn, and the CLI then runs every queued line next, merged into one
+    turn; naming any one of them is enough. The lines are delivered beforehand
+    by ordinary `send`s, so none is written here. It is no stop (no
+    `cancelled` marker, no tree-kill, background work untouched), and it is
+    Claude only: another backend's host reads an `interrupt` as a stop.
+
+    The `send_now` marker records where `out.jsonl` ended when the interrupt
+    was queued: the abort result the CLI writes for the ended turn
+    (`error_during_execution`) is the one at or after that offset, which
+    `_poll` recognises whichever poll window it lands in."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "no such run"}
+    if not _CLIENT_UUID_RE.match(message_uuid or ""):
+        return {"error": "missing message uuid"}
+    try:
+        with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return {"error": "no live session"}
+    if not isinstance(host, dict) or not _pid_alive(str(host.get("pid") or "")):
+        return {"error": "no live session"}
+    if host.get("backend", "claude") != "claude":
+        return {"error": "send-now is not supported by this agent"}
+    try:
+        offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        offset = 0
+    with open(os.path.join(run_dir, "send_now"), "w", encoding="utf-8") as f:
+        f.write(str(offset))
+    _write_control_request(run_dir, "interrupt", send_now=True,
+                           message_uuid=message_uuid)
+    return {"sent": True}
+
+
+def _send_now_abort_end(run_dir: str) -> int:
+    """Where the abort `result` of the last send-now ends in `out.jsonl`, or 0
+    when there is none (no send-now, the interrupt has not been answered yet, or
+    the turn ended cleanly before it landed).
+
+    It is the FIRST `result` at or after the `send_now` marker's offset, and
+    only when that result is an `error_during_execution`: any later one is the
+    run's own. Once found it is written back into the marker, so later polls
+    compare an offset instead of scanning again."""
+    path = os.path.join(run_dir, "send_now")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            parts = fh.read().split()
+        offset = int(parts[0])
+    except (OSError, ValueError, IndexError):
+        return 0
+    if len(parts) > 1:
+        return int(parts[1]) if parts[1].isdigit() else 0
+    end = offset
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            fh.seek(offset)
+            for raw in fh:
+                if not raw.endswith(b"\n"):
+                    return 0
+                end += len(raw)
+                try:
+                    row = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get("type") == "result":
+                    abort = row.get("subtype") == "error_during_execution"
+                    try:
+                        with open(path, "w", encoding="utf-8") as out:
+                            out.write(f"{offset} {end if abort else 0}")
+                    except OSError:
+                        pass
+                    return end if abort else 0
+    except OSError:
+        return 0
+    return 0
 
 
 def _discard_inbox(run_dir: str, keep_first: bool = False) -> list:
@@ -7544,6 +7785,11 @@ def _is_text_delta(row) -> bool:
     return (ev.get("delta") or {}).get("type") == "text_delta"
 
 
+def _thinking_kind(row: dict, nested: bool) -> str:
+    mode = row.get("thinking_display") or row.get("thinkingDisplay")
+    return "update" if mode == "updates" and not nested else "thinking"
+
+
 def _thinking_delta_text(row) -> str:
     """The reasoning text of one streamed thinking chunk; "" for any other row
     AND for a chunk that carries no text.
@@ -7799,7 +8045,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                     # unfolded to nothing at all.
                     chunk = _thinking_delta_text(row)
                     if chunk:
-                        grow("thinking", chunk, ts=_row_ts(row))
+                        grow(_thinking_kind(row, _nested), chunk, ts=_row_ts(row))
             elif et == "message_stop":
                 # A tool-using turn is several assistant messages; without a
                 # break their texts concatenate mid-word ("orange.After").
@@ -7817,7 +8063,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                         continue
                     chunk = str(block.get("thinking") or "")
                     if chunk.strip():
-                        grow("thinking", chunk, ts=_row_ts(row))
+                        grow(_thinking_kind(row, _nested), chunk, ts=_row_ts(row))
             # Text blocks next, joined the way `_history` joins them, so a
             # restored turn's `text` and its segments say the same thing. Safe
             # against block order because a real message is text-then-tools.
@@ -7968,7 +8214,7 @@ def _segments_from_rows(rows: list, shape: tuple = (),
         # invariant the page depends on ("a thinking segment HAS a body"), so it
         # is enforced here rather than assumed. Text segments are NOT filtered:
         # an empty one is how the page knows the reply's tail is still coming.
-        if seg["kind"] == "thinking" and not seg["text"].strip():
+        if seg["kind"] in ("thinking", "update") and not seg["text"].strip():
             continue
         if seg["kind"] == "tool" and seg.get("id") in links:
             seg["task_id"] = links[seg["id"]]
@@ -9258,7 +9504,8 @@ def _is_api_error_row(row: dict) -> bool:
     return isinstance(row, dict) and row.get("isApiErrorMessage") is True
 
 
-def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
+def _absorbed_turn_breaks(rows: list, app_reads: bool = False,
+                          sub_jobs: frozenset | None = None) -> list:
     """Where a reply ENDED inside this row window because a follow-up had been
     folded into it, as payload offsets a page can slice on.
 
@@ -9302,6 +9549,9 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
     # in one payload is measured against one segmentation.
     shape = _window_shape(rows)
     outstanding = 0
+    # The window's own copy of the owned ids: a job started before the window
+    # has its notification inside it.
+    sub_jobs = set(sub_jobs or ())
     # Whether a `result` has closed a reply since the last echo — the exact
     # test `_read_current_turn`'s cursor makes, and for the same reason: an echo
     # WITH one before it is a genuinely new turn (the cursor is about to advance
@@ -9390,7 +9640,8 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
                 quiet_since_result = False
             else:
                 outstanding += 1
-        elif not _not_a_turn_row(row) and not _turn_preamble_row(row):
+        elif not _subagent_job_row(row, sub_jobs) \
+                and not _not_a_turn_row(row) and not _turn_preamble_row(row):
             # The run itself speaking after a `result` (a wake's rows): a
             # seam at that `result` would file this under the wrong turn.
             quiet_since_result = False
@@ -9730,6 +9981,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
+    stop_marked = os.path.exists(os.path.join(run_dir, "cancelled"))
+    # The abort a send-now interrupt wrote, never a failure: the line it made
+    # way for is the reply. A Stop keeps its own abort (the `cancelled` marker).
+    send_now_abort = 0 if stop_marked else _send_now_abort_end(run_dir)
     quota = None         # the latest `rate_limit_event` — plan window + reset time
     context = None       # the latest API response's own `usage` (`_context_usage`)
     # WHAT THE RUN IS DOING RIGHT NOW, beyond the verb. Every one of these is a
@@ -9770,6 +10025,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # the bytes since the last closed turn — see `_read_current_turn` — so this
     # list only holds a second reference to objects that pass already built.
     parsed = []
+    sub_jobs = set(_subagent_task_ids(run_dir))  # task ids a background subagent started
 
     ends = []
     pending_cursor = []
@@ -9802,7 +10058,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # which is also each one's command name.
     cli_name = backend
 
-    for row in rows:
+    for row_at, row in enumerate(rows):
         parsed.append(row)
         t = row.get("type")
         # Anything at all after a `result` is the run waking up for another turn
@@ -9811,7 +10067,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         # except the rows that are not the run speaking at all
         # (`_NOT_A_TURN_ROW`), and the preamble of the turn a pending send is
         # about to open (`_turn_preamble_row`, gated on `echo_outstanding`).
-        if t != "result" and not _not_a_turn_row(row) \
+        if t != "result" and not _subagent_job_row(row, sub_jobs) \
+                and not _not_a_turn_row(row) \
                 and not (echo_outstanding and _turn_preamble_row(row)):
             idle = False
         # Any of these means the request the retries were for went THROUGH.
@@ -9999,7 +10256,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             _learn_windows(row)
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
-            if row.get("is_error"):
+            if row.get("is_error") and not (
+                    send_now_abort and ends[row_at] == send_now_abort):
                 error = str(result_text or f"{cli_name} exited with an error")
                 # Only if the failure arrived DURING a retry. A retry earlier in
                 # the turn that then succeeded says nothing about why this ended.
@@ -10432,7 +10690,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # while `echo_pending` blanks the payload the offsets would index
             # into.
             "turn_breaks": [] if echo_pending
-            else _absorbed_turn_breaks(parsed, app_reads),
+            else _absorbed_turn_breaks(parsed, app_reads,
+                                  _subagent_task_ids(run_dir)),
             # WHERE THIS WINDOW STARTS, as a byte offset into out.jsonl (the
             # cursor `_read_current_turn` settled on). The page keeps one
             # bubble per reply in the window and has to notice when the cursor
@@ -12739,14 +12998,18 @@ def _cancel_run(run_id: str, interrupt_first: bool = True,
     stranded = []
     if interrupt_first and _host_alive(run_dir):
         # Interrupt the TURN, not the whole session. A live host survives an
-        # `interrupt` control request (verified live against 2.1.251) exactly
-        # the way it survives a trailing `result` — the CLI stays up on the
-        # same held-open stdin, ready for the next follow-up, and the pid
-        # file (the CLI's own) never changes. This is the whole reason a stop
-        # button no longer has to mean "end the session": a background task
-        # started earlier in the SAME session outlives a stop pressed on a
-        # later turn, and the next message continues this session instead of
+        # `interrupt` control request exactly the way it survives a trailing
+        # `result` — the CLI stays up on the same held-open stdin, ready for
+        # the next follow-up, and the pid file (the CLI's own) never changes.
+        # That is the whole reason a stop button no longer has to mean "end
+        # the session": the next message continues this session instead of
         # resuming a dead one.
+        #
+        # A plain interrupt is a STOP for the background work too: on CLI
+        # 2.1.304 it also ends the session's background subagents (a
+        # `task_updated` with status `killed` follows within milliseconds). A
+        # send-now (`_send_now_queued`) is the interrupt that ends only the
+        # main agent's turn, via `send_now` + a queued line's uuid.
         #
         # THE INBOX FIRST, and before the interrupt row is queued so the scan
         # cannot see (or race) it. `interrupt` only reaches the CLI's OWN
@@ -12994,6 +13257,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
                     permission_mode, terminal_hint, client_uuid, typed)
+    if action == "send_now":
+        return _send_now_queued(run_id, client_uuid)
     if action == "set_mode":
         # The Approvals pill changed on a live chat: apply it now, with no
         # message and no turn (`_send` only applies it piggybacked on a send).

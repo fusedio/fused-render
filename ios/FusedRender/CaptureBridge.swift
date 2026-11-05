@@ -1,12 +1,12 @@
 // Native side of `fused.capture.*` for pages in the shell (Resources/runtime-ios.js
-// is the JS side). A page on plain http cannot use the microphone or take a
-// picture of itself; the app can. Each call arrives as {id, op, args, page},
-// runs natively, uploads its file to the server the page came from, and
-// answers with the desktop's own result shapes so apps run unchanged.
+// is the JS side). A page cannot record the screen or take a picture of
+// itself; the app can. Each call arrives as {id, op, args, page}, runs
+// natively, uploads its file to the server the page came from, and answers
+// with the desktop's own result shapes so apps run unchanged.
 //
-// Uploads go through /api/fs/upload with the WEBVIEW'S cookie (read from the
-// shared WKHTTPCookieStore) — the same pairing the page holds, so nothing new
-// to store and nothing the server has to learn. Files land beside the app
+// Uploads go through /api/fs/upload with the pairing cookie from the Keychain
+// (PairingSecret) over the pinned session — the same pairing the page holds,
+// so nothing the server has to learn. Files land beside the app
 // (`<app dir>/captures/…`) unless the call names a `path`: the listener only
 // writes inside the app roots (lan.py allowed_roots), so a laptop-style
 // default such as ~/recordings would be refused.
@@ -77,7 +77,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         // the page and have it uploaded under this phone's cookie.
         guard message.frameInfo.isMainFrame,
               !message.frameInfo.securityOrigin.host.isEmpty,
-              message.frameInfo.securityOrigin.host == server?.host else { return }
+              server?.reaches(message.frameInfo.securityOrigin.host) == true else { return }
         guard let body = message.body as? [String: Any],
               let id = body["id"] as? String,
               let op = body["op"] as? String else { return }
@@ -279,21 +279,18 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         guard let webView, let pageURL = webView.url, var comps = URLComponents(url: pageURL, resolvingAgainstBaseURL: false) else {
             throw BridgeError("no server to upload to")
         }
+        // Only ever https (the listener is nothing else): the pairing cookie
+        // below must never ride a plain-http page that reached this bridge.
+        guard comps.scheme == "https" else { throw BridgeError("the page is not served over https") }
         comps.path = "/api/fs/upload"
         comps.query = nil
         comps.fragment = nil
         guard let endpoint = comps.url else { throw BridgeError("bad server address") }
 
-        let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
-        let cookieHeader = cookies
-            // Exact host only: a suffix match would hand render.fused.local's
-            // cookie to a page on xrender.fused.local.
-            .filter { c in pageURL.host.map { $0 == c.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) } ?? false }
-            .map { "\($0.name)=\($0.value)" }
-            .joined(separator: "; ")
+        let cookieHeader = server.flatMap(PairingSecret.cookieHeader(for:)) ?? ""
 
-        // Over https, trust exactly the computer's private CA (TLSTrust.swift).
-        let pinned = PinnedSession(caDER: server?.caDER)
+        // Trust exactly the computer's pinned certificate (TLSTrust.swift).
+        let pinned = PinnedSession(fingerprint: server?.fingerprint)
 
         // /api/fs/upload refuses a missing parent; make `<app dir>/captures/`
         // (or whatever the caller named) first. "Already exists" is fine.
@@ -305,7 +302,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
             mk.setValue("application/json", forHTTPHeaderField: "Content-Type")
             mk.setValue("1", forHTTPHeaderField: "X-Fused")
             if !cookieHeader.isEmpty { mk.setValue(cookieHeader, forHTTPHeaderField: "Cookie") }
-            mk.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
+            mk.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
             mk.httpBody = try JSONSerialization.data(withJSONObject: ["path": (path as NSString).deletingLastPathComponent])
             _ = try? await pinned.data(for: mk)
         }
@@ -325,7 +322,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         req.setValue("1", forHTTPHeaderField: "X-Fused")
         if !cookieHeader.isEmpty { req.setValue(cookieHeader, forHTTPHeaderField: "Cookie") }
-        req.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
+        req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
         req.httpBody = body
 
         let (data, response) = try await pinned.data(for: req)

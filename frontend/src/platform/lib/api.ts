@@ -1633,26 +1633,26 @@ export interface Prefs {
    *  choosing. See `Task.entrypoint`'s own doc comment for why this can only
    *  ever be a best-effort filter, never an exact one. */
   task_notify?: { terminal_sessions: boolean };
-  // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
-  // the stored switch plus the live listener — `url` once it is serving
-  // (http://render.fused.local/), `error` when the bind or mDNS failed.
+  // Local-network sharing (lan.py, opt-in, default off): the stored switch
+  // plus the live https listener — `url` once it is serving
+  // (https://<hostname>.local:1889/), `error` when the bind or the
+  // certificate failed. `hostname` is the OS-advertised local name the code
+  // carries (null when the OS has none; the address stands in), `fingerprint`
+  // the SHA-256 the app pins. `warnings` is what the computer itself can see
+  // that would keep a phone from reaching it (lan_doctor.py).
   lan: {
     enabled: boolean;
     running: boolean;
     url: string | null;
-    host: string;
-    alias: string;
+    hostname: string | null;
     ip: string | null;
     port: number | null;
     error: string | null;
-    // The https listener beside the http one (for the native app); its
-    // failure leaves browsers working and is reported separately.
-    https_url: string | null;
-    https_port: number | null;
-    tls_error: string | null;
+    fingerprint: string | null;
     // Devices paired by scanning the QR code (lan.py): what the Preferences
     // list shows and can revoke.
     devices: LanDevice[];
+    warnings: LanWarning[];
   };
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
@@ -2248,32 +2248,34 @@ export function ackMarketplacePython(slug: string): Promise<{ ok: boolean; slugs
 
 export interface LanDevice {
   id: string;
-  name: string; // "iPhone · Safari", derived from the user agent at pairing
+  name: string; // the name the app declared at pairing ("Vas iPhone"), else a plain kind
   paired_at: number; // epoch seconds
   last_seen: number;
 }
 
-// A one-time pairing URL for the QR code (five minutes, single use). `ip_url`
-// carries the same token behind the raw LAN address, for a phone whose
-// resolver does not do multi-label .local names.
-export function getLanPairToken(): Promise<{ url: string; ip_url: string | null; ttl_s: number }> {
+// One thing the computer can see that would keep a phone from reaching it
+// (lan_doctor.py): `code` is stable (no_lan, vpn, firewall, hostname,
+// listener, renamed), `message` is what Preferences shows.
+export interface LanWarning {
+  code: string;
+  message: string;
+}
+
+// A one-time pairing URL for the QR code (five minutes, single use), naming
+// the computer's local name (or its address), the certificate fingerprint
+// the app pins and the address it falls back to.
+export function getLanPairToken(): Promise<{
+  url: string;
+  ttl_s: number;
+  fingerprint: string;
+  hostname: string | null;
+  ip: string | null;
+}> {
   return getJson("/api/lan/pair-token");
 }
 
 export function getLanDevices(): Promise<{ devices: LanDevice[] }> {
   return getJson("/api/lan/devices");
-}
-
-// A device that paired since the shell last dismissed the news — one row in
-// the status bar's Notifications section (RepoUpdatesDock).
-export type LanPairingEvent = { id: string; name: string; at: number };
-
-export function getLanPairings(): Promise<{ pairings: LanPairingEvent[] }> {
-  return getJson("/api/lan/pairings");
-}
-
-export function dismissLanPairing(id: string): Promise<{ pairings: LanPairingEvent[] }> {
-  return postJson("/api/lan/pairings/dismiss", { id });
 }
 
 async function lanDelete(path: string): Promise<{ devices: LanDevice[] }> {
@@ -3896,11 +3898,12 @@ export interface TaskMessage {
 
 /** `Task.background_jobs` — the jobs a live session host is still holding
  *  for a chat whose reply is over. `title` is the CLI's own description ("" when
- *  it sent none). */
+ *  it sent none). `agent` is true for a background subagent, false for a Bash,
+ *  a Monitor or any other job (absent from an older server: not a subagent). */
 export interface TaskBackgroundJobs {
   count: number;
   run_id: string;
-  jobs: Array<{ id: string; title: string }>;
+  jobs: Array<{ id: string; title: string; agent?: boolean }>;
 }
 
 export interface Task {

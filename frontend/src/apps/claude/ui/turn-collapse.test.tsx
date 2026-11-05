@@ -87,6 +87,7 @@ const tool = (id: string, name: string): ToolSegment => ({
   images: [],
 });
 const text = (t: string): Segment => ({ kind: "text", text: t });
+const update: Segment = { kind: "update", text: "Reading the rows." };
 
 // TWO LINES, because a ONE-line reply is never foldable (`Turn`'s
 // `isOneLiner`) and every test below is about the fold. The folded row shows
@@ -717,9 +718,13 @@ describe("the line a folded reply shows", () => {
   test("the FIRST LINE of the first text segment", () => {
     const turn = assistant("a:1", {
       text: "ignored",
-      segments: [tool("t1", "Read"), text("## Heading\nand the rest"), text("later")],
+      segments: [update, tool("t1", "Read"), text("## Heading\nand the rest"), text("later")],
     });
     expect(collapsedLine(turn)).toEqual({ text: "## Heading", muted: false });
+    expect(collapsedLine(assistant("a:2", { text: "", segments: [update] }))).toEqual({
+      text: "Reading the rows.",
+      muted: false,
+    });
     const r = mount(<Turn turn={turn} collapsed onToggleCollapse={() => {}} />);
     expect(folded(r)).toEqual(["## Heading"]);
   });

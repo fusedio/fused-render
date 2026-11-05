@@ -440,6 +440,20 @@ def test_the_thinking_gate_is_separate_from_the_text_gate(agent, tmp_path):
     assert data["text"] == "Done.", "the flat field is untouched by any of this"
 
 
+def test_a_progress_update_is_its_own_prose_kind_not_folded_thinking(
+        agent, tmp_path, monkeypatch):
+    live = [dict(_delta("thinking_delta", "Loading."), thinking_display="updates"),
+            _delta("text_delta", "Done.")]
+    assert [(s["kind"], s["text"]) for s in agent._segments_from_rows(live)] == [
+        ("update", "Loading."), ("text", "Done.")]
+    saved = dict(_t_assistant([{"type": "thinking", "thinking": "Loading."}]),
+                 thinkingDisplay="updates")
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("go"), saved, _t_assistant([{"type": "thinking", "thinking": "Hmm."}])])
+    assert [s["kind"] for s in turns[-1]["segments"]] == ["update", "thinking"]
+    assert agent._segments_from_rows([saved], _nested=True)[0]["kind"] == "thinking"
+
+
 # ---------------------------------------------------------- text did not move
 
 def _old_text(rows):

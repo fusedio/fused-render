@@ -92,6 +92,46 @@ def test_a_command_lifecycle_row_after_the_result_does_not_reopen_the_turn(
     assert agent._turn_state(run_dir) == (True, False)
 
 
+def _job(sub, tid, **extra):
+    return {"type": "system", "subtype": sub, "task_id": tid, **extra}
+
+
+def test_a_background_subagents_own_job_rows_do_not_reopen_the_turn(
+        agent, tmp_path):
+    """A background Agent's Bash calls surface as top-level rows with no
+    `parent_tool_use_id`: a `task_started` marked `owned_by_subagent` and a
+    `task_notification` that names only the task id. Neither is the parent
+    speaking, so a finished parent stays finished."""
+    run_dir = str(tmp_path / "run_sub")
+    _write_rows(run_dir, [_system_init(), _result(),
+                          _job("task_started", "b1", owned_by_subagent=True),
+                          _job("task_notification", "b1", status="completed")])
+    assert agent._turn_state(run_dir) == (False, False)
+
+
+def test_a_parent_owned_jobs_completion_still_reopens_the_turn(agent, tmp_path):
+    """The CLI wakes the model for the parent's own job finishing."""
+    run_dir = str(tmp_path / "run_parent_job")
+    _write_rows(run_dir, [_system_init(), _result(),
+                          _job("task_started", "p1"),
+                          _job("task_notification", "p1", status="completed")])
+    assert agent._turn_state(run_dir) == (True, False)
+
+
+def test_subagent_job_ids_survive_a_resumed_fold(agent, tmp_path):
+    """The `task_started` and its `task_notification` land in different
+    folds: the cursor carries the owned ids across."""
+    run_dir = str(tmp_path / "run_sub_resume")
+    _write_rows(run_dir, [_system_init(), _result(),
+                          _job("task_started", "b1", owned_by_subagent=True)])
+    cursor = {}
+    assert agent._turn_state_fold(run_dir, cursor) == (False, False)
+    with open(os.path.join(run_dir, "out.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps(_job("task_notification", "b1",
+                                status="completed")) + "\n")
+    assert agent._turn_state_fold(run_dir, cursor) == (False, False)
+
+
 def test_nonempty_tasks_is_pending_even_when_idle(agent, tmp_path):
     run_dir = str(tmp_path / "run4")
     _write_rows(run_dir, [_system_init(), _bg_tasks("t1"), _result()])

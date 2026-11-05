@@ -3178,6 +3178,24 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   // ---- stop (T:15901-15926) ----------------------------------------------
 
+  async function sendQueuedNow(): Promise<boolean> {
+    const runId = activeRun;
+    if (disposed || !runId) return false;
+    // The oldest line the inbox has confirmed: the CLI runs the rest behind it
+    // in queue order. A line whose `send` has not answered yet is not in the
+    // inbox, so an interrupt naming it would find nothing. After a reload the
+    // run's own inbox report is all there is to name.
+    const mine = queued.find((q) => q.landed && q.opts.clientId)?.opts.clientId;
+    const target = mine || state.inbox.find((m) => m.uuid)?.uuid;
+    if (!target) return false;
+    try {
+      const res = await run("send_now", { run_id: runId, client_uuid: target });
+      return "sent" in res && res.sent;
+    } catch {
+      return false;
+    }
+  }
+
   async function stopRun(): Promise<void> {
     if (disposed) return;
     const runId = activeRun;
@@ -4797,6 +4815,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     beginFork,
     cancelFork,
     stopRun,
+    sendQueuedNow,
     applyPermission,
     decidePermission,
     answerQuestion,

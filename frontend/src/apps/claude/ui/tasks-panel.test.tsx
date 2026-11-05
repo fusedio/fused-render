@@ -284,7 +284,7 @@ describe("TasksPanel", () => {
       const pre = r.root.findAll((n) => n.type === "pre");
       expect(pre.length).toBe(1);
       expect(text(pre[0]!)).toBe("ok\nall green");
-      expect(text(byClass(r.root, "chat-task-note")[0]!)).toBe("Showing the last 64 KB.");
+      expect(text(byClass(r.root, "chat-task-note")[0]!)).toBe("Showing the end of the output.");
       expect(line(row()).props["aria-expanded"]).toBe(true);
       act(() => line(row()).props.onClick());
       expect(r.root.findAll((n) => n.type === "pre").length).toBe(0);
@@ -319,6 +319,121 @@ describe("TasksPanel", () => {
         line(byClass(r.root, "chat-task")[0]!).props.onClick();
       });
       expect(text(byClass(r.root, "chat-task-note")[0]!)).toBe("No output yet.");
+    });
+
+    describe("a shown output is polled while the task is live", () => {
+      const w = globalThis.window as unknown as Record<string, any>;
+      let ticks: Array<() => void> = [];
+      let realSet: any, realClear: any;
+      beforeEach(() => {
+        realSet = w.setInterval;
+        realClear = w.clearInterval;
+        ticks = [];
+        w.setInterval = (fn: () => void) => {
+          ticks.push(fn);
+          return ticks.length;
+        };
+        w.clearInterval = (id: number) => {
+          ticks[id - 1] = () => {};
+        };
+      });
+      afterEach(() => {
+        w.setInterval = realSet;
+        w.clearInterval = realClear;
+      });
+      const tick = async () => {
+        await act(async () => {
+          ticks.forEach((f) => f());
+        });
+      };
+      const answers = (...a: Array<TaskOutputResponse | ErrorOnly | "reject">) => {
+        let n = 0;
+        const fetchOutput = async () => {
+          const v = a[Math.min(n++, a.length - 1)]!;
+          if (v === "reject") throw new Error("boom");
+          return v;
+        };
+        return { fetchOutput, count: () => n };
+      };
+      const open1 = async (r: ReactTestRenderer) =>
+        act(async () => {
+          line(byClass(r.root, "chat-task")[0]!).props.onClick();
+        });
+      const ok = (output: string, truncated = false): TaskOutputResponse => ({ output, status: "running", truncated });
+
+      test("an empty first read is replaced by the next poll", async () => {
+        const a = answers(ok(""), ok("hello"));
+        const r = mount(<TasksPanel tasks={[SHELL]} runId="r1" open onToggle={() => {}} fetchOutput={a.fetchOutput} now={() => 70_000} />);
+        await open1(r);
+        expect(text(byClass(r.root, "chat-task-note")[0]!)).toBe("No output yet.");
+        await tick();
+        expect(a.count()).toBe(2);
+        expect(r.root.findAll((n) => n.type === "pre").map(text)).toEqual(["hello"]);
+      });
+
+      test("a failing poll keeps the last good text", async () => {
+        const a = answers(ok("kept"), { error: "gone" }, "reject");
+        const r = mount(<TasksPanel tasks={[SHELL]} runId="r1" open onToggle={() => {}} fetchOutput={a.fetchOutput} now={() => 70_000} />);
+        await open1(r);
+        await tick();
+        await tick();
+        expect(a.count()).toBe(3);
+        expect(r.root.findAll((n) => n.type === "pre").map(text)).toEqual(["kept"]);
+        expect(byClass(r.root, "chat-task-error").length).toBe(0);
+      });
+
+      test("a paused (not live) row is not polled and an empty one says No output.", async () => {
+        const a = answers(ok(""));
+        const paused = rec({ ...SHELL, status: "paused" });
+        const r = mount(<TasksPanel tasks={[paused]} runId="r1" open onToggle={() => {}} fetchOutput={a.fetchOutput} now={() => 70_000} />);
+        await open1(r);
+        await tick();
+        expect(a.count()).toBe(1);
+        expect(text(byClass(r.root, "chat-task-note")[0]!)).toBe("No output.");
+      });
+
+      test("going from live to not live reads once more, then stops", async () => {
+        const a = answers(ok("a"), ok("a\nfinal"));
+        const mk = (status: string) => (
+          <TasksPanel tasks={[rec({ ...SHELL, status: status as TaskRecord["status"] })]} runId="r1" open onToggle={() => {}} fetchOutput={a.fetchOutput} now={() => 70_000} />
+        );
+        const r = mount(mk("running"));
+        await open1(r);
+        await act(async () => r.update(mk("paused")));
+        expect(a.count()).toBe(2);
+        expect(r.root.findAll((n) => n.type === "pre").map(text)).toEqual(["a\nfinal"]);
+        await tick();
+        expect(a.count()).toBe(2);
+      });
+
+      test("an older in-flight poll answering after the final read does not overwrite it", async () => {
+        const pending: Array<(v: TaskOutputResponse) => void> = [];
+        let n = 0;
+        const fetchOutput = (): Promise<TaskOutputResponse> => {
+          if (n++ === 0) return Promise.resolve(ok("first"));
+          return new Promise((res) => pending.push(res));
+        };
+        const mk = (status: string) => (
+          <TasksPanel tasks={[rec({ ...SHELL, status: status as TaskRecord["status"] })]} runId="r1" open onToggle={() => {}} fetchOutput={fetchOutput} now={() => 70_000} />
+        );
+        const r = mount(mk("running"));
+        await open1(r);
+        await tick(); // poll #2, stays pending
+        await act(async () => r.update(mk("paused"))); // forced final read #3
+        expect(pending.length).toBe(2);
+        await act(async () => pending[1]!(ok("final")));
+        await act(async () => pending[0]!(ok("old")));
+        expect(r.root.findAll((x) => x.type === "pre").map(text)).toEqual(["final"]);
+      });
+
+      test("collapsing stops the polling", async () => {
+        const a = answers(ok("x"));
+        const r = mount(<TasksPanel tasks={[SHELL]} runId="r1" open onToggle={() => {}} fetchOutput={a.fetchOutput} now={() => 70_000} />);
+        await open1(r);
+        act(() => line(byClass(r.root, "chat-task")[0]!).props.onClick());
+        await tick();
+        expect(a.count()).toBe(1);
+      });
     });
 
     test("an error answer is shown under the row", async () => {

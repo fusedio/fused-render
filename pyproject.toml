@@ -253,12 +253,9 @@ data = [
 ]
 # The native OS integrations the desktop shell uses. None of them is on the
 # path of rendering or running an app, which is why they are not base.
-#   * zeroconf: mDNS advertising of render.fused.local for local-network app
-#     sharing (fused_render/lan.py). Without it the listener still binds; the
-#     friendly name just does not resolve. zeroconf ships no x86_64 macOS wheel
-#     after 0.148.0 (verified against https://pypi.org/pypi/zeroconf/json on
-#     2026-09-23; 0.149.0+ ship only macosx_11_0_arm64), so Intel Macs get a
-#     ceiling instead of a source build.
+#   (Local-network sharing, fused_render/lan.py, no longer needs anything
+#   here: the computer's own OS-advertised `.local` name replaced the
+#   python-zeroconf records and their Intel-Mac version ceiling.)
 #   * pyobjc-framework-Cocoa: the macOS half of the OS clipboard bridge
 #     (shell/pasteboard/_darwin.py reads and writes NSPasteboard file URLs).
 #     Without it the clipboard route reports `supported: false`.
@@ -272,8 +269,6 @@ data = [
 #     (server/image_convert.py), which keeps the original file when it is
 #     absent.
 desktop = [
-    "zeroconf>=0.130,<=0.148.0 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "zeroconf>=0.130 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
     "pyobjc-framework-ScreenCaptureKit; sys_platform == 'darwin'",
     "pyobjc-framework-AVFoundation; sys_platform == 'darwin'",
@@ -321,7 +316,7 @@ fused = [
 # The middle ground: what `fused-render serve` (the file explorer) needs, and
 # nothing more. Lights up the explorer (search, the index, Repos, previews, the
 # Hugging Face login) plus deploy, share and MCP. Leaves out only `[desktop]`
-# (zeroconf, pyobjc, dbus-fast: LAN discovery, screen capture, pasteboard;
+# (pyobjc, dbus-fast: screen capture, pasteboard;
 # ~36 MB, platform-native wheels), which serve degrades without.
 # Sizes: base ~59 MB, `[cli]` ~290 MB, `[all]` ~325 MB.
 # pillow is listed because the thumbnail route (server/routers/fs_read.py)

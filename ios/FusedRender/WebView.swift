@@ -1,16 +1,17 @@
 // The webview that shows the grid, the bots pages and the apps. One persistent
-// WKWebsiteDataStore (the default) is the whole pairing story: /pair sets the
-// device cookie there once, and every later launch carries it.
+// WKWebsiteDataStore (the default) carries the pairing cookie; the app also
+// keeps the cookie's value in the Keychain (PairingSecret.swift) and sets it
+// for whatever host it is about to load, so reaching the computer by its
+// address instead of its name is still paired.
 //
 // The user agent carries a marker (`FusedRender-iOS/<version>`) so the
-// listener can tell this shell from a phone browser: lan.py serves the STOCK
-// runtime.js to it and the native bridge (CaptureBridge.swift) installs its
-// own `fused.capture` on top.
+// listener can tell this shell apart; the native bridge (CaptureBridge.swift)
+// installs its own `fused.capture` on top of the page's runtime.
 //
-// Over https the server presents a certificate from its own private CA; the
-// navigation delegate accepts exactly that CA for exactly this host
-// (TLSTrust.swift) — which is what gives pages a secure context, and with it
-// the microphone and clipboard the same pages lack on plain http.
+// The server presents one self-signed certificate; the navigation delegate
+// accepts exactly the certificate whose fingerprint the pairing code carried,
+// for the computer's own hosts (TLSTrust.swift) — which is what gives pages a
+// secure context, and with it the microphone and the camera.
 import Network
 import SwiftUI
 import WebKit
@@ -31,26 +32,46 @@ final class WebController: ObservableObject {
     func load(_ url: URL) { webView?.load(URLRequest(url: url)) }
 }
 
-struct WebView: UIViewRepresentable {
-    let server: Server
-    @Binding var pairURL: URL?
-    let controller: WebController
-    /// Fired with the host when the grid finishes loading — AppModel treats it
-    /// as proof a pending pairing landed (cookie set, token spent).
-    var onGridLoaded: (String) -> Void = { _ in }
-
+/// How this shell introduces itself to the computer. Not on `WebView` (a
+/// SwiftUI `View`, main-actor by inference), so nonisolated code such as the
+/// reachability probe can read it without a warning.
+enum ShellIdentity {
     static let userAgentMarker: String = {
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
         return "FusedRender-iOS/\(v)"
     }()
 
+    /// What the server records as the device's name (`X-Fused-Device-Name` on
+    /// the /pair request): the device's own name, which iOS reports as a
+    /// plain "iPhone" unless the app is entitled to more — still better than
+    /// a user-agent guess.
+    @MainActor static var deviceName: String {
+        let name = UIDevice.current.name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? UIDevice.current.model : name
+    }
+}
+
+struct WebView: UIViewRepresentable {
+    let server: Server
+    /// The host and port to reach the computer on right now: its name and
+    /// stored port, or wherever Reachability found it.
+    let host: String
+    let port: Int
+    @Binding var pairURL: URL?
+    let controller: WebController
+    /// Fired with the host when the grid finishes loading — AppModel treats it
+    /// as proof a pending pairing landed (cookie set, token spent).
+    var onGridLoaded: (String) -> Void = { _ in }
+    /// A main-frame navigation died on the network: ConnectedView runs the
+    /// reachability diagnosis and shows why.
+    var onNavigationFailed: () -> Void = {}
+
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         // The marker rides on WebKit's own UA from the very first request (the
-        // pairing one included) — setting customUserAgent after creation was
-        // too late, and the server named the device "iPhone · Safari".
-        config.applicationNameForUserAgent = "Mobile/15E148 " + Self.userAgentMarker
+        // pairing one included).
+        config.applicationNameForUserAgent = "Mobile/15E148 " + ShellIdentity.userAgentMarker
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -95,13 +116,16 @@ struct WebView: UIViewRepresentable {
         // after and would otherwise load the same /pair again — the token is
         // single-use, so the second hit would land on "code expired".
         context.coordinator.lastPending = pairURL
-        web.load(URLRequest(url: pairURL ?? server.baseURL))
+        context.coordinator.host = host
+        context.coordinator.load(pairURL ?? server.url(host: host, port: port), pairing: pairURL != nil)
         return web
     }
 
     func updateUIView(_ web: WKWebView, context: Context) {
         context.coordinator.server = server
         context.coordinator.bridge.server = server
+        context.coordinator.onNavigationFailed = onNavigationFailed
+        let base = server.url(host: host, port: port)
         if let pair = pairURL {
             // A fresh pairing request: load it once, then clear so a SwiftUI
             // re-render does not replay it. Guarded against the same URL being
@@ -111,22 +135,34 @@ struct WebView: UIViewRepresentable {
                 // The pending page IS this server's page (a deep link, or the
                 // pairing): mark the base as current too, or the next pass
                 // would see a stale baseURL and wipe the page with the grid.
-                context.coordinator.baseURL = server.baseURL
+                context.coordinator.baseURL = base
+                context.coordinator.host = host
                 webLog.info("load pending \(pair.absoluteString, privacy: .public)")
-                web.load(URLRequest(url: pair))
+                context.coordinator.load(pair, pairing: pair.path == "/pair")
             }
             DispatchQueue.main.async { pairURL = nil }
-        } else if context.coordinator.baseURL != server.baseURL {
-            context.coordinator.baseURL = server.baseURL
-            webLog.info("load base \(server.baseURL.absoluteString, privacy: .public)")
-            web.load(URLRequest(url: server.baseURL))
+        } else if context.coordinator.baseURL != base {
+            // The computer moved (to its address, or another port): carry
+            // the page that was asked for — a deep link's app or bot — onto
+            // the new base rather than dropping to the grid.
+            let previous = context.coordinator.baseURL
+            context.coordinator.baseURL = base
+            context.coordinator.host = host
+            let target = context.coordinator.carried(onto: base, from: previous)
+            webLog.info("load on new base \(target.absoluteString, privacy: .public)")
+            context.coordinator.load(target, pairing: false)
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(server: server, controller: controller, onGridLoaded: onGridLoaded) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(server: server, host: host, port: port, controller: controller, onGridLoaded: onGridLoaded,
+                    onNavigationFailed: onNavigationFailed)
+    }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var server: Server
+        var host: String
+        var port: Int
         var baseURL: URL
         var lastPending: URL?
         var titleObservation: NSKeyValueObservation?
@@ -134,6 +170,7 @@ struct WebView: UIViewRepresentable {
         weak var webView: WKWebView?
         let controller: WebController
         let onGridLoaded: (String) -> Void
+        var onNavigationFailed: () -> Void
         let bridge = CaptureBridge()
 
         /// Set when a navigation failed, cleared when one lands. What makes
@@ -147,18 +184,25 @@ struct WebView: UIViewRepresentable {
         /// didFinish would then take for a pairing that succeeded.
         private var requestedURL: URL?
         private let network = NWPathMonitor()
+        /// Bumped per `load`: an older load whose cookie install finishes
+        /// after a newer one must not navigate last.
+        private var loadGeneration = 0
 
-        init(server: Server, controller: WebController, onGridLoaded: @escaping (String) -> Void) {
+        init(server: Server, host: String, port: Int, controller: WebController, onGridLoaded: @escaping (String) -> Void,
+             onNavigationFailed: @escaping () -> Void) {
             self.server = server
-            self.baseURL = server.baseURL
+            self.host = host
+            self.port = port
+            self.baseURL = server.url(host: host, port: port)
             self.controller = controller
             self.onGridLoaded = onGridLoaded
+            self.onNavigationFailed = onNavigationFailed
             super.init()
             // Coming back onto a network reloads a page that died on the way
-            // out. Leaving one Wi-Fi for another takes the computer's address
-            // with it — the desktop re-announces itself (lan.py's watcher),
-            // and this is the phone's half: without it the webview sits on
-            // WebKit's error page until someone pulls to refresh.
+            // out. The computer's name follows its address on its own (the
+            // OS advertises it); this is the phone's half: without it the
+            // webview sits on WebKit's error page until someone pulls to
+            // refresh.
             network.pathUpdateHandler = { [weak self] path in
                 guard path.status == .satisfied else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self?.retryAfterNetworkChange() }
@@ -168,6 +212,38 @@ struct WebView: UIViewRepresentable {
 
         deinit { network.cancel() }
 
+        /// The page to show on `base` after the computer moved there: the
+        /// page last asked for (or shown) when it was this computer's and
+        /// not the pairing page, re-addressed; otherwise the grid.
+        func carried(onto base: URL, from previous: URL) -> URL {
+            guard let current = requestedURL ?? webView?.url,
+                  var c = URLComponents(url: current, resolvingAgainstBaseURL: false),
+                  c.host?.lowercased() == previous.host?.lowercased(),
+                  c.path != "/pair" else { return base }
+            c.scheme = base.scheme
+            c.host = base.host
+            c.port = base.port
+            return c.url ?? base
+        }
+
+        /// Load `url` with the pairing cookie installed for its host first
+        /// (a no-op before the first pairing), and the device's name on the
+        /// /pair request itself so the computer's list can show it.
+        func load(_ url: URL, pairing: Bool) {
+            guard let web = webView else { return }
+            let server = self.server
+            let host = url.host ?? self.host
+            loadGeneration += 1
+            let generation = loadGeneration
+            Task { @MainActor in
+                await PairingSecret.install(into: web, server: server, host: host)
+                guard generation == self.loadGeneration else { return }
+                var req = URLRequest(url: url)
+                if pairing { req.setValue(ShellIdentity.deviceName, forHTTPHeaderField: "X-Fused-Device-Name") }
+                web.load(req)
+            }
+        }
+
         @MainActor
         private func retryAfterNetworkChange() {
             guard navigationFailed, let web = webView else { return }
@@ -175,7 +251,7 @@ struct WebView: UIViewRepresentable {
             // `reload()` on an error page re-requests the URL that failed;
             // with no URL at all (the very first load never landed) there is
             // nothing to reload, so ask again for what was requested.
-            if web.url != nil { web.reload() } else { web.load(URLRequest(url: requestedURL ?? baseURL)) }
+            if web.url != nil { web.reload() } else { load(requestedURL ?? baseURL, pairing: requestedURL?.path == "/pair") }
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
@@ -198,10 +274,10 @@ struct WebView: UIViewRepresentable {
 
         @objc func pulled(_ sender: UIRefreshControl) {
             guard let web = webView else { sender.endRefreshing(); return }
-            if web.url != nil { web.reload() } else { web.load(URLRequest(url: baseURL)) }
+            if web.url != nil { web.reload() } else { load(baseURL, pairing: false) }
         }
 
-        // The server's private CA is the only anchor for this host.
+        // The pinned certificate is the only one accepted for this computer.
         func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
                      completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
             guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
@@ -209,14 +285,15 @@ struct WebView: UIViewRepresentable {
                 completionHandler(.performDefaultHandling, nil)
                 return
             }
-            // Pin the private CA for the paired computer ONLY. Everything else
-            // a page loads (tile servers, fonts, APIs) keeps the system trust
-            // store — cancelling those broke every app that talks to the web.
-            guard challenge.protectionSpace.host == server.host else {
+            // Pin for the paired computer ONLY (its name or its address).
+            // Everything else a page loads (tile servers, fonts, APIs) keeps
+            // the system trust store — cancelling those broke every app that
+            // talks to the web.
+            guard server.reaches(challenge.protectionSpace.host) else {
                 completionHandler(.performDefaultHandling, nil)
                 return
             }
-            if let ca = server.caDER, TLSTrust.accepts(trust, caDER: ca, host: challenge.protectionSpace.host) {
+            if TLSTrust.accepts(trust, fingerprint: server.fingerprint) {
                 completionHandler(.useCredential, URLCredential(trust: trust))
             } else {
                 completionHandler(.cancelAuthenticationChallenge, nil)
@@ -225,12 +302,21 @@ struct WebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             webView.scrollView.refreshControl?.endRefreshing()
-            if Self.isRealFailure(error) { navigationFailed = true }
+            if Self.isRealFailure(error) { failed() }
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             webView.scrollView.refreshControl?.endRefreshing()
-            if Self.isRealFailure(error) { navigationFailed = true }
+            if Self.isRealFailure(error) { failed() }
+        }
+
+        private func failed() {
+            navigationFailed = true
+            // A pending pairing re-issued on the same URL must load again:
+            // the "already loaded" record is only about not spending a token
+            // twice on a SwiftUI re-render, not about a load that died.
+            lastPending = nil
+            onNavigationFailed()
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -240,11 +326,24 @@ struct WebView: UIViewRepresentable {
             controller.location = webView.url
             controller.canGoBack = webView.canGoBack
             controller.title = webView.title ?? ""
-            // The grid just loaded (paired, current): refresh what the widgets
-            // and quick actions know.
-            if let u = webView.url, u.path == "/" || u.path == "/index.html" {
-                onGridLoaded(server.host)
-                ManifestSync.refresh(from: webView, server: server)
+            // A page landed at `/`. Only with the device cookie is that the
+            // grid (the how-to-pair page lives at `/` too, for an unpaired
+            // phone): then keep the pairing, confirm it, and refresh what the
+            // widgets and quick actions know.
+            // Only this computer's own hosts: a stray page at `/` elsewhere
+            // must not have its cookie taken for the pairing.
+            if let u = webView.url, u.path == "/" || u.path == "/index.html", let landed = u.host,
+               server.reaches(landed) {
+                let server = self.server
+                let landedPort = u.port ?? server.port
+                Task { @MainActor in
+                    guard await PairingSecret.capture(from: webView, server: server, host: landed) else {
+                        webLog.info("landed on / without a pairing cookie: not paired")
+                        return
+                    }
+                    onGridLoaded(landed)
+                    ManifestSync.refresh(server: server, host: landed, port: landedPort)
+                }
             }
         }
 
@@ -270,7 +369,7 @@ struct WebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                      decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-            if frame.isMainFrame, origin.host == server.host {
+            if frame.isMainFrame, server.reaches(origin.host) {
                 decisionHandler(.grant)
             } else {
                 decisionHandler(.prompt)

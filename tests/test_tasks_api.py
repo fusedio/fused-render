@@ -4472,11 +4472,17 @@ class _HostedAgent(_FakeAgent):
 
 
 def _bg_row(tasks):
-    """The CLI's background list; a task is an id, or `(id, description)`."""
+    """The CLI's background list; a task is an id, `(id, description)` or
+    `(id, description, task_type)`."""
+    def one(t):
+        if isinstance(t, str):
+            return {"task_id": t}
+        row = {"task_id": t[0], "description": t[1]}
+        if len(t) > 2:
+            row["task_type"] = t[2]
+        return row
     return {"type": "system", "subtype": "background_tasks_changed",
-            "tasks": [{"task_id": t} if isinstance(t, str)
-                      else {"task_id": t[0], "description": t[1]}
-                      for t in tasks]}
+            "tasks": [one(t) for t in tasks]}
 
 
 def _append(run, row):
@@ -4551,7 +4557,7 @@ def test_background_work_is_a_caption_not_a_status(
     # Exactly what the row's Stop hands the agent's `task_stop`: the run dir's
     # name and the CLI's own task id.
     assert task["background_jobs"] == {
-        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
+        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": "", "agent": False}]}
 
 
 def test_the_pulse_ships_a_done_rows_held_background_jobs(
@@ -4565,7 +4571,7 @@ def test_the_pulse_ships_a_done_rows_held_background_jobs(
     row = _pulse(client)[0]
     assert row["status"] == "done"
     assert row["background_jobs"] == {
-        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
+        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": "", "agent": False}]}
 
 
 def test_background_work_under_a_dead_host_does_not_count(
@@ -4728,6 +4734,23 @@ def test_the_caption_clears_when_the_background_list_empties(
     assert task["status"] == "done"
 
 
+def test_a_background_job_says_whether_it_is_a_subagent(
+        client, projects_dir, parked, monkeypatch, registry):
+    """`agent` is the CLI's `task_type == "local_agent"`: the UI holds the
+    "Task finished" notice for a background subagent, never for a dev server
+    or a Monitor."""
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a",
+                  [("a1", "research", "local_agent"),
+                   ("b1", "dev server", "local_bash"),
+                   ("m1", "watch", "monitor_mcp")], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    jobs = _by_key(client)["sess-a"]["background_jobs"]["jobs"]
+    assert {j["id"]: j["agent"] for j in jobs} == {
+        "a1": True, "b1": False, "m1": False}
+
+
 def test_background_jobs_name_every_job_and_follow_the_newest_list(
         client, projects_dir, parked, monkeypatch, registry):
     """The badge counts and names what the CLI's NEWEST list holds — "2 jobs
@@ -4741,8 +4764,8 @@ def test_background_jobs_name_every_job_and_follow_the_newest_list(
     registry("sess-a")
     jobs = _by_key(client)["sess-a"]["background_jobs"]
     assert jobs == {"count": 2, "run_id": "r-1",
-                    "jobs": [{"id": "b1", "title": "npm run dev"},
-                             {"id": "b2", "title": "sleep 900"}]}
+                    "jobs": [{"id": "b1", "title": "npm run dev", "agent": False},
+                             {"id": "b2", "title": "sleep 900", "agent": False}]}
 
     _append(run, _bg_row([("b1", "npm run dev")]))
     jobs = _by_key(client)["sess-a"]["background_jobs"]
@@ -4766,10 +4789,11 @@ def test_a_cold_read_of_a_long_run_parses_only_its_tail(
     _install_hosted(monkeypatch, parked.dir)
     registry("sess-a")
     jobs = _by_key(client)["sess-a"]["background_jobs"]
-    assert jobs["jobs"] == [{"id": "b1", "title": "npm run dev"}]
+    assert jobs["jobs"] == [
+        {"id": "b1", "title": "npm run dev", "agent": False}]
     offset, held = tasks_mod._bg_memo[str(run)]
     assert offset == (run / "out.jsonl").stat().st_size
-    assert held == (("b1", "npm run dev"),)
+    assert held == (("b1", "npm run dev", False),)
 
 
 def test_a_cold_read_stops_at_its_tail(

@@ -578,6 +578,13 @@ OPTIONS = {
         "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
+        # Apple Notes / Apple Calendar as connected services (connect/applescript.py)
+        # drive the apps through Apple events. Without this string macOS refuses
+        # them silently (-1743) instead of asking the user once; with it the
+        # Automation prompt names this app, and the grant lives under its name.
+        "NSAppleEventsUsageDescription": (
+            f"{_APP} reads and adds to your Notes and Calendar when you connect them under "
+            "Preferences > Connections, and runs the automations you ask for."),
         # No LSUIElement (D34): regular app, Dock icon + menu bar item both.
         # Finder "Open with FusedRender" (SPEC DM-8). Render only: FusedBot
         # is not a file viewer and must not compete for `.fused` (Render

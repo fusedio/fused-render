@@ -243,8 +243,8 @@ export interface ComposerCardProps {
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
   onFollowUp?(text: string): void;
   /**
-   * SEND NOW — Ctrl+X with words: stop the running turn and send this line at
-   * once, ahead of anything parked. Only asked while `running`; otherwise
+   * SEND NOW — Ctrl+X with words: interrupt the running turn (the main agent
+   * only) and send this line at once. Only asked while `running`; otherwise
    * Ctrl+X is the plain send.
    */
   onSendNow?(text: string): void;
@@ -2024,7 +2024,7 @@ export function ComposerCard({
     }
     // PICK MODE: the words are the breakout's first message.
     if (pickSubmit) pickSubmit.onStart(message);
-    // SEND NOW (Ctrl+X while live): stop the turn and this line goes first.
+    // SEND NOW (Ctrl+X while live): the turn is interrupted and this line runs next.
     else if (mode === "now" && running && onSendNow) onSendNow(message);
     // HOLD (Ctrl+Enter while live): the line waits for the session to be done.
     else if (mode === "hold" && running && onSendHeld) onSendHeld(message);

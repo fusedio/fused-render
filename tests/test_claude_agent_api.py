@@ -20,6 +20,7 @@ contract is what the React chat's AgentError mapping
 The handler is stubbed (the agent module is swapped for a namespace with a
 `main`), so these pin the router, not agent.py.
 """
+from pathlib import Path
 import inspect
 import time
 import types
@@ -109,6 +110,24 @@ def test_task_background_is_routable_not_a_400(client, stub):
     assert r.status_code == 200
     assert stub["main"] == [{"action": "task_background", "run_id": "r",
                              "tool_use_id": "toolu_1"}]
+
+
+def test_send_now_is_routable_not_a_400(client, stub):
+    stub["install"](lambda action="", run_id="", client_uuid="": {"sent": True})
+    r = _post(client, {"action": "send_now", "run_id": "r", "client_uuid": "u1"})
+    assert r.status_code == 200
+    assert r.json() == {"sent": True}
+    assert stub["main"] == [{"action": "send_now", "run_id": "r", "client_uuid": "u1"}]
+
+
+def test_every_action_the_page_can_send_is_on_the_allowlist():
+    import re
+    src = (Path(__file__).resolve().parents[1]
+           / "frontend/src/apps/claude/protocol/types.ts").read_text(encoding="utf-8")
+    union = re.search(r"export type \w*Action\w* =((?:\s*\|\s*\"\w+\")+)", src)
+    assert union, "the page's action union moved"
+    sent = set(re.findall(r'"(\w+)"', union.group(1)))
+    assert sent <= set(router.ACTIONS), sorted(sent - set(router.ACTIONS))
 
 
 def test_the_allowlist_names_only_handlers_the_real_module_has():

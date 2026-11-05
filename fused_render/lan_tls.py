@@ -1,39 +1,44 @@
-"""A private certificate authority for the local-network listener (lan.py).
+"""One self-signed certificate for the local-network listener (lan.py).
 
-Why: a phone browser on plain http withholds the microphone and clipboard
-(no secure context), and a trusted certificate for a ``.local`` name cannot
-come from a public CA. The native iOS shell (ios/) makes a private CA
-workable with ZERO user steps: the pairing QR carries the CA's fingerprint,
-the app fetches the CA over http, checks the fingerprint, and pins it — so the
-https listener is trusted by the app alone. Browsers keep using http.
+Why https at all: WebKit withholds the camera, the microphone and the
+clipboard from a page that is not a secure context, and those have to work
+in the Fused Render app on the phone. Why not a public CA: a ``.local`` name
+or a private address cannot get a publicly trusted certificate.
 
-Files live in ``<state dir>/lan_tls/``: ``ca.pem``/``ca.key`` (10 years) and
-``server.pem``/``server.key`` (1 year), the leaf reissued whenever the set of
-names it must carry — the two mDNS names plus the current LAN address — changes.
-Keys are P-256; the CA key never leaves this folder and signs nothing but the
-leaf. ``cryptography`` is NOT a core dependency of fused-render — it arrives
-only via the ``[bundled]``/``[fused]`` extras (LEAN_WHEEL_SPEC.md). This
-module is therefore unavailable on a bare/lean install; callers must guard
-their import of it and fail cleanly (see lan.py's ``/lan/ca.pem`` and
-``/api/lan/tls`` routes for the pattern).
+Why ONE self-signed certificate rather than a private CA: the app pins the
+certificate itself, by the SHA-256 of its DER, which the pairing QR carries
+as ``fp``. The app checks every TLS handshake against that hash and nothing
+else — not the hostname, not the chain, not the expiry — so the certificate
+never needs to name an address, never needs reissuing when the computer's
+address or name changes, and nothing has to be fetched before pairing.
+(The previous design kept a CA so a leaf naming the current IP could be
+reissued under a stable anchor; with hostname checking gone, the leaf IS
+the anchor and the CA layer had nothing left to do.)
+
+Files live in ``<state dir>/lan_tls/``: ``server.pem`` and ``server.key``
+(P-256, ten years). The key never leaves this folder. ``cryptography`` is
+NOT a core dependency of fused-render — it arrives only via the
+``[bundled]``/``[fused]`` extras — so every function here imports it lazily
+and callers guard for ``ModuleNotFoundError`` (lan.py reports it in
+``tls_error`` and refuses to mint a pairing code).
 """
 from __future__ import annotations
 
 import datetime as _dt
 import hashlib
-import ipaddress
 import logging
 import os
 import threading
 
 logger = logging.getLogger("fused_render.lan_tls")
 
-CA_DAYS = 3650
-LEAF_DAYS = 365
+CERT_DAYS = 3650
 
-# The one CA this process uses, per state folder (see _ensure_ca).
-_ca_by_dir: dict = {}
-_ca_lock = threading.Lock()
+# The one certificate this process uses, per state folder: the fingerprint a
+# QR carries and the certificate the listener presents must be the same
+# object whatever the folder looks like between two calls.
+_cert_by_dir: dict = {}
+_lock = threading.Lock()
 
 
 def _dir() -> str:
@@ -44,8 +49,12 @@ def _dir() -> str:
     return path
 
 
-def ca_pem_path() -> str:
-    return os.path.join(_dir(), "ca.pem")
+def cert_path() -> str:
+    return os.path.join(_dir(), "server.pem")
+
+
+def key_path() -> str:
+    return os.path.join(_dir(), "server.key")
 
 
 def _write_private(path: str, data: bytes) -> None:
@@ -57,47 +66,87 @@ def _write_private(path: str, data: bytes) -> None:
         pass
 
 
-def _ensure_ca():
-    """Load or create the CA. Returns (cert, key).
-
-    Memoised for the life of the process, and that is load-bearing, not a
-    speed-up: a pairing QR carries ``ca_fingerprint()`` and the phone then
-    fetches the bytes ``ca_pem()`` reads. If those two calls ever disagreed
-    — a half-present folder (a cert whose key is gone) makes this function
-    generate a fresh CA and overwrite ca.pem on EVERY call — no code could
-    pair, and the app could only report it as a certificate that did not
-    match. One CA per process, whatever the folder looks like.
-    """
+def ensure_cert():
+    """Load or create the certificate. Returns the ``cryptography`` certificate
+    object; the PEM files are at ``cert_path()``/``key_path()``. Memoised for
+    the life of the process (see ``_cert_by_dir``), and serialised across
+    processes sharing the state folder (``_file_lock``): two first starts at
+    once must not interleave their writes into a mismatched pair."""
     folder = _dir()
-    with _ca_lock:
-        if folder not in _ca_by_dir:
-            _ca_by_dir[folder] = _load_or_create_ca()
-        return _ca_by_dir[folder]
+    with _lock:
+        if folder not in _cert_by_dir:
+            with _file_lock(folder):
+                _cert_by_dir[folder] = _load_or_create()
+        return _cert_by_dir[folder]
 
 
-def _load_or_create_ca():
+class _file_lock:
+    """A cross-process lock on ``<folder>/.lock`` (``fcntl.flock`` where it
+    exists; a no-op elsewhere, where one desktop app owns the folder)."""
+
+    def __init__(self, folder: str):
+        self._path = os.path.join(folder, ".lock")
+        self._fh = None
+
+    def __enter__(self):
+        try:
+            import fcntl
+
+            self._fh = open(self._path, "a+")  # noqa: SIM115 — released in __exit__
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            self._fh = None
+        return self
+
+    def __exit__(self, *exc):
+        if self._fh is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except (ImportError, OSError):
+                pass
+            self._fh.close()
+
+
+def _load_or_create():
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import NameOID
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-    cert_path, key_path = ca_pem_path(), os.path.join(_dir(), "ca.key")
-    if os.path.exists(cert_path) and os.path.exists(key_path):
-        with open(cert_path, "rb") as f:
-            cert = x509.load_pem_x509_certificate(f.read())
-        with open(key_path, "rb") as f:
-            key = serialization.load_pem_private_key(f.read(), password=None)
-        if cert.not_valid_after_utc > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=30):
-            return cert, key
-        logger.warning("lan_tls: local CA expires within 30 days - issuing a new one; phones must pair again")
-    elif os.path.exists(cert_path) or os.path.exists(key_path):
-        # Half a CA is no CA: every device paired against the old one is about
-        # to stop trusting this computer, so say so rather than churn quietly.
-        logger.warning("lan_tls: local CA is incomplete (cert %s, key %s) - issuing a new one; "
-                       "phones must pair again", os.path.exists(cert_path), os.path.exists(key_path))
+    cpath, kpath = cert_path(), key_path()
+    if os.path.exists(cpath) and os.path.exists(kpath):
+        try:
+            with open(cpath, "rb") as f:
+                cert = x509.load_pem_x509_certificate(f.read())
+            with open(kpath, "rb") as f:
+                key = serialization.load_pem_private_key(f.read(), password=None)
+            # The pair must match, or the listener fails its handshake on
+            # every start until someone deletes the files by hand.
+            if cert.public_key().public_numbers() != key.public_key().public_numbers():
+                raise ValueError("certificate and key do not match")
+            # Expiry is not checked by the app (it pins the hash), but a
+            # certificate past its date is still worth replacing well ahead:
+            # phones must pair again when it changes, so do it once a year
+            # before the end, not the day of. (`not_valid_after_utc` arrived
+            # in cryptography 42; the naive property is UTC on older ones.)
+            expires = getattr(cert, "not_valid_after_utc", None)
+            if expires is None:
+                expires = cert.not_valid_after.replace(tzinfo=_dt.timezone.utc)
+            if expires > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365):
+                return cert
+            logger.warning("lan_tls: certificate expires within a year - issuing a new one; phones must pair again")
+        except Exception:  # noqa: BLE001 — unreadable files → reissue, and say so
+            logger.warning("lan_tls: certificate files unreadable - issuing a new one; phones must pair again",
+                           exc_info=True)
+    elif os.path.exists(cpath) or os.path.exists(kpath):
+        logger.warning("lan_tls: certificate incomplete (cert %s, key %s) - issuing a new one; "
+                       "phones must pair again", os.path.exists(cpath), os.path.exists(kpath))
+
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "Fused Render local CA"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "Fused Render"),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Fused Render"),
     ])
     now = _dt.datetime.now(_dt.timezone.utc)
@@ -107,111 +156,37 @@ def _load_or_create_ca():
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - _dt.timedelta(minutes=5))
-        .not_valid_after(now + _dt.timedelta(days=CA_DAYS))
-        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
-        .add_extension(x509.KeyUsage(digital_signature=True, key_cert_sign=True, crl_sign=True,
-                                     content_commitment=False, key_encipherment=False,
-                                     data_encipherment=False, key_agreement=False,
-                                     encipher_only=False, decipher_only=False), critical=True)
-        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
-        .sign(key, hashes.SHA256())
-    )
-    with open(cert_path, "wb") as f:
-        f.write(cert.public_bytes(serialization.Encoding.PEM))
-    _write_private(key_path, key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    logger.info("lan_tls: new local CA at %s", cert_path)
-    return cert, key
-
-
-def ensure_server_cert(hosts: list[str], ips: list[str]) -> tuple[str, str]:
-    """The leaf for these names, (re)issued when they changed or it is close to
-    expiry. Returns (cert_pem_path, key_pem_path)."""
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-
-    ca_cert, ca_key = _ensure_ca()
-    cert_path, key_path = os.path.join(_dir(), "server.pem"), os.path.join(_dir(), "server.key")
-    wanted_dns = sorted({h.rstrip(".") for h in hosts if h})
-    wanted_ips = sorted({ip for ip in ips if ip})
-
-    if os.path.exists(cert_path) and os.path.exists(key_path):
-        try:
-            with open(cert_path, "rb") as f:
-                cur = x509.load_pem_x509_certificate(f.read())
-            san = cur.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-            have_dns = sorted(san.get_values_for_type(x509.DNSName))
-            have_ips = sorted(str(i) for i in san.get_values_for_type(x509.IPAddress))
-            fresh = cur.not_valid_after_utc > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=14)
-            # Signature check, not an issuer-name check: a regenerated CA has
-            # the same name, and a leaf the old key signed would then be served
-            # while the QR advertises the new CA — every new pairing failing.
-            cur.verify_directly_issued_by(ca_cert)
-            if have_dns == wanted_dns and have_ips == wanted_ips and fresh:
-                return cert_path, key_path
-        except Exception:  # noqa: BLE001 — unreadable leaf → reissue
-            pass
-
-    key = ec.generate_private_key(ec.SECP256R1())
-    now = _dt.datetime.now(_dt.timezone.utc)
-    san_entries = [x509.DNSName(h) for h in wanted_dns]
-    for ip in wanted_ips:
-        try:
-            san_entries.append(x509.IPAddress(ipaddress.ip_address(ip)))
-        except ValueError:
-            pass
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, wanted_dns[0] if wanted_dns else "fused-render")]))
-        .issuer_name(ca_cert.subject)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - _dt.timedelta(minutes=5))
-        .not_valid_after(now + _dt.timedelta(days=LEAF_DAYS))
-        .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
+        .not_valid_after(now + _dt.timedelta(days=CERT_DAYS))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .add_extension(x509.KeyUsage(digital_signature=True, key_encipherment=False, key_agreement=True,
                                      content_commitment=False, data_encipherment=False, key_cert_sign=False,
                                      crl_sign=False, encipher_only=False, decipher_only=False), critical=True)
-        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
-        .sign(ca_key, hashes.SHA256())
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+        .sign(key, hashes.SHA256())
     )
-    with open(cert_path, "wb") as f:
+    with open(cpath, "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
-        # The chain: leaf then CA, so clients that want the issuer get it.
-        f.write(ca_cert.public_bytes(serialization.Encoding.PEM))
-    _write_private(key_path, key.private_bytes(
+    _write_private(kpath, key.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    logger.info("lan_tls: server certificate issued for %s %s", wanted_dns, wanted_ips)
-    return cert_path, key_path
+    logger.info("lan_tls: new certificate at %s", cpath)
+    return cert
 
 
-def ca_fingerprint() -> str:
-    """SHA-256 of the CA certificate's DER, lowercase hex — what the QR carries
-    and what the app checks the fetched CA against."""
+def fingerprint() -> str:
+    """SHA-256 of the certificate's DER, lowercase hex — what the QR carries
+    as ``fp`` and what the app compares every handshake against."""
     from cryptography.hazmat.primitives import serialization
 
-    cert, _ = _ensure_ca()
+    cert = ensure_cert()
     return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
 
 
-def ca_pem() -> bytes:
-    """The CA the QR's fingerprint was taken from — the certificate in hand,
-    not a re-read of the file, so the bytes a phone fetches and the fingerprint
-    it checks them against cannot come from two different CAs."""
-    from cryptography.hazmat.primitives import serialization
-
-    cert, _ = _ensure_ca()
-    return cert.public_bytes(serialization.Encoding.PEM)
-
-
 def server_ssl_context(certfile: str, keyfile: str, alpn_protocols=None):
-    """A server-side context for the https listener, built from the stdlib class
-    rather than `ssl.SSLContext`, which `_system_trust` swaps for truststore's
-    client-side wrapper (its server handshake fails on macOS)."""
+    """A server-side context built from the stdlib class rather than
+    ``ssl.SSLContext``, which ``_system_trust`` swaps for truststore's
+    client-side wrapper (its server handshake fails on macOS; D1442). Shared
+    with connect/tls.py."""
     import ssl
 
     from fused_render._system_trust import ORIGINAL_SSL_CONTEXT

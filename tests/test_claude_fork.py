@@ -270,7 +270,7 @@ def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
     (hook,) = entry["hooks"]
     assert hook["type"] == "command" and "onFailure" not in hook
     assert hook["timeout"] == 10
-    assert "permission_server.py" in hook["command"]
+    assert "permission_server-" in hook["command"] and ".py" in hook["command"]
     # Any non-zero exit of the guard blocks: the CLI blocks only on exit 2.
     if os.name == "nt":
         assert hook["command"].endswith(" || exit 2")
