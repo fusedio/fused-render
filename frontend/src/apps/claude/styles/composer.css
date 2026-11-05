@@ -1929,6 +1929,49 @@ select.c-pill {
   cursor: pointer;
 }
 
+/* THE BREAKOUT SELECTION BAR, directly above the composer: wears the fork
+   notice's skin, with a primary Open and a quiet Clear. */
+.chat-root .breakout-sel-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--c-dim);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+}
+.chat-root .breakout-sel-text,
+.chat-root .breakout-sel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-root .breakout-sel-open,
+.chat-root .breakout-sel-clear {
+  padding: 2px 8px;
+  font: inherit;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.chat-root .breakout-sel-open {
+  color: var(--c-fg);
+  background: none;
+  border: 1px solid var(--c-border-strong);
+  font-weight: 600;
+}
+.chat-root .breakout-sel-clear {
+  color: var(--c-dim);
+  background: none;
+  border: 1px solid transparent;
+}
+.chat-root .breakout-sel-clear:hover {
+  color: var(--c-fg);
+}
+
 /* ── the waiting bar: stands in for the composer while a card is open ──────
    The composer stays mounted inside `.composer-gate`, which is layout-neutral
    while shown and removed from layout while hidden. Margins are spelled out:

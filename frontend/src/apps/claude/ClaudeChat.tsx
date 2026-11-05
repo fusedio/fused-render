@@ -150,6 +150,7 @@ import {
   AgentProvider,
 } from "./ui";
 import { ComposerGate, waitingKind } from "./ui/WaitingBar";
+import { BreakoutSelectionBar } from "./ui/BreakoutSelectionBar";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import { sessionSeed } from "./ui/useRecentTasks";
@@ -6161,6 +6162,14 @@ function ChatBody(props: ChatBodyProps) {
                   Cancel
                 </button>
               </div>
+            ) : null}
+            {/* BREAKOUT SELECTION: the shift-picked exchanges, above the composer. */}
+            {breakoutBtn && breakoutSel.size ? (
+              <BreakoutSelectionBar
+                count={state.turns.filter((t) => t.role === "user" && breakoutSel.has(t.key)).length}
+                onOpen={openFromComposer}
+                onClear={() => setBreakoutSel(new Set())}
+              />
             ) : null}
             {/* A card is READ, not typed into: compact is the one cut that takes
                 the composer away, which is the whole difference from peek
