@@ -322,3 +322,22 @@ def test_a_real_error_followed_by_a_good_turn_still_reports_the_error(
     poll = agent._poll("run")
     assert poll["done"] is True
     assert poll["error"] == "boom"
+
+
+def test_a_subagent_jobs_notification_is_bookkeeping_even_when_its_start_is_before_the_window(
+        agent, run_dir):
+    # The `task_started` (owned by a background subagent) sits before the
+    # cursor an earlier poll left, so the window holds only the
+    # `task_notification`, which names nothing but the task id.
+    started = {"type": "system", "subtype": "task_started", "task_id": "b1",
+               "owned_by_subagent": True}
+    note = {"type": "system", "subtype": "task_notification", "task_id": "b1",
+            "status": "completed"}
+    rows = [_user_row("turn one"), _text_row("One."), _result_row("One."),
+            started, _user_row("two"), _text_row("Two."), _result_row("Two.")]
+    _write(run_dir, rows)
+    _setup(agent, run_dir)
+    assert agent._poll("run")["done"] is True
+
+    _write(run_dir, rows + [note])
+    assert agent._poll("run")["done"] is True

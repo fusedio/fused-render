@@ -5703,7 +5703,8 @@ _STOPPED_TASK_STATUSES = frozenset({"stopped", "killed"})
 def _not_a_turn_row(row: dict) -> bool:
     """Whether `row` is one of the shapes that never opens or reopens a turn
     (`_NOT_A_TURN_ROW`, `_BOOKKEEPING_SYSTEM_ROWS`, and a stopped job's
-    `task_notification` — `_STOPPED_TASK_STATUSES`)."""
+    `task_notification` — `_STOPPED_TASK_STATUSES`). A background subagent's own
+    job rows need the caller's owned-id set, so they are `_subagent_job_row`'s."""
     t = row.get("type")
     if t in _NOT_A_TURN_ROW:
         return True
@@ -5712,9 +5713,15 @@ def _not_a_turn_row(row: dict) -> bool:
     sub = row.get("subtype")
     if sub == "task_notification":
         return str(row.get("status") or "") in _STOPPED_TASK_STATUSES
-    if sub == "task_started":
-        return bool(row.get("owned_by_subagent"))
     return sub in _BOOKKEEPING_SYSTEM_ROWS
+
+
+def _subagent_started_id(row: dict) -> str:
+    """The task id of a `task_started` row a background subagent owns, else ""."""
+    if (row.get("type") == "system" and row.get("subtype") == "task_started"
+            and row.get("owned_by_subagent") and row.get("task_id")):
+        return str(row["task_id"])
+    return ""
 
 
 def _subagent_job_row(row: dict, owned: set) -> bool:
@@ -5722,18 +5729,62 @@ def _subagent_job_row(row: dict, owned: set) -> bool:
     Bash calls surface as top-level rows with no `parent_tool_use_id`). Only
     the `task_started` carries `owned_by_subagent`; its `task_notification`
     names just the `task_id`, so `owned` (the caller's running set of those
-    ids, mutated here) is what ties the two together. A parent-owned job's
+    ids, mutated here) is what ties the two together; the notification is the
+    last row of the job, so its id leaves the set. A parent-owned job's
     `task_notification` is not one of these: the CLI wakes the model for it."""
     if row.get("type") != "system":
         return False
     sub = row.get("subtype")
     tid = row.get("task_id")
     if sub == "task_started":
-        if row.get("owned_by_subagent") and tid:
-            owned.add(str(tid))
+        started = _subagent_started_id(row)
+        if started:
+            owned.add(started)
             return True
         return False
-    return sub == "task_notification" and str(tid) in owned
+    if sub == "task_notification" and str(tid) in owned:
+        owned.discard(str(tid))
+        return True
+    return False
+
+
+# `run_dir -> (offset, frozenset of task ids)`: every background-subagent job
+# started so far in this run's out.jsonl. `_poll` reads a window that can begin
+# after a job's `task_started`, so it asks here instead of folding the ids
+# itself. Incremental (only appended bytes are read) and capped like
+# `_echo_cache`.
+_subagent_ids_cache: dict = {}
+
+
+def _subagent_task_ids(run_dir: str) -> frozenset:
+    """Ids of the jobs a background subagent started anywhere in this run's
+    out.jsonl (`_subagent_job_row`'s `task_started` rule), independent of any
+    poll window."""
+    with _ECHO_LOCK:
+        offset, ids = _subagent_ids_cache.get(run_dir, (0, frozenset()))
+    found = set(ids)
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            if os.fstat(fh.fileno()).st_size < offset:
+                offset, found = 0, set()
+            fh.seek(offset)
+            for raw in fh:
+                if not raw.endswith(b"\n"):
+                    break
+                offset += len(raw)
+                if b"owned_by_subagent" not in raw:
+                    continue
+                try:
+                    row = json.loads(raw.decode("utf-8", errors="replace"))
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and _subagent_started_id(row):
+                    found.add(_subagent_started_id(row))
+    except OSError:
+        return frozenset(found)
+    result = frozenset(found)
+    _remember_capped(_subagent_ids_cache, run_dir, (offset, result))
+    return result
 
 
 def _turn_preamble_row(row: dict) -> bool:
@@ -9353,7 +9404,8 @@ def _is_api_error_row(row: dict) -> bool:
     return isinstance(row, dict) and row.get("isApiErrorMessage") is True
 
 
-def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
+def _absorbed_turn_breaks(rows: list, app_reads: bool = False,
+                          sub_jobs: frozenset | None = None) -> list:
     """Where a reply ENDED inside this row window because a follow-up had been
     folded into it, as payload offsets a page can slice on.
 
@@ -9397,7 +9449,9 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
     # in one payload is measured against one segmentation.
     shape = _window_shape(rows)
     outstanding = 0
-    sub_jobs = set()
+    # The window's own copy of the owned ids: a job started before the window
+    # has its notification inside it.
+    sub_jobs = set(sub_jobs or ())
     # Whether a `result` has closed a reply since the last echo — the exact
     # test `_read_current_turn`'s cursor makes, and for the same reason: an echo
     # WITH one before it is a genuinely new turn (the cursor is about to advance
@@ -9869,7 +9923,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # the bytes since the last closed turn — see `_read_current_turn` — so this
     # list only holds a second reference to objects that pass already built.
     parsed = []
-    sub_jobs = set()       # task ids a background subagent started
+    sub_jobs = set(_subagent_task_ids(run_dir))  # task ids a background subagent started
 
     ends = []
     pending_cursor = []
@@ -10543,7 +10597,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # while `echo_pending` blanks the payload the offsets would index
             # into.
             "turn_breaks": [] if echo_pending
-            else _absorbed_turn_breaks(parsed, app_reads),
+            else _absorbed_turn_breaks(parsed, app_reads,
+                                  _subagent_task_ids(run_dir)),
             # WHERE THIS WINDOW STARTS, as a byte offset into out.jsonl (the
             # cursor `_read_current_turn` settled on). The page keeps one
             # bubble per reply in the window and has to notice when the cursor
