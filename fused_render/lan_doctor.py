@@ -339,11 +339,14 @@ def _self_connect(ip: str, port: int, fingerprint: str, timeout: float) -> bool:
     import hashlib
     import ssl
 
-    # A CLIENT context, so whatever `ssl.SSLContext` currently is (truststore's
-    # after _system_trust injected it) is the right class; the stdlib class
-    # cannot have its verify_mode set once injection has happened. No
-    # verification: the fingerprint below is the check, as on the phone.
-    ctx = ssl._create_unverified_context()  # noqa: SLF001
+    from fused_render._system_trust import pinned_client_ssl_context
+
+    # No verification by the context: the fingerprint below is the check, as
+    # on the phone. Not `ssl._create_unverified_context()`: once truststore
+    # is injected that is its wrapper, which verifies in wrap_socket anyway
+    # and refuses the self-signed certificate — every probe came back False
+    # and prefs said "the listener is not answering" while it was.
+    ctx = pinned_client_ssl_context()
     try:
         with socket.create_connection((ip, port), timeout=timeout) as raw:
             with ctx.wrap_socket(raw, server_hostname=ip) as tls:

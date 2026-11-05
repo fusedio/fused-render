@@ -233,6 +233,41 @@ def test_self_connect_pins_the_fingerprint(home):
     lsock.close()
 
 
+def test_self_connect_survives_truststore_injection(home, monkeypatch):
+    """The app runs with truststore injected into `ssl` (_system_trust). Its
+    wrapper verifies the peer in wrap_socket whatever verify_mode says and
+    rejects the listener's self-signed certificate, so a probe built from
+    `ssl.SSLContext` after injection always said "not answering" (2026-11-05).
+    The probe must pin the hash itself and verify nothing else."""
+    import socket
+    import ssl
+    import threading
+
+    truststore = pytest.importorskip("truststore")
+    monkeypatch.setattr(ssl, "SSLContext", truststore.SSLContext)
+
+    lan_tls.ensure_cert()
+    ctx = lan_tls.server_ssl_context(lan_tls.cert_path(), lan_tls.key_path())
+    lsock = socket.socket()
+    lsock.bind(("127.0.0.1", 0))
+    lsock.listen(2)
+    port = lsock.getsockname()[1]
+
+    def serve():
+        for _ in range(2):
+            conn, _ = lsock.accept()
+            try:
+                with ctx.wrap_socket(conn, server_side=True):
+                    pass
+            except Exception:  # noqa: BLE001
+                pass
+
+    threading.Thread(target=serve, daemon=True).start()
+    assert lan_doctor._self_connect("127.0.0.1", port, lan_tls.fingerprint(), 5.0) is True
+    assert lan_doctor._self_connect("127.0.0.1", port, "00" * 32, 5.0) is False
+    lsock.close()
+
+
 def test_macos_firewall_listapps_numbered_entries(monkeypatch):
     """`socketfilterfw --listapps` numbers its entries; the running executable
     inside a blocked .app must still be matched."""
