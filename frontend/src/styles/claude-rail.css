@@ -266,8 +266,8 @@
      keep in view, so it is never the thing that clips. */
   flex: 0 0 auto;
   width: 28px;
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px solid var(--rail-sep);
 }
 /* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): the rail's last
@@ -322,7 +322,10 @@
   flex-shrink: 0;
 }
 .claude-rail .sidebar-rail-sep.is-tight {
-  margin: 6px 0;
+  /* The same 12px as the left rail's dividers (sidebar.css
+     `.sidebar-rail-sep`): left and right stand identically (owner,
+     2026-11-05). */
+  margin: 12px 0;
 }
 /* 4px at the foot, not 10, while favourites stand there (owner, 2026-11-03:
    "a bit of padding below which needs to be removed"): they are the rail's

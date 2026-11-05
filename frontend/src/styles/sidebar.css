@@ -15,8 +15,8 @@
      resize drag (below): a transition there would make the edge chase the
      cursor. */
   transition:
-    flex-basis var(--dur-slow) var(--ease-out),
-    width var(--dur-slow) var(--ease-out);
+    flex-basis var(--dur-panel) var(--ease-out),
+    width var(--dur-panel) var(--ease-out);
 }
 
 /* Set while the resize handle is captured (Sidebar.tsx `resizing`). */
@@ -72,7 +72,7 @@
    swap from reading as a pop. Only replays on a real subtree swap — React reuses
    these children across ordinary re-renders. */
 #sidebar > * {
-  animation: sidebar-content-in var(--dur-slow) var(--ease-out);
+  animation: sidebar-content-in var(--dur-panel) var(--ease-out);
 }
 
 @keyframes sidebar-content-in {
@@ -149,14 +149,13 @@ body:has(.sidebar-resize-handle.resizing) {
   user-select: none;
 }
 
-/* Collapse toggle in the brand row, pushed to the right edge. Its glyph is the
-   left-hand panel icon (platform/ui/PanelIcon), the same one the collapsed
-   rail's expand button wears. */
+/* Collapse toggle in the brand row, pushed to the right edge. An X (owner,
+   2026-11-05) in the SAME 28px chassis and hover wash as the collapsed rail's
+   expand button (`.sidebar-rail-btn`), so the two halves of one toggle feel
+   alike under the pointer. The negative block margin keeps the brand row's
+   height what the old 20px button made it; -1px right keeps the glyph's x. */
 .sidebar-collapse-btn {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
+  margin: -4px -1px -4px auto;
 }
 
 /* Collapsed sidebar = an icon rail: the reopen control on top (the SAME one
@@ -340,8 +339,10 @@ a.sidebar-rail-btn {
   /* 24px each side, not 4: the margin + heading it stands in for are ~48px
      tall (20 + 28), so the rail's "+" and app icons land on the same y the
      expanded "+ New app" and app rows hold (measured: 218/250/282 against
-     218/248/278). */
-  margin: 24px 0;
+     218/248/278). HALVED to 12 (owner, 2026-11-05): the section seams on
+     the collapsed rail read too loose. The Claude rail's dividers
+     (claude-rail.css `.is-tight`, `.claude-rail-all-seat`) wear the same 12. */
+  margin: 12px 0;
   background: var(--rail-sep);
 }
 

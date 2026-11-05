@@ -427,6 +427,46 @@ html.side-reopening iframe {
   position: relative;
 }
 
+/* THE SLIDE (platform/lib/pane-presence; owner, 2026-11-05): the app page's
+   pane's (app-page.css), on this column — its basis runs 0 ↔ its own while
+   the contents keep their full width, pinned right, so the column slides in
+   from the window's edge. */
+.preview-side.is-entering,
+.preview-side.is-leaving {
+  overflow: hidden;
+}
+.preview-side.is-entering > *,
+.preview-side.is-leaving > * {
+  flex-shrink: 0;
+  width: var(--pane-w);
+  align-self: flex-end;
+}
+.preview-side.is-entering {
+  animation: preview-side-in var(--dur-panel) var(--ease-out);
+}
+.preview-side.is-leaving {
+  animation: preview-side-out var(--dur-panel) var(--ease-out) forwards;
+  pointer-events: none;
+}
+/* A reopen drag drives the inline basis itself: no entrance animation under it. */
+html.side-reopening .preview-side.is-entering {
+  animation: none;
+}
+@keyframes preview-side-in {
+  from {
+    flex-basis: 0;
+    min-width: 0;
+    opacity: 0;
+  }
+}
+@keyframes preview-side-out {
+  to {
+    flex-basis: 0;
+    min-width: 0;
+    opacity: 0;
+  }
+}
+
 /* FULL SCREEN (lib/side-maximized-store; toggled from the chat's ⋮ menu).
    The column is lifted over the whole viewport instead of being remounted, so
    the chat keeps its state and .stat-main stays mounted underneath. No ancestor

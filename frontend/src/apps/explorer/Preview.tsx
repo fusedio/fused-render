@@ -3,6 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
+import { usePanePresence } from "@platform/lib/pane-presence";
 import { canonFsPath } from "@platform/lib/path-url";
 import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -1046,6 +1047,12 @@ function TemplatePreview({
   // paint framing it, because `activeSide` is recomputed from the lists every
   // render and an unhonourable request falls to the default (lib/preview-side).
   const activeSide = resolveSide(sideReq, split, getSideTab());
+  // THE COLUMN SLIDES (platform/lib/pane-presence): held mounted through its
+  // exit, still showing the companion it had, like the app page's pane.
+  const heldSide = useRef(activeSide);
+  if (activeSide) heldSide.current = activeSide;
+  const sidePane = usePanePresence(!!activeSide);
+  const shownSide = activeSide ?? (sidePane.mounted ? heldSide.current : null);
   const sideEntry = activeSide ? sidebarModes.find((e) => e.mode === activeSide) ?? null : null;
   // Which companion a bare "open the sidebar" reopens: the last one the user had
   // open on this file, so closing and reopening is not a reset. STATE, not a ref,
@@ -2478,16 +2485,17 @@ function TemplatePreview({
       {sideSlot &&
         createPortal(
           <>
-          {activeSide && (
+          {shownSide && (
           <PreviewSidebar
+            phase={sidePane.phase}
             entries={sidebarMenu.map((t) => ({
               mode: t.mode,
               icon: templateModeIcon(t),
               pending: isSidePending(t),
               disabledReason: t.disabledReason,
             }))}
-            active={activeSide}
-            src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
+            active={shownSide}
+            src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(shownSide)}
             chat={
               /* THE SIDEBAR'S CHAT, `chat_only` because the chat's own left
                  pane would be this same file previewed twice in one window. The

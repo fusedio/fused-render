@@ -85,6 +85,43 @@
   flex-direction: column;
 }
 
+/* THE SLIDE (platform/lib/pane-presence.ts; owner, 2026-11-05): the left
+   sidebar's glide, mirrored. The column's width runs 0 ↔ its own over
+   `--dur-panel` while the chat inside keeps its full width, right-aligned, so
+   it slides in from the window's edge instead of being squeezed. Clipped only
+   while it moves: at rest the seam's hit area overhangs the column. */
+.app-page-claude.is-entering,
+.app-page-claude.is-leaving {
+  overflow: hidden;
+  justify-content: flex-end;
+}
+.app-page-claude.is-entering > .app-page-claude-chat,
+.app-page-claude.is-leaving > .app-page-claude-chat {
+  flex: 0 0 auto;
+  width: var(--pane-w);
+}
+.app-page-claude.is-entering {
+  animation: side-pane-in var(--dur-panel) var(--ease-out);
+}
+.app-page-claude.is-leaving {
+  animation: side-pane-out var(--dur-panel) var(--ease-out) forwards;
+  pointer-events: none;
+}
+@keyframes side-pane-in {
+  from {
+    width: 0;
+    min-width: 0;
+    opacity: 0;
+  }
+}
+@keyframes side-pane-out {
+  to {
+    width: 0;
+    min-width: 0;
+    opacity: 0;
+  }
+}
+
 /* Width transitions on the same clock as the peek's own slide
    (`--peek-dur`/`--peek-ease`, styles/task-peek.css), so the frame's reflow
    and the peek's slide run off one number instead of the frame snapping

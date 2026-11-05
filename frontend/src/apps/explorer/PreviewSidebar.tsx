@@ -33,6 +33,7 @@
 // the portal (preview-side-slot.ts). Rendered as a FRAGMENT of two flex items (the
 // divider and the column) into a `display: contents` slot, so both end up direct
 // flex children of the split container.
+import type { PanePhase } from "@platform/lib/pane-presence";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
 import { SideCloseButton, SideTabs } from "@apps/explorer/SideChrome";
@@ -121,6 +122,7 @@ export default function PreviewSidebar({
   onSelect,
   onClose: closeSide,
   chat,
+  phase = "open",
 }: {
   // The switcher's whole list: every companion, in SIDEBAR_MODES order, the ones
   // this file cannot show disabled and carrying their reason.
@@ -144,6 +146,9 @@ export default function PreviewSidebar({
    * goes.
    */
   chat?: ReactNode;
+  /** The slide in/out (platform/lib/pane-presence): the caller holds this
+   *  column mounted through its exit and says which way it is moving. */
+  phase?: PanePhase;
 }) {
   // Full screen (lib/side-maximized-store). Closing the column always drops it,
   // so a later reopen is not unexpectedly full screen.
@@ -326,7 +331,7 @@ export default function PreviewSidebar({
 
   return (
     <>
-      {!maximized && (
+      {!maximized && phase !== "leaving" && (
         <div
           className="preview-side-divider"
           ref={dividerRef}
@@ -336,8 +341,11 @@ export default function PreviewSidebar({
         />
       )}
       <aside
-        className={maximized ? "preview-side maximized" : "preview-side"}
-        style={{ flexBasis: width }}
+        className={
+          (maximized ? "preview-side maximized" : "preview-side") +
+          (!maximized && phase !== "open" ? " is-" + phase : "")
+        }
+        style={{ flexBasis: width, ["--pane-w" as string]: width + "px" }}
         aria-label={modeTitle(active) + " sidebar"}
       >
         <div className="preview-side-header">

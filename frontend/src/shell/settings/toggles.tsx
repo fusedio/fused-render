@@ -18,6 +18,7 @@ import {
   putReaderEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putChatRecapEnabled,
+  putTurnClickOpensReplyEnabled,
   putBreakoutEnabled,
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
@@ -35,6 +36,7 @@ import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
   publishChatRecapEnabled,
+  publishTurnClickOpensReplyEnabled,
   publishBreakoutEnabled,
 } from "@apps/claude/feature-flag";
 import { publishTaskNotifyTerminalSessions } from "../task-notify-terminal-flag";
@@ -79,6 +81,19 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
 }
 
 // The in-chat recap fold. Default on: one haiku call per recap.
+// A click on a user message opens the folded reply under it.
+export function TurnClickOpensReplyControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="turn-click-opens-reply"
+      checked={prefs.turn_click_open?.enabled === true}
+      put={putTurnClickOpensReplyEnabled}
+      after={(next) => publishTurnClickOpensReplyEnabled(next.turn_click_open?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
 export function ChatRecapControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow

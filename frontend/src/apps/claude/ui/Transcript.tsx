@@ -33,6 +33,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { useTurnClickOpensReplyEnabled } from "../feature-flag";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { cn } from "@platform/lib/utils";
 
@@ -941,6 +942,31 @@ export const Transcript = memo(function Transcript({
     followTail.current = false;
     bumpFold((n) => n + 1);
   }, []);
+  // A CLICK ON A USER MESSAGE OPENS THE REPLY UNDER IT (prefs `turn_click_open`,
+  // off by default). Open only, never a toggle: every assistant row between
+  // this message and the next one that is folded becomes `manual-open`, the
+  // same pin the ✻ mark writes. A reply already open, or a one-liner (no
+  // fold state at all), is left as it is.
+  const clickOpens = useTurnClickOpensReplyEnabled();
+  const turnsRef = useRef(state.turns);
+  turnsRef.current = state.turns;
+  const onOpenReply = useCallback((key: string) => {
+    const turns = turnsRef.current;
+    const at = turns.findIndex((t) => t.key === key);
+    if (at < 0) return;
+    let opened = false;
+    for (let i = at + 1; i < turns.length && turns[i].role !== "user"; i++) {
+      if (turns[i].role !== "assistant") continue;
+      const id = foldIds.current.get(turns[i].key);
+      if (id === undefined || !isFolded(folds.current.get(id))) continue;
+      folds.current.set(id, "manual-open");
+      opened = true;
+    }
+    if (!opened) return;
+    // Same rule as `onToggleCollapse`: the reader asked to READ something.
+    followTail.current = false;
+    bumpFold((n) => n + 1);
+  }, []);
   // …and the same for every disclosure BELOW a turn — a run's `more`/`less`, a
   // chip, a thinking block — which resize the log the same way from five levels
   // down a memoized tree (ui/cardPolicy `useHoldTail`).
@@ -985,6 +1011,7 @@ export const Transcript = memo(function Transcript({
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
                   {...(onPullPending ? { onPullPending } : {})}
+                  {...(clickOpens ? { onOpenReply } : {})}
                   {...(sendNowKey && sendNowKey === turn.key ? { sendNowHint: true } : {})}
                   {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}

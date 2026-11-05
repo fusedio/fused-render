@@ -135,6 +135,7 @@ import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { chatDoorOnApp, useAppPageClaudePane } from "./useAppPageClaudePane";
 import { ClaudeRail, paneHomeHref } from "./claude-rail/ClaudeRail";
+import { usePanePresence } from "@platform/lib/pane-presence";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ChatMount } from "@apps/claude";
 import { peekSearch } from "./task-peek-store";
@@ -757,6 +758,8 @@ export default function AppPage({
   // side peek (`.app-page-split`'s header).
   const claudeSplitRef = useRef<HTMLDivElement | null>(null);
   const claude = useAppPageClaudePane(claudeSplitRef);
+  // Held mounted through its exit so the pane slides like the left sidebar.
+  const pane = usePanePresence(claude.open);
   // THE RAIL BESIDE THE OPEN PANE (ClaudeRail `paneOpen`; owner,
   // 2026-11-05): with favourites on the rail stands whether the pane is open
   // or shut; off, only while it is shut, as before.
@@ -1199,8 +1202,14 @@ export default function AppPage({
         layout={gitPeekLayout}
       />
       </div>
-      {claude.open && (
-        <div className="app-page-claude" style={{ width: claude.width }}>
+      {pane.mounted && (
+        <div
+          className={"app-page-claude" + (pane.phase === "open" ? "" : " is-" + pane.phase)}
+          style={{ width: claude.width, ["--pane-w" as string]: claude.width + "px" }}
+          // Leaving: still mounted for the slide, but nothing in it may take
+          // focus or input (a focused composer would still submit).
+          {...(pane.phase === "leaving" ? { inert: true } : {})}
+        >
           <div
             // The explorer's seam, reused as-is (preview.css): one hairline
             // that lights on hover and drag like every draggable seam here.
