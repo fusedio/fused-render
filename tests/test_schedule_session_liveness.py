@@ -280,3 +280,20 @@ def test_the_liveness_read_is_made_once_per_session_per_tick(target, spawned,
 
     assert schedule.tick(now=_now()) == []
     assert reads == [LIVE_SESSION]
+
+
+def test_transcript_path_prefers_the_bucket_holding_a_conversation(projects_dir):
+    """One id in two buckets: the one the conversation was moved into
+    (EnterWorktree) and the original one the CLI's exit bookkeeping re-created
+    with no conversation row. The stub's bucket sorts FIRST here, so the answer
+    is decided by the conversation check, not by listing order."""
+    sid = "sess-moved"
+    stub = projects_dir / "-a-repo" / f"{sid}.jsonl"
+    moved = projects_dir / "-z-worktree" / f"{sid}.jsonl"
+    stub.parent.mkdir()
+    moved.parent.mkdir()
+    stub.write_text(json.dumps({"type": "cost-state", "sessionId": sid}) + "\n")
+    assert session_liveness.transcript_path(sid) == str(stub)  # nothing better
+    moved.write_text(json.dumps({"type": "user", "uuid": "u1", "sessionId": sid,
+                                 "message": {"role": "user", "content": "hi"}}) + "\n")
+    assert session_liveness.transcript_path(sid) == str(moved)

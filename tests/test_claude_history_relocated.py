@@ -120,3 +120,34 @@ def test_relocated_found_from_file_workdir(agent, tmp_path):
     cand = os.path.join(agent.PROJECTS, agent._munge(str(root)) + "--claude-worktrees-foo", "sid.jsonl")
     _write(cand, _rows("x"))
     assert agent._session_transcript_path(str(f), "sid") == cand
+
+
+def _bookkeeping(sid="sid"):
+    # What the CLI writes on exit, with no conversation row among them.
+    return [
+        {"type": "bridge-session", "sessionId": sid, "bridgeSessionId": "cse_x"},
+        {"type": "cost-state", "sessionId": sid, "totalCostUSD": 1.0},
+        {"type": "last-prompt", "lastPrompt": "hi", "leafUuid": "a0", "sessionId": sid},
+        {"type": "ai-title", "aiTitle": "t", "sessionId": sid},
+        {"type": "mode", "mode": "normal", "sessionId": sid},
+        {"type": "atis-latch", "atis": "", "sessionId": sid},
+    ]
+
+
+def test_bookkeeping_only_original_loses_to_relocated(agent, tmp_path):
+    # EnterWorktree moved the conversation; the CLI's exit then re-created the
+    # original path with bookkeeping rows only, newer than nothing it replaced.
+    target, work, munged = _setup(agent, tmp_path)
+    orig = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
+    moved = os.path.join(agent.PROJECTS, munged + "--claude-worktrees-wt", "sid.jsonl")
+    _write(moved, _rows("first", "second", "is it done?"))
+    _write(orig, _bookkeeping())
+    assert agent._session_transcript_path(work, "sid") == moved
+    assert _users(agent._history(target, "sid")) == ["first", "second", "is it done?"]
+
+
+def test_bookkeeping_only_original_kept_when_nothing_relocated(agent, tmp_path):
+    _t, work, munged = _setup(agent, tmp_path)
+    orig = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
+    _write(orig, _bookkeeping())
+    assert agent._session_transcript_path(work, "sid") == orig

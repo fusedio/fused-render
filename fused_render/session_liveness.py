@@ -46,7 +46,8 @@ import re
 from datetime import datetime, timezone
 
 from fused_render.agent_backends import roots
-from fused_render.tasks_store import is_interrupt_mark, leading_machinery_tag
+from fused_render.tasks_store import (
+    holds_conversation, is_interrupt_mark, leading_machinery_tag)
 
 # Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
 # `agent_roots.claude_dir`). Module-level so a test can monkeypatch
@@ -364,7 +365,8 @@ def transcript_path(session_id: str, projects_dir: str | None = None) -> str:
     transcript sits under fused's own root, same bucket layout. With
     `projects_dir` given, that ONE root is searched — the callers that pass one
     (tests, `tasks_watch._read_live_transcripts`) are naming the root they mean,
-    and `tasks_watch` walks the list itself. First match wins, as it always has.
+    and `tasks_watch` walks the list itself. Within a root, the first sorted
+    match that holds a conversation wins, else the first sorted match.
     """
     if not session_id or not isinstance(session_id, str):
         return ""
@@ -373,9 +375,13 @@ def transcript_path(session_id: str, projects_dir: str | None = None) -> str:
     search = ([projects_dir] if projects_dir
               else [root for _b, root in roots.projects_roots(PROJECTS_DIR)])
     for root in search:
-        matches = glob.glob(os.path.join(root, "*", session_id + ".jsonl"))
+        matches = sorted(glob.glob(os.path.join(root, "*", session_id + ".jsonl")))
         if matches:
-            return matches[0]
+            # Two buckets can hold one id: EnterWorktree moved the conversation
+            # and the CLI's exit bookkeeping re-created the original path with
+            # no conversation in it (`holds_conversation`). Prefer the one with
+            # a conversation; else the first in sorted order.
+            return next((p for p in matches if holds_conversation(p)), matches[0])
     return ""
 
 

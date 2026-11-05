@@ -3115,8 +3115,22 @@ def _collect() -> dict[str, dict]:
     # session's transcript sits under fused's own root in Claude's shape, so
     # it is a task like any other, and which root it came from is the one
     # fact about its agent that costs nothing to know.
+    #
+    # ONE SESSION CAN HAVE TWO FILES: EnterWorktree moves the conversation into
+    # `<munge(root)>--claude-worktrees-<name>/`, and the CLI's exit bookkeeping
+    # then re-creates `<munge(root)>/<sid>.jsonl` with no conversation in it.
+    # That stub sorts AFTER the worktree bucket (`-` < `/`), so the plain
+    # last-wins below would file the task on it and its thread would be empty.
+    # A later path only replaces an earlier one that holds a conversation when
+    # it holds one too (`tasks_store.holds_conversation`, read for duplicates
+    # only).
     for backend, path in tasks_store.transcripts_by_backend():
         session_id = os.path.splitext(os.path.basename(path))[0]
+        prior = tasks.get(session_id)
+        if (prior is not None and prior["path"]
+                and not tasks_store.holds_conversation(path)
+                and tasks_store.holds_conversation(prior["path"])):
+            continue
         tasks[session_id] = _new_task(session_id, session_id, path, backend)
     # A SEND IS A TASK BEFORE ANY FILE SAYS SO. `tasks_watch.sent_marks()` is
     # the page that made the send telling this process it made it (see
