@@ -550,3 +550,21 @@ export function ringMarks(o: RingMarkInput): {
   const pointerQuiet = pinnedElsewhere && overPin;
   return { classes, hovers, favRing, overPin, titleOnly, pointerQuiet };
 }
+
+/** WHETHER THE RAIL STANDS (ClaudeRail; owner, 2026-11-05: "we show the rail
+ *  no matter what now … on every page … even if the sidebar is expanded or
+ *  not. The only reason we don't show the rail is if there are no tasks in
+ *  favourites AND no items to be shown in the rail").
+ *   - THE PANE SHUT: always — the rail is the pane's way back in (its panel
+ *     glyph, its pull), so an empty one still stands; a shut pane with no
+ *     rail would leave no door.
+ *   - THE PANE OPEN, favourites on (`always`): only with something to draw —
+ *     a chat in the list (`list`, the place's — and the node's — chats, before
+ *     the clip) or a favourite (`favs`).
+ *   - THE PANE OPEN, favourites off: never — the rail of 2026-11-04, which
+ *     stood only while the pane was shut. */
+export function railShown(o: { list: number; favs: number; paneOpen: boolean; always: boolean }): boolean {
+  if (!o.paneOpen) return true;
+  if (!o.always) return false;
+  return o.list > 0 || o.favs > 0;
+}

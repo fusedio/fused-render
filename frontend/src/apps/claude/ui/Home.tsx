@@ -6,8 +6,8 @@ import "../styles/home.css";
 import type { Task } from "@platform/lib/api";
 import { HomeCard, type HomeCardProps } from "./HomeCard";
 import { Lists } from "./Lists";
-import { useFavouriteTasks } from "./useFavouriteTasks";
 import { useLandingReads } from "./useLandingReads";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 
 export interface HomeProps extends HomeCardProps {
   /** The chats about this target, as TASKS — see `Lists`' own prop. */
@@ -57,8 +57,10 @@ export function Home({
     snapInvalidation,
   );
 
-  // THE FAVOURITES (owner, 2026-11-03): global, above the lists (`Lists`).
-  const favourites = useFavouriteTasks();
+  // THE FAVOURITES ARE THE RAIL'S (owner, 2026-11-05): no block here, and
+  // Recent leaves a starred chat out while the switch is on (`Lists`
+  // `hideStarred`).
+  const favsOn = useTaskFavourites();
 
   return (
     <div className="c-home">
@@ -85,7 +87,7 @@ export function Home({
             {...(onFillDraft ? { onFillDraft } : {})}
             onNavigate={cardProps.onNavigate}
             disabled={listsDisabled}
-            favourites={favourites}
+            hideStarred={favsOn}
           />
         </div>
       </div>

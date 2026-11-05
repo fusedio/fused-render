@@ -11,8 +11,11 @@
 // remount its chat on every hop. This one is the shell's: the chat mounts
 // once and stays; the card stands beside whatever rail is on the page now
 // (fav-peek-store, where each rail registers itself and its favourite
-// rings), and while no rail is up — the pane expanded, a page with no rail —
-// it hides, the chat kept alive, and shows again on the next rail. A bit
+// rings), and while no rail is up — a page with no rail, a rail hidden for
+// having nothing to draw (ClaudeRail `shown`) — it hides, the chat kept
+// alive, and shows again on the next rail. The rail stands beside the open
+// pane too (owner, 2026-11-05), so the card keeps its corner pane open or
+// shut. A bit
 // smaller than the list's card (`FAV_SIZE`), and STUCK TO THE BOTTOM RIGHT
 // (owner: "it should stick to bottom so we can have it at bottom right all
 // the time and we can close and open it"): its bottom on the rail's, not on

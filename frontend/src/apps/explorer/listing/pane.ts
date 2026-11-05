@@ -50,6 +50,7 @@ import {
   subscribeSideWidth,
 } from "@apps/explorer/lib/side-store";
 import { dragPaneFrac, paneDragCloses, paneFracFromSharedWidth } from "@apps/explorer/listing/pane-math";
+import { railInset } from "@shell/claude-rail/ClaudeRail";
 
 // THE ONE-TIME PURGE of the per-folder width, run at module init — which is the
 // first time anything in the app cares about a pane at all, and the only place
@@ -184,7 +185,9 @@ export function usePreviewPane(enabled = true, onDragClose?: () => void) {
       // The pane is the right side: its width is the distance from the cursor
       // to the container's right edge, run through the shared FS-12 clamps and
       // divided back into a fraction of the container (dragPaneFrac).
-      const rawPx = rect.right - ev.clientX;
+      // Less the rail standing past the pane (favourites on, rail-peek-lib
+      // `railInset`): the pane's edge is the rail's, not the split's.
+      const rawPx = rect.right - railInset(splitRef.current) - ev.clientX;
       // Dragged clean through the resistance band: the gesture means SHUT.
       // Deliberately BEFORE any width is recorded this move, and `resized`
       // untouched by the close: every move before this one stuck the pane at

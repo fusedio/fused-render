@@ -1,7 +1,8 @@
-// THE CLAUDE RAIL: what stands at a page's right edge while its Claude pane
-// is shut (owner, 2026-10-26: "a very min width column, like we have for the
-// fused render left sidebar, just a single width column with the button";
-// "rail stays on only when claude panel is collapsed"). Born on the canvas
+// THE RAIL (the owner's name for it, 2026-11-05): what stands at a page's
+// right edge while its Claude pane is shut (owner, 2026-10-26: "a very min
+// width column, like we have for the fused render left sidebar, just a single
+// width column with the button") — and, with favourites on, BESIDE THE OPEN
+// PANE too (below). Born on the canvas
 // page; since 2026-11-01 the app page and the explorer's file and folder
 // views draw the same rail (owner: "replicate that same behaviour in explorer
 // and app view — exact same behaviour"). WHERE it stands is a `RailPlace`
@@ -17,7 +18,9 @@
 //   - the panel glyph (platform/ui/PanelIcon) — the way back IN. Its other
 //     half, the Hide, is the first seat of the chat's own top row while the
 //     pane is up (ClaudeChat `onHidePane`): exactly one of the two is on
-//     screen at any moment, the explorer sidebar's own rule (SideChrome.tsx).
+//     screen at any moment, the explorer sidebar's own rule (SideChrome.tsx)
+//     — so beside the open pane the rail draws no glyph (and no pull seam:
+//     the pane's own seam resizes it).
 //   - NEW TASK, at the head of the list (owner, 2026-10-28: "the + icon
 //     should be at the top of the list and it should show a new task modal
 //     when we click it, instead of opening the sidebar"). It opens the Tasks
@@ -36,6 +39,21 @@
 //     that chat where the Tasks page's door would (`taskHref`): the canvas
 //     chat on its session, or the node selected with its chat on its session.
 //     Scrolls on a short window.
+//
+// BESIDE THE OPEN PANE (owner, 2026-11-05: "we show the rail no matter what
+// now … on every page … even if the sidebar is expanded or not. The only
+// reason we don't show the rail is if there are no tasks in favourites AND no
+// items to be shown in the rail"): with favourites on (favourites-flag), every
+// page that draws this rail draws it whether its pane is shut or open
+// (`paneOpen`), at the window's right edge past the pane. Open, the rail is
+// the + and the list's rings on top, the favourites at its foot — and it is
+// HIDDEN while it has neither a chat in its list nor a favourite (claude-rail-
+// lib `railShown`; shut, it always stands: it is the way back in). A hidden
+// rail registers nothing, so the favourite's card stands only beside a rail
+// on screen. Beside the open pane, this rail's card mounts no chat the pane
+// already holds (`paneSids`): one chat, one composer — the favourite's card's
+// rule (FavouritePeek). With favourites off, the rail stands only while the
+// pane is shut, as it did.
 //
 // A SELECTED NODE NARROWS THE RAIL the way it narrows the open pane (owner,
 // 2026-10-29: "collapsed sidebar should behave exact same way as expanded
@@ -80,8 +98,9 @@
 // opens the pane as before (the first such press included).
 //
 // FAVOURITES (owner, 2026-11-03): the card's STAR (RailPeek) makes a chat a
-// favourite — server-side, global, so every rail and every pane lists the same
-// ones (api `setTaskFavourite`; `starred` on the pulse). Which favourite's card
+// favourite — server-side, global, so every rail lists the same ones (api
+// `setTaskFavourite`; `starred` on the pulse); the pane lists none — its
+// Recent leaves them out (owner, 2026-11-05). Which favourite's card
 // is OPEN is per window (2026-11-04, below). The consequences here:
 //   - THE RAIL'S LAST SECTION HOLDS THEM: under the Git seats, a ring for
 //     every starred chat from ANY place (claude-rail-lib `favSeats` — not
@@ -223,6 +242,7 @@ import {
   placeRoot,
   railRows,
   railScope,
+  railShown,
   readMark,
   ringMarks,
   type RailHere,
@@ -231,7 +251,17 @@ import {
   type ReadMark,
 } from "./claude-rail-lib";
 import { CanvasGlyph } from "@apps/canvases/glyph";
-import { FAV_SETTLE_MS, PeekIntent, keepAlive, railOnChipLeave, railOnStarred, railOpenFav, statusWords } from "./rail-peek-lib";
+import {
+  FAV_SETTLE_MS,
+  PeekIntent,
+  favChatElsewhere,
+  keepAlive,
+  railOnChipLeave,
+  railOnStarred,
+  railOpenFav,
+  statusWords,
+} from "./rail-peek-lib";
+import { usePaneSessions } from "@platform/lib/peek-session";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { focusRail, registerRail, requestFavFocus, setRailPage, takeQuietFocus, useFavPeekState } from "./fav-peek-store";
 import { FAV_PEEK_ID } from "./FavouritePeek";
@@ -240,6 +270,13 @@ import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useRailGit } from "./rail-git";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
+
+/** The rail beside an open pane, for the pages' seam drags (rail-peek-lib
+ *  `railInset`) — re-exported here, the one rail module apps may import. */
+export { railInset } from "./rail-peek-lib";
+
+/** No pane sessions: the shut pane's answer (`paneSids`), one reference. */
+const NO_SESSIONS: readonly string[] = [];
 
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
 const PEEK_ID = "claude-rail-peek";
@@ -350,6 +387,7 @@ export function ClaudeRail({
   onSelectNode,
   onPullStart,
   onCardPinned,
+  paneOpen = false,
 }: {
   /** Where the rail stands (claude-rail-lib `RailPlace`): whose chats ride
    *  it. On a canvas the selected node's file narrows it (header). The
@@ -385,6 +423,12 @@ export function ClaudeRail({
   /** A card opened by a press is up (`true`) or gone (`false`): the page
    *  holds its frame's focus-on-enter meanwhile (header). */
   onCardPinned?: (pinned: boolean) => void;
+  /** THE PANE IS OPEN beside this rail (header, "BESIDE THE OPEN PANE"):
+   *  favourites on only — the page mounts the rail then, at the window's
+   *  right edge past the pane. No panel glyph and no pull seam (the pane's
+   *  own Hide and seam do those jobs), and the rail hides while it has
+   *  nothing to draw (claude-rail-lib `railShown`). */
+  paneOpen?: boolean;
 }) {
   const rows = useTasksPulseRows();
   const peekOn = useCanvasRailPeek();
@@ -457,6 +501,24 @@ export function ClaudeRail({
     () => listSeats(railRows(rows, full, seatPlace), favsOn),
     [rows, full, seatPlace, favsOn],
   );
+  // The +'s New task card (`openNewTask`, below) — declared up here because
+  // an open one keeps the rail standing (`shown`).
+  const [card, setCard] = useState<Card | null>(null);
+  // WHETHER THE RAIL STANDS (header, claude-rail-lib `railShown`): with the
+  // pane shut, always; beside the open pane (favourites on), only while it
+  // has a chat or a favourite to draw — or the +'s card is up, which must
+  // not vanish under the reader. HIDDEN, not unmounted: the rail's
+  // subscriptions and measures stay put, and it is back the moment a chat
+  // lands. A hidden rail does not register (below), so the favourite's card
+  // has no rail to stand beside — there is no favourite to show then anyway.
+  const shown = railShown({ list: allSeats.length, favs: favs.length, paneOpen, always: favsOn }) || card !== null;
+  // ONE CHAT, ONE COMPOSER beside the open pane: a chat the pane (or the
+  // explorer's sidebar) has mounted is not mounted again in this rail's card
+  // — the card says where it is instead (`bodyNote`), as the favourite's card
+  // does (FavouritePeek). Only while the pane is open: shut, nothing is
+  // mounted there, and the rail is the rail of 2026-11-04.
+  const paneSidsLive = usePaneSessions();
+  const paneSids = paneOpen ? paneSidsLive : NO_SESSIONS;
   // ONLY AS MANY RINGS AS FIT, from the top — no scroll (owner, 2026-11-02:
   // "if we have more chats let's not add scroll, just clip them; basically we
   // only show the top chats"). The list is its rings' height and the foot
@@ -669,8 +731,7 @@ export function ClaudeRail({
   // it, and it survives the rail narrowing to a node and widening again.
   // Shared with the pane's Recent chats list (platform/lib/last-chat), so
   // the mark holds across the pane opening and shutting. THE FAVOURITES'
-  // SECTION KEEPS ITS OWN (header, `useLastFav`), shared the same way with
-  // the pane's Favourites block.
+  // SECTION KEEPS ITS OWN (header, `useLastFav`).
   const lastPressed = useLastChat();
   const lastFavPressed = useLastFav();
   const railRef = useRef<HTMLElement | null>(null);
@@ -734,8 +795,8 @@ export function ClaudeRail({
   const hereOf = useCallback(() => hereRef.current, []);
   useEffect(() => {
     const el = railRef.current;
-    return el ? registerRail(el, hereOf) : undefined;
-  }, [hereOf]);
+    return el && shown ? registerRail(el, hereOf) : undefined;
+  }, [hereOf, shown]);
   // …and WHERE THE PAGE STANDS, for the favourite card's where-chip (fav-
   // peek-store `setRailPage`): said again on every hop this rail makes in
   // place and every node selected. After the register above, in the same
@@ -743,8 +804,8 @@ export function ClaudeRail({
   const pageNode = place.kind === "canvas" ? (place.file ?? null) : null;
   useEffect(() => {
     const el = railRef.current;
-    if (el) setRailPage(el, { root, node: pageNode });
-  }, [root, pageNode]);
+    if (el && shown) setRailPage(el, { root, node: pageNode });
+  }, [root, pageNode, shown]);
   // ONE CHAT, ONE MOUNT: this rail's card lets go of the chat the
   // favourite's card is taking — on a favourite ring's press
   // (`openFavourite`), when this card's own star is pressed on (`onStarred`,
@@ -854,9 +915,11 @@ export function ClaudeRail({
   const keptSeats = useMemo(
     () =>
       peekOn
-        ? kept.map((k) => seats.find((s) => s.pulse.key === k)).filter((s): s is NonNullable<typeof s> => !!s)
+        ? kept
+            .map((k) => seats.find((s) => s.pulse.key === k))
+            .filter((s): s is NonNullable<typeof s> => !!s && !favChatElsewhere(s.pulse, paneSids, null))
         : [],
-    [peekOn, kept, seats],
+    [peekOn, kept, seats, paneSids],
   );
   // While the card is up: a press anywhere but the rail and the card closes
   // it. A click INTO the workbench frame is not a press this document sees,
@@ -1093,7 +1156,6 @@ export function ClaudeRail({
       alive.current = false;
     };
   }, []);
-  const [card, setCard] = useState<Card | null>(null);
   const [opening, setOpening] = useState(false);
   // The all-chats seat pressed by keyboard (below): when the node goes, the
   // keyboard goes to the +, the rail's first seat, rather than to the body.
@@ -1481,6 +1543,7 @@ export function ClaudeRail({
       ref={railRef}
       className={"claude-rail" + (favs.length > 0 ? " has-favs" : "")}
       aria-label="Claude"
+      hidden={!shown || undefined}
       onPointerMove={(e) => {
         lastPointer.current = { x: e.clientX, y: e.clientY };
       }}
@@ -1493,23 +1556,27 @@ export function ClaudeRail({
           width the pointer takes it to — the explorer sidebar's reopen edge
           (SideReopenEdge) and the global sidebar's rail, the same gesture on
           the same kind of edge. The Show button stays the click. */}
-      <div
-        className="claude-rail-seam"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Drag to show the Claude panel"
-        onPointerDown={onPullStart}
-      />
-      <button
-        type="button"
-        className="sidebar-rail-btn"
-        title="Show the Claude panel"
-        aria-label="Show the Claude panel"
-        aria-expanded={false}
-        onClick={onOpen}
-      >
-        <PanelIcon side="right" />
-      </button>
+      {!paneOpen && (
+        <div
+          className="claude-rail-seam"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Drag to show the Claude panel"
+          onPointerDown={onPullStart}
+        />
+      )}
+      {!paneOpen && (
+        <button
+          type="button"
+          className="sidebar-rail-btn"
+          title="Show the Claude panel"
+          aria-label="Show the Claude panel"
+          aria-expanded={false}
+          onClick={onOpen}
+        >
+          <PanelIcon side="right" />
+        </button>
+      )}
       <div className="sidebar-rail-items">
         <button
           ref={plusRef}
@@ -1707,7 +1774,9 @@ export function ClaudeRail({
           </>
         )}
       </div>
-      {peekOn && keptSeats.length > 0 && (
+      {peekOn && (keptSeats.length > 0 || (paneOpen && peekSeat)) && (
+        // Beside the open pane a card can stand with no chat of its own: the
+        // one the pane holds (`paneSids`), said in its body instead.
         <RailPeek
           ref={peekRef}
           id={PEEK_ID}
@@ -1733,6 +1802,7 @@ export function ClaudeRail({
           onHeld={setHeld}
           onStarred={onStarred}
           avoid={favBox}
+          bodyNote={peekSeat && favChatElsewhere(peekSeat.pulse, paneSids, null) ? "Open in the Claude panel" : null}
           pinned={pinned}
           onPin={() => {
             const key = intent.current;

@@ -58,6 +58,7 @@ import {
   subscribeSideWidth,
 } from "@apps/explorer/lib/side-store";
 import { committedWidth, resizeWidth } from "@platform/lib/panel-drag";
+import { railInset } from "@shell/claude-rail/ClaudeRail";
 
 // The split container's class, and the drag's frame of reference. Looked up from
 // the divider with `closest` rather than handed down as a ref: the two live in
@@ -283,7 +284,9 @@ export default function PreviewSidebar({
       // RIGHT-hand panel grows as the cursor moves LEFT, which is the whole of
       // the mirroring; `resizeWidth` speaks only in widths and never learns
       // which edge of the window it is on (platform/lib/panel-drag).
-      const next = resizeWidth(rect.right - ev.clientX, MIN_W, max);
+      // Less the rail standing past the column (favourites on, rail-peek-lib
+      // `railInset`): the column's edge is the rail's, not the split's.
+      const next = resizeWidth(rect.right - railInset(splitEl()) - ev.clientX, MIN_W, max);
       if (next === null) {
         // Dragged clean through the floor: the gesture means SHUT, and it hands
         // off to the same `_side=off` the header's chevron writes. Deliberately

@@ -36,6 +36,7 @@ import {
   type StarMark,
   type Timers,
   rowOf,
+  railInset,
 } from "./rail-peek-lib";
 import type { TaskPulseTask } from "@platform/lib/api";
 
@@ -1146,3 +1147,36 @@ describe("railOpenFav (the open favourite as the rail counts it)", () => {
   });
 });
 
+
+// ---- THE RAIL BESIDE AN OPEN PANE (owner, 2026-11-05) ----------------------
+// A pane's seam drag measures the pane to the split's right edge; with the
+// rail standing there the pane ends at the rail's edge instead.
+describe("railInset", () => {
+  const box = (left: number, width: number) => ({ left, right: left + width, width });
+  const split = (right: number, rails: { right: number; width: number; hidden?: boolean }[]) =>
+    ({
+      getBoundingClientRect: () => box(0, right),
+      querySelectorAll: () =>
+        rails.map((r) => ({ hidden: !!r.hidden, getBoundingClientRect: () => box(r.right - r.width, r.width) })),
+    }) as unknown as Element;
+
+  it("no split, a stand-in with no DOM, or no rail: nothing", () => {
+    expect(railInset(null)).toBe(0);
+    expect(railInset(undefined)).toBe(0);
+    expect(railInset({ getBoundingClientRect: () => box(0, 900) } as unknown as Element)).toBe(0);
+    expect(railInset(split(900, []))).toBe(0);
+  });
+
+  it("a rail at the split's right edge: its width", () => {
+    expect(railInset(split(900, [{ right: 900, width: 48 }]))).toBe(48);
+  });
+
+  it("a hidden rail (nothing to draw) or one laid out at no width: nothing", () => {
+    expect(railInset(split(900, [{ right: 900, width: 48, hidden: true }]))).toBe(0);
+    expect(railInset(split(900, [{ right: 900, width: 0 }]))).toBe(0);
+  });
+
+  it("a rail that is not at the right edge is not the pane's neighbour", () => {
+    expect(railInset(split(900, [{ right: 600, width: 48 }]))).toBe(0);
+  });
+});

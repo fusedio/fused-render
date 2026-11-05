@@ -21,6 +21,7 @@ import {
   placeRoot,
   railRows,
   railScope,
+  railShown,
   readMark,
   ringMarks,
   type RailPlace,
@@ -700,3 +701,36 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
   });
 });
 
+
+// ---- WHETHER THE RAIL STANDS (owner, 2026-11-05) ---------------------------
+// "We show the rail no matter what now … even if the sidebar is expanded or
+// not. The only reason we don't show the rail is if there are no tasks in
+// favourites AND no items to be shown in the rail."
+describe("railShown", () => {
+  const at = (list: number, favs: number, paneOpen: boolean, always: boolean) =>
+    railShown({ list, favs, paneOpen, always });
+
+  it("the pane shut: always — the rail is the way back in, empty or not, flag on or off", () => {
+    for (const always of [true, false]) {
+      expect(at(0, 0, false, always)).toBe(true);
+      expect(at(3, 0, false, always)).toBe(true);
+      expect(at(0, 2, false, always)).toBe(true);
+    }
+  });
+
+  it("the pane open, favourites on: a list chat or a favourite is enough", () => {
+    expect(at(1, 0, true, true)).toBe(true);
+    expect(at(0, 1, true, true)).toBe(true);
+    expect(at(4, 2, true, true)).toBe(true);
+  });
+
+  it("the pane open, favourites on: nothing to draw, no rail", () => {
+    expect(at(0, 0, true, true)).toBe(false);
+  });
+
+  it("the pane open, favourites off: never — the rail of 2026-11-04", () => {
+    expect(at(5, 0, true, false)).toBe(false);
+    expect(at(0, 3, true, false)).toBe(false);
+    expect(at(0, 0, true, false)).toBe(false);
+  });
+});
