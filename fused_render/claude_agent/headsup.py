@@ -158,11 +158,13 @@ def main_steps(run_dir: str, agent=None) -> tuple:
     A file that shrank, or whose bytes before the offset changed, is rescanned
     from the start. A partial trailing line is left unconsumed."""
     not_a_turn = getattr(agent, "_not_a_turn_row", None) or _fallback_not_a_turn
+    sub_job = getattr(agent, "_subagent_job_row", None) or (lambda row, owned: False)
     with _steps_lock:
         c = _steps_cache.get(run_dir)
         if c is None:
             c = {"offset": 0, "tail": b"", "results": 0, "steps": 0,
-                 "last_steps": 0, "idle": False, "pending": set()}
+                 "last_steps": 0, "idle": False, "pending": set(),
+                 "sub_jobs": set()}
             _steps_cache[run_dir] = c
         _steps_cache.move_to_end(run_dir)
         while len(_steps_cache) > _MAX_RUNS:
@@ -177,17 +179,18 @@ def main_steps(run_dir: str, agent=None) -> tuple:
                     ok = fh.read(c["offset"] - start) == c["tail"]
                 if not ok:
                     c.update(offset=0, tail=b"", results=0, steps=0,
-                             last_steps=0, idle=False, pending=set())
+                             last_steps=0, idle=False, pending=set(), sub_jobs=set())
                 fh.seek(c["offset"])
                 data = fh.read()
         except OSError:
-            c.update(offset=0, tail=b"", results=0, steps=0, last_steps=0, idle=False, pending=set())
+            c.update(offset=0, tail=b"", results=0, steps=0, last_steps=0, idle=False, pending=set(),
+                     sub_jobs=set())
             data = b""
         end = data.rfind(b"\n") + 1
         if end:
             consumed = data[:end]
             for raw in consumed.split(b"\n"):
-                _consume(c, raw, not_a_turn)
+                _consume(c, raw, not_a_turn, sub_job)
             c["offset"] += end
             c["tail"] = (c["tail"] + consumed)[-_TAIL:]
         if c["idle"]:
@@ -206,7 +209,7 @@ def pending_tools(run_dir: str, agent=None) -> int:
         return len(c["pending"]) if c else 0
 
 
-def _consume(c: dict, raw: bytes, not_a_turn) -> None:
+def _consume(c: dict, raw: bytes, not_a_turn, sub_job) -> None:
     if not raw.strip():
         return
     try:
@@ -216,7 +219,7 @@ def _consume(c: dict, raw: bytes, not_a_turn) -> None:
     if not isinstance(row, dict) or row.get("parent_tool_use_id"):
         return
     t = row.get("type")
-    if not_a_turn(row):
+    if sub_job(row, c["sub_jobs"]) or not_a_turn(row):
         return
     c["idle"] = t == "result"
     if t == "result":

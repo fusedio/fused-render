@@ -5673,7 +5673,28 @@ def _not_a_turn_row(row: dict) -> bool:
     sub = row.get("subtype")
     if sub == "task_notification":
         return str(row.get("status") or "") in _STOPPED_TASK_STATUSES
+    if sub == "task_started":
+        return bool(row.get("owned_by_subagent"))
     return sub in _BOOKKEEPING_SYSTEM_ROWS
+
+
+def _subagent_job_row(row: dict, owned: set) -> bool:
+    """Whether `row` belongs to a job a background SUBAGENT started (its own
+    Bash calls surface as top-level rows with no `parent_tool_use_id`). Only
+    the `task_started` carries `owned_by_subagent`; its `task_notification`
+    names just the `task_id`, so `owned` (the caller's running set of those
+    ids, mutated here) is what ties the two together. A parent-owned job's
+    `task_notification` is not one of these: the CLI wakes the model for it."""
+    if row.get("type") != "system":
+        return False
+    sub = row.get("subtype")
+    tid = row.get("task_id")
+    if sub == "task_started":
+        if row.get("owned_by_subagent") and tid:
+            owned.add(str(tid))
+            return True
+        return False
+    return sub == "task_notification" and str(tid) in owned
 
 
 def _turn_preamble_row(row: dict) -> bool:
@@ -5788,13 +5809,13 @@ def _turn_state_row(row: dict, state: dict) -> None:
         if isinstance(arr, list):
             state["tasks"] = {str(x.get("task_id")): True
                               for x in arr if isinstance(x, dict) and x.get("task_id")}
-    if _not_a_turn_row(row):
+    if _subagent_job_row(row, state["sub_jobs"]) or _not_a_turn_row(row):
         return
     state["idle"] = t == "result"
 
 
 def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple:
-    """`_turn_state`, resumable: `cursor` (`{"offset", "idle", "tasks"}`, a dict
+    """`_turn_state`, resumable: `cursor` (`{"offset", "idle", "tasks", "sub_jobs"}`, a dict
     the caller owns and this mutates) remembers how far into `out.jsonl` the
     fold has read, so each call parses only the bytes appended since the last
     one. The session host calls `_turn_state` every 0.2s whenever the file
@@ -5810,10 +5831,11 @@ def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple
     cursor.setdefault("offset", 0)
     cursor.setdefault("idle", False)
     cursor.setdefault("tasks", {})
+    cursor.setdefault("sub_jobs", set())
     try:
         with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
             if os.fstat(fh.fileno()).st_size < cursor["offset"]:
-                cursor.update(offset=0, idle=False, tasks={})
+                cursor.update(offset=0, idle=False, tasks={}, sub_jobs=set())
             fh.seek(cursor["offset"])
             trailing = b""
             for raw in fh:
@@ -5836,7 +5858,8 @@ def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple
         except ValueError:
             row = None
         if isinstance(row, dict):
-            scratch = {"idle": idle, "tasks": tasks}
+            scratch = {"idle": idle, "tasks": tasks,
+                       "sub_jobs": set(cursor["sub_jobs"])}
             _turn_state_row(row, scratch)
             idle, tasks = scratch["idle"], scratch["tasks"]
     return not idle, bool(tasks)
@@ -9309,6 +9332,7 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
     # in one payload is measured against one segmentation.
     shape = _window_shape(rows)
     outstanding = 0
+    sub_jobs = set()
     # Whether a `result` has closed a reply since the last echo — the exact
     # test `_read_current_turn`'s cursor makes, and for the same reason: an echo
     # WITH one before it is a genuinely new turn (the cursor is about to advance
@@ -9397,7 +9421,8 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
                 quiet_since_result = False
             else:
                 outstanding += 1
-        elif not _not_a_turn_row(row) and not _turn_preamble_row(row):
+        elif not _subagent_job_row(row, sub_jobs) \
+                and not _not_a_turn_row(row) and not _turn_preamble_row(row):
             # The run itself speaking after a `result` (a wake's rows): a
             # seam at that `result` would file this under the wrong turn.
             quiet_since_result = False
@@ -9777,6 +9802,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # the bytes since the last closed turn — see `_read_current_turn` — so this
     # list only holds a second reference to objects that pass already built.
     parsed = []
+    sub_jobs = set()       # task ids a background subagent started
 
     ends = []
     pending_cursor = []
@@ -9818,7 +9844,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         # except the rows that are not the run speaking at all
         # (`_NOT_A_TURN_ROW`), and the preamble of the turn a pending send is
         # about to open (`_turn_preamble_row`, gated on `echo_outstanding`).
-        if t != "result" and not _not_a_turn_row(row) \
+        if t != "result" and not _subagent_job_row(row, sub_jobs) \
+                and not _not_a_turn_row(row) \
                 and not (echo_outstanding and _turn_preamble_row(row)):
             idle = False
         # Any of these means the request the retries were for went THROUGH.
