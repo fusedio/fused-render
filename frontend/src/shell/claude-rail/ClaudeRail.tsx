@@ -282,7 +282,6 @@ import {
   railRemembered,
   rememberRail,
   collapseRestore,
-  paneTakesPinned,
   paneHoldAfter,
   paneWas,
   plusDoor,
@@ -1583,31 +1582,19 @@ export function ClaudeRail({
   const pinNow = useRef({ pinned, peekKey, favsOn });
   pinNow.current = { pinned, peekKey, favsOn };
   const paneWasOpen = useRef(paneOpen);
+  // THE PANE OPENING UNDER A PINNED LIST CARD (owner, 2026-11-05 evening:
+  // "the expand button should only open the Recent chats sidebar, not an
+  // item active — for that it has the Open button in the popover already"):
+  // the card goes, and NOTHING is opened in the pane — the pane stands on
+  // its home, whose Recent list marks the chat the card was on (the list's
+  // last press, apps/claude Lists `selected`). The hand-over of this
+  // morning (claude-rail-lib `paneTakesPinned`) is retired.
   useLayoutEffect(() => {
     const wasOpen = paneWasOpen.current;
     paneWasOpen.current = paneOpen;
-    const now = pinNow.current;
-    const key = now.pinned ? now.peekKey : null;
-    const seat = key ? seatsRef.current.find((s) => s.pulse.key === key) : undefined;
-    const takes = paneTakesPinned({
-      wasOpen,
-      open: paneOpen,
-      favsOn: now.favsOn,
-      pinnedKey: key,
-      // A favourite's RING (window B's), not a starred chat: a starred chat
-      // pinned from its LIST ring is the list's card, and the pane takes it
-      // like any other (2026-11-05: the sections do not see each other).
-      isFav: !!key && favKeysRef.current.has(key) && !baseSeatsRef.current.some((s) => s.pulse.key === key),
-      hasSession: !!seat?.pulse.session_id,
-    });
-    if (!takes || !seat) return;
-    // The pane is about to show it: remembered for the collapse (below),
-    // an empty pane not "home" while its chat mounts.
-    paneKey.current = { key: seat.pulse.key, holdUntil: Date.now() + 4000 };
-    const href = seatHref(seat);
+    if (wasOpen || !paneOpen || !pinNow.current.favsOn || !pinNow.current.pinned) return;
     setHeld(false);
     intent.dismiss();
-    if (href) openChatRef.current(href);
   }, [paneOpen, intent]);
   // THE PANE COLLAPSING GIVES THE CARD BACK (owner, 2026-11-05; claude-rail-
   // lib `paneWas`, `collapseRestore`): `paneKey` remembers the list chat the
@@ -1978,7 +1965,12 @@ export function ClaudeRail({
           title="Show the Claude panel"
           aria-label="Show the Claude panel"
           aria-expanded={false}
-          onClick={onOpen}
+          // The pane's HOME (its Recent chats), never a chat (owner,
+          // 2026-11-05): `onNewChat` where the page has it, after the open.
+          onClick={() => {
+            onOpen();
+            onNewChat?.();
+          }}
         >
           <PanelIcon side="right" />
         </button>
