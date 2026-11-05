@@ -3882,7 +3882,7 @@ def _comeback_at(entries: list[dict]) -> float:
 # ---------------------------------------------- stable AI titles (haiku queue)
 #
 # Behind `task_summary_titles_enabled` (default off): a session's stable AI
-# title is (re)written by haiku (claude_sessions `_title_and_recap`) and stored
+# title is (re)written by haiku (claude_sessions `_session_title`) and stored
 # on the session's record in `session_settings.json` (`ai_title`). This queue
 # carries titles ONLY: the in-chat recap fold is produced on demand by the
 # chat itself (`chat_recap_enabled`), never from here, and never titles a row.
@@ -4136,7 +4136,7 @@ def _recap_worker() -> None:
 
 def _recap_run(job: dict) -> None:
     """One queued job: ask haiku for the session's stable AI title (stored by
-    `_title_and_recap`), then wake the Tasks page so the row re-titles. Only
+    `_session_title`), then wake the Tasks page so the row re-titles. Only
     with `task_summary_titles_enabled` NOW, not when the job was queued; with
     it off the job is never asked and is un-marked so a later listing can queue
     it. Never raises."""
@@ -4148,9 +4148,9 @@ def _recap_run(job: dict) -> None:
             _recap_seen.discard(_job_seen(job))
         return
     try:
-        title, _ = sessions._title_and_recap(
+        title = sessions._session_title(
             agent, job["file"], job["session_id"], job["for_uuid"],
-            job.get("transcript", ""), want_recap=False,
+            job.get("transcript", ""),
             current=job.get("current_title", ""),
             first=job.get("first_message", ""),
             prompts_seen=int(job.get("prompts") or 0))

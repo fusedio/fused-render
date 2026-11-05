@@ -1391,12 +1391,11 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
 #
 #     {"<session-id>": {"model": …, "recap": {"text": "…", "for_uuid": "…", "at": …}}}
 #
-# `for_uuid` is the turn the recap is about — the same key the away fold's
-# `/api/claude-sessions/recap` takes — so the fold and the Tasks row title share
-# one haiku call. `text: ""` is a stored FAILURE: the turn was tried and haiku
-# said nothing usable, and the listing does not ask again. One recap per
-# session: a newer turn's replaces it. Written only while
-# `task_recap_titles_enabled` is on (claude_sessions `_recap`).
+# `for_uuid` is the turn the recap is about. NOTHING WRITES THIS ANY MORE: the
+# away fold's recap (claude_sessions `_recap`) is produced on demand and cached
+# in memory only, keyed on the file too (a copied folder shares session ids,
+# which this per-session record cannot tell apart). Records written by older
+# builds are inert; the helpers below stay for them.
 
 
 def session_recap(state: dict, session_id: str) -> dict | None:

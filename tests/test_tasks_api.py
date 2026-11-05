@@ -6115,26 +6115,25 @@ def test_recap_run_asks_for_a_title_only_then_wakes_the_page(monkeypatch, titles
     asked, woke = [], []
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
 
-    def title_and_recap(agent, f, sid, uuid, transcript="", **kw):
+    def session_title(agent, f, sid, uuid, transcript="", **kw):
         asked.append((f, sid, uuid, transcript, kw))
-        return "A fine title", ""
+        return "A fine title"
 
-    monkeypatch.setattr(sessions_mod, "_title_and_recap", title_and_recap)
+    monkeypatch.setattr(sessions_mod, "_session_title", session_title)
     monkeypatch.setattr(sessions_mod, "_recap",
                         lambda *a, **k: pytest.fail("no recap call expected"))
     monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: woke.append(keys))
     tasks_mod._recap_run(_run_job())
     (f, sid, uuid, transcript, kw), = asked
     assert (f, sid, uuid, transcript) == ("/f", "s", "u", "/t.jsonl")
-    assert kw == {"want_recap": False, "current": "cur", "first": "first",
-                  "prompts_seen": 4}
+    assert kw == {"current": "cur", "first": "first", "prompts_seen": 4}
     assert woke == [{"k", "s"}]
 
 
 def test_recap_run_with_the_summary_flag_off_never_asks(monkeypatch):
     """Flag off: never asked, and un-marked so a later listing can queue it."""
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
-    monkeypatch.setattr(sessions_mod, "_title_and_recap",
+    monkeypatch.setattr(sessions_mod, "_session_title",
                         lambda *a, **k: pytest.fail("title flag is off"))
     monkeypatch.setattr(sessions_mod, "_recap",
                         lambda *a, **k: pytest.fail("no recap call expected"))
@@ -6151,8 +6150,8 @@ def test_recap_run_unmarks_a_failed_title_job(monkeypatch, titles_on):
     monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
     for title, kept in (("", False), ("Real title", True)):
         tasks_mod._recap_seen.add(tasks_mod._job_seen(job))
-        monkeypatch.setattr(sessions_mod, "_title_and_recap",
-                            lambda *a, _t=title, **k: (_t, ""))
+        monkeypatch.setattr(sessions_mod, "_session_title",
+                            lambda *a, _t=title, **k: _t)
         tasks_mod._recap_run(job)
         assert (tasks_mod._job_seen(job) in tasks_mod._recap_seen) is kept
 
