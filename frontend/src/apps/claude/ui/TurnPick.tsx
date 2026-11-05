@@ -40,6 +40,25 @@ export function pickRootProps(pick: TurnPick | undefined) {
   return { cls, onClick };
 }
 
+/** Right-click on a turn: the host starts a breakout from its exchange, or
+ *  (already picking) toggles it, and no menu shows either way. The native menu
+ *  stays for a link, a code block, an input, a non-empty text selection, and
+ *  whatever the host declines (`onContext` returns false: a locked exchange,
+ *  or a chat that cannot break out). */
+const NATIVE_MENU = "a, pre, code, input, textarea, select, [contenteditable]";
+export function pickContextHandler(
+  turnKey: string,
+  onContext: ((key: string) => boolean) | undefined,
+): ((e: MouseEvent) => void) | undefined {
+  if (!onContext) return undefined;
+  return (e: MouseEvent) => {
+    const t = e.target as Element | null;
+    if (t && typeof t.closest === "function" && t.closest(NATIVE_MENU)) return;
+    if (hasSelection()) return;
+    if (onContext(turnKey)) e.preventDefault();
+  };
+}
+
 /** The check circle, drawn only on an exchange's prompt turn. */
 export function PickCheck({ pick }: { pick: TurnPick }) {
   if (!pick.lead) return null;

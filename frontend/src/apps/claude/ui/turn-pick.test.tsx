@@ -10,7 +10,7 @@ import { act, create } from "react-test-renderer";
 const { Turn } = await import("./Turn");
 
 import type { AssistantTurn, UserTurn } from "../protocol/controller-api";
-import { pickDefault, pickPlan, type TurnPick } from "./TurnPick";
+import { pickContextHandler, pickDefault, pickPlan, type TurnPick } from "./TurnPick";
 
 const base: UserTurn = { role: "user", key: "k1", text: "hello", uuid: "u1" };
 const answer: AssistantTurn = { role: "assistant", key: "k2", text: "hi there" };
@@ -104,5 +104,33 @@ describe("pickDefault", () => {
     ];
     expect(pickDefault(turns)).toEqual(["u1", "a1"]);
     expect(pickDefault([{ key: "u", role: "user", text: "x" }])).toEqual([]);
+  });
+});
+
+describe("pickContextHandler", () => {
+  const ev = (hit = false) => {
+    const e = { target: { closest: () => (hit ? {} : null) }, prevented: false, preventDefault() { this.prevented = true; } };
+    return e as typeof e & import("react").MouseEvent;
+  };
+  test("calls the host and suppresses the native menu only when the host took it", () => {
+    const keys: string[] = [];
+    const take = pickContextHandler("k1", (k) => (keys.push(k), true))!;
+    const e = ev();
+    take(e);
+    expect(keys).toEqual(["k1"]);
+    expect(e.prevented).toBe(true);
+    // A host that declines (a streaming or pending exchange) leaves the native menu.
+    const decline = pickContextHandler("k1", () => false)!;
+    const e2 = ev();
+    decline(e2);
+    expect(e2.prevented).toBe(false);
+  });
+  test("an interactive target never reaches the host", () => {
+    let n = 0;
+    pickContextHandler("k1", () => (n++, true))!(ev(true));
+    expect(n).toBe(0);
+  });
+  test("no host callback, no handler", () => {
+    expect(pickContextHandler("k1", undefined)).toBeUndefined();
   });
 });

@@ -13,6 +13,7 @@ import { act, create } from "react-test-renderer";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
 const { publishBreakoutEnabled, resetFlagsForTests } = await import("./feature-flag");
+const { Kebab } = await import("./ui/Kebab");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
@@ -671,10 +672,11 @@ test("a peek with headerInPeek draws the slim top bar; a bare peek and a compact
   expect(byClass(compact.r, "c-topbar").length).toBe(0);
 });
 
-// BREAKOUT, COMPOSER SIDE: the one button must render exactly once in either
-// layout. In the merged-head side pane there is no `.c-anntools` strip, so it
-// rides the identity row's tail beside the kebab.
-test("the composer Breakout button renders once in the merged head and once in the strip", async () => {
+// BREAKOUT DOOR: the top bar carries no Breakout button any more. The ⋮ menu
+// holds the item (the Kebab's `breakout` prop) in either layout, wherever the
+// gate passes.
+const kebabOf = (r: ReturnType<typeof create>) => r.root.findAllByType(Kebab)[0]!;
+test("no Breakout button in the bar: the kebab carries the item in the merged head and in the strip", async () => {
   const onBreakout = () => {};
   const merged = await mountChat({ mergedHead: true, onBreakout, initialSessionId: "sess-abc12345" });
   await settle(20);
@@ -682,33 +684,25 @@ test("the composer Breakout button renders once in the merged head and once in t
   await act(async () => publishBreakoutEnabled(true));
   await settle(20);
   expect(byClass(merged.r, "c-anntools").length).toBe(0);
-  expect(byClass(merged.r, "c-breakout").length).toBe(1);
+  expect(byClass(merged.r, "c-breakout").length).toBe(0);
+  expect(kebabOf(merged.r).props.breakout.picking).toBe(false);
 
   const strip = await mountChat({ onBreakout, initialSessionId: "sess-abc12345" });
   await settle(20);
   expect(byClass(strip.r, "c-anntools").length).toBe(1);
-  expect(byClass(strip.r, "c-breakout").length).toBe(1);
+  expect(byClass(strip.r, "c-breakout").length).toBe(0);
+  expect(kebabOf(strip.r).props.breakout).toBeDefined();
 });
 
-test("a TaskPeek chat (peek + headerInPeek) seats the Breakout button in its slim head, once", async () => {
-  const onBreakout = () => {};
-  const peek = await mountChat({ peek: true, headerInPeek: true, onBreakout, initialSessionId: "sess-abc12345" });
+test("the kebab has no Breakout item while the flag is off (default) or without onBreakout", async () => {
+  const strip = await mountChat({ onBreakout: () => {}, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(kebabOf(strip.r).props.breakout).toBeUndefined();
+  const none = await mountChat({ initialSessionId: "sess-abc12345" });
   await settle(20);
   await act(async () => publishBreakoutEnabled(true));
   await settle(20);
-  expect(byClass(peek.r, "chat-peek-head").length).toBe(1);
-  expect(byClass(peek.r, "c-breakout").length).toBe(1);
-  // A bare peek has no head to seat it in.
-  const bare = await mountChat({ peek: true, onBreakout, initialSessionId: "sess-abc12345" });
-  await settle(20);
-  expect(byClass(bare.r, "c-breakout").length).toBe(0);
-});
-
-test("the composer Breakout button is absent while the Breakout flag is off (default)", async () => {
-  const strip = await mountChat({ onBreakout: () => {}, initialSessionId: "sess-abc12345" });
-  await settle(20);
-  expect(byClass(strip.r, "c-anntools").length).toBe(1);
-  expect(byClass(strip.r, "c-breakout").length).toBe(0);
+  expect(kebabOf(none.r).props.breakout).toBeUndefined();
 });
 
 // BREAKOUT BOOT: a breakout card is a fresh chat. It restores no history and
@@ -752,26 +746,24 @@ describe("breakout pick mode", () => {
       doc.addEventListener = prev;
     }
   }
-  const btn = (r: ReturnType<typeof create>) => byClass(r, "c-breakout")[0]!;
-  const toggle = (r: ReturnType<typeof create>) => act(() => btn(r).props.onClick());
+  const toggle = (r: ReturnType<typeof create>) => act(() => kebabOf(r).props.breakout.onToggle());
   const picked = (r: ReturnType<typeof create>) => byClass(r, "is-pick-on").length;
   const exchange = (r: ReturnType<typeof create>, i: number) =>
     r.root.findAll((x) => typeof x.props.className === "string" && /\bturn\b/.test(x.props.className) && /\bis-pick\b/.test(x.props.className) && typeof x.type === "string")[i]!;
   const click = (r: ReturnType<typeof create>, i: number, target: unknown = { closest: () => null }) =>
     act(() => exchange(r, i).props.onClick({ target }));
 
-  test("no per-message breakout button, and no pick UI until the button is pressed", async () => {
+  test("no per-message breakout button, and no pick UI until the kebab item is pressed", async () => {
     const { r } = await mountParent();
     expect(byClass(r, "turn-breakout").length).toBe(0);
     expect(byClass(r, "breakout-sel-bar").length).toBe(0);
-    expect(btn(r).props["aria-pressed"]).toBe(false);
+    expect(kebabOf(r).props.breakout.picking).toBe(false);
   });
 
-  test("the button enters pick mode with the latest exchange picked, and toggles it off", async () => {
+  test("the kebab item enters pick mode with the latest exchange picked, and toggles it off", async () => {
     const { r } = await mountParent();
     toggle(r);
-    expect(btn(r).props["aria-pressed"]).toBe(true);
-    expect(btn(r).props.title).toBe("Pick messages for a breakout");
+    expect(kebabOf(r).props.breakout.picking).toBe(true);
     expect(byClass(r, "breakout-sel-bar").length).toBe(1);
     expect(picked(r)).toBe(2);
     expect(byClass(r, "turn-pick-check").length).toBe(2);
@@ -791,6 +783,77 @@ describe("breakout pick mode", () => {
     expect(picked(r)).toBe(2);
     click(r, 2);
     expect(picked(r)).toBe(0);
+  });
+
+  // RIGHT-CLICK on a message starts the pick with THAT exchange picked.
+  const idleTurns = (r: ReturnType<typeof create>) =>
+    r.root.findAll((x) => typeof x.type === "string" && /\bturn\b/.test(String(x.props.className ?? "")) && typeof x.props.onContextMenu === "function");
+  const ctx = (r: ReturnType<typeof create>, i: number, target: unknown = { closest: () => null }) => {
+    const ev = { target, prevented: false, preventDefault() { this.prevented = true; } };
+    act(() => idleTurns(r)[i]!.props.onContextMenu(ev));
+    return ev;
+  };
+
+  test("right-click on the FIRST exchange picks it and nothing else, with no custom menu", async () => {
+    const { r } = await mountParent();
+    const ev = ctx(r, 0);
+    expect(ev.prevented).toBe(true);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(1);
+    expect(kebabOf(r).props.breakout.picking).toBe(true);
+    expect(picked(r)).toBe(2);
+    // The first exchange, not the default (latest) one.
+    expect(exchange(r, 0).props.className).toContain("is-pick-on");
+    expect(exchange(r, 2).props.className).not.toContain("is-pick-on");
+    expect(byClass(r, "context-menu").length).toBe(0);
+  });
+
+  test("right-click on an assistant turn picks its exchange", async () => {
+    const { r } = await mountParent();
+    ctx(r, 3);
+    expect(picked(r)).toBe(2);
+    expect(exchange(r, 3).props.className).toContain("is-pick-on");
+  });
+
+  test("right-click on a link or a code block keeps the native menu and does not pick", async () => {
+    const { r } = await mountParent();
+    const ev = ctx(r, 1, { closest: (sel: string) => (sel.includes("pre") ? {} : null) });
+    expect(ev.prevented).toBe(false);
+    expect(kebabOf(r).props.breakout.picking).toBe(false);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+  });
+
+  test("right-click with a text selection keeps the native menu", async () => {
+    const { r } = await mountParent();
+    const w = window as unknown as { getSelection?: () => { toString(): string } };
+    const prev = w.getSelection;
+    w.getSelection = () => ({ toString: () => "some words" });
+    try {
+      expect(ctx(r, 1).prevented).toBe(false);
+    } finally {
+      w.getSelection = prev;
+    }
+    expect(kebabOf(r).props.breakout.picking).toBe(false);
+  });
+
+  test("while picking, right-click toggles the exchange and suppresses the native menu", async () => {
+    const { r } = await mountParent();
+    toggle(r);
+    expect(picked(r)).toBe(2);
+    const ev = exchange(r, 0);
+    const e1 = { target: { closest: () => null }, prevented: false, preventDefault() { this.prevented = true; } };
+    act(() => ev.props.onContextMenu(e1));
+    expect(e1.prevented).toBe(true);
+    expect(picked(r)).toBe(4);
+    const e2 = { target: { closest: () => null }, prevented: false, preventDefault() { this.prevented = true; } };
+    act(() => exchange(r, 0).props.onContextMenu(e2));
+    expect(picked(r)).toBe(2);
+  });
+
+  test("no right-click pick without onBreakout, or while the flag is off", async () => {
+    historyTurns = HISTORY;
+    const off = await mountChat({ initialSessionId: "sess-abc12345", onBreakout: () => {} });
+    await settle(20);
+    expect(idleTurns(off.r).length).toBe(0);
   });
 
   test("Start opens with the picked keys and leaves pick mode; Start is disabled at zero", async () => {

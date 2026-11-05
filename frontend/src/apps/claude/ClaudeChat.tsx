@@ -32,7 +32,6 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { MessagesSquare } from "lucide-react";
 
 import { IS_EMBED, confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
@@ -151,7 +150,7 @@ import {
 } from "./ui";
 import { ComposerGate, waitingKind } from "./ui/WaitingBar";
 import { BreakoutSelectionBar } from "./ui/BreakoutSelectionBar";
-import { pickDefault } from "./ui/TurnPick";
+import { pickDefault, pickPlan } from "./ui/TurnPick";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import { sessionSeed } from "./ui/useRecentTasks";
@@ -3906,6 +3905,25 @@ function ChatBody(props: ChatBodyProps) {
     },
     [controller],
   );
+  /** Right-click on a message: pick mode opens with THAT exchange picked (or,
+   *  already picking, the exchange toggles). False leaves the native menu: not
+   *  under the gate, or the exchange is still streaming or pending. */
+  const gateRef = useRef(false);
+  const onContextTurn = useCallback(
+    (turnKey: string): boolean => {
+      if (!gateRef.current) return false;
+      const turns = controller.getState().turns;
+      if (pickPlan(turns, new Set(), () => {}).get(turnKey)?.locked !== false) return false;
+      if (pickingRef.current) {
+        onPickTurn(turnKey);
+        return true;
+      }
+      setBreakoutSel(new Set(exchangeKeys(turns, turnKey)));
+      setPicking(true);
+      return true;
+    },
+    [controller, onPickTurn],
+  );
   const pickProp = useMemo(
     () => (picking ? { keys: breakoutSel, onToggle: onPickTurn } : undefined),
     [picking, breakoutSel, onPickTurn],
@@ -5722,23 +5740,17 @@ function ChatBody(props: ChatBodyProps) {
       setBreakoutSel(new Set());
     }
   };
-  const breakoutBtn =
-    breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file ? (
-      <button
-        type="button"
-        className={"bar-ctl bar-ctl-icon c-breakout" + (picking ? " on" : "")}
-        title={picking ? "Pick messages for a breakout" : "Breakout: a research-only side chat from here"}
-        aria-label="Breakout"
-        aria-pressed={picking}
-        onClick={togglePicking}
-      >
-        <MessagesSquare size={14} aria-hidden="true" />
-      </button>
-    ) : null;
+  // The same gate the bar's old button had: the kebab item and the right-click
+  // on a message both start a breakout under it.
+  const breakoutGate = !!(
+    breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file
+  );
+  gateRef.current = breakoutGate;
   const kebabEl = (
     <>
       {canvasShotSeat}
       <Kebab
+        {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
         file={file}
         sessionId={inChat ? (state.sessionId ?? "") : ""}
         btnRef={kebabBtn}
@@ -5884,9 +5896,6 @@ function ChatBody(props: ChatBodyProps) {
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
             {inChat && !mergedHeadRow ? backBtn : null}
-            {/* BREAKOUT FROM THE LATEST MESSAGE: the composer-side door, open
-                while a run is going too (the breakout is its own run). */}
-            {breakoutBtn}
             {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
                 `margin-left: auto` (T:255-262, chat.css), which is not the same
                 thing: a spacer is a flex ITEM, so it kept its 12px gap even
@@ -5988,11 +5997,8 @@ function ChatBody(props: ChatBodyProps) {
                 slim={peek}
                 {...(inSidePane ? { bare: true } : {})}
                 {...(mergedHeadRow
-                  ? { lead: backBtn, tail: <>{breakoutBtn}{kebabEl}</>, noProject: true }
-                  : // The slim peek head has no strip or merged row: it seats the button itself.
-                    peek && breakoutBtn
-                    ? { tail: breakoutBtn }
-                    : {})}
+                  ? { lead: backBtn, tail: kebabEl, noProject: true }
+                  : {})}
                 {...(headerExtra ? { extra: headerExtra } : {})}
                 // The hint names where the work is; the menu would only repeat the
                 // original checkout's branch.
@@ -6056,6 +6062,7 @@ function ChatBody(props: ChatBodyProps) {
               onSendNow={onSendQueuedNow}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
               {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}
+              {...(breakoutGate ? { onBreakoutContext: onContextTurn } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
@@ -6210,7 +6217,7 @@ function ChatBody(props: ChatBodyProps) {
               </div>
             ) : null}
             {/* BREAKOUT PICK MODE: the picked exchanges, above the composer. */}
-            {breakoutBtn && picking ? (
+            {breakoutGate && picking ? (
               <BreakoutSelectionBar
                 count={state.turns.filter((t) => t.role === "user" && breakoutSel.has(t.key)).length}
                 onStart={startBreakout}

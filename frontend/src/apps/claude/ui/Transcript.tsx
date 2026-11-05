@@ -124,6 +124,10 @@ export interface TranscriptProps {
   onFork?: (key: string) => void;
   /** Breakout pick mode: absent when not picking (`TurnProps.pick`). */
   pick?: { keys: ReadonlySet<string>; onToggle: (key: string) => void };
+  /** Right-click on a message (`TurnProps.onBreakoutContext`): starts pick mode
+   *  with its exchange picked, or toggles it while picking. Absent, right-click
+   *  is native. */
+  onBreakoutContext?: (key: string) => boolean;
   /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
   onOpenShot?: (shot: Viewable) => void;
   /** "preview" / "app" — the word a receipt's nouns use (`PaneState.paneNoun`). */
@@ -187,6 +191,7 @@ export const Transcript = memo(function Transcript({
   onSendNow,
   onFork,
   pick,
+  onBreakoutContext,
   onOpenShot,
   paneNoun,
   what,
@@ -984,6 +989,7 @@ export const Transcript = memo(function Transcript({
                   {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}
                   {...(pickFor.get(turn.key) ? { pick: pickFor.get(turn.key)! } : {})}
+                  {...(onBreakoutContext ? { onBreakoutContext } : {})}
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
