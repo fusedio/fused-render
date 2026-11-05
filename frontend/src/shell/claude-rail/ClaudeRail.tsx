@@ -263,7 +263,6 @@ import {
   useFavOpen,
   useLastChat,
   useLastFav,
-  clearFavOpen,
 } from "@platform/lib/last-chat";
 import { draftHref, preloadChat } from "@apps/claude";
 import { hideHint } from "@platform/lib/hints";
@@ -306,8 +305,6 @@ import {
   PeekIntent,
   favChatElsewhere,
   favLike,
-  favRingRoute,
-  favPressClears,
   keepAlive,
   railOnChipLeave,
   railOnStarred,
@@ -315,7 +312,7 @@ import {
   rowOf,
   statusWords,
 } from "./rail-peek-lib";
-import { usePaneSessions, usePeekSession } from "@platform/lib/peek-session";
+import { usePaneSessions } from "@platform/lib/peek-session";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import {
   dismissFavHover,
@@ -704,7 +701,6 @@ export function ClaudeRail({
   // mounted there, and the rail is the rail of 2026-11-04.
   const paneSidsLive = usePaneSessions();
   const paneSids = paneOpen ? paneSidsLive : NO_SESSIONS;
-  const peekSid = usePeekSession();
   // WITH FAVOURITES ON, THE LIST SCROLLS (owner, 2026-11-05: "remove the
   // clip-not-scroll restriction"): every ring is drawn and the list scrolls
   // in its share of the column, its scrollbar hidden like the favourites'
@@ -1061,9 +1057,6 @@ export function ClaudeRail({
   );
   // The open key moving: in the layout phase, so the draft flush (`letGo`)
   // lands before the favourite's composer paints.
-  useLayoutEffect(() => {
-    if (openFavKey) letGo(openFavKey);
-  }, [openFavKey, letGo]);
   // …AND A CHAT STARRED ANYWHERE while this card shows it (another window's
   // star): the list no longer holds it (header, `listSeats`), so this card
   // lets go and the ring is the favourites section's. Only on the TURN to
@@ -1071,18 +1064,15 @@ export function ClaudeRail({
   // (header), and that card must stay. In the layout phase, so the held
   // outsider's ring (`heldExtra`) never paints beside the section's — and
   // while it is still a seat, so `letGo` finds its draft to flush.
-  const peekStarred = favsOn && !!peekKey && rows.some((t) => t.key === peekKey && t.starred);
-  const peekWas = useRef<{ key: string | null; starred: boolean }>({ key: null, starred: false });
-  useLayoutEffect(() => {
-    const was = peekWas.current;
-    peekWas.current = { key: peekKey, starred: peekStarred };
-    if (peekKey && was.key === peekKey && !was.starred && peekStarred) letGo(peekKey);
-  }, [peekKey, peekStarred, letGo]);
   // A star pressed on in this rail's card: the ring moved to the favourites
   // section, so this card lets go now, and the favourite's card opens in
   // this window — a star you just pressed is a card you want to see
   // (rail-peek-lib `railOnStarred`).
-  const onStarred = useMemo(() => railOnStarred(() => favsOnRef.current, letGo, setFavOpen), [letGo]);
+  // A STAR PRESSED IN WINDOW A MOVES NOTHING (owner, 2026-11-05: "the item
+  // also stays in the normal tasks section and the modal also stays; only
+  // one more item is added in the fav section"): the card stays, the list
+  // ring stays, and the favourites gain a ring — nothing hands over.
+  const onStarred = useMemo(() => railOnStarred(() => false, letGo, setFavOpen), [letGo]);
   // A FAVOURITE'S RING PRESSED (header): this window's favourite card opens
   // on it at once — a local write, nothing to wait for — and this rail's card
   // lets go of the chat first. A key that is not a live favourite (unstarred
@@ -1098,10 +1088,11 @@ export function ClaudeRail({
         openChatRef.current(href);
         return;
       }
-      letGo(t.key);
+      // Window A keeps whatever it shows (owner, 2026-11-05: the sections
+      // do not influence each other).
       setFavOpen(t.key);
     },
-    [letGo],
+    [],
   );
   // A FAVOURITE'S CHAT LEFT BY THIS CARD'S WHERE-CHIP (owner, 2026-11-05: a
   // press "navigates to that canvas page but does not open the favourite
@@ -1118,7 +1109,9 @@ export function ClaudeRail({
       () => favsOnRef.current,
       // The refs, not this render's sets: the hand-over runs once the hop
       // lands, and a chat starred in between is a favourite by then.
-      (key) => favKeysRef.current.has(key) && !!seatOf(key)?.pulse.session_id,
+      // Never a favourite as far as window A is concerned (owner,
+      // 2026-11-05): the sections do not hand over to each other.
+      (_key) => false,
       letGo,
       (key, keyboard) => {
         if (keyboard) requestFavFocus(key);
@@ -1538,23 +1531,6 @@ export function ClaudeRail({
     if (seat?.row && isDraftTask(seat.row)) openDraftCard(seat.row, href);
     else onOpenChat(href);
   };
-  // The pane's own composer (the shell's `.c-composer-chat`, never one inside
-  // a rail card), for a favourite whose chat the pane already shows.
-  const focusPaneComposerSoon = () => {
-    let tries = 0;
-    const attempt = () => {
-      const ta = [...document.querySelectorAll<HTMLTextAreaElement>(".c-composer-chat textarea")].find(
-        (el) => !el.closest(`#${PEEK_ID}, #${FAV_PEEK_ID}`),
-      );
-      if (ta) {
-        ta.scrollIntoView({ block: "nearest" });
-        ta.focus({ preventScroll: true });
-        if (document.activeElement === ta) return;
-      }
-      if (++tries < 30) requestAnimationFrame(attempt);
-    };
-    attempt();
-  };
   const openChatRef = useRef(openChat);
   openChatRef.current = openChat;
   // A RING'S ORDINARY PRESS (header): the card, shown now and pinned, with
@@ -1799,7 +1775,6 @@ export function ClaudeRail({
                 activeFav,
                 favHoverKey,
                 paneOpen,
-                chatElsewhere: foot && favRingRoute(t, paneSids, peekSid) !== "card",
               });
               // The rings' own captions step aside for the card: a hover
               // shows the card, and the card IS the caption. The exception
@@ -1906,22 +1881,17 @@ export function ClaudeRail({
                     // rail-lib `ringMarks`). The open favourite's ring — the
                     // foot's, or the list's a moment after its star — has its
                     // card up already: nothing more to open.
-                    if ((foot || favRing) && peekOn) {
+                    // WHATEVER THE PANE SHOWS (owner, 2026-11-05: "if the
+                    // expanded sidebar is open with a fav task, we don't
+                    // open and focus the expanded sidebar"): the press
+                    // opens window B, the chat in both if need be.
+                    if (foot && peekOn) {
                       hideHint();
                       // The hover (window B) becomes the open card, or goes.
                       dismissFavHover();
                       // A keyboard press: the favourite's card takes the
                       // keyboard once it stands (fav-peek-store); a pointer
                       // press takes nothing.
-                      const route = favRingRoute(t, paneSids, peekSid);
-                      if (route !== "card") {
-                        // The chat is already in the pane: its composer takes
-                        // the keyboard; no card, no open key.
-                        for (const k of favPressClears(route, t.key, openFavKey)) clearFavOpen(k);
-                        if (route === "pane") focusPaneComposerSoon();
-                        else openChat(href);
-                        return;
-                      }
                       if (e.detail === 0) requestFavFocus(t.key);
                       if (!favRing) openFavourite(t, href);
                       return;

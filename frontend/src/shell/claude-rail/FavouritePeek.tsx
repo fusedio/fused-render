@@ -96,13 +96,11 @@ import { ownPlace, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   FAV_HEIGHT,
   FAV_WIDTH,
-  favChatElsewhere,
   favHoverRow,
   rowOf,
   type PeekWish,
   favLike,
 } from "./rail-peek-lib";
-import { usePaneSessions, usePeekSession } from "@platform/lib/peek-session";
 
 export const FAV_PEEK_ID = "claude-rail-fav-peek";
 
@@ -187,22 +185,13 @@ export function FavouritePeek() {
   useEffect(() => {
     if (on) favHoverIntent().prune(hoverLive);
   }, [on, hoverLive]);
-  // …and a favourite whose chat the pane or the Tasks peek already shows has
-  // NO card (an empty one with a note must never stand): its open key and
-  // hover are let go, its ring is a caption and a door (`favRingRoute`).
-  const paneSids = usePaneSessions();
-  const peekSid = usePeekSession();
-  const elsewhere = favChatElsewhere(seat?.pulse ?? null, paneSids, peekSid);
-  useEffect(() => {
-    if (!elsewhere) return;
-    dismissFavHover();
-    if (open) clearFavOpen(open.key);
-  }, [elsewhere, open]);
-  const shown = on && seat && rail && !noRoom && !elsewhere ? seat : null;
-  // A mounted pane chat on this very session (header), or the Tasks side
-  // peek showing it: no chat here. Never the URL alone — a shut pane leaves
-  // `session_id` in it and shows nothing.
-  const kept = useMemo(() => (seat && !elsewhere ? [seat] : []), [seat, elsewhere]);
+  // THE CARD STANDS WHATEVER THE PANE SHOWS (owner, 2026-11-05: "we can
+  // have the same task open as the expanded view and as a window B pin
+  // view"): a favourite's chat in the pane is no reason for its card not
+  // to mount it too — the rule of 2026-11-05 morning (a caption and a door
+  // instead) is gone.
+  const shown = on && seat && rail && !noRoom ? seat : null;
+  const kept = useMemo(() => (seat ? [seat] : []), [seat]);
 
   // FOCUS NEVER FALLS TO THE BODY (header). Whether the keyboard was last
   // inside the card is followed document-wide: a card that unmounts takes
