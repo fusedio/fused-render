@@ -772,8 +772,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const cur = state.worktreeHint ?? null;
     // `git worktree remove <other>` leaves a hint for a different absolute
     // path standing; everything else that exits clears it.
-    if (hint && hint.via === "exit" && hint.removed && cur && cur.path.startsWith("/") && cur.path !== hint.removed) return;
-    const next = hint && hint.via !== "exit" ? hint : null;
+    // The path a standing hint really names: an agent hint's own is empty, its
+    // `prev` is the main agent's worktree.
+    const standing = !cur ? null : cur.via === "agent" ? (cur.prev ?? null) : cur;
+    if (hint && hint.via === "exit" && hint.removed && standing && standing.path.startsWith("/") && standing.path !== hint.removed) return;
+    let next = hint && hint.via !== "exit" ? hint : null;
+    // Removing the checkout an agent hint's `prev` names drops only `prev`: the
+    // isolated task is still running, so its label stays.
+    if (hint && hint.via === "exit" && hint.removed && cur && cur.via === "agent" && cur.prev && cur.prev.path === hint.removed) {
+      const { prev: _prev, ...rest } = cur;
+      next = rest;
+    }
+    // An isolated Task must not make the page forget the worktree the main
+    // agent stands in: carry it as `prev` (the server does the same in a window
+    // that can see it).
+    if (hint && hint.via !== "exit" && next && next.via === "agent" && !next.prev && standing && standing.path.startsWith("/") && standing.via !== "exit") {
+      next = { ...next, prev: { path: standing.path, branch: standing.branch, via: standing.via } };
+    }
     if (
       next === cur ||
       (next &&
@@ -781,7 +796,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         next.path === cur.path &&
         next.branch === cur.branch &&
         next.via === cur.via &&
-        (next.label ?? "") === (cur.label ?? ""))
+        (next.label ?? "") === (cur.label ?? "") &&
+        (next.prev?.path ?? "") === (cur.prev?.path ?? ""))
     )
       return;
     emit({ worktreeHint: next });
