@@ -32,9 +32,12 @@ export function workspaceTasks(tasks: readonly Task[]): Task[] {
   return [...tasks].sort((a, b) => (b.started ?? 0) - (a.started ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
-/** The reader has to look: parked on a card, or stopped (failed, usage limit). */
-export function needsYou(task: Pick<Task, "status">): boolean {
-  return task.status === "needs_attention" || task.status === "blocked";
+/** The reader has to look: parked on a card, stopped (failed, usage limit), or
+ *  an unfinished New task draft they have to come back to. The "Needs you"
+ *  group, the `n` key and the row's `data-needs-you` all ask this. */
+export function needsYou(task: Pick<Task, "status" | "kind">): boolean {
+  if (task.status === "archived") return false;
+  return task.status === "needs_attention" || task.status === "blocked" || isDraftTask(task);
 }
 
 /** The status in today's words; a finished task whose chat still holds a live
@@ -314,7 +317,7 @@ export function isUpcoming(task: Pick<Task, "status" | "next_run">): boolean {
  *  idle. */
 export function workspaceGroup(task: Task, facts: WorkspaceFacts, now: number): WorkspaceGroupKey {
   if (task.status === "archived") return "archived";
-  if (needsYou(task) || isDraftTask(task)) return "needs";
+  if (needsYou(task)) return "needs";
   if (
     task.status === "in_progress" ||
     task.status === "queued" ||

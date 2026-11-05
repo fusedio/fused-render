@@ -9,6 +9,7 @@ import {
   dirtyBadge,
   dirtyTitle,
   moveSelection,
+  needsYou,
   nextNeedingYou,
   portBadges,
   searchTasks,
@@ -194,6 +195,14 @@ describe("nextNeedingYou", () => {
   });
   test("none needs you", () => {
     expect(nextNeedingYou([task()], null)).toBeNull();
+  });
+  test("an unfinished draft needs you, as its group says", () => {
+    const withDraft = [task({ key: "a" }), task({ key: "dr", kind: "draft", status: "upcoming" })];
+    expect(needsYou(withDraft[1])).toBe(true);
+    expect(nextNeedingYou(withDraft, null)).toBe("dr");
+  });
+  test("an archived draft does not", () => {
+    expect(needsYou(task({ kind: "draft", status: "archived" }))).toBe(false);
   });
 });
 
