@@ -6442,8 +6442,7 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
          effort: str = "", permission_mode: str = "",
-         terminal_hint: str = "", client_uuid: str = "", typed: str = "",
-         send_now: bool = False) -> dict:
+         terminal_hint: str = "", client_uuid: str = "", typed: str = "") -> dict:
     """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
     process for it.
 
@@ -6480,17 +6479,6 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     needs the CLI's answer to answer ITS OWN caller, only the eventual
     `system/init`-style row the CLI writes on its own, which the page already
     reads for other reasons.
-
-    `send_now` is Ctrl+X: after the line is queued, an `interrupt` naming it
-    with `send_now: true` follows it into the inbox. The CLI then ends the main
-    agent's turn and runs that line next; background subagents, background
-    Bash and Monitors keep running (a Stop's plain `interrupt` ends them too).
-    It is NOT a stop: no `cancelled` / `interrupted_offset` marker, no
-    tree-kill, nothing discarded, and the run stays a live run. A CLI with no
-    turn open, or one that has not admitted the line yet, answers that it is
-    delivering and the line is simply an ordinary follow-up. Claude only — the
-    other backends' hosts read an `interrupt` as a stop — so there it is the
-    ordinary follow-up too.
     """
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
@@ -6647,22 +6635,25 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     if client_uuid and any(r.get("uuid") == client_uuid
                            for r in _inbox_waiting(run_dir)):
         return {"sent": True}
-    entry_uuid = _write_inbox_entry(
+    _write_inbox_entry(
         run_dir, _compose_turn(message, terminal_hint), client_uuid,
         typed=typed or message)
-    if send_now and backend == "claude":
-        _write_control_request(run_dir, "interrupt", send_now=True,
-                               message_uuid=entry_uuid)
     return {"sent": True}
 
 
 def _send_now_queued(run_id: str, message_uuid: str) -> dict:
-    """Ctrl+X on a line the live run already holds (a follow-up the inbox took,
-    or the CLI queued): only the `send_now` interrupt naming it, which ends the
-    MAIN agent's turn so the CLI runs that line next. The line is not written
-    again. Like `_send(..., send_now=True)` it is no stop (no markers, no
-    tree-kill, background work untouched), and it is Claude only: another
-    backend's host reads an `interrupt` as a stop."""
+    """Ctrl+X: ONE `send_now` interrupt naming a line the live run already
+    holds (a follow-up the inbox took, or the CLI queued). It ends the MAIN
+    agent's turn, and the CLI then runs every queued line next, merged into one
+    turn; naming any one of them is enough. The lines are delivered beforehand
+    by ordinary `send`s, so none is written here. It is no stop (no
+    `cancelled` marker, no tree-kill, background work untouched), and it is
+    Claude only: another backend's host reads an `interrupt` as a stop.
+
+    The `send_now` marker records where `out.jsonl` ended when the interrupt
+    was queued: the abort result the CLI writes for the ended turn
+    (`error_during_execution`) is the one at or after that offset, which
+    `_poll` recognises whichever poll window it lands in."""
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"error": "no such run"}
@@ -6677,9 +6668,58 @@ def _send_now_queued(run_id: str, message_uuid: str) -> dict:
         return {"error": "no live session"}
     if host.get("backend", "claude") != "claude":
         return {"error": "send-now is not supported by this agent"}
+    try:
+        offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        offset = 0
+    with open(os.path.join(run_dir, "send_now"), "w", encoding="utf-8") as f:
+        f.write(str(offset))
     _write_control_request(run_dir, "interrupt", send_now=True,
                            message_uuid=message_uuid)
     return {"sent": True}
+
+
+def _send_now_abort_end(run_dir: str) -> int:
+    """Where the abort `result` of the last send-now ends in `out.jsonl`, or 0
+    when there is none (no send-now, the interrupt has not been answered yet, or
+    the turn ended cleanly before it landed).
+
+    It is the FIRST `result` at or after the `send_now` marker's offset, and
+    only when that result is an `error_during_execution`: any later one is the
+    run's own. Once found it is written back into the marker, so later polls
+    compare an offset instead of scanning again."""
+    path = os.path.join(run_dir, "send_now")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            parts = fh.read().split()
+        offset = int(parts[0])
+    except (OSError, ValueError, IndexError):
+        return 0
+    if len(parts) > 1:
+        return int(parts[1]) if parts[1].isdigit() else 0
+    end = offset
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            fh.seek(offset)
+            for raw in fh:
+                if not raw.endswith(b"\n"):
+                    return 0
+                end += len(raw)
+                try:
+                    row = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get("type") == "result":
+                    abort = row.get("subtype") == "error_during_execution"
+                    try:
+                        with open(path, "w", encoding="utf-8") as out:
+                            out.write(f"{offset} {end if abort else 0}")
+                    except OSError:
+                        pass
+                    return end if abort else 0
+    except OSError:
+        return 0
+    return 0
 
 
 def _discard_inbox(run_dir: str, keep_first: bool = False) -> list:
@@ -9920,8 +9960,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
-    aborted = False      # `error` is an `error_during_execution` abort
     stop_marked = os.path.exists(os.path.join(run_dir, "cancelled"))
+    # The abort a send-now interrupt wrote, never a failure: the line it made
+    # way for is the reply. A Stop keeps its own abort (the `cancelled` marker).
+    send_now_abort = 0 if stop_marked else _send_now_abort_end(run_dir)
     quota = None         # the latest `rate_limit_event` — plan window + reset time
     context = None       # the latest API response's own `usage` (`_context_usage`)
     # WHAT THE RUN IS DOING RIGHT NOW, beyond the verb. Every one of these is a
@@ -9995,7 +10037,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # which is also each one's command name.
     cli_name = backend
 
-    for row in rows:
+    for row_at, row in enumerate(rows):
         parsed.append(row)
         t = row.get("type")
         # Anything at all after a `result` is the run waking up for another turn
@@ -10193,21 +10235,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             _learn_windows(row)
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
-            if row.get("is_error"):
+            if row.get("is_error") and not (
+                    send_now_abort and ends[row_at] == send_now_abort):
                 error = str(result_text or f"{cli_name} exited with an error")
                 # Only if the failure arrived DURING a retry. A retry earlier in
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
-                aborted = row.get("subtype") == "error_during_execution"
-            elif aborted and not stop_marked:
-                # The abort a send-now interrupt writes (`error_during_execution`)
-                # is not how the run ended: the line it made way for answers
-                # cleanly in the same window. A real failure keeps its error
-                # whatever follows, and a Stop's abort keeps its own (the
-                # `cancelled` marker is what tells the two aborts apart).
-                error = ""
-                gave_up = False
-                aborted = False
 
     # A NON-CLAUDE WINDOW SIZE, for the meter: onto this poll's reading as
     # `window` (no model id says it for Copilot's `auto`, and the page's
@@ -12954,8 +12987,8 @@ def _cancel_run(run_id: str, interrupt_first: bool = True,
         # A plain interrupt is a STOP for the background work too: on CLI
         # 2.1.304 it also ends the session's background subagents (a
         # `task_updated` with status `killed` follows within milliseconds). A
-        # send-now (`_send(..., send_now=True)`) is the interrupt that ends
-        # only the main agent's turn, via `send_now` + the queued line's uuid.
+        # send-now (`_send_now_queued`) is the interrupt that ends only the
+        # main agent's turn, via `send_now` + a queued line's uuid.
         #
         # THE INBOX FIRST, and before the interrupt row is queued so the scan
         # cannot see (or race) it. `interrupt` only reaches the CLI's OWN
@@ -13052,8 +13085,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
          terminal_hint: str = "", task_id: str = "", backend: str = "",
          fork_at: str = "", tool_use_id: str = "",
-         client_uuid: str = "", breakout: str = "", typed: str = "",
-         send_now: str = "") -> dict:
+         client_uuid: str = "", breakout: str = "", typed: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -13203,8 +13235,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         # itself decides which of the three (if any) actually changed, and
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
-                    permission_mode, terminal_hint, client_uuid, typed,
-                    send_now == "1")
+                    permission_mode, terminal_hint, client_uuid, typed)
     if action == "send_now":
         return _send_now_queued(run_id, client_uuid)
     if action == "set_mode":

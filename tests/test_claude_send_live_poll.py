@@ -293,21 +293,66 @@ def test_a_repeated_message_landing_in_the_tail_is_not_matched_to_its_older_echo
     assert poll["text"] == "Turn one answer.Turn two answer."
 
 
-def test_a_send_now_interrupted_turn_does_not_leave_its_error_on_the_reply(
+_ABORTED = {"type": "result", "subtype": "error_during_execution",
+            "is_error": True, "session_id": "s"}
+
+
+def _mark_send_now(run_dir, offset):
+    (run_dir / "send_now").write_text(str(offset), encoding="utf-8")
+
+
+def test_a_send_now_abort_is_no_error_whatever_the_poll_window(
         agent, run_dir):
     # Ctrl+X: the CLI aborts the running turn (an `error_during_execution`
-    # result with no text) and runs the queued line next. The next turn's own
-    # clean result is what the page is told the run ended with.
-    aborted = {"type": "result", "subtype": "error_during_execution",
-               "is_error": True, "session_id": "s"}
-    _write(run_dir, [_user_row("turn one"), _text_row("Partial."), aborted,
-                      _user_row("now"), _text_row("Answer."),
-                      _result_row("Answer.")])
+    # result with no text) and runs the queued line next. The marker the
+    # send-now action left names that abort, so a poll whose window ends ON it
+    # reports no error, and so does one that also holds the next turn.
+    _write(run_dir, [_user_row("turn one"), _text_row("Partial.")])
+    _mark_send_now(run_dir, (run_dir / "out.jsonl").stat().st_size)
     _setup(agent, run_dir)
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_ABORTED) + "\n")
 
+    poll = agent._poll("run")
+    assert poll["error"] == ""
+
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        for r in (_user_row("now"), _text_row("Answer."),
+                  _result_row("Answer.")):
+            fh.write(json.dumps(r) + "\n")
     poll = agent._poll("run")
     assert poll["done"] is True
     assert poll["error"] == ""
+
+
+def test_an_abort_without_a_send_now_marker_is_still_an_error(agent, run_dir):
+    _write(run_dir, [_user_row("turn one"), _text_row("Partial."), _ABORTED])
+    _setup(agent, run_dir)
+
+    assert agent._poll("run")["error"] != ""
+
+
+def test_only_the_first_abort_after_a_send_now_is_cleared(agent, run_dir):
+    _write(run_dir, [_user_row("turn one"), _text_row("Partial.")])
+    _mark_send_now(run_dir, (run_dir / "out.jsonl").stat().st_size)
+    _setup(agent, run_dir)
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        for r in (_ABORTED, _user_row("now"), _text_row("Half."),
+                  {**_ABORTED, "result": "boom"}):
+            fh.write(json.dumps(r) + "\n")
+
+    assert agent._poll("run")["error"] == "boom"
+
+
+def test_a_stop_after_a_send_now_keeps_its_error(agent, run_dir):
+    _write(run_dir, [_user_row("turn one"), _text_row("Partial.")])
+    _mark_send_now(run_dir, (run_dir / "out.jsonl").stat().st_size)
+    (run_dir / "cancelled").write_text("1", encoding="utf-8")
+    _setup(agent, run_dir)
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_ABORTED) + "\n")
+
+    assert agent._poll("run")["error"] != ""
 
 
 def test_a_real_error_followed_by_a_good_turn_still_reports_the_error(

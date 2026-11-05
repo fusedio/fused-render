@@ -159,32 +159,38 @@ def test_cancel_against_a_live_host_writes_an_interrupt_and_leaves_it_alive(
         "tell a genuinely new turn apart from this one's own error result"
 
 
-def test_send_now_queues_the_line_and_names_it_in_a_send_now_interrupt(
+def test_queued_lines_then_one_send_now_interrupt_naming_the_first(
         agent, monkeypatch, stub_cli, target):
+    # Ctrl+X with several lines queued: each is delivered as an ordinary
+    # follow-up, then ONE `send_now` interrupt names the oldest. No stop.
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
     assert _wait_for(lambda: agent._host_alive(run_dir))
 
-    result = agent._send(run_id, "now please", client_uuid="send-now-1",
-                         send_now=True)
-    assert result == {"sent": True}
+    for n, text in enumerate(("one", "two", "three"), 1):
+        assert agent._send(run_id, text, client_uuid=f"queued-line-{n}") \
+            == {"sent": True}
+    assert agent.main(action="send_now", run_id=run_id,
+                      client_uuid="queued-line-1") == {"sent": True}
 
-    def answered():
+    def answers():
+        out = []
         for row in _out_rows(run_dir):
             if row.get("type") != "control_response":
                 continue
             resp = row["response"].get("response") or {}
             if resp.get("send_now") is True:
-                return resp
-        return None
+                out.append(resp)
+        return out
 
-    assert _wait_for(lambda: answered() is not None), _out_rows(run_dir)
-    assert answered()["message_uuid"] == "send-now-1"
-    assert _wait_for(lambda: any(
-        r.get("type") == "echo" and r.get("text") == "now please"
-        for r in _out_rows(run_dir)))
+    assert _wait_for(lambda: len(answers()) >= 1), _out_rows(run_dir)
+    assert _wait_for(lambda: sum(
+        1 for r in _out_rows(run_dir) if r.get("type") == "echo"
+        and r.get("text") in ("one", "two", "three")) == 3)
+    assert [a["message_uuid"] for a in answers()] == ["queued-line-1"]
     # Not a stop: nothing a Stop leaves behind, and the host is untouched.
     assert not os.path.exists(os.path.join(run_dir, "cancelled"))
     assert not os.path.exists(os.path.join(run_dir, "interrupted_offset"))
+    assert os.path.exists(os.path.join(run_dir, "send_now"))
     assert agent._host_alive(run_dir)
 
 
