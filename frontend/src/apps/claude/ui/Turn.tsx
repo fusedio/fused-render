@@ -612,7 +612,7 @@ const KIND_NOUN: Record<SegmentKind, string> = {
  */
 export function collapsedLine(turn: TurnRow): CollapsedLine {
   const segs = (turn as AssistantTurn).segments ?? [];
-  for (const seg of segs) {
+  for (const seg of segs.filter((s) => s?.kind === "text").concat(segs)) {
     if (!seg || viewKind(seg) !== "text") continue;
     const line = firstLine((seg as { text?: string }).text ?? "");
     if (line) return { text: line, muted: false };

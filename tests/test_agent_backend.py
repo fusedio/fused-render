@@ -296,7 +296,8 @@ def test_every_prompt_shape_says_a_blocked_turn_must_park_on_a_card(
         claude = agent._appended_prompt(target, pane)
         assert rule in claude and "`AskUserQuestion`" in claude, target
         # ... and the tool is for a BLOCKED turn only, never a closing flourish.
-        assert "only when you truly cannot proceed" in claude, target
+        assert ("only when you truly cannot proceed without the answer. Pacing "
+                "a conversation") in claude, target
         # ... and a user who answers a card with a question gets a plain-text
         # reply first, not the same card again.
         assert "answer it in plain text first" in claude, target
