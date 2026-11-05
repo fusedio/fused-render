@@ -144,6 +144,11 @@ def test_google_packs_are_desktop_pkce_clients_with_their_own_scopes(key):
     assert any(own in s for s in scopes)
     others = {"gmail.", "calendar", "documents"} - {own}
     assert not any(o in s for s in scopes for o in others)   # one card grants nothing of the other two
+    # None of Google's restricted-tier scopes (the paid annual CASA assessment): every
+    # mailbox-reading Gmail scope, and whole-Drive access. Sensitive tier only.
+    restricted = ("mail.google.com", "gmail.readonly", "gmail.modify", "gmail.metadata", "gmail.compose",
+                  "gmail.insert", "gmail.settings", "auth/drive.readonly", "auth/drive.metadata", "auth/drive ")
+    assert not any(r in s + " " for s in scopes for r in restricted), scopes
     assert a["byo"] == {"docs": "https://console.cloud.google.com/apis/credentials", "secret": "Client secret"}
     assert p.tools == {"remote": None, "native": True}
     ok, reason = registry.availability(p, a)

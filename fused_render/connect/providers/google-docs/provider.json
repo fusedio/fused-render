@@ -1,13 +1,13 @@
 {
   "name": "Google Docs",
-  "_comment": "client_id ships empty on purpose: Fused still has to publish a Google Cloud project with a Desktop OAuth client. Google's desktop clients must send their (non-secret, by Google's own docs) client_secret at the token endpoint, so a pack never ships one: FUSED_RENDER_CONNECT_GOOGLE_DOCS_CLIENT_ID and FUSED_RENDER_CONNECT_GOOGLE_DOCS_CLIENT_SECRET fill both at load, and Advanced on the card takes the id and secret of your own Desktop client (Google Cloud Console > APIs & Services > Credentials, with the Google Docs API and the Google Drive API enabled). A card of its own, apart from Gmail and Calendar, so connecting Docs grants nothing else. drive.metadata.readonly is what lets a doc be found by name; documents is what reads and edits it.",
+  "_comment": "client_id ships empty on purpose: Fused still has to publish a Google Cloud project with a Desktop OAuth client. Google's desktop clients must send their (non-secret, by Google's own docs) client_secret at the token endpoint, so a pack never ships one: FUSED_RENDER_CONNECT_GOOGLE_DOCS_CLIENT_ID and FUSED_RENDER_CONNECT_GOOGLE_DOCS_CLIENT_SECRET fill both at load, and Advanced on the card takes the id and secret of your own Desktop client (Google Cloud Console > APIs & Services > Credentials, with the Google Docs API and the Google Drive API enabled). A card of its own, apart from Gmail and Calendar, so connecting Docs grants nothing else. Both scopes are Google's sensitive tier (free brand review, no CASA): documents reads and edits any doc by id or URL; drive.file lists only the docs made through Fused. Whole-Drive search by name would need drive.metadata.readonly, a restricted scope, and is left out on purpose.",
   "auth": [
     {"kind": "oauth-pkce", "client_id": "",
      "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
      "token_url": "https://oauth2.googleapis.com/token",
      "revoke_url": "https://oauth2.googleapis.com/revoke",
      "identity_url": "https://www.googleapis.com/oauth2/v3/userinfo",
-     "scopes": {"scope": "https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/drive.metadata.readonly email"},
+     "scopes": {"scope": "https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/drive.file email"},
      "extra_authorize": {"access_type": "offline", "prompt": "consent"},
      "redirect": {"host": "127.0.0.1", "ports": null, "path": "/callback"},
      "byo": {"docs": "https://console.cloud.google.com/apis/credentials", "secret": "Client secret"}}

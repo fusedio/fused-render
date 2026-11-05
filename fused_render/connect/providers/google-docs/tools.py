@@ -5,9 +5,15 @@ A document comes back as text, not as the Docs API's structural tree: the
 body's paragraphs joined, tables cell by cell, capped. That is what a model
 reads, quotes and summarises; styling is not in scope here. Edits are the two
 that need no structural knowledge: append at the end, and replace every
-occurrence of a string. Finding a doc goes through Drive's file list (the
-`drive.metadata.readonly` scope), and any tool takes the document's URL in
-place of its id.
+occurrence of a string. Any tool takes the document's URL in place of its id.
+
+Scopes, on purpose: `documents` (any doc the user can open, by id or URL) and
+`drive.file`, which lists only the docs made through Fused or opened through
+it. Searching the user's whole Drive by title needs `drive.metadata.readonly`,
+which Google puts in its restricted tier (the paid annual CASA assessment);
+both scopes here are the sensitive tier, Google's free brand review only. So
+`docs_search` is "the docs Fused made", and a bot asks for a link to anything
+else.
 """
 from __future__ import annotations
 
@@ -24,12 +30,13 @@ _URL_ID = re.compile(r"/d/([A-Za-z0-9_-]{10,})")
 
 TOOLS = [
     {"name": "docs_search",
-     "description": "Find Google Docs by name (most recently changed first); empty query lists recent docs.",
+     "description": "Find, by name, the Google Docs created through Fused (most recently changed first); "
+                    "empty query lists them all. Any other doc is reached by its URL or id with docs_get.",
      "input_schema": obj({"query": {"type": "string", "description": "words of the title", "default": ""},
                           "max_results": {"type": "integer", "description": "1-100", "default": 20}}),
      "read_only": True, "destructive": False},
     {"name": "docs_get",
-     "description": "A document's title and text (tables as tab-separated rows).",
+     "description": "A document's title and text (tables as tab-separated rows), from its URL or id.",
      "input_schema": obj({"document_id": {"type": "string", "description": "the id, or the document's URL"}},
                          ["document_id"]),
      "read_only": True, "destructive": False},

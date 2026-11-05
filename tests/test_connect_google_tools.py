@@ -123,54 +123,21 @@ def test_dispatch_checks_names_and_required_arguments():
 class Gmail:
     def __init__(self):
         self.calls = []
-        self.headers_asked = []
 
     def __call__(self, request):
         path = request.url.path.replace("/gmail/v1/users/me/", "")
         body = json.loads(request.content) if request.content else None
         self.calls.append((request.method, path, dict(request.url.params.multi_items()), body))
-        if "metadataHeaders" in request.url.params:
-            self.headers_asked = request.url.params.get_list("metadataHeaders")
-        if path == "labels":
+        if path == "labels" and request.method == "GET":
             return httpx.Response(200, json={"labels": [
                 {"id": "INBOX", "name": "INBOX", "type": "system"},
-                {"id": "UNREAD", "name": "UNREAD", "type": "system"},
                 {"id": "Label_7", "name": "Work", "type": "user"}]})
-        if path == "messages":
-            return httpx.Response(200, json={"resultSizeEstimate": 2, "messages": [{"id": "m1"}, {"id": "m2"}]})
-        if path in ("messages/m1", "messages/m2"):
-            fmt = request.url.params.get("format")
-            payload = {"headers": [{"name": "From", "value": "Ana <ana@x.io>"}, {"name": "To", "value": "me@x.io"},
-                                   {"name": "Subject", "value": "Budget"}, {"name": "Date", "value": "Tue, 4 Nov 2026"},
-                                   {"name": "Message-ID", "value": "<abc@x.io>"},
-                                   {"name": "X-Tracking", "value": "junk"}]}
-            if fmt == "full":
-                payload.update({"mimeType": "multipart/mixed", "parts": [
-                    {"mimeType": "multipart/alternative", "parts": [
-                        {"mimeType": "text/plain", "body": {"data": _b64("Hi there\n\n-- Ana")}},
-                        {"mimeType": "text/html", "body": {"data": _b64("<p>Hi <b>there</b></p>")}}]},
-                    {"mimeType": "application/pdf", "filename": "q3.pdf",
-                     "body": {"attachmentId": "att1", "size": 1234}}]})
-            return httpx.Response(200, json={"id": path.split("/")[1], "threadId": "t1", "snippet": "Hi &amp; bye",
-                                             "labelIds": ["INBOX", "UNREAD"], "payload": payload})
-        if path == "messages/html1":
-            return httpx.Response(200, json={"id": "html1", "threadId": "t2", "labelIds": [], "payload": {
-                "mimeType": "text/html", "headers": [],
-                "body": {"data": _b64("<style>p{}</style><div>One</div><div>Two &amp; three</div>")}}})
-        if path == "messages/gone":
-            return _google_error(404, "NOT_FOUND", "Requested entity was not found.")
-        if path == "threads/t1":
-            return httpx.Response(200, json={"id": "t1", "messages": [
-                {"id": "m1", "threadId": "t1", "payload": {"headers": [{"name": "Subject", "value": "Budget"}],
-                                                         "mimeType": "text/plain", "body": {"data": _b64("first")}}},
-                {"id": "m2", "threadId": "t1", "payload": {"headers": [], "mimeType": "text/plain",
-                                                         "body": {"data": _b64("second")}}}]})
+        if path == "labels" and request.method == "POST":
+            return httpx.Response(200, json={"id": "Label_8", "name": body["name"], "type": "user"})
         if path == "messages/send":
             return httpx.Response(200, json={"id": "s1", "threadId": body.get("threadId") or "tnew"})
-        if path == "messages/m1/modify":
-            return httpx.Response(200, json={"id": "m1", "labelIds": ["INBOX", "Label_7"]})
-        if path == "messages/m1/trash":
-            return httpx.Response(200, json={"id": "m1", "labelIds": ["TRASH"]})
+        if path == "messages":
+            return _google_error(403, "PERMISSION_DENIED", "Request had insufficient authentication scopes.")
         return httpx.Response(404, json={"error": {"code": 404, "status": "NOT_FOUND", "message": path}})
 
 
@@ -181,76 +148,43 @@ def gmail(monkeypatch):
     return srv
 
 
-def test_gmail_tools_listed_with_flags(gmail):
+def test_gmail_is_send_and_labels_only(gmail):
+    """No tool reads mail: every mailbox-reading Gmail scope is Google's restricted (CASA) tier."""
     by = {s.name: s for s in tools.list_tools("gmail")}
-    assert set(by) == {"gmail_search_messages", "gmail_get_message", "gmail_get_thread", "gmail_list_labels",
-                       "gmail_send_message", "gmail_modify_labels", "gmail_trash_message"}
-    assert all(by[n].read_only for n in ("gmail_search_messages", "gmail_get_message", "gmail_get_thread",
-                                         "gmail_list_labels"))
+    assert set(by) == {"gmail_send_message", "gmail_list_labels", "gmail_create_label"}
+    assert by["gmail_list_labels"].read_only is True
     assert by["gmail_send_message"].read_only is False and by["gmail_send_message"].destructive is False
-    assert by["gmail_trash_message"].destructive is True
+    assert not any(n for n in by if "search" in n or "get" in n or "trash" in n or "modify" in n)
 
 
-def test_gmail_search_fetches_headers_only_and_trims(gmail):
-    out, data = _call("gmail", "gmail_search_messages", {"query": "from:ana", "max_results": 2, "label": "work"})
-    assert out["ok"], out
-    assert data["estimated_total"] == 2 and data["count"] == 2
-    assert data["messages"][0] == {"id": "m1", "thread_id": "t1", "from": "Ana <ana@x.io>", "to": "me@x.io",
-                                   "subject": "Budget", "date": "Tue, 4 Nov 2026", "snippet": "Hi & bye",
-                                   "labels": ["INBOX", "UNREAD"]}
-    listing = [c for c in gmail.calls if c[1] == "messages"][0]
-    assert listing[2]["q"] == "from:ana" and listing[2]["maxResults"] == "2" and listing[2]["labelIds"] == "Label_7"
-    fetch = [c for c in gmail.calls if c[1] == "messages/m1"][0]
-    assert fetch[2]["format"] == "metadata" and {"From", "Subject", "Date"} <= set(gmail.headers_asked)
-    assert [c[1] for c in gmail.calls][0] == "labels"     # the label name was resolved first
-
-
-def test_gmail_get_message_prefers_plain_text_and_lists_attachments(gmail):
-    _, data = _call("gmail", "gmail_get_message", {"id": "m1"})
-    assert data["body"] == "Hi there\n\n-- Ana" and data["truncated"] is False
-    assert data["attachments"] == [{"filename": "q3.pdf", "mime_type": "application/pdf", "size": 1234,
-                                    "attachment_id": "att1"}]
-    assert "x-tracking" not in json.dumps(data).lower()
-    _, html = _call("gmail", "gmail_get_message", {"id": "html1"})
-    assert html["body"] == "One\nTwo & three"
-    _, thread = _call("gmail", "gmail_get_thread", {"id": "t1"})
-    assert [m["body"] for m in thread["messages"]] == ["first", "second"] and thread["count"] == 2
-
-
-def test_gmail_send_and_reply(gmail):
+def test_gmail_send_and_reply_by_supplied_ids(gmail):
     out, data = _call("gmail", "gmail_send_message", {"to": "bo@x.io", "subject": "Hey", "body": "yo", "cc": "c@x.io"})
     assert out["ok"] and data == {"ok": True, "id": "s1", "thread_id": "tnew", "to": "bo@x.io", "subject": "Hey"}
     sent = [c for c in gmail.calls if c[1] == "messages/send"][0][3]
     raw = base64.urlsafe_b64decode(sent["raw"] + "=" * (-len(sent["raw"]) % 4)).decode()
     assert "To: bo@x.io" in raw and "Cc: c@x.io" in raw and "Subject: Hey" in raw and raw.rstrip().endswith("yo")
-    assert "threadId" not in sent
-    # A reply: thread, In-Reply-To and the original's sender and subject, when not given.
-    _, data = _call("gmail", "gmail_send_message", {"body": "ok", "reply_to_message_id": "m1"})
-    assert data["to"] == "Ana <ana@x.io>" and data["subject"] == "Re: Budget" and data["thread_id"] == "t1"
+    assert "threadId" not in sent and "In-Reply-To" not in raw
+    # A reply: the user supplies the thread and the Message-ID, since the card cannot read them.
+    _, data = _call("gmail", "gmail_send_message", {"to": "ana@x.io", "body": "ok", "subject": "Re: Budget",
+                                                    "thread_id": "t1", "in_reply_to": "abc@x.io"})
+    assert data["thread_id"] == "t1"
     sent = [c for c in gmail.calls if c[1] == "messages/send"][-1][3]
     raw = base64.urlsafe_b64decode(sent["raw"] + "=" * (-len(sent["raw"]) % 4)).decode()
     assert sent["threadId"] == "t1" and "In-Reply-To: <abc@x.io>" in raw and "References: <abc@x.io>" in raw
-    out, text = _call("gmail", "gmail_send_message", {"body": "x"})
+    out, text = _call("gmail", "gmail_send_message", {"to": "not an address", "body": "x"})
     assert not out["ok"] and text == "gmail: to is required (an email address)"
     out, text = _call("gmail", "gmail_send_message", {"to": "a@b.c"})
     assert text == "gmail: missing argument: body"
 
 
-def test_gmail_labels_trash_and_errors(gmail):
-    _, data = _call("gmail", "gmail_modify_labels", {"id": "m1", "add": ["Work"], "remove": "unread"})
-    assert data == {"ok": True, "id": "m1", "labels": ["INBOX", "Label_7"]}
-    assert [c for c in gmail.calls if c[1] == "messages/m1/modify"][0][3] == {"addLabelIds": ["Label_7"],
-                                                                             "removeLabelIds": ["UNREAD"]}
-    out, text = _call("gmail", "gmail_modify_labels", {"id": "m1", "add": ["Nope"]})
-    assert text == "gmail: no label called 'Nope'"
-    out, text = _call("gmail", "gmail_modify_labels", {"id": "m1"})
-    assert text.startswith("gmail: nothing to change")
-    _, data = _call("gmail", "gmail_trash_message", {"id": "m1"})
-    assert data == {"ok": True, "id": "m1", "labels": ["TRASH"]}
-    out, text = _call("gmail", "gmail_get_message", {"id": "gone"})
-    assert not out["ok"] and text.startswith("gmail: not found")
+def test_gmail_labels(gmail):
     _, data = _call("gmail", "gmail_list_labels", {})
-    assert [x["name"] for x in data["labels"]] == ["INBOX", "UNREAD", "Work"]
+    assert [x["name"] for x in data["labels"]] == ["INBOX", "Work"] and data["count"] == 2
+    _, data = _call("gmail", "gmail_create_label", {"name": "Clients/Acme"})
+    assert data == {"ok": True, "id": "Label_8", "name": "Clients/Acme"}
+    assert gmail.calls[-1][3]["name"] == "Clients/Acme"
+    out, text = _call("gmail", "gmail_create_label", {})
+    assert text == "gmail: missing argument: name"
 
 
 def test_a_refused_google_token_is_refreshed_once_then_reconnect(monkeypatch):
