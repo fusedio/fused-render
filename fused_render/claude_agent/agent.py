@@ -12818,14 +12818,18 @@ def _cancel_run(run_id: str, interrupt_first: bool = True,
     stranded = []
     if interrupt_first and _host_alive(run_dir):
         # Interrupt the TURN, not the whole session. A live host survives an
-        # `interrupt` control request (verified live against 2.1.251) exactly
-        # the way it survives a trailing `result` — the CLI stays up on the
-        # same held-open stdin, ready for the next follow-up, and the pid
-        # file (the CLI's own) never changes. This is the whole reason a stop
-        # button no longer has to mean "end the session": a background task
-        # started earlier in the SAME session outlives a stop pressed on a
-        # later turn, and the next message continues this session instead of
+        # `interrupt` control request exactly the way it survives a trailing
+        # `result` — the CLI stays up on the same held-open stdin, ready for
+        # the next follow-up, and the pid file (the CLI's own) never changes.
+        # That is the whole reason a stop button no longer has to mean "end
+        # the session": the next message continues this session instead of
         # resuming a dead one.
+        #
+        # A plain interrupt is a STOP for the background work too: on CLI
+        # 2.1.304 it also ends the session's background subagents (a
+        # `task_updated` with status `killed` follows within milliseconds). A
+        # send-now (`_send(..., send_now=True)`) is the interrupt that ends
+        # only the main agent's turn, via `send_now` + the queued line's uuid.
         #
         # THE INBOX FIRST, and before the interrupt row is queued so the scan
         # cannot see (or race) it. `interrupt` only reaches the CLI's OWN
