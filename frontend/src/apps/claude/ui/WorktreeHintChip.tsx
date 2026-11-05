@@ -27,12 +27,13 @@ export function isSameFolder(hintPath: string, currentPath?: string): boolean {
   return rel !== "" && (rel === base(c) || c.endsWith("/" + rel));
 }
 
-/** A `via: "agent"` hint is true only while an isolated agent is running:
- *  hidden once no task with `isolation === "worktree"` is live. */
+/** A `via: "agent"` hint is true only while an isolated agent is running; once
+ *  no task with `isolation === "worktree"` is live it falls back to the main
+ *  agent's own worktree (`prev`), or nothing. */
 export function visibleWorktreeHint(hint: WorktreeHint | null | undefined, tasks: TaskRecord[] | undefined): WorktreeHint | null {
   if (!hint) return null;
   if (hint.via !== "agent") return hint;
-  return (tasks ?? []).some((t) => t.isolation === "worktree" && isLive(t.status)) ? hint : null;
+  return (tasks ?? []).some((t) => t.isolation === "worktree" && isLive(t.status)) ? hint : (hint.prev ?? null);
 }
 
 /** The hint the chip will actually draw: live, not the chat's own folder, not a

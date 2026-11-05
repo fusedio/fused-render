@@ -359,14 +359,13 @@ describe("favSeats: the blocked at the head", () => {
     expect(favLike({ status: "done" })).toBe(false);
     expect(favLike(undefined)).toBe(false);
   });
-  it("the list leaves a blocked chat out too (one ring per chat), favourites on", () => {
+  it("the list keeps a blocked chat too — it stands in both sections (2026-11-05)", () => {
     const rows = [
       pulse(task({ key: "a", happened_at: 300 })),
       pulse(task({ key: "blk", status: "blocked", happened_at: 200 })),
       pulse(task({ key: "b", happened_at: 100 })),
     ];
-    expect(listSeats(railRows(rows, new Map(), PLACE), true).map((s) => s.pulse.key)).toEqual(["a", "b"]);
-    expect(listSeats(railRows(rows, new Map(), PLACE), false).map((s) => s.pulse.key)).toEqual(["blk", "a", "b"]);
+    expect(listSeats(railRows(rows, new Map(), PLACE), true).map((s) => s.pulse.key)).toEqual(["blk", "a", "b"]);
   });
 });
 
@@ -404,29 +403,18 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
   });
 });
 
-describe("listSeats (one ring per chat)", () => {
+describe("listSeats (the two sections are independent, 2026-11-05)", () => {
   const rows = [
     pulse(task({ key: "a", happened_at: 300 })),
     pulse(task({ key: "fav", happened_at: 200 }), { starred: true }),
     pulse(task({ key: "b", happened_at: 100 })),
   ];
-  it("with the favourites on, a starred chat leaves the list for the favourites section", () => {
-    const list = listSeats(railRows(rows, new Map(), PLACE), true);
-    const favs = favSeats(rows, new Map());
-    expect(list.map((s) => s.pulse.key)).toEqual(["a", "b"]);
-    expect(favs.map((s) => s.pulse.key)).toEqual(["fav"]);
-    // Exactly one of the two holds each chat.
-    const both = [...list, ...favs].map((s) => s.pulse.key).sort();
-    expect(both).toEqual(["a", "b", "fav"]);
-  });
-  it("with the favourites off, the list is untouched (the same array)", () => {
+  it("favourites on or off, the list keeps every chat of the place — a starred one stands in both sections", () => {
     const seats = railRows(rows, new Map(), PLACE);
-    expect(listSeats(seats, false)).toBe(seats);
-    expect(seats.map((s) => s.pulse.key)).toContain("fav");
-  });
-  it("nothing starred: the same array back", () => {
-    const seats = railRows([rows[0]!, rows[2]!], new Map(), PLACE);
     expect(listSeats(seats, true)).toBe(seats);
+    expect(listSeats(seats, false)).toBe(seats);
+    expect(seats.map((s) => s.pulse.key)).toEqual(["a", "fav", "b"]);
+    expect(favSeats(rows, new Map()).map((s) => s.pulse.key)).toEqual(["fav"]);
   });
   it("a node narrows the list, never the favourites", () => {
     const NODE: RailPlace = { ...PLACE, file: "n.py" };
@@ -553,12 +541,11 @@ describe("ringMarks (what each ring wears, per section)", () => {
     expect(rings.every((r) => r.hovers)).toBe(true);
   });
 
-  it("a star pressed a moment ago: its ring still in the list opens no hover card either", () => {
-    // `railOpenFav` counts the just-opened key while the pulse lags.
+  it("the open favourite's chat in the LIST is a list ring like any other (the sections do not see each other, 2026-11-05)", () => {
     const rings = rail({ list: ["A", "S"], favs: ["F"], openFavKey: "S" });
     const s = rings.find((r) => r.key === "S")!;
-    expect(s.hovers).toBe(false);
-    expect(s.favRing).toBe(true);
+    expect(s.hovers).toBe(true);
+    expect(s.favRing).toBe(false);
     // It is not the foot's ring: no `is-open`, no `is-fav`.
     expect(s.classes).not.toContain("is-open");
     expect(s.classes).not.toContain("is-fav");
@@ -928,9 +915,11 @@ describe("ringMarks with the Claude pane open", () => {
     expect(list.hovers).toBe(false);
     expect(list.titleOnly).toBe(true);
     expect(ringMarks({ ...o, key: "a", foot: true, paneOpen: true }).hovers).toBe(true);
+    // A favourite whose chat the pane shows still hovers (2026-11-05: the
+    // chat may stand in the pane and in window B at once).
     const held = ringMarks({ ...o, key: "a", foot: true, paneOpen: true, chatElsewhere: true });
-    expect(held.hovers).toBe(false);
-    expect(held.titleOnly).toBe(true);
+    expect(held.hovers).toBe(true);
+    expect(held.titleOnly).toBe(false);
     expect(ringMarks({ ...o, key: "a", foot: false, paneOpen: false }).hovers).toBe(true);
   });
 });
