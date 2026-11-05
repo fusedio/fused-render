@@ -816,3 +816,14 @@ test("the folded line carries no <a> even for GFM autolinks (bugbot on d4233e8)"
   expect(html).not.toContain("<img");
   expect(html).toContain("https://x.com");
 });
+
+describe("Turn `unfolded`", () => {
+  test("calls and prose draw flat: every chip, no run trigger; without it the run folds", () => {
+    const segments = [text("Looking."), tool("a", "Bash"), tool("b", "Read"), text("Done."), tool("c", "Bash")];
+    const fold = mount(<Turn turn={assistant("a:1", { segments })} />);
+    expect(byClass(fold, "run-trigger").length).toBeGreaterThan(0);
+    const flat = mount(<Turn turn={assistant("a:2", { segments })} unfolded />);
+    expect(byClass(flat, "run-trigger")).toHaveLength(0);
+    expect(byClass(flat, "toolchip")).toHaveLength(3);
+  });
+});
