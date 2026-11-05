@@ -394,6 +394,9 @@ test("opening the work or prompt fold releases the peek's tail-follow", () => {
   port.scrollTop = 0;
   act(() => r.update(<AgentPeekLog seg={mk(1)} />));
   expect(port.scrollTop).toBe(0);
+  // Unmount: the rows subscribe to the shared minute tick (useMinuteTick), and a
+  // peek left mounted keeps that interval alive for every later test file.
+  act(() => r.unmount());
 });
 
 test("closing removes the agent peek", () => {
