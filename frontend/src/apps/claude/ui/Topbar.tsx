@@ -241,7 +241,7 @@ export function Topbar({
       // tooltip goes on the line itself rather than on a span of its own, so the
       // header spends no width on a string nobody reads on purpose (T:12700).
       <div
-        className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "")}
+        className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "") + (bare ? " c-topbar-side" : "")}
         title={sessionId || undefined}
       >
         {lead}
@@ -313,7 +313,7 @@ export function Topbar({
     shortTaskId(taskId || knownTaskId(sessionId) || "") ||
     (sessionId ? sessionId.slice(0, 8) : "");
   return (
-    <div className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "")}>
+    <div className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "") + (bare ? " c-topbar-side" : "")}>
       {lead}
       {/* THE RING TAKES THE MARK'S SEAT rather than sitting beside it: the line
           keeps ONE glyph at its left end, and on a waiting chat the fact worth a

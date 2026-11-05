@@ -65,7 +65,16 @@ export function WorktreeHintChip({ hint, currentPath }: { hint: WorktreeHint | n
   return (
     <span className="chat-worktree-btn chat-worktree-hint" title={title}>
       <GitBranch size={12} aria-hidden="true" />
-      <span>{name ? "worktree · " + name : "worktree"}</span>
+      <span className="c-wt-name">
+        {name ? (
+          <>
+            <span className="c-wt-word">worktree · </span>
+            {name}
+          </>
+        ) : (
+          "worktree"
+        )}
+      </span>
     </span>
   );
 }

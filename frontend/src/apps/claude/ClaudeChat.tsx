@@ -5666,7 +5666,7 @@ function ChatBody(props: ChatBodyProps) {
           aria-disabled={ann.locked ? "true" : "false"}
           onClick={onBack}
         >
-          ← Chats
+          ←<span className="c-back-word"> Chats</span>
         </button>
   );
   // A canvas chat whose strip draws no seats — the node pane (`noAnnTools`),
