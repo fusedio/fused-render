@@ -302,6 +302,9 @@ export interface RailPeekProps {
   kept: readonly RailRow[];
   /** The ring element for a seat (its anchor), or null if it is not drawn. */
   anchorOf: (key: string) => HTMLElement | null;
+  /** The element the hover cone starts at; default `anchorOf` (the favourite's
+   *  card stands on the rail but its cone starts at its ring). */
+  coneOf?: (key: string) => HTMLElement | null;
   /** The rail, for its edge and for the row it stands in (its parent). */
   railEl: HTMLElement | null;
   /** Where the rail stands (claude-rail-lib `RailPlace`): what a row's
@@ -456,6 +459,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     shown,
     kept,
     anchorOf,
+    coneOf,
     railEl,
     place: where,
     onReload,
@@ -693,7 +697,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   onBoxRef.current = onBox;
   useEffect(() => {
     onBoxRef.current?.(visible ? box : null);
-  }, [visible, box]);
+  }, [visible, box, onBox]);
   useEffect(() => () => onBoxRef.current?.(null), []);
   // A pinned list card — any list card with favourites on (`oneSize`) — or
   // a card sized by the reader whatever its pin (the favourite's,
@@ -822,7 +826,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   };
   useEffect(() => {
     if (!on || !box || !shownKey) return;
-    const anchor = anchorOf(shownKey);
+    const anchor = (coneOf ?? anchorOf)(shownKey);
     if (!anchor) return;
     const r = anchor.getBoundingClientRect();
     const apex = { x: r.left + r.width / 2, y: r.top + r.height / 2 };

@@ -172,6 +172,12 @@ export function railHere(rail: HTMLElement | null): RailHere | null {
   return (rail && heres.get(rail)?.()) ?? null;
 }
 
+/** What the favourite's card tells the rail's own card (`avoid`): its box
+ *  when OPEN, nothing for a hover — a hover overlaps, never shrinks it. */
+export function publishFavBoxFor(hovering: boolean, box: Box | null): void {
+  publishFavBox(hovering ? null : box);
+}
+
 /** Where the favourite's card stands (null while closed). */
 export function publishFavBox(box: Box | null): void {
   if (sameBox(live.favBox, box)) return;

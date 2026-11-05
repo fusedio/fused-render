@@ -16,6 +16,7 @@ import {
   favHoverKey,
   resetFavHoverForTests,
   favPeekState,
+  publishFavBoxFor,
   focusRail,
   pageRailCount,
   registerPageRail,
@@ -418,5 +419,19 @@ describe("the page-rail count (the shell's fallback)", () => {
     old();
     expect(pageRailCount()).toBe(1);
     next();
+  });
+});
+
+describe("favourite card box (avoid)", () => {
+  it("a hover publishes no box; an open card does", async () => {
+    const box = { left: 10, top: 20, width: 300, height: 200 };
+    publishFavBoxFor(true, box);
+    expect(favPeekState().favBox).toBeNull();
+    publishFavBoxFor(false, box);
+    await settle();
+    expect(favPeekState().favBox).toEqual(box);
+    publishFavBoxFor(true, box);
+    await settle();
+    expect(favPeekState().favBox).toBeNull();
   });
 });

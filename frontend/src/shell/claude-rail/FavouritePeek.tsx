@@ -82,6 +82,7 @@ import {
   favHoverIntent,
   focusRail,
   publishFavBox,
+  publishFavBoxFor,
   railHere,
   takeFavFocus,
   useFavHoverKey,
@@ -262,15 +263,14 @@ export function FavouritePeek() {
     };
     focusWait.current = requestAnimationFrame(attempt);
   }, [shownKey, pendingFocus]);
-  // The rail itself is the anchor: with `align: "bottom"` the card's bottom
-  // lands on the rail's, clamped inside the row — the bottom right, always.
+  // The rail itself is the anchor, hover or open: with `align: "bottom"` the
+  // card's bottom lands on the rail's, clamped inside the row — the bottom
+  // right, always, so a press never moves it (`favCardWish` for both).
+  const anchorOf = useCallback(() => rail, [rail]);
   // A hover's cone starts at its own ring.
-  const anchorOf = useCallback(
-    (key: string) =>
-      (hovering &&
-        rail?.querySelector<HTMLElement>(`.claude-rail-favs [data-task-key="${CSS.escape(key)}"]`)) ||
-      rail,
-    [rail, hovering],
+  const coneOf = useCallback(
+    (key: string) => rail?.querySelector<HTMLElement>(`.claude-rail-favs [data-task-key="${CSS.escape(key)}"]`) ?? rail,
+    [rail],
   );
   // The page's canvas, off the rail this card stands beside (header).
   const here = useCallback(() => railHere(rail), [rail]);
@@ -296,6 +296,9 @@ export function FavouritePeek() {
     setFavOpen(hoverRow.key);
     dismissFavHover();
   }, [hovering, hoverRow]);
+  // Only an OPEN card makes the rail's own card give way (`avoid`); a hover
+  // overlaps it and publishes nothing.
+  const onBox = useCallback((b: Parameters<typeof publishFavBox>[0]) => publishFavBoxFor(hovering, b), [hovering]);
   useEffect(() => () => publishFavBox(null), []);
   if (!on || !seat || !place) return null;
   return (
@@ -304,11 +307,12 @@ export function FavouritePeek() {
       shown={shown}
       kept={kept}
       anchorOf={anchorOf}
+      coneOf={coneOf}
       railEl={rail}
       place={place}
       size={FAV_SIZE}
       resizeKey="canvasRailFav"
-      onBox={publishFavBox}
+      onBox={onBox}
       onReload={refreshListing}
       onPointerEnter={hovering ? () => favHoverIntent().enterCard() : noop}
       onPointerLeave={hovering ? () => favHoverIntent().leaveCard() : noop}
