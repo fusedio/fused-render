@@ -2586,7 +2586,7 @@ export function ComposerCard({
             // hop is carrying (Bugbot 4034977395).
             {...(sendBlocked || hopFrozen ? { disabled: true } : {})}
           >
-            {running ? (
+            {running && !pickSubmit ? (
               <svg
                 width="14"
                 height="14"

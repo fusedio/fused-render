@@ -6106,7 +6106,7 @@ function ChatBody(props: ChatBodyProps) {
               onPullPending={onPullPending}
               sendNowKey={running ? newestQueuedKey : null}
               onSendNow={onSendQueuedNow}
-              {...(chatBackend === "claude" && !running ? { onFork } : {})}
+              {...(chatBackend === "claude" && !running && !props.breakout ? { onFork } : {})}
               {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}
               {...(breakoutGate ? { onBreakoutContext: onContextTurn } : {})}
               onOpenShot={openShot}

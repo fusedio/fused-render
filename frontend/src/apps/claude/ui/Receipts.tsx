@@ -19,6 +19,7 @@ import { probePruned, receiptsFromWire } from "../shots";
 import type { Receipt } from "../shots/types";
 import { ShotThumb } from "./AttachTray";
 import { AttachIcon } from "./AttachIcon";
+import { useCardOpen } from "./cardPolicy";
 import {
   glyphDoor,
   prunedLabel,
@@ -175,7 +176,9 @@ function ShotRow({
 /** "N messages from <title>", collapsed; the quoted messages behind a click.
  *  Worn by a breakout's first turn, and above the composer until it is sent. */
 export function BreakoutContextChip({ context }: { context: BreakoutContextWire }) {
-  const [open, setOpen] = useState(false);
+  // Through the card policy so the transcript holds the follow tail while it
+  // opens, like every other disclosure.
+  const [open, toggle] = useCardOpen("breakout-context");
   const count = `${context.count} message${context.count === 1 ? "" : "s"}`;
   const label = `${count}${context.title ? ` from ${context.title}` : ""}`;
   return (
@@ -186,7 +189,7 @@ export function BreakoutContextChip({ context }: { context: BreakoutContextWire 
           className="annsum-lbl annsum-breakout"
           aria-expanded={open}
           title={label}
-          onClick={() => setOpen((v) => !v)}
+          onClick={toggle}
         >
           <ChevronRight size="1em" className={open ? "annsum-breakout-open" : ""} />
           <span className="annsum-breakout-count">{count}</span>

@@ -86,6 +86,8 @@ test("the chat mounts fresh: no parent session, the selected messages as context
   });
   expect(seen["sessionId"]).toBeUndefined();
   expect(seen["breakout"]).toBe(true);
+  // A breakout is Claude-only: it must not inherit a non-Claude catalog default.
+  expect(seen["backend"]).toBe("claude");
   expect(seen["breakoutContext"]).toEqual({ block: "<breakout-context>\nx\n</breakout-context>", count: 2, title: "Parent" });
   expect("breakoutAt" in seen).toBe(false);
 });

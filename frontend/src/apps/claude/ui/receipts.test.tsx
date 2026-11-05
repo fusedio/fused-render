@@ -459,3 +459,22 @@ test("a breakout's first turn wears a collapsible chip of the messages it carrie
   const body = els(r, "annsum-breakout-body")[0]!;
   expect(body.props.children).toBe("User: How does it work?\n\nAssistant: It keys on path.");
 });
+
+test("opening the breakout chip holds the follow tail through the card policy", async () => {
+  const { CardPolicyProvider, createCardPolicy } = await import("./cardPolicy");
+  const raw = composeOutgoing("hi", [
+    formatBreakoutContext({ messages: [{ role: "user", text: "q" }], files: [] }),
+  ]);
+  const t: UserTurn = { role: "user", key: "u:10", text: "hi", raw };
+  const policy = createCardPolicy();
+  let held = 0;
+  policy.holdTail = () => held++;
+  const r = mount(
+    <CardPolicyProvider value={policy}>
+      <Receipts turn={t} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />
+    </CardPolicyProvider>,
+  );
+  act(() => els(r, "annsum-lbl annsum-breakout")[0]!.props.onClick());
+  expect(held).toBe(1);
+  expect(els(r, "annsum-breakout-body")).toHaveLength(1);
+});

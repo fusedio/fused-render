@@ -283,6 +283,7 @@ export function Card({
         <Mount
           file={card.file}
           breakout
+          backend="claude"
           breakoutContext={card.context}
           {...(card.prompt ? { breakoutPrompt: card.prompt, onBreakoutPromptSent: () => consumeBreakoutPrompt(card.id) } : {})}
           onBreakoutState={onState}
