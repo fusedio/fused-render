@@ -153,8 +153,8 @@ function byClass(r: Chat, cls: string) {
 /** Is the pane showing a conversation, or the Claude home? `← Chats` is drawn
  *  by the chat view and by nothing else (`inChat`). */
 function inChat(r: Chat): boolean {
-  return r.root.findAll((n) => n.type === "button" && String(n.props.children).includes("Chats"))
-    .length > 0;
+  // The label is `←<span class="c-back-word"> Chats</span>` (the word folds at narrow widths).
+  return byClass(r, "c-back-word").length > 0;
 }
 
 async function sendQueued(r: Chat, text: string, entryId = "q1"): Promise<void> {
