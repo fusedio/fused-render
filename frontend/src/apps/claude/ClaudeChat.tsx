@@ -32,7 +32,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { GitBranchPlus } from "lucide-react";
+import { SquareArrowOutUpRight } from "lucide-react";
 
 import { IS_EMBED, confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
@@ -5706,7 +5706,7 @@ function ChatBody(props: ChatBodyProps) {
         aria-pressed={picking}
         onClick={togglePicking}
       >
-        <GitBranchPlus size={14} aria-hidden="true" />
+        <SquareArrowOutUpRight size={14} aria-hidden="true" />
       </button>
     ) : null;
   const kebabEl = (
