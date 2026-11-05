@@ -32,7 +32,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { SquareArrowOutUpRight } from "lucide-react";
+import { MessagesSquare } from "lucide-react";
 
 import { IS_EMBED, confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
@@ -5732,7 +5732,7 @@ function ChatBody(props: ChatBodyProps) {
         aria-pressed={picking}
         onClick={togglePicking}
       >
-        <SquareArrowOutUpRight size={14} aria-hidden="true" />
+        <MessagesSquare size={14} aria-hidden="true" />
       </button>
     ) : null;
   const kebabEl = (
