@@ -30,7 +30,8 @@
 //   - HOW BIG IT IS (`peekPlacement`, `dragResize`): 420×640 for a hover; a
 //     PINNED card takes the size the reader last dragged it to from its left
 //     corners or its left, top and bottom edges (RailPeek, ui-layout
-//     `canvasRailPeek`; the favourite's card its own, `canvasRailFav`), both clamped to the
+//     `canvasRailPeek`; the favourite's card its own, `canvasRailFav`, from
+//     the same grips — a bottom drag keeps its top), both clamped to the
 //     row, the width also to the chat's reading column (`PEEK_MAX_WIDTH`).
 //     The drag itself moves the box as the pointer does; when it ends the
 //     card is placed again — top level with the ring — at its new size.
@@ -483,6 +484,23 @@ export class PeekIntent {
     else this.scheduleClose();
   }
 
+  /** The keyboard was HANDED to ring `key` (fav-peek-store `focusRail`, a
+   *  card shutting under it): it rests there, muted like Escape's return —
+   *  no card opens until the pointer arrives or the focus moves on. */
+  quietFocus(key: string): void {
+    this.focusKey = key;
+    this.muteFocus = true;
+    if (this.pendingKey === key) this.cancelOpen();
+  }
+
+  /** Chat `key` went elsewhere (the favourite's card took it): a hover or a
+   *  focus still waiting to open it here is dropped — else this card opens
+   *  on the same chat a beat after the favourite's (two composers, one
+   *  draft). A card already showing it is the caller's to dismiss. */
+  forget(key: string): void {
+    if (this.pendingKey === key) this.cancelOpen();
+  }
+
   /** Show `key` now, no wait — the keyboard's way in (ArrowLeft on a ring).
    *  `pin`: the card stays up until dismissed (`press`). */
   showNow(key: string, pin = false): void {
@@ -607,23 +625,29 @@ export function starMarkStep(mark: StarMark, t: TaskPulseTask | undefined): Star
 /** What a card does once the server has answered its star (RailPeek
  *  `toggleStar`): the rail hears it (`onStarred`), and an UNSTAR shuts the
  *  card only where the card is the favourite's own (`dismissOnUnstar`,
- *  FavouritePeek) and still on that chat — the rail's card lets go on the
- *  star itself (`railOnStarred`) and never shows a starred chat, so an
- *  unstar is never its to act on. */
+ *  FavouritePeek) and still on that chat. The rail's card may show a
+ *  favourite on a hover of its ring (2026-11-04) and unstar it there; that
+ *  card stays — the chat is back in the list. */
 export function starOutcome(starred: boolean, key: string, shownKey: string | null, dismissOnUnstar: boolean): { dismiss: boolean } {
   return { dismiss: !starred && dismissOnUnstar && shownKey === key };
 }
 
 /** The rail's side of a star (ClaudeRail `onStarred`): with favourites on,
  *  a starred chat leaves the list and lives on its ring in the favourites
- *  section — no duplicate — so the rail's own card lets go of it AT ONCE, on
- *  EVERY star, whether the server recorded the favourite's card open or
- *  closed (another favourite open). When it did open, letting go now also
- *  lands before the pulse that mounts the favourite's composer, so one draft
- *  never has two composers. */
-export function railOnStarred(favsOn: () => boolean, letGo: (key: string) => void): (key: string, on: boolean) => void {
+ *  section — no duplicate — and a star you just pressed is a card you want
+ *  to see, so its favourite's card opens IN THIS WINDOW (`open`, the
+ *  per-window open key) and the rail's own card lets go of it AT ONCE,
+ *  before the favourite's composer mounts, so one draft never has two
+ *  composers. */
+export function railOnStarred(
+  favsOn: () => boolean,
+  letGo: (key: string) => void,
+  open: (key: string) => void = () => {},
+): (key: string, on: boolean) => void {
   return (key, on) => {
-    if (on && favsOn()) letGo(key);
+    if (!on || !favsOn()) return;
+    letGo(key);
+    open(key);
   };
 }
 
@@ -638,105 +662,76 @@ export function errorWords(e: unknown, fallback: string): string {
   return message || fallback;
 }
 
-/** A FAVOURITE'S RING PRESSED (ClaudeRail `openFavourite`): the open write
- *  first; the rail's card lets go of the chat only when the server says the
- *  favourite's card is open on it. A refused write (archived, gone, the
- *  network) or an answer that is not "open" — another window unstarred it —
- *  says so once and falls back to the ring's ordinary press, so the chat
- *  never vanishes into a card that will not come. */
-export async function openFavouriteFlow(
-  key: string,
-  deps: {
-    post: (key: string) => Promise<{ starred: boolean; open: boolean }>;
-    letGo: (key: string) => void;
-    fallback: () => void;
-    fail: (message: string) => void;
-  },
-): Promise<boolean> {
-  let message: string;
-  try {
-    const res = await deps.post(key);
-    if (res.open === true) {
-      deps.letGo(key);
-      return true;
-    }
-    message = res.starred ? "The favourite could not be opened" : "This chat is not a favourite any more";
-  } catch (e) {
-    message = errorWords(e, "The favourite could not be opened");
-  }
-  deps.fail(message);
-  deps.fallback();
-  return false;
+// ---- THE OPEN FAVOURITE, PER WINDOW ------------------------------------------
+
+/** How long a favourite this document just opened (a star pressed on, whose
+ *  `starred` the pulse has yet to carry — seconds on a loaded Mac) may stand
+ *  before the pulse has said it is a favourite. */
+export const FAV_SETTLE_MS = 15_000;
+
+/** WHAT THE OPEN FAVOURITE'S CARD DOES (FavouritePeek; the open key is this
+ *  window's own, platform/lib/last-chat `useFavOpen`): `"show"` it, `"wait"`
+ *  for the pulse (no card yet, the key kept), or `"close"` — the key cleared.
+ *  `row` is the pulse's row for the key (undefined: none), `loaded` whether
+ *  the pulse has any rows yet, `seenLive` whether it has said this key is a
+ *  live favourite since the key was opened, `openedAt` when THIS document
+ *  opened it (null: a stored key from before a reload, or another document
+ *  of the window). In order:
+ *    - an ARCHIVED row never shows a card: close;
+ *    - a starred row shows;
+ *    - a key the pulse has said live and now does not (unstarred, erased —
+ *      here or in another window): close;
+ *    - a key just opened here, the pulse not caught up yet: show it if the
+ *      row is there (a star pressed a moment ago), else wait — for at most
+ *      FAV_SETTLE_MS;
+ *    - otherwise wait for a first pulse, and close once it has come. */
+export function favOpenVerdict(
+  row: { starred?: boolean; status: string } | undefined,
+  loaded: boolean,
+  seenLive: boolean,
+  openedAt: number | null,
+  now: number,
+): "show" | "wait" | "close" {
+  if (row?.status === "archived") return "close";
+  if (row?.starred) return "show";
+  if (seenLive) return "close";
+  if (openedAt !== null && now - openedAt < FAV_SETTLE_MS) return row ? "show" : "wait";
+  return loaded ? "close" : "wait";
 }
 
-// ---- THE FAVOURITE'S OPEN, AHEAD OF THE PULSE ---------------------------------
-
-/** A FAVOURITE'S RING PRESS SHOWS AT ONCE (owner, 2026-11-04: "click on the
- *  pin doesn't open it and switch it" — on a loaded Mac the pulse that says
- *  `starred_open` is seconds behind the press). The key the reader opened,
- *  held over the pulse's open favourite until the pulse agrees (ClaudeRail's
- *  ring `is-open`, from the press; FavouritePeek's card, from the server's
- *  "open" answer). `stale` is every open key the pulse may still say
- *  because it left the server BEFORE this write landed — what it said when
- *  the mark was set, and the keys earlier marks were waiting out (a quick
- *  A-then-B: a pulse saying A is late, not a verdict). A pulse naming
- *  anything else answered after the write: another window (or this one's ×)
- *  moved the record, and the pulse is the truth. */
-export interface FavOpenMark {
-  key: string;
-  stale: readonly (string | null)[];
-  /** When it was set (ms): past FAV_MARK_MS a pulse that never moved off a
-   *  stale answer wins anyway — a write undone elsewhere back to the same
-   *  record must not hold the mark for good. */
-  at: number;
-}
-
-/** How long a mark may wait out a stale pulse. Past an 8 s pulse stall. */
-export const FAV_MARK_MS = 15_000;
-
-/** The mark a press (or an "open" answer) on `key` sets, the pulse saying
- *  `pulseOpen` now and `prev` the mark it replaces. */
-export function favOpenMark(key: string, pulseOpen: string | null, prev: FavOpenMark | null, now: number): FavOpenMark {
-  const stale: (string | null)[] = [];
-  for (const k of [pulseOpen, ...(prev ? [prev.key, ...prev.stale] : [])]) {
-    if (!stale.includes(k)) stale.push(k);
-  }
-  return { key, stale: stale.slice(0, 4), at: now };
-}
-
-/** The mark after the pulse says `pulseOpen` (null: no favourite open):
- *  null once the pulse agrees, once the pulse names a key this mark is not
- *  waiting out (header), once the key is no longer a live favourite
- *  (`live`: unstarred, archived, gone), or past FAV_MARK_MS; else the same
- *  mark. */
-export function favOpenStep(mark: FavOpenMark, pulseOpen: string | null, live: boolean, now: number): FavOpenMark | null {
-  if (!live || pulseOpen === mark.key) return null;
-  if (!mark.stale.includes(pulseOpen)) return null;
-  if (now - mark.at >= FAV_MARK_MS) return null;
-  return mark;
-}
-
-/** Whether a × (`closing`) still hides the favourite's card. `landed`: the
- *  pulse rows in hand when the close write landed (null: not landed yet).
- *  A pulse read AFTER that (other rows) that still says the key open is a
- *  reopen — another window's, landing behind this one's close — so the card
- *  shows (CodeRabbit, PR #2100). Anything else holds. */
-export function favCloseHolds(landed: object | null, rows: object, saysOpen: boolean): boolean {
-  return !(saysOpen && landed !== null && rows !== landed);
+/** THE OPEN FAVOURITE AS THE RAIL COUNTS IT (ClaudeRail): this window's open
+ *  key (`openKey`) when the pulse says it is a favourite (`favKeys`) — and,
+ *  for FAV_SETTLE_MS after this window opened it (`openedAt`: a star pressed
+ *  in the rail's card a moment ago, the pulse yet to say `starred`), even
+ *  though its ring still stands in the LIST: the favourite's card is already
+ *  up on it (FavouritePeek shows a just-opened key), so that ring must not
+ *  open the rail's hover card on the same chat — two composers on one draft.
+ *  Null otherwise (a key the pulse dropped, or one the settle ran out on). */
+export function railOpenFav(
+  openKey: string | null,
+  favKeys: ReadonlySet<string>,
+  openedAt: number | null,
+  now: number,
+): string | null {
+  if (!openKey) return null;
+  if (favKeys.has(openKey)) return openKey;
+  return openedAt !== null && now - openedAt < FAV_SETTLE_MS ? openKey : null;
 }
 
 /** Where the favourite's chat already is, so its card keeps none of its own
- *  (one chat, one composer): `"pane"` when the page's URL names its session
- *  (the Claude pane, the Open door), `"peek"` when the Tasks side peek shows
- *  it (platform/lib/peek-session), else null. */
+ *  (one chat, one composer): `"pane"` when a mounted pane chat says it shows
+ *  its session (`paneSessions`, platform/lib/peek-session — the Claude pane
+ *  open on it, the explorer's sidebar), `"peek"` when the Tasks side peek
+ *  shows it, else null. ONLY a mounted composer counts: a URL still naming
+ *  the session with the pane shut shows it nowhere, and the card keeps it. */
 export function favChatElsewhere(
   fav: { key: string; session_id?: string | null } | null,
-  urlSession: string | null,
+  paneSessions: readonly string[],
   peekSession: string | null,
 ): "pane" | "peek" | null {
   if (!fav) return null;
   const names = (sid: string | null) => !!sid && (sid === fav.session_id || sid === fav.key);
-  if (names(urlSession)) return "pane";
+  if (paneSessions.some(names)) return "pane";
   if (names(peekSession)) return "peek";
   return null;
 }

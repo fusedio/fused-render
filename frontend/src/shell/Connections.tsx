@@ -17,9 +17,11 @@ import {
   cancelConnection,
   CERT_WARNING,
   defaultAuth,
+  isLocalApp,
   kindLabel,
   logoutConnection,
   pasteCallback,
+  pendingLabel,
   toolCount,
   useConnections,
   type ConnectAuth,
@@ -147,7 +149,13 @@ function ProviderCard({
   // button works: a user who would rather not sign in through Fused's Slack
   // app pastes the client id of one made from the same manifest, and the
   // server uses that id for the flow (manager.login `client_id`).
-  const others = [...p.auth.filter((a) => a !== primary), ...(primary?.byo ? [primary] : [])];
+  // With no available kind the card's status line already carries the first
+  // kind's reason (an app on this Mac, off a Mac); Advanced repeats it only
+  // when it has something to add: a BYO form that fixes it.
+  const others = [
+    ...p.auth.filter((a) => a !== primary && !(primary === null && a === p.auth[0] && !a.byo)),
+    ...(primary?.byo ? [primary] : []),
+  ];
   const again: LoginBody = againBody(p, st);
   const n = toolCount(st);
 
@@ -155,7 +163,7 @@ function ProviderCard({
   let control: ReactNode = null;
   switch (st.state) {
     case "pending":
-      status = "Waiting for you in the browser…";
+      status = pendingLabel(st);
       control = (
         <Button variant="outline" size="sm" disabled={busy} onClick={() => void act(() => cancelConnection(p.key))}>
           Cancel
@@ -308,7 +316,7 @@ function PendingDetails({
           </a>
         </p>
       )}
-      {!st.user_code && (
+      {!st.user_code && !isLocalApp(st.kind) && (
         <details className="settings-row-desc">
           <summary className="cursor-pointer select-none">
             Browser on another machine? Paste the address it landed on

@@ -17,6 +17,9 @@ Two sources, merged, remote first:
   A native tool raises `ToolError(msg)` for a vendor error, which becomes
   `{ok: False, text: "<key>: <msg>"}`, and `ToolAuthError` for a refused
   token, which gets the same one-refresh-then-reconnect treatment as MCP.
+  The Apple packs (`local-app` kind) have no token: `ctx.token` is `""`, their
+  tools run `osascript` through `connect/applescript.py`, and a withdrawn
+  Automation grant (`AutomationDenied`) is their `ToolAuthError`.
 
 `read_only` comes from MCP `annotations.readOnlyHint` (default False) and
 `destructive` from `destructiveHint` (default True): the MCP spec's own
@@ -342,7 +345,12 @@ def call_tool(key: str, name: str, args: dict) -> dict:
         mod = None
     native_names = {t.get("name") for t in (getattr(mod, "TOOLS", None) or []) if isinstance(t, dict)}
     remote = (p.tools or {}).get("remote")
-    reconnect = (f"{p.name} refused the saved sign-in. Reconnect it in Preferences > Connections.")
+    rec = manager.record(key) or {}
+    if rec.get("kind") == "local-app":
+        reconnect = (f"macOS no longer lets Fused control {rec.get('app') or p.name} (System Settings > "
+                     f"Privacy & Security > Automation). Reconnect it in Preferences > Connections.")
+    else:
+        reconnect = f"{p.name} refused the saved sign-in. Reconnect it in Preferences > Connections."
     try:
         if remote and name not in native_names:
             def go():

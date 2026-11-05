@@ -12,8 +12,8 @@
 // `fused-render:last-fav`) — a press on a favourite's ring (the rail's
 // favourites section, the pane's Favourites row) moves only that one, and a
 // press on a list ring (the rail's chats, the pane's Recent row) only the
-// list's. Both show at once, one in each section. Only a PRESS moves either:
-// a favourite opened from another window (`starred_open`) moves nothing. A
+// list's. Both show at once, one in each section. Only a PRESS moves either
+// (no client follows the server's `starred_open` any more). A
 // chat unstarred back into the list keeps the list's mark where it was; the
 // favourites' mark on it just matches nothing any more.
 //
@@ -21,6 +21,25 @@
 // same-origin frame (CanvasWorkspace `preview-side-frame`), whose modules are
 // a second copy — the `storage` event is what carries a press across. Per
 // window (a second window has its own), and it survives a reload.
+//
+// THE OPEN FAVOURITE IS PER WINDOW TOO (owner, 2026-11-04: "if I have
+// multiple windows open, the open favourite shouldn't sync; the list items
+// (stars) do sync"): which favourite's card (shell FavouritePeek) is up in
+// THIS window — `useFavOpen`, sessionStorage `fused-render:fav-open`, the
+// session KEY (not `lastChatId`: a favourite is a started chat, whose key
+// never rekeys). A favourite ring's press sets it, the card's × clears it,
+// and an unstar, an erase or an archive of that chat clears it (FavouritePeek
+// reads the pulse). The stars stay the server's and sync everywhere; the
+// server's own `starred_open` is no longer what any card follows.
+//
+// WHEN IT WAS OPENED rides beside the key (`fused-render:fav-open-at`, JSON
+// `{key, at}`), in sessionStorage too: a star pressed a moment ago opens its
+// card before the pulse says `starred`, and every document of the window —
+// the node chat's frame that wrote the key, the shell that draws the card —
+// must agree it is "just opened" (FavouritePeek's verdict would otherwise
+// close it, and wipe the key, during the pulse's lag). A reload inside the
+// settle window (rail-peek-lib FAV_SETTLE_MS, seconds) still counts as just
+// opened; past it, the pulse decides alone.
 //
 // THE ID is the project plus the task number: `task_id` ("TASK-003") is
 // numbered per project, and the key alone is rewritten when a queued row
@@ -37,7 +56,8 @@ export function lastChatId(t: { project?: string | null; task_id?: string | null
  *  favourites'. The two run the same code and never touch each other. */
 interface MarkStore {
   get(): string | null;
-  set(id: string): void;
+  /** Null clears the mark (the open favourite's ×). */
+  set(id: string | null): void;
   onStorage(e: Pick<StorageEvent, "key" | "storageArea">): void;
   subscribe(fn: () => void): () => void;
 }
@@ -74,7 +94,8 @@ function markStore(key: string): MarkStore {
       if (id === mem) return;
       mem = id;
       try {
-        sessionStorage.setItem(key, id);
+        if (id === null) sessionStorage.removeItem(key);
+        else sessionStorage.setItem(key, id);
         unsaved = false;
       } catch {
         // Storage refused (private mode, quota): this document still knows.
@@ -157,4 +178,76 @@ export function subscribeLastFav(fn: () => void): () => void {
 /** The favourites' last pick, live. */
 export function useLastFav(): string | null {
   return useSyncExternalStore(subscribeLastFav, lastFav, lastFav);
+}
+
+const favOpenMark = markStore("fused-render:fav-open");
+const FAV_OPEN_AT = "fused-render:fav-open-at";
+/** This document's own copy of the open time (header), for a storage that
+ *  refuses writes (private mode, quota): then this document is the only one
+ *  that knows, which is what it was before. */
+let favOpenedAtMem: { key: string; at: number } | null = null;
+/** The last write of it was refused: `favOpenedAtMem` is the only copy. */
+let favOpenedAtUnsaved = false;
+
+function readFavOpenedAt(): { key: string; at: number } | null {
+  if (favOpenedAtUnsaved) return favOpenedAtMem;
+  try {
+    if (typeof sessionStorage === "undefined") return favOpenedAtMem;
+    const raw = sessionStorage.getItem(FAV_OPEN_AT);
+    if (raw === null) return null;
+    const v = JSON.parse(raw) as { key?: unknown; at?: unknown } | null;
+    return v && typeof v.key === "string" && typeof v.at === "number" ? { key: v.key, at: v.at } : null;
+  } catch {
+    return favOpenedAtMem;
+  }
+}
+
+/** The favourite whose card is open in THIS window (header), by task key. */
+export function favOpen(): string | null {
+  return favOpenMark.get();
+}
+
+/** Open `key`'s favourite card in this window (a favourite ring's press, a
+ *  star pressed on), or close it (`null`: the ×, an unstar, an archive). The
+ *  open time first, so a document hearing the key's `storage` event reads
+ *  it beside the key (header). */
+export function setFavOpen(key: string | null): void {
+  favOpenedAtMem = key === null ? null : { key, at: Date.now() };
+  try {
+    if (key === null) sessionStorage.removeItem(FAV_OPEN_AT);
+    else sessionStorage.setItem(FAV_OPEN_AT, JSON.stringify(favOpenedAtMem));
+    favOpenedAtUnsaved = false;
+  } catch {
+    // Storage refused: `favOpenedAtMem` is this document's answer.
+    favOpenedAtUnsaved = true;
+  }
+  favOpenMark.set(key);
+}
+
+/** Close the card only if it is still on `key` (a verdict about one chat
+ *  must not close a card that has moved on since). */
+export function clearFavOpen(key: string): void {
+  if (favOpenMark.get() === key) setFavOpen(null);
+}
+
+/** When `key` was opened in this window (ms) — by this document or another
+ *  of the window (header) — or null if it was not. */
+export function favOpenedAtMs(key: string): number | null {
+  const v = readFavOpenedAt();
+  return v && v.key === key ? v.at : null;
+}
+
+/** `onLastChatStorage`, for the open favourite. */
+export function onFavOpenStorage(e: Pick<StorageEvent, "key" | "storageArea">): void {
+  favOpenMark.onStorage(e);
+}
+
+/** `subscribeLastChat`, for the open favourite. */
+export function subscribeFavOpen(fn: () => void): () => void {
+  return favOpenMark.subscribe(fn);
+}
+
+/** The open favourite, live. */
+export function useFavOpen(): string | null {
+  return useSyncExternalStore(subscribeFavOpen, favOpen, favOpen);
 }

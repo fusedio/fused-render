@@ -3910,9 +3910,11 @@ export interface Task {
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
   // FAVOURITE (owner, 2026-11-03): the star on the rail card. Server-side,
   // global (`tasks_store.FAVOURITES_FILE`), so every rail and every pane on
-  // every page lists the same starred tasks. `starred_open` is whether its
-  // preview card is up right now — at most ONE favourite is open at a time,
-  // the server keeps that rule. Both absent on an older server.
+  // every page lists the same starred tasks. `starred_open` is the server's
+  // record of an open card (at most one) — kept for older clients; since
+  // 2026-11-04 the open favourite is PER WINDOW (platform/lib/last-chat
+  // `useFavOpen`) and no card follows this field. Both absent on an older
+  // server.
   starred?: boolean;
   starred_open?: boolean;
   project: string; // the FOLDER: a task on ~/x/foo.py belongs to project ~/x
@@ -4934,12 +4936,12 @@ export function renameTask(key: string, title: string): Promise<{ ok: boolean; t
 }
 
 /** THE STAR (owner, 2026-11-03): make a task a favourite, or take it back.
- *  `on` is the star; `open` is whether its preview card is up — the server
- *  keeps at most one favourite open, so opening one closes the others.
- *  Starring with `open` omitted opens it (the card is what the reader just
- *  starred); unstarring closes it. `on: null` leaves the star alone and
- *  moves only `open` — a no-op on a task that is not starred, so a card's
- *  close can never re-star what another window unstarred. The answer is the
+ *  `on` is the star. `open` moves the server's `starred_open` record (one
+ *  open at a time; a star with `open` omitted records it open) — kept for
+ *  compatibility, but the client no longer sends it: since 2026-11-04 which
+ *  favourite's card is open is per window (platform/lib/last-chat
+ *  `useFavOpen`), and the rail and its cards call this with the star alone.
+ *  `on: null` leaves the star alone and moves only `open`. The answer is the
  *  stored state. */
 export function setTaskFavourite(
   key: string,

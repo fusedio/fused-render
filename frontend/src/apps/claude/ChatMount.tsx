@@ -25,6 +25,28 @@ import {
  * chunk load with the chat's own skeleton.
  */
 import { isChunkLoadError } from "@platform/lib/chunk-load";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { announcePaneSession } from "@platform/lib/peek-session";
+
+/**
+ * A URL-BACKED CHAT SAYS WHICH SESSION IT SHOWS while it is mounted
+ * (platform/lib/peek-session `announcePaneSession`): the favourite's card
+ * keeps no chat of its own on a session another composer on the page holds —
+ * and keeps it whenever none does, whatever the URL still names (a shut pane
+ * leaves `session_id` behind). Its own component, so a URL event re-renders
+ * this and not the chat. Not for a thumbnail (`preview`): display-only.
+ */
+function AnnounceUrlSession() {
+  useUrlVersion();
+  let sid: string | null = null;
+  try {
+    sid = new URLSearchParams(location.search).get("session_id");
+  } catch {
+    sid = null;
+  }
+  useEffect(() => (sid ? announcePaneSession(sid) : undefined), [sid]);
+  return null;
+}
 
 const ClaudeChat = lazy(() => import("./ClaudeChat"));
 
@@ -302,6 +324,7 @@ export function ChatMount(props: ChatMountProps) {
 
   return (
    <ChatChunkBoundary>
+    {props.paramsSource === "url" && !props.preview && <AnnounceUrlSession />}
     <div className={props.mountClassName ? `chat-mount ${props.mountClassName}` : "chat-mount"}>
      <Suspense fallback={<ChatFramePlaceholder />}>
       <ClaudeChat
