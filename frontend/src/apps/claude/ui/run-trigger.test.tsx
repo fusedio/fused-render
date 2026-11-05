@@ -577,3 +577,14 @@ describe("the trigger's column", () => {
     expect(ruleFor(".chat-root .seg-block.is-bare")).toContain("text-align: right");
   });
 });
+
+describe("unfolded (the caller already folded these rows)", () => {
+  test("a turn of calls and prose draws flat: every chip, no run trigger", () => {
+    const segs = [text("Looking."), tool("a", "Bash"), tool("b", "Read"), text("Done."), tool("c", "Bash")];
+    const folded = view(segs).toJSON() as Json | Json[];
+    expect(byClass(folded, "run-trigger").length).toBeGreaterThan(0);
+    const flat = view(segs, { unfolded: true }).toJSON() as Json | Json[];
+    expect(byClass(flat, "run-trigger").length).toBe(0);
+    expect(chips(flat).length).toBe(3);
+  });
+});
