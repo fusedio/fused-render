@@ -22,12 +22,17 @@
 // and its markdown stack are not the shell's to carry until a bot's ring is
 // hovered (`preloadBotChat`, the intent's `warm`).
 //
-// ONE MOUNT: the shown bot's chat, kept through the fade-out (`view`). The
+// ONE MOUNT, AND NONE WHILE CLOSED: the shown bot's chat, kept through the
+// fade-out and UNMOUNTED once that is done (`chatKey`, CHAT_LINGER_MS past
+// the close) — the store's quiet feed stops with it, and no hidden thread
+// goes on marking the bot read behind a closed card (Bugbot on #2143). The
 // Bots page's store holds one thread's scroll bookkeeping (pinned, the new
 // count), so this card never keeps a second bot's thread mounted behind the
-// shown one the way the rail's card keeps chats warm. ON THE BOTS PAGE the
-// ring is a door again (claude-rail-lib `botRingRoute`): the page shows the
-// bot itself.
+// shown one the way the rail's card keeps chats warm, and ON THE BOTS PAGE
+// the ring is a door again (claude-rail-lib `botRingRoute`): the page shows
+// the bot itself. THE READ MARK is the pin's (BotChat `markRead`): a hover's
+// glance over the card leaves the rail's unread dot alone; a press that
+// pinned the card is the reader reading.
 //
 // The head is ONE row: the ×, the bot's face and name, its status in the
 // rail's words (claude-rail-lib `botStatusWords`), and Open.
@@ -77,6 +82,10 @@ export function preloadBotChat(): void {
 }
 
 export const BOT_PEEK_ID = "claude-rail-bot-peek";
+
+/** How long the chat stays mounted past the close: the card's fade
+ *  (claude-rail.css `--dur-med`), with room to spare. */
+export const CHAT_LINGER_MS = 400;
 
 /** The bot's page: the head's Open door, and the ring's own href. */
 export function botHref(id: string): string {
@@ -152,6 +161,17 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const [box, setBox] = useState<Box | null>(null);
   const [on, setOn] = useState(false);
   const shownKey = shown?.id ?? null;
+  // The chat mounted (header): the shown bot's at once; none, CHAT_LINGER_MS
+  // after the close.
+  const [chatKey, setChatKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (shownKey) {
+      setChatKey(shownKey);
+      return;
+    }
+    const id = window.setTimeout(() => setChatKey(null), CHAT_LINGER_MS);
+    return () => window.clearTimeout(id);
+  }, [shownKey]);
 
   // GROWN (RailPeek): the pinned card takes the remembered size at once for
   // a ring press, after the pointer comes up for a press inside the card.
@@ -493,10 +513,10 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
             </div>
           )}
           <div className="claude-rail-peek-body">
-            {view && (
-              <div key={view.id} className="claude-rail-peek-chat is-shown">
+            {chatKey && (
+              <div key={chatKey} className="claude-rail-peek-chat is-shown">
                 <Suspense fallback={<p className="claude-rail-peek-note">Loading…</p>}>
-                  <BotChat id={view.id} />
+                  <BotChat id={chatKey} markRead={pinned} />
                 </Suspense>
               </div>
             )}

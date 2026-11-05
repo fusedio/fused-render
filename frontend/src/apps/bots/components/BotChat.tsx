@@ -31,11 +31,13 @@ import { ToBottom } from "./ToBottom";
 export interface BotChatProps {
   /** The bot whose chat this is (`Bot.id`). */
   id: string;
+  /** Sitting at the end marks the bot read (Thread `markRead`): the card passes its pin — a hover never marks. */
+  markRead?: boolean;
 }
 
 const noop = () => {};
 
-export default function BotChat({ id }: BotChatProps) {
+export default function BotChat({ id, markRead = true }: BotChatProps) {
   useEffect(() => feedBotQuietly(), []);
   // The page-wide switches (sounds, the clear-context button): once per
   // document, guarded inside.
@@ -64,7 +66,7 @@ export default function BotChat({ id }: BotChatProps) {
     <div className="bots-page bots-peek">
       <section className="chat">
         <div className="tw">
-          <Thread b={b} threadRef={threadRef} searchQ="" onSearchCount={noop} onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} />
+          <Thread b={b} threadRef={threadRef} searchQ="" onSearchCount={noop} onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} markRead={markRead} />
           <ToBottom threadRef={threadRef} botId={b.id} />
         </div>
         <Composer b={b} reply={reply} setReply={setReply} threadRef={threadRef} />

@@ -457,9 +457,13 @@ export interface ThreadProps {
   onReact: (anchor: Element, seq: number) => void;
   /** A reply button was clicked: quote this message in the composer. */
   onReply: (r: { seq: number; text: string }) => void;
+  /** Whether sitting at the thread's end marks the bot READ (`markSeen`): the page always (the default); the rail's
+   *  bot card only once a press pinned it (shell/claude-rail BotPeek; Bugbot on #2143) — a hover's glance over the
+   *  card must not spend the rail's unread dot. */
+  markRead?: boolean;
 }
 
-export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply }: ThreadProps) {
+export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply, markRead = true }: ThreadProps) {
   const S = useBots();
   const appsRoot = useAppsRoot();
   const botId = b?.id ?? "";
@@ -647,7 +651,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // does not draw a New line above messages you already watched arrive. In Stage the thread stays beside the page,
     // except in the narrow fallback (.sfull), where the live view covers it: nothing is seen then.
     const s2 = getState();
-    if (c && !document.hidden && s2.pinned && !(s2.fast && botsRoot().classList.contains("sfull"))) markSeen(c.id, c.seq);
+    if (c && markRead && !document.hidden && s2.pinned && !(s2.fast && botsRoot().classList.contains("sfull"))) markSeen(c.id, c.seq);
   });
 
   // The observer (threshold .4, rooted at the thread) and the ResizeObserver that keeps a pinned thread pinned when its

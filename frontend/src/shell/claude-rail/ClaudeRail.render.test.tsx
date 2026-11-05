@@ -20,7 +20,7 @@ const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import(
 const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-store");
 const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
-const { BotPeek } = await import("./BotPeek");
+const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 
 const DIR = "/home/me/apps/demo";
 
@@ -324,6 +324,21 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
     expect(ring(r).props["aria-expanded"]).toBe(true);
     expect(ring(r).props["aria-controls"]).toBe("claude-rail-bot-peek");
     expect(ring(r).props.className).toContain("is-pinned");
+    const chats = () => r.root.findAll((n) => n.type === "div" && n.props.className === "claude-rail-peek-chat is-shown");
+    expect(chats()).toHaveLength(1);
+    // The × closes the card; its chat leaves once the fade is done (BotPeek
+    // CHAT_LINGER_MS; Bugbot on #2143) — nothing polls for a closed card.
+    const close = r.root.find((n) => n.type === "button" && n.props.className === "claude-rail-peek-btn claude-rail-peek-close");
+    await act(async () => {
+      close.props.onClick();
+      await new Promise((res) => setTimeout(res, 0));
+    });
+    expect(r.root.findByType(BotPeek).props.shown).toBeNull();
+    expect(chats()).toHaveLength(1);
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, CHAT_LINGER_MS + 50));
+    });
+    expect(chats()).toHaveLength(0);
   });
 
   test("on the Bots page the ring is the page's door: no popup, the name as its caption", async () => {
