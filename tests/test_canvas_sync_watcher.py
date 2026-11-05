@@ -601,6 +601,23 @@ def test_a_push_does_not_wait_for_the_source_of_a_node_the_workbench_just_create
         ["a", "fresh"]]
 
 
+def test_the_body_channel_reads_and_writes_lf_whatever_the_line_endings(
+        harness, tmp_path, monkeypatch, fake_agent):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    m = _start(harness)
+    path = harness.root / "alpha" / "a.py"
+    path.write_bytes(b"a1\r\n")
+    with m._op_lock:
+        first = m.apply_body("a", "a.py", canvas_snapshot.body_hash("a1\n"), "a2\r\nb\r\n")
+        assert first["changed"] is True and path.read_bytes() == b"a2\nb\n"
+        assert m.apply_body("a", "a.py", first["hash"], "a2\nb\n")["changed"] is False
+        path.write_bytes(b"a2\r\nb\r\n")
+        assert m.apply_body("a", "a.py", first["hash"], "a2\nb\n")["changed"] is False
+    trashed = (harness.root / ".sync" / "trash" / "alpha").glob("*/a.py")
+    assert [t.read_bytes() for t in trashed] == [b"a1\r\n"]
+
+
 def test_a_manual_push_that_landed_is_ok_even_if_the_clone_moved_during_it(
         harness, tmp_path, monkeypatch, fake_agent):
     """A write during the CLI run leaves the fold "pending" for a follow-up,

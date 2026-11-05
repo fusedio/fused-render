@@ -2113,9 +2113,8 @@ def _seed_default_udf(env: str, name: str) -> None:
             # one): nothing to seed, and nothing of the user's to overwrite.
             if canvas_snapshot.rows_of_doc(doc)["nodes"] or canvas_snapshot.node_files(target):
                 return
-            with open(os.path.join(target, f"{_DEFAULT_UDF_NAME}.py"), "w",
-                      encoding="utf-8") as f:
-                f.write(_DEFAULT_UDF_CODE)
+            canvas_snapshot._write_atomic(os.path.join(target, f"{_DEFAULT_UDF_NAME}.py"),
+                                          _DEFAULT_UDF_CODE)
             canvas_snapshot.reconcile_rows(target)
         except Exception as e:  # noqa: BLE001 — best effort, see docstring
             logger.warning("canvas %s: starter UDF not seeded — %s", key, e)
@@ -2864,8 +2863,8 @@ class _SyncManager:
             return None
         return path
 
-    def _backup_to(self, trash: str | None, rel: str, data: bytes) -> None:
-        if trash is None:
+    def _backup_to(self, trash: str | None, rel: str, data: bytes | None) -> None:
+        if trash is None or data is None:
             return
         dest = os.path.join(trash, rel)
         try:
@@ -4626,6 +4625,7 @@ class _SyncManager:
                                   f"{self._body_fence_rev} not acked); not written")
             return {"ok": False, "code": "fenced", "node": node, "file": file}
         path = os.path.join(self.dir, file)
+        text = canvas_snapshot.normalize_newlines(text)
         current = canvas_snapshot.read_body(path)
         current_hash = canvas_snapshot.body_hash(current if current is not None else "")
         if current_hash != base_hash:
@@ -4644,7 +4644,7 @@ class _SyncManager:
             # Not the frame's own previous text: keep a copy, as a note body
             # overwrite does.
             trash = self._new_trash_dir()
-            self._backup_to(trash, file, current.encode("utf-8", "replace"))
+            self._backup_to(trash, file, canvas_snapshot._read_bytes(path))
         # Re-read right before the replace: the trash copy above took time,
         # and Claude writes without _op_lock. A write that landed in between
         # is answered stale like any other, instead of being overwritten
