@@ -557,17 +557,18 @@ export function ringMarks(o: RingMarkInput): {
  *     the clip) or a favourite (`favs`).
  *   - THE PANE OPEN, favourites off: never — the rail of 2026-11-04, which
  *     stood only while the pane was shut.
- *   - THE SHELL'S FALLBACK (`favouritesOnly`, `fallbackRailUp`): only while
- *     favourites are on and there is a favourite to draw. */
+ *   - THE SHELL'S FALLBACK (`favouritesOnly`, `fallbackRailUp`): while
+ *     favourites are on — the + alone with no favourite (owner, 2026-11-05:
+ *     "even in home or bots let's have a + button"), the favourites below it. */
 export function railShown(o: {
   list: number;
   favs: number;
   paneOpen: boolean;
   always: boolean;
-  /** The shell's fallback rail (`fallbackRailUp`): its favourites or nothing. */
+  /** The shell's fallback rail (`fallbackRailUp`): the + and its favourites. */
   favouritesOnly?: boolean;
 }): boolean {
-  if (o.favouritesOnly) return o.always && o.favs > 0;
+  if (o.favouritesOnly) return o.always;
   if (!o.paneOpen) return true;
   if (!o.always) return false;
   return o.list > 0 || o.favs > 0;

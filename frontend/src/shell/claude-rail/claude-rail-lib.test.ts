@@ -723,10 +723,9 @@ describe("railShown", () => {
 });
 
 describe("railShown, the shell's fallback (favouritesOnly)", () => {
-  it("favourites on: only with a favourite to draw — never for a list or a shut pane", () => {
+  it("favourites on: always shown (the + alone with no favourite)", () => {
     expect(railShown({ list: 0, favs: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
-    expect(railShown({ list: 0, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
-    expect(railShown({ list: 4, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
+    expect(railShown({ list: 0, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
   });
   it("favourites off: never", () => {
     expect(railShown({ list: 0, favs: 2, paneOpen: false, always: false, favouritesOnly: true })).toBe(false);

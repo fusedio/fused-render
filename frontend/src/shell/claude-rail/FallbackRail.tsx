@@ -3,9 +3,10 @@
 // rail when there are fav tasks"). The page rails (ClaudeRail on the canvas,
 // app and explorer pages) stand where a page has a place; every other page
 // gets this one, mounted once in the shell (App.tsx) at #main's right edge:
-// the same rail with NO PLACE — no list, no +, no Git, no panel glyph — only
-// the Favourites section, and hidden while there are none (ClaudeRail
-// `favouritesOnly`, claude-rail-lib `railShown`). The favourite's card
+// the same rail with NO PLACE — no list, no Git, no panel glyph — the + (New
+// task; no locked target, so the card opens on the default Fused folder,
+// NewJobModal `defaultTargetOf`) and the Favourites section when there are
+// any (ClaudeRail `favouritesOnly`, claude-rail-lib `railShown`). The favourite's card
 // (FavouritePeek) stands beside it as beside any rail: it registers like one.
 //
 // ONE REGISTRY CHECK: mounted while favourites are on and no page rail is

@@ -72,8 +72,8 @@
 //
 // ON A PAGE WITH NO RAIL (owner, 2026-11-05: home, Bots, Tasks, AI Models,
 // Community, Preferences…): the shell's FALLBACK (FallbackRail, App.tsx), this
-// rail with `favouritesOnly` — no place, no list, no +, no Git, no glyph:
-// the favourites alone, hidden with none. It stands only while no page rail
+// rail with `favouritesOnly` — no place, no list, no Git, no glyph, but the +:
+// the + (New task, on the default Fused folder) and the favourites. It stands only while no page rail
 // is mounted (fav-peek-store `registerPageRail`, claude-rail-lib
 // `fallbackRailUp`): every page rail counts itself from its layout phase.
 //
@@ -1845,7 +1845,6 @@ export function ClaudeRail({
         </button>
       )}
       <div className="sidebar-rail-items">
-        {!favouritesOnly && (
         <button
           ref={plusRef}
           type="button"
@@ -1859,7 +1858,6 @@ export function ClaudeRail({
         >
           <Plus size={16} aria-hidden="true" />
         </button>
-        )}
         {anyRing && (
           <div
             ref={listRef}
