@@ -8,6 +8,7 @@ from __future__ import annotations
 import array
 import math
 import socket
+import threading
 import time
 import wave
 
@@ -406,7 +407,7 @@ def test_both_mixes_mic_into_the_monitor_master_clock(monkeypatch, tmp_path):
 def test_both_closes_the_mic_stream_when_the_monitor_open_raises(monkeypatch, tmp_path):
     """A fake `PaSimple` whose MONITOR open raises: the mic stream was
     already open at that point, so `_start`'s `BaseException` handler must
-    find it in `handle._streams` and close it — not leak it to PipeWire."""
+    find it in `handle._readers` and close it — not leak it to PipeWire."""
     opened: list = []
 
     class _RaisingPaSimple:
@@ -512,6 +513,195 @@ def test_failure_surfaces_when_a_puller_thread_dies(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError):
         _linux_audio.stop(handle)
+
+
+# ------------------------------------------------- teardown with a stuck read
+
+
+class BlockingStream:
+    """A stream whose `read` blocks until `release` is set (a dead Bluetooth
+    transport that never delivers and never errors). Records every `close`
+    that lands while a read is in flight, and from which thread."""
+
+    def __init__(self):
+        self.release = threading.Event()
+        self.in_read = threading.Event()
+        self.reading = False
+        self.closes: list[tuple[str, bool]] = []      # (thread name, mid-read?)
+        self.exited = threading.Event()
+
+    def read(self, num_bytes: int) -> bytes:
+        self.reading = True
+        self.in_read.set()
+        try:
+            self.release.wait(5)
+            return bytes(num_bytes)
+        finally:
+            self.reading = False
+
+    def close(self) -> None:
+        self.closes.append((threading.current_thread().name, self.reading))
+        if threading.current_thread().name.startswith("fused-capture"):
+            self.exited.set()
+
+
+def blocking_pasimple(streams: dict):
+    class _PaSimple:
+        def __init__(self, direction, fmt, channels, rate, app_name="python",
+                     stream_name=None, server_name=None, device_name=None,
+                     maxlength=-1, tlength=-1, prebuf=-1, minreq=-1, fragsize=-1):
+            self._s = streams[device_name]
+
+        def read(self, num_bytes):
+            return self._s.read(num_bytes)
+
+        def close(self):
+            self._s.close()
+
+    class _Module:
+        PA_STREAM_RECORD = 1
+        PA_SAMPLE_FLOAT32LE = 3
+        PaSimple = _PaSimple
+
+    return _Module()
+
+
+@pytest.fixture
+def blocking_streams():
+    """Every `BlockingStream` a test makes, released at teardown even when an
+    assertion fails, so no daemon reader outlives its test."""
+    made: list[BlockingStream] = []
+    yield made
+    for stream in made:
+        stream.release.set()
+
+
+def _start_stuck(monkeypatch, tmp_path, blocking_streams, source="mic",
+                 join=0.1):
+    mic = BlockingStream()
+    monitor = BlockingStream()
+    blocking_streams.extend([mic, monitor])
+    monkeypatch.setattr(_linux_audio, "_pasimple", lambda: blocking_pasimple(
+        {None: mic, _linux_audio.MONITOR_DEVICE: monitor}))
+    monkeypatch.setattr(_linux_audio, "_JOIN_TIMEOUT_S", join)
+    out = tmp_path / "stuck.wav"
+    handle = _linux_audio.start(str(out), {"audio": source})
+    assert mic.in_read.wait(2)
+    return handle, mic, monitor, out
+
+
+def test_stop_with_a_blocked_read_never_closes_the_stream_under_it(
+        monkeypatch, tmp_path, blocking_streams):
+    handle, mic, _, out = _start_stuck(monkeypatch, tmp_path, blocking_streams)
+    _linux_audio.stop(handle)
+    assert mic.closes == []
+    n, rate, _ = _wav_frames(out)
+    assert (n, rate) == (1, RATE)
+
+
+def test_a_released_reader_closes_its_own_stream_without_raising(
+        monkeypatch, tmp_path, blocking_streams):
+    handle, mic, _, _ = _start_stuck(monkeypatch, tmp_path, blocking_streams)
+    _linux_audio.stop(handle)
+    mic.release.set()
+    assert mic.exited.wait(2)
+    assert len(mic.closes) == 1
+    name, mid_read = mic.closes[0]
+    assert name == "fused-capture-mic" and mid_read is False
+    assert handle.error is None
+    handle.write(b"\x01\x00" * 10)                     # WAV closed: a no-op
+
+
+def test_both_with_stuck_reads_leaves_both_streams_to_their_readers(
+        monkeypatch, tmp_path, blocking_streams):
+    handle, mic, monitor, out = _start_stuck(monkeypatch, tmp_path, blocking_streams, "both")
+    assert monitor.in_read.wait(2)
+    _linux_audio.stop(handle)
+    assert mic.closes == [] and monitor.closes == []
+    mic.release.set()
+    monitor.release.set()
+    assert mic.exited.wait(2) and monitor.exited.wait(2)
+    assert mic.closes[0][0] == "fused-capture-mic"
+    assert monitor.closes[0][0] == "fused-capture-system"
+    assert not mic.closes[0][1] and not monitor.closes[0][1]
+
+
+def test_normal_stop_closes_each_stream_once_from_its_own_thread(
+        monkeypatch, tmp_path):
+    made: list = []
+
+    class _Module:
+        PA_STREAM_RECORD = 1
+        PA_SAMPLE_FLOAT32LE = 3
+
+        class PaSimple:
+            def __init__(self, *a, device_name=None, **k):
+                self.stream = FakeStream(silence)
+                self.names: list[str] = []
+                made.append(self)
+
+            def read(self, n):
+                return self.stream.read(n)
+
+            def close(self):
+                self.names.append(threading.current_thread().name)
+                self.stream.close()
+
+    monkeypatch.setattr(_linux_audio, "_pasimple", lambda: _Module())
+    handle = _linux_audio.start(str(tmp_path / "ok.wav"), {"audio": "both"})
+    time.sleep(0.02)
+    _linux_audio.stop(handle)
+    assert len(made) == 2
+    assert all(m.stream.closed and len(m.names) == 1 for m in made)
+    assert {m.names[0] for m in made} == {
+        "fused-capture-mic", "fused-capture-system"}
+
+
+# ------------------------------------------------------------- stall watchdog
+
+
+def test_stalled_stream_is_reported_after_the_threshold(
+        monkeypatch, tmp_path, blocking_streams):
+    monkeypatch.setattr(_linux_audio, "FIRST_CHUNK_GRACE_S", 0.15)
+    handle, mic, _, _ = _start_stuck(monkeypatch, tmp_path, blocking_streams)
+    assert _linux_audio.failure(handle) is None        # still in the grace
+    time.sleep(0.2)
+    message = _linux_audio.failure(handle)
+    assert message is not None
+    assert "microphone audio device stopped delivering audio" in message
+    mic.release.set()
+    with pytest.raises(RuntimeError, match="stopped delivering"):
+        _linux_audio.stop(handle)
+
+
+def test_first_chunk_grace_outlasts_the_mid_stream_threshold(
+        monkeypatch, tmp_path, blocking_streams):
+    monkeypatch.setattr(_linux_audio, "STALL_AFTER_S", 0.1)
+    monkeypatch.setattr(_linux_audio, "FIRST_CHUNK_GRACE_S", 0.6)
+    handle, mic, _, _ = _start_stuck(monkeypatch, tmp_path, blocking_streams)
+    time.sleep(0.25)                                   # past STALL_AFTER_S
+    assert _linux_audio.failure(handle) is None        # not past the grace
+    time.sleep(0.5)
+    assert "stopped delivering" in _linux_audio.failure(handle)
+
+
+def test_a_stream_that_delivered_is_held_to_the_shorter_threshold():
+    handle = _linux_audio.Handle("unused.wav", "mic")
+    handle.add_reader("microphone", object())
+    handle.beat("microphone")
+    handle.last_chunk_at["microphone"] -= _linux_audio.STALL_AFTER_S + 0.1
+    assert handle.stalled() == "microphone"
+
+
+def test_a_flowing_stream_never_reads_as_stalled_even_paused(monkeypatch, tmp_path):
+    monkeypatch.setattr(_linux_audio, "STALL_AFTER_S", 0.15)
+    monkeypatch.setattr(_linux_audio, "_pasimple",
+                        lambda: fake_pasimple({None: silence}))
+    handle = _linux_audio.start(str(tmp_path / "flow.wav"), {"audio": "mic"})
+    _linux_audio.pause(handle)
+    time.sleep(0.2)
+    assert _linux_audio.failure(handle) is None
+    _linux_audio.stop(handle)
 
 
 def test_can_pause_is_always_true_for_native_handles(monkeypatch, tmp_path):
