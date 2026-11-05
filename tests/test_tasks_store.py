@@ -1090,6 +1090,24 @@ def test_an_ai_title_round_trips_and_a_failure_keeps_the_old_text(state_dir):
     assert tasks_store.session_ai_title(tasks_store.settings_state(), "sess-a") is None
 
 
+def test_record_ai_title_started_at_drops_a_write_a_newer_job_beat(state_dir):
+    """A job that started before the stored title was written is stale: a newer
+    job finished first. Older stored row or no guard: written as before."""
+    tasks_store.record_ai_title("s", "Newer title", 5, now=100.0)
+    tasks_store.record_ai_title("s", "Stale title", 3, now=110.0, started_at=90.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "s")
+    assert got["text"] == "Newer title" and got["at"] == 100.0
+
+    tasks_store.record_ai_title("s", "Fresh title", 6, now=120.0, started_at=105.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "s")
+    assert got["text"] == "Fresh title" and got["turns"] == 6
+
+    tasks_store.record_ai_title("s", "Unguarded", 1, now=130.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "s")
+    assert got["text"] == "Unguarded"  # a lower turn count still writes (scan reset)
+
+
+
 # ------------------------------------------------- did the user say anything?
 # `user_row_after` — the evidence a tombstone asks for before it lets a row
 # come back (routers/tasks.py:_deleted). Read from the END of the transcript,

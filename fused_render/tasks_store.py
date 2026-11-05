@@ -1415,10 +1415,16 @@ def session_ai_title(state: dict, session_id: str) -> dict | None:
 
 
 def record_ai_title(session_id: str, text: str, turns: int,
-                    now: float | None = None) -> dict:
+                    now: float | None = None,
+                    started_at: float | None = None) -> dict:
     """Store a title (or, for an empty `text`, a failed attempt) on the
     session's record. A failure keeps the previous text/at/turns and only sets
-    `failed_at`; a success clears it. Nothing for an empty session id."""
+    `failed_at`; a success clears it. Nothing for an empty session id.
+
+    `started_at` (when the job began) guards a success against a stale
+    overwrite: if the stored title was written after the job started, a newer
+    job finished first and this write is dropped. Fewer turns is NOT grounds to
+    drop (a scan reset legitimately restarts the count)."""
     session_id = str(session_id or "").strip()
     if not session_id:
         return {}
@@ -1429,6 +1435,8 @@ def record_ai_title(session_id: str, text: str, turns: int,
         rec = state.get(session_id)
         rec = dict(rec) if isinstance(rec, dict) else {}
         old = rec.get("ai_title") if isinstance(rec.get("ai_title"), dict) else {}
+        if text and started_at is not None and float(old.get("at") or 0.0) > started_at:
+            return dict(old), False
         if text:
             title = {"text": text, "at": stamp, "turns": int(turns), "failed_at": 0.0}
         else:

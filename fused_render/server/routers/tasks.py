@@ -4001,7 +4001,7 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
     job = {"key": task["key"], "file": folder or os.path.dirname(path),
            "transcript": path, "session_id": sid, "for_uuid": anchor,
            "reply_at": reply_at, "stale_before": 0.0, "want_title": True,
-           **fields}
+           "turns": prompts, **fields}
     if due:
         job["due"] = due
     out.append(job)
@@ -4148,12 +4148,20 @@ def _recap_run(job: dict) -> None:
             _recap_seen.discard(_job_seen(job))
         return
     try:
+        stored = tasks_store.session_ai_title(tasks_store.settings_state(),
+                                              job["session_id"])
+        if (stored is not None and stored["text"] and not stored["failed_at"]
+                and "turns" in job and stored["turns"] == job["turns"]
+                and stored["at"] >= job["reply_at"]):
+            return  # another job already produced this exact title
+        started = time.time()
         title = sessions._session_title(
             agent, job["file"], job["session_id"], job["for_uuid"],
             job.get("transcript", ""),
             current=job.get("current_title", ""),
             first=job.get("first_message", ""),
-            prompts_seen=int(job.get("prompts") or 0))
+            prompts_seen=int(job.get("prompts") or 0),
+            started_at=started)
         failed = not title
     except Exception:  # noqa: BLE001 — a title nicety, never a fault
         logger.debug("tasks title failed for %s", job["session_id"], exc_info=True)

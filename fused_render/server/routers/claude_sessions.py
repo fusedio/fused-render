@@ -1209,7 +1209,8 @@ def _recap(agent, file: str, session_id: str, for_uuid: str,
 
 def _session_title(agent, file: str, session_id: str, for_uuid: str,
                    transcript: str = "", *, current: str = "", first: str = "",
-                   prompts_seen: int = 0) -> str:
+                   prompts_seen: int = 0,
+                   started_at: float | None = None) -> str:
     """ONE haiku call for a session's stable AI title. Returns the title, ""
     on failure, and stores what the call earned through
     `record_ai_title(session_id, title, prompts_seen)` (an empty one stamps the
@@ -1236,7 +1237,8 @@ def _session_title(agent, file: str, session_id: str, for_uuid: str,
         logger.warning("could not title session %s", session_id, exc_info=True)
         title = ""
     try:
-        tasks_store.record_ai_title(session_id, title, prompts_seen)
+        tasks_store.record_ai_title(session_id, title, prompts_seen,
+                                    started_at=started_at)
     except Exception:  # noqa: BLE001
         logger.debug("could not store a title for %s", session_id, exc_info=True)
     return title

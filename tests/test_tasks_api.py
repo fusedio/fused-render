@@ -6105,7 +6105,7 @@ def test_title_candidate_retries_a_failure_after_the_cooldown(tmp_path):
 def _run_job(**over):
     job = {"key": "k", "file": "/f", "session_id": "s", "for_uuid": "u",
            "reply_at": 5.0, "stale_before": 0.0, "transcript": "/t.jsonl",
-           "want_title": True, "prompts": 4,
+           "want_title": True, "prompts": 4, "turns": 4,
            "current_title": "cur", "first_message": "first"}
     job.update(over)
     return job
@@ -6126,8 +6126,55 @@ def test_recap_run_asks_for_a_title_only_then_wakes_the_page(monkeypatch, titles
     tasks_mod._recap_run(_run_job())
     (f, sid, uuid, transcript, kw), = asked
     assert (f, sid, uuid, transcript) == ("/f", "s", "u", "/t.jsonl")
+    assert isinstance(kw.pop("started_at"), float)
     assert kw == {"current": "cur", "first": "first", "prompts_seen": 4}
     assert woke == [{"k", "s"}]
+
+
+def _store_title(monkeypatch, **fields):
+    stored = {"text": "Stored", "at": 10.0, "turns": 4, "failed_at": 0.0, **fields}
+    monkeypatch.setattr(tasks_mod.tasks_store, "settings_state", lambda: {})
+    monkeypatch.setattr(tasks_mod.tasks_store, "session_ai_title",
+                        lambda state, sid: stored)
+
+
+def test_recap_run_skips_when_the_same_title_is_already_stored(monkeypatch, titles_on):
+    """Another job already produced this exact title: no model call, no write."""
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
+    monkeypatch.setattr(sessions_mod, "_session_title",
+                        lambda *a, **k: pytest.fail("title already stored"))
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
+    _store_title(monkeypatch, at=10.0, turns=4)
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+
+
+def test_recap_run_still_asks_when_turns_or_time_differ(monkeypatch, titles_on):
+    asked = []
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
+    monkeypatch.setattr(sessions_mod, "_session_title",
+                        lambda *a, **k: asked.append(1) or "T")
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
+    _store_title(monkeypatch, at=10.0, turns=1)  # a 3-prompt refresh
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+    _store_title(monkeypatch, at=1.0, turns=4)   # stored before the reply
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+    _store_title(monkeypatch, at=10.0, turns=4, failed_at=11.0)
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+    assert len(asked) == 3
+
+
+def test_title_candidate_jobs_carry_the_prompt_count_as_turns(tmp_path):
+    job, = _title_job(_title_task(tmp_path), _title_rec(count=3))
+    assert job["turns"] == 3
+
+
+def test_title_candidate_settles_a_title_written_between_prompt_and_reply(tmp_path):
+    task = _title_task(tmp_path)
+    now = time.time()
+    rec = {"tail": [{"anchor": "u1", "at": now - 300.0}], "count": 1,
+           "reply_at": now - 120.0}
+    job, = _title_job(task, rec, _settle_stored(at=now - 200.0))
+    assert "due" not in job
 
 
 def test_recap_run_with_the_summary_flag_off_never_asks(monkeypatch):
@@ -6217,7 +6264,7 @@ def test_title_candidate_settle_refresh_inside_the_minute_is_held_with_a_due(tmp
     task = _title_task(tmp_path)
     rec = _title_rec(count=1, age=30.0)
     job, = _title_job(task, rec, _settle_stored(at=rec["reply_at"] - 500.0))
-    assert job["due"] == pytest.approx(rec["reply_at"] + tasks_mod._RECAP_SETTLE_S)
+    assert job["due"] == rec["reply_at"] + tasks_mod._RECAP_SETTLE_S
     assert job["due"] > time.time()
 
 
