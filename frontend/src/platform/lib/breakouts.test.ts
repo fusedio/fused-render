@@ -314,6 +314,39 @@ describe("buildBreakoutContext", () => {
     expect(block).toContain("m11 ");
     expect(block).not.toContain("User: m0 ");
   });
+  test("a tool-only assistant turn still contributes its files, not a message", () => {
+    const t = [
+      { role: "user", key: "u", text: "look" },
+      { role: "assistant", key: "a", text: "", segments: [{ kind: "tool", name: "Read", input: { file_path: "/w/only.py" } }] },
+    ] as const;
+    const { block, count } = buildBreakoutContext(t, ["u", "a"], "t");
+    expect(count).toBe(1);
+    expect(block).toContain("- /w/only.py");
+    expect(block).not.toContain("Assistant:");
+  });
+  test("the cap covers the title and the files list", () => {
+    const segs = Array.from({ length: 200 }, (_, i) => ({ kind: "tool", name: "Read", input: { file_path: "/w/" + "d".repeat(150) + i } }));
+    const t = [
+      { role: "user", key: "u", text: "q".repeat(4000) },
+      { role: "assistant", key: "a", text: "x".repeat(4000), segments: segs },
+      { role: "user", key: "u2", text: "y".repeat(4000) },
+      { role: "assistant", key: "a2", text: "z".repeat(4000) },
+      { role: "user", key: "u3", text: "w".repeat(4000) },
+      { role: "assistant", key: "a3", text: "v".repeat(4000) },
+    ];
+    const { block } = buildBreakoutContext(t, t.map((m) => m.key), "T".repeat(5000));
+    expect(block.length).toBeLessThanOrEqual(20000 + 400);
+  });
+  test("an annotations-only prompt quotes its annotations, not the invisible marker", () => {
+    const t = [
+      { role: "user", key: "u", text: "\u2063annotations", raw: "<annotations>\nA: the button is misaligned\n</annotations>" },
+      { role: "user", key: "p", text: "\u2063pane screenshot" },
+    ];
+    const { block } = buildBreakoutContext(t, ["u", "p"], "t");
+    expect(block).toContain("the button is misaligned");
+    expect(block).toContain("sent pane screenshot");
+    expect(block).not.toContain("\u2063");
+  });
   test("selecting nothing readable yields no messages", () => {
     expect(buildBreakoutContext(turns, ["nope"], "t").count).toBe(0);
   });
