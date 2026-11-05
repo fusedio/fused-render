@@ -451,7 +451,9 @@ test("a breakout's first turn wears a collapsible chip of the messages it carrie
   const r = mount(<Receipts turn={t} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
   const chip = els(r, "annsum-lbl annsum-breakout")[0]!;
   expect(chip.props["aria-expanded"]).toBe(false);
-  expect(chip.props.children[1]).toBe(" 2 messages from Cache chat");
+  expect(chip.props.title).toBe("2 messages from Cache chat");
+  expect(els(r, "annsum-breakout-count")[0]!.props.children).toBe("2 messages");
+  expect(els(r, "annsum-breakout-title")[0]!.props.children).toBe(" from Cache chat");
   expect(els(r, "annsum-breakout-body")).toHaveLength(0);
   act(() => chip.props.onClick());
   const body = els(r, "annsum-breakout-body")[0]!;

@@ -2560,6 +2560,32 @@
   margin-right: 4px;
 }
 /* A breakout's attached messages: a chip that opens onto the quoted text. */
+/* The label fits its column: chevron and count stay, the chat title takes the
+   ellipsis. Without this the nowrap, right-aligned row overflowed the narrow
+   card and was cut off at its left edge. */
+.chat-root .annsum .annsum-lbl.annsum-breakout {
+  display: inline-flex;
+  align-items: baseline;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-root .annsum .annsum-breakout svg {
+  flex: none;
+  align-self: center;
+  margin-right: 4px;
+}
+.chat-root .annsum .annsum-breakout-count {
+  flex: none;
+  white-space: pre;
+}
+.chat-root .annsum .annsum-breakout-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
 .chat-root .annsum .annsum-breakout svg {
   transition: transform 120ms ease;
 }

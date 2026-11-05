@@ -176,7 +176,8 @@ function ShotRow({
  *  Worn by a breakout's first turn, and above the composer until it is sent. */
 export function BreakoutContextChip({ context }: { context: BreakoutContextWire }) {
   const [open, setOpen] = useState(false);
-  const label = `${context.count} message${context.count === 1 ? "" : "s"}${context.title ? ` from ${context.title}` : ""}`;
+  const count = `${context.count} message${context.count === 1 ? "" : "s"}`;
+  const label = `${count}${context.title ? ` from ${context.title}` : ""}`;
   return (
     <>
       <div className="annsum-row">
@@ -184,10 +185,12 @@ export function BreakoutContextChip({ context }: { context: BreakoutContextWire 
           type="button"
           className="annsum-lbl annsum-breakout"
           aria-expanded={open}
+          title={label}
           onClick={() => setOpen((v) => !v)}
         >
           <ChevronRight size="1em" className={open ? "annsum-breakout-open" : ""} />
-          {" " + label}
+          <span className="annsum-breakout-count">{count}</span>
+          {context.title ? <span className="annsum-breakout-title">{" from " + context.title}</span> : null}
         </button>
       </div>
       {open ? <div className="annsum-breakout-body">{context.body}</div> : null}
