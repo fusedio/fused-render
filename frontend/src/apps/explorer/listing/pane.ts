@@ -108,6 +108,39 @@ export function useSplitWidth(ref: React.RefObject<HTMLElement>): number {
   return w;
 }
 
+// THE RAIL STANDING PAST THE PANE (favourites on, rail-peek-lib `railInset`):
+// how much of the split's right edge it takes, for the render's clamp — the
+// drag reads it live. Re-read after every render and whenever the rail comes
+// or goes (its `hidden` flips, or it mounts into the split's slot), neither of
+// which resizes the split itself, so the width's ResizeObserver cannot see it.
+function useRailInset(ref: React.RefObject<HTMLElement>, width: number): number {
+  const [inset, setInset] = useState(0);
+  useLayoutEffect(() => {
+    const read = () => {
+      const next = railInset(ref.current);
+      setInset((prev) => (prev === next ? prev : next));
+    };
+    read();
+    const el = ref.current;
+    if (!el || typeof MutationObserver === "undefined") return;
+    // Only a record about a rail costs a measurement: the listing's own rows
+    // mutate the subtree all the time.
+    const isRail = (n: Node) =>
+      n instanceof Element && (n.classList.contains("claude-rail") || n.querySelector(".claude-rail") !== null);
+    const mo = new MutationObserver((records) => {
+      for (const r of records) {
+        if (r.type === "attributes" ? isRail(r.target) : [...r.addedNodes, ...r.removedNodes].some(isRail)) {
+          read();
+          return;
+        }
+      }
+    });
+    mo.observe(el, { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden"] });
+    return () => mo.disconnect();
+  }, [ref, width]);
+  return inset;
+}
+
 // `enabled=false` (an embedded Listing — the preview pane's own `_listing`
 // mode) turns the whole feature off at the source: however wide that embedded
 // listing is, it never grows a pane of its own — no nesting.
@@ -145,11 +178,14 @@ export function usePreviewPane(enabled = true, onDragClose?: () => void) {
   // not reopen: the measurement below decides the pane's SHARE, never its existence.
   const on = enabled;
   const width = useSplitWidth(splitRef);
+  const inset = useRailInset(splitRef, width);
   // The shared pixel width, re-clamped into THIS pane's own floors and turned
   // into a fraction of this container (pane-math's paneFracFromSharedWidth) —
   // never the file sidebar's wider floors, even though the two now share one
   // stored number.
-  const frac = paneFracFromSharedWidth(chosenPx, width);
+  // Less a rail standing past the pane (`inset`, as the drag below measures
+  // it): the list keeps its floor beside the rail, not beside the split's edge.
+  const frac = paneFracFromSharedWidth(chosenPx, width, inset);
 
   // The divider drag: pointer capture keeps the drag alive when the cursor
   // crosses into the pane's iframe (which would otherwise swallow mousemove).
