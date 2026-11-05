@@ -8230,10 +8230,10 @@
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
     env: "local",
     // Which kind of client this runtime is driving. "desktop" here; the
-    // local-network listener appends static/lan/runtime-phone.js, which sets
-    // "phone-web" and swaps the members that mean something else on a phone
-    // (capture.*, fileIndex). A native shell would set "ios-app". Apps branch
-    // on this, never on user-agent sniffing.
+    // native iOS shell's bridge (ios/FusedRender/Resources/runtime-ios.js)
+    // sets "ios-app" and swaps the members that mean something else on a
+    // phone (capture.*, fileIndex). Apps branch on this, never on user-agent
+    // sniffing.
     device: "desktop",
     runPython,
     daemon,

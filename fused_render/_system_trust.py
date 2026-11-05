@@ -29,6 +29,21 @@ _done = False
 ORIGINAL_SSL_CONTEXT = ssl.SSLContext
 
 
+def pinned_client_ssl_context():
+    """A client context that verifies nothing, for a caller that pins the
+    peer's certificate hash itself (lan_doctor's self-probe, the same check
+    the phone makes). Built from the stdlib class: truststore's wrapper runs
+    the system verifier in ``wrap_socket`` whatever ``verify_mode`` says and
+    rejects a self-signed certificate ("not standards compliant"), and the
+    stdlib class's own ``verify_mode`` setter recurses once injection has
+    rebound ``ssl.SSLContext`` — so the C-level descriptor sets it."""
+    ctx = ORIGINAL_SSL_CONTEXT(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    super(ORIGINAL_SSL_CONTEXT, ORIGINAL_SSL_CONTEXT).verify_mode.__set__(  # type: ignore[attr-defined]
+        ctx, ssl.CERT_NONE)
+    return ctx
+
+
 def _inside(path: str, root: str) -> bool:
     path, root = os.path.realpath(path), os.path.realpath(root)
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)

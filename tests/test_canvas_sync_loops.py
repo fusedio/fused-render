@@ -362,3 +362,14 @@ def test_snapshot_hidden_udf_lands_on_disk(tmp_path):
     result = cs.apply_snapshot(d, new, view)
     assert result["changed"] is True
     assert _rows(d)[0]["visible"] is False
+
+
+def test_snapshot_note_body_equal_but_for_line_endings_is_not_rewritten(tmp_path):
+    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
+    with open(os.path.join(d, "n.md"), "wb") as fh:
+        fh.write(b"# n\r\nbody\r\n")
+    prev = dict(cs.compact_state_from_disk(d), bodies={"n": "old"})
+    new = _snapshot_new([_studio_node("a")], [
+        {"slug": "a", "file": "a.py", "id": "sid-a"},
+        {"slug": "n", "file": "n.md", "id": "sid-n", "file_body": "# n\rbody\r\n"}])
+    assert cs.apply_snapshot(d, new, prev)["written"] == []

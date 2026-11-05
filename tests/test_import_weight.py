@@ -37,7 +37,7 @@ import pytest
 # Every top-level import name that is NOT part of the base install
 # (pyproject.toml `dependencies`), by the extra that brings it:
 #   * [index]: duckdb, pyarrow, watchfiles
-#   * [desktop]: zeroconf (and its ifaddr), PIL, dbus_fast, objc
+#   * [desktop]: PIL, dbus_fast, objc
 #   * [hf]: huggingface_hub
 #   * [fused]: boto3, mcp, anthropic, cryptography (via pyjwt[crypto])
 #   * [bundled]: numpy, pandas, openpyxl, pptx, msgpack, fpdf, drain3
@@ -50,7 +50,7 @@ import pytest
 # and `.linux` to prove the guard from both platform branches.
 OPTIONAL = frozenset({
     "duckdb", "pyarrow", "watchfiles",
-    "zeroconf", "ifaddr", "PIL", "dbus_fast", "objc",
+    "PIL", "dbus_fast", "objc",
     "huggingface_hub",
     "botocore", "google", "requests",
     "boto3", "mcp", "anthropic", "cryptography",

@@ -2113,9 +2113,8 @@ def _seed_default_udf(env: str, name: str) -> None:
             # one): nothing to seed, and nothing of the user's to overwrite.
             if canvas_snapshot.rows_of_doc(doc)["nodes"] or canvas_snapshot.node_files(target):
                 return
-            with open(os.path.join(target, f"{_DEFAULT_UDF_NAME}.py"), "w",
-                      encoding="utf-8") as f:
-                f.write(_DEFAULT_UDF_CODE)
+            canvas_snapshot._write_atomic(os.path.join(target, f"{_DEFAULT_UDF_NAME}.py"),
+                                          _DEFAULT_UDF_CODE)
             canvas_snapshot.reconcile_rows(target)
         except Exception as e:  # noqa: BLE001 — best effort, see docstring
             logger.warning("canvas %s: starter UDF not seeded — %s", key, e)
@@ -4626,7 +4625,9 @@ class _SyncManager:
                                   f"{self._body_fence_rev} not acked); not written")
             return {"ok": False, "code": "fenced", "node": node, "file": file}
         path = os.path.join(self.dir, file)
-        current = canvas_snapshot.read_body(path)
+        text = canvas_snapshot.normalize_newlines(text)
+        raw = canvas_snapshot._read_bytes(path)
+        current = canvas_snapshot.body_text(raw)
         current_hash = canvas_snapshot.body_hash(current if current is not None else "")
         if current_hash != base_hash:
             self.log_event("embed_to_disk", "body stale",
@@ -4644,7 +4645,7 @@ class _SyncManager:
             # Not the frame's own previous text: keep a copy, as a note body
             # overwrite does.
             trash = self._new_trash_dir()
-            self._backup_to(trash, file, current.encode("utf-8", "replace"))
+            self._backup_to(trash, file, raw)
         # Re-read right before the replace: the trash copy above took time,
         # and Claude writes without _op_lock. A write that landed in between
         # is answered stale like any other, instead of being overwritten

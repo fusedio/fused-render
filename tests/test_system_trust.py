@@ -113,14 +113,16 @@ def test_lan_style_tls_server_handshake_still_works(tmp_path, monkeypatch):
     """After injection `ssl.SSLContext` is truststore's client-side class, whose
     server handshake fails on macOS; lan.py therefore builds its listener's
     context from the stdlib class (lan_tls.server_ssl_context). A real
-    handshake against a lan_tls-issued cert proves it."""
+    handshake against the lan_tls certificate proves it. The client pins the
+    certificate by fingerprint, exactly as the iOS app does."""
     from fused_render import lan_tls
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
-    lan_tls._ca_by_dir.clear()
-    cert, key = lan_tls.ensure_server_cert(["localhost"], ["127.0.0.1"])
-    ca = lan_tls.ca_pem_path()
+    lan_tls._cert_by_dir.clear()
+    lan_tls.ensure_cert()
+    cert, key = lan_tls.cert_path(), lan_tls.key_path()
+    fingerprint = lan_tls.fingerprint()
 
     _system_trust.use_system_trust()
     assert ssl.SSLContext is truststore.SSLContext
@@ -143,15 +145,19 @@ def test_lan_style_tls_server_handshake_still_works(tmp_path, monkeypatch):
 
     t = threading.Thread(target=serve, daemon=True)
     t.start()
-    client_ctx = ssl.create_default_context(cafile=ca)
+    client_ctx = ssl._create_unverified_context()  # noqa: SLF001 — pinned below
     with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
         with client_ctx.wrap_socket(raw, server_hostname="localhost") as tls:
+            presented = tls.getpeercert(binary_form=True)
             tls.sendall(b"ping")
             reply = tls.recv(4)
     t.join(10)
     lsock.close()
     assert result.get("got") == b"ping", result
     assert reply == b"pong"
+    import hashlib
+
+    assert hashlib.sha256(presented).hexdigest() == fingerprint
 
 
 def test_uvicorn_serves_https_with_the_lan_pattern(tmp_path, monkeypatch):
@@ -166,9 +172,9 @@ def test_uvicorn_serves_https_with_the_lan_pattern(tmp_path, monkeypatch):
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
-    lan_tls._ca_by_dir.clear()
-    cert, key = lan_tls.ensure_server_cert(["localhost"], ["127.0.0.1"])
-    ca = lan_tls.ca_pem_path()
+    lan_tls._cert_by_dir.clear()
+    lan_tls.ensure_cert()
+    cert, key = lan_tls.cert_path(), lan_tls.key_path()
     _system_trust.use_system_trust()
 
     async def app(scope, receive, send):
@@ -199,9 +205,12 @@ def test_uvicorn_serves_https_with_the_lan_pattern(tmp_path, monkeypatch):
         while not server.started and time.time() < deadline:
             time.sleep(0.05)
         conn = http.client.HTTPSConnection(
-            "localhost", port, timeout=10, context=ssl.create_default_context(cafile=ca))
+            "localhost", port, timeout=10, context=ssl._create_unverified_context())  # noqa: SLF001
         conn.request("GET", "/")
         assert conn.getresponse().read() == b"ok"
+        import hashlib
+
+        assert hashlib.sha256(conn.sock.getpeercert(binary_form=True)).hexdigest() == lan_tls.fingerprint()
         conn.close()
     finally:
         server.should_exit = True

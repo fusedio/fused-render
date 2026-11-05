@@ -289,7 +289,7 @@ export interface SegmentClock {
   ended?: number;
 }
 export interface TextSegment extends SegmentClock {
-  kind: "text";
+  kind: "text" | "update";
   text: string;
 }
 export interface ThinkingSegment extends SegmentClock {

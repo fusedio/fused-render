@@ -1,6 +1,7 @@
-// Screens: pick a computer (found on the Wi-Fi, or paired before) → pair by
-// QR (or a pasted URL, the simulator's only way) → the grid, the bots pages
-// and the apps in a webview.
+// Screens: pick a computer (paired before) or pair one by QR (or a pasted URL,
+// the simulator's only way) → the grid, the bots pages and the apps in a
+// webview, with a banner above it saying why the computer cannot be reached
+// when it cannot (Reachability.swift).
 //
 // Bots on the phone: `/bots` (the list) and `/bots/<id>` (one bot's chat) are
 // web pages the paired computer's LAN listener serves from the same lan entry
@@ -17,6 +18,7 @@ struct RootView: View {
         Group {
             if let server = model.current {
                 ConnectedView(server: server)
+                    .id(server.fingerprint)
             } else {
                 NavigationStack { ServersView() }
             }
@@ -42,61 +44,42 @@ struct RootView: View {
 
 struct ServersView: View {
     @EnvironmentObject var model: AppModel
-    @State private var pairing: Server?
+    @State private var pairing = false
 
     var body: some View {
         List {
             if !model.known.isEmpty {
                 Section("Paired before") {
                     ForEach(model.known) { server in
-                        Button { model.open(server) } label: { ServerRow(server: server, live: model.discovered.contains(server)) }
+                        Button { model.open(server) } label: { ServerRow(server: server) }
                             .swipeActions { Button("Forget", role: .destructive) { model.forget(server) } }
                     }
                 }
             }
             Section {
-                let fresh = model.discovered.filter { !model.known.contains($0) }
-                if fresh.isEmpty {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                        Text(model.known.isEmpty ? "Looking for a computer running Fused Render…" : "Looking for other computers…")
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    ForEach(fresh) { server in
-                        Button { pairing = server } label: { ServerRow(server: server, live: true) }
-                    }
+                Button { pairing = true } label: {
+                    Label("Pair a computer", systemImage: "qrcode.viewfinder")
                 }
-            } header: {
-                Text("On this Wi-Fi")
             } footer: {
-                Text("On the computer, turn on Preferences → Render local network. New computers appear here; tap one to pair.")
+                Text("On the computer, turn on Preferences → Phone access and scan the code it shows. Pairing is once per computer; it keeps working when the Wi-Fi or the computer's address changes.")
             }
         }
         .navigationTitle("Fused Render")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { pairing = Server(name: "Fused Render", host: "render.fused.local", port: 80) } label: {
-                    Label("Pair", systemImage: "qrcode.viewfinder")
-                }
-            }
-        }
-        .sheet(item: $pairing) { server in
-            PairView(server: server)
+        .sheet(isPresented: $pairing) {
+            PairView()
         }
     }
 }
 
 struct ServerRow: View {
     let server: Server
-    let live: Bool
     var body: some View {
         HStack {
             Image(systemName: "desktopcomputer")
-                .foregroundStyle(live ? Color.accentColor : .secondary)
+                .foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 2) {
-                Text(server.host).font(.body.weight(.medium))
-                Text(live ? "Online" : "Not seen right now")
+                Text(server.name).font(.body.weight(.medium))
+                Text(server.host)
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -111,11 +94,8 @@ struct ServerRow: View {
 struct PairView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    let server: Server
     @State private var pasted = ""
     @State private var problem: String?
-    @State private var busy = false
-    @State private var pairTask: Task<Void, Never>?
     /// Bumped after a failed pairing so a fresh ScannerView starts scanning again.
     @State private var scanRun = 0
 
@@ -128,42 +108,40 @@ struct PairView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.quaternary))
                         .frame(maxHeight: 360)
-                    Text("On the computer, open **Preferences → Render local network** and point the camera at the QR code.")
+                    Text("On the computer, open **Preferences → Phone access** and point the camera at the QR code.")
                         .font(.callout).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 } else {
                     ContentUnavailableView("No camera here",
                                            systemImage: "camera.metering.unknown",
-                                           description: Text("Paste the pairing link from Preferences → Render local network instead."))
+                                           description: Text("Paste the pairing link from Preferences → Phone access instead."))
                         .frame(maxHeight: 220)
                 }
                 HStack {
-                    TextField("http://render.fused.local/pair?t=…", text: $pasted)
+                    TextField("https://…/pair?t=…", text: $pasted)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .textFieldStyle(.roundedBorder)
                     Button("Pair") { _ = accept(pasted) }
                         .buttonStyle(.borderedProminent)
-                        .disabled(busy || pasted.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(pasted.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                if busy { ProgressView() }
                 if let problem {
                     Text(problem).font(.footnote).foregroundStyle(.red)
                 }
                 Spacer()
             }
             .padding()
-            .navigationTitle("Pair with \(server.host)")
+            .navigationTitle("Pair a computer")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { pairTask?.cancel(); dismiss() } } }
-            .onDisappear { pairTask?.cancel() }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
     }
 
     /// Returns whether the text looked like a pairing code (the scanner keeps
-    /// scanning past codes that are not). The sheet stays up until the pairing
-    /// settles, so a certificate mismatch is an error the user actually sees.
+    /// scanning past codes that are not). Nothing is fetched here: the code
+    /// carries everything, and the /pair load itself is the first contact.
     @discardableResult
     private func accept(_ text: String) -> Bool {
         guard AppModel.looksLikePairingCode(text),
@@ -172,17 +150,11 @@ struct PairView: View {
             return false
         }
         problem = nil
-        busy = true
-        pairTask = Task {
-            let ok = await model.pair(with: url)
-            guard !Task.isCancelled else { return }
-            busy = false
-            if ok {
-                dismiss()
-            } else {
-                problem = model.pairProblem ?? "Pairing failed."
-                scanRun += 1  // let the camera try again
-            }
+        if model.pair(with: url) {
+            dismiss()
+        } else {
+            problem = model.pairProblem ?? "Pairing failed."
+            scanRun += 1  // let the camera try again
         }
         return true
     }
@@ -192,9 +164,27 @@ struct PairView: View {
 
 struct ConnectedView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
     let server: Server
     @StateObject private var web = WebController()
     @State private var showHomeScreenHelp = false
+    @State private var showPair = false
+    /// The host and port the webview reaches the computer on: the name and
+    /// the stored port until the probe finds the computer elsewhere.
+    @State private var host: String
+    @State private var port: Int
+    @State private var lanState: LanState?
+    @State private var diagnoseRun = 0
+    /// A navigation died since the last diagnosis: a successful probe on
+    /// the same host then reloads the page rather than only clearing the
+    /// banner.
+    @State private var needsReload = false
+
+    init(server: Server) {
+        self.server = server
+        _host = State(initialValue: server.host)
+        _port = State(initialValue: server.port)
+    }
 
     /// Where the webview is, as far as the top bar cares.
     private enum Place {
@@ -217,7 +207,8 @@ struct ConnectedView: View {
         return .app
     }
 
-    private var botsURL: URL { server.baseURL.appendingPathComponent("bots") }
+    private var baseURL: URL { server.url(host: host, port: port) }
+    private var botsURL: URL { baseURL.appendingPathComponent("bots") }
 
     /// The page's own <title> once it lands; until then (or for a page without
     /// one) the app's name from the manifest, else its folder name.
@@ -241,16 +232,76 @@ struct ConnectedView: View {
     }
 
     var body: some View {
-        WebView(server: server, pairURL: $model.pendingPairURL, controller: web,
-                onGridLoaded: { host in model.confirmPairing(host: host) })
+        WebView(server: server, host: host, port: port, pairURL: $model.pendingPairURL, controller: web,
+                onGridLoaded: { landed in
+                    model.confirmPairing(host: landed)
+                    model.noteReached(server, host: landed, port: port)
+                    lanState = .ok(host: landed, port: port)
+                    needsReload = false
+                },
+                onNavigationFailed: { needsReload = true; diagnoseRun += 1 })
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showHomeScreenHelp) { HomeScreenHelp() }
+            .sheet(isPresented: $showPair) { PairView() }
             // One top bar, on the grid, the bots pages and inside apps alike
             // (owner's call — no floating button). Left: the computer (grid),
             // the bots list (a bot's chat) or home (bots list, app). Middle:
-            // where you are. Right: the few actions.
-            .safeAreaInset(edge: .top, spacing: 0) { topBar }
+            // where you are. Right: the few actions. Under it, the reason the
+            // computer cannot be reached, when it cannot.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    topBar
+                    if let state = lanState, state != .ok(host: host, port: port) {
+                        ReachabilityBanner(state: state, server: server, retry: { diagnoseRun += 1 },
+                                           scan: { showPair = true })
+                    }
+                }
+            }
+            // The diagnosis runs on appear, on every return to the foreground
+            // and after every navigation failure (the webview asks for it).
+            .task(id: diagnoseRun) { await diagnose() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { diagnoseRun += 1 }
+            }
+            // A rescan of the same computer under a new name keeps this view
+            // (same fingerprint): the chrome's links follow the new host.
+            .onChange(of: server.host) { _, fresh in host = fresh }
+            .onChange(of: server.port) { _, fresh in port = fresh }
+    }
+
+    @MainActor
+    private func diagnose() async {
+        let state = await Reachability.diagnose(server)
+        // `.task(id:)` cancelled this run for a newer one: its answer is stale.
+        guard !Task.isCancelled else { return }
+        lanState = state
+        if case .ok(let reached, let reachedPort) = state {
+            // A name that works still leaves its address behind, for the day
+            // it stops resolving.
+            let resolved = Server.looksLikeIP(reached) ? nil : await Reachability.resolvedIPv4(of: reached)
+            guard !Task.isCancelled else { return }
+            model.noteReached(server, host: reached, port: reachedPort, resolvedIP: resolved)
+            if reached != host || reachedPort != port {
+                // Found only elsewhere: move the webview there, and re-send a
+                // pairing that never got through on the name.
+                host = reached
+                port = reachedPort
+                model.retryPairing(on: reached, port: reachedPort)
+            } else if web.location == nil {
+                // Nothing ever landed (the first load died, typically before
+                // Local Network access was allowed). A pairing still pending
+                // goes out again as /pair — loading `/` instead would show the
+                // how-to-pair page and strand the token; with none pending the
+                // grid is the page to ask for.
+                if !model.retryPairing(on: reached, port: reachedPort) { web.load(baseURL) }
+            } else if needsReload {
+                // The page died and the computer is back on the same host:
+                // reload it, not just the banner.
+                web.webView?.reload()
+            }
+            needsReload = false
+        }
     }
 
     @ViewBuilder
@@ -267,7 +318,7 @@ struct ConnectedView: View {
             }
             .accessibilityLabel("Bots")
         case .bots, .app:
-            Button { web.load(server.baseURL) } label: {
+            Button { web.load(baseURL) } label: {
                 Label("All apps", systemImage: "house").labelStyle(.iconOnly)
             }
             .accessibilityLabel("All apps")
@@ -281,7 +332,7 @@ struct ConnectedView: View {
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
-                Text(server.host)
+                Text(server.name)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -293,7 +344,7 @@ struct ConnectedView: View {
                 Button("Add an app to the Home Screen", systemImage: "plus.square.on.square") { showHomeScreenHelp = true }
                 Divider()
                 Button("Switch computer", systemImage: "desktopcomputer") { model.disconnect() }
-                Text(server.baseURL.absoluteString).font(.footnote)
+                Text(baseURL.absoluteString).font(.footnote)
             } label: {
                 Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
             }
@@ -303,6 +354,54 @@ struct ConnectedView: View {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
         .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+}
+
+// MARK: - Why the computer cannot be reached
+
+struct ReachabilityBanner: View {
+    let state: LanState
+    let server: Server
+    let retry: () -> Void
+    let scan: () -> Void
+
+    private var message: String {
+        switch state {
+        case .ok:
+            return ""
+        case .localNetworkDenied:
+            return "Fused Render needs Local Network access to reach your computer. It is turned off for this app."
+        case .noWifi:
+            return "Connect this phone to the same Wi-Fi as your computer."
+        case .unreachable:
+            return "Can't reach \(server.name) on this Wi-Fi. Make sure both are on the same network — guest and hotel networks often keep devices from seeing each other. If the computer is asleep, wake it."
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(message, systemImage: state == .noWifi ? "wifi.slash" : "exclamationmark.triangle")
+                .font(.footnote)
+            HStack(spacing: 12) {
+                if state == .localNetworkDenied {
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                }
+                Button("Try again", action: retry)
+                if case .unreachable = state {
+                    Button("Scan a new code", action: scan)
+                }
+            }
+            .font(.footnote.weight(.semibold))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.yellow.opacity(0.18))
         .overlay(alignment: .bottom) { Divider() }
     }
 }

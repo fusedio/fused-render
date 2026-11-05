@@ -12145,7 +12145,7 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
   `LOGGING_CONFIG` sets `propagate=False` on `uvicorn` and gives it its own
   stderr handler, so ASGI tracebacks, bind errors and lifespan failures went
   to a stderr nobody reads on a Finder launch (D68 claimed otherwise). Every
-  `uvicorn.Config` (`app.py`, `cli.py`, `lan.py` ×2) is passed
+  `uvicorn.Config` (`app.py`, `cli.py`, `lan.py`) is passed
   `log_config=logs.uvicorn_log_config()`: `uvicorn` and `uvicorn.error`
   propagate to root; `uvicorn.access` stays silent, because
   `server/common.py`'s middleware already writes one request line with its

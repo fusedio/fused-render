@@ -2036,6 +2036,19 @@
 .lan-pair-text p {
   margin: 0 0 10px;
 }
+.lan-checklist ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.lan-checklist li {
+  margin: 2px 0;
+}
+.lan-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
 .lan-devices {
   margin-top: 18px;
 }
