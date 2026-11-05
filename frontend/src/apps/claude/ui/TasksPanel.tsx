@@ -167,6 +167,7 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
     setOutputs({});
     setStopping({});
     setUpdOpen(new Set());
+    pollSeq.current.clear();
   }, [runId, sessionId]);
 
   // THE ELAPSED CLOCK TICKS ONLY WHILE SOMETHING IS LIVE AND THE ROWS SHOW: a
@@ -186,14 +187,20 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
   // to "Loading…") and a failed poll keeps the last good text.
   const outputsRef = useRef(outputs);
   outputsRef.current = outputs;
-  const polling = useRef<Set<string>>(new Set());
+  // Per task: the newest request's sequence number and whether it is still out.
+  // A forced read may overlap a poll; only the newest answer may land.
+  const pollSeq = useRef<Map<string, { seq: number; inFlight: boolean }>>(new Map());
   const poll = useCallback(
     (taskId: string, force = false) => {
       const asked = runRef.current;
-      if (!asked || (!force && polling.current.has(taskId))) return;
-      polling.current.add(taskId);
+      const prev = pollSeq.current.get(taskId);
+      if (!asked || (!force && prev?.inFlight)) return;
+      const mine = (prev?.seq ?? 0) + 1;
+      pollSeq.current.set(taskId, { seq: mine, inFlight: true });
       const land = (state: OutputState | null) => {
-        polling.current.delete(taskId);
+        const entry = pollSeq.current.get(taskId);
+        if (!entry || entry.seq !== mine) return; // a newer request superseded this one
+        entry.inFlight = false;
         if (!state || runRef.current !== asked) return;
         setOutputs((o) => {
           const cur = o[taskId];

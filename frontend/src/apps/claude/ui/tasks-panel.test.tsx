@@ -406,6 +406,26 @@ describe("TasksPanel", () => {
         expect(a.count()).toBe(2);
       });
 
+      test("an older in-flight poll answering after the final read does not overwrite it", async () => {
+        const pending: Array<(v: TaskOutputResponse) => void> = [];
+        let n = 0;
+        const fetchOutput = (): Promise<TaskOutputResponse> => {
+          if (n++ === 0) return Promise.resolve(ok("first"));
+          return new Promise((res) => pending.push(res));
+        };
+        const mk = (status: string) => (
+          <TasksPanel tasks={[rec({ ...SHELL, status: status as TaskRecord["status"] })]} runId="r1" open onToggle={() => {}} fetchOutput={fetchOutput} now={() => 70_000} />
+        );
+        const r = mount(mk("running"));
+        await open1(r);
+        await tick(); // poll #2, stays pending
+        await act(async () => r.update(mk("paused"))); // forced final read #3
+        expect(pending.length).toBe(2);
+        await act(async () => pending[1]!(ok("final")));
+        await act(async () => pending[0]!(ok("old")));
+        expect(r.root.findAll((x) => x.type === "pre").map(text)).toEqual(["final"]);
+      });
+
       test("collapsing stops the polling", async () => {
         const a = answers(ok("x"));
         const r = mount(<TasksPanel tasks={[SHELL]} runId="r1" open onToggle={() => {}} fetchOutput={a.fetchOutput} now={() => 70_000} />);
