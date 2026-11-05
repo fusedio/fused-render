@@ -1308,10 +1308,6 @@ function ChatBody(props: ChatBodyProps) {
    *  through the single "current dispatch" ref, which the later dispatch
    *  overwrote. Set at dispatch, deleted in its `finally`. */
   const parkedBySendId = useRef<Map<string, OutboxPayload>>(new Map());
-  /** CTRL+X ON AN EMPTY BOX (`onSendQueuedNow`): the Stop in flight hands its
-   *  stranded lines back to be SENT, not to sit as "not sent". Read once by
-   *  `strandAll`, reset there and after the stop resolves. */
-  const sendQueuedNow = useRef(false);
   const postNotSent = useCallback(
     (text: string, payload: OutboxPayload): OutboxEntry<OutboxPayload> | null => {
       const c = controllerRef.current;
@@ -1329,32 +1325,7 @@ function ChatBody(props: ChatBodyProps) {
     (lines: readonly StrandedLine[]) => {
       if (!controllerRef.current) return;
       const entries: OutboxEntry<OutboxPayload>[] = [];
-      const resend = sendQueuedNow.current;
-      sendQueuedNow.current = false;
       for (const line of lines) {
-        // SEND-QUEUED-NOW: an ordinary outbox line, journal kept, bubble "queued".
-        if (resend && line.text) {
-          if (line.sendId && postedForSend.current.has(line.sendId)) {
-            postedForSend.current.delete(line.sendId);
-            continue;
-          }
-          const c = controllerRef.current;
-          const own = line.returned && line.sendId ? parkedBySendId.current.get(line.sendId) : null;
-          const bubble = c.postOptimisticUser(line.text, "queued");
-          const base = own ?? { opts: {}, bubble: "", taken: NO_TAKEN };
-          // ALWAYS A FRESH ID: an acked line's id is spent (its uuid is known
-          // to the server, so a reload would treat the re-send as delivered).
-          // The old id leaves the journal here so a reload cannot send the same
-          // words twice; the new id is journalled until THIS send acks.
-          if (line.clientId) journalDrop(line.clientId);
-          const clientId = newClientId();
-          journalAdd(clientId, line.text);
-          const opts = { ...base.opts, clientId };
-          const id = `o${++outboxSeq.current}`;
-          entries.push({ id, text: line.text, payload: { ...base, opts, bubble, entryId: id } });
-          if (own && line.sendId) postedForSend.current.add(line.sendId);
-          continue;
-        }
         if (line.clientId) journalDrop(line.clientId);
         if (!line.text) continue;
         // ALREADY POSTED, BY ID: `onSendReturned` took this send back earlier
@@ -1375,11 +1346,8 @@ function ChatBody(props: ChatBodyProps) {
         if (own && line.sendId) postedForSend.current.add(line.sendId);
       }
       if (entries.length) setOutbox(pushFrontAll(outboxRef.current, entries));
-      // A run that went idle before the cancel answered has no transition left
-      // to drain these; the drain itself refuses while the run is stopping.
-      if (resend && entries.length) drainRef.current();
     },
-    [setOutbox, postNotSent, journalDrop, journalAdd],
+    [setOutbox, postNotSent, journalDrop],
   );
 
   // One collapse policy per MOUNT, not per module: six compact mounts on the
@@ -3853,29 +3821,6 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   /**
-   * SEND NOW — Claude Code's Ctrl+X: the line goes into the live run as an
-   * ordinary follow-up and the CLI is told (`sendNow`) to end the MAIN agent's
-   * turn for it. Background subagents, Bash and Monitors keep running, and the
-   * run is not stopped: the line has the journal, the outbox and the bubble of
-   * any other follow-up, so a reload loses nothing.
-   */
-  const onSendNow = useCallback(
-    (text: string) => {
-      dispatchSend(
-        text,
-        {
-          model: defaults.model,
-          effort: defaults.effort,
-          permission: defaults.permission,
-          sendNow: true,
-        },
-        true,
-      );
-    },
-    [dispatchSend, defaults.model, defaults.effort, defaults.permission],
-  );
-
-  /**
    * HOLD UNTIL DONE — Ctrl+Enter while a run is live (D1462): the line is NOT
    * written into the run. It waits in the outbox as a held line (bubble tag
    * "queued until this turn is done") until the turn is over and every ordinary
@@ -3957,8 +3902,16 @@ function ChatBody(props: ChatBodyProps) {
     },
     [dispatchSend, rcSay],
   );
-  const onFollowUp = useCallback(
-    (text: string) => {
+  /**
+   * AN ORDINARY FOLLOW-UP, or — with `sendNow` — Claude Code's Ctrl+X: the line
+   * goes into the live run as a follow-up and the CLI is told to end the MAIN
+   * agent's turn for it. Background subagents, Bash and Monitors keep running,
+   * and the run is not stopped: the line has the journal, the outbox and the
+   * bubble of any other follow-up, so a reload loses nothing. Remote Control
+   * takes the words either way.
+   */
+  const sendLine = useCallback(
+    (text: string, sendNow: boolean) => {
       if (rcSay) return rcSay(text);
       dispatchSend(
         text,
@@ -3966,12 +3919,15 @@ function ChatBody(props: ChatBodyProps) {
           model: defaults.model,
           effort: defaults.effort,
           permission: defaults.permission,
+          ...(sendNow ? { sendNow: true } : {}),
         },
         true,
       );
     },
     [dispatchSend, defaults.model, defaults.effort, defaults.permission, rcSay],
   );
+  const onFollowUp = useCallback((text: string) => sendLine(text, false), [sendLine]);
+  const onSendNow = useCallback((text: string) => sendLine(text, true), [sendLine]);
   /**
    * STOP MEANS STOP, THE OUTBOX INCLUDED (Akshil's R2-12 rule, kept over Claude
    * Code's own Esc, which lets the queue run on). A line parked behind the
@@ -3979,8 +3935,8 @@ function ChatBody(props: ChatBodyProps) {
    * a turn the reader has just asked not to have. It stays on screen as "not
    * sent" — theirs to pull back (↑ or a click) and resend, never dropped.
    */
-  const stopNow = useCallback((keepOutbox: boolean) => {
-    if (!keepOutbox && outboxRef.current.some((e) => !e.notSent)) {
+  const onStop = useCallback(() => {
+    if (outboxRef.current.some((e) => !e.notSent)) {
       const next = outboxRef.current.map((e) => {
         if (e.notSent) return e;
         // "Not sent" is the reader's to resend: a reload must not do it for them.
@@ -3993,22 +3949,29 @@ function ChatBody(props: ChatBodyProps) {
     // …AND THE LINE THE DRAIN IS HOLDING RIGHT NOW (Bugbot 4122227255): it is
     // on neither list yet, so it is named here and `dispatchSend` puts it back
     // as "not sent" before the controller ever sees it.
-    // An empty-box Ctrl+X (`keepOutbox`) keeps every line: the one in the gap
-    // is sent, not retagged.
-    if (!keepOutbox) for (const id of dispatching.current) cancelledDispatch.current.add(id);
-    void controller.stopRun().finally(() => {
-      sendQueuedNow.current = false;
-      // The re-sent lines may have been pushed while the run was still
-      // stopping, or after it went idle: look once the stop has resolved.
-      if (keepOutbox) drainRef.current();
-    });
+    for (const id of dispatching.current) cancelledDispatch.current.add(id);
+    void controller.stopRun();
   }, [controller, setOutbox, journalDrop]);
-  const onStop = useCallback(() => stopNow(false), [stopNow]);
-  /** CTRL+X with an empty box: Stop, but the queued lines come back to SEND. */
+  /**
+   * CTRL+X WITH AN EMPTY BOX (or a click on the queued bubble): send the lines
+   * that are waiting NOW, the way a typed Ctrl+X does — never Stop, which ends
+   * background subagents too. A line the outbox still holds goes out as a
+   * send-now follow-up when the drain reaches it; a line the live run already
+   * holds is named to the CLI in a `send_now` interrupt.
+   */
   const onSendQueuedNow = useCallback(() => {
-    sendQueuedNow.current = true;
-    stopNow(true);
-  }, [stopNow]);
+    const parked = outboxRef.current.filter((e) => !e.hold && !e.notSent);
+    if (parked.length) {
+      const ids = new Set(parked.map((e) => e.id));
+      setOutbox(
+        outboxRef.current.map((e) =>
+          ids.has(e.id) ? { ...e, payload: { ...e.payload, opts: { ...e.payload.opts, sendNow: true } } } : e,
+        ),
+      );
+      drainRef.current();
+    }
+    void controller.sendQueuedNow();
+  }, [controller, setOutbox]);
   /**
    * `sched.reset` — declared HERE, ahead of the hook that fills it, because
    * `onBack` is one of its two callers and is itself declared before the PR4

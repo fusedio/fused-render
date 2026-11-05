@@ -6566,6 +6566,32 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     return {"sent": True}
 
 
+def _send_now_queued(run_id: str, message_uuid: str) -> dict:
+    """Ctrl+X on a line the live run already holds (a follow-up the inbox took,
+    or the CLI queued): only the `send_now` interrupt naming it, which ends the
+    MAIN agent's turn so the CLI runs that line next. The line is not written
+    again. Like `_send(..., send_now=True)` it is no stop (no markers, no
+    tree-kill, background work untouched), and it is Claude only: another
+    backend's host reads an `interrupt` as a stop."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "no such run"}
+    if not _CLIENT_UUID_RE.match(message_uuid or ""):
+        return {"error": "missing message uuid"}
+    try:
+        with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return {"error": "no live session"}
+    if not isinstance(host, dict) or not _pid_alive(str(host.get("pid") or "")):
+        return {"error": "no live session"}
+    if host.get("backend", "claude") != "claude":
+        return {"error": "send-now is not supported by this agent"}
+    _write_control_request(run_dir, "interrupt", send_now=True,
+                           message_uuid=message_uuid)
+    return {"sent": True}
+
+
 def _discard_inbox(run_dir: str, keep_first: bool = False) -> list:
     """Throw away every USER-TURN entry the session host has not drained yet,
     and return the messages that were in them.
@@ -13079,6 +13105,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _send(run_id, message, read_dirs, model, effort,
                     permission_mode, terminal_hint, client_uuid, typed,
                     send_now == "1")
+    if action == "send_now":
+        return _send_now_queued(run_id, client_uuid)
     if action == "set_mode":
         # The Approvals pill changed on a live chat: apply it now, with no
         # message and no turn (`_send` only applies it piggybacked on a send).

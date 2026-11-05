@@ -188,6 +188,42 @@ def test_send_now_queues_the_line_and_names_it_in_a_send_now_interrupt(
     assert agent._host_alive(run_dir)
 
 
+def test_send_now_for_a_queued_line_only_sends_the_interrupt(
+        agent, monkeypatch, stub_cli, target):
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
+    assert _wait_for(lambda: agent._host_alive(run_dir))
+
+    assert agent.main(action="send_now", run_id=run_id,
+                      client_uuid="queued-line-1") == {"sent": True}
+
+    def answered():
+        for row in _out_rows(run_dir):
+            if row.get("type") != "control_response":
+                continue
+            resp = row["response"].get("response") or {}
+            if resp.get("send_now") is True:
+                return resp
+        return None
+
+    assert _wait_for(lambda: answered() is not None), _out_rows(run_dir)
+    assert answered()["message_uuid"] == "queued-line-1"
+    # No new line, and nothing a Stop leaves behind.
+    assert not any(r.get("type") == "echo" for r in _out_rows(run_dir)[1:]
+                   if r.get("text") == "queued-line-1")
+    assert not os.path.exists(os.path.join(run_dir, "cancelled"))
+    assert not os.path.exists(os.path.join(run_dir, "interrupted_offset"))
+    assert agent._host_alive(run_dir)
+
+
+def test_send_now_for_a_queued_line_needs_a_live_host_and_a_uuid(
+        agent, tmp_path):
+    run_dir = os.path.join(agent.RUNS, "20260901-140000-ddd")
+    os.makedirs(run_dir)
+    assert "error" in agent.main(action="send_now", run_id="20260901-140000-ddd",
+                                 client_uuid="queued-line-1")
+    assert "error" in agent.main(action="send_now", run_id="20260901-140000-ddd")
+
+
 def test_cancel_with_no_host_still_tree_kills(agent, tmp_path):
     target = tmp_path / "orphan.txt"
     target.write_text("x")

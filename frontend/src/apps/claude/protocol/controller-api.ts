@@ -590,6 +590,14 @@ export interface ChatController {
   cancelFork(): void;
   /** Stop the live run (T:15870-16023 stopRun). No-op when idle. */
   stopRun(): Promise<void>;
+  /**
+   * SEND NOW for lines the live run already holds (empty-box Ctrl+X, a click on
+   * the queued bubble): the `send_now` interrupt naming the oldest of them, so
+   * the CLI ends the MAIN agent's turn and runs them next. No stop: background
+   * subagents, Bash and Monitors keep running. Resolves true when an interrupt
+   * was sent, false when no landed line could be named.
+   */
+  sendQueuedNow(): Promise<boolean>;
   /** The Approvals pill changed: when a run is live, switch ITS mode now through
    *  the `set_mode` action (no message, no turn) and follow the reply into
    *  `ChatState.permissionMode`. No live run → nothing; the value rides the next send. */

@@ -2058,7 +2058,13 @@ for (const flagOn of [false, true]) {
   const hints = (r: Chat) =>
     byClass(r, "turn-pending").map((n) => String(n.props.children).replace(/,/g, ""));
 
-  test(`${tag}: a live follow-up carries the hint; empty-box Ctrl+X re-sends it as the next turn, never "not sent"; taken, the hint is gone`, async () => {
+  const sendNows = () => runs.filter((c) => c.action === "send_now");
+  const clickHint = (r: Chat) =>
+    act(async () => {
+      byClass(r, "turn-pending")[0]!.props.onClick();
+    });
+
+  test(`${tag}: a live follow-up carries the hint; empty-box Ctrl+X names it in a send_now interrupt, never a stop or a re-send`, async () => {
     const { r } = await liveChat();
     await typeInBox(r, "keep going");
     await pressEnterInBox(r);
@@ -2069,24 +2075,24 @@ for (const flagOn of [false, true]) {
     expect(hints(r)).toEqual(["(Ctrl+X to send now)"]);
     expect(byClass(r, "is-pending")).toHaveLength(0);
     expect(JSON.stringify(r.toJSON())).not.toContain("queued for this turn");
-    // The CLI never read it: the interrupt reports it as still queued.
-    const uuid = sends()[0]!.params.client_uuid;
-    cancelStill = [String(sends()[0]!.params.message)];
-    stickyLive = true;
     await ctrlX(r);
     await settle(100);
-    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
-    stickyLive = false;
-    await settle(1500);
-    const again = [...sends(), ...started()].filter(
-      (c) => String(c.params.message).includes("keep going") && c !== sends()[0],
-    );
-    expect(again).toHaveLength(1);
-    // A FRESH id: the first one was acked, so the server knows its uuid.
-    expect(again[0]!.params.client_uuid).toBeTruthy();
-    expect(again[0]!.params.client_uuid).not.toBe(uuid);
-    expect(hints(r)).not.toContain("not sent · click to edit");
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([sends()[0]!.params.client_uuid]);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+    expect(sends()).toHaveLength(1);
+    expect(started()).toHaveLength(1);
     expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
+  });
+
+  test(`${tag}: clicking the queued bubble sends the same send_now interrupt, never a stop`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    await clickHint(r);
+    await settle(100);
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([sends()[0]!.params.client_uuid]);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
   });
 
   test(`${tag}: Ctrl+X mid-turn writes the line into the live run with send_now, never a stop, and is journalled until acked`, async () => {
@@ -2112,54 +2118,6 @@ for (const flagOn of [false, true]) {
     expect(storeCells.get(PENDING_KEY)).toBeUndefined();
   });
 
-  test(`${tag}: empty-box Ctrl+X re-send of an acked follow-up is journalled under a fresh id until it acks`, async () => {
-    const { r } = await liveChat();
-    await typeInBox(r, "keep going");
-    await pressEnterInBox(r);
-    await settle(60);
-    const first = sends()[0]!.params.client_uuid;
-    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
-    cancelStill = [String(sends()[0]!.params.message)];
-    stickyLive = true;
-    await ctrlX(r);
-    await settle(100);
-    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
-    expect(stored.map((l) => l.text)).toEqual(["keep going"]);
-    expect(stored[0]!.id).not.toBe(first);
-    stickyLive = false;
-    await settle(1500);
-    const again = [...sends(), ...started()].filter(
-      (c) => String(c.params.message).includes("keep going") && c !== sends()[0],
-    );
-    expect(again).toHaveLength(1);
-    expect(again[0]!.params.client_uuid).toBe(stored[0]!.id);
-    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
-  });
-
-  test(`${tag}: empty-box Ctrl+X whose run went idle BEFORE the cancel answered still sends the line, with no further trigger`, async () => {
-    const { r } = await liveChat();
-    await typeInBox(r, "keep going");
-    await pressEnterInBox(r);
-    await settle(60);
-    cancelStill = [String(sends()[0]!.params.message)];
-    let release: () => void = () => {};
-    holdCancel = new Promise<void>((res) => {
-      release = res;
-    });
-    await ctrlX(r);
-    // The poll sees the cancel at once and the run goes idle while the answer
-    // is still out.
-    await settle(1200);
-    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
-    await act(async () => release());
-    await settle(1500);
-    const again = [...sends(), ...started()].filter(
-      (c) => String(c.params.message).includes("keep going") && c !== sends()[0],
-    );
-    expect(again).toHaveLength(1);
-    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
-  });
-
   test(`${tag}: Enter while the run is stopping waits for the stop to settle and is sent once after it, never into the dying run`, async () => {
     const { r } = await liveChat();
     stickyLive = true;
@@ -2177,22 +2135,6 @@ for (const flagOn of [false, true]) {
     await settle(1500);
     const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("after"));
     expect(out).toHaveLength(1);
-  });
-
-  test(`${tag}: empty-box Ctrl+X re-send of an UNACKED follow-up stays journalled under a fresh id`, async () => {
-    const { r } = await liveChat();
-    holdSend = new Promise<void>(() => {});
-    await typeInBox(r, "keep going");
-    await pressEnterInBox(r);
-    await settle(60);
-    const first = sends()[0]!.params.client_uuid;
-    cancelStill = [String(sends()[0]!.params.message)];
-    stickyLive = true;
-    await ctrlX(r);
-    await settle(150);
-    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
-    expect(stored.map((l) => l.text)).toEqual(["keep going"]);
-    expect(stored[0]!.id).not.toBe(first);
   });
 
   test(`${tag}: once the CLI has taken a live follow-up its hint is gone`, async () => {
@@ -2408,21 +2350,6 @@ for (const flagOn of [false, true]) {
     await endTurn();
     const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("held two"));
     expect(out).toHaveLength(1);
-  });
-
-  test(`${tag}: a re-sent send-now line leaves the journal under its old id, so a reload cannot send it twice`, async () => {
-    const { r } = await liveChat();
-    await typeInBox(r, "will be stranded");
-    await pressEnterInBox(r);
-    await settle(60);
-    const oldId = sends()[0]!.params.client_uuid!;
-    cancelStill = [String(sends()[0]!.params.message)];
-    stickyLive = true;
-    await ctrlX(r);
-    await settle(100);
-    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
-    expect(stored.map((l) => l.text)).toEqual(["will be stranded"]);
-    expect(stored[0]!.id).not.toBe(oldId);
   });
 
   test(`${tag}: a reload re-sends a line the server never had, exactly once`, async () => {
