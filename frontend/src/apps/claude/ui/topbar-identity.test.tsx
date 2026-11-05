@@ -290,3 +290,16 @@ test("the host's `extra` (the explorer pane's PR chip) rides the identity head t
   expect(has("c-tb-extra")).toHaveLength(1);
   expect(text()).toContain("PR #7");
 });
+
+test("in a side pane the identity drops ring, mark and task number, and keeps the title", () => {
+  const full = render({ sessionId: "sess-1", task: task(), running: false });
+  expect(full.has("task-side-peek-status").length).toBe(1);
+  expect(full.has("task-side-peek-id").length).toBe(1);
+  const side = render({ sessionId: "sess-1", task: task(), running: false, bare: true });
+  expect(side.has("task-side-peek-status").length).toBe(0);
+  expect(side.has("task-side-peek-id").length).toBe(0);
+  expect(side.text()).not.toContain("T042");
+  expect(side.has("task-side-peek-title").length).toBe(1);
+  expect(side.text()).toContain("Rename the pane noun");
+  expect(side.has("task-side-peek-project").length).toBe(1);
+});

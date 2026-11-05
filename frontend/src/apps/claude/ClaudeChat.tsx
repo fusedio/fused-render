@@ -5960,6 +5960,7 @@ function ChatBody(props: ChatBodyProps) {
             {showHead ? (
               <Topbar
                 slim={peek}
+                {...(inSidePane ? { bare: true } : {})}
                 {...(mergedHeadRow
                   ? { lead: backBtn, tail: <>{breakoutBtn}{kebabEl}</>, noProject: true }
                   : // The slim peek head has no strip or merged row: it seats the button itself.
