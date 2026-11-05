@@ -136,6 +136,59 @@ def test_worktree_hint_enter_and_agent(agent):
     assert agent._worktree_hint("Read", {"file_path": "x"}) is None
 
 
+def test_enter_worktree_name_resolves_under_repo_root(agent, tmp_path):
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    sub = root / "src" / "pkg"
+    sub.mkdir(parents=True)
+    got = agent._worktree_hint("EnterWorktree", {"name": "wt1"}, str(sub))
+    assert got == {"path": str(root / ".claude" / "worktrees" / "wt1"),
+                   "branch": "", "via": "enter"}
+    # .git as a FILE (a linked worktree) counts too
+    wt = tmp_path / "linked"
+    wt.mkdir()
+    (wt / ".git").write_text("gitdir: x")
+    assert agent._worktree_hint("EnterWorktree", {"name": "a"}, str(wt))["path"] == str(
+        wt / ".claude" / "worktrees" / "a")
+    # an explicit relative path resolves against cwd
+    assert agent._worktree_hint("EnterWorktree", {"path": "../w"}, str(sub))["path"] == str(
+        root / "src" / "w")
+    # no repo found / no cwd: the bare name, as before
+    assert agent._worktree_hint("EnterWorktree", {"name": "n"}, "/nonexistent-zz/q")["path"] == "n"
+
+
+def test_agent_hint_carries_the_standing_worktree_as_prev(agent):
+    bash = {"path": "/r/wt", "branch": "b", "via": "bash"}
+    ag = {"path": "", "branch": "", "via": "agent", "label": "x"}
+    got = agent._next_worktree_hint(bash, ag)
+    assert got == {**ag, "prev": bash}
+    # a second agent hint carries the same prev, never nested
+    got2 = agent._next_worktree_hint(got, {**ag, "label": "y"})
+    assert got2["prev"] == bash and "prev" not in got2["prev"]
+    # enter with an absolute path counts; relative / none does not
+    enter = {"path": "/r/e", "branch": "", "via": "enter"}
+    assert agent._next_worktree_hint(enter, ag)["prev"] == enter
+    assert agent._next_worktree_hint({"path": "e", "branch": "", "via": "enter"}, ag) == ag
+    assert agent._next_worktree_hint(None, ag) == ag
+    # exit clears; remove of another path stands (remove of prev: see below)
+    assert agent._next_worktree_hint(got, dict(agent._WT_EXIT)) is None
+    assert agent._next_worktree_hint(got, {**agent._WT_EXIT, "removed": "/r/other"}) is got
+
+
+def test_remove_of_prev_under_an_agent_hint_keeps_the_agent_hint(agent):
+    bash = {"path": "/r/wt", "branch": "b", "via": "bash"}
+    ag = {"path": "", "branch": "", "via": "agent", "label": "x"}
+    cur = agent._next_worktree_hint(bash, ag)
+    assert cur["prev"] == bash
+    # removing prev's checkout drops only prev; the isolated task's label stays
+    assert agent._next_worktree_hint(cur, {**agent._WT_EXIT, "removed": "/r/wt"}) == ag
+    # an exit with no `removed` still clears, a remove of another path stands
+    assert agent._next_worktree_hint(cur, dict(agent._WT_EXIT)) is None
+    assert agent._next_worktree_hint(cur, {**agent._WT_EXIT, "removed": "/r/other"}) is cur
+    # a bash hint whose own path is removed still clears
+    assert agent._next_worktree_hint(bash, {**agent._WT_EXIT, "removed": "/r/wt"}) is None
+
+
 def test_poll_exposes_the_latest_worktree_hint(agent, run_dir):
     assert _poll(agent, run_dir, [_tool_start("Bash")])["worktree_hint"] is None
     rows = [_assistant_tool("Bash", {"command": "git worktree add ../a -b a"}, "t1"),

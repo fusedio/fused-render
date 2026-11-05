@@ -8,7 +8,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import type { Task } from "@platform/lib/api";
 import type { WorktreeHint } from "../protocol/types";
 
-const { WorktreeHintChip, visibleWorktreeHint, shownWorktreeHint, isSameFolder } = await import("./WorktreeHintChip");
+const { WorktreeHintChip, visibleWorktreeHint, shownWorktreeHint, isSameFolder, breakoutCwdFor } = await import("./WorktreeHintChip");
 const { Topbar } = await import("./Topbar");
 
 const mounted: ReactTestRenderer[] = [];
@@ -82,6 +82,13 @@ describe("visibleWorktreeHint", () => {
     expect(visibleWorktreeHint(agent, [t("completed", "worktree")])).toBe(null);
     expect(visibleWorktreeHint(agent, [t("running", "")])).toBe(null);
     expect(visibleWorktreeHint(agent, undefined)).toBe(null);
+  });
+  test("a finished agent hint falls back to the main agent's worktree (prev)", () => {
+    const prev: WorktreeHint = { path: "/r/.claude/worktrees/main-wt", branch: "", via: "enter" };
+    const withPrev: WorktreeHint = { ...agent, prev };
+    expect(visibleWorktreeHint(withPrev, [t("running", "worktree")])).toBe(withPrev);
+    expect(visibleWorktreeHint(withPrev, [t("completed", "worktree")])).toBe(prev);
+    expect(breakoutCwdFor(shownWorktreeHint(withPrev, [], "/r"))).toBe("/r/.claude/worktrees/main-wt");
   });
   test("other hints do not depend on tasks", () => {
     expect(visibleWorktreeHint(bash, [])).toBe(bash);

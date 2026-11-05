@@ -5161,6 +5161,47 @@ describe("the run's tasks", () => {
     expect(await run("/x/wt")).toBe(null);
   });
 
+  test("an agent hint lands carrying the standing worktree as prev", async () => {
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const agentHint = { path: "", branch: "", via: "agent" as const, label: "t" };
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ worktree_hint: hint })
+          : n === 1
+            ? poll({ worktree_hint: agentHint })
+            : poll({ done: true, segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().worktreeHint).toEqual({ ...agentHint, prev: hint });
+  });
+
+  test("removing the prev worktree under an agent hint drops only prev; a bare exit clears", async () => {
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const agentHint = { path: "", branch: "", via: "agent" as const, label: "t" };
+    const run = async (exit: { removed?: string }) => {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) =>
+          n === 0
+            ? poll({ worktree_hint: hint })
+            : n === 1
+              ? poll({ worktree_hint: agentHint })
+              : n === 2
+                ? poll({ worktree_hint: { path: "", branch: "", via: "exit", ...exit } })
+                : poll({ done: true, segments: [text("ok")], text: "ok" }),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      return controller.getState().worktreeHint;
+    };
+    expect(await run({ removed: "/x/wt" })).toEqual(agentHint);
+    expect(await run({})).toBe(null);
+    expect(await run({ removed: "/x/other" })).toEqual({ ...agentHint, prev: hint });
+  });
+
   test("an equal worktree hint does not bump rev", async () => {
     const hint = { path: "../wt", branch: "feat/x", via: "bash" as const };
     const revs: number[] = [];

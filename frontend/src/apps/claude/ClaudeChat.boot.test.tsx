@@ -723,6 +723,21 @@ test("a breakout card opens on the chat, never the folder landing", async () => 
   expect(byClass(r, "c-home").length).toBe(0);
 });
 
+// SEND BACK: the card offers it only once the breakout has stopped, so the
+// reported `send` must start a fresh turn on an idle chat. It used to be a
+// follow-up and failed "no run to attach this message to".
+test("a breakout's reported send starts a new turn when the chat is idle", async () => {
+  let reported: { send: (t: string) => void } | null = null;
+  await mountChat({ breakout: true, onBreakoutState: (s: { send: (t: string) => void }) => { reported = s; } });
+  await settle(20);
+  expect(reported).not.toBeNull();
+  expect(started()).toHaveLength(0);
+  await act(async () => reported!.send("handoff text"));
+  await settle(20);
+  expect(started()).toHaveLength(1);
+  expect(started()[0]!.params["message"] ?? JSON.stringify(started()[0])).toContain("handoff text");
+});
+
 // BREAKOUT PICK MODE: the top-bar button toggles it; each exchange is one click target.
 describe("breakout pick mode", () => {
   const HISTORY = [
