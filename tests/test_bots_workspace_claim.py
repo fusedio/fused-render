@@ -80,7 +80,7 @@ def test_require_workspace_raises_while_another_home_holds_the_claim():
             registry.require_workspace()
         assert isinstance(e.value, ValueError)
         assert str(e.value) == (f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); "
-                                "use that window or quit it")
+                                "use that window, quit it, or take them over here")
     assert registry.workspace_claimed() is True  # retried and won once the other home let go
     registry.require_workspace()
 
@@ -92,18 +92,19 @@ def test_doors_refuse_without_the_claim_and_open_after_the_pass(client, ws, walk
                                                           "minutes": 60}))
     assert st == 200
     rid = out["routine"]["id"]
-    msg = f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window or quit it"
+    msg = f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window, quit it, or take them over here"
     other = OtherHome().__enter__()
     try:
         registry._pass()
         registry._pass()
         assert walks == []  # no takeover walk without the claim: the claimant's running tasks are not ours
-        assert j(client.post(f"/api/bots/{bid}/send", {"text": "find me a laptop"})) == (409, {"error": msg})
+        st, out = j(client.post(f"/api/bots/{bid}/send", {"text": "find me a laptop"}))
+        assert (st, out["error"], out["reason"]) == (409, msg, "workspace_busy")  # + `holder` for the page's Override
         st, out = j(client.post(f"/api/phone/bots/{bid}/send", {"text": "hi"}))
         assert (st, out["error"]) == (409, msg)
         st, out = j(client.post(f"/api/bots/{bid}/routines", {"op": "add", "text": "check", "kind": "interval",
                                                               "minutes": 60}))
-        assert (st, out) == (409, {"error": msg})  # read-only for bot state: the claimant's next save would revert it
+        assert (st, out["error"]) == (409, msg)  # read-only for bot state: the claimant's next save would revert it
         assert j(client.post(f"/api/bots/{bid}/routines", {"op": "run", "rid": rid}))[0] == 409
         assert j(client.post("/api/bots", {"name": "Second"}))[0] == 409
         assert j(client.post(f"/api/bots/{bid}/open", {})) == (200, {"ok": True, "setup": "pending"})
@@ -380,7 +381,7 @@ def test_every_bot_write_refuses_without_the_claim_and_works_after(client, ws, w
     registry.forget(bid)
     before = _files(bid)
     ids_before = store.list_ids()
-    msg = f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window or quit it"
+    msg = f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window, quit it, or take them over here"
     other = OtherHome().__enter__()
     try:
         registry._pass()  # a started owner without the claim

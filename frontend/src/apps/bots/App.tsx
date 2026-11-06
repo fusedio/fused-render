@@ -8,7 +8,7 @@
 // mirrors OpenBot: layout first (useLayout, before paint), then the store's poll loop, the builds feed,
 // notifications and the face animator. The theme is the shell's (`data-theme` on <html>); the page only maps it
 // onto its own tokens.
-import { useEffect, type DragEvent } from "react";
+import { useEffect, useState, type DragEvent } from "react";
 import { useBotsFeeder } from "@platform/lib/botsPulse";
 import "./styles/bots.css";
 import { AppsPanel } from "./apps/AppsPanel";
@@ -95,10 +95,13 @@ function onPageDrop(e: DragEvent<HTMLDivElement>): void {
 
 function Banner() {
   const banner = useBotsSelector((s) => s.banner);
+  const [busy, setBusy] = useState(false);
+  const action = banner.action;
   return (
     <div id="banner" className={banner.show ? "show" : ""}>
       <span id="bannerText">{banner.text}</span>
-      <button id="bannerBtn" onClick={() => { hideBanner(); void poll(); }}>Retry</button>
+      {action && <button id="bannerAct" disabled={busy} onClick={() => { setBusy(true); void action.run().finally(() => setBusy(false)); }}>{busy ? "Taking over…" : action.label}</button>}
+      <button id="bannerBtn" onClick={() => { hideBanner(true); void poll(); }}>{banner.sticky ? "Dismiss" : "Retry"}</button>
     </div>
   );
 }

@@ -184,7 +184,9 @@ def _handled(fn):
         try:
             return fn(*args, **kwargs)
         except registry.WorkspaceBusy as e:  # a ValueError: before the 400 branch
-            return _error(str(e), 409)
+            # `reason` + `holder` let the page offer "Take over here" (POST /api/bots/workspace/take).
+            return Response(json.dumps({"error": str(e), "reason": "workspace_busy", "holder": e.holder}),
+                            status_code=409, media_type="application/json")
         except (ValueError, RuntimeError) as e:
             msg = str(e) or e.__class__.__name__
             return _error(msg, 404 if msg.startswith("no such bot") else 400)
@@ -511,6 +513,52 @@ def bots_setup():
     true here; a forwarder overwrites it with its own view (forward_middleware);
     null when no process does."""
     return {"chrome": _chrome_snapshot(), "claude": _claude_snapshot(), "owner": registry.owner_info()}
+
+
+@router.post("/api/bots/workspace/take")
+@_handled
+def bots_workspace_take(x_fused: str | None = Header(default=None)):
+    """The page's Override on a 409 "workspace_busy" (registry module docstring): ask the holder named in the
+    workspace lock record to yield, then claim the workspace here and run its steps, so the doors open on
+    return. `{taken, holder, error}`; 409 with the error sentence when the claim could not be taken."""
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
+
+    def post_yield(origin: str) -> str:
+        import httpx
+        try:
+            r = httpx.post(origin + "/api/bots/workspace/yield", headers={"X-Fused": "1"},
+                           timeout=registry.WS_YIELD_BUDGET_S + 10.0)
+        except httpx.HTTPError as e:
+            return f"could not reach the holder at {origin} ({e.__class__.__name__}); quit it instead"
+        if r.status_code == 404:
+            return f"the holder at {origin} is an older build without a yield door; quit it instead"
+        if r.status_code >= 400:
+            try:
+                msg = (r.json() or {}).get("error") or ""
+            except ValueError:
+                msg = ""
+            return f"the holder at {origin} refused to let go: {msg or r.status_code}"
+        return ""
+
+    out = registry.take_workspace(post_yield)
+    if not out["taken"]:
+        return Response(json.dumps({"error": out["error"], "reason": "workspace_busy", "holder": out["holder"]}),
+                        status_code=409, media_type="application/json")
+    return out
+
+
+@router.post("/api/bots/workspace/yield")
+@_handled
+def bots_workspace_yield(x_fused: str | None = Header(default=None)):
+    """Another home's server is taking the workspace (bots_workspace_take): stop the engines and Chromes here,
+    drop the claim and stand down for the cooldown (registry.yield_workspace). `{yielded}`: False when this
+    process did not hold the claim (nothing to do)."""
+    guard = _require_fused(x_fused)
+    if guard:
+        return guard
+    return {"yielded": registry.yield_workspace()}
 
 
 @router.get("/api/bots/usage")

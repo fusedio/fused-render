@@ -8,7 +8,7 @@
 // (routes.ts: the selection IS the path), the UI request slots (dialog / context menu) the panes open each other
 // with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
-import { api, apiHooks, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
+import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
 import { landingBot } from "../lib/landing";
 import { botHasUnread } from "@platform/lib/botsPulse";
@@ -66,7 +66,9 @@ export interface BotsState {
   scrollSeq: { bot: string; seq: number } | null;
   /** Set by send(): the next render shows the message you just sent. The thread clears it (setScrollToEnd(false)). */
   scrollToEnd: boolean;
-  banner: { show: boolean; text: string };
+  /** `sticky`: survives the poll's and the stall hook's hideBanner (only Retry / Dismiss or the action clear it).
+   *  `action`: a button beside Retry (the "workspace_busy" 409's Override). */
+  banner: { show: boolean; text: string; sticky?: boolean; action?: { label: string; run: () => Promise<void> } };
   toasts: Toast[];
   buildsChip: BuildsChip;
   ui: { dialog: DialogReq | null; menu: MenuReq | null };
@@ -264,8 +266,21 @@ function flushPendingStage(): void {
 }
 
 // ------------------------------------------------------------------ banner ----
-export function showBanner(msg: string): void { commit({ banner: { show: true, text: msg } }); }
-export function hideBanner(): void { if (S.banner.show) commit({ banner: { ...S.banner, show: false } }); }
+export function showBanner(msg: string, opts: { sticky?: boolean; action?: { label: string; run: () => Promise<void> } } = {}): void {
+  if (S.banner.show && S.banner.sticky && !opts.sticky) return;  // a sticky banner is not displaced by a passing one
+  commit({ banner: { show: true, text: msg, sticky: !!opts.sticky, action: opts.action } });
+}
+/** `force`: Retry / Dismiss and a finished action; without it a sticky banner stays (the poll hides only passing ones). */
+export function hideBanner(force = false): void { if (S.banner.show && (force || !S.banner.sticky)) commit({ banner: { show: false, text: S.banner.text } }); }
+
+/** A door the workspace gate refused (409 "workspace_busy"): the banner stays until acted on, and Override asks
+ *  the holding server to yield, claims the workspace here, then polls so the doors read as open. */
+function showWorkspaceBusy(e: ApiError): void {
+  showBanner(e.message, { sticky: true, action: { label: "Take over here", run: async () => {
+    try { await api.workspaceTake(); hideBanner(true); await poll(); }
+    catch (err) { showBanner(errMsg(err), { sticky: true, action: S.banner.action }); }
+  } } });
+}
 
 // ------------------------------------------------------------------ unread ----
 // "Seen" is the server's Bot.seen_seq (D1386; it was localStorage, which the port walk empties on relaunch). markSeen
@@ -611,7 +626,7 @@ export async function pollOnce(): Promise<void> {
 /** Run a mutation, then poll so the page shows its effect; errors land in the banner unless silent. Resolves undefined on failure. */
 export async function act<T>(call: () => Promise<T>, silent = false): Promise<T | undefined> {
   try { const r = await call(); await poll(); return r; }
-  catch (e) { if (!silent) showBanner(errMsg(e)); return undefined; }
+  catch (e) { if (isWorkspaceBusy(e)) showWorkspaceBusy(e); else if (!silent) showBanner(errMsg(e)); return undefined; }
 }
 
 /** The live view (Stage) opened/closed: poll every 400 ms while open. The thread stays beside the page, so nothing re-pins. */

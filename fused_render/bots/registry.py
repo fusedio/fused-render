@@ -55,6 +55,17 @@ browser sweep), logs "another fused-render owns routines for <bots_root>" once,
 and re-tries the claim every pass, so a quitting main app hands routines over.
 The claim drops with the owner lock (`_drop_routines_lock`).
 
+The claim can be MOVED without quitting (2026-11-06): several dev servers on one
+workspace (each its own `FUSED_RENDER_BRANCH` home) used to leave every window
+but the first unable to test bots. The claimant writes the same record as the
+owner lock into `.routines.lock` (`_write_ws_record`), so a refused process can
+name it (`workspace_info()`, the 409's `holder`) and ask it to let go:
+`POST /api/bots/workspace/take` (routes.py) posts `/api/bots/workspace/yield`
+to the holder's origin, which stops its engines and Chromes, drops the claim
+(`yield_workspace`), forgets its Bots (they rebuild read-only) and skips
+re-claiming for `WS_YIELD_COOLDOWN_S`, so the asker's claim (`take_workspace`)
+lands before the holder's next pass. The page's Override button is that call.
+
 `shutdown()` (from `@on_shutdown_always _shutdown_bots`) stops every bot's
 task and Chrome and drops the lock LAST, so a successor never builds Bots
 while this process's engines still write. Both hooks live in
@@ -94,8 +105,15 @@ _chan = {"router": None}   # the channels router (bots/channels/router.py); None
 # `ws_fh`: the flock'd `<bots_root>/.routines.lock` (the workspace claim, module docstring); `ws_ready`: the
 # shared-workspace steps ran under it; `ws_logged`: the "another process owns routines" line went out.
 _OWNER = {"fh": None, "lean": False, "ready": False, "elect_lock": threading.Lock(),
-          "ws_fh": None, "ws_ready": False, "ws_logged": False}
+          "ws_fh": None, "ws_ready": False, "ws_logged": False,
+          # `ws_yield_until`: after yield_workspace(), no claim attempt until this monotonic time (the taker's claim
+          # must land before this process's next pass). `ws_lock`: the workspace steps run under it, whether from
+          # the pass or from take_workspace() on a request thread, so they never run twice at once (an RLock:
+          # take_workspace holds it while _workspace_steps takes it again).
+          "ws_yield_until": 0.0, "ws_lock": threading.RLock()}
 WS_LOCK = ".routines.lock"
+WS_YIELD_COOLDOWN_S = 30.0
+WS_YIELD_BUDGET_S = 8.0
 
 
 class NotOwner(RuntimeError):
@@ -112,10 +130,13 @@ class WorkspaceBusy(ValueError):
     """This process owns its home but not the workspace claim (module docstring): another fused-render instance
     runs the bots in this workspace, so nothing here may start a bot engine. A 409 on the routes."""
 
-    def __init__(self, root: str = ""):
+    def __init__(self, root: str = "", holder: dict | None = None):
         self.root = root
-        super().__init__(f"another fused-render instance owns the bots in this workspace ({root}); "
-                         "use that window or quit it")
+        self.holder = holder
+        who = _owner_words(holder) if holder and holder.get("known") else "another fused-render instance"
+        where = f" at {holder['origin']}" if holder and holder.get("origin") else ""
+        super().__init__(f"{who}{where} owns the bots in this workspace ({root}); "
+                         "use that window, quit it, or take them over here")
 
 
 def _owner_words(info: dict | None) -> str:
@@ -293,7 +314,7 @@ def require_workspace() -> None:
     home's owner holds the workspace claim."""
     require_owner()
     if not workspace_claimed():
-        raise WorkspaceBusy(bpaths.bots_root())
+        raise WorkspaceBusy(bpaths.bots_root(), workspace_info())
 
 
 def _elect() -> bool:
@@ -438,9 +459,10 @@ def _become_owner() -> None:
         _workspace_steps()
         return
     _OWNER["ready"] = True
-    claimed = _claim_workspace()
-    if claimed:
-        _OWNER["ws_ready"] = True
+    with _OWNER["ws_lock"]:
+        claimed = _claim_workspace()
+        if claimed:
+            _OWNER["ws_ready"] = True
     # Router BEFORE anything that builds a Bot (the takeover walk, the sweep): a Bot's __init__ may emit an
     # interrupted hand-off's result card that must reach the phone, and on_event skips a router that is None.
     steps = [("layout migration", lambda: bpaths.migrate_layout()),
@@ -469,9 +491,10 @@ def _workspace_steps() -> None:
     """The shared-workspace steps, once, on the first pass that holds the workspace claim after an ownership
     that started without it (a main app on the same workspace quit). The router is already up (`_become_owner`),
     so the takeover walk's Bots can reach the phone as they would at first ownership."""
-    if _OWNER["ws_ready"] or not _claim_workspace():
-        return
-    _OWNER["ws_ready"] = True
+    with _OWNER["ws_lock"]:
+        if _OWNER["ws_ready"] or not _claim_workspace():
+            return
+        _OWNER["ws_ready"] = True
     _run_steps((("v3 folder migration", _migrate_v3), ("Super Bot seed", _seed_super),
                 ("takeover walk", _reconcile), ("browser sweep", _sweep_browsers)))
 
@@ -481,6 +504,8 @@ def _claim_workspace() -> bool:
     (module docstring). True when held. A miss logs once and is re-tried by the caller's next pass."""
     if _OWNER["ws_fh"] is not None:
         return True
+    if time.monotonic() < _OWNER["ws_yield_until"]:
+        return False  # just yielded: the taker's claim goes first (module docstring)
     try:
         root = bpaths.bots_root()
         fh = open(os.path.join(root, WS_LOCK), "a+", encoding="utf-8")
@@ -499,10 +524,124 @@ def _claim_workspace() -> bool:
                         root)
         return False
     _OWNER["ws_fh"] = fh
+    _write_ws_record()
     if _OWNER["ws_logged"]:
         logger.info("bots: took over routines for %s", root)
     _OWNER["ws_logged"] = False
     return True
+
+
+def _write_ws_record() -> None:
+    """Our record into the workspace lock file (the owner record's shape plus `home`), so another home's server
+    can name and reach the claimant (workspace_info). Written on the claim and refreshed by every pass."""
+    fh = _OWNER["ws_fh"]
+    if fh is None:
+        return
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write(json.dumps({**_record(), "home": bpaths.root()}))
+        fh.flush()
+    except OSError:
+        logger.debug("bots: could not write the workspace lock record", exc_info=True)
+
+
+def _read_ws_record() -> dict | None:
+    try:
+        with open(os.path.join(bpaths.bots_root(), WS_LOCK), encoding="utf-8") as f:
+            raw = f.read().strip()
+    except OSError:
+        return None
+    try:
+        rec = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def workspace_info() -> dict | None:
+    """Who holds the workspace claim: `{this, known, pid, origin, app, version, home}`; None when nobody does
+    (the flock is free) or when this process holds it. `known` False = held by an older build that wrote no
+    record (nothing to post a yield to)."""
+    if _OWNER["ws_fh"] is not None:
+        return None
+    path = os.path.join(bpaths.bots_root(), WS_LOCK)
+    if not os.path.exists(path):
+        return None
+    try:
+        fh = open(path, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        if _platform.flock(fh, blocking=False):
+            _platform.funlock(fh)
+            return None
+    finally:
+        fh.close()
+    rec = _read_ws_record()
+    if rec is None or not _pid_alive(rec.get("pid")):
+        return {"this": False, "known": False, "pid": None, "origin": "", "app": "", "version": "", "home": ""}
+    return {"this": False, "known": True, "pid": rec.get("pid"), "origin": rec.get("origin") or "",
+            "app": rec.get("app") or "", "version": rec.get("version") or "", "home": rec.get("home") or ""}
+
+
+def yield_workspace(budget_s: float = WS_YIELD_BUDGET_S) -> bool:
+    """Let another home's server take the workspace claim (module docstring): stop every loaded bot's task and
+    every Chrome this process launched, join the task threads on the budget, drop the claim, forget the Bots (the
+    next `get()` rebuilds them read-only from disk, so nothing here writes over the taker's state) and skip
+    re-claiming for WS_YIELD_COOLDOWN_S. True when this process held the claim; False (nothing done) otherwise."""
+    from fused_render.bots import browsers
+    with _OWNER["ws_lock"]:
+        if _OWNER["ws_fh"] is None:
+            return False
+        started = time.monotonic()
+        bots = loaded()
+        for b in bots:
+            try:
+                b.stop()
+            except Exception:  # noqa: BLE001
+                logger.warning("bot %s: stop failed while yielding the workspace", getattr(b, "id", "?"), exc_info=True)
+        try:
+            browsers.stop_all(budget_s)
+        except Exception:  # noqa: BLE001
+            logger.warning("stopping the bots' Chromes failed while yielding the workspace", exc_info=True)
+        for b in bots:
+            t = getattr(b, "thread", None)
+            if t is not None and t.is_alive():
+                t.join(max(0.0, started + budget_s - time.monotonic()))
+        _OWNER["ws_yield_until"] = time.monotonic() + WS_YIELD_COOLDOWN_S
+        _drop_workspace_claim()
+        with _lock:
+            _bots.clear()
+        logger.info("bots: yielded the workspace claim for %s on request", bpaths.bots_root())
+        return True
+
+
+def take_workspace(post_yield) -> dict:
+    """Take the workspace claim for this process (the page's Override): `post_yield(origin)` asks the holder to
+    yield (routes.py does the HTTP), then the claim is tried here and the workspace steps run at once under
+    `ws_lock` (the pass takes the same lock), so the doors open when this returns rather than a pass later.
+    Returns `{taken, holder, error}`; raises nothing into the route."""
+    require_owner()
+    if workspace_claimed():
+        return {"taken": True, "holder": None, "error": ""}
+    holder = workspace_info()
+    if holder is not None:
+        if not holder.get("origin"):
+            return {"taken": False, "holder": holder,
+                    "error": "the holder is an older build that cannot be asked to let go; quit it"}
+        err = post_yield(holder["origin"])
+        if err:
+            return {"taken": False, "holder": holder, "error": err}
+    with _OWNER["ws_lock"]:
+        _OWNER["ws_yield_until"] = 0.0  # a server that yielded earlier may take it back from its own window
+        if not _claim_workspace():
+            return {"taken": False, "holder": workspace_info(),
+                    "error": "the claim is still held; try again in a moment"}
+        if _OWNER["ready"]:
+            _workspace_steps()
+    logger.info("bots: took the workspace claim for %s on request", bpaths.bots_root())
+    return {"taken": True, "holder": holder, "error": ""}
 
 
 def _drop_workspace_claim() -> None:
@@ -511,6 +650,12 @@ def _drop_workspace_claim() -> None:
     _OWNER["ws_logged"] = False
     if fh is None:
         return
+    try:  # an empty file reads as "nobody" to the next workspace_info(); our record must not outlive the claim
+        fh.seek(0)
+        fh.truncate()
+        fh.flush()
+    except Exception:  # noqa: BLE001
+        pass
     try:
         _platform.funlock(fh)
     except Exception:  # noqa: BLE001
@@ -699,6 +844,7 @@ def _pass() -> None:
     _write_lock_record()  # the heartbeat (`ticked_at`), read by owner_info() in other processes
     if not _claim_workspace():
         return  # another home's owner sweeps and ticks this workspace; re-tried next pass
+    _write_ws_record()  # the claimant's heartbeat, read by workspace_info() in other homes
     _sweep_handoffs()
     for b in all():
         try:
