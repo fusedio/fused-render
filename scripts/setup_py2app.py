@@ -698,6 +698,11 @@ if _BUILDING:
 
     setup(
         app=APP,
+        # Not the bundle folder's name: py2app's get_appname() reads the plist's
+        # CFBundleName ("Fused Render"), and create_appbundle names the folder
+        # `<CFBundleName>.app` and the binary from CFBundleExecutable. This
+        # `name=` only seeds the default plist, which OPTIONS["plist"] overrides.
+        # A space here would trip setuptools' package-name validation.
         name=f"{_EXE}{branch_suffix()}",
         version=VERSION,
         options={"py2app": OPTIONS},
