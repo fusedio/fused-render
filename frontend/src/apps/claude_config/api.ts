@@ -394,7 +394,7 @@ export const skills = {
 
 // -- mcp ----------------------------------------------------------------------
 
-export type McpStatus = "connected" | "needs-auth" | "failed" | "pending" | "unknown";
+export type McpStatus = "connected" | "needs-auth" | "failed" | "pending" | "disabled" | "unknown";
 export type McpKind = "user" | "connector" | "plugin";
 
 export interface McpServer {
