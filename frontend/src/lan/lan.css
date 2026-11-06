@@ -211,11 +211,34 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
 .lan-bots .bots-page .bots > label.search {
   margin: 0 16px 8px;
 }
+/* ONE TAP OPENS A ROW. iOS fires the first tap on an element as hover when
+   that hover changes what is there, and only the second tap as a click
+   (WebKit's hover-reveal rule). The desktop row reveals its actions, swaps
+   the status ring for a checkbox and lifts the action wash on hover — all
+   of it content. A phone has no pointer to hover with, so under this host
+   the row's hover state is the row's resting state: nothing appears, and
+   the tap is a click. The actions themselves live in the peek's menu. */
+.lan-tasks .tasks-row:hover .tasks-act,
+.lan-tasks .tasks-row:hover > .tasks-acts > .tasks-acts-inner,
+.lan-tasks .tasks-row:hover > .tasks-row-check:not([data-checked]) {
+  opacity: 0;
+  pointer-events: none;
+}
+.lan-tasks .tasks-row:hover .tasks-rowmark .schedule-ring {
+  opacity: 1;
+  pointer-events: auto;
+}
 /* "Open in Explorer" (a row's action and the peek header's) opens the Mac's
    Explorer; there is none on the phone. */
 .lan-tasks .tasks-act--page,
 .lan-tasks .task-side-peek-open {
   display: none;
+}
+/* The toolbar (List / Board, filters, New task) wraps at 390px instead of
+   running off the right edge. */
+.lan-tasks .schedule-toolbar {
+  flex-wrap: wrap;
+  row-gap: 8px;
 }
 /* The Tasks page's own title ("Tasks") repeats the switch; the toolbar
    (List / Board, filters, New task) stays and aligns to the page gutter. */
