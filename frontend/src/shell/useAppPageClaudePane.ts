@@ -263,30 +263,3 @@ export function chatDoorOnApp(href: string, dir: string): { params: Record<strin
   if (!params.session_id && !params.queued) return null;
   return { params };
 }
-
-/**
- * THE SAME QUESTION ON THE CANVAS PROJECT PAGE (CanvasPage `openChatHere`;
- * owner, 2026-11-03: the pane and rail on the canvas page as on the app
- * page). A canvas task's door is the EDITOR's URL (tasks-lib `taskHref` →
- * canvasPagePath: `/canvases/<env>/<name>?session_id=`, with `node=` +
- * `node_file=` for a node's chat). The canvas chat — no node named — opens
- * in this page's own pane; a NODE's chat is the editor's to show (its right
- * pane on that node), so that door answers null and navigates as it says.
- */
-export function chatDoorOnCanvas(
-  href: string,
-  env: string,
-  name: string,
-): { params: Record<string, string> } | null {
-  const url = new URL(href, "http://x");
-  const m = /^\/canvases\/([a-z]+)\/([A-Za-z0-9_]+)$/.exec(url.pathname);
-  if (!m || m[1] !== env || m[2] !== name) return null;
-  if (url.searchParams.get("node") || url.searchParams.get("node_file")) return null;
-  const params: Record<string, string> = {};
-  for (const k of ["session_id", "queued", "backend"]) {
-    const v = url.searchParams.get(k);
-    if (v) params[k] = v;
-  }
-  if (!params.session_id && !params.queued) return null;
-  return { params };
-}

@@ -298,28 +298,39 @@ describe("buildBreakoutContext", () => {
     expect(bare).not.toContain("titled");
     expect(bare).toContain('"How does the cache work?"');
   });
-  test("a long first prompt is cut and a long message is capped", () => {
-    const long = [
-      { role: "user", key: "u0", text: "p".repeat(500) },
-      { role: "assistant", key: "a", text: "x".repeat(9000) },
+  test("a selected 10,000-char user prompt appears in full", () => {
+    const big = "p".repeat(10000);
+    const t = [
+      { role: "user", key: "u", text: big },
+      { role: "assistant", key: "a", text: "ok" },
     ] as const;
-    const { block } = buildBreakoutContext(long, ["a"], "t");
-    expect(block).not.toContain("p".repeat(250));
-    expect(block).toContain("p".repeat(200) + "…");
-    expect(block).not.toContain("x".repeat(4100));
-    expect(block).toContain("…");
+    const { block } = buildBreakoutContext(t, ["u", "a"], "t");
+    expect(block).toContain(big);
+    expect(block).not.toContain("…");
   });
-  test("the block is capped, keeping the newest messages", () => {
-    const many = Array.from({ length: 12 }, (_, i) => ({
+  test("30 turns of 4,000 chars are all kept", () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({
       role: i % 2 ? "assistant" : "user",
       key: "k" + i,
-      text: `m${i} ` + "z".repeat(3900),
+      text: `m${i} ` + "z".repeat(3995),
     }));
     const { block, count } = buildBreakoutContext(many, many.map((t) => t.key), "t");
-    expect(block.length).toBeLessThan(21000);
-    expect(count).toBeLessThan(12);
-    expect(block).toContain("m11 ");
-    expect(block).not.toContain("User: m0 ");
+    expect(count).toBe(30);
+    expect(block).toContain("User: m0 ");
+    expect(block).toContain("Assistant: m29 ");
+    expect(block).not.toContain("…");
+  });
+  test("a long title and a long first prompt appear in full", () => {
+    const title = "T".repeat(500);
+    const first = "f".repeat(500);
+    const t = [
+      { role: "user", key: "u0", text: first },
+      { role: "assistant", key: "a", text: "reply" },
+    ] as const;
+    const r = buildBreakoutContext(t, ["a"], title);
+    expect(r.block).toContain(JSON.stringify(title));
+    expect(r.block).toContain(JSON.stringify(first));
+    expect(r.title).toBe(title);
   });
   test("a tool-only assistant turn still contributes its files, not a message", () => {
     const t = [
@@ -331,18 +342,36 @@ describe("buildBreakoutContext", () => {
     expect(block).toContain("- /w/only.py");
     expect(block).not.toContain("Assistant:");
   });
-  test("the cap covers the title and the files list", () => {
-    const segs = Array.from({ length: 200 }, (_, i) => ({ kind: "tool", name: "Read", input: { file_path: "/w/" + "d".repeat(150) + i } }));
+  test("a tool-only turn before the first text message still contributes its files", () => {
     const t = [
-      { role: "user", key: "u", text: "q".repeat(4000) },
-      { role: "assistant", key: "a", text: "x".repeat(4000), segments: segs },
-      { role: "user", key: "u2", text: "y".repeat(4000) },
-      { role: "assistant", key: "a2", text: "z".repeat(4000) },
-      { role: "user", key: "u3", text: "w".repeat(4000) },
-      { role: "assistant", key: "a3", text: "v".repeat(4000) },
+      { role: "assistant", key: "a", text: "", segments: [{ kind: "tool", name: "Read", input: { file_path: "/a/early.ts" } }] },
+      { role: "user", key: "u", text: "then this" },
+    ] as const;
+    const { block, count } = buildBreakoutContext(t, ["a", "u"], "t");
+    expect(count).toBe(1);
+    expect(block).toContain("- /a/early.ts");
+  });
+  test("a selection of only tool-only turns still counts 0", () => {
+    const t = [
+      { role: "assistant", key: "a", text: "", segments: [{ kind: "tool", name: "Read", input: { file_path: "/a/early.ts" } }] },
+    ] as const;
+    expect(buildBreakoutContext(t, ["a"], "t").count).toBe(0);
+  });
+  test("the files list is still capped and tool inputs stay out", () => {
+    const segs = Array.from({ length: 200 }, (_, i) => ({
+      kind: "tool",
+      name: "Read",
+      input: { file_path: "/w/" + "d".repeat(150) + i, pattern: "SECRET_PATTERN" },
+    }));
+    const t = [
+      { role: "user", key: "u", text: "q" },
+      { role: "assistant", key: "a", text: "x", segments: segs },
     ];
-    const { block } = buildBreakoutContext(t, t.map((m) => m.key), "T".repeat(5000));
-    expect(block.length).toBeLessThanOrEqual(20000 + 400);
+    const { block } = buildBreakoutContext(t, ["u", "a"], "t");
+    const files = block.split("Files these messages touched:\n")[1]!.split("\n</breakout-files>")[0]!;
+    expect(files.length).toBeLessThanOrEqual(4000);
+    expect(files.split("\n").length).toBeLessThan(200);
+    expect(block).not.toContain("SECRET_PATTERN");
   });
   test("an annotations-only prompt quotes its annotations, not the invisible marker", () => {
     const t = [

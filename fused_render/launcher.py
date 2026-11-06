@@ -266,9 +266,8 @@ def _appfile_row(a: dict, *, recent: bool = False) -> dict:
 
 
 def canvas_page_for(clone_dir: str) -> str | None:
-    """The shell URL PATH a canvas row opens at — the canvas's PROJECT page
-    (`/canvases-project/<env>/<name>`, the sidebar's canvas-row door, owner
-    2026-10-20: the tabbed read-only view, not the editor), or None when
+    """The shell URL PATH a canvas row opens at — the canvas's editor
+    (`/canvases/<env>/<name>`, the sidebar's canvas-row door), or None when
     ``clone_dir`` is not a clone. The native side (app.py
     ``_open_from_launcher``) resolves the row's key through this, the way
     `window_policy.shell_path_for` resolves an app folder's."""
@@ -278,13 +277,13 @@ def canvas_page_for(clone_dir: str) -> str | None:
     if clone is None:
         return None
     env, name, _dir = clone
-    return f"/canvases-project/{env}/{name}"
+    return f"/canvases/{env}/{name}"
 
 
 def _canvas_row(env: str, name: str, clone_dir: str, *, pinned: bool) -> dict:
     """A cloned canvas (`~/Fused/canvas/<env>/<name>`): ``kind: "canvas"``,
     ``path`` the clone dir (the key the open callback receives, and what
-    `file_results` dedupes against), ``url`` the project page, ``env`` so
+    `file_results` dedupes against), ``url`` the canvas editor, ``env`` so
     the panel can say which Fused a same-named prod/unstable pair belongs
     to. Never ``running``: a window's key (`window_policy.window_key_of`)
     names /apps and /explorer URLs only, so no window is ever keyed on a
@@ -292,7 +291,7 @@ def _canvas_row(env: str, name: str, clone_dir: str, *, pinned: bool) -> dict:
     path = canonical_fs_path(os.path.abspath(clone_dir)).rstrip("/") or clone_dir
     return {
         "path": path,
-        "url": f"/canvases-project/{env}/{name}",
+        "url": f"/canvases/{env}/{name}",
         "name": name,
         "title": name,
         "kind": "canvas",
@@ -308,7 +307,7 @@ def _canvases_offered() -> bool:
     """Whether canvas rows exist at all: the `canvases_enabled` preference
     (D427). Off, the launcher lists no canvas — not even one on the desk,
     which the sidebar hides too (its Canvases section is behind the same
-    switch). The flag alone, not the account: the project page answers
+    switch). The flag alone, not the account: the canvas editor answers
     signed out, as every canvases route does."""
     from fused_render.shell.prefs import canvases_enabled
 
@@ -367,7 +366,7 @@ def desk_rows() -> list[dict]:
         canvas = a.get("canvas")
         if canvas:
             # A canvas clone on the desk (its Canvases section): a canvas
-            # row to its project page, never an app row to an app page the
+            # row to its editor, never an app row to an app page the
             # clone does not have. Dropped outright while the feature is
             # off, as the sidebar drops the section.
             if offered:

@@ -65,9 +65,6 @@ import {
   ENV_NAMES,
   canvasNameFromPath,
   canvasPagePath,
-  canvasPageTabFromSearch,
-  canvasProjectFromPath,
-  canvasProjectPath,
   isWorkbenchEnv,
 } from "@apps/canvases/api";
 import { CanvasGlyph } from "@apps/canvases/glyph";
@@ -173,18 +170,14 @@ export function useDeskAppsOrdered(enabled: boolean): CurrentApp[] {
   return currentApps(entries, [], new Set(), []);
 }
 
-/** A canvas row's door: the canvas's PROJECT page (/canvases-project/…), on
- *  the tab the reader is on when they are already on a canvas project page
- *  ("same view, other canvas", the Projects rule below). Null for a clone of
- *  an unknown environment, which has no project page — the caller falls back
- *  to the folder's app page. Exported for the collapsed rail's canvas doors
- *  (GlobalSidebar), the same door as the row. */
+/** A canvas row's door: the canvas's editor (/canvases/<env>/<name>). Null
+ *  for a clone of an unknown environment, which has no editor route — the
+ *  caller falls back to the folder's app page. Exported for the collapsed
+ *  rail's canvas doors (GlobalSidebar), the same door as the row. */
 export function canvasRowHref(app: CurrentApp): string | null {
   const c = app.canvas;
   if (!c || !isWorkbenchEnv(c.env)) return null;
-  const onProject = canvasProjectFromPath(location.pathname) !== null;
-  const tab = onProject ? canvasPageTabFromSearch(location.search) : undefined;
-  return canvasProjectPath(c.env, c.name, tab !== undefined ? { tab } : undefined);
+  return canvasPagePath(c.env, c.name);
 }
 
 function CurrentAppRow({
@@ -214,7 +207,6 @@ function CurrentAppRow({
   // params (`?file=`, `?view=`) name things inside ONE app and are dropped.
   // Off an app page the default tab it is. Read at render: the sidebar
   // remounts on every navigation (App.tsx), so the href cannot go stale.
-  // A canvas row's door is the canvas's project page, same rule.
   const onAppPage = appPathFromPath(location.pathname) !== null;
   const tab = onAppPage ? appPageTabFromSearch(location.search) : undefined;
   const href = canvasRowHref(app) ?? appPageUrl(app.path, tab);
@@ -233,13 +225,7 @@ function CurrentAppRow({
     onSeen(app.path);
     // The row for the page already on screen, on the tab it already shows, is
     // a no-op; the tab's own params would be the only thing the click cleared.
-    // A canvas row lights on its EDITOR too (isActive), but its door is the
-    // PROJECT page: lit by the editor it still navigates — otherwise the
-    // sidebar offers no way from the editor to the project view (owner,
-    // 2026-10-22). Lit by the project page, `onCanvas` resolved from that
-    // path, so active ⇒ this canvas's project page ⇒ at the door.
-    const atDoor = active && (!app.canvas || canvasProjectFromPath(location.pathname) !== null);
-    if (!atDoor) navigateUrl(href);
+    if (!active) navigateUrl(href);
   };
   const onRemove = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -506,10 +492,9 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
 
   // Which row is the page on screen. Read at render: the sidebar remounts on
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
-  // For a canvas row: its project page OR its editor (both are "the canvas
-  // open"), so the dot clears on either and the row lights on either.
+  // For a canvas row: its editor.
   const onPath = appPathFromPath(location.pathname);
-  const onCanvas = canvasProjectFromPath(location.pathname) ?? canvasNameFromPath(location.pathname);
+  const onCanvas = canvasNameFromPath(location.pathname);
   const isActive = (app: CurrentApp): boolean =>
     app.canvas
       ? !!onCanvas && onCanvas.env === app.canvas.env && onCanvas.name === app.canvas.name
