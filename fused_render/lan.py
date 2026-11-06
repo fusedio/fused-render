@@ -146,6 +146,15 @@ def allowed_roots() -> list[str]:
     home = home_dir()
     roots = [fused_dir()]
     roots.extend(os.path.join(home, sub) for sub in _HOME_SUBROOTS)
+    # The chat's attachment folder (claude_agent/agent.py SHOTS): what a phone
+    # uploads into a task chat (`/api/fs/upload`) and the pictures the
+    # transcript draws back (`/api/fs/raw`). One bounded folder, pruned by its
+    # owner; never the runs tree beside it.
+    try:
+        from fused_render.claude_agent.agent import SHOTS
+        roots.append(SHOTS)
+    except Exception:  # noqa: BLE001 — no chat module, no attachments
+        logger.debug("lan: shots root unavailable", exc_info=True)
     try:
         from fused_render import registered_apps
 
@@ -278,25 +287,80 @@ _EXACT: dict[str, frozenset[str]] = {
 #: assets, the engine proxy (the daemon behind it is validated by
 #: engine_host, and the browser never sees its port), job cancel/dismiss.
 _PREFIXES = ("/static/", "/template-assets/", "/template-shared/", "/api/engines/", "/api/jobs/")
-#: The phone bots door (bots/phone.py, docs/bots.md §14): the bots as the iOS
-#: app shows them — a chat, the live shot, pause/stop, a small settings sheet,
-#: routines. Forwarded with ``X-Fused-Device`` stamped from the pairing record
-#: (``_AsDevice``). The desktop's own ``/api/bots`` stays a 404 here: it holds
-#: the Mac-screen operations (take-over, pop-out, profiles, reveal, …).
-_PHONE_BOTS = "/api/phone/bots"
-_PHONE_BOTS_METHODS = frozenset({"GET", "POST", "DELETE"})
-#: The lan page's own routes beside ``/``: the bots list and one bot's chat.
-_BOTS_PAGE = re.compile(r"^/bots(?:/[^/]+)?$")
-#: The phone tasks door (server/routers/phone_tasks.py, docs/phone-tasks.md):
-#: the agent tasks as the iOS app shows them — trimmed rows, a reduced
-#: transcript, the live card, a fixed set of verbs. Forwarded like the bots
-#: door, device stamped. The desktop's ``/api/tasks/*`` and
-#: ``/api/claude/agent`` stay a 404 here: they carry erase, worktree removal,
-#: terminal hand-off and the whole listing.
-_PHONE_TASKS = "/api/phone/tasks"
-_PHONE_TASKS_METHODS = frozenset({"GET", "POST"})
-#: The lan page's tasks routes: the list and one task. A key is a session id
-#: or ``pending:<entry>``; the colon is a plain path character.
+#: THE PHONE DOOR (docs/bots.md §14, D1467). The iOS app renders the desktop's
+#: own bots app and task chat (frontend/src/lan/main.tsx mounts `@apps/bots`
+#: and the shell's Tasks page), so the routes it reaches are the DESKTOP'S OWN,
+#: not a trimmed phone shape: one UI, one wire. What keeps a paired phone from
+#: driving the Mac is this table, which fails closed — a route not matched
+#: here (and not in `_EXACT`/`_PREFIXES`) is a 404 on the LAN. Every forward
+#: is `_AsDevice`-stamped (`X-Fused-Device` from the pairing record, a
+#: client-sent one dropped) so the desktop handlers can tell a phone from
+#: the Mac without ever trusting the client for it.
+#:
+#: Not here on purpose (the owner's call, 2026-11-06): everything that drives
+#: the Mac's screen, terminal, disk or worktrees — bots takeover / giveback /
+#: popout / dock / wake / profile / reveal / package / export / clone, the
+#: browsers, iMessage, builds, usage and workspace routes, `/api/bot-apps`;
+#: the agent's snapshot_* / terminal_command / set_mode / app_state /
+#: canvas_shot actions; `/api/tasks/erase`, `/api/claude/worktrees` create and
+#: remove, `/api/capture/*`, desktop `/api/prefs` writes. A row is one line;
+#: a reviewer reads a new line here as "the phone can now do this".
+_DOOR_BOT_OPS = ("pause", "resume", "stop", "clear", "open", "settings", "routines", "skills", "seen",
+                 "react", "flag", "attach", "goto", "nav", "tab", "tool", "viewport", "failures")
+_DOOR_AGENT_ACTIONS = frozenset({
+    "start", "send", "send_now", "poll", "cancel", "history", "cards", "commands", "decide", "defaults",
+    "sessions", "shots_dir", "image_to_png", "task_background", "task_output", "task_stop", "tasks",
+    "live_run", "live_host"})
+#: A bot id — never one of the collection's own names under the same prefix
+#: (`/api/bots/browsers` is not bot "browsers").
+_BOT = r"(?!(?:browsers|imessage|builds|usage|roster|workspace|profiles|presets|pulse|setup)(?:/|$))[A-Za-z0-9_-]+"
+#: (path pattern, methods, body gate) — the gate is ``(key, allowed values)``
+#: read from the JSON body, the way ``/api/claude/agent`` multiplexes on
+#: ``action``; None forwards the body unread.
+_DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | None], ...] = (
+    (re.compile(r"^/api/bots$"), frozenset({"GET", "POST"}), None),
+    (re.compile(r"^/api/bots/(pulse|presets|setup)$"), frozenset({"GET"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}$"), frozenset({"DELETE"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}/(shot|app_events|tools|failures)$"), frozenset({"GET"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}/steps/[A-Za-z0-9_.-]+$"), frozenset({"GET"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}/send$"), frozenset({"POST"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}/({'|'.join(_DOOR_BOT_OPS)})$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/claude/agent$"), frozenset({"POST"}), ("action", _DOOR_AGENT_ACTIONS)),
+    (re.compile(r"^/api/claude/artifacts$"), frozenset({"POST"}), ("action", frozenset({"list", "live"}))),
+    (re.compile(r"^/api/claude/worktrees$"), frozenset({"POST"}), ("action", frozenset({"list"}))),
+    (re.compile(r"^/api/claude/app-entry$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/claude-sessions(/history|/recap|/defaults|/summaries|/liveness)?$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/tasks$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/tasks/(changes|pulse|scheduled|settings)$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/tasks/[^/]+/messages$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/tasks/(read|seen|rename|archive|unarchive|delete|settings|holds|ports|running|idle"
+                r"|queue/admit|queue/decide|queue/force|queue/skip|queue/event)$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/phone/tasks/new-app$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/schedule$"), frozenset({"GET", "POST"}), None),
+    (re.compile(r"^/api/schedule/(cancel|resend|run-now|shot|queue/cancel)$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/schedule/queue$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/drafts$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/drafts/(chat|task)/.+$"), frozenset({"PUT", "DELETE"}), None),
+    (re.compile(r"^/api/ui-layout$"), frozenset({"GET", "PUT", "POST", "PATCH"}), None),
+    (re.compile(r"^/api/prefs$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/recents$"), frozenset({"GET", "POST"}), None),
+)
+
+
+def _door_for(path: str, method: str):
+    """The `_DOORS` row for ``path``/``method``, or None."""
+    for pat, methods, gate in _DOORS:
+        if pat.match(path) and method in methods:
+            return pat, methods, gate
+    return None
+
+
+#: The lan page's own routes beside ``/``: the bots app (`/bots`, `/bots/<id>`,
+#: its tasks / apps / preferences pages) and the tasks page (`/tasks`,
+#: `/tasks/<key>` — a key is a session id or ``pending:<entry>``; the colon is
+#: a plain path character). Both are the desktop's own React pages mounted by
+#: lan.html (frontend/src/lan/main.tsx).
+_BOTS_PAGE = re.compile(r"^/bots(?:/[^/]+){0,2}$")
 _TASKS_PAGE = re.compile(r"^/tasks(?:/[^/]+)?$")
 
 
@@ -639,35 +703,36 @@ class LanApp:
         if path == "/" or path == "/index.html" or (method == "GET" and _lan_page(path)):
             # The grid is a second Vite page (frontend/lan.html → shell-dist/
             # lan.html); its assets resolve under /static/shell-dist/, which the
-            # /static/ prefix below already forwards. `/bots` and `/bots/<id>`
-            # are the same page: its own router draws the bots list and a chat
-            # (docs/bots.md §14); `/tasks` and `/tasks/<key>` likewise
-            # (docs/phone-tasks.md).
+            # /static/ prefix below already forwards. `/bots/*` and `/tasks/*`
+            # are the same page: it mounts the desktop's bots app and Tasks
+            # page (docs/bots.md §14).
             page = os.path.join(os.path.dirname(_STATIC_DIR), "shell-dist", "lan.html")
             if not os.path.isfile(page):
                 return PlainTextResponse(
                     "phone grid not built (frontend/lan.html → shell-dist/lan.html); "
                     "run: cd frontend && npm run build", status_code=503)
             return FileResponse(page, headers={"Cache-Control": "no-store"})
-        if (path == _PHONE_BOTS or path.startswith(_PHONE_BOTS + "/")) and method in _PHONE_BOTS_METHODS:
-            # The phone bots door (bots/phone.py): no path arguments to scope, but
-            # the inner routes learn WHICH paired device is talking from the
-            # pairing record, never from the client. No dot segment: the inner
-            # app forwards this owned prefix to the process holding the bots
-            # (bots/routes.forward_middleware), whose client normalises the URL,
-            # so `/api/phone/bots/../../bots/<id>/takeover` would land on the
-            # desktop door.
+        door = _door_for(path, method)
+        if door is not None:
+            # The phone door (`_DOORS`): the desktop's own routes, device
+            # stamped. No dot segment: the inner app forwards the bots prefix
+            # to the process holding the bots (bots/routes.forward_middleware),
+            # whose client normalises the URL, so `/api/bots/x/../../bots/<id>/
+            # takeover` would land on an op this table never admitted.
             if any(seg in (".", "..") for seg in path.split("/")):
                 return _not_found()
-            return _AsDevice(self.inner, str(device.get("id") or ""))
-        if (path == _PHONE_TASKS or path.startswith(_PHONE_TASKS + "/")) and method in _PHONE_TASKS_METHODS:
-            # The phone tasks door (server/routers/phone_tasks.py): the same
-            # device stamping and the same dot-segment refusal as the bots door
-            # above; the desktop's `/api/tasks/*` is not in `_EXACT`, so it
-            # stays a 404 below.
-            if any(seg in (".", "..") for seg in path.split("/")):
+            device_id = str(device.get("id") or "")
+            gate = door[2]
+            if gate is None:
+                return _AsDevice(self.inner, device_id)
+            body = await _read_body(receive)
+            try:
+                args = json.loads(body) if body.strip() else {}
+            except ValueError:
+                args = {}
+            if not isinstance(args, dict) or args.get(gate[0]) not in gate[1]:
                 return _not_found()
-            return _AsDevice(self.inner, str(device.get("id") or ""))
+            return _AsDevice(_Forward(self.inner, body), device_id)
         if path == "/api/lan/apps" and method == "GET":
             return JSONResponse({"apps": lan_apps(), "host": _controller.host_for_url()})
         if path.startswith("/a/"):

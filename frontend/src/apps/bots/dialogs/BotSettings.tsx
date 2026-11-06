@@ -34,6 +34,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { ConnectionsSection, PREFERENCES_CONNECTIONS_URL } from "./ConnectionsSection";
 import { FacePopover } from "./FacePopover";
 import { PhoneSection } from "./PhoneSection";
+import { isLanHost } from "@platform/lib/host";
 import { RoutinesSection } from "./RoutinesSection";
 import { Row, Rows } from "./SettingsRow";
 import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
@@ -50,9 +51,13 @@ export interface BotSettingsProps {
 
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
-  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"], ["connections", "Connections"], ["browser", "Browser"], ["skills", "Skills"],
-    ["routines", "Routines"], ["memory", "Memory"],
-    ...(isSuper ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
+  // On the phone (isLanHost) the Connections, Browser and Phone tabs are not drawn: their routes (Preferences,
+  // /api/bots/browsers, iMessage) are Mac-side and the LAN door 404s them (lan.py `_DOORS`).
+  const lan = isLanHost();
+  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"],
+    ...(lan ? [] : [["connections", "Connections"] as [SettingsTab, string], ["browser", "Browser"] as [SettingsTab, string]]),
+    ["skills", "Skills"], ["routines", "Routines"], ["memory", "Memory"],
+    ...(isSuper && !lan ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
   const [tab, setTab] = useState<SettingsTab>(() => (tabs.some(([t]) => t === tab0) ? (tab0 as SettingsTab) : "general"));
   // What the dialog opened with (OpenBot's botDialog arguments).
   const [init] = useState(() => ({

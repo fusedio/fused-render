@@ -37,7 +37,7 @@ router = APIRouter()
 
 # One owner per machine (registry module docstring): every request under these prefixes is answered by the
 # process that holds the bots and forwarded there by every other one (`forward_middleware`).
-OWNED_PREFIXES = ("/api/bots", "/api/bot-apps", "/api/phone/bots")  # the last: bots/phone.py, the iOS app's door (docs §14)
+OWNED_PREFIXES = ("/api/bots", "/api/bot-apps")
 FORWARD_TIMEOUT_S = 120.0  # a tool call or an app send may wait on the model; the page's own timeouts are shorter
 _SKIP_REQUEST_HEADERS = {"host", "content-length", "connection", "transfer-encoding"}
 _SKIP_RESPONSE_HEADERS = {"content-length", "connection", "transfer-encoding", "content-encoding"}
@@ -63,9 +63,9 @@ async def forward_middleware(request: Request, call_next):
     `owner` must describe THIS process's view (docs §3)."""
     path = request.url.path
     if path.startswith(OWNED_PREFIXES) and any(seg in (".", "..") for seg in path.split("/")):
-        # httpx resolves dot segments when it builds the forward's URL: `/api/phone/bots/../../bots/<id>/takeover`
-        # (the prefix the LAN listener lets through, lan.py) would reach the desktop door on the owner. No route
-        # has a dot segment, so the owner answers 404 to it as well.
+        # httpx resolves dot segments when it builds the forward's URL: `/api/bots/x/../../bots/<id>/takeover`
+        # (the LAN listener admits a fixed set of ops under this prefix, lan.py `_DOORS`) would reach an op it
+        # never admitted. No route has a dot segment, so the owner answers 404 to it as well.
         return _error("not found", 404)
     if path.startswith(OWNED_PREFIXES) and not _platform.IS_WINDOWS and registry.needs_start():
         # The boot hook starts the scheduler only on a machine that has used bots; the first bots request on

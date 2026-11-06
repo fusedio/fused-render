@@ -22,13 +22,13 @@ import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { cn } from "@platform/lib/utils";
-import { HeaderRow, navigate } from "./nav";
-import { Toaster } from "./bots/Toast";
+import { HeaderRow, navigate, peekUrl } from "./nav";
+import { Toaster } from "./ui/Toast";
 
-// "+" on the grid: the New sheet on its New app tab (describe an app; the
-// computer names, scaffolds and builds it as a task). Lazy, with the task
-// screens' chunk: the grid never pays for it until the button is tapped.
-const NewSheet = lazy(() => import("./tasks/screens").then((m) => ({ default: m.NewSheet })));
+// "+" on the grid: the New app sheet (describe an app; the computer names,
+// scaffolds and builds it as a task). Lazy: the grid never pays for it until
+// the button is tapped.
+const NewSheet = lazy(() => import("./NewSheet").then((m) => ({ default: m.NewSheet })));
 
 interface LanAppRow {
   name: string;
@@ -166,7 +166,7 @@ export function LanApp() {
   };
 
   return (
-    <main className="mx-auto max-w-3xl px-4 pb-[max(24px,env(safe-area-inset-bottom))]">
+    <main className="lan-grid mx-auto max-w-3xl px-4 pb-[max(24px,env(safe-area-inset-bottom))]">
       <header className="sticky top-0 z-10 -mx-4 bg-[var(--bg)]/92 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-3 backdrop-blur">
         {/* The section switch is the page's title row, in the browser and
             inside the native shell alike (whose top bar reads <title>). */}
@@ -288,12 +288,10 @@ export function LanApp() {
           <NewSheet
             open={creating}
             onOpenChange={setCreating}
-            tab="app"
-            projects={null}
             onCreatedWithoutTask={() => setReloads((n) => n + 1)}
-            onCreated={(key, entryId) => {
+            onCreated={(key) => {
               setCreating(false);
-              navigate(`/tasks/${encodeURIComponent(key)}${entryId ? `?entry=${encodeURIComponent(entryId)}` : ""}`);
+              navigate(peekUrl(key));
             }}
           />
         </Suspense>

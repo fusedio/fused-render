@@ -8,6 +8,7 @@
 // (routes.ts: the selection IS the path), the UI request slots (dialog / context menu) the panes open each other
 // with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
+import { isLanHost } from "@platform/lib/host";
 import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
 import { landingBot } from "../lib/landing";
@@ -276,6 +277,9 @@ export function hideBanner(force = false): void { if (S.banner.show && (force ||
 /** A door the workspace gate refused (409 "workspace_busy"): the banner stays until acted on, and Override asks
  *  the holding server to yield, claims the workspace here, then polls so the doors read as open. */
 function showWorkspaceBusy(e: ApiError): void {
+  // A phone cannot claim the workspace (the LAN door 404s /api/bots/workspace/take, lan.py): the banner says
+  // why, with no Override.
+  if (isLanHost()) { showBanner(e.message, { sticky: true }); return; }
   showBanner(e.message, { sticky: true, action: { label: "Take over here", run: async () => {
     try { await api.workspaceTake(); hideBanner(true); await poll(); }
     catch (err) { showBanner(errMsg(err), { sticky: true, action: S.banner.action }); }

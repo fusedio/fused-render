@@ -1,34 +1,33 @@
-/* The phone grid's stylesheet: the shell's Tailwind layer + tokens (so shadcn
-   components and the palette are the same ones the desktop uses), plus the few
-   rules the page itself needs. No base.css — that is the desktop app's 20k
-   lines and this page is a single screen. */
-@import "../styles/tailwind.css";
-@import "../styles/tokens.css";
+/* The phone page's stylesheet. THE SHELL'S OWN SHEET, WHOLE (shell.css: the
+   Tailwind layer, the tokens, base.css, the tasks / task-cards / task-peek /
+   chat-frame / dialogs sheets …): the page mounts the desktop's bots app and
+   Tasks page unchanged (D1467), and they are styled by the same rules on both
+   hosts — one sheet, so the word-break fix a table got on the Mac is the one
+   the phone draws. What follows is only the phone LAYOUT, keyed off
+   `html[data-host="lan"]` (lan.html): one section at a time, the chat full
+   screen under a Back, dialogs as bottom sheets, thumb-sized controls. */
+@import "../shell.css";
 
-html,
-body {
+html[data-host="lan"],
+html[data-host="lan"] body {
+  height: 100%;
   margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  font-size: 15px;
-  line-height: 1.4;
+  overflow: hidden;
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
 }
-
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+html[data-host="lan"] #root {
+  height: 100%;
+}
+/* iOS zooms into a field whose text is under 16px; never on this page. */
+html[data-host="lan"] :is(input, textarea, select) {
+  font-size: max(16px, 1em);
 }
 
-/* In the base layer, under the utilities: a link's own text-* class wins. */
-@layer base {
-  a {
-    color: inherit;
-    text-decoration: none;
-  }
+/* ---- the grid (src/lan/App.tsx) ---------------------------------------- */
+/* The grid scrolls as a document; the sections below are app-height frames. */
+html[data-host="lan"] body:has(> #root > main.lan-grid) {
+  overflow: auto;
 }
 
 /* The monogram tile: an app without icon.svg gets its initial in a hue hashed
@@ -75,80 +74,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .lan-card {
-    transition: none;
-  }
-}
-
-/* ---- the bot screens (src/lan/bots) ---------------------------------------
-   No preflight in tailwind.css: the few UA defaults the bot screens would
-   otherwise inherit (button chrome, heading/paragraph margins) are reset here,
-   scoped to raw controls and to `.lan-bots` (the screens and their sheets).
-   In the base layer: unlayered, these would out-rank every Tailwind utility
-   (a raw button's bg-*, px-*, border, text-*; a <p>'s mt-*). */
-@layer base {
-  :where(button):not([data-slot]) {
-    font: inherit;
-    color: inherit;
-    background: none;
-    border: 0;
-    padding: 0;
-    margin: 0;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-  }
-  :where(textarea, input, select):not([data-slot]) {
-    font: inherit;
-    color: inherit;
-  }
-  .lan-bots :where(h1, h2, h3, p, ul, ol, figure) {
-    margin: 0;
-  }
-}
-
-/* Markdown-lite bubbles (lib.ts markdownLite): p, br, strong, code, a. */
-.lan-md p + p {
-  margin-top: 0.6em;
-}
-.lan-md code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.88em;
-  padding: 0.08em 0.35em;
-  border-radius: 6px;
-  background: color-mix(in oklch, var(--fg) 9%, transparent);
-  overflow-wrap: anywhere;
-}
-.lan-md a {
-  color: inherit;
-  text-decoration: underline;
-  text-decoration-color: color-mix(in oklch, currentColor 45%, transparent);
-  text-underline-offset: 2px;
-  overflow-wrap: anywhere;
-}
-.lan-md strong {
-  font-weight: 650;
-}
-
-/* The chat frame follows the visual viewport (hooks.ts useVisualViewportVar):
-   the composer rides on the keyboard instead of under it. */
-.lan-chat {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: var(--vvtop, 0px);
-  height: var(--vvh, 100dvh);
-  display: flex;
-  flex-direction: column;
-}
-.lan-thread {
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  overflow-anchor: none;
-}
-
-/* The selected half of a segmented control (Apps | Bots, Ask | Auto): a white
+/* The selected half of a segmented control (Apps | Bots | Tasks): a white
    pill on a grey track in light, a raised grey in dark — the iOS reading. */
 .lan-seg-on {
   background: color-mix(in srgb, var(--fg) 16%, var(--bg));
@@ -175,7 +101,108 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .lan-pulse {
+  .lan-card, .lan-pulse {
+    transition: none;
     animation: none;
   }
+}
+
+/* ---- a section: the header row and the desktop page under it ------------ */
+.lan-section {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+}
+.lan-header {
+  flex: none;
+  padding: max(10px, env(safe-area-inset-top)) 12px 6px;
+  background: var(--bg);
+}
+.lan-host {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.lan-host > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- the bots app (@apps/bots) on a phone ------------------------------- */
+/* The desktop page is a five-column grid (list · gutter · chat · gutter ·
+   preview). On a phone it is ONE column at a time: the list at /bots, the
+   chat at /bots/<id> (main.tsx picks the class from the route); the gutters
+   and the live-view column are not drawn. Nothing else changes: the rows, the
+   thread, the composer, the dialogs are the desktop's. */
+.lan-bots .bots-page {
+  position: relative;
+  height: 100%;
+  width: 100%;
+}
+.lan-bots .bots-page main {
+  display: block;
+  overflow: hidden;
+  height: 100%;
+}
+.lan-bots .bots-page main > .gutter,
+.lan-bots .bots-page main > .preview {
+  display: none;
+}
+.lan-bots .bots-page main > :is(.bots, .chat) {
+  width: 100%;
+  height: 100%;
+}
+.lan-bots--list .bots-page main > .chat {
+  display: none;
+}
+.lan-bots--chat .bots-page main > .bots {
+  display: none;
+}
+/* Thumb-sized: a card's buttons, the question options, the composer's send. */
+html[data-host="lan"] .bots-page .msg button,
+html[data-host="lan"] .bots-page .composer button:not(.icon) {
+  min-height: 44px;
+}
+html[data-host="lan"] .bots-page .thread,
+html[data-host="lan"] .bots-page .composer {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+html[data-host="lan"] .bots-page .msg {
+  max-width: 92%;
+}
+
+/* ---- the Tasks page (@shell/Scheduled) on a phone ------------------------ */
+/* The peek (the task's chat) covers the list instead of sitting beside it. */
+html[data-host="lan"] .task-side-peek {
+  position: fixed;
+  inset: 0;
+  width: 100% !important;
+  max-width: none !important;
+  z-index: 30;
+  background: var(--bg);
+  padding-top: env(safe-area-inset-top);
+}
+
+/* ---- dialogs as bottom sheets ------------------------------------------- */
+/* The bots dialogs wear one shadcn shell (dialogs/shell.ts, 880 × min(760px,
+   90vh), centred). Under this host the same shell is a sheet: pinned to the
+   bottom, full width, content height up to 92% of the screen, round top
+   corners. The dialog's inside — tabs, rows, footer — is untouched. */
+html[data-host="lan"] [data-slot="dialog-content"],
+html[data-host="lan"] [data-slot="alert-dialog-content"] {
+  top: auto !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  transform: none !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: auto !important;
+  max-height: 92dvh !important;
+  border-radius: 16px 16px 0 0 !important;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
 }

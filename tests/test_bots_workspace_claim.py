@@ -100,8 +100,6 @@ def test_doors_refuse_without_the_claim_and_open_after_the_pass(client, ws, walk
         assert walks == []  # no takeover walk without the claim: the claimant's running tasks are not ours
         st, out = j(client.post(f"/api/bots/{bid}/send", {"text": "find me a laptop"}))
         assert (st, out["error"], out["reason"]) == (409, msg, "workspace_busy")  # + `holder` for the page's Override
-        st, out = j(client.post(f"/api/phone/bots/{bid}/send", {"text": "hi"}))
-        assert (st, out["error"]) == (409, msg)
         st, out = j(client.post(f"/api/bots/{bid}/routines", {"op": "add", "text": "check", "kind": "interval",
                                                               "minutes": 60}))
         assert (st, out["error"]) == (409, msg)  # read-only for bot state: the claimant's next save would revert it
@@ -318,7 +316,6 @@ def test_unclaimed_load_leaves_the_bot_files_byte_identical(client, ws, walks):
         st, out = j(client.get("/api/bots"))
         assert st == 200 and [x["id"] for x in out["bots"]] == [bid]
         assert j(client.get("/api/bots/pulse"))[0] == 200
-        assert j(client.get(f"/api/phone/bots/{bid}"))[0] == 200
         assert j(client.get(f"/api/bots/{bid}/package"))[0] == 200  # the export plan reads
         assert _files(bid) == before
         assert "id" not in store.read_meta(bid)["routines"][0]
@@ -333,7 +330,7 @@ def test_unclaimed_load_leaves_the_bot_files_byte_identical(client, ws, walks):
 
 def _gated(bid, rid, brid):
     b64 = "aGk="
-    p, ph = f"/api/bots/{bid}", f"/api/phone/bots/{bid}"
+    p = f"/api/bots/{bid}"
     return [
         ("post", f"{p}/routines", {"op": "add", "text": "x", "kind": "interval", "minutes": 60}),
         ("post", f"{p}/routines", {"op": "edit", "rid": rid, "text": "y", "kind": "interval", "minutes": 30}),
@@ -363,11 +360,6 @@ def _gated(bid, rid, brid):
         ("post", f"{p}/send", {"text": "hi"}),
         ("post", f"/api/bots/browsers/{brid}", {"op": "encrypt", "on": True}),
         ("post", f"/api/bots/browsers/{brid}", {"op": "delete"}),
-        ("post", f"{ph}/settings", {"name": "Renamed"}),
-        ("post", f"{ph}/routines", {"op": "enable", "rid": rid}),
-        ("post", f"{ph}/clear", {}),
-        ("post", f"{ph}/send", {"text": "hi"}),
-        ("delete", ph, None),
         ("delete", p, None),
         ("post", "/api/botfile/install", {"path": "/nowhere/x.fusedbot", "apps": [], "bot_id": bid}),
     ]
