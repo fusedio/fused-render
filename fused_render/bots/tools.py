@@ -1407,8 +1407,12 @@ def call_key(bot, act: str, d: dict):
     if act == "handoff":
         ref = [" ".join(str(d.get("bot") or d.get("name") or "").split()).lower(),
                " ".join(str(d.get("task") or d.get("text") or "").split())]
-    elif act in MANAGE_TOOLS or act == "routine_add":
+    elif act in MANAGE_TOOLS:
         ref = [{k: d[k] for k in sorted(d)}]
+    elif act == "routine_add":
+        # The normalised fields only: the steps engine's decision carries `thought` (never the same twice) and
+        # the task under `text`, so the whole dict would let a twin routine through.
+        ref = [{k: v for k, v in _routine_args(d).items() if v not in (None, "")}]
     elif act == "marketplace_install":
         ref = [_market_target(d)[0]]
     elif act == "py":
