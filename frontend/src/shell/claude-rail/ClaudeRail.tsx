@@ -452,7 +452,10 @@ function cardFocusSoon(cardId: string, focus: () => boolean): void {
 /** How long the +'s press beside the open pane waits for the pane's home
  *  composer (`paneHomeComposer`): the page may remount its chat first, and
  *  the composer's leave guard may ask. */
-const PANE_FOCUS_WAIT_MS = 4000;
+// Ten seconds, not four (2026-11-06): a node chat's pane is a frame that
+// boots its chat — on a loaded Mac the composer lands late, and the wait is
+// harmless (the reader's own press or key ends it).
+const PANE_FOCUS_WAIT_MS = 10_000;
 
 /** THE OPEN PANE'S HOME COMPOSER (the +, header "BESIDE THE OPEN PANE"): the
  *  new-chat composer on the pane's Recent chats page (`.c-home`), looked for
