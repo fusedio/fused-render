@@ -35,11 +35,13 @@ export interface BotChatProps {
   id: string;
   /** Sitting at the end marks the bot read (Thread `markRead`): the card passes its pin — a hover never marks. */
   markRead?: boolean;
+  /** Thread `sharedScroll`: false beside the Bots page, whose own thread holds the store's scroll bookkeeping. */
+  sharedScroll?: boolean;
 }
 
 const noop = () => {};
 
-export default function BotChat({ id, markRead = true }: BotChatProps) {
+export default function BotChat({ id, markRead = true, sharedScroll = true }: BotChatProps) {
   // The page-wide switches (store `hydrateBotsPrefs`: sounds, the clear-
   // context button, the one-shot seen import) are the PAGE's to hydrate,
   // not this card's: none of them is read here, and the hydrate joins the
@@ -78,8 +80,8 @@ export default function BotChat({ id, markRead = true }: BotChatProps) {
     <div className="bots-page bots-peek">
       <section className="chat">
         <div className="tw">
-          <Thread b={b} threadRef={threadRef} searchQ="" onSearchCount={noop} onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} markRead={markRead} onOpenBot={openBot} />
-          <ToBottom threadRef={threadRef} botId={b.id} />
+          <Thread b={b} threadRef={threadRef} searchQ="" onSearchCount={noop} onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} markRead={markRead} sharedScroll={sharedScroll} onOpenBot={openBot} />
+          <ToBottom threadRef={threadRef} botId={b.id} sharedScroll={sharedScroll} />
         </div>
         <Composer b={b} reply={reply} setReply={setReply} threadRef={threadRef} />
         <ReactionPicker req={pick} onClose={closePick} botId={b.id} />

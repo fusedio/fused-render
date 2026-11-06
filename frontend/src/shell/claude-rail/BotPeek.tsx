@@ -40,9 +40,11 @@
 // goes on marking the bot read behind a closed card (Bugbot on #2143). The
 // Bots page's store holds one thread's scroll bookkeeping (pinned, the new
 // count), so this card never keeps a second bot's thread mounted behind the
-// shown one the way the rail's card keeps chats warm, and ON THE BOTS PAGE
-// the ring is a door again (claude-rail-lib `botRingRoute`): the page shows
-// the bot itself. THE READ MARK is the pin's (BotChat `markRead`): a hover's
+// shown one the way the rail's card keeps chats warm. ON THE BOTS PAGE TOO
+// (owner, 2026-11-06: "change the view only when we click Open"): the card
+// stands beside the page's own thread, and keeps its scroll bookkeeping to
+// itself (BotChat `sharedScroll` false) so the two never fight over the
+// store's one pin. THE READ MARK is the pin's (BotChat `markRead`): a hover's
 // glance over the card leaves the rail's unread dot alone; a press that
 // pinned the card is the reader reading.
 //
@@ -70,6 +72,7 @@ import { ChatChunkBoundary } from "@apps/claude/ChatMount";
 import { Face } from "@apps/bots/components/Face";
 import type { FaceSubject } from "@apps/bots/lib/face";
 import { botStatusWords } from "./claude-rail-lib";
+import { isBotsPath } from "@apps/bots/routes";
 import { publishFavBox } from "./fav-peek-store";
 import {
   FAV_HEIGHT,
@@ -514,7 +517,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
                     head and its Open door stand above it (CodeRabbit on #2143). */}
                 <ChatChunkBoundary>
                   <Suspense fallback={<p className="claude-rail-peek-note">Loading…</p>}>
-                    <BotChat id={chatKey} markRead={pinned} />
+                    <BotChat id={chatKey} markRead={pinned} sharedScroll={!isBotsPath(location.pathname)} />
                   </Suspense>
                 </ChatChunkBoundary>
               </div>

@@ -230,7 +230,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type FocusEvent as ReactFocusEvent,
@@ -259,6 +258,7 @@ import { StatusIcon } from "@shell/ScheduleTaskViews";
 import NewJobModal, { chatHopSeed, reopenTime, type DraftSeed } from "@shell/NewJobModal";
 import { fetchDrafts } from "@platform/lib/drafts";
 import {
+  clearFavOpen,
   favOpenedAtMs,
   lastChatId,
   setFavOpen,
@@ -337,10 +337,9 @@ import { useRailGit } from "./rail-git";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import { botHasUnread, useBotsRows } from "@platform/lib/botsPulse";
-import { NAV_EVENT, navigateUrl } from "@platform/lib/router";
+import { navigateUrl } from "@platform/lib/router";
 import { Face } from "@apps/bots/components/Face";
 import type { FaceSubject } from "@apps/bots/lib/face";
-import { isBotsPath } from "@apps/bots/routes";
 import { BotPeek, BOT_PEEK_ID, botHref, preloadBotChat, type BotPeekHandle } from "./BotPeek";
 
 /** THE RAIL'S WIDTH, SAID TO THE DOCUMENT (owner, 2026-11-05: "move the
@@ -450,29 +449,13 @@ function cardFocusSoon(cardId: string, focus: () => boolean): void {
   requestAnimationFrame(attempt);
 }
 
-/** WHETHER THE READER IS ON THE BOTS PAGE (claude-rail-lib `botRingRoute`):
- *  the path, re-read on every navigation the router announces and on the
- *  history's own moves. */
-function subscribePath(fn: () => void): () => void {
-  window.addEventListener(NAV_EVENT, fn);
-  window.addEventListener("popstate", fn);
-  window.addEventListener("fused:urlchange", fn);
-  return () => {
-    window.removeEventListener(NAV_EVENT, fn);
-    window.removeEventListener("popstate", fn);
-    window.removeEventListener("fused:urlchange", fn);
-  };
-}
-const onBotsPage = () => typeof location !== "undefined" && isBotsPath(location.pathname);
-const notOnBotsPage = () => false;
-function useOnBotsPage(): boolean {
-  return useSyncExternalStore(subscribePath, onBotsPage, notOnBotsPage);
-}
-
 /** How long the +'s press beside the open pane waits for the pane's home
  *  composer (`paneHomeComposer`): the page may remount its chat first, and
  *  the composer's leave guard may ask. */
-const PANE_FOCUS_WAIT_MS = 4000;
+// Ten seconds, not four (2026-11-06): a node chat's pane is a frame that
+// boots its chat — on a loaded Mac the composer lands late, and the wait is
+// harmless (the reader's own press or key ends it).
+const PANE_FOCUS_WAIT_MS = 10_000;
 
 /** THE OPEN PANE'S HOME COMPOSER (the +, header "BESIDE THE OPEN PANE"): the
  *  new-chat composer on the pane's Recent chats page (`.c-home`), looked for
@@ -480,9 +463,21 @@ const PANE_FOCUS_WAIT_MS = 4000;
  *  remounted under the press — and in the canvas node pane's same-origin
  *  frame. Never one inside a rail or a rail card. */
 function paneHomeComposer(rail: HTMLElement | null): HTMLTextAreaElement | null {
+  return paneComposer(rail, ".c-home textarea");
+}
+
+/** THE PANE'S CHAT COMPOSER, whichever chat it shows (owner, 2026-11-06:
+ *  "when we click on the task list item can we focus on the composer"): a
+ *  list ring's press beside the open pane opens the chat there, and the
+ *  keyboard follows into its composer — found the way the home's is. */
+function paneChatComposer(rail: HTMLElement | null): HTMLTextAreaElement | null {
+  return paneComposer(rail, ".c-composer textarea");
+}
+
+function paneComposer(rail: HTMLElement | null, selector: string): HTMLTextAreaElement | null {
   const scope: ParentNode = (rail?.isConnected && rowOf(rail)) || document;
   const pick = (root: ParentNode) =>
-    [...root.querySelectorAll<HTMLTextAreaElement>(".c-home textarea")].find(
+    [...root.querySelectorAll<HTMLTextAreaElement>(selector)].find(
       (el) => !el.closest(".claude-rail, .claude-rail-peek") && el.getClientRects().length > 0,
     ) ?? null;
   const hit = pick(scope);
@@ -1018,7 +1013,22 @@ export function ClaudeRail({
   const railRef = useRef<HTMLElement | null>(null);
   const peekRef = useRef<RailPeekHandle | null>(null);
   const ringEls = useRef(new Map<string, HTMLElement>());
-  const anchorOf = useCallback((key: string) => ringEls.current.get(key) ?? null, []);
+  // WINDOW A STANDS AT THE LIST'S TOP (owner, 2026-11-06: "window A should
+  // be aligned with the top of the list's first item, no matter whether the
+  // selected item is below, above or out of the list"): every list ring's
+  // card anchors on the FIRST ring of the list — RailPeek clamps that to the
+  // list's scrolled box, so the card's top is the box's top — while the safe
+  // cone still starts at the ring the pointer is on (`coneOf`).
+  const anchorOf = useCallback((key: string) => {
+    const ring = ringEls.current.get(key) ?? null;
+    if (!ring) return null;
+    // Favourites on, and a ring OF THE LIST (favourites off, the blocked
+    // box's rings are window A's too, and anchor on themselves as before).
+    const list = listRef.current;
+    if (!favsOnRef.current || !list?.contains(ring)) return ring;
+    return list.querySelector<HTMLElement>("a[data-task-key]") ?? ring;
+  }, []);
+  const coneOf = useCallback((key: string) => ringEls.current.get(key) ?? null, []);
   // The chat's chunk, ahead of the first hover (ChatMount `preloadChat`).
   const anySeat = seats.length > 0;
   useEffect(() => {
@@ -1374,7 +1384,6 @@ export function ClaudeRail({
   // card up when the reader lands there closes. The rules below are the
   // list card's, one each (the outside press, Escape with the focus nowhere,
   // the press into the workbench frame), on the bot card's own state.
-  const onBots = useOnBotsPage();
   const [botKey, setBotKey] = useState<string | null>(null);
   const [botPinned, setBotPinned] = useState(false);
   const [botHeld, setBotHeld] = useState(false);
@@ -1437,13 +1446,15 @@ export function ClaudeRail({
   useEffect(() => {
     if (botKey) dismissFavHover();
   }, [botKey]);
-  // The flag off, or the Bots page reached with the card up: nothing to show.
+  // The flag off with the card up: nothing to show. (The Bots page is no
+  // longer a reason — owner, 2026-11-06: the card stands there too, and only
+  // its Open changes the page.)
   useEffect(() => {
-    if ((!peekOn || onBots) && botKey) {
+    if (!peekOn && botKey) {
       setBotHeld(false);
       botIntent.dismiss();
     }
-  }, [peekOn, onBots, botKey, botIntent]);
+  }, [peekOn, botKey, botIntent]);
   const botInsidePress = useRef(false);
   const onBotPressInside = useCallback(() => {
     botInsidePress.current = true;
@@ -1554,6 +1565,15 @@ export function ClaudeRail({
     setFavRestore(null);
   };
   const pressBotRing = (id: string, href: string) => {
+    // A TOGGLE (owner, 2026-11-06: "a task item on the rail is also a toggle
+    // to open and close the window"): the ring of the bot whose card a press
+    // pinned closes it.
+    if (botPinned && botKey === id) {
+      hideHint();
+      setBotHeld(false);
+      botIntent.dismiss();
+      return;
+    }
     botPressedHref.current = href;
     requestAnimationFrame(() => {
       botPressedHref.current = null;
@@ -1845,10 +1865,23 @@ export function ClaudeRail({
         setHeld(false);
         intent.dismiss();
       }
+      // …and the keyboard into that chat's composer (`paneChatComposer`) —
+      // the NEW chat's: the box on screen now belongs to the one being
+      // replaced, unless the ring is the pane's own chat already.
+      const before = t.session_id && t.session_id !== activeSessionId ? paneChatComposer(railRef.current) : null;
       openChat(href);
+      if (t.session_id) focusPaneComposer(paneChatComposer, before);
       return;
     }
     if (how === "card") {
+      // A TOGGLE (owner, 2026-11-06): the ring of the chat whose card a press
+      // pinned closes it; a hover card on it is pinned by the press.
+      if (pinNow.current.favsOn && pinNow.current.pinned && pinNow.current.peekKey === t.key) {
+        hideHint();
+        setHeld(false);
+        intent.dismiss();
+        return;
+      }
       pressedHref.current = href;
       requestAnimationFrame(() => {
         pressedHref.current = null;
@@ -1918,9 +1951,13 @@ export function ClaudeRail({
   const plusPane = plusDoor({ paneOpen, favsOn, paneHome: !!onNewChat }) === "pane";
   const paneFocusWait = useRef<(() => void) | null>(null);
   useEffect(() => () => paneFocusWait.current?.(), []);
-  const openPaneHome = () => {
-    hideHint();
-    onNewChat?.();
+  // THE KEYBOARD INTO THE PANE'S COMPOSER (the home's on the +, the chat's
+  // on a ring's press beside the open pane) — retried until it stands, and
+  // given up the moment the reader presses or types anything themselves.
+  // `not`: the composer on screen at the press — a ring's press that REPLACES
+  // the pane's chat waits for the new chat's box, never the old one's, which
+  // is about to unmount under the keyboard (Bugbot on #2161).
+  const focusPaneComposer = (find: (rail: HTMLElement | null) => HTMLTextAreaElement | null, not: HTMLElement | null = null) => {
     paneFocusWait.current?.();
     let live = true;
     let raf = 0;
@@ -1937,8 +1974,8 @@ export function ClaudeRail({
     const until = performance.now() + PANE_FOCUS_WAIT_MS;
     const attempt = () => {
       if (!live) return;
-      const box = paneHomeComposer(railRef.current);
-      if (box) {
+      const box = find(railRef.current);
+      if (box && box !== not) {
         box.focus({ preventScroll: true });
         if (box.ownerDocument.activeElement === box) return stop();
       }
@@ -1946,6 +1983,11 @@ export function ClaudeRail({
       else stop();
     };
     raf = requestAnimationFrame(attempt);
+  };
+  const openPaneHome = () => {
+    hideHint();
+    onNewChat?.();
+    focusPaneComposer(paneHomeComposer);
   };
   const plusLabel = waiting ?? (plusPane ? "New chat" : newTask.on ? `New task on ${newTask.on}` : "New task");
 
@@ -2034,6 +2076,7 @@ export function ClaudeRail({
                 favHoverKey,
                 paneOpen,
                 botHeld: botUp !== null,
+                sectionSize: foot ? favs.length : baseSeats.length,
               });
               // The rings' own captions step aside for the card: a hover
               // shows the card, and the card IS the caption. The exception
@@ -2167,8 +2210,15 @@ export function ClaudeRail({
                       // A keyboard press: the favourite's card takes the
                       // keyboard once it stands (fav-peek-store); a pointer
                       // press takes nothing.
-                      if (e.detail === 0) requestFavFocus(t.key);
-                      if (!favRing) openFavourite(t, href);
+                      // A TOGGLE (owner, 2026-11-06): the open favourite's
+                      // own ring closes its card; any other opens it (a
+                      // keyboard press asking for the card's keyboard then —
+                      // never for a close, or the wish would outlive it).
+                      if (favRing) clearFavOpen(t.key);
+                      else {
+                        if (e.detail === 0) requestFavFocus(t.key);
+                        openFavourite(t, href);
+                      }
                       return;
                     }
                     pressRing(t, href, e.detail === 0);
@@ -2478,7 +2528,7 @@ export function ClaudeRail({
                 // the card off or no room for one, the ring is the page's
                 // door as it was. While the card can stand it is the ring's
                 // caption (an empty hint is the opt-out, as the chats').
-                const card = botRingRoute({ onBotsPage: onBots, peekOn, noRoom: botNoRoom }) === "card";
+                const card = botRingRoute({ peekOn, noRoom: botNoRoom }) === "card";
                 // ONE WINDOW B (header): with a favourite's card open the
                 // ring's hover is its caption, as a favourite's ring beside
                 // an open favourite; a press still takes the window.
@@ -2560,6 +2610,7 @@ export function ClaudeRail({
           shown={peekSeat}
           kept={keptSeats}
           anchorOf={anchorOf}
+          coneOf={coneOf}
           railEl={railRef.current}
           place={place}
           onReload={refreshListing}

@@ -827,10 +827,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (!on || !box || !shownKey) return;
     const anchor = (coneOf ?? anchorOf)(shownKey);
     if (!anchor) return;
-    const r = anchor.getBoundingClientRect();
-    const apex = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    // The apex is read per move, not once: with the card anchored on the
+    // list's top (ClaudeRail `anchorOf`, 2026-11-06) the list can scroll
+    // under a resting card, moving the ring without moving the box
+    // (CodeRabbit on #2161).
     const onMove = (e: PointerEvent) => {
       const inCard = cardRef.current?.contains(e.target as Node) ?? false;
+      const r = anchor.getBoundingClientRect();
+      const apex = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
       setCone(!inCard && inSafeCone({ x: e.clientX, y: e.clientY }, apex, box));
     };
     document.addEventListener("pointermove", onMove, true);

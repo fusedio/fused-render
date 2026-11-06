@@ -502,8 +502,12 @@ export function pinnedBots<B extends { pinned?: boolean; hidden?: boolean }>(bot
  *  own would be two threads on one store; there the ring is the page's door,
  *  as it was. The door is the bot's page (`/bots/<id>`) in every case the
  *  card is not. */
-export function botRingRoute(o: { onBotsPage: boolean; peekOn: boolean; noRoom: boolean }): "door" | "card" {
-  if (o.onBotsPage || !o.peekOn || o.noRoom) return "door";
+export function botRingRoute(o: { peekOn: boolean; noRoom: boolean }): "door" | "card" {
+  // ON THE BOTS PAGE TOO (owner, 2026-11-06: "in the Bots page we should
+  // change the view only when we click Open; clicking a bot should open the
+  // window, and Open then opens that bot" — the favourites' rule): the ring
+  // is a door only with the card off or no room for one.
+  if (!o.peekOn || o.noRoom) return "door";
   return "card";
 }
 
@@ -601,6 +605,10 @@ export interface RingMarkInput {
    *  favourite's ring hovers nothing meanwhile — its caption, as beside an
    *  open favourite's card; a press still takes the window. */
   botHeld?: boolean;
+  /** How many rings the section holds (owner, 2026-11-06: "if it is only
+   *  one item, that would be the last selected item, so no need to show
+   *  that"): favourites on, a section of ONE wears no `.is-last`. */
+  sectionSize?: number;
 }
 
 export function ringMarks(o: RingMarkInput): {
@@ -625,6 +633,7 @@ export function ringMarks(o: RingMarkInput): {
   if (o.foot && o.openFavKey === o.key) classes.push("is-open");
   if (
     o.isLast &&
+    !(one && o.sectionSize === 1) &&
     (!one || (o.foot ? o.activeFav === o.key && o.openFavKey !== o.key : o.activeList === o.key))
   )
     classes.push("is-last");
