@@ -1166,7 +1166,17 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
   sweep and the workspace steps (v3 migration, Super Bot seed, the takeover
   walk, which would stop the claimant's running tasks as stale, the browser
   sweep); the pass that later wins the claim runs those steps once, and the
-  doors open after that pass. The seed also waits while a legacy BOT remains
+  doors open after that pass. **The claim moves without a quit** (2026-11-06):
+  the claimant writes its record (`{pid, origin, app, version, home}`) into
+  `.routines.lock`, the 409 carries `reason: "workspace_busy"` and `holder`
+  (`registry.workspace_info`), and the page keeps that banner up (sticky; the
+  poll hides only passing ones) with a "Take over here" button → `POST
+  /api/bots/workspace/take`, which posts `/api/bots/workspace/yield` to the
+  holder's origin (it stops its tasks and Chromes, drops the claim, forgets its
+  Bots so they rebuild read-only, and skips re-claiming for 30 s) and then
+  claims here and runs the workspace steps inline under `ws_lock` (the pass
+  takes the same lock), so the doors open on return. A holder without a
+  record (an older build) cannot be asked: the 409 says to quit it. The seed also waits while a legacy BOT remains
   (a `bot.json` in the legacy data dir or under `.unmigrated/<id>/`; strays
   never count): it could be a Super Bot the seed cannot see.
 - `server.py`: include `bots.routes.router` and `apps` routes; `/` →

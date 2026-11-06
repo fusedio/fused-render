@@ -382,11 +382,16 @@ export const apiHooks: { onStall: (msg: string) => void; onSettle: () => void; o
 };
 let inflight = 0, stallTimer: ReturnType<typeof setInterval> | null = null, stallShown = false;
 
-/** Thrown for a non-2xx reply; `message` is the server's `{error}` sentence when it sent one. */
+/** Thrown for a non-2xx reply; `message` is the server's `{error}` sentence when it sent one, `body` its whole
+ *  JSON object when it sent one (a 409 carries `reason`, e.g. "workspace_busy" with a `holder`). */
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) { super(message); this.status = status; }
+  body: Record<string, unknown> | null;
+  constructor(message: string, status: number, body: Record<string, unknown> | null = null) { super(message); this.status = status; this.body = body; }
 }
+/** A 409 from a door the workspace gate refused (bots/registry.py WorkspaceBusy): another fused-render server
+ *  holds the workspace claim. The page offers to take it over (POST /api/bots/workspace/take). */
+export function isWorkspaceBusy(e: unknown): e is ApiError { return e instanceof ApiError && e.status === 409 && e.body?.reason === "workspace_busy"; }
 
 type Method = "GET" | "POST" | "DELETE";
 export async function request<T>(method: Method, url: string, body?: unknown, label?: string): Promise<T> {
@@ -407,7 +412,7 @@ export async function request<T>(method: Method, url: string, body?: unknown, la
     if (!r.ok) {
       const err = data && typeof data === "object" ? (data as { error?: unknown }).error : undefined;
       const msg = (err ? String(err) : "") || text.trim() || `${r.status} ${r.statusText}`;
-      throw new ApiError(msg, r.status);
+      throw new ApiError(msg, r.status, data && typeof data === "object" ? (data as Record<string, unknown>) : null);
     }
     return data as T;
   } finally {
@@ -531,6 +536,9 @@ export const api = {
   starterUpdate: (key: string) => post<StarterInstallReply>(`/api/bot-apps/starters/${encodeURIComponent(key)}/update`, {}, "starter_update"),
   /** GET /api/bots/setup: is there a Chrome to drive and a Claude Code to think with (the empty hero's setup lines). */
   setup: () => get<SetupReply>(`${B}/setup`, "setup"),
+  /** POST /api/bots/workspace/take: ask the server holding the workspace claim to yield and claim it here (the
+   *  banner's Override after a "workspace_busy" 409). 409 again, with the reason, when it could not. */
+  workspaceTake: () => post<{ taken: boolean; error: string }>(`${B}/workspace/take`, {}, "workspace/take"),
   /** Slow (runs each installed starter's setup tool): call after the strip is drawn. null = could not tell. */
   starterStatus: () => get<{ ok: true; ready: Record<string, boolean | null>; why: Record<string, string> }>("/api/bot-apps/starters/status", "starter_status"),
 };
