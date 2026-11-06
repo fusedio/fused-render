@@ -93,6 +93,7 @@ from AppKit import (
     NSFontWeightMedium,
     NSImage,
     NSImageSymbolConfiguration,
+    NSImageSymbolScaleLarge,
     NSLayoutAttributeLeading,
     NSLayoutAttributeTrailing,
     NSTitlebarAccessoryViewController,
@@ -877,7 +878,14 @@ class _Window:
             if symbol_pt is not None:
                 conf = NSImageSymbolConfiguration.configurationWithPointSize_weight_(
                     symbol_pt, NSFontWeightMedium)
-                image = image.imageWithSymbolConfiguration_(conf)
+            else:
+                # The large control size DRAWS the symbol at large scale, but
+                # sizeToFit measures the default-scale image (safari: 15pt
+                # tall vs ~20pt drawn) -- the frame then clips the glyph's
+                # top and bottom. Bake the scale into the image so the frame
+                # fits what is drawn.
+                conf = NSImageSymbolConfiguration.configurationWithScale_(NSImageSymbolScaleLarge)
+            image = image.imageWithSymbolConfiguration_(conf)
             button = NSButton.buttonWithImage_target_action_(
                 image, self.manager._menu_target, action)
             button.setBezelStyle_(NSBezelStyleRecessed)
