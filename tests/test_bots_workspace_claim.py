@@ -79,7 +79,7 @@ def test_require_workspace_raises_while_another_home_holds_the_claim():
         with pytest.raises(registry.WorkspaceBusy) as e:
             registry.require_workspace()
         assert isinstance(e.value, ValueError)
-        assert str(e.value) == (f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); "
+        assert str(e.value) == (f"another Fused Render instance owns the bots in this workspace ({bpaths.bots_root()}); "
                                 "use that window or quit it")
     assert registry.workspace_claimed() is True  # retried and won once the other home let go
     registry.require_workspace()
@@ -92,7 +92,7 @@ def test_doors_refuse_without_the_claim_and_open_after_the_pass(client, ws, walk
                                                           "minutes": 60}))
     assert st == 200
     rid = out["routine"]["id"]
-    msg = f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window or quit it"
+    msg = f"another Fused Render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window or quit it"
     other = OtherHome().__enter__()
     try:
         registry._pass()
@@ -242,7 +242,7 @@ def test_channel_inbound_is_refused_and_answered_without_the_claim(caplog):
     r.dispatch(ch, Inbound(addr="+1", text="again"))
     assert b.received == []
     assert ch.sent == [("+1", rmod.BUSY_REPLY)] * 2
-    assert rmod.BUSY_REPLY == "another fused-render instance owns the bots in this workspace"
+    assert rmod.BUSY_REPLY == "another Fused Render instance owns the bots in this workspace"
     assert len([x for x in caplog.records if "refused" in x.getMessage()]) == 1  # logged once per streak
     mute = _Chan(fail=True)  # a channel that cannot reply: the refusal still holds, nothing raises
     r.dispatch(mute, Inbound(addr="+1", text="hi"))
@@ -380,7 +380,7 @@ def test_every_bot_write_refuses_without_the_claim_and_works_after(client, ws, w
     registry.forget(bid)
     before = _files(bid)
     ids_before = store.list_ids()
-    msg = f"another fused-render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window or quit it"
+    msg = f"another Fused Render instance owns the bots in this workspace ({bpaths.bots_root()}); use that window or quit it"
     other = OtherHome().__enter__()
     try:
         registry._pass()  # a started owner without the claim

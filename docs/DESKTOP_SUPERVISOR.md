@@ -1,6 +1,6 @@
 # Desktop supervisor architecture
 
-The **supervisor** is the windowless process that owns a FusedRender desktop
+The **supervisor** is the windowless process that owns a Fused Render desktop
 install: it elects a single instance, launches and supervises the Python
 server as a child, shows the tray, forwards "open this file" requests from
 secondary launches, and tears everything down cleanly (including on

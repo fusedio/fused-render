@@ -44,7 +44,7 @@ thread, and the next leader's first tick adopts the run from its own files
 (`schedule._resolve_orphan` → `_adopt_watch`) and records the verdict.
 
 "Our exact binary" is the full path of our own executable — for the shipped
-app `…/FusedRender.app/Contents/MacOS/FusedRender`, as `ps -o comm=` shows
+app `…/Fused Render.app/Contents/MacOS/FusedRender`, as `ps -o comm=` shows
 it (the user's own Diagnostics zip listed exactly that for the app and
 `…/MacOS/python` for its workers) — realpath'd and compared whole
 (`process_executable`, the same rule canvases' force-quit uses). A dev

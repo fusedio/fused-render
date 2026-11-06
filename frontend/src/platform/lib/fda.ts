@@ -45,8 +45,8 @@ export function relaunchHref(): string {
 }
 
 // Shared copy, so the wizard step and the strip say the same thing. The pane
-// lists the app by its BUNDLE name ("FusedRender" / "FusedBot", no space),
-// so that is the word the steps use. A function for the same reason as the
+// lists the app by its BUNDLE name ("Fused Render" / "FusedBot"; "FusedRender"
+// on an install from before the rename), so that is the word the steps use. A function for the same reason as the
 // href above.
 export function fdaCopy() {
   const app = bundleName();

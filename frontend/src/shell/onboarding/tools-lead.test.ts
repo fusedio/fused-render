@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { toolsLead } from "./tools-lead";
 
-const base = { isBot: false, showGit: true, chromeApplies: true, bundleName: "Render" };
+const base = { isBot: false, showGit: true, chromeApplies: true, appName: "Render" };
 
 test("names Chrome for bots when Chrome applies", () => {
   expect(toolsLead(base)).toContain("drives Google Chrome for bots");

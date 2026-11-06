@@ -742,12 +742,17 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
     # the path, and none of them reach the app log (the spawn just says
     # EACCES). Scoped to those three senders, not a bare CONTAINS over
     # everything.
+    # Every name the bundle folder can have: `Fused Render.app`, or
+    # `FusedRender.app` on an install from before the rename.
+    python_paths = " OR ".join(
+        f'eventMessage CONTAINS "{name}.app/Contents/MacOS/python"'
+        for name in (_flavor.bundle_name(), *_flavor.legacy_bundle_names()))
     predicate = ('(sender == "kernel" AND eventMessage CONTAINS "memorystatus") OR '
                  'subsystem == "com.apple.memorystatus" OR '
                  f'(process == "{_flavor.app_name()}" AND subsystem == "com.apple.runningboard") OR '
                  'process == "fused-apple-ai" OR '
                  '((process == "kernel" OR process == "syspolicyd" OR process == "amfid") '
-                 f'AND eventMessage CONTAINS "{_flavor.app_name()}.app/Contents/MacOS/python")')
+                 f'AND ({python_paths}))')
     span = min(now - window_start, LOG_SHOW_MAX_SPAN_S)
     deadline = time.monotonic() + LOG_SHOW_TIMEOUT_S
 

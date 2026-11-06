@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { Bot, Code2, Cpu, Mic } from "lucide-react";
 
-import { bundleName } from "@platform/lib/flavor";
+import { displayName } from "@platform/lib/flavor";
 import { StepHeader } from "./StepHeader";
 
 // Versioned filename: the asset ships with a one-day browser cache and
@@ -42,7 +42,7 @@ export function AboutStep({ eyebrow }: { eyebrow: ReactNode }) {
       <StepHeader
         eyebrow={eyebrow}
         title="Your files, your AI, your apps."
-        lead={`${bundleName()} turns any folder on this machine into an app: a web page you see, a Python file that does the work, and Claude Code to write both. Everything runs here — no account, no cloud.`}
+        lead={`${displayName()} turns any folder on this machine into an app: a web page you see, a Python file that does the work, and Claude Code to write both. Everything runs here — no account, no cloud.`}
       />
 
       {videoOk && (
@@ -54,7 +54,7 @@ export function AboutStep({ eyebrow }: { eyebrow: ReactNode }) {
             loop
             playsInline
             preload="metadata"
-            aria-label={`${bundleName()} in use`}
+            aria-label={`${displayName()} in use`}
             className="block aspect-video w-full object-cover"
             onError={() => setVideoOk(false)}
           />

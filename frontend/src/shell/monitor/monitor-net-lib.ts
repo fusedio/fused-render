@@ -82,7 +82,7 @@ export function claudeLine(c: {
   other: number;
   mem_bytes: number;
 }): string {
-  const split = c.other > 0 ? ` (fused-render ${c.fused} · other ${c.other})` : "";
+  const split = c.other > 0 ? ` (Fused Render ${c.fused} · other ${c.other})` : "";
   return `Claude CLIs: ${c.total}${split} · ${formatBytes(c.mem_bytes, true)}`;
 }
 

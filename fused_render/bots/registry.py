@@ -114,7 +114,7 @@ class WorkspaceBusy(ValueError):
 
     def __init__(self, root: str = ""):
         self.root = root
-        super().__init__(f"another fused-render instance owns the bots in this workspace ({root}); "
+        super().__init__(f"another Fused Render instance owns the bots in this workspace ({root}); "
                          "use that window or quit it")
 
 

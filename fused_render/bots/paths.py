@@ -747,7 +747,7 @@ def server_origin() -> str:
     except (OSError, ValueError):
         o = ""
     if not o:
-        raise RuntimeError("the fused-render server is not running (no origin known)")
+        raise RuntimeError("the Fused Render server is not running (no origin known)")
     return o
 
 

@@ -98,9 +98,9 @@ STAGE="$OUT_DIR/FusedChromium"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 FW_BUILT="$(find "$BUILD" -name 'FusedChromium.framework' -type d -maxdepth 3 | head -1)"
-HELPER_BUILT="$(find "$BUILD" -name 'FusedRender Helper.app' -type d -maxdepth 3 | head -1)"
+HELPER_BUILT="$(find "$BUILD" -name 'Fused Render Helper.app' -type d -maxdepth 3 | head -1)"
 [[ -d "$FW_BUILT" ]] || { echo "FATAL: FusedChromium.framework not built" >&2; exit 1; }
-[[ -d "$HELPER_BUILT" ]] || { echo "FATAL: FusedRender Helper.app not built" >&2; exit 1; }
+[[ -d "$HELPER_BUILT" ]] || { echo "FATAL: Fused Render Helper.app not built" >&2; exit 1; }
 cp -R "$FW_BUILT" "$STAGE/"
 # The distribution ships the CEF framework FLAT (no Versions/); codesign on
 # Xcode 26 wants the versioned layout, so it is rebuilt here the way CEF's
@@ -121,12 +121,12 @@ else
 fi
 # The helper and its four variants (GPU, Renderer, Plugin, Alerts): CEF finds
 # them by name next to the main helper, each with its own bundle id suffix.
-cp -R "$HELPER_BUILT" "$STAGE/FusedRender Helper.app"
+cp -R "$HELPER_BUILT" "$STAGE/Fused Render Helper.app"
 for variant in GPU Renderer Plugin Alerts; do
-  name="FusedRender Helper ($variant)"
+  name="Fused Render Helper ($variant)"
   app="$STAGE/$name.app"
   cp -R "$HELPER_BUILT" "$app"
-  mv "$app/Contents/MacOS/FusedRender Helper" "$app/Contents/MacOS/$name"
+  mv "$app/Contents/MacOS/Fused Render Helper" "$app/Contents/MacOS/$name"
   suffix="$(echo "$variant" | tr '[:upper:]' '[:lower:]')"
   /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $name" \
     -c "Set :CFBundleName $name" -c "Set :CFBundleDisplayName $name" \

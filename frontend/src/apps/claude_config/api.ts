@@ -144,7 +144,7 @@ export interface AvailablePlugins {
 
 // One thing a plugin contributes to a session — a skill, a command, an agent,
 // a hook event, an MCP server. `path` is the absolute file that declares it,
-// which is what makes the entry clickable: the panel opens it in FusedRender
+// which is what makes the entry clickable: the panel opens it in Fused Render
 // rather than paraphrasing it.
 export interface PluginComponent {
   name: string;

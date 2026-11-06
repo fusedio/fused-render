@@ -22,7 +22,7 @@ MAX_READ_ROWS = 10000
 
 
 def _unshadow_google():
-    """FusedRender's bundled python312.zip carries its own (older, partial)
+    """Fused Render's bundled python312.zip carries its own (older, partial)
     `google` package, which hides the venv's google-* packages. Put the venv's
     google/ first on the package path and drop anything already imported."""
     import sysconfig

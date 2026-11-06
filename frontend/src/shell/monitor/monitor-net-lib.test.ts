@@ -187,7 +187,7 @@ test("timelineSeries gives one row per figure and skips nulls", () => {
 
 test("claudeLine names the split only when other > 0", () => {
   expect(claudeLine({ total: 3, fused: 2, other: 1, mem_bytes: 1.5 * (1 << 30) })).toBe(
-    "Claude CLIs: 3 (fused-render 2 · other 1) · 1.5 GB",
+    "Claude CLIs: 3 (Fused Render 2 · other 1) · 1.5 GB",
   );
   expect(claudeLine({ total: 4, fused: 4, other: 0, mem_bytes: 1.5 * (1 << 30) })).toBe(
     "Claude CLIs: 4 · 1.5 GB",

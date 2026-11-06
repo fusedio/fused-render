@@ -420,7 +420,7 @@ class GtkBackend:
         if hasattr(settings, "set_enable_webrtc"):
             settings.set_enable_webrtc(True)
         window = Gtk.Window()
-        window.set_title("FusedRender")
+        window.set_title("Fused Render")
         size = self._frames.get(frame_name)
         window.set_default_size(*( (size["w"], size["h"]) if size else _DEFAULT_SIZE))
         if size and size.get("x") is not None and size.get("y") is not None:
@@ -430,7 +430,7 @@ class GtkBackend:
         view.connect("decide-policy", self._on_decide_policy)
         view.connect("create", self._on_create)
         view.connect("close", lambda _v: window.destroy())
-        view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or "FusedRender"))
+        view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or "Fused Render"))
         view.connect("permission-request", self._on_permission)
         view.connect("web-process-terminated", self._on_web_process_terminated)
         window.connect("delete-event", lambda _w, _e: self.save_frame(win) and False)
@@ -582,7 +582,7 @@ class GtkBackend:
         self._log(f"web process terminated ({reason.value_nick}) at {view.get_uri()}")
         url = view.get_uri() or ""
         media = ("<p>If this page plays audio or video, this system's WebKitGTK may "
-                 "lack GStreamer plugins (see the FusedRender Linux notes).</p>"
+                 "lack GStreamer plugins (see the Fused Render Linux notes).</p>"
                  if reason.value_nick == "crashed" else "")
         safe = url.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
         view.load_html(
@@ -629,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
     # the compositor/taskbar group and icon this process under the same
     # identity the installed .desktop entry advertises.
     tk.GLib.set_prgname("fused-render")
-    tk.GLib.set_application_name("FusedRender")
+    tk.GLib.set_application_name("Fused Render")
     tk.Gtk.Window.set_default_icon_name("fused-render")
 
     holder: dict = {}

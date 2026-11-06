@@ -297,7 +297,7 @@ def _native_run_app_tool(spec: AppToolSpec, kwargs) -> Any:
     """Refuse: fused-render runs app tools only through the bundled runner
     (module docstring). Reached only when `fused.agent_core` failed to import;
     run_tool turns the RuntimeError into `error: ...` text."""
-    raise RuntimeError(f"app tool {spec.tool.name!r} failed: fused-render runs app tools through the `fused` "
+    raise RuntimeError(f"app tool {spec.tool.name!r} failed: Fused Render runs app tools through the `fused` "
                        "package (fused.agent_core.app_mcp), which did not import in this install")
 
 
@@ -1108,7 +1108,7 @@ def _api(origin, method, path, body=None, timeout=20):
             said = f"HTTP {e.code}"
         raise RuntimeError(str(said))
     except urllib.error.URLError as e:
-        raise RuntimeError(f"fused-render is not reachable: {e.reason}")
+        raise RuntimeError(f"Fused Render is not reachable: {e.reason}")
 
 
 def resolve_app(app):

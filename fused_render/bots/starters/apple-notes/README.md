@@ -17,7 +17,7 @@ note all live in the URL. Nothing on the page edits a note.
 for the `py` action.
 
 **How it reaches Notes.** macOS only shows the "control Notes" prompt to apps
-whose Info.plist carries `NSAppleEventsUsageDescription`, and FusedRender's does
+whose Info.plist carries `NSAppleEventsUsageDescription`, and Fused Render's does
 not, so its own automation is refused silently. `notes.py` therefore builds a
 small helper applet, `.fused/data/NotesBridge.app` (osacompile, ad-hoc signed,
 no Dock icon), and runs each request inside it. The first time, macOS asks

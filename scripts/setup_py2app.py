@@ -1,4 +1,4 @@
-"""py2app build spec for FusedRender.app / FusedBot.app (SPEC D33-D35).
+"""py2app build spec for Fused Render.app / FusedBot.app (SPEC D33-D35).
 
 Which one is decided by the product flavor (fused_render/_flavor.py,
 FUSED_RENDER_FLAVOR): bundle id, name, URL scheme and the TCC purpose strings
@@ -34,8 +34,15 @@ import sys
 from fused_render import _flavor
 from fused_render._branch import branch_ref, branch_suffix
 
-# `FusedRender` / `FusedBot`, no suffix — the brand every string below spells.
-_APP = _flavor.app_name()
+# "Fused Render" / "Fused Bot", no suffix — the brand every string below spells.
+_APP = _flavor.display_name()
+# The .app folder and CFBundleName ("Fused Render" / "FusedBot"): py2app names
+# the bundle `<CFBundleName>.app`.
+_BUNDLE = _flavor.bundle_name()
+# The binary under Contents/MacOS ("FusedRender" / "FusedBot"). Kept free of
+# spaces and unchanged across the bundle rename: process probes (`ps -o
+# comm=`, `pgrep`), the relauncher and log predicates match it.
+_EXE = _flavor.app_name()
 
 # `setuptools` is imported lazily inside the build guard below: this module must
 # stay importable by tests/test_bundle_contents.py, which runs in the plain test
@@ -354,9 +361,9 @@ DOCUMENT_TYPES = [
     {
         # `.fused` is our own single-file app format (SPEC §43, D385): declare
         # the UTI below and claim Owner rank so a Finder double-click always
-        # opens FusedRender on the file's install page (AF-14). Render only:
+        # opens Fused Render on the file's install page (AF-14). Render only:
         # a bot build declares no document types at all (see the plist).
-        "CFBundleTypeName": "FusedRender app",
+        "CFBundleTypeName": f"{_APP} app",
         "CFBundleTypeRole": "Viewer",
         "LSHandlerRank": "Owner",
         "CFBundleTypeExtensions": ["fused"],
@@ -366,7 +373,7 @@ DOCUMENT_TYPES = [
         # `.fusedbot` is the bot package (docs/bots.md §17): same shape as the
         # `.fused` claim above, so a Finder double-click opens Render on the
         # bot's install page (apps/bots/file BotFilePage).
-        "CFBundleTypeName": "FusedRender bot",
+        "CFBundleTypeName": f"{_APP} bot",
         "CFBundleTypeRole": "Viewer",
         "LSHandlerRank": "Owner",
         "CFBundleTypeExtensions": ["fusedbot"],
@@ -379,7 +386,7 @@ DOCUMENT_TYPES = [
         "CFBundleTypeExtensions": ["parquet"],
     },
     {
-        "CFBundleTypeName": "FusedRender previewable file",
+        "CFBundleTypeName": f"{_APP} previewable file",
         "CFBundleTypeRole": "Viewer",
         "LSHandlerRank": "Alternate",  # never steals the user's default app
         "CFBundleTypeExtensions": _PREVIEWABLE_EXTENSIONS,
@@ -572,8 +579,9 @@ OPTIONS = {
     "no_report_missing_conditional_import": True,
     "plist": {
         "CFBundleIdentifier": _flavor.bundle_id() + (f".{branch_ref()}" if branch_ref() else ""),
-        "CFBundleName": f"{_APP}{branch_suffix()}",
-        "CFBundleDisplayName": f"{_APP}{branch_suffix()}",
+        "CFBundleName": f"{_BUNDLE}{branch_suffix()}",
+        "CFBundleDisplayName": f"{_BUNDLE}{branch_suffix()}",
+        "CFBundleExecutable": f"{_EXE}{branch_suffix()}",
         "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "11.0",
@@ -586,7 +594,7 @@ OPTIONS = {
             f"{_APP} reads and adds to your Notes and Calendar when you connect them under "
             "Preferences > Connections, and runs the automations you ask for."),
         # No LSUIElement (D34): regular app, Dock icon + menu bar item both.
-        # Finder "Open with FusedRender" (SPEC DM-8). Render only: FusedBot
+        # Finder "Open with Fused Render" (SPEC DM-8). Render only: FusedBot
         # is not a file viewer and must not compete for `.fused` (Render
         # stays the Owner) or any previewable extension.
         "CFBundleDocumentTypes": [] if _flavor.is_bot() else DOCUMENT_TYPES,
@@ -604,7 +612,7 @@ OPTIONS = {
         # No other app defines `.fused`, so export the UTI ourselves —
         # without this, LaunchServices treats the extension as dynamic data
         # and the Owner rank above binds unreliably. Identifier deliberately
-        # NOT branch-suffixed: every FusedRender build describes the same
+        # NOT branch-suffixed: every Fused Render build describes the same
         # file format, even though only one can be the Finder default. The
         # bot build exports nothing: it does not open the format, and a
         # second declaration of the same UTI would only confuse LaunchServices.
@@ -614,14 +622,14 @@ OPTIONS = {
             # friends from claiming it.
             {
                 "UTTypeIdentifier": "io.fused.render.app",
-                "UTTypeDescription": "FusedRender app",
+                "UTTypeDescription": f"{_APP} app",
                 "UTTypeConformsTo": ["public.data"],
                 "UTTypeTagSpecification": {"public.filename-extension": ["fused"]},
             },
             # `.fusedbot` (docs/bots.md §17): the bot package, same rationale.
             {
                 "UTTypeIdentifier": "io.fused.render.bot",
-                "UTTypeDescription": "FusedRender bot",
+                "UTTypeDescription": f"{_APP} bot",
                 "UTTypeConformsTo": ["public.data"],
                 "UTTypeTagSpecification": {"public.filename-extension": ["fusedbot"]},
             },
@@ -690,7 +698,7 @@ if _BUILDING:
 
     setup(
         app=APP,
-        name=f"{_APP}{branch_suffix()}",
+        name=f"{_EXE}{branch_suffix()}",
         version=VERSION,
         options={"py2app": OPTIONS},
         # py2app is already installed into the build venv directly (see

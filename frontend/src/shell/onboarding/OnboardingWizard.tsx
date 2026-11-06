@@ -3,7 +3,7 @@
 // bar — and redirects a fresh install there at boot (shell/onboarding/state
 // has the rule). Leaving is a navigation like any other.
 //
-//   1 About        — what FusedRender is (download-page copy + video)
+//   1 About        — what Fused Render is (download-page copy + video)
 //   2 Tools        — ONE checklist: Claude Code (installed / new enough /
 //                    signed in / on PATH), a usable git, a Google Chrome for
 //                    bots — three STAGES (claude, git, chrome), one step; was
@@ -39,7 +39,7 @@ import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
 import { FusedMark } from "@platform/ui/FusedMark";
-import { bundleName, isBot } from "@platform/lib/flavor";
+import { displayName, isBot } from "@platform/lib/flavor";
 
 import {
   firstOpenStage,
@@ -346,7 +346,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
   return (
     <div
       className="onboarding flex min-h-0 flex-1 flex-col bg-background text-foreground"
-      aria-label={`Set up ${bundleName()}`}
+      aria-label={`Set up ${displayName()}`}
     >
       {/* Top bar: brand · steps · close. Three tracks, the outer two an equal
           `1fr`, so the middle one is centred on the BAR — not on whatever the

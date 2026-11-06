@@ -15,7 +15,7 @@ live in [`DESKTOP_SUPERVISOR.md`](DESKTOP_SUPERVISOR.md). Linux support is a new
 
 ## Goal
 
-Ship FusedRender as a single-file Linux desktop app with the user-visible
+Ship Fused Render as a single-file Linux desktop app with the user-visible
 guarantees a desktop app owes — single instance, file "Open with", tray,
 start-at-login, no orphaned process trees on crash, clean upgrade — packaged as
 an **AppImage** (download, `chmod +x`, run; no admin, no package-manager

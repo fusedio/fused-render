@@ -70,7 +70,7 @@ export function BotsList() {
           <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
           <div>
             <div className="font-medium">Claude Code is not installed on the computer</div>
-            <div className="text-[var(--fg-muted)]">Bots need it to think. Install it from fused-render on the computer.</div>
+            <div className="text-[var(--fg-muted)]">Bots need it to think. Install it from Fused Render on the computer.</div>
           </div>
         </div>
       )}

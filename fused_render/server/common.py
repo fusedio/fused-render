@@ -246,7 +246,7 @@ def ws_origin_ok(ws) -> bool:
 async def unhandled_exception(request, exc):
     # A bare "Internal Server Error" with an empty body is undebuggable on
     # a DMG install: Finder-launched apps have no visible stderr, so the
-    # traceback used to vanish (e.g. a right-click "Open with FusedRender"
+    # traceback used to vanish (e.g. a right-click "Open with Fused Render"
     # that 500s on /render or /api/run leaves nothing to report). Put the
     # traceback in the response body (local single-user tool, D3 — the
     # only reader owns the machine) AND in the log file so a later
@@ -263,7 +263,7 @@ async def unhandled_exception(request, exc):
         f" [err_id {err_id}]" if err_id else "", tb
     )
     return _error(
-        f"fused-render internal error on {request.method} "
+        f"Fused Render internal error on {request.method} "
         f"{request.url.path}"
         + (f" (err_id {err_id})" if err_id else "")
         + f":\n\n{tb}",

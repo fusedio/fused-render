@@ -95,7 +95,7 @@ export const GROUPS: readonly SettingsGroup[] = [
     id: "claude-cli",
     nav: "agents",
     label: "Claude Code",
-    blurb: "The settings.json keys that shape the Claude sessions fused-render runs.",
+    blurb: "The settings.json keys that shape the Claude sessions Fused Render runs.",
   },
   { id: "apps", nav: "apps", label: "Sharing & sync", blurb: "Git sync, sharing, and how app cards preview." },
   { id: "indexing", nav: "apps", label: "File index", blurb: "The file index behind Files search." },
@@ -652,7 +652,7 @@ const ENTRIES = [
     group: "advanced",
     section: "Call log",
     label: "Record API calls",
-    description: "Log every runPython, readFile, stat and writeFile your pages make, with duration, result size, output and any traceback. Read it with fused-render calls or the Monitor's Network tab.",
+    description: "Log every runPython, readFile, stat and writeFile your pages make, with duration, result size, output and any traceback. Read it with the fused-render calls command or the Monitor's Network tab.",
     keywords: "call log api runpython logging record debug",
   },
   {

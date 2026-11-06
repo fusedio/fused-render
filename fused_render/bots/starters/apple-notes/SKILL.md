@@ -7,7 +7,7 @@ approve: [notes.py]
 # Apple Notes
 
 One Python file beside `index.html`, `notes.py`, with one `main(**params)`.
-It drives Notes.app with JavaScript for Automation. FusedRender itself cannot get
+It drives Notes.app with JavaScript for Automation. Fused Render itself cannot get
 macOS's "control Notes" prompt (its Info.plist lacks NSAppleEventsUsageDescription),
 so `notes.py` builds a tiny helper applet, `.fused/data/NotesBridge.app`, and runs
 the script inside it; macOS asks once "NotesBridge wants to control Notes" and the

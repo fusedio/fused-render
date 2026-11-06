@@ -50,7 +50,7 @@ test("the detail sentence names the version and carries one action", () => {
   expect(updatesDetail(st({ state: "available", check_only: true }), "ready")?.action).toBeNull();
   expect(updatesDetail(st({ state: "available", check_only: true }), "ready")?.command).toBeUndefined();
   expect(updatesDetail(st({ state: "available", check_only: true, latest_version: "0.6.99", manual_command: "uv tool upgrade fused-render" }), "ready")).toMatchObject({
-    detail: "v0.6.99 is out. Quit fused-render, then run in your terminal:",
+    detail: "v0.6.99 is out. Quit Fused Render, then run in your terminal:",
     command: "uv tool upgrade fused-render",
     action: null,
   });

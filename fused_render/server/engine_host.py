@@ -362,7 +362,7 @@ def refuse_new_children() -> None:
 def _spawn(child: Child) -> None:
     """Start the daemon and wait for it to publish its port and answer /ping."""
     if _stopping.is_set():
-        raise EngineError("fused-render is quitting; not starting an engine")
+        raise EngineError("Fused Render is quitting; not starting an engine")
     os.makedirs(child.cache, exist_ok=True)
     status = os.path.join(child.cache, f"engine-{child.uid}.json")
     log = os.path.join(child.cache, "daemon.log")

@@ -69,6 +69,10 @@ export interface Config {
   scheme?: string;
   /** "Fused Render" / "Fused Bot" — the brand as copy shows it. */
   display_name?: string;
+  /** The .app folder's name as Finder and System Settings list it: "Fused
+   *  Render" / "FusedBot", or "FusedRender" for an install from before the
+   *  rename that no update has moved yet. */
+  bundle_name?: string;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge
   // (the Claude Code group of Preferences), so its availability is

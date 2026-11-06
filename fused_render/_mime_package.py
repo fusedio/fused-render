@@ -68,7 +68,7 @@ def custom_mime_xml() -> str:
         if standard_mime_for_token(token) is not None:
             continue
         lines.append(f'  <mime-type type="{custom_mime(token)}">')
-        lines.append(f"    <comment>{token.upper()} File (FusedRender)</comment>")
+        lines.append(f"    <comment>{token.upper()} File (Fused Render)</comment>")
         lines.append(f'    <glob pattern="*{extension}"/>')
         lines.append("  </mime-type>")
     lines.append("</mime-info>")
