@@ -203,7 +203,8 @@ TOOL_SPECS: dict[str, dict] = {
     # Every bot, for ITSELF (docs §12): the user approves the card, every time (ALWAYS_ASK).
     "routine_add": {
         "description": "Schedule a ROUTINE for yourself: a task text this bot runs on its own, on a schedule, when the user "
-                       "asks for one (\"check X every hour\", \"every weekday at 9 send me…\", \"remind me Friday at 5\"). "
+                       "asks for one in chat (\"check X every hour\", \"every weekday at 9 send me…\", \"remind me Friday at "
+                       "5\"); never from a scheduled run itself. "
                        "`task` is the whole text the scheduled run will get (self-contained: a run has no chat context; "
                        "put the rules, the site and what to report in it). `kind` interval (`minutes`, at least 5), daily "
                        "(`time` HH:MM local, `weekdays` 0 Mon…6 Sun, omit for every day) or once (`at` a local "
@@ -406,6 +407,13 @@ def phone_super(bot) -> bool:
     "ask" whatever its settings say (docs §5). A routine is the user's own task
     from the Mac (channels.base.is_local), so it keeps the bot's settings."""
     return is_super(bot) and not chan.is_local(getattr(bot, "task_via", None))
+
+
+def routine_run(bot) -> bool:
+    """This task was started by a routine (channels.base.ROUTINE): no user is at the card. `routine_add`
+    refuses here rather than raise a card that waits on nobody (the audit's wedge: one unanswered ask in a
+    scheduled run and every later slot reads "skipped: bot was busy")."""
+    return (getattr(bot, "task_via", None) or {}).get("kind") == chan.ROUTINE_KIND
 
 
 def effective_approval(bot) -> str:
@@ -991,6 +999,9 @@ def ui_summary(name: str, result: str, change: str = "", obs: dict | None = None
         return f"{m.group(1)} hits" if m else _clip(_first_line(raw))
     if name == "screenshot":
         return "captured"
+    if name == "routine_add" and raw.startswith("ok"):
+        # The result's tail ("Tell the user it is set…") is written to the model; the chip gets the schedule.
+        return _clip("routine saved · " + (label[len("add routine "):] if label.startswith("add routine ") else label or ""))
     if name == "scroll" and change and raw.startswith("ok"):
         # A scroll's controls diff is just what came into the DOM-scan window;
         # the user wants to know whether it moved.
@@ -1305,10 +1316,11 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
             return ""
         return f"It rewrites {t.meta.get('name')}'s settings as shown; the bot behaves differently from its next task on."
     if act == "routine_add":
-        # A call that will fail validation gets no card: execute() returns the error to the model.
+        # A call that will fail validation gets no card: execute() returns the error to the model. Nor does a
+        # scheduled run get one (routine_run): nobody is watching, and an unanswered card wedges every later slot.
         from fused_render.bots import bot as botmod
         fields, err = botmod.routine_check(**_routine_args(d))
-        if err:
+        if err or routine_run(bot):
             return ""
         return ("It schedules this task to run on its own, on this bot, without asking first each time; you can edit, "
                 "pause or delete it later under Routines.")
@@ -1699,6 +1711,9 @@ def _routine_add(bot, d: dict) -> tuple[str, str]:
     after the same check the card was built from; a `system` line on the bot's
     thread records it (the user's Routines panel reads bot.json on its next poll)."""
     from fused_render.bots import bot as botmod
+    if routine_run(bot):
+        return "add routine", ("error: a scheduled run cannot add routines (its approval card would wait on nobody); "
+                               "say so in your result, and the user can ask for it in chat")
     args = _routine_args(d)
     fields, err = botmod.routine_check(**args)
     if err:

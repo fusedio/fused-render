@@ -1926,8 +1926,13 @@ dialog's own clamps) and returns the schedule exactly as it will be stored,
 so the card (`tools._routine_preview`: `add routine every 60 min: "<task>"`,
 `bot.routine_words` for the schedule, the task text capped like
 instructions) shows the floor-clamped interval the write will keep. A call
-that fails validation gets no card (`risk()` is "") and the `error:` back.
-The write is `Bot.routine_add` (the dialog's path: `next` computed, wake
+that fails validation gets no card (`risk()` is "") and the `error:` back;
+so does a call from a scheduled run (`tools.routine_run`, `task_via` kind
+`routine`): nobody is at that card, and one unanswered ask in a routine
+wedges every later slot (the 2026-10-13 audit), so the run gets "a
+scheduled run cannot add routines" and the chip for a saved one reads
+`routine saved · every 60 min` (`ui_summary`, the model's "Tell the user…"
+tail stays off the chip). The write is `Bot.routine_add` (the dialog's path: `next` computed, wake
 agent synced), plus `system "Routine added (…)"` (`source: "routine"`) on
 the thread; the Routines panel reads bot.json on its next poll, no new
 route. ALWAYS_ASK (a standing task is the user's call every time, never
