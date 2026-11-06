@@ -41,7 +41,15 @@ export function PlaceTag({ task, pageRoot = null, pageNode, onSelectNode, onlyDo
     at.kind === "canvas" && onSelectNode && pageRoot === placeRoot(at)
       ? { env: at.env, name: at.name, file: pageNode ?? null }
       : null;
-  const door = chipDoor(scope, at, here, pageRoot, true);
+  // THE CANVAS TAG IS ALWAYS A BUTTON ON ITS OWN CANVAS (owner, 2026-11-06:
+  // "I still cannot click on the Canvas button to deselect nodes and fit
+  // view everything"): the chip rule makes it plain text once nothing is
+  // selected, but here the press also fits the whole canvas in view, which
+  // is worth a press with nothing selected too.
+  const door =
+    here && scope.kind === "whole"
+      ? { href: chipDoor(scope, at, null, null, true)?.href ?? "", title: `Fit the canvas ${at.name}`, select: { udfName: null } }
+      : chipDoor(scope, at, here, pageRoot, true);
   const label = chipLabel(scope, at);
   const cls = "c-tb-place" + (scope.kind === "node" ? " is-node" : scope.kind === "file" ? " is-file" : "");
   if (!door) {
