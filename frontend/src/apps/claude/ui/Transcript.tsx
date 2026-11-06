@@ -951,10 +951,15 @@ export const Transcript = memo(function Transcript({
   // one becomes `manual-closed`, the same pin a fold's own click writes. A
   // one-liner (no fold state at all) and a reply still streaming are left
   // as they are: the first is never folded, the second is never folded
-  // while it is being written (the seed's rule).
+  // while it is being written (the seed's rule) — and so is the reply the
+  // run is BLOCKED in (`blockedFold`, an unanswered card: `pendingCard`
+  // draws it open and its own fold toggle is withheld; CodeRabbit on
+  // #2154): it opens with the others, it never folds.
   const clickOpens = useTurnClickOpensReplyEnabled();
   const turnsRef = useRef(state.turns);
   turnsRef.current = state.turns;
+  const blockedFoldRef = useRef(blockedFold);
+  blockedFoldRef.current = blockedFold;
   const onOpenReply = useCallback((key: string) => {
     const turns = turnsRef.current;
     const at = turns.findIndex((t) => t.key === key);
@@ -968,7 +973,10 @@ export const Transcript = memo(function Transcript({
     }
     if (ids.length === 0) return;
     const open = ids.some((id) => isFolded(folds.current.get(id)));
-    for (const id of ids) folds.current.set(id, open ? "manual-open" : "manual-closed");
+    for (const id of ids) {
+      if (!open && id === blockedFoldRef.current) continue;
+      folds.current.set(id, open ? "manual-open" : "manual-closed");
+    }
     // Same rule as `onToggleCollapse`: the reader asked to READ something.
     followTail.current = false;
     bumpFold((n) => n + 1);

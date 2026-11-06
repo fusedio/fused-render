@@ -76,15 +76,10 @@ const actions = {
   addNote: () => {},
 };
 
-async function mount(on: boolean) {
+async function mount(on: boolean, turns: TurnRow[] = [user("u:1"), assistant("a:1"), user("u:2"), assistant("a:2")]) {
   let r!: ReturnType<typeof create>;
   await act(async () => {
-    r = create(
-      <Transcript
-        state={state([user("u:1"), assistant("a:1"), user("u:2"), assistant("a:2")])}
-        actions={actions}
-      />,
-    );
+    r = create(<Transcript state={state(turns)} actions={actions} />);
     await new Promise((res) => setTimeout(res, 0));
   });
   // Set the flag the way a Settings PUT does, not through the async prefs read:
@@ -121,6 +116,24 @@ describe("a click on a user message", () => {
     expect(folded(r)).toBe(2);
     click(r, 1);
     expect(folded(r)).toBe(1);
+  });
+
+  test("two replies under one message move together: any folded opens both, all open folds both", async () => {
+    // a:1 and a:1b both fold behind the newest (a:2).
+    const r = await mount(true, [user("u:1"), assistant("a:1"), assistant("a:1b"), user("u:2"), assistant("a:2")]);
+    expect(folded(r)).toBe(2);
+    click(r, 0);
+    expect(folded(r)).toBe(0);
+    click(r, 0);
+    expect(folded(r)).toBe(2);
+    // Mixed: one of the two opened by its own fold toggle, a click opens the other too.
+    const toggle = (byClass(r, "turn-collapsed")[0]!.props as { onClick?: () => void }).onClick;
+    if (toggle) {
+      act(() => toggle());
+      expect(folded(r)).toBe(1);
+      click(r, 0);
+      expect(folded(r)).toBe(0);
+    }
   });
 
   test("with the flag off the bubble is inert", async () => {

@@ -2120,7 +2120,17 @@ export function ClaudeRail({
                           "aria-expanded": true,
                           "aria-controls": FAV_PEEK_ID,
                         }
-                      : {})}
+                      : peekOn && foot && favsOn
+                        ? {
+                            // A SILENCED favourite's ring — another favourite's
+                            // card, or a bot's, holds window B — hovers nothing,
+                            // but the keyboard still takes the window
+                            // (CodeRabbit on #2154): ArrowLeft opens this
+                            // favourite there, as a press would.
+                            "aria-keyshortcuts": "ArrowLeft",
+                            onKeyDown: onFavRingKey(t, href),
+                          }
+                        : {})}
                   {...(peekOn
                     ? {
                         // The open favourite's ring opens no hover card, but
