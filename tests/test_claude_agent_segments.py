@@ -1532,7 +1532,8 @@ def test_a_seam_count_leaves_orphans_out(agent):
             user,
             _delta("text_delta", "second reply")]
     breaks = agent._absorbed_turn_breaks(rows)
-    assert breaks == [{"segments": 1, "text": len("first reply")}]
+    assert breaks == [{"segments": 1, "text": len("first reply"),
+                       "user": {"text": "next", "uuid": ""}}]
     segs = agent._segments_from_rows(rows)
     assert [s["kind"] for s in segs] == ["text", "text", "tool"]
     assert segs[0]["text"] == "first reply"

@@ -8004,7 +8004,13 @@ def _segments_from_rows(rows: list, shape: tuple = (),
     # normally the last row of the window, and the one shape that legitimately
     # continues past one — a D415 wake — puts a `notice` segment in between, so
     # the tail was already a different kind and no merge was happening.
+    # The one other boundary is a message steered into a running tool call
+    # (`tool_boundary` below).
     hard_break = False
+    # ...and so is a message steered into a running tool call: the echo that
+    # lands right after a `tool_result` opens the model's answer to it, and
+    # `_absorbed_turn_breaks` cuts there. Tracked the same way it tracks it.
+    tool_boundary = False
 
     def tail(kind):
         return segments[-1] if segments and segments[-1]["kind"] == kind else None
@@ -8061,6 +8067,12 @@ def _segments_from_rows(rows: list, shape: tuple = (),
         t = row.get("type")
         message = row.get("message")
         content = message.get("content") if isinstance(message, dict) else None
+        if _tool_answer_row(row):
+            tool_boundary = True
+        elif t in ("stream_event", "assistant", "result"):
+            tool_boundary = False
+        elif t == "user" and tool_boundary and _starts_new_turn(row, slash=False):
+            hard_break = True  # see `tool_boundary`; the echo itself draws nothing
         if t == "stream_event":
             ev = row.get("event") or {}
             et = ev.get("type")
@@ -9579,6 +9591,20 @@ def _starts_new_turn(row: dict, slash: bool = True) -> bool:
                for item in content)
 
 
+def _tool_answer_row(row: dict) -> bool:
+    """Whether `row` is a tool's answer — a `type: "user"` row whose list
+    content carries a `tool_result` block. One lands after every tool call,
+    and it is the one place the CLI reads its queue MID-TURN: a message typed
+    while a tool runs is injected right after this row (see
+    `_absorbed_turn_breaks`, "steered")."""
+    if not isinstance(row, dict) or row.get("type") != "user":
+        return False
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+
+
 def _is_api_error_row(row: dict) -> bool:
     """Whether this transcript row is Claude Code's own record of an API
     FAILURE rather than a reply — no network, a 429, an exhausted usage limit.
@@ -9612,12 +9638,20 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False,
     `segments`/`text` to say where the seam is: a user echo row produces no
     segment of its own.
 
-    THE SEAM IS THE `result`, NOT THE ECHO, and that distinction is the whole
-    of this function. The echo's file position is where Claude READ the
-    message, which is in the middle of the previous answer; the previous
-    answer's own `result` row is where that answer ENDS. Splitting at the echo
-    puts the first reply's remainder under the follow-up's bubble, which is
-    the defect this is fixing, not a fix for it (feedback #9).
+    FOR A MESSAGE READ MID-STREAM, THE SEAM IS THE `result`, NOT THE ECHO,
+    and that distinction is the whole of this function. The echo's file
+    position is where Claude READ the message, which is in the middle of the
+    previous answer; the previous answer's own `result` row is where that
+    answer ENDS. Splitting at the echo puts the first reply's remainder under
+    the follow-up's bubble, which is the defect this is fixing, not a fix for
+    it (feedback #9).
+
+    FOR A MESSAGE READ AT A TOOL BOUNDARY, THE SEAM IS THE ECHO. The CLI
+    drains its queue between two API calls — right after a `tool_result` —
+    and what streams next is the model answering the line it just read, so
+    the answer before the echo is whole and the echo is where it ends
+    (`tool_boundary` below; Akshil, 2026-11-05). Such a seam carries the
+    echo's words (`user`), as does a genuine boundary's.
 
     So: an echo with no `result` before it since the window began (or since the
     last seam) records that a follow-up is outstanding, and the NEXT main-turn
@@ -9662,6 +9696,15 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False,
     # for any genuine boundary at all, and a page with nothing to subtract
     # typed the previous reply into the new bubble (Akshil, 2026-10-14).
     quiet_since_result = False
+    # WHETHER THE MODEL IS AT A TOOL BOUNDARY: the newest main-turn row is a
+    # tool's answer (`_tool_answer_row`), or an echo that landed on one. That
+    # is the one place the CLI drains its queue mid-turn — a message typed
+    # while a tool runs is injected straight after the `tool_result`, the
+    # model's NEXT output answers it, and no `result` separates the two
+    # (measured live on 2.1.3xx: `tool_result`, echo, `command_lifecycle`,
+    # `system/status`, then the reply). Bookkeeping rows between do not move
+    # the model; a delta, an assistant row or a `result` does.
+    tool_boundary = False
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
@@ -9669,8 +9712,19 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False,
         # `_read_current_turn`'s cursor and `_segments_from_rows` both make.
         if row.get("parent_tool_use_id"):
             continue
+        # ...nor are synthetic rows: `_segments_from_rows` skips these, so a
+        # seam measured through it must not be cut at one (a skill's injected
+        # text is a `user` row with words, `isMeta`, right after a
+        # `tool_result` — the steered shape to the letter, and not a message).
+        if row.get("isMeta") or row.get("isSidechain"):
+            continue
+        if _tool_answer_row(row):
+            tool_boundary = True
+        elif row.get("type") in ("stream_event", "assistant"):
+            tool_boundary = False
         if row.get("type") == "result":
             seen_result = True
+            tool_boundary = False
             if outstanding:
                 # This closes a reply a follow-up was folded into, so it is a
                 # seam — and one of the outstanding follow-ups is now the
@@ -9685,7 +9739,34 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False,
                 quiet_since_result = True
         elif i and _starts_new_turn(row):
             # `i and` skips `rows[0]`: the window opens on its own turn's echo.
-            if seen_result:
+            if tool_boundary:
+                # STEERED INTO A RUNNING TOOL CALL (Akshil, 2026-11-05: the
+                # reply that said "you asked me to read PRs #74 and #75" sat
+                # ABOVE the two bubbles that asked). Here the echo IS the seam,
+                # and that is not the defect feedback #9 fixed: a message
+                # read mid-STREAM lands inside an answer the model goes on to
+                # finish, so that answer's `result` is the cut; a message
+                # read at a tool boundary lands between two API calls, the
+                # call before it is whole, and what streams next is the
+                # model answering it. Nothing is outstanding — the turn's
+                # one `result` closes the whole reply as usual — and the seam
+                # carries the words (`user`), because this echo is the only
+                # row the page will ever see for them while the run lives:
+                # the CLI persists it as a `queued_command` attachment that
+                # `_history` reads into its place only after the turn ends.
+                #
+                # TESTED BEFORE `seen_result`: a `result` earlier in the
+                # window (a fold-in's, already a seam) does not make this
+                # echo a genuine boundary — the tool answer right before it
+                # says where the model was. The cursor's own rule may still
+                # open its next window on this echo, so like a genuine
+                # boundary it clears `seen_result`: the turn it opens needs
+                # its own `result` too.
+                _seam(breaks, rows, i, shape, app_reads, echo=row)
+                seen_result = False
+                last_result = None
+                quiet_since_result = False
+            elif seen_result:
                 seen_result = False   # a genuine new turn, not a fold-in
                 # A GENUINE BOUNDARY IS A SEAM TOO, and it has to be reported
                 # for the same reason a fold-in does: the page gets ONE payload
@@ -9727,7 +9808,7 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False,
                 # branch exists for (a follow-up the CLI drained straight after
                 # the reply's `result`) has no wake in it by construction.
                 if last_result is not None and quiet_since_result:
-                    _seam(breaks, rows, i, shape, app_reads)
+                    _seam(breaks, rows, i, shape, app_reads, echo=row)
                     last_result = None
                 quiet_since_result = False
             else:
@@ -9741,29 +9822,43 @@ def _absorbed_turn_breaks(rows: list, app_reads: bool = False,
 
 
 def _seam(breaks: list, rows: list, end: int, shape: tuple,
-          app_reads: bool = False) -> None:
+          app_reads: bool = False, echo: dict | None = None) -> None:
     """Record a seam at `rows[:end]`, as payload offsets.
 
-    `end` is EXCLUSIVE, and the two callers pass different things for good
+    `echo` is the user row that opens the span AFTER the seam, when the seam
+    is that echo (a steered message, a genuine boundary): its words and uuid
+    ride the entry as `user`, so a page with no bubble of its own for them (a
+    reload, a second window) can draw one where it belongs rather than
+    nothing until the run ends. A fold-in's seam is a `result`, not an echo,
+    and carries none.
+
+    `end` is EXCLUSIVE, and the callers pass different things for good
     reason: a fold-in's seam is the `result` that closed the reply the
     follow-up was absorbed into (`i + 1`, the result included), while a genuine
     boundary's is everything before the echo that opens the next turn (`i`) —
     which is the same `result` PLUS anything a D415 wake appended to that turn
-    after it.
+    after it — and a steered line's is everything before its echo (`i`), the
+    tool answer it landed on included.
 
     The `segments` count and the `text` length of that prefix, both measured
     through `_segments_from_rows` with the WINDOW's own gates (`shape`) — so
     they are indices into the exact lists `_poll` returns. See
     `_segments_from_rows`'s note on why the gates travel."""
     prefix = _segments_from_rows(rows[:end], shape, app_reads)
-    breaks.append({
+    entry = {
         # Orphaned subagent groups sit at the END of the window's list (see
         # `_segments_from_rows`), never between replies, so they are not
         # part of any prefix's count.
         "segments": sum(1 for seg in prefix if not seg.get("orphan")),
         "text": sum(len(seg.get("text") or "")
                     for seg in prefix if seg.get("kind") == "text"),
-    })
+    }
+    words = _inbox_text(echo) if echo is not None else ""
+    if words.strip():
+        entry["user"] = {"text": words, "uuid": str(echo.get("uuid") or "")}
+        if _row_ts(echo) is not None:
+            entry["user"]["at"] = _row_ts(echo)
+    breaks.append(entry)
 
 
 def _read_current_turn(run_dir: str, ends: list | None = None,
