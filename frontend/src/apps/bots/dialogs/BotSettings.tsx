@@ -246,11 +246,13 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
           <DialogTitle>Settings · {n || init.name}</DialogTitle>
           <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, the services it may use, its browser, its playbooks, its routines, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
         </DialogHeader>
-        <div className="flex min-h-0 flex-1 gap-6 px-6 pb-5">
-          <nav className="-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start" aria-label="Settings sections">
+        {/* On the phone (lan) the section list is a scrolling row above the content, not a column beside it. */}
+        <div className={cn("flex min-h-0 flex-1 gap-6 px-6 pb-5", lan && "flex-col gap-3 px-4")}>
+          <nav className={cn("-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start", lan && "m-0 w-full flex-row gap-1 self-stretch overflow-x-auto [scrollbar-width:none]")}
+            aria-label="Settings sections">
             {tabs.map(([t, l]) => (
               <button key={t} type="button" aria-current={tab === t ? "page" : undefined} onClick={() => setTab(t)}
-                className={cn("flex h-8 w-full cursor-pointer appearance-none items-center rounded-md border-0 bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
+                className={cn("flex h-8 w-full cursor-pointer appearance-none items-center rounded-md border-0 bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50", lan && "h-9 w-auto shrink-0 whitespace-nowrap px-3",
                   tab === t ? "bg-foreground/[0.08] font-medium text-foreground" : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground")}>
                 {l}
                 {t === "phone" && imessageEnabled && imessage ? <span className="ml-auto size-1.5 rounded-full bg-emerald-400" aria-label="connected" /> : null}

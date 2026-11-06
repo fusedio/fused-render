@@ -3,6 +3,8 @@
 // to-bottom pill, and the composer. Owns the state those share: the thread element, the reply quote, the search bar
 // and the reaction picker.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isLanHost } from "@platform/lib/host";
+import { navigateUrl } from "@platform/lib/router";
 import { statusLabel } from "../lib/derive";
 import { toggleRight } from "../lib/layout";
 import { canClear } from "../lib/commands";
@@ -37,6 +39,13 @@ export function ChatPane() {
   return (
     <section className="chat">
       <header>
+        {/* The phone (isLanHost): the chat is a page one level in from the list, so the header carries its Back —
+            left of the face, where iOS puts it; the list is `/bots` (frontend/src/lan/nav.tsx). */}
+        {isLanHost() ? (
+          <a id="cback" href="/bots" aria-label="Back to bots" onClick={(e) => { e.preventDefault(); void navigateUrl("/bots"); }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+          </a>
+        ) : null}
         <span className="av sm" id="cav" title="Settings" onClick={() => { if (b) openDialog({ kind: "settings", id: b.id }); }}>
           <span id="cavt">{b ? <Face b={b} svgId="hface" /> : null}</span>
           <span className={`dot${b ? " " + b.status : ""}`} id="cdot" />

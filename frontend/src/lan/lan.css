@@ -211,9 +211,37 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
 .lan-bots .bots-page .bots > label.search {
   margin: 0 16px 8px;
 }
+/* "Open in Explorer" (a row's action and the peek header's) opens the Mac's
+   Explorer; there is none on the phone. */
+.lan-tasks .tasks-act--page,
+.lan-tasks .task-side-peek-open {
+  display: none;
+}
 /* The Tasks page's own title ("Tasks") repeats the switch; the toolbar
    (List / Board, filters, New task) stays and aligns to the page gutter. */
 .lan-tasks .schedule-page > header.schedule-header {
+  display: none;
+}
+/* The chat header on the phone: Back left of the face (ChatPane #cback), the
+   iMessage toggle (Mac-side) gone, the header clear of the status bar. */
+.lan-bots .bots-page .chat > header {
+  padding-top: max(10px, env(safe-area-inset-top));
+}
+.lan-bots .bots-page .chat > header #cback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-left: -8px;
+  border-radius: 10px;
+  color: var(--text);
+}
+.lan-bots .bots-page .chat > header #cback svg {
+  width: 22px;
+  height: 22px;
+}
+.lan-bots .bots-page .chat > header #cphone {
   display: none;
 }
 /* Thumb-sized: a card's buttons, the question options, the composer's send. */
