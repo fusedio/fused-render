@@ -380,11 +380,12 @@ _DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | Non
     (re.compile(r"^/api/tasks/(changes|pulse|scheduled|settings)$"), frozenset({"GET"}), None),
     (re.compile(r"^/api/tasks/[^/]+/messages$"), frozenset({"GET"}), None),
     (re.compile(r"^/api/tasks/(read|seen|rename|archive|unarchive|delete|settings|holds|ports|running|idle"
-                r"|queue/admit|queue/decide|queue/force|queue/skip|queue/event)$"), frozenset({"POST"}), None),
+                r"|favourite|pr-status|queue/admit|queue/decide|queue/force|queue/skip|queue/event)$"),
+     frozenset({"POST"}), None),
     (re.compile(r"^/api/phone/tasks/new-app$"), frozenset({"POST"}), None),
     (re.compile(r"^/api/schedule$"), frozenset({"GET", "POST"}), None),
-    (re.compile(r"^/api/schedule/(cancel|resend|run-now|shot|queue/cancel)$"), frozenset({"POST"}), None),
-    (re.compile(r"^/api/schedule/queue$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/schedule/(cancel|resend|run-now|shot|restore|queue/cancel|events/ack)$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/schedule/(queue|events)$"), frozenset({"GET"}), None),
     (re.compile(r"^/api/drafts$"), frozenset({"GET"}), None),
     (re.compile(r"^/api/drafts/(chat|task)/.+$"), frozenset({"PUT", "DELETE"}), None),
     (re.compile(r"^/api/ui-layout$"), frozenset({"GET", "PUT", "POST", "PATCH"}), None),
@@ -398,6 +399,53 @@ _DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | Non
     (re.compile(r"^/api/current-apps/ensure$"), frozenset({"POST"}), None),
     (re.compile(r"^/api/capture$"), frozenset({"GET"}), None),
 )
+
+
+#: WHERE A PHONE MAY START AN AGENT. `start`/`send` on the agent route carry
+#: the folder the agent runs in (`file`) and the folders it may read this turn
+#: (`read_dirs`, a JSON array); a `POST /api/schedule` carries `target`. The
+#: phone picks these from lists the Mac showed it, so each must lie in the
+#: read scope (`read_roots()`: the workspace, the linked apps, SHOTS, every
+#: task's folder) — a paired device never turns an agent loose on `~` or `/`.
+#: The old phone door kept the same rule (`phone_tasks._known_folder`).
+_SCOPED_AGENT_ACTIONS = frozenset({"start", "send"})
+
+
+def _in_read_scope(value) -> bool:
+    """``value`` (a folder, or a file whose folder counts) lies in the read
+    scope. A miss retries once on fresh task roots: a task made a moment ago
+    sits in the 5 s cache's blind spot."""
+    global _task_roots_cache
+    if not isinstance(value, str) or not value.strip():
+        return False
+    if _inside_root(value, read_roots()):
+        return True
+    _task_roots_cache = None
+    return _inside_root(value, read_roots())
+
+
+def _door_in_scope(path: str, method: str, args: dict) -> bool:
+    """Whether the folders a door body names are in scope (see
+    `_SCOPED_AGENT_ACTIONS`). Routes with no folder in their body are always
+    in scope; a missing value is left to the inner route's own validation."""
+    values: list = []
+    if path == "/api/claude/agent":
+        if args.get("action") not in _SCOPED_AGENT_ACTIONS:
+            return True
+        values.append(args.get("file"))
+        raw = args.get("read_dirs")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return False
+        if isinstance(raw, list):
+            values.extend(raw)
+        elif raw not in (None, ""):
+            return False
+    elif path == "/api/schedule" and method == "POST":
+        values.append(args.get("target"))
+    return all(v in (None, "") or _in_read_scope(v) for v in values)
 
 
 def _door_for(path: str, method: str):
@@ -776,16 +824,25 @@ class LanApp:
                 return _not_found()
             device_id = str(device.get("id") or "")
             gate = door[2]
-            if gate is None:
+            scoped = path in ("/api/claude/agent", "/api/schedule") and method == "POST"
+            if gate is None and not scoped:
                 return _AsDevice(self.inner, device_id)
             body = await _read_body(receive)
             try:
                 args = json.loads(body) if body.strip() else {}
             except ValueError:
                 args = {}
-            if not isinstance(args, dict) or args.get(gate[0]) not in gate[1]:
-                logger.info("lan: refused %s %s %s=%r (not in the door's gate)", method, path, gate[0],
-                            args.get(gate[0]) if isinstance(args, dict) else None)
+            if not isinstance(args, dict):
+                return _not_found()
+            if gate is not None:
+                # A string, then a member: a list or dict here is unhashable
+                # and would raise out of the membership test as a 500.
+                value = args.get(gate[0])
+                if not isinstance(value, str) or value not in gate[1]:
+                    logger.info("lan: refused %s %s %s=%r (not in the door's gate)", method, path, gate[0], value)
+                    return _not_found()
+            if scoped and not _door_in_scope(path, method, args):
+                logger.info("lan: refused %s %s (a folder outside the read scope)", method, path)
                 return _not_found()
             return _AsDevice(_Forward(self.inner, body), device_id)
         if path == "/api/lan/apps" and method == "GET":

@@ -6126,8 +6126,9 @@ function ChatBody(props: ChatBodyProps) {
                       onToggle={toggleTasksPanel}
                       parentModel={defaults.model}
                       // The peek is drawn by the shell's overlay (App's
-                      // `BreakoutCards`), which an embed does not mount.
-                      {...(!props.breakout && !IS_EMBED
+                      // `BreakoutCards`), which an embed and the phone page
+                      // do not mount: there the row opens its output inline.
+                      {...(!props.breakout && !IS_EMBED && !isLanHost()
                         ? {
                             onPeekAgent: (t: TaskRecord) =>
                               void openAgentPeek({

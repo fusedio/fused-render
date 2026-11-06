@@ -88,8 +88,41 @@ function TasksSection({ peek }: { peek: string | null }) {
   );
 }
 
+/** The visual viewport's height (the part not under the keyboard) as CSS
+ *  variables on <html>: --vvh and --vvtop. iOS shrinks only the VISUAL
+ *  viewport for the keyboard (the `interactive-widget` meta is ignored there),
+ *  so the page's frame, the task peek and the dialog sheets are sized by
+ *  these (lan.css) and the composer rides on top of the keyboard. `data-kb`
+ *  while the keyboard is up. */
+function useVisualViewportVar() {
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const root = document.documentElement;
+    const set = () => {
+      const h = vv ? vv.height : window.innerHeight;
+      root.style.setProperty("--vvh", `${Math.round(h)}px`);
+      root.style.setProperty("--vvtop", `${Math.round(vv ? vv.offsetTop : 0)}px`);
+      if (window.innerHeight - h > 120) root.setAttribute("data-kb", "");
+      else root.removeAttribute("data-kb");
+    };
+    set();
+    vv?.addEventListener("resize", set);
+    vv?.addEventListener("scroll", set);
+    window.addEventListener("resize", set);
+    return () => {
+      vv?.removeEventListener("resize", set);
+      vv?.removeEventListener("scroll", set);
+      window.removeEventListener("resize", set);
+      root.style.removeProperty("--vvh");
+      root.style.removeProperty("--vvtop");
+      root.removeAttribute("data-kb");
+    };
+  }, []);
+}
+
 function Root() {
   const route = useRoute();
+  useVisualViewportVar();
   if (route.name === "grid") return <LanApp />;
   return (
     <>

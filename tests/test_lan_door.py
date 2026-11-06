@@ -15,6 +15,11 @@ from fused_render import lan, lan_doctor, lan_tls
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    # The read scope's workspace: where a phone may start an agent.
+    (tmp_path / "Fused" / "app" / "demo").mkdir(parents=True)
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    lan._roots_cache = None
+    lan._task_roots_cache = None
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
     lan_tls._cert_by_dir.clear()
     lan_doctor.reset_cache()
@@ -80,6 +85,8 @@ ALLOWED = [
     ("GET", "/api/tasks/abc/messages"), ("POST", "/api/tasks/read"), ("POST", "/api/tasks/archive"),
     ("POST", "/api/tasks/queue/decide"), ("POST", "/api/phone/tasks/new-app"), ("POST", "/api/schedule"),
     ("GET", "/api/schedule/queue"), ("POST", "/api/schedule/cancel"), ("GET", "/api/drafts"),
+    ("POST", "/api/tasks/favourite"), ("POST", "/api/tasks/pr-status"), ("GET", "/api/schedule/events"),
+    ("POST", "/api/schedule/events/ack"), ("POST", "/api/schedule/restore"),
     ("PUT", "/api/drafts/chat/some-key"), ("GET", "/api/ui-layout"), ("PUT", "/api/ui-layout"),
     ("GET", "/api/prefs"), ("GET", "/api/recents"), ("GET", "/api/agent-backends"), ("GET", "/api/current-apps"),
     ("POST", "/api/current-apps/ensure"), ("GET", "/api/capture"),
@@ -135,13 +142,14 @@ def test_unpaired_gets_nothing(home):
 def test_the_agent_route_is_gated_on_its_action(home):
     inner = Inner()
     app, cookie, _ = _paired(inner)
+    folder = str(home / "Fused" / "app" / "demo")
     for action in ("start", "send", "poll", "cancel", "history", "cards", "decide", "shots_dir", "tasks"):
-        assert call(app, "/api/claude/agent", "POST", {"action": action, "file": "/x"}, headers=[cookie]) == 200, action
+        assert call(app, "/api/claude/agent", "POST", {"action": action, "file": folder}, headers=[cookie]) == 200, action
     # The body reaches the inner app intact (the door read it to look at `action`).
-    assert json.loads(inner.hits[-1][3]) == {"action": "tasks", "file": "/x"}
+    assert json.loads(inner.hits[-1][3]) == {"action": "tasks", "file": folder}
     inner.hits.clear()
     for action in ("snapshot_plan", "snapshot_revert", "snapshots", "terminal_command", "set_mode", "app_state",
-                   "canvas_shot", "", None):
+                   "canvas_shot", "", None, [], {}, ["start"], 7):
         body = {"action": action} if action is not None else {}
         assert call(app, "/api/claude/agent", "POST", body, headers=[cookie]) == 404, action
     assert call(app, "/api/claude/worktrees", "POST", {"action": "list"}, headers=[cookie]) == 200
@@ -155,3 +163,36 @@ def test_every_door_row_matches_something_it_names(home):
     for pat, methods, gate in lan._DOORS:
         assert methods, pat.pattern
         assert gate is None or (isinstance(gate[0], str) and gate[1]), pat.pattern
+
+
+def test_a_phone_starts_agents_only_in_the_read_scope(home):
+    """`start`/`send` run an agent in `file`'s folder and grant it `read_dirs`;
+    a scheduled task runs in `target`. Each must be the workspace, a linked
+    app, SHOTS or a task's own folder — never `~`, `/` or a stranger."""
+    inner = Inner()
+    app, cookie, _ = _paired(inner)
+    agent = "/api/claude/agent"
+    folder = str(home / "Fused" / "app" / "demo")
+    assert call(app, agent, "POST", {"action": "start", "file": folder, "message": "hi"}, headers=[cookie]) == 200
+    assert call(app, agent, "POST", {"action": "start", "file": folder + "/index.html"}, headers=[cookie]) == 200
+    assert call(app, agent, "POST", {"action": "start", "file": folder, "read_dirs": json.dumps([folder])},
+                headers=[cookie]) == 200
+    # A send without a file names its run by id; the inner route validates that.
+    assert call(app, agent, "POST", {"action": "send", "run_id": "r1", "message": "more"}, headers=[cookie]) == 200
+    assert call(app, "/api/schedule", "POST", {"target": folder, "message": "later"}, headers=[cookie]) == 200
+    assert len(inner.hits) == 5
+    inner.hits.clear()
+    for body in ({"action": "start", "file": "/"}, {"action": "start", "file": "~"},
+                 {"action": "start", "file": str(home / "elsewhere")},
+                 {"action": "send", "run_id": "r1", "file": "/etc"},
+                 {"action": "start", "file": folder, "read_dirs": json.dumps(["/"])},
+                 {"action": "start", "file": folder, "read_dirs": "not json"},
+                 {"action": "start", "file": folder, "read_dirs": json.dumps({"dir": folder})},
+                 {"action": "start", "file": ["x"]}):
+        assert call(app, agent, "POST", body, headers=[cookie]) == 404, body
+    for body in ({"target": "/"}, {"target": str(home)}, {"target": str(home / "elsewhere")}, {"target": ["x"]}):
+        assert call(app, "/api/schedule", "POST", body, headers=[cookie]) == 404, body
+    # The actions with no folder in their body are not scoped.
+    assert call(app, agent, "POST", {"action": "poll", "file": "/etc"}, headers=[cookie]) == 200
+    assert call(app, "/api/schedule", headers=[cookie]) == 200
+    assert len(inner.hits) == 2

@@ -16,8 +16,12 @@ html[data-host="lan"] body {
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
 }
+/* The frame is the VISUAL viewport (main.tsx useVisualViewportVar): with the
+   keyboard up it shrinks and the composer stays above the keys. */
 html[data-host="lan"] #root {
-  height: 100%;
+  position: relative;
+  top: var(--vvtop, 0px);
+  height: var(--vvh, 100%);
 }
 /* No double-tap zoom, no pinch zoom (the native shell disables the gesture
    too, WebView.swift lockZoom): the page is an app. `manipulation` keeps
@@ -254,9 +258,9 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  margin-left: -8px;
+  width: 44px;
+  height: 44px;
+  margin-left: -12px;
   border-radius: 10px;
   color: var(--text);
 }
@@ -286,6 +290,8 @@ html[data-host="lan"] .bots-page .msg {
 html[data-host="lan"] .task-side-peek {
   position: fixed;
   inset: 0;
+  top: var(--vvtop, 0px);
+  height: var(--vvh, 100%);
   width: 100% !important;
   max-width: none !important;
   z-index: 30;
@@ -303,12 +309,12 @@ html[data-host="lan"] [data-slot="alert-dialog-content"] {
   top: auto !important;
   left: 0 !important;
   right: 0 !important;
-  bottom: 0 !important;
+  bottom: calc(100dvh - var(--vvh, 100dvh) - var(--vvtop, 0px)) !important;
   transform: none !important;
   width: 100% !important;
   max-width: none !important;
   height: auto !important;
-  max-height: 92dvh !important;
+  max-height: calc(var(--vvh, 100dvh) * 0.92) !important;
   border-radius: 16px 16px 0 0 !important;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
 }

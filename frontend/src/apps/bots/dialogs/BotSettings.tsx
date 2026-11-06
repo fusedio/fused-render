@@ -170,6 +170,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     setFolderTyped(null);
   };
   const pickFolder = async () => {
+    // The native picker opens on the Mac's screen (/api/fs/pick-folder is a 404 on the LAN door): the phone types.
+    if (lan) { setFolderTyped(""); return; }
     if (pickingRef.current) return;
     pickingRef.current = true;
     setPicking(true);

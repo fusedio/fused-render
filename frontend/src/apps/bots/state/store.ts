@@ -472,6 +472,9 @@ const hasNews = (b: Bot): boolean => botHasUnread({ seq: b.seq, news_seq: b.news
  *  entry. A different bot than the one on screen gets the select resets (applySel), and landing marks it read.
  *  With no rows yet the pick waits for the first poll (pollOnce), which calls this again. */
 function landOnBare(): void {
+  // The phone's `/bots` IS the list (D1467): landing would select a bot off-screen, and selecting marks it read
+  // (applySel → markSeen) for a chat nobody is looking at. The Mac's rule only.
+  if (isLanHost()) return;
   const pick = S.bots.length ? landingBot(S.bots, hasNews, S.sel) : S.sel;
   if (!pick) return;
   batch(() => {
@@ -622,7 +625,8 @@ export async function pollOnce(): Promise<void> {
       if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null, { replace: true });
       // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
       // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
-      if (S.sel && !document.hidden) sendOpen(S.sel);
+      // Not from the phone's list page: the chat on screen there is none (D1467).
+      if (S.sel && !document.hidden && !(isLanHost() && parseBotsPath(location.pathname).kind === "list")) sendOpen(S.sel);
       updateTitle();
     });
   } catch (e) {
