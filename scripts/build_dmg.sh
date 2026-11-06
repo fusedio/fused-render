@@ -1236,7 +1236,7 @@ MINOS_REPORT="$(find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' -o -p
         *) continue ;;
       esac
       v="$(otool -l "$f" 2>/dev/null | awk "/LC_BUILD_VERSION/{b=1} b&&/minos/{print \$2; exit} /LC_VERSION_MIN_MACOSX/{m=1} m&&/version/{print \$2; exit}")"
-      [ -n "$v" ] && printf "%s %s\n" "$v" "$f"
+      if [ -n "$v" ]; then printf "%s %s\n" "$v" "$f"; fi
     done' _ | sort -t. -k1,1n -k2,2n | tail -5)"
 MINOS_MAX="$(echo "$MINOS_REPORT" | tail -1 | cut -d" " -f1)"
 echo "    highest minos in the bundle: ${MINOS_MAX:-none} (floor ${MINOS_FLOOR})"
