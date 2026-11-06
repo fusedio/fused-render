@@ -392,6 +392,9 @@ function writeUrl(id: string | null, mode: "push" | "replace") {
     const r = parseBotsPath(location.pathname);
     if (r.kind === "bot" && r.id === id) return;
     if (mode === "replace" && r.kind !== "list" && r.kind !== "bot") return;
+    // On the phone the bare `/bots` IS a page — the list, one column at a time (lan.css) — so the store's own
+    // fallback never fills it in with the default pick: that would bounce every Back from a chat straight into it.
+    if (mode === "replace" && r.kind === "list" && isLanHost()) return;
     const href = (id ? botHref(id) : BOTS_PREFIX) + location.search + location.hash;
     if (mode === "push") navigateUrl(href); else replaceSearch(href);
   } catch { /* no history (tests) */ }

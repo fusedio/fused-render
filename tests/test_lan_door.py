@@ -81,7 +81,8 @@ ALLOWED = [
     ("POST", "/api/tasks/queue/decide"), ("POST", "/api/phone/tasks/new-app"), ("POST", "/api/schedule"),
     ("GET", "/api/schedule/queue"), ("POST", "/api/schedule/cancel"), ("GET", "/api/drafts"),
     ("PUT", "/api/drafts/chat/some-key"), ("GET", "/api/ui-layout"), ("PUT", "/api/ui-layout"),
-    ("GET", "/api/prefs"), ("GET", "/api/recents"),
+    ("GET", "/api/prefs"), ("GET", "/api/recents"), ("GET", "/api/agent-backends"), ("GET", "/api/current-apps"),
+    ("POST", "/api/current-apps/ensure"), ("GET", "/api/capture"),
 ]
 
 #: The Mac's screen, terminal, disk and worktrees — a 404 on the LAN by the
@@ -93,7 +94,7 @@ REFUSED = [
     "/api/bots/imessage", "/api/bots/imessage/test", "/api/bots/builds", "/api/bots/usage",
     "/api/bots/roster", "/api/bots/workspace/take", "/api/bots/workspace/yield", "/api/bot-apps",
     "/api/bot-apps/reveal", "/api/bot-apps/starters", "/api/tasks/erase", "/api/tasks/settings/x",
-    "/api/capture/shot-region", "/api/prefs/chromium/reopen-windows", "/api/phone/tasks", "/api/phone/bots",
+    "/api/capture/shot-region", "/api/current-apps/add", "/api/current-apps/archive", "/api/prefs/chromium/reopen-windows", "/api/phone/tasks", "/api/phone/bots",
     "/api/phone/bots/b_1", "/api/bots/b_1/../../bots/b_1/takeover",
 ]
 

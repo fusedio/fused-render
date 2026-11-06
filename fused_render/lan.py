@@ -169,13 +169,59 @@ def allowed_roots() -> list[str]:
     return seen
 
 
-def _inside_root(path: str) -> bool:
+def _inside_root(path: str, roots: list[str] | None = None) -> bool:
     try:
         real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
-        roots = [os.path.realpath(r) for r in allowed_roots()]
+        roots = [os.path.realpath(r) for r in (allowed_roots() if roots is None else roots)]
     except (OSError, ValueError):
         return False
     return any(is_within(real, root, fs_root_ok=False) for root in roots)
+
+
+_TASK_ROOTS_TTL_S = 5.0
+_task_roots_cache: tuple[float, list[str]] | None = None
+
+
+def task_roots() -> list[str]:
+    """Every task's folder (`project`, and `target`'s folder), from the tasks
+    listing the desktop's own Tasks page reads. The phone draws that page
+    (D1467), and the page STATS each task's folder to pick its chat template
+    and LISTS it for the peek — folders anywhere on the disk, not under
+    ~/Fused. So these join the READ scope (`/api/fs/stat`, `/api/fs/list`,
+    `/api/fs/raw`) and never the write scope: a phone reads what a task
+    reads, and writes only where every LAN page could already write."""
+    global _task_roots_cache
+    import time
+
+    now = time.monotonic()
+    if _task_roots_cache is not None and now - _task_roots_cache[0] < _TASK_ROOTS_TTL_S:
+        return _task_roots_cache[1]
+    roots: list[str] = []
+    try:
+        from fused_render.server.routers.tasks import _listing
+        rows, _gen = _listing()
+        for row in rows:
+            for key in ("project", "target"):
+                value = row.get(key)
+                if not isinstance(value, str) or not value:
+                    continue
+                folder = value if key == "project" or os.path.isdir(value) else os.path.dirname(value)
+                if folder and folder not in roots:
+                    roots.append(folder)
+    except Exception:  # noqa: BLE001 — no listing, no task folders: the roots alone
+        logger.debug("lan: task roots unavailable", exc_info=True)
+    _task_roots_cache = (now, roots)
+    return roots
+
+
+def read_roots() -> list[str]:
+    """The read scope: the write roots plus every task's folder."""
+    return allowed_roots() + task_roots()
+
+
+#: File routes whose only effect is a read: scoped to `read_roots()`.
+_READ_ROUTES = frozenset({"/api/fs/raw", "/api/fs/stat", "/api/fs/list", "/api/fs/walk", "/api/fs/conditions",
+                          "/api/fs/git-repo"})
 
 
 def _resolve(value, anchor) -> str | None:
@@ -218,7 +264,7 @@ def _anchor(args: dict):
     return None
 
 
-def _args_in_scope(args: dict) -> bool:
+def _args_in_scope(args: dict, roots: list[str] | None = None) -> bool:
     anchor = _anchor(args)
     for key in _PATH_KEYS:
         if key not in args:
@@ -230,7 +276,7 @@ def _args_in_scope(args: dict) -> bool:
             if value is None or value == "":
                 continue
             resolved = _resolve(value, anchor)
-            if resolved is None or not _inside_root(resolved):
+            if resolved is None or not _inside_root(resolved, roots):
                 return False
     return True
 
@@ -344,6 +390,13 @@ _DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | Non
     (re.compile(r"^/api/ui-layout$"), frozenset({"GET", "PUT", "POST", "PATCH"}), None),
     (re.compile(r"^/api/prefs$"), frozenset({"GET"}), None),
     (re.compile(r"^/api/recents$"), frozenset({"GET", "POST"}), None),
+    # What the Tasks page and the chat read on load: the agent catalog, the
+    # desk (a task opened on an app folder puts that app on the desk, the way
+    # the Mac does), the capture capabilities the composer's mic asks about.
+    (re.compile(r"^/api/agent-backends$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/current-apps$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/current-apps/ensure$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/capture$"), frozenset({"GET"}), None),
 )
 
 
@@ -731,6 +784,8 @@ class LanApp:
             except ValueError:
                 args = {}
             if not isinstance(args, dict) or args.get(gate[0]) not in gate[1]:
+                logger.info("lan: refused %s %s %s=%r (not in the door's gate)", method, path, gate[0],
+                            args.get(gate[0]) if isinstance(args, dict) else None)
                 return _not_found()
             return _AsDevice(_Forward(self.inner, body), device_id)
         if path == "/api/lan/apps" and method == "GET":
@@ -741,6 +796,11 @@ class LanApp:
             return None
         allowed = _EXACT.get(path)
         if allowed is None or method not in allowed:
+            # Named in the log: a page that reaches for a route the door never
+            # admitted is the first thing to look for when the phone shows a
+            # blank where the Mac shows a pane.
+            if path.startswith("/api/"):
+                logger.info("lan: refused %s %s (not in _DOORS / _EXACT)", method, path)
             return _not_found()
 
         # EVERY value of a repeated key is scoped, not the last one: which
@@ -748,7 +808,8 @@ class LanApp:
         # `?path=<in-root>&path=/etc/passwd` must fail whichever it is.
         query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
                          keep_blank_values=True)
-        if not _args_in_scope(query):
+        if not _args_in_scope(query, read_roots() if path in _READ_ROUTES else None):
+            logger.info("lan: refused %s %s (a path outside the roots)", method, path)
             return _not_found()
 
         if method in ("GET", "HEAD"):
@@ -770,6 +831,7 @@ class LanApp:
         else:
             args = {}
         if not _args_in_scope(args):
+            logger.info("lan: refused %s %s (a path outside the roots)", method, path)
             return _not_found()
         return _Forward(self.inner, body)
 

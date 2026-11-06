@@ -19,12 +19,26 @@ html[data-host="lan"] body {
 html[data-host="lan"] #root {
   height: 100%;
 }
+/* No double-tap zoom, no pinch zoom (the native shell disables the gesture
+   too, WebView.swift lockZoom): the page is an app. `manipulation` keeps
+   pan and the ordinary tap. */
+html[data-host="lan"],
+html[data-host="lan"] body {
+  touch-action: manipulation;
+}
 /* iOS zooms into a field whose text is under 16px; never on this page. */
 html[data-host="lan"] :is(input, textarea, select) {
   font-size: max(16px, 1em);
 }
 
 /* ---- the grid (src/lan/App.tsx) ---------------------------------------- */
+/* In the base layer, under the utilities: a link's own text-* class wins. */
+@layer base {
+  html[data-host="lan"] a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
 /* The grid scrolls as a document; the sections below are app-height frames. */
 html[data-host="lan"] body:has(> #root > main.lan-grid) {
   overflow: auto;
@@ -154,11 +168,40 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
 .lan-bots .bots-page main > :is(.bots, .chat) {
   width: 100%;
   height: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+/* The desktop floors the thread at --mid (450px) and lets a wide table push
+   the bubble (.msg.md:has(> .wide)); on a 390px phone both would scroll the
+   page sideways. The thread column is the screen, and wide content scrolls
+   inside its own .tablewrap. */
+.lan-bots .bots-page {
+  --mid: 0px;
+  --chatw: 0px;
+}
+.lan-bots .bots-page .thread {
+  overflow-x: hidden;
+}
+.lan-bots .bots-page .msg,
+.lan-bots .bots-page .msg.md:has(> .wide) {
+  max-width: 92%;
+  min-width: 0;
+}
+.lan-bots .bots-page .msg.md .tablewrap,
+.lan-bots .bots-page .msg pre {
+  max-width: 100%;
+  overflow-x: auto;
 }
 .lan-bots--list .bots-page main > .chat {
   display: none;
 }
 .lan-bots--chat .bots-page main > .bots {
+  display: none;
+}
+/* The list header's Mac-only buttons: Browsers (/api/bots/browsers is a 404 on
+   the LAN door), Usage (same), and the collapse-to-rail toggle (one column). */
+.lan-bots .bots-page :is(#browsers, #usage, #lcol) {
   display: none;
 }
 /* Thumb-sized: a card's buttons, the question options, the composer's send. */
