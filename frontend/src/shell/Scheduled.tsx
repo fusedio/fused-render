@@ -766,6 +766,15 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // `?view=board` comes through here rather than needing a subscription.
     return viewFromSearch(location.search, saved);
   });
+  // Back/Forward onto a URL whose `?view=` differs from the one on screen: the
+  // shell remounts this page per navigation (App.tsx keys it on the nav epoch)
+  // so the initialiser above reads it there; the phone page (lan/main.tsx)
+  // keeps it mounted across the peek's own history entries, so it is read here.
+  useEffect(() => {
+    const on = () => setView((v) => viewFromSearch(location.search, v));
+    window.addEventListener("popstate", on);
+    return () => window.removeEventListener("popstate", on);
+  }, []);
   // WHICH TABS THE SWITCHER SHOWS (Akshil, 2026-10-16) — the reader's own
   // row, a preference since D1386 (see `readViewTabs`); the defaults until
   // they edit it, and until the first read of this document lands.

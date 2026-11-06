@@ -2110,82 +2110,60 @@ expanded to `thumbUrl` (`/api/bots/<id>/steps/<seq>.jpg`).
 routines, skills, bot creation, an embedded chat. `stop` stops only the app's
 own task (`Bot.app_stop`, as `handoff_stop` stops only its hand-off).
 
-## 14. The phone — the iOS app's Bots screens (`bots/phone.py`, `lan.py`, `frontend/src/lan/`, 2026-10-13)
+## 14. The phone — the iOS app renders the desktop's own pages through an allow-listed door (`lan.py`, `frontend/src/lan/`, 2026-11-06, D1468)
 
 The Fused Render iOS app (`ios/`) is a thin native shell around the LAN
-listener's page (`lan.py`, `frontend/lan.html`). Beside the apps grid it now
-shows the bots: a list at `/bots` and one bot's chat at `/bots/<id>`, both
-the same lan page (its own pathname router), phone-first and small. The
-desktop Bots page is not reused (three panes, the CDP screencast, the whole
-shell bundle).
+listener's page (`lan.py`, `frontend/lan.html`). Beside the apps grid it shows
+Bots at `/bots` and `/bots/<id>` and Tasks at `/tasks` and `/tasks/<key>`, and
+both are THE DESKTOP'S OWN REACT PAGES: `frontend/src/lan/main.tsx` mounts
+`@apps/bots` (the list, the chat, the dialogs, the store) and the shell's Tasks
+page (`shell/Scheduled`, whose peek is `@apps/claude`'s chat) unchanged, under
+`html[data-host="lan"]`. One UI, one wire: a fix in the thread, a card or the
+composer lands on the phone with no second copy to patch. The phone-only code
+is the section switch, the grid, the New app sheet and the layout rules in
+`lan.css` (one column at a time, the chat full screen under a Back, dialogs as
+bottom sheets, 16px fields so iOS never zooms). This reverses 2026-10-13's
+`bots/phone.py` and 2026-11-05's `phone_tasks.py` (D1358, D1464): a trimmed
+phone wire and a hand-copied phone UI that lagged the desktop within weeks (no
+tables, no sanitiser, no reactions, no always-approve).
 
-**A channel of its own.** A message from the phone carries
-`via = {kind: "phone", addr: "<paired device id>"}` (`channels.base.PHONE_KIND`,
-`phone_via`, label "the phone"). It is outside (`is_outside`): Super Bot takes
-it (the `receive` and `start_task` gates admit it beside `imessage` and `app`,
-`bot._SUPER_OUTSIDE`) and runs it under the phone posture — every write, edit,
-shell command and build asks on a card, whatever `super_access` says.
-Ordinary bots keep their own `approval` setting. `caps_for` gives it
-`PHONE_CAPS`: cards, chips and media show on the phone, but a `login` still
-means walking to the Mac (`can_login` false; the phone never takes the
-browser over). The router has no phone channel object: the phone reads the
-chat itself, so nothing is pushed.
+**The door (`lan.py` `_DOORS`).** For a paired device the listener forwards an
+ALLOW-LIST of the desktop's routes — a table of (path pattern, methods, body
+gate) that fails closed: a route not in it (and not in `_EXACT`/`_PREFIXES`) is
+a 404 on the LAN. Every forward is `_AsDevice`-stamped (`X-Fused-Device` from
+the pairing record; a client-sent one is dropped). `/api/claude/agent`,
+`/api/claude/artifacts` and `/api/claude/worktrees` are gated on the JSON
+body's `action` (the chat multiplexes on it): start, send, poll, cancel,
+history, cards, commands, decide, defaults, sessions, shots_dir, image_to_png,
+task_* and tasks are in; snapshot_*, terminal_command, set_mode, app_state and
+canvas_shot are not, and worktrees admits `list` alone. Under `/api/bots` the
+list, status (`?cursors=`), presets, setup, pulse, create, delete, send, the
+shot and step pictures and these ops are in: pause resume stop clear open
+settings routines skills seen react flag attach goto nav tab tool viewport
+failures. Not in, by the owner's call (2026-11-06): takeover, giveback, popout,
+dock, wake, profile, reveal, clone, package, export, the browsers, iMessage,
+builds, usage, roster and workspace routes, `/api/bot-apps`,
+`/api/tasks/erase`, `/api/capture/*`, `/api/prefs` writes — everything that
+drives the Mac's screen, terminal, disk or worktrees. `tests/test_lan_door.py`
+pins both lists. The chat's attachments live in the agent's `SHOTS` folder,
+which joins `allowed_roots()` so `/api/fs/upload` and `/api/fs/raw` (scoped
+like every file route) can carry a picture in and draw it back.
 
-**The phone answers the card it shows.** The phone is the user's own paired
-device (QR pairing), not a stranger's text. A send carrying `answer: <seq>`
-is checked — the bot waits on that seq right now (`status` waiting,
-`waiting_on` = seq) and the event there is an `approval` — and its text must
-be a yes or a no (agent_engine `YES` / `NO`; the page sends "approve" /
-"deny"). Then the route stamps `via["answers"] = seq`, exactly the texted-card
-mechanism (§10, `channels.base.answers_card`): `_texted_approval` lets it
-through and the gate takes it as the verdict. Any other `answer` is a 400
-("that card is not waiting on an answer"); a plain "yes" without the stamp is
-held back with the usual "answered here at the Mac" line. It holds for a card
-of any task, Mac-started too: the user is looking at it. "Approve, don't ask
-again" (`Forever`) is never offered from the phone.
+**What a component hides.** `@platform/lib/host.isLanHost()` reads the
+`data-host` stamp; the few controls whose route the door 404s ask it:
+BotSettings drops its Connections, Browser and Phone tabs, the bot list its
+Builds and Apps buttons, the workspace-busy banner its "Take over here", the
+chat its worktree menu. Everything else is drawn as on the Mac and, where the
+door refuses, the desktop's own error surfaces (a 404 toast), the same
+backstop the Mac has for a dead worker.
 
-**The phone may steer a running task, too.** A phone message while a bot —
-Super Bot included, on a task started at the Mac — is busy reaches it as a
-mid-task instruction, as the chat's own would. iMessage holds such a text
-back ("Busy with a task from the Mac") and an app page may steer only the
-task it started; the phone gets neither hold, for the same reason it may
-answer a Mac-started card: it is the user's own paired device, and the user
-who typed the task at the Mac is the one holding the phone. What the phone
-posture still governs is what a phone-STARTED task may do unasked (nothing
-that writes, runs or builds). Decided 2026-10-13 (D1358), reviewer's question.
-
-**Routes** (`/api/phone/bots`, its own router in `bots/phone.py`, included
-beside the bots router and listed in `routes.OWNED_PREFIXES`, so a non-owner
-process forwards it). Every POST/DELETE needs `X-Fused: 1`; errors are
-`{"error": "<sentence>"}` (400 from the bot layer, 404 unknown bot or op).
-
-| Route | Does |
-|---|---|
-| `GET /api/phone/bots` | `{bots: [PhoneBot], ts, setup: {claude, owner, models, efforts}}`; Super Bot first, then `updated` desc. PhoneBot: id, name, kind, status, busy, waitingOn, step, task, last (the newest user/done/question/approval/error line), seq, updated, control, routines (count), face (the bot.json `face`: with id, name and status all the desktop's `faceOf` / `moodOf` read), hidden, pinned |
-| `GET /api/phone/bots/presets` | `/api/bots/presets`' answer |
-| `GET /api/phone/bots/{id}?since&before&limit&detail` | `{bot, events, seq, first_seq, ts}`. `since=0`: the last `limit` (80, max 400); with `before=<seq>` the `limit` before it; `since=<seq>`: everything after (`events_since`). Events keep the desktop's keys minus `trace`, `artifacts`, `forever`; `thumb` becomes `/api/phone/bots/{id}/steps/<n>.jpg`, `detail` is cut to 600 chars. The bot adds instructions, model, effort, approval, engine, max_steps, `waiting_seq` (the one card whose buttons are live), shot, shot_ts, viewport, browser {running, url, title}, routines, and memory / skills with `detail=1` |
-| `GET …/{id}/shot`, `…/{id}/steps/{name}` | the PNG / JPEG, as under `/api/bots` |
-| `POST /api/phone/bots` | create `{name, preset?, instructions?, model?, effort?, approval?}`: always an ordinary bot, never encrypted |
-| `POST …/{id}/send` | `{text, reply_to?, answer?, files?}` → `receive(via=phone_via)`; files through `routes.decode_files` / `save_files`, the app door's own (§13: files/, the "Attached (…)" line, images as blocks). `{ok, seq, held, files}`; `held` when the user holds the browser at the Mac (`receive` parks it) |
-| `POST …/{id}/pause\|resume\|stop\|clear` | the bot methods (`clear` = `clear_context`) |
-| `POST …/{id}/settings` | name, instructions, model, effort, approval, max_steps, memory through `routes._settings`; any other key is ignored. On Super Bot, instructions, memory and approval are a 400: they go into every task it runs, a Mac-written routine's included, which runs with its own access |
-| `POST …/{id}/routines` | `routes._routines` as is, except Super Bot's `add` / `edit` (400: a routine runs as the user's own Mac task, with Super Bot's own access, so its text is written at the Mac) |
-| `DELETE /api/phone/bots/{id}` | delete; Super Bot → 400 |
-
-Not on the phone: take-over, give-back, pop-out, dock, wake, profile import,
-reveal, browsers, encryption, trusted apps, allow rules, build access, Super
-Bot's access, the engine, iMessage settings, clone, skills, reactions, flags —
-the Mac's screen and the desktop's settings. An unknown op is a 404.
-
-**On the LAN** (`lan.py`): `/bots` and `/bots/<id>` (one segment, GET, paired)
-serve `shell-dist/lan.html` as `/` does (503 when it is not built; an unpaired
-phone gets the how-to-pair page). The `/api/phone/bots` prefix is forwarded for
-a paired device on GET/POST/DELETE (`_AsDevice`): a copy of the scope with
-any client `x-fused-device` header dropped and `X-Fused-Device: <id>` set from
-the pairing record (`_paired_record`, the cookie lookup `_paired` now wraps;
-the `last_seen` bump unchanged). `/api/bots` itself stays a 404 on the LAN.
-On loopback (D3: trusted) the routes answer too; without the header the via
-addr is "".
+**Still true.** A message typed on the phone is the desktop's own `send`; the
+`phone` channel (`channels.base.PHONE_KIND`, `phone_via`) remains for a texted
+approval's `via`. Unread is the server's `seen_seq`, shared with the Mac
+(reading on the phone clears it there). `POST /api/phone/tasks/new-app`
+(`server/routers/phone_tasks.py`) is the phone's one route of its own: the
+grid's "+" names, scaffolds and builds an app as a task, server-side so a slow
+hop never shows a half-made app.
 
 ## 15. The Marketplace — `marketplace_search` / `marketplace_install` (`tools.MARKET_TOOLS`, 2026-10-15)
 

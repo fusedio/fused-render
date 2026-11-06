@@ -213,7 +213,13 @@ struct ConnectedView: View {
         if path == "/" || path == "/index.html" || path == "/pair" { return .grid }
         if path == "/bots" || path == "/bots/" { return .bots }
         if path.hasPrefix("/bots/") { return .bot }
-        if path == "/tasks" || path == "/tasks/" { return .tasks }
+        // The Tasks page opens a task as `/tasks?peek=<key>` (the shell's own
+        // peek store rewrites a `/tasks/<key>` deep link into it on load).
+        if path == "/tasks" || path == "/tasks/" {
+            let peek = URLComponents(url: loc, resolvingAgainstBaseURL: false)?
+                .queryItems?.first { $0.name == "peek" }?.value ?? ""
+            return peek.isEmpty ? .tasks : .task
+        }
         if path.hasPrefix("/tasks/") { return .task }
         return .app
     }

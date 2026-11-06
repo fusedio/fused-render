@@ -8,6 +8,7 @@
 // (routes.ts: the selection IS the path), the UI request slots (dialog / context menu) the panes open each other
 // with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
+import { isLanHost } from "@platform/lib/host";
 import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
 import { landingBot } from "../lib/landing";
@@ -276,6 +277,9 @@ export function hideBanner(force = false): void { if (S.banner.show && (force ||
 /** A door the workspace gate refused (409 "workspace_busy"): the banner stays until acted on, and Override asks
  *  the holding server to yield, claims the workspace here, then polls so the doors read as open. */
 function showWorkspaceBusy(e: ApiError): void {
+  // A phone cannot claim the workspace (the LAN door 404s /api/bots/workspace/take, lan.py): the banner says
+  // why, with no Override.
+  if (isLanHost()) { showBanner(e.message, { sticky: true }); return; }
   showBanner(e.message, { sticky: true, action: { label: "Take over here", run: async () => {
     try { await api.workspaceTake(); hideBanner(true); await poll(); }
     catch (err) { showBanner(errMsg(err), { sticky: true, action: S.banner.action }); }
@@ -388,6 +392,9 @@ function writeUrl(id: string | null, mode: "push" | "replace") {
     const r = parseBotsPath(location.pathname);
     if (r.kind === "bot" && r.id === id) return;
     if (mode === "replace" && r.kind !== "list" && r.kind !== "bot") return;
+    // On the phone the bare `/bots` IS a page — the list, one column at a time (lan.css) — so the store's own
+    // fallback never fills it in with the default pick: that would bounce every Back from a chat straight into it.
+    if (mode === "replace" && r.kind === "list" && isLanHost()) return;
     const href = (id ? botHref(id) : BOTS_PREFIX) + location.search + location.hash;
     if (mode === "push") navigateUrl(href); else replaceSearch(href);
   } catch { /* no history (tests) */ }
@@ -465,6 +472,9 @@ const hasNews = (b: Bot): boolean => botHasUnread({ seq: b.seq, news_seq: b.news
  *  entry. A different bot than the one on screen gets the select resets (applySel), and landing marks it read.
  *  With no rows yet the pick waits for the first poll (pollOnce), which calls this again. */
 function landOnBare(): void {
+  // The phone's `/bots` IS the list (D1468): landing would select a bot off-screen, and selecting marks it read
+  // (applySel → markSeen) for a chat nobody is looking at. The Mac's rule only.
+  if (isLanHost()) return;
   const pick = S.bots.length ? landingBot(S.bots, hasNews, S.sel) : S.sel;
   if (!pick) return;
   batch(() => {
@@ -615,7 +625,8 @@ export async function pollOnce(): Promise<void> {
       if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null, { replace: true });
       // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
       // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
-      if (S.sel && !document.hidden) sendOpen(S.sel);
+      // Not from the phone's list page: the chat on screen there is none (D1468).
+      if (S.sel && !document.hidden && !(isLanHost() && parseBotsPath(location.pathname).kind === "list")) sendOpen(S.sel);
       updateTitle();
     });
   } catch (e) {

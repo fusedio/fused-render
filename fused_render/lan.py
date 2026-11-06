@@ -146,6 +146,15 @@ def allowed_roots() -> list[str]:
     home = home_dir()
     roots = [fused_dir()]
     roots.extend(os.path.join(home, sub) for sub in _HOME_SUBROOTS)
+    # The chat's attachment folder (claude_agent/agent.py SHOTS): what a phone
+    # uploads into a task chat (`/api/fs/upload`) and the pictures the
+    # transcript draws back (`/api/fs/raw`). One bounded folder, pruned by its
+    # owner; never the runs tree beside it.
+    try:
+        from fused_render.claude_agent.agent import SHOTS
+        roots.append(SHOTS)
+    except Exception:  # noqa: BLE001 — no chat module, no attachments
+        logger.debug("lan: shots root unavailable", exc_info=True)
     try:
         from fused_render import registered_apps
 
@@ -160,13 +169,59 @@ def allowed_roots() -> list[str]:
     return seen
 
 
-def _inside_root(path: str) -> bool:
+def _inside_root(path: str, roots: list[str] | None = None) -> bool:
     try:
         real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
-        roots = [os.path.realpath(r) for r in allowed_roots()]
+        roots = [os.path.realpath(r) for r in (allowed_roots() if roots is None else roots)]
     except (OSError, ValueError):
         return False
     return any(is_within(real, root, fs_root_ok=False) for root in roots)
+
+
+_TASK_ROOTS_TTL_S = 5.0
+_task_roots_cache: tuple[float, list[str]] | None = None
+
+
+def task_roots() -> list[str]:
+    """Every task's folder (`project`, and `target`'s folder), from the tasks
+    listing the desktop's own Tasks page reads. The phone draws that page
+    (D1468), and the page STATS each task's folder to pick its chat template
+    and LISTS it for the peek — folders anywhere on the disk, not under
+    ~/Fused. So these join the READ scope (`/api/fs/stat`, `/api/fs/list`,
+    `/api/fs/raw`) and never the write scope: a phone reads what a task
+    reads, and writes only where every LAN page could already write."""
+    global _task_roots_cache
+    import time
+
+    now = time.monotonic()
+    if _task_roots_cache is not None and now - _task_roots_cache[0] < _TASK_ROOTS_TTL_S:
+        return _task_roots_cache[1]
+    roots: list[str] = []
+    try:
+        from fused_render.server.routers.tasks import _listing
+        rows, _gen = _listing()
+        for row in rows:
+            for key in ("project", "target"):
+                value = row.get(key)
+                if not isinstance(value, str) or not value:
+                    continue
+                folder = value if key == "project" or os.path.isdir(value) else os.path.dirname(value)
+                if folder and folder not in roots:
+                    roots.append(folder)
+    except Exception:  # noqa: BLE001 — no listing, no task folders: the roots alone
+        logger.debug("lan: task roots unavailable", exc_info=True)
+    _task_roots_cache = (now, roots)
+    return roots
+
+
+def read_roots() -> list[str]:
+    """The read scope: the write roots plus every task's folder."""
+    return allowed_roots() + task_roots()
+
+
+#: File routes whose only effect is a read: scoped to `read_roots()`.
+_READ_ROUTES = frozenset({"/api/fs/raw", "/api/fs/stat", "/api/fs/list", "/api/fs/walk", "/api/fs/conditions",
+                          "/api/fs/git-repo"})
 
 
 def _resolve(value, anchor) -> str | None:
@@ -209,7 +264,7 @@ def _anchor(args: dict):
     return None
 
 
-def _args_in_scope(args: dict) -> bool:
+def _args_in_scope(args: dict, roots: list[str] | None = None) -> bool:
     anchor = _anchor(args)
     for key in _PATH_KEYS:
         if key not in args:
@@ -221,7 +276,7 @@ def _args_in_scope(args: dict) -> bool:
             if value is None or value == "":
                 continue
             resolved = _resolve(value, anchor)
-            if resolved is None or not _inside_root(resolved):
+            if resolved is None or not _inside_root(resolved, roots):
                 return False
     return True
 
@@ -278,25 +333,135 @@ _EXACT: dict[str, frozenset[str]] = {
 #: assets, the engine proxy (the daemon behind it is validated by
 #: engine_host, and the browser never sees its port), job cancel/dismiss.
 _PREFIXES = ("/static/", "/template-assets/", "/template-shared/", "/api/engines/", "/api/jobs/")
-#: The phone bots door (bots/phone.py, docs/bots.md §14): the bots as the iOS
-#: app shows them — a chat, the live shot, pause/stop, a small settings sheet,
-#: routines. Forwarded with ``X-Fused-Device`` stamped from the pairing record
-#: (``_AsDevice``). The desktop's own ``/api/bots`` stays a 404 here: it holds
-#: the Mac-screen operations (take-over, pop-out, profiles, reveal, …).
-_PHONE_BOTS = "/api/phone/bots"
-_PHONE_BOTS_METHODS = frozenset({"GET", "POST", "DELETE"})
-#: The lan page's own routes beside ``/``: the bots list and one bot's chat.
-_BOTS_PAGE = re.compile(r"^/bots(?:/[^/]+)?$")
-#: The phone tasks door (server/routers/phone_tasks.py, docs/phone-tasks.md):
-#: the agent tasks as the iOS app shows them — trimmed rows, a reduced
-#: transcript, the live card, a fixed set of verbs. Forwarded like the bots
-#: door, device stamped. The desktop's ``/api/tasks/*`` and
-#: ``/api/claude/agent`` stay a 404 here: they carry erase, worktree removal,
-#: terminal hand-off and the whole listing.
-_PHONE_TASKS = "/api/phone/tasks"
-_PHONE_TASKS_METHODS = frozenset({"GET", "POST"})
-#: The lan page's tasks routes: the list and one task. A key is a session id
-#: or ``pending:<entry>``; the colon is a plain path character.
+#: THE PHONE DOOR (docs/bots.md §14, D1468). The iOS app renders the desktop's
+#: own bots app and task chat (frontend/src/lan/main.tsx mounts `@apps/bots`
+#: and the shell's Tasks page), so the routes it reaches are the DESKTOP'S OWN,
+#: not a trimmed phone shape: one UI, one wire. What keeps a paired phone from
+#: driving the Mac is this table, which fails closed — a route not matched
+#: here (and not in `_EXACT`/`_PREFIXES`) is a 404 on the LAN. Every forward
+#: is `_AsDevice`-stamped (`X-Fused-Device` from the pairing record, a
+#: client-sent one dropped) so the desktop handlers can tell a phone from
+#: the Mac without ever trusting the client for it.
+#:
+#: Not here on purpose (the owner's call, 2026-11-06): everything that drives
+#: the Mac's screen, terminal, disk or worktrees — bots takeover / giveback /
+#: popout / dock / wake / profile / reveal / package / export / clone, the
+#: browsers, iMessage, builds, usage and workspace routes, `/api/bot-apps`;
+#: the agent's snapshot_* / terminal_command / set_mode / app_state /
+#: canvas_shot actions; `/api/tasks/erase`, `/api/claude/worktrees` create and
+#: remove, `/api/capture/*`, desktop `/api/prefs` writes. A row is one line;
+#: a reviewer reads a new line here as "the phone can now do this".
+_DOOR_BOT_OPS = ("pause", "resume", "stop", "clear", "open", "settings", "routines", "skills", "seen",
+                 "react", "flag", "attach", "goto", "nav", "tab", "tool", "viewport", "failures")
+_DOOR_AGENT_ACTIONS = frozenset({
+    "start", "send", "send_now", "poll", "cancel", "history", "cards", "commands", "decide", "defaults",
+    "sessions", "shots_dir", "image_to_png", "task_background", "task_output", "task_stop", "tasks",
+    "live_run", "live_host"})
+#: A bot id — never one of the collection's own names under the same prefix
+#: (`/api/bots/browsers` is not bot "browsers").
+_BOT = r"(?!(?:browsers|imessage|builds|usage|roster|workspace|profiles|presets|pulse|setup)(?:/|$))[A-Za-z0-9_-]+"
+#: (path pattern, methods, body gate) — the gate is ``(key, allowed values)``
+#: read from the JSON body, the way ``/api/claude/agent`` multiplexes on
+#: ``action``; None forwards the body unread.
+_DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | None], ...] = (
+    (re.compile(r"^/api/bots$"), frozenset({"GET", "POST"}), None),
+    (re.compile(r"^/api/bots/(pulse|presets|setup)$"), frozenset({"GET"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}$"), frozenset({"DELETE"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}/(shot|app_events|tools|failures)$"), frozenset({"GET"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}/steps/[A-Za-z0-9_.-]+$"), frozenset({"GET"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}/send$"), frozenset({"POST"}), None),
+    (re.compile(rf"^/api/bots/{_BOT}/({'|'.join(_DOOR_BOT_OPS)})$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/claude/agent$"), frozenset({"POST"}), ("action", _DOOR_AGENT_ACTIONS)),
+    (re.compile(r"^/api/claude/artifacts$"), frozenset({"POST"}), ("action", frozenset({"list", "live"}))),
+    (re.compile(r"^/api/claude/worktrees$"), frozenset({"POST"}), ("action", frozenset({"list"}))),
+    (re.compile(r"^/api/claude/app-entry$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/claude-sessions(/history|/recap|/defaults|/summaries|/liveness)?$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/tasks$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/tasks/(changes|pulse|scheduled|settings)$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/tasks/[^/]+/messages$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/tasks/(read|seen|rename|archive|unarchive|delete|settings|holds|ports|running|idle"
+                r"|favourite|pr-status|queue/admit|queue/decide|queue/force|queue/skip|queue/event)$"),
+     frozenset({"POST"}), None),
+    (re.compile(r"^/api/phone/tasks/new-app$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/schedule$"), frozenset({"GET", "POST"}), None),
+    (re.compile(r"^/api/schedule/(cancel|resend|run-now|shot|restore|queue/cancel|events/ack)$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/schedule/(queue|events)$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/drafts$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/drafts/(chat|task)/.+$"), frozenset({"PUT", "DELETE"}), None),
+    (re.compile(r"^/api/ui-layout$"), frozenset({"GET", "PUT", "POST", "PATCH"}), None),
+    (re.compile(r"^/api/prefs$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/recents$"), frozenset({"GET", "POST"}), None),
+    # What the Tasks page and the chat read on load: the agent catalog, the
+    # desk (a task opened on an app folder puts that app on the desk, the way
+    # the Mac does), the capture capabilities the composer's mic asks about.
+    (re.compile(r"^/api/agent-backends$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/current-apps$"), frozenset({"GET"}), None),
+    (re.compile(r"^/api/current-apps/ensure$"), frozenset({"POST"}), None),
+    (re.compile(r"^/api/capture$"), frozenset({"GET"}), None),
+)
+
+
+#: WHERE A PHONE MAY START AN AGENT. `start`/`send` on the agent route carry
+#: the folder the agent runs in (`file`) and the folders it may read this turn
+#: (`read_dirs`, a JSON array); a `POST /api/schedule` carries `target`. The
+#: phone picks these from lists the Mac showed it, so each must lie in the
+#: read scope (`read_roots()`: the workspace, the linked apps, SHOTS, every
+#: task's folder) — a paired device never turns an agent loose on `~` or `/`.
+#: The old phone door kept the same rule (`phone_tasks._known_folder`).
+_SCOPED_AGENT_ACTIONS = frozenset({"start", "send"})
+
+
+def _in_read_scope(value) -> bool:
+    """``value`` (a folder, or a file whose folder counts) lies in the read
+    scope. A miss retries once on fresh task roots: a task made a moment ago
+    sits in the 5 s cache's blind spot."""
+    global _task_roots_cache
+    if not isinstance(value, str) or not value.strip():
+        return False
+    if _inside_root(value, read_roots()):
+        return True
+    _task_roots_cache = None
+    return _inside_root(value, read_roots())
+
+
+def _door_in_scope(path: str, method: str, args: dict) -> bool:
+    """Whether the folders a door body names are in scope (see
+    `_SCOPED_AGENT_ACTIONS`). Routes with no folder in their body are always
+    in scope; a missing value is left to the inner route's own validation."""
+    values: list = []
+    if path == "/api/claude/agent":
+        if args.get("action") not in _SCOPED_AGENT_ACTIONS:
+            return True
+        values.append(args.get("file"))
+        raw = args.get("read_dirs")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return False
+        if isinstance(raw, list):
+            values.extend(raw)
+        elif raw not in (None, ""):
+            return False
+    elif path == "/api/schedule" and method == "POST":
+        values.append(args.get("target"))
+    return all(v in (None, "") or _in_read_scope(v) for v in values)
+
+
+def _door_for(path: str, method: str):
+    """The `_DOORS` row for ``path``/``method``, or None."""
+    for pat, methods, gate in _DOORS:
+        if pat.match(path) and method in methods:
+            return pat, methods, gate
+    return None
+
+
+#: The lan page's own routes beside ``/``: the bots app (`/bots`, `/bots/<id>`,
+#: its tasks / apps / preferences pages) and the tasks page (`/tasks`,
+#: `/tasks/<key>` — a key is a session id or ``pending:<entry>``; the colon is
+#: a plain path character). Both are the desktop's own React pages mounted by
+#: lan.html (frontend/src/lan/main.tsx).
+_BOTS_PAGE = re.compile(r"^/bots(?:/[^/]+){0,2}$")
 _TASKS_PAGE = re.compile(r"^/tasks(?:/[^/]+)?$")
 
 
@@ -639,35 +804,47 @@ class LanApp:
         if path == "/" or path == "/index.html" or (method == "GET" and _lan_page(path)):
             # The grid is a second Vite page (frontend/lan.html → shell-dist/
             # lan.html); its assets resolve under /static/shell-dist/, which the
-            # /static/ prefix below already forwards. `/bots` and `/bots/<id>`
-            # are the same page: its own router draws the bots list and a chat
-            # (docs/bots.md §14); `/tasks` and `/tasks/<key>` likewise
-            # (docs/phone-tasks.md).
+            # /static/ prefix below already forwards. `/bots/*` and `/tasks/*`
+            # are the same page: it mounts the desktop's bots app and Tasks
+            # page (docs/bots.md §14).
             page = os.path.join(os.path.dirname(_STATIC_DIR), "shell-dist", "lan.html")
             if not os.path.isfile(page):
                 return PlainTextResponse(
                     "phone grid not built (frontend/lan.html → shell-dist/lan.html); "
                     "run: cd frontend && npm run build", status_code=503)
             return FileResponse(page, headers={"Cache-Control": "no-store"})
-        if (path == _PHONE_BOTS or path.startswith(_PHONE_BOTS + "/")) and method in _PHONE_BOTS_METHODS:
-            # The phone bots door (bots/phone.py): no path arguments to scope, but
-            # the inner routes learn WHICH paired device is talking from the
-            # pairing record, never from the client. No dot segment: the inner
-            # app forwards this owned prefix to the process holding the bots
-            # (bots/routes.forward_middleware), whose client normalises the URL,
-            # so `/api/phone/bots/../../bots/<id>/takeover` would land on the
-            # desktop door.
+        door = _door_for(path, method)
+        if door is not None:
+            # The phone door (`_DOORS`): the desktop's own routes, device
+            # stamped. No dot segment: the inner app forwards the bots prefix
+            # to the process holding the bots (bots/routes.forward_middleware),
+            # whose client normalises the URL, so `/api/bots/x/../../bots/<id>/
+            # takeover` would land on an op this table never admitted.
             if any(seg in (".", "..") for seg in path.split("/")):
                 return _not_found()
-            return _AsDevice(self.inner, str(device.get("id") or ""))
-        if (path == _PHONE_TASKS or path.startswith(_PHONE_TASKS + "/")) and method in _PHONE_TASKS_METHODS:
-            # The phone tasks door (server/routers/phone_tasks.py): the same
-            # device stamping and the same dot-segment refusal as the bots door
-            # above; the desktop's `/api/tasks/*` is not in `_EXACT`, so it
-            # stays a 404 below.
-            if any(seg in (".", "..") for seg in path.split("/")):
+            device_id = str(device.get("id") or "")
+            gate = door[2]
+            scoped = path in ("/api/claude/agent", "/api/schedule") and method == "POST"
+            if gate is None and not scoped:
+                return _AsDevice(self.inner, device_id)
+            body = await _read_body(receive)
+            try:
+                args = json.loads(body) if body.strip() else {}
+            except ValueError:
+                args = {}
+            if not isinstance(args, dict):
                 return _not_found()
-            return _AsDevice(self.inner, str(device.get("id") or ""))
+            if gate is not None:
+                # A string, then a member: a list or dict here is unhashable
+                # and would raise out of the membership test as a 500.
+                value = args.get(gate[0])
+                if not isinstance(value, str) or value not in gate[1]:
+                    logger.info("lan: refused %s %s %s=%r (not in the door's gate)", method, path, gate[0], value)
+                    return _not_found()
+            if scoped and not _door_in_scope(path, method, args):
+                logger.info("lan: refused %s %s (a folder outside the read scope)", method, path)
+                return _not_found()
+            return _AsDevice(_Forward(self.inner, body), device_id)
         if path == "/api/lan/apps" and method == "GET":
             return JSONResponse({"apps": lan_apps(), "host": _controller.host_for_url()})
         if path.startswith("/a/"):
@@ -676,6 +853,11 @@ class LanApp:
             return None
         allowed = _EXACT.get(path)
         if allowed is None or method not in allowed:
+            # Named in the log: a page that reaches for a route the door never
+            # admitted is the first thing to look for when the phone shows a
+            # blank where the Mac shows a pane.
+            if path.startswith("/api/"):
+                logger.info("lan: refused %s %s (not in _DOORS / _EXACT)", method, path)
             return _not_found()
 
         # EVERY value of a repeated key is scoped, not the last one: which
@@ -683,7 +865,8 @@ class LanApp:
         # `?path=<in-root>&path=/etc/passwd` must fail whichever it is.
         query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
                          keep_blank_values=True)
-        if not _args_in_scope(query):
+        if not _args_in_scope(query, read_roots() if path in _READ_ROUTES else None):
+            logger.info("lan: refused %s %s (a path outside the roots)", method, path)
             return _not_found()
 
         if method in ("GET", "HEAD"):
@@ -705,6 +888,7 @@ class LanApp:
         else:
             args = {}
         if not _args_in_scope(args):
+            logger.info("lan: refused %s %s (a path outside the roots)", method, path)
             return _not_found()
         return _Forward(self.inner, body)
 

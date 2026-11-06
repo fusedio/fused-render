@@ -436,7 +436,7 @@ def test_approval_sets_waiting_on_its_card(steps_bot, monkeypatch):
 
 @pytest.mark.parametrize("stamp", ["card", "other"])
 def test_an_outside_yes_approves_only_the_card_it_was_stamped_for(steps_bot, monkeypatch, stamp):
-    # The phone's answer (bots/phone.py) and a texted one carry via["answers"] = the card's seq
+    # A phone-channel answer (channels.base.phone_via) and a texted one carry via["answers"] = the card's seq
     # (channels.base.answers_card): the steps engine's gate takes it as the verdict, as the agent engine's does.
     # One stamped for another card (settled between bot._texted_approval's check and the inbox write) is neither
     # a yes nor a no: the card stays up (no "Denied"), and the next, rightly stamped yes settles it.

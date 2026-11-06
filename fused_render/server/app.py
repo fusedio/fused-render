@@ -1239,7 +1239,6 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # `fused_render.bots.routes` before the server.
     from fused_render.bots import registry as _bots_registry
     from fused_render.bots.routes import forward_middleware as _bots_forward
-    from fused_render.bots.phone import router as phone_bots_router
     from fused_render.bots.file_routes import router as botfile_router
     from fused_render.bots.routes import router as bots_router
 
@@ -1247,12 +1246,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # The `.fusedbot` install page's `/api/botfile/*` (bots/file_routes.py, docs/bots.md §17): outside the
     # owned prefixes ("file" would parse as a bot id), so its install POST forwards to the owner itself.
     app.include_router(botfile_router)
-    # The iOS app's door (bots/phone.py, docs/bots.md §14): `/api/phone/bots/*`, an owned prefix like the two
-    # above, and the one bots prefix the LAN listener forwards (lan.py) for a paired phone.
-    app.include_router(phone_bots_router)
-    # The iOS app's Tasks door (server/routers/phone_tasks.py, docs/phone-tasks.md): `/api/phone/tasks/*`,
-    # trimmed rows and a reduced transcript over the tasks router's own listing and handlers, and the one
-    # tasks prefix the LAN listener forwards for a paired phone. The desktop's `/api/tasks/*` stays off the LAN.
+    # The iOS app's one route of its own (server/routers/phone_tasks.py): `POST /api/phone/tasks/new-app`,
+    # the grid's "+". Everything else the phone draws is the desktop's own routes, allow-listed by the LAN
+    # listener (lan.py `_DOORS`, docs/bots.md §14).
     from fused_render.server.routers.phone_tasks import router as phone_tasks_router
     app.include_router(phone_tasks_router)
     # One owner per machine (bots/registry.py module docstring): the process holding the bots flock serves

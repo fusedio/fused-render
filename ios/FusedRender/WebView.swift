@@ -92,6 +92,16 @@ struct WebView: UIViewRepresentable {
         web.uiDelegate = context.coordinator
         web.allowsBackForwardNavigationGestures = true
         web.scrollView.contentInsetAdjustmentBehavior = .never
+        // No pinch, no double-tap zoom, no zoom bounce: the page is an app, not
+        // a document (the viewport meta says `user-scalable=no` too, which
+        // WKWebView honours only partly — the recognizer is the reliable half,
+        // and it comes back enabled on every navigation, hence `lockZoom`
+        // again in didCommit / didFinish). The way every webview-as-content
+        // app does it (Cordova, Capacitor, Ionic).
+        web.scrollView.bouncesZoom = false
+        web.scrollView.minimumZoomScale = 1
+        web.scrollView.maximumZoomScale = 1
+        Coordinator.lockZoom(web)
         // Pull down to reload — the grid (fresh listing) and any app page alike.
         let refresh = UIRefreshControl()
         refresh.addTarget(context.coordinator, action: #selector(Coordinator.pulled(_:)), for: .valueChanged)
@@ -319,8 +329,18 @@ struct WebView: UIViewRepresentable {
             onNavigationFailed()
         }
 
+        /// Pinch-to-zoom off. WKWebView re-enables its pinch recognizer per
+        /// navigation, so this runs on every commit and finish.
+        static func lockZoom(_ webView: WKWebView) {
+            webView.scrollView.pinchGestureRecognizer?.isEnabled = false
+            webView.scrollView.minimumZoomScale = 1
+            webView.scrollView.maximumZoomScale = 1
+            if webView.scrollView.zoomScale != 1 { webView.scrollView.setZoomScale(1, animated: false) }
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             webView.scrollView.refreshControl?.endRefreshing()
+            Coordinator.lockZoom(webView)
             navigationFailed = false
             webLog.info("finished \(webView.url?.absoluteString ?? "-", privacy: .public)")
             controller.location = webView.url
@@ -348,6 +368,7 @@ struct WebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            Coordinator.lockZoom(webView)
             controller.canGoBack = webView.canGoBack
             // A new document: whatever the old page was recording has no owner
             // any more — end it, or the microphone stays on with no way back.

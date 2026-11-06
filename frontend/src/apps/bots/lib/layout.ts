@@ -12,6 +12,7 @@
 // React tree sits on, exactly as in OpenBot. The fit is measured on the page's own <main> (ResizeObserver), never
 // window.innerWidth: the shell's sidebar takes width the page cannot use.
 import { botsRoot } from "./root";
+import { isLanHost } from "@platform/lib/host";
 
 export const LAYOUT_KEY = "browser-bot.layout";
 export interface Layout { lw: number; rw: number; cw: number; lcol: boolean; rcol: boolean }
@@ -167,7 +168,12 @@ export function withRailGlide(fn: () => void): void {
 let unfolding = false;
 export function fitPreview(): void {
   const main = mainEl(); if (!main) return;
-  const cl = body().classList, f = fitFlags(main.clientWidth, layout, { lfit: !unfolding && cl.contains("lfit"), rfit: cl.contains("rfit"), sfull: cl.contains("sfull") });
+  const cl = body().classList;
+  // On the phone (lan.css) the page is one column at a time — the full list at /bots, the chat at /bots/<id> — so
+  // the narrow-window folds (icon rail, hidden preview, full-window Stage) never apply: at 390px every one of
+  // them would fire and the list would be a 72px rail of faces.
+  if (isLanHost()) { cl.remove("lfit", "rfit", "sfull", "lstuck"); return; }
+  const f = fitFlags(main.clientWidth, layout, { lfit: !unfolding && cl.contains("lfit"), rfit: cl.contains("rfit"), sfull: cl.contains("sfull") });
   cl.toggle("lfit", f.lfit);
   cl.toggle("rfit", f.rfit);
   cl.toggle("sfull", f.sfull);

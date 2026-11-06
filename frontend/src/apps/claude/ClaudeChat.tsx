@@ -165,6 +165,7 @@ import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
 import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
 import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
+import { isLanHost } from "@platform/lib/host";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
@@ -400,7 +401,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** WHETHER A WORKTREE MENU IS MOUNTED for this target: any file or folder the
  *  pane has named — the menu then hides itself unless its list says repo. */
 export function worktreeMenuTarget(file: string | null, noun: TargetNoun): boolean {
-  return !!file && !!noun;
+  // Not on the phone: worktree create/remove are Mac-disk operations the LAN door 404s (lan.py `_DOORS`).
+  return !!file && !!noun && !isLanHost();
 }
 
 // `/model` and `/effort` parsing moved to `ui/local-commands.ts`; re-exported.
@@ -6124,8 +6126,9 @@ function ChatBody(props: ChatBodyProps) {
                       onToggle={toggleTasksPanel}
                       parentModel={defaults.model}
                       // The peek is drawn by the shell's overlay (App's
-                      // `BreakoutCards`), which an embed does not mount.
-                      {...(!props.breakout && !IS_EMBED
+                      // `BreakoutCards`), which an embed and the phone page
+                      // do not mount: there the row opens its output inline.
+                      {...(!props.breakout && !IS_EMBED && !isLanHost()
                         ? {
                             onPeekAgent: (t: TaskRecord) =>
                               void openAgentPeek({
