@@ -749,6 +749,111 @@
     opacity: 0.6;
   }
 }
+/* FAVOURITES ON (owner, 2026-11-06): the second row carries the facts —
+   the status ring with the Archive seat over it on hover, the star, the
+   number — and the title takes all that is left; the pencil stands OVER the
+   title's end on hover (a gradient wash, the Archive seat's way) instead
+   of holding a seat of its own. */
+.claude-rail-peek.favs-on .claude-rail-peek-titlerow {
+  position: relative;
+  gap: 6px;
+  padding-left: 4px;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-title {
+  flex: 1 1 auto;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-titlerow:has(.claude-rail-peek-reply) .claude-rail-peek-title {
+  flex: 0 1 auto;
+}
+/* THE MARK SLOT, THE LIST ROW'S (tasks.css `.tasks-rowmark`, 2026-08-18;
+   owner, 2026-11-06: "make sure this is how we have in the Tasks page list,
+   reuse that here"): one box, two occupants — the status ring at rest, the
+   Archive button in its place with a pointer anywhere on the row. Nothing
+   moves: the slot is the ring's 16px, the button is taken out of flow and
+   centred on it (22px to aim at), the ring fades as the button arrives, and
+   `pointer-events` travels with the ink. The keyboard arm is the button's
+   own `:focus-visible`, never the row's `:focus-within` (the stuck-Archive
+   bug, tasks.css). */
+.claude-rail-peek-status {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: content-box;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+.claude-rail-peek-status .claude-rail-peek-archive {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+}
+.claude-rail-peek-head:hover .claude-rail-peek-status .claude-rail-peek-archive,
+.claude-rail-peek-status .claude-rail-peek-archive:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.claude-rail-peek-head:hover .claude-rail-peek-status .schedule-ring,
+.claude-rail-peek-status:has(.claude-rail-peek-archive:focus-visible) .schedule-ring {
+  opacity: 0;
+  pointer-events: none;
+}
+.claude-rail-peek-status .schedule-ring {
+  transition: opacity 0.08s ease;
+}
+.claude-rail-peek-status .claude-rail-peek-archive:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+.claude-rail-peek-status .claude-rail-peek-archive:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-rename {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  bottom: 0;
+  height: auto;
+  width: 44px;
+  justify-content: flex-end;
+  padding-right: 4px;
+  border-radius: 0 6px 6px 0;
+  pointer-events: none;
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+  transition: opacity 0.12s ease;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-head:hover .claude-rail-peek-rename,
+.claude-rail-peek.favs-on .claude-rail-peek-rename:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-rename:hover {
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+}
+@media (hover: none) {
+  .claude-rail-peek-status .claude-rail-peek-archive {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .claude-rail-peek-status .schedule-ring {
+    opacity: 0;
+  }
+}
 .claude-rail-peek-title-input {
   flex: 1 1 auto;
   min-width: 0;
@@ -956,6 +1061,60 @@
   visibility: visible;
 }
 
+/* THE PLACE TAGS (shell/claude-rail PlaceTags; owner, 2026-11-06): one or
+   two pills with a chevron between — the place, then where in it — in the
+   rail cards' head and at the chat's own identity row's right end. A tag
+   that is a door wears the fill and the ink; one naming the place the page
+   already stands on is the outline alone, muted, the default cursor. */
+.place-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  /* Whole, everywhere: the same word is the same pill in the card and in
+     the chat head (owner, 2026-11-06: "same length for the same word,
+     centre aligned"); the title gives way, never the place. */
+  flex: 0 0 auto;
+}
+
+.place-tags-seat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.place-tags-sep {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  opacity: 0.7;
+}
+.place-tag {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 120px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+.place-tag.is-file,
+.place-tag.is-node {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+a.place-tag.is-door {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+a.place-tag.is-door:hover {
+  background: rgba(var(--tint), 0.14);
+}
 /* The head's facts (RailPeek, owner 2026-10-30): the task number in the
    Tasks page's register, and WHERE the chat lives — "Canvas", or the node's
    name — as a quiet chip. The "Open" door is a word, not a glyph. */

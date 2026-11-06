@@ -143,10 +143,22 @@ export const catalogPath = (env: WorkbenchEnv) => `/canvases?env=${env}`;
  *  canvas chat otherwise (both read it off this page's URL). The Tasks
  *  page's door on a canvas task is built here (tasks-lib `taskHref`), so the
  *  page's own query grammar has one author. */
+/** THE VIEW ASK ON THE CANVAS PAGE'S URL (`focus=`; the place tags,
+ *  shell/claude-rail `placeTags`, 2026-11-06): what the page does to the
+ *  workbench on arrival, once — `node` selects the URL's node (the
+ *  workbench zooms to it), `canvas` deselects everything and fits the whole
+ *  canvas in view, `view` nothing at all (the place's own tag: a view move
+ *  that never opens a shut pane). Spent and dropped off the URL by CanvasWorkspace. Without
+ *  it a URL naming a node only shows that node's CHAT in the pane: opening
+ *  a task no longer selects or zooms (owner, 2026-11-06: "decouple the node
+ *  selection and zoom-in from task opening"). */
+export type CanvasFocus = "node" | "canvas" | "view";
+export const CANVAS_FOCUS_PARAM = "focus";
+
 export function canvasPagePath(
   env: WorkbenchEnv,
   name: string,
-  opts?: { file?: string; sessionId?: string },
+  opts?: { file?: string; sessionId?: string; focus?: CanvasFocus },
 ): string {
   const q = new URLSearchParams();
   const file = opts?.file || "";
@@ -156,6 +168,7 @@ export function canvasPagePath(
     q.set("node_file", file);
   }
   if (opts?.sessionId) q.set("session_id", opts.sessionId);
+  if (opts?.focus) q.set(CANVAS_FOCUS_PARAM, opts.focus);
   const search = q.toString();
   return `/canvases/${env}/${name}` + (search ? "?" + search : "");
 }

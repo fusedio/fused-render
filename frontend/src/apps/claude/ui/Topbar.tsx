@@ -147,6 +147,10 @@ export interface TopbarProps {
   tail?: ReactNode;
   /** Leave the project name out: the host is already inside that folder. */
   noProject?: boolean;
+  /** THE PLACE TAG (ui/PlaceTag; owner, 2026-11-06): the node's name or the
+   *  canvas, the folder or the file, as a tag at the identity row's right
+   *  end IN PLACE of the project's name — a door to its place. */
+  placeTag?: ReactNode;
   /** The chat in a side pane: the identity drops its ring, mark, task number
    *  and the agent / model text, so the title gets the width. */
   bare?: boolean;
@@ -169,6 +173,7 @@ export function Topbar({
   lead,
   tail,
   noProject,
+  placeTag,
   bare,
 }: TopbarProps) {
   // THE AGENT'S NAME AND MARK (D18): the conversation's own, off the context.
@@ -253,7 +258,7 @@ export function Topbar({
         {/* …AND THE PLACE IN THE LINE TRAILS THE TITLE, exactly where a Tasks
             row puts it, rather than at the far end of the header. */}
         {line ? <QueuedCaption line={line} /> : null}
-        {noProject ? null : <TaskPeekProject task={who} {...(home ? { home } : {})} />}
+        {placeTag ?? (noProject ? null : <TaskPeekProject task={who} {...(home ? { home } : {})} />)}
         {bare ? null : <TaskPeekAgent task={who} />}
         {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
             the ring says running or not, and "resumes 4:00 AM" is the one fact

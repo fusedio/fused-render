@@ -139,7 +139,9 @@ import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import {
   cardTitleLine,
+  draftRing,
   isDraftTask,
+  liveJobRow,
   messageStamp,
   nextRunAt,
   relativeWhen,
@@ -150,6 +152,8 @@ import {
 } from "@shell/tasks-lib";
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
 import { chipDoor, chipLabel, chipPath, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { PlaceTags } from "./PlaceTags";
+import { StatusIcon } from "@shell/ScheduleTaskViews";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -968,6 +972,44 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // leave a Confirm that files the chat that left view.
   const askedKey = useRef<string | null>(null);
   const [filing, setFiling] = useState(false);
+  /** THE ARCHIVE SEAT: over the pulse's right end (favourites off), or over
+   *  the second row's status ring (favourites on; owner, 2026-11-06). */
+  const archiveButton = (facts: SeatFacts) => (
+    <button
+      type="button"
+      className="claude-rail-peek-btn claude-rail-peek-archive"
+      disabled={filing}
+      // ONE WORD, the List seat's caption (tasks-lib `filingIntent`;
+      // Akshil, 2026-10-05: "just say archive").
+      data-hint={facts.t.status === "archived" ? "Unarchive" : "Archive"}
+      aria-label={facts.t.status === "archived" ? "Unarchive this task" : "Archive this task"}
+      onClick={() => fileTask(facts)}
+    >
+      {facts.t.status === "archived" ? (
+        <ArchiveRestore size={14} aria-hidden="true" />
+      ) : (
+        <Archive size={14} aria-hidden="true" />
+      )}
+    </button>
+  );
+  /** A place tag's door walked through: the hand-over of chat `key` runs at
+   *  the push, never on a hop the leave guard refused (rail-peek-lib
+   *  `onHop`, `onChipLeave`). */
+  const walkDoor = (key: string, href: string, isDir: boolean | undefined, keyboard: boolean) => {
+    const go = () => navigateUrl(href, isDir === undefined ? undefined : { isDir });
+    if (!onChipLeave) {
+      go();
+      return;
+    }
+    const want = new URL(rewriteLegacyUrl(href), location.href);
+    onHop(
+      window,
+      NAV_EVENT,
+      () => location.pathname === want.pathname && location.search === want.search,
+      () => onChipLeave(key, keyboard),
+      go,
+    );
+  };
   const fileTask = (facts: SeatFacts) => {
     askedKey.current = facts.t.key;
     const archived = facts.t.status === "archived";
@@ -1263,28 +1305,57 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 <X size={14} aria-hidden="true" />
               </button>
               )}
-              {favsOn && head.t.session_id && (
-              // Behind the favourites switch (favourites-flag). Only a
-              // STARTED chat can be starred (a draft or a queued row has no
-              // key that lasts; the server refuses them too).
-              <button
-                type="button"
-                className={"claude-rail-peek-btn claude-rail-peek-star" + (starOf(head.t) ? " is-on" : "")}
-                aria-pressed={starOf(head.t)}
-                // One label, the state in `aria-pressed`.
-                aria-label="Favourite"
-                title={starOf(head.t) ? "Remove from favourites" : "Add to favourites"}
-                onClick={() => void toggleStar(head.t)}
-              >
-                <Star size={14} fill={starOf(head.t) ? "currentColor" : "none"} aria-hidden="true" />
-              </button>
-              )}
-              {head.id && (
+              {!favsOn && head.id && (
                 <span className="claude-rail-peek-id" title={head.words}>
                   {head.id}
                 </span>
               )}
-              {(() => {
+              {favsOn ? (
+                // THE PLACE TAGS (PlaceTags; owner, 2026-11-06: "in the first
+                // line we have the × and then the tag"): the place, then
+                // where in it — each a door to its view; on this canvas the
+                // second tag selects its node or fits the canvas IN PLACE
+                // (`RailHere.tag`), the card pinned first since the rail
+                // narrows to the node and only a pinned card is held through
+                // that (CodeRabbit on #2044). A navigation hands a
+                // favourite's chat over at the push (`onChipLeave`, the
+                // where-chip's rule below).
+                <PlaceTags
+                  scope={head.scope}
+                  at={head.at}
+                  pageRoot={pageRoot ?? null}
+                  sessionId={head.t.session_id ?? null}
+                  {...(here?.()?.tag
+                    ? {
+                        onSelectNode: (udfName: string | null) => {
+                          onPin();
+                          here?.()?.tag?.(udfName);
+                        },
+                      }
+                    : {})}
+                  onNavigate={(href, o) => {
+                    // A door out closes the card, the Open button's way
+                    // (owner, 2026-11-06: "open in the fav window closes the
+                    // window and opens the view and the chat"). The rail's
+                    // own card (`onChipLeave` given) hops the where-chip's
+                    // way, handing a favourite's chat over at the push; the
+                    // favourite's window walks the Open door (`onOpenChat`:
+                    // the page's door, the card closed once the hop went).
+                    // Neither closes the card here: the favourite's window
+                    // closes itself once the hop went (its leave guard may
+                    // refuse), and the rail's card goes with its rail.
+                    if (onChipLeave) walkDoor(head.t.key, href, o.isDir, o.keyboard);
+                    else onOpenChat(href);
+                  }}
+                  onSelected={(e) => {
+                    // Back to the composer (the where-chip's rule below).
+                    const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
+                    (box ?? cardRef.current?.querySelector<HTMLElement>("button") ?? e.currentTarget).focus({
+                      preventScroll: true,
+                    });
+                  }}
+                />
+              ) : (() => {
                 // THE WHERE-CHIP IS A DOOR, on every page (owner, 2026-11-04:
                 // "click on the tag — we should go to the page/node, wherever
                 // we have"): a real link to the place's page (claude-rail-lib
@@ -1376,7 +1447,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 );
               })()}
               <span className="claude-rail-peek-gap" aria-hidden="true" />
-              {head.t.session_id && !head.draft && (
+              {head.t.session_id && !head.draft && (!favsOn || head.when || head.count > 0) && (
                 // THE PULSE AND THE ARCHIVE share one seat: the unread count
                 // (none → no count, the glyph goes too) and when the chat
                 // last moved, muted words; the archive button sits over
@@ -1421,22 +1492,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                       )}
                     </span>
                   )}
-                  <button
-                    type="button"
-                    className="claude-rail-peek-btn claude-rail-peek-archive"
-                    disabled={filing}
-                    // ONE WORD, the List seat's caption (tasks-lib `filingIntent`;
-                    // Akshil, 2026-10-05: "just say archive").
-                    data-hint={head.t.status === "archived" ? "Unarchive" : "Archive"}
-                    aria-label={head.t.status === "archived" ? "Unarchive this task" : "Archive this task"}
-                    onClick={() => fileTask(head)}
-                  >
-                    {head.t.status === "archived" ? (
-                      <ArchiveRestore size={14} aria-hidden="true" />
-                    ) : (
-                      <Archive size={14} aria-hidden="true" />
-                    )}
-                  </button>
+                  {!favsOn && archiveButton(head)}
                 </span>
               )}
               {head.href && (
@@ -1480,6 +1536,45 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               )}
             </div>
             <div className="claude-rail-peek-titlerow">
+              {favsOn && (
+                // THE SECOND ROW'S FACTS (owner, 2026-11-06: "status icon
+                // [hover shows the archive icon], fav icon, task id and
+                // title"): the List row's status ring — the Archive seat
+                // stands over it on hover —, the star, the task's number.
+                <>
+                  <span className="claude-rail-peek-status">
+                    <StatusIcon
+                      status={taskColumn(head.merged)}
+                      unread={head.unread > 0}
+                      background={liveJobRow(head.t)}
+                      draftHeld={!!head.row && draftRing(head.merged as Task)}
+                      {...(head.row?.failed ? { failed: true } : {})}
+                    />
+                    {head.t.session_id && !head.draft && archiveButton(head)}
+                  </span>
+                  {head.t.session_id && (
+                    // Behind the favourites switch (favourites-flag). Only a
+                    // STARTED chat can be starred (a draft or a queued row has
+                    // no key that lasts; the server refuses them too).
+                    <button
+                      type="button"
+                      className={"claude-rail-peek-btn claude-rail-peek-star" + (starOf(head.t) ? " is-on" : "")}
+                      aria-pressed={starOf(head.t)}
+                      // One label, the state in `aria-pressed`.
+                      aria-label="Favourite"
+                      title={starOf(head.t) ? "Remove from favourites" : "Add to favourites"}
+                      onClick={() => void toggleStar(head.t)}
+                    >
+                      <Star size={14} fill={starOf(head.t) ? "currentColor" : "none"} aria-hidden="true" />
+                    </button>
+                  )}
+                  {head.id && (
+                    <span className="claude-rail-peek-id" title={head.words}>
+                      {head.id}
+                    </span>
+                  )}
+                </>
+              )}
               {draft === null ? (
                 <>
                   <span

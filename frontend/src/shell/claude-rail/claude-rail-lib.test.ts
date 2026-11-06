@@ -10,6 +10,7 @@ import {
   activeRing,
   chipDoor,
   chipPath,
+  placeTags,
   chipLabel,
   chipPlace,
   dotCleared,
@@ -882,7 +883,6 @@ describe("ringMarks with the Claude pane open", () => {
   });
 });
 
-
 describe("ringMarks: a section of one ring wears no last mark (2026-11-06)", () => {
   const base = {
     favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null,
@@ -895,5 +895,42 @@ describe("ringMarks: a section of one ring wears no last mark (2026-11-06)", () 
   });
   it("favourites off: as before, the mark whatever the count", () => {
     expect(ringMarks({ ...base, favsOn: false, key: "a", foot: false, sectionSize: 1 }).classes).toContain("is-last");
+  });
+});
+
+describe("placeTags (the place as one or two tags, 2026-11-06)", () => {
+  const canvas = { kind: "canvas" as const, env: "prod" as const, name: "HLS_Data", dir: "/c/HLS_Data" };
+  const folder = { kind: "folder" as const, dir: "/a/app/" };
+  it("canvas › Canvas: the canvas's page, then the fit ask — in place on its own canvas", () => {
+    const away = placeTags({ kind: "whole", word: "Canvas" }, canvas, { pageRoot: "folder:/x", here: false, sessionId: "s1" });
+    expect(away.map((t) => t.label)).toEqual(["HLS_Data", "Canvas"]);
+    expect(away[0].door?.href).toBe("/canvases/prod/HLS_Data?session_id=s1&focus=view");
+    expect(away[1].door?.href).toBe("/canvases/prod/HLS_Data?session_id=s1&focus=canvas");
+    expect(away[1].door?.select).toBeUndefined();
+    const own = placeTags({ kind: "whole", word: "Canvas" }, canvas, { pageRoot: "canvas:prod:HLS_Data", here: true });
+    expect(own[0].door).toBeNull();
+    expect(own[1].door?.select).toEqual({ udfName: null });
+  });
+  it("canvas › node: the node's chat on the canvas page, the select ask — in place on its own canvas", () => {
+    const away = placeTags({ kind: "node", name: "hex", file: "hex.py" }, canvas, { pageRoot: null, here: false, sessionId: "s1" });
+    expect(away[0].door?.href).toBe("/canvases/prod/HLS_Data?session_id=s1&focus=view");
+    expect(away[1].label).toBe("hex");
+    expect(away[1].door?.href).toBe("/canvases/prod/HLS_Data?node=hex&node_file=hex.py&session_id=s1&focus=node");
+    const own = placeTags({ kind: "node", name: "hex", file: "hex.py" }, canvas, { pageRoot: "canvas:prod:HLS_Data", here: true });
+    expect(own[0].door).toBeNull();
+    expect(own[1].door?.select).toEqual({ udfName: "hex" });
+  });
+  it("folder › file, folder alone, file alone: the explorer's pages, plain where the page stands", () => {
+    const ff = placeTags({ kind: "file", name: "index.html", file: "/a/app/index.html" }, folder, { pageRoot: "folder:/a/app", here: false });
+    expect(ff.map((t) => t.label)).toEqual(["app", "index.html"]);
+    expect(ff[0].door).toBeNull();
+    expect(ff[1].door?.href).toBe("/explorer/view/a/app/index.html");
+    const f = placeTags({ kind: "whole", word: "Folder" }, folder, { pageRoot: null, here: false });
+    expect(f).toHaveLength(1);
+    expect(f[0].door?.isDir).toBe(true);
+    const file = placeTags({ kind: "whole", word: "File" }, { kind: "file", file: "/a/app/x.py" }, { pageRoot: "file:/a/app/x.py", here: false });
+    expect(file).toHaveLength(1);
+    expect(file[0].label).toBe("x.py");
+    expect(file[0].door).toBeNull();
   });
 });
