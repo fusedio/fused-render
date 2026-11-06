@@ -207,7 +207,7 @@ def _builds_root() -> str:
 # is substituted when the prompt is built (app_guide()), so FUSED_RENDER_DIR applies.
 APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its own settings and its own Chrome unless it was made to share another bot's logins):
 - Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Steps per task (the tool-call cap of one task: 200 by default, Super Bot 1000, blank keeps the default), applies from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; an approval card can also offer "Approve, don't ask again" (plain commands and repeatable actions only, never for chaining, redirects or `$(…)`), and those rules are listed under Settings › Permissions › "Approved forever", where "Ask again" removes one; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
-- Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
+- Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You add one yourself with `routine_add` (the user approves its card, every time); editing, disabling, running now or deleting one stays the user's, in Routines.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
 - Live view: clicking your screenshot widens your browser into the page (the chat becomes a side rail) with a tab strip, back/forward/reload and a URL bar. "Take over" pauses you and lets the user drive (solve a captcha, pass a popup); "Done, hand back" returns control and you continue; "Real window" opens the same browser as a real Chrome window for passkeys and password managers (the live view itself cannot show a passkey prompt: while the user watches it, a passkey request offers them the real window, and declining makes the page fall back, e.g. Google's "Try another way"; with nobody watching, a passkey prompt just waits, so pick another sign-in option or use `login`). Your `login` action hands the page over the same way and waits until the user clicks Done (or replies in chat).
@@ -4097,9 +4097,90 @@ def face_words(face) -> str:
 
 
 # Settings `bot_settings` may change, and nothing else (approval, builds, engine,
-# encryption, contacts and routines stay the user's own: docs §12).
+# encryption and contacts stay the user's own: docs §12; a bot adds its OWN routines
+# with `routine_add`, never another bot's).
 MANAGE_FIELDS = ("name", "instructions", "model", "effort", "face")
 CREATE_FIELDS = MANAGE_FIELDS + ("logins_from",)  # bot_create only: share another bot's logins
+
+WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+ROUTINE_TASK_CAP = 2000  # a routine's task text from the model; the dialog has no cap, the card must stay readable
+
+
+def parse_when(at):
+    """A `once` routine's time as the model gives it: epoch seconds, or a local
+    "YYYY-MM-DD HH:MM" (ISO "T" accepted). Epoch floats are what the schedule stores
+    (`_routine_fields`), but a model writes clock times. Raises ValueError."""
+    if isinstance(at, bool):
+        raise ValueError("`at` must be a date-time")
+    if isinstance(at, (int, float)):
+        return float(at)
+    s = " ".join(str(at or "").replace("T", " ").split())
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2}) (\d{1,2}):(\d{2})(?::\d{2})?", s)
+    if not m:
+        raise ValueError("`at` must be a local date-time like 2026-11-07 09:00")
+    y, mo, d, hh, mm = (int(x) for x in m.groups())
+    try:
+        return time.mktime((y, mo, d, hh, mm, 0, 0, 0, -1))
+    except (OverflowError, ValueError):
+        raise ValueError("`at` is not a real date-time") from None
+
+
+def routine_check(task, kind, minutes=None, time_s="", weekdays=None, at=None):
+    """Validate a `routine_add` call WITHOUT writing: ({task, kind, …schedule}, "") or
+    (None, "error: …"). The approval preview (tools.describe / risk) and the run
+    (tools.execute → Bot.routine_add) both go through here, so the card shows the
+    schedule exactly as it will be stored (the interval floor applied, weekdays
+    sorted, the once-time resolved)."""
+    task = " ".join(str(task or "").split())
+    if not task:
+        return None, "error: a routine needs `task`, the text it will run"
+    if len(task) > ROUTINE_TASK_CAP:
+        return None, f"error: the task text is over {ROUTINE_TASK_CAP} characters; shorten it"
+    kind = str(kind or "").strip().lower()
+    try:
+        if kind == "interval" and minutes is not None:
+            if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or minutes != int(minutes):
+                raise ValueError("`minutes` must be a whole number")
+            minutes = int(minutes)
+            if minutes < 1:
+                raise ValueError("`minutes` must be at least 1")
+        if kind == "daily" and weekdays is not None:
+            if not isinstance(weekdays, list) or any(isinstance(d, bool) or not isinstance(d, int) for d in weekdays):
+                raise ValueError("`weekdays` must be a list of numbers, 0 (Mon) to 6 (Sun)")
+        if kind == "once":
+            at = parse_when(at)
+        fields = Bot._routine_fields(kind, minutes, time_s, weekdays, at)
+    except ValueError as e:
+        return None, f"error: {e}"
+    return dict(fields, task=task, kind=kind), ""
+
+
+def routine_words(r) -> str:
+    """A routine's schedule as the user and the model read it: `every 60 min`,
+    `daily at 09:00 on Mon, Wed`, `once at 2026-11-07 09:00`."""
+    kind = r.get("kind")
+    if kind == "interval":
+        return f"every {int(r.get('minutes') or 0)} min"
+    if kind == "daily":
+        days = sorted({int(d) for d in (r.get("weekdays") or []) if 0 <= int(d) <= 6})
+        when = "every day" if len(days) == 7 or not days else "on " + ", ".join(WEEKDAY_NAMES[d] for d in days)
+        return f"daily at {r.get('time') or '09:00'} {when}"
+    if kind == "once":
+        return "once at " + time.strftime("%Y-%m-%d %H:%M", time.localtime(float(r.get("at") or 0)))
+    return str(kind or "?")
+
+
+def routines_brief(meta) -> str:
+    """The guide's "Counts now" line for routines: how many are active, and each one's
+    schedule and task, so a bot asked to "check Slack every hour" sees that it already
+    does (and does not `routine_add` a twin)."""
+    rs = [r for r in (meta or {}).get("routines") or [] if isinstance(r, dict)]
+    on = [r for r in rs if r.get("enabled")]
+    if not rs:
+        return "0 routines"
+    lines = [f"{routine_words(r)}: {' '.join(str(r.get('task') or '').split())[:100]}{'' if r.get('enabled') else ' (disabled)'}"
+             for r in rs[:12]]
+    return f"{len(on)} active routine(s) of {len(rs)}: " + "; ".join(lines) + (" …" if len(rs) > 12 else "")
 
 
 def _name_taken(name, except_id=None) -> bool:

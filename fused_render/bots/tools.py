@@ -200,6 +200,22 @@ TOOL_SPECS: dict[str, dict] = {
                              "would contain, and 5-15 numbered steps with exact URLs, what to click, what to skip. Use it right "
                              "before finishing when a task took real exploration; not when a matching PLAYBOOK already worked.",
               "inputSchema": _s(title=REQ, trigger=REQ, steps=REQ)},
+    # Every bot, for ITSELF (docs §12): the user approves the card, every time (ALWAYS_ASK).
+    "routine_add": {
+        "description": "Schedule a ROUTINE for yourself: a task text this bot runs on its own, on a schedule, when the user "
+                       "asks for one (\"check X every hour\", \"every weekday at 9 send me…\", \"remind me Friday at 5\"). "
+                       "`task` is the whole text the scheduled run will get (self-contained: a run has no chat context; "
+                       "put the rules, the site and what to report in it). `kind` interval (`minutes`, at least 5), daily "
+                       "(`time` HH:MM local, `weekdays` 0 Mon…6 Sun, omit for every day) or once (`at` a local "
+                       "\"YYYY-MM-DD HH:MM\"). The user approves the card, which shows the schedule and the task, before it "
+                       "is saved, every time. Check your routines in the APP GUIDE's counts line first: never add a twin of "
+                       "one that exists. Editing, disabling, running now or deleting a routine stays the user's, in Routines.",
+        "inputSchema": _s(task=REQ, kind=({"type": "string", "enum": ["interval", "daily", "once"]}, True),
+                          minutes={"type": "integer", "description": "interval: run every N minutes (min 5)"},
+                          time={"type": "string", "description": "daily: HH:MM, local time"},
+                          weekdays={"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 6},
+                                    "description": "daily: 0 Mon … 6 Sun; omit for every day"},
+                          at={"type": "string", "description": "once: local date-time, YYYY-MM-DD HH:MM"})},
     "ask": {"description": "Ask the user something and wait for the answer (a decision, a choice). Never for passwords, codes or "
                            "sign-ins (use login). With 2-7 short `options` the user can pick one with a click; they may still type. "
                            "`multi: true` lets them tick several and press Done: the answer is then a comma-separated list "
@@ -285,8 +301,9 @@ TOOL_SPECS: dict[str, dict] = {
                                     "settings and its WHOLE instructions text (no approval needed): do that first when editing "
                                     "instructions, BOTS shows an excerpt. With change fields it changes its name, instructions "
                                     "(pass the whole new text), model, effort or face (avatar); give only the fields that change. "
-                                    "Nothing else is yours to change (approvals, builds, encryption, contacts, routines are the "
-                                    "user's, in that bot's Settings). The user approves the card, which shows every change, before "
+                                    "Nothing else is yours to change (approvals, builds, encryption, contacts and routines are the "
+                                    "user's, in that bot's Settings; a bot adds its own routines with `routine_add`). The user "
+                                    "approves the card, which shows every change, before "
                                     "it is written, every time.",
                      "inputSchema": _s(bot=({"type": "string", "description": "the bot's current name from BOTS"}, True),
                                        name=STR, instructions=STR, model=STR, effort=STR,
@@ -359,7 +376,10 @@ TERMINAL_OFF = ("error: bot terminals are off (turn on Terminal in this bot's se
 #: text, so this is what makes a rule safe. A denylist missed zsh `=(cmd)`, `!`, `(`/`{` and terminal-editing bytes.
 _PLAIN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 _./:,=@%+~-")
 _DQUOTE_CHARS = _PLAIN_CHARS | frozenset("'<>|&;(){}*?[]#^")
-ALWAYS_ASK = frozenset(MANAGE_TOOLS + ("marketplace_install",))
+# A bot scheduling its own future runs (`routine_add`, docs §12) is ALWAYS_ASK too: a standing task is the
+# user's call every time, never approved forever, under "Never ask" too.
+ROUTINE_TOOLS = ("routine_add",)
+ALWAYS_ASK = frozenset(MANAGE_TOOLS + ROUTINE_TOOLS + ("marketplace_install",))
 
 ALL_TOOLS = tuple(TOOL_SPECS)
 
@@ -1040,7 +1060,7 @@ def ui_detail(name: str, result: str, summary: str, change: str = "") -> str | N
     raw = (result or "").strip()
     if name == "show":
         return None
-    if name in SUPER_TOOLS and name not in READ_TOOLS and not raw.startswith("error"):
+    if name in SUPER_TOOLS + ROUTINE_TOOLS and name not in READ_TOOLS and not raw.startswith("error"):
         return None  # the chip says it all; the rest is written to the model (a bot_chat read stays expandable)
     if name == "build":
         raw = _NOW_DONE.sub("", raw).strip()
@@ -1176,10 +1196,40 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         return f"note \"{' '.join(str(d.get('text') or '').split())[:120]}\""
     if act in MANAGE_TOOLS:
         return _manage_preview(bot, act, d)
+    if act == "routine_add":
+        return _routine_preview(d)
     return f"{act} {what}".strip()
 
 
 MANAGE_TEXT_CAP = 600   # instructions on the card: the user approves the prompt they can read, so cap late
+
+
+def _routine_args(d: dict) -> dict:
+    """`routine_add`'s fields from either engine's call (the steps engine's JSON
+    carries the task in `text` and the time in `value`)."""
+    d = d or {}
+    minutes = d.get("minutes")
+    if isinstance(minutes, str) and minutes.strip().isdigit():
+        minutes = int(minutes)  # a local model writes "60" as often as 60
+    weekdays = d.get("weekdays")
+    if isinstance(weekdays, list) and all(isinstance(x, str) and x.strip().isdigit() for x in weekdays):
+        weekdays = [int(x) for x in weekdays]
+    return {"task": d.get("task") if d.get("task") is not None else d.get("text"), "kind": d.get("kind"),
+            "minutes": minutes, "time_s": d.get("time") or d.get("value") or "",
+            "weekdays": weekdays, "at": d.get("at")}
+
+
+def _routine_preview(d: dict) -> str:
+    """The approval card for `routine_add`: the schedule as it will be stored and the
+    whole task text (the user approves the words a future run will get). On an error
+    the preview carries it (no card: risk() returns "" then)."""
+    from fused_render.bots import bot as botmod
+    fields, err = botmod.routine_check(**_routine_args(d))
+    if err:
+        return f"add routine ({err})"
+    task = fields["task"]
+    cut = (task[:MANAGE_TEXT_CAP] + "…") if len(task) > MANAGE_TEXT_CAP else task
+    return f"add routine {botmod.routine_words(fields)}: \"{cut}\""
 
 
 def _create_line(botmod, f: dict, cut) -> str:
@@ -1254,6 +1304,14 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         if err or not changes:
             return ""
         return f"It rewrites {t.meta.get('name')}'s settings as shown; the bot behaves differently from its next task on."
+    if act == "routine_add":
+        # A call that will fail validation gets no card: execute() returns the error to the model.
+        from fused_render.bots import bot as botmod
+        fields, err = botmod.routine_check(**_routine_args(d))
+        if err:
+            return ""
+        return ("It schedules this task to run on its own, on this bot, without asking first each time; you can edit, "
+                "pause or delete it later under Routines.")
     if act == "terminal_run":
         # A call that cannot run gets no card: execute() returns the error to the model.
         cmd = str(d.get("command") or "").strip()
@@ -1337,7 +1395,7 @@ def call_key(bot, act: str, d: dict):
     if act == "handoff":
         ref = [" ".join(str(d.get("bot") or d.get("name") or "").split()).lower(),
                " ".join(str(d.get("task") or d.get("text") or "").split())]
-    elif act in MANAGE_TOOLS:
+    elif act in MANAGE_TOOLS or act == "routine_add":
         ref = [{k: d[k] for k in sorted(d)}]
     elif act == "marketplace_install":
         ref = [_market_target(d)[0]]
@@ -1636,6 +1694,31 @@ def _terminal_exec(bot, act: str, d: dict) -> str:
         return f"error: could not use the terminal ({e})"
 
 
+def _routine_add(bot, d: dict) -> tuple[str, str]:
+    """`routine_add` (docs §12): the bot's OWN routine, written by Bot.routine_add
+    after the same check the card was built from; a `system` line on the bot's
+    thread records it (the user's Routines panel reads bot.json on its next poll)."""
+    from fused_render.bots import bot as botmod
+    args = _routine_args(d)
+    fields, err = botmod.routine_check(**args)
+    if err:
+        return "add routine", err
+    try:
+        r = bot.routine_add(fields["task"], fields["kind"], minutes=fields.get("minutes"), time_s=fields.get("time") or "",
+                            weekdays=fields.get("weekdays"), at=fields.get("at"))
+    except ValueError as e:
+        return "add routine", f"error: {e}"
+    when = botmod.routine_words(r)
+    try:
+        bot.emit("system", f"Routine added ({when}): {r['task'][:80]}", source="routine")
+    except Exception:  # noqa: BLE001
+        pass
+    nxt = r.get("next")
+    first = (" First run " + time.strftime("%Y-%m-%d %H:%M", time.localtime(nxt)) + ".") if nxt else ""
+    return f"add routine {when}", (f"ok, routine saved ({when}); the user can edit, pause or delete it under Routines.{first} "
+                                   "Tell the user it is set, in one line.")
+
+
 def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
     """Run one tool (OpenBot `_execute`); never raises. Control-flow tools
     (ask, login, offer) are NOT here: each engine owns them."""
@@ -1776,6 +1859,8 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             if act == "bot_create":
                 return botmod.manage_create(bot, d)
             return botmod.manage_settings(bot, d.get("bot") or "", {k: v for k, v in d.items() if k != "bot"})
+        if act == "routine_add":
+            return _routine_add(bot, d)
         if act == "ls":
             return bot.list_dir(d.get("path") or d.get("file") or "")
         if act == "find":
