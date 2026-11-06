@@ -499,8 +499,9 @@ def chat_recap_enabled() -> bool:
 
 def turn_click_opens_reply_enabled() -> bool:
     """Whether clicking a user message in a Claude task chat opens the reply
-    under it when that reply is folded (default off). It only ever opens: a
-    click on an already-open reply leaves it open. Only a stored `true` is on.
+    under it when that reply is folded, and folds it again when it is open
+    (default off; a toggle since 2026-11-06 — it only ever opened before).
+    Only a stored `true` is on.
     """
     return read_prefs().get("turn_click_opens_reply_enabled") is True
 
@@ -1242,8 +1243,8 @@ def _prefs_response() -> dict:
         # Whether the in-chat recap fold is shown (default on,
         # `chat_recap_enabled`). Does not touch Tasks titles.
         "chat_recap": {"enabled": chat_recap_enabled()},
-        # A click on a user message opens the reply under it
-        # (`turn_click_opens_reply_enabled`; off by default).
+        # A click on a user message opens the reply under it, or folds it
+        # again (`turn_click_opens_reply_enabled`; off by default).
         "turn_click_open": {"enabled": turn_click_opens_reply_enabled()},
         # Breakout side chats (opt-in beta, `breakout_enabled`).
         "breakout": {"enabled": breakout_enabled()},

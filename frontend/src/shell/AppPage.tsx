@@ -775,22 +775,21 @@ export default function AppPage({
   // door that is not a chat on this app (a draft's New task card, another
   // folder's chat) navigates as it says.
   const [claudeSeq, setClaudeSeq] = useState(0);
-  const openChatHere = (href: string) => {
+  // Answers whether the hop went (the leave guard may refuse): the favourite
+  // card's Open closes its card only then (FavouritePeek, Bugbot on #2154).
+  const openChatHere = (href: string): Promise<boolean> => {
     const door = chatDoorOnApp(href, dir);
-    if (!door) {
-      navigateUrl(href);
-      return;
-    }
-    openChatDoor(door);
+    if (!door) return navigateUrl(href);
+    return openChatDoor(door);
   };
-  const openChatDoor = (door: { params: Record<string, string> }) => {
+  const openChatDoor = (door: { params: Record<string, string> }): Promise<boolean> => {
     // THE COMPOSER'S OWN LEAVE GUARD FIRST (platform/lib/router
     // `confirmLeave`, what `navigateUrl` asks): a remount is a leave for the
     // chat on screen, and words typed into it must not go without a word —
     // the explorer's ring press and the canvas page's both go through
     // `navigateUrl`, which asks.
-    void confirmLeave().then((ok) => {
-      if (!ok) return;
+    return confirmLeave().then((ok) => {
+      if (!ok) return false;
       const next = new URL(location.href);
       for (const k of ["session_id", "queued", "backend"]) {
         const v = door.params[k];
@@ -801,6 +800,7 @@ export default function AppPage({
       if (next.href !== location.href) replaceSearch(next.pathname + next.search + next.hash);
       setClaudeSeq((n) => n + 1);
       claude.show();
+      return true;
     });
   };
   // THE RAIL'S + BESIDE THE OPEN PANE (ClaudeRail `onNewChat`): the pane's

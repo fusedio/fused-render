@@ -30,9 +30,6 @@ import {
   readMark,
   fallbackRailUp,
   paneHomeHref,
-  collapseRestore,
-  paneTakesPinned,
-  paneWas,
   plusDoor,
   ringPress,
   ringMarks,
@@ -371,7 +368,8 @@ describe("favSeats: the blocked at the head", () => {
 
 describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
   it("the list hides beside the open pane on its home, favourites on, and only then", () => {
-    expect(listHidden({ paneOpen: true, favsOn: true, paneHome: true })).toBe(true);
+    // Since 2026-11-06 the list stands beside the pane's home too.
+    expect(listHidden({ paneOpen: true, favsOn: true, paneHome: true })).toBe(false);
     expect(listHidden({ paneOpen: true, favsOn: true, paneHome: false })).toBe(false);
     expect(listHidden({ paneOpen: false, favsOn: true, paneHome: true })).toBe(false);
     expect(listHidden({ paneOpen: true, favsOn: false, paneHome: true })).toBe(false);
@@ -856,47 +854,7 @@ describe("ringPress (a list ring's plain press)", () => {
   });
 });
 
-describe("paneTakesPinned (the pane opening under a pinned list card)", () => {
-  const base = { wasOpen: false, open: true, favsOn: true, pinnedKey: "k", isFav: false, hasSession: true };
-  it("shut to open with a pinned list chat: the pane takes it", () => {
-    expect(paneTakesPinned(base)).toBe(true);
-  });
-  it("the pane shutting, or staying open: nothing forced", () => {
-    expect(paneTakesPinned({ ...base, wasOpen: true, open: false })).toBe(false);
-    expect(paneTakesPinned({ ...base, wasOpen: true, open: true })).toBe(false);
-  });
-  it("no pin, a favourite's ring, no conversation, or favourites off: nothing", () => {
-    expect(paneTakesPinned({ ...base, pinnedKey: null })).toBe(false);
-    expect(paneTakesPinned({ ...base, isFav: true })).toBe(false);
-    expect(paneTakesPinned({ ...base, hasSession: false })).toBe(false);
-    expect(paneTakesPinned({ ...base, favsOn: false })).toBe(false);
-  });
-});
 
-describe("paneWas / collapseRestore (the pane collapsing gives the list's card back)", () => {
-  const was = { paneOpen: true, paneKey: null, anySession: false, remembered: null, holdUntil: 0, now: 100 };
-  it("the pane on a list chat remembers it; on home, nothing", () => {
-    expect(paneWas({ ...was, paneKey: "k" })).toBe("k");
-    expect(paneWas({ ...was, remembered: "k" })).toBeNull();
-  });
-  it("a session that is no list ring (a favourite's) is not pinnable", () => {
-    expect(paneWas({ ...was, anySession: true, remembered: "k" })).toBeNull();
-  });
-  it("the pane taking a pinned chat is held until it mounts; shut, it keeps its answer", () => {
-    expect(paneWas({ ...was, remembered: "k", holdUntil: 500 })).toBe("k");
-    expect(paneWas({ ...was, remembered: "k", holdUntil: 50 })).toBeNull();
-    expect(paneWas({ ...was, paneOpen: false, remembered: "k" })).toBe("k");
-  });
-  const c = { wasOpen: true, open: false, favsOn: true, key: "k", isList: true };
-  it("open to shut on a list chat: pin it; on home, a favourite, or favourites off: nothing", () => {
-    expect(collapseRestore(c)).toBe("k");
-    expect(collapseRestore({ ...c, key: null })).toBeNull();
-    expect(collapseRestore({ ...c, isList: false })).toBeNull();
-    expect(collapseRestore({ ...c, favsOn: false })).toBeNull();
-    expect(collapseRestore({ ...c, wasOpen: false })).toBeNull();
-    expect(collapseRestore({ ...c, open: true })).toBeNull();
-  });
-});
 
 describe("paneHomeHref", () => {
   it("drops the conversation's params, keeps the rest", () => {

@@ -323,6 +323,8 @@ const DELTA_RETRY_WINDOW_MS = 30_000;
 // for at most this long.
 const NODE_FILE_PROBE_MS = 400;
 const NODE_FILE_WAIT_MS = 20_000;
+/** After the wait: the probe goes on at this pace until the file lands. */
+const NODE_FILE_PROBE_SLOW_MS = 5_000;
 
 // A fallback state poll that keeps failing is treated, after this many
 // consecutive misses, as a dropped watcher: sync/start is asked again.
@@ -405,7 +407,18 @@ function nodeFile(dir: string, node: NodeSel): string {
 const SIDE_OFF = "off";
 
 function sideOpenFromUrl(): boolean {
-  if (new URLSearchParams(window.location.search).get("side") === SIDE_OFF) return false;
+  const q = new URLSearchParams(window.location.search);
+  if (q.get("side") === SIDE_OFF) return false;
+  // A URL NAMING A CONVERSATION ASKS TO SEE IT (owner, 2026-11-06: a card's
+  // Open "should expand the sidebar and show me the chat; if the sidebar is
+  // expanded it should open the chat, whatever chat it is in"): the rail's
+  // doors — a card's Open, a ring's press with no room for a card — and the
+  // Tasks page's rows all hop to this page with the chat's `session_id` (or
+  // a queued entry's `queued`) on the URL and no `side`, and the pane must
+  // open on it whatever the shared flag remembers. The flag is for a URL
+  // that says nothing at all. (A node's URL opened the pane already — the
+  // nav reader below; the canvas chat's never did.)
+  if (q.has("session_id") || q.has("queued")) return true;
   return !getSideHidden();
 }
 
@@ -1054,6 +1067,14 @@ export default function CanvasWorkspace({
         if (cancelled) return;
         if (Date.now() - started > NODE_FILE_WAIT_MS) {
           setNodeFileReady(nodePath); // give up waiting: let the frame say so
+          // …BUT GO ON LOOKING, slowly (owner, 2026-11-06: "sometimes the +
+          // icon doesn't work"): the rail's + waits on `nodeFileOnDisk`, the
+          // file itself — a task locked on a file that is not there is the
+          // #2015 bug — and a probe that stopped here left the + disabled on
+          // "Saving <file>…" for as long as the node stayed selected, even
+          // once the file landed (a slow sync, a late write). A disk_rev
+          // change restarts the fast probe anyway (the effect's deps).
+          timer = window.setTimeout(() => void probe(), NODE_FILE_PROBE_SLOW_MS);
           return;
         }
         timer = window.setTimeout(() => void probe(), NODE_FILE_PROBE_MS);
@@ -1972,13 +1993,36 @@ export default function CanvasWorkspace({
       setNodeBootSeq((n) => n + 1);
       setNode(next);
     };
+    // THE CHAT MOVING ON BY ITSELF keeps `canvasChatSidRef` honest (owner,
+    // 2026-11-06: "on Recent chats, open a task from the bottom window, click
+    // Open — nothing happens"): the canvas chat's own moves — "← Chats", a
+    // new chat, a session landing on a brand-new chat — rewrite the URL with
+    // replaceState and announce `fused:urlchange`, no nav event; the ref
+    // kept the session the chat had left, and a hop back onto that very
+    // session read as "already there" and remounted nothing. Deferred a
+    // tick: a PUSH announces `fused:urlchange` first and the nav event
+    // right after (main.tsx, router `navigateUrl`), and `onNav` must read
+    // the ref as it was. Only the canvas chat's URL: a node's is its frame's.
+    let sync = 0;
+    const onUrl = () => {
+      window.clearTimeout(sync);
+      sync = window.setTimeout(() => {
+        const here = canvasNameFromPath(window.location.pathname);
+        if (!here || here.env !== env || here.name !== name) return;
+        if (nodeFromUrl() || nodeRef.current) return;
+        canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
+      }, 0);
+    };
     // Back / Forward move the URL without a push: `popstate`, which the
     // router does not re-announce, lands on this same reader.
     window.addEventListener(NAV_EVENT, onNav);
     window.addEventListener("popstate", onNav);
+    window.addEventListener("fused:urlchange", onUrl);
     return () => {
+      window.clearTimeout(sync);
       window.removeEventListener(NAV_EVENT, onNav);
       window.removeEventListener("popstate", onNav);
+      window.removeEventListener("fused:urlchange", onUrl);
     };
   }, [env, name, sendSelect]);
 
@@ -3172,7 +3216,11 @@ export default function CanvasWorkspace({
             // The + makes a task on the clone — on the node's file under it
             // while a node is selected — said as the canvas and the node
             // (ClaudeRail `NewTaskSeed`); held until the clone exists and
-            // the node's file is on disk (the pane's own two waits).
+            // the node's file is ON DISK (`nodeFileOnDisk`, not the pane's
+            // own give-up `nodeFileReady`: a task on a file that is not
+            // there is the #2015 bug) — and the probe never stops looking
+            // (NODE_FILE_PROBE_SLOW_MS), so the + is never held for a file
+            // that has landed (owner, 2026-11-06).
             newTask={{
               target: dir && node ? nodeFile(dir, node) : dir,
               waiting:

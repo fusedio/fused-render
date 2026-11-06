@@ -51,7 +51,8 @@ let recapTitles = true;
 const recapListeners = new Set<(v: boolean) => void>();
 
 /** The click-opens-reply switch (`prefs.turn_click_open.enabled`): a click on
- *  a user message opens the folded reply under it. Opt-in (default off). */
+ *  a user message opens the folded reply under it, or folds it again (a
+ *  toggle since 2026-11-06). Opt-in (default off). */
 let turnClickOpen = false;
 const turnClickOpenListeners = new Set<(v: boolean) => void>();
 

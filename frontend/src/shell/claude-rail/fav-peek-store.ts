@@ -135,6 +135,8 @@ function topRail(): HTMLElement | null {
 const heres = new WeakMap<HTMLElement, () => RailHere | null>();
 /** Each rail's page, as its rail last said (header). */
 const pages = new WeakMap<HTMLElement, RailPage>();
+/** Each rail's chat door (`railDoor`). */
+const doors = new WeakMap<HTMLElement, (href: string) => void | Promise<boolean>>();
 
 function settleRail(): void {
   const top = topRail();
@@ -145,17 +147,35 @@ function settleRail(): void {
 /** A rail mounted: it goes on top of the stack (header). The answer takes it
  *  off again — itself only, wherever it stands in the stack. `here`: the
  *  page's canvas, where the page can select a node in place (header). */
-export function registerRail(el: HTMLElement, here?: () => RailHere | null): () => void {
+export function registerRail(
+  el: HTMLElement,
+  here?: () => RailHere | null,
+  door?: (href: string) => void | Promise<boolean>,
+): () => void {
   rails = [...rails.filter((r) => r !== el), el];
   if (here) heres.set(el, here);
   else heres.delete(el);
+  if (door) doors.set(el, door);
+  else doors.delete(el);
   settleRail();
   return () => {
     rails = rails.filter((r) => r !== el);
     heres.delete(el);
+    doors.delete(el);
     pages.delete(el);
     settleRail();
   };
+}
+
+/** THE RAIL'S DOOR, for the favourite's card's Open (owner, 2026-11-06: "the
+ *  sidebar should expand and show me the chat; if the sidebar is expanded it
+ *  should open the chat, no matter what chat it is in"): the page rail's own
+ *  `openChat` — the page's pane door, which expands the pane and remounts
+ *  its chat on the href (CanvasPage `openChatHere`, AppPage), behind the
+ *  composer's leave guard — registered with the rail. Null for a rail that
+ *  gave none (the shell's fallback: the href navigates). */
+export function railDoor(rail: HTMLElement | null): ((href: string) => void | Promise<boolean>) | null {
+  return (rail && doors.get(rail)) ?? null;
 }
 
 /** Where `el`'s page stands now (header): a rail says so as it mounts and on
@@ -172,16 +192,98 @@ export function railHere(rail: HTMLElement | null): RailHere | null {
   return (rail && heres.get(rail)?.()) ?? null;
 }
 
-/** What the favourite's card tells the rail's own card (`avoid`): its box
- *  when OPEN, nothing for a hover — a hover overlaps, never shrinks it. */
-export function publishFavBoxFor(hovering: boolean, box: Box | null): void {
-  publishFavBox(hovering ? null : box);
+/** WINDOW B IS ONE WINDOW (owner, 2026-11-06: "treat fav bots and fav tasks
+ *  as one window — the UI inside may differ, but no resize, no jitter, no
+ *  overlap"): the favourite's card (FavouritePeek) and the bot's card
+ *  (BotPeek) stand in the same place at the same remembered size, and ONE
+ *  of them is up at a time — a bot's press closes the open favourite, a
+ *  favourite's press closes the bot's card (ClaudeRail), and a hover on
+ *  either kind closes the other's hover. Both publish their box here as
+ *  window B's (`favBox`, what window A keeps clear of), each as its own
+ *  OWNER: a card that is going never clears the box the other one has
+ *  just published (the two swap in one gesture, and their effects race). */
+export type FavBoxOwner = "fav" | "bot";
+let boxOwner: FavBoxOwner | null = null;
+
+/** What window B tells the rail's own card (`avoid`): its box when OPEN,
+ *  nothing for a hover — a hover overlaps, never shrinks it. */
+export function publishFavBoxFor(hovering: boolean, box: Box | null, owner?: FavBoxOwner): void {
+  publishFavBox(hovering ? null : box, owner);
 }
 
-/** Where the favourite's card stands (null while closed). */
-export function publishFavBox(box: Box | null): void {
+/** Where window B's card stands (null while closed). An `owner`'s null is
+ *  heard only while that owner's box is the one standing (header). */
+export function publishFavBox(box: Box | null, owner?: FavBoxOwner): void {
+  if (box === null && owner && boxOwner !== null && boxOwner !== owner) return;
+  boxOwner = box === null ? null : (owner ?? "fav");
   if (sameBox(live.favBox, box)) return;
   mark({ ...live, favBox: box });
+}
+
+/** THE BOT WHOSE CARD HOLDS WINDOW B (ClaudeRail `botPinned`; header): the
+ *  favourite's card shows no hover meanwhile (FavouritePeek), and the
+ *  favourites' rings hover nothing (claude-rail-lib `ringMarks` `botHeld`). */
+let botCard: string | null = null;
+const botSubs = new Set<() => void>();
+
+export function setBotCard(id: string | null): void {
+  if (botCard === id) return;
+  botCard = id;
+  for (const fn of [...botSubs]) fn();
+}
+
+export function botCardUp(): string | null {
+  return botCard;
+}
+
+function subscribeBot(fn: () => void): () => void {
+  botSubs.add(fn);
+  return () => {
+    botSubs.delete(fn);
+  };
+}
+
+export function useBotCard(): string | null {
+  return useSyncExternalStore(subscribeBot, botCardUp, botCardUp);
+}
+
+/** THE FAVOURITE THE PANE'S COLLAPSE GIVES BACK (owner, 2026-11-06: "if I
+ *  have a fav window and click Open, the sidebar expands and shows the
+ *  chat, and the fav window closes; when I close that sidebar it opens the
+ *  fav popup again"): the Open door of the favourite's card (FavouritePeek)
+ *  closes it and leaves its key here; the rail hears the pane turn from
+ *  open to shut and opens that favourite again (ClaudeRail, `takeFavRestore`).
+ *  Anything else taking window B meanwhile — another favourite, a bot —
+ *  forgets it: the window moved on. Per document, like the rail stack.
+ *
+ *  ARMED, THEN CONFIRMED (reviewer): the door arms it, but the pane does
+ *  not always open on it — the composer's leave guard refused, the href
+ *  led to a page with no pane — and an armed key waiting forever would pop
+ *  the favourite up on some later, unrelated collapse. A rail standing
+ *  beside an OPEN pane confirms it (`confirmFavRestore`, on every render
+ *  with the pane open: the door's own show, or a pane already up); the
+ *  collapse takes a confirmed key, or an unconfirmed one armed a moment
+ *  ago (`RESTORE_GRACE_MS`: the door and the collapse in one breath, the
+ *  rail's render in between not yet landed); anything older and
+ *  unconfirmed is dropped. */
+let favRestore: { key: string; at: number; confirmed: boolean } | null = null;
+export const RESTORE_GRACE_MS = 3000;
+
+export function setFavRestore(key: string | null, now = Date.now()): void {
+  favRestore = key === null ? null : { key, at: now, confirmed: false };
+}
+
+/** The pane is open (ClaudeRail): an armed restore is a real one. */
+export function confirmFavRestore(): void {
+  if (favRestore) favRestore.confirmed = true;
+}
+
+/** The pending restore, and spent (header). */
+export function takeFavRestore(now = Date.now()): string | null {
+  const r = favRestore;
+  favRestore = null;
+  if (!r) return null;
+  return r.confirmed || now - r.at <= RESTORE_GRACE_MS ? r.key : null;
 }
 
 /** A keyboard press on a favourite's ring (header): its card takes the
@@ -385,6 +487,9 @@ export function resetFavPeekStoreForTests(): void {
   rails = [];
   pendingAt = 0;
   pageRails = 0;
+  boxOwner = null;
+  botCard = null;
+  favRestore = null;
 }
 
 /** THIS WINDOW'S OPEN FAVOURITE, checked against the pulse's stars

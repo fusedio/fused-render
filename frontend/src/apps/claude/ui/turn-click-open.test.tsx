@@ -1,5 +1,5 @@
-// CLICK A USER MESSAGE, OPEN ITS REPLY (prefs `turn_click_open`, off by
-// default). It only ever opens: a reply already open stays open, and a click
+// CLICK A USER MESSAGE, OPEN ITS REPLY — OR FOLD IT AGAIN (prefs
+// `turn_click_open`, off by default; a toggle since 2026-11-06). A click
 // that is the end of a text selection is not a click on the message.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
@@ -76,15 +76,10 @@ const actions = {
   addNote: () => {},
 };
 
-async function mount(on: boolean) {
+async function mount(on: boolean, turns: TurnRow[] = [user("u:1"), assistant("a:1"), user("u:2"), assistant("a:2")]) {
   let r!: ReturnType<typeof create>;
   await act(async () => {
-    r = create(
-      <Transcript
-        state={state([user("u:1"), assistant("a:1"), user("u:2"), assistant("a:2")])}
-        actions={actions}
-      />,
-    );
+    r = create(<Transcript state={state(turns)} actions={actions} />);
     await new Promise((res) => setTimeout(res, 0));
   });
   // Set the flag the way a Settings PUT does, not through the async prefs read:
@@ -104,19 +99,41 @@ const click = (r: ReturnType<typeof create>, i: number) => {
 };
 
 describe("a click on a user message", () => {
-  test("opens the folded reply under it, and a second click leaves it open", async () => {
+  test("opens the folded reply under it, and a second click folds it again", async () => {
     const r = await mount(true);
     expect(folded(r)).toBe(1); // a:1 folded, the newest (a:2) open
     click(r, 0);
     expect(folded(r)).toBe(0);
     click(r, 0);
+    expect(folded(r)).toBe(1);
+    click(r, 0);
     expect(folded(r)).toBe(0);
   });
 
-  test("a message whose reply is already open changes nothing", async () => {
+  test("a message whose reply is already open folds it", async () => {
     const r = await mount(true);
     click(r, 1);
+    expect(folded(r)).toBe(2);
+    click(r, 1);
     expect(folded(r)).toBe(1);
+  });
+
+  test("two replies under one message move together: any folded opens both, all open folds both", async () => {
+    // a:1 and a:1b both fold behind the newest (a:2).
+    const r = await mount(true, [user("u:1"), assistant("a:1"), assistant("a:1b"), user("u:2"), assistant("a:2")]);
+    expect(folded(r)).toBe(2);
+    click(r, 0);
+    expect(folded(r)).toBe(0);
+    click(r, 0);
+    expect(folded(r)).toBe(2);
+    // Mixed: one of the two opened by its own fold toggle, a click opens the other too.
+    const toggle = (byClass(r, "turn-collapsed")[0]!.props as { onClick?: () => void }).onClick;
+    if (toggle) {
+      act(() => toggle());
+      expect(folded(r)).toBe(1);
+      click(r, 0);
+      expect(folded(r)).toBe(0);
+    }
   });
 
   test("with the flag off the bubble is inert", async () => {
