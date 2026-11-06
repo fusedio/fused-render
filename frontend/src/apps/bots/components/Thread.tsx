@@ -461,13 +461,30 @@ export interface ThreadProps {
    *  bot card only once a press pinned it (shell/claude-rail BotPeek; Bugbot on #2143) — a hover's glance over the
    *  card must not spend the rail's unread dot. */
   markRead?: boolean;
+  /** SHARE THE STORE'S SCROLL BOOKKEEPING (`pinned`, `newCount` — one
+   *  thread's worth): the page's thread does; the rail's bot card standing
+   *  BESIDE the Bots page (shell/claude-rail BotPeek, 2026-11-06) keeps its
+   *  own end-pin instead, so two threads never fight over one flag (a card
+   *  scrolled up would have stopped the page's auto-scroll). */
+  sharedScroll?: boolean;
   /** A DOOR TO ANOTHER BOT'S CHAT — a hand-off card's "Open <bot>'s chat", a relayed line's "Read more" (`seq`: the
    *  message to land on): the page selects the bot (`select` / `jumpTo`, the default); the rail's bot card, which
    *  shows one bot and selects nothing, goes to the bot's page instead (components/BotChat; CodeRabbit on #2143). */
   onOpenBot?: (id: string, seq?: number) => void;
 }
 
-export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply, markRead = true, onOpenBot }: ThreadProps) {
+export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply, markRead = true, sharedScroll = true, onOpenBot }: ThreadProps) {
+  // The card's own end-pin (`sharedScroll` false): at the end until the reader scrolls up. Read through a ref: the
+  // observers below are the mount's closures (Bugbot on #2159 — a card carried onto /bots must switch too).
+  const localPinned = useRef(true);
+  const sharedRef = useRef(sharedScroll);
+  sharedRef.current = sharedScroll;
+  const pinnedNow = () => (sharedRef.current ? getState().pinned : localPinned.current);
+  const onThreadScroll = () => {
+    const th = threadRef.current;
+    if (sharedScroll) updateToBottom(th);
+    else if (th) localPinned.current = gapOf(th) <= END_GAP;
+  };
   const S = useBots();
   const appsRoot = useAppsRoot();
   const botId = b?.id ?? "";
@@ -649,13 +666,15 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
     // same: the seed only ever folds what was already seen, and a click that folds is a reader who has read them.
     if (folded && botId) { const set = viewedSet(botId); for (const e of evs.slice(0, ci)) set.add(e.seq); }
     if (foldHidden.size && botId) { const set = viewedSet(botId); for (const j of foldHidden) set.add(evs[j].seq); }
-    if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
-    updateToBottom(th);
+    if (sharedScroll) {
+      if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
+      updateToBottom(th);
+    }
     // Sitting at the end with the tab visible means you are following along: keep "seen" current so a reload or re-open
     // does not draw a New line above messages you already watched arrive. In Stage the thread stays beside the page,
     // except in the narrow fallback (.sfull), where the live view covers it: nothing is seen then.
     const s2 = getState();
-    if (c && markRead && !document.hidden && s2.pinned && !(s2.fast && botsRoot().classList.contains("sfull"))) markSeen(c.id, c.seq);
+    if (c && markRead && !document.hidden && pinnedNow() && !(s2.fast && botsRoot().classList.contains("sfull"))) markSeen(c.id, c.seq);
   });
 
   // The observer (threshold .4, rooted at the thread) and the ResizeObserver that keeps a pinned thread pinned when its
@@ -671,11 +690,11 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
         const seq = (en.target.closest(".ev") as HTMLElement | null)?.dataset.seq;
         if (en.isIntersecting && seq) { set.add(Number(seq)); hit = true; }
       }
-      if (hit) { setNewCount(unviewed(c, eventsOf(c.id)).length); updateToBottom(th); }
+      if (hit && sharedRef.current) { setNewCount(unviewed(c, eventsOf(c.id)).length); updateToBottom(th); }
     }, { root: th, threshold: 0.4 });
     viewer.current = io;
     th.querySelectorAll<HTMLElement>(".ev[data-seq]").forEach((el) => { el.dataset.obs = "1"; const m = evBox(el); if (m) io.observe(m); });
-    const ro = new ResizeObserver(() => { if (getState().pinned) th.scrollTop = th.scrollHeight; });
+    const ro = new ResizeObserver(() => { if (pinnedNow()) th.scrollTop = th.scrollHeight; });
     ro.observe(th);
     return () => { io.disconnect(); ro.disconnect(); viewer.current = null; };
   }, [threadRef]);
@@ -785,7 +804,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
 
   return (
     <div className="thread" id="thread" ref={threadRef} data-bot={botId || undefined}
-      onScroll={() => updateToBottom(threadRef.current)} onClick={onClick}>
+      onScroll={onThreadScroll} onClick={onClick}>
       {content}
     </div>
   );

@@ -387,11 +387,11 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
     ];
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
   });
-  it("a pinned bot's ring opens its card, except on the Bots page, with the card off, or with no room (2026-11-05)", () => {
-    expect(botRingRoute({ onBotsPage: false, peekOn: true, noRoom: false })).toBe("card");
-    expect(botRingRoute({ onBotsPage: true, peekOn: true, noRoom: false })).toBe("door");
-    expect(botRingRoute({ onBotsPage: false, peekOn: false, noRoom: false })).toBe("door");
-    expect(botRingRoute({ onBotsPage: false, peekOn: true, noRoom: true })).toBe("door");
+  it("a pinned bot's ring opens its card, on every page, the Bots page too, with the card off, or with no room (2026-11-05)", () => {
+    expect(botRingRoute({ peekOn: true, noRoom: false })).toBe("card");
+    // The Bots page is no exception any more (2026-11-06): the card there too.
+    expect(botRingRoute({ peekOn: false, noRoom: false })).toBe("door");
+    expect(botRingRoute({ peekOn: true, noRoom: true })).toBe("door");
   });
   it("the bot card's status words are the page's", () => {
     expect(botStatusWords("waiting")).toBe("waiting for you");
@@ -879,5 +879,21 @@ describe("ringMarks with the Claude pane open", () => {
     expect(held.hovers).toBe(true);
     expect(held.titleOnly).toBe(false);
     expect(ringMarks({ ...o, key: "a", foot: false, paneOpen: false }).hovers).toBe(true);
+  });
+});
+
+
+describe("ringMarks: a section of one ring wears no last mark (2026-11-06)", () => {
+  const base = {
+    favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null,
+    sessionHere: false, isLast: true, activeList: "a", activeFav: "a",
+  };
+  it("favourites on: one ring, no mark; two rings, the mark", () => {
+    expect(ringMarks({ ...base, key: "a", foot: false, sectionSize: 1 }).classes).not.toContain("is-last");
+    expect(ringMarks({ ...base, key: "a", foot: false, sectionSize: 2 }).classes).toContain("is-last");
+    expect(ringMarks({ ...base, key: "a", foot: true, sectionSize: 1 }).classes).not.toContain("is-last");
+  });
+  it("favourites off: as before, the mark whatever the count", () => {
+    expect(ringMarks({ ...base, favsOn: false, key: "a", foot: false, sectionSize: 1 }).classes).toContain("is-last");
   });
 });
