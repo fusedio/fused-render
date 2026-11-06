@@ -782,6 +782,9 @@ export default function CanvasWorkspace({
   const keepPaneRef = useRef<{ udfName: string | null; until: number } | null>(null);
   // A Canvas tag's fit pressed before the frame is up: spent on its hello.
   const pendingFitRef = useRef(false);
+  // The chat a node tag was pressed from (`selectFromTag`): seeded under the
+  // node when its selection echo lands, so its pane shows that chat.
+  const tagSessionRef = useRef<{ udfName: string; sessionId: string } | null>(null);
   // When the frame last said hello: for HELLO_SETTLE_MS after it, an echo
   // naming a node the page did not ask for is an older workbench's own
   // boot pick (udf_1 on hydration), not the reader's — it is noted and not
@@ -1051,7 +1054,8 @@ export default function CanvasWorkspace({
         // Only for THIS canvas (reviewer): the frame says which it stands in.
         if (event.data?.env !== env || event.data?.name !== name) return;
         const udf = event.data?.udfName;
-        selectFromTagRef.current?.(typeof udf === "string" ? udf : null);
+        const sid = event.data?.sessionId;
+        selectFromTagRef.current?.(typeof udf === "string" ? udf : null, typeof sid === "string" ? sid : null);
         return;
       }
       setSideOpen(false);
@@ -1059,7 +1063,7 @@ export default function CanvasWorkspace({
     window.addEventListener("message", onHidePane);
     return () => window.removeEventListener("message", onHidePane);
   }, [env, name]);
-  const selectFromTagRef = useRef<((udfName: string | null) => void) | null>(null);
+  const selectFromTagRef = useRef<((udfName: string | null, sessionId?: string | null) => void) | null>(null);
   // The framed chat's ask, from a same-origin child frame (the node pane). The
   // answer goes back to the asking window — `event.source` — so a pane that
   // swapped frames meanwhile never receives a picture it did not ask for.
@@ -1592,12 +1596,20 @@ export default function CanvasWorkspace({
   // tag deselects everything and fits the whole canvas in view. A VIEW move:
   // the chat on screen stays (`keepPaneUntilRef`).
   const selectFromTag = useCallback(
-    (udfName: string | null) => {
+    (udfName: string | null, sessionId: string | null = null) => {
       // A node's select is FOLLOWED by the pane (its chats = the rail's,
       // owner, 2026-11-06: "the tag filters the rail but not the Recent
       // chats in the expanded sidebar"); the Canvas tag's deselect alone
       // keeps the chat on screen.
       if (udfName === null) keepPaneRef.current = { udfName, until: performance.now() + KEEP_PANE_MS };
+      else {
+        // …and the chat the tag stands for comes along: the node's pane
+        // boots on it (`nodeSessions`), not on its own last chat — a task
+        // opened into the canvas pane seeded nothing (Bugbot on #2167).
+        // A node ask outranks a fit kept for the hello.
+        pendingFitRef.current = false;
+        tagSessionRef.current = sessionId ? { udfName, sessionId } : null;
+      }
       askSelect(udfName);
       if (udfName === null) {
         // No frame yet: the fit waits for the hello with the kept select.
@@ -2441,13 +2453,13 @@ export default function CanvasWorkspace({
               : wbSelRef.current?.udfName ?? null;
         helloAtRef.current = performance.now();
         helloAskedRef.current = ask;
-        // A kept ask is a view move too: its echo leaves the pane alone.
-        if (kept) keepPaneRef.current = { udfName: kept.udfName, until: performance.now() + KEEP_PANE_MS };
+        // A kept DESELECT is a view move (the Canvas tag's): its echo leaves
+        // the pane alone; a kept node ask is followed by the pane (Bugbot
+        // on #2167). The fit goes only with a canvas ask.
+        if (kept && kept.udfName === null) keepPaneRef.current = { udfName: null, until: performance.now() + KEEP_PANE_MS };
         sendSelect(ask);
-        if (focus === "canvas" || pendingFitRef.current) {
-          pendingFitRef.current = false;
-          sendFit();
-        }
+        if (ask === null && (focus === "canvas" || pendingFitRef.current)) sendFit();
+        pendingFitRef.current = false;
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;
@@ -2510,6 +2522,12 @@ export default function CanvasWorkspace({
               : `${udfName}.${kind === "widget" ? "json" : "py"}`;
           wbSelRef.current = { udfName, file };
           setWbSelFile(file);
+          const tagged = tagSessionRef.current;
+          if (tagged && tagged.udfName === udfName) {
+            tagSessionRef.current = null;
+            nodeSessions.set(nodeSessionKey(env, name, file), tagged.sessionId);
+            setNodeBootSeq((n) => n + 1);
+          }
           if ((was && was.udfName === udfName && was.file === file) || keepPane || bootPick) return;
           // The node already shown: nothing to do.
           const cur = nodeRef.current;

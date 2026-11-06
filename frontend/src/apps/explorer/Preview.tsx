@@ -130,8 +130,8 @@ const FRAME_CANVAS = (() => {
   const i = v ? v.indexOf(":") : -1;
   return v && i > 0 ? { env: v.slice(0, i), name: v.slice(i + 1) } : null;
 })();
-const selectNodeInParent = (udfName: string | null) => {
-  window.parent.postMessage({ type: "fused-canvas-select-node", udfName, ...FRAME_CANVAS }, location.origin);
+const selectNodeInParent = (udfName: string | null, sessionId?: string | null) => {
+  window.parent.postMessage({ type: "fused-canvas-select-node", udfName, sessionId: sessionId ?? null, ...FRAME_CANVAS }, location.origin);
 };
 // `?_saveon=blur`: the host frames this document as a canvas node's code pane
 // (CanvasWorkspace). Forwarded onto the CONTENT frame's render URL, where the

@@ -622,7 +622,7 @@ export function ClaudeRail({
   /** The cards' place tags' press (claude-rail-lib `RailHere.tag`): the
    *  node selected and zoomed to, or the canvas fit — the pane's chat
    *  untouched (CanvasWorkspace `selectFromTag`). */
-  onTagSelect?: (udfName: string | null) => void;
+  onTagSelect?: (udfName: string | null, sessionId?: string | null) => void;
   /** A pointer down on the rail's inner edge: the start of a pull that opens
    *  the pane at the width the pointer drags it to (CanvasWorkspace
    *  `onRailPull`). */

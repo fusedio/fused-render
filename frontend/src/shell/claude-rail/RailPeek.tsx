@@ -153,6 +153,7 @@ import {
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
 import { chipDoor, chipLabel, chipPath, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
 import { PlaceTags } from "./PlaceTags";
+import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
 import {
   PEEK_MAX_HEIGHT,
@@ -1002,10 +1003,17 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       return;
     }
     const want = new URL(rewriteLegacyUrl(href), location.href);
+    // Less the view ask (`focus=`): the canvas page takes it off the URL on
+    // the same nav event this listens to (Bugbot on #2167).
+    const bare = (search: string) => {
+      const q = new URLSearchParams(search);
+      q.delete(CANVAS_FOCUS_PARAM);
+      return q.toString();
+    };
     onHop(
       window,
       NAV_EVENT,
-      () => location.pathname === want.pathname && location.search === want.search,
+      () => location.pathname === want.pathname && bare(location.search) === bare(want.search),
       () => onChipLeave(key, keyboard),
       go,
     );
@@ -1327,9 +1335,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   sessionId={head.t.session_id ?? null}
                   {...(here?.()?.tag
                     ? {
-                        onSelectNode: (udfName: string | null) => {
+                        onSelectNode: (udfName: string | null, sessionId?: string | null) => {
                           onPin();
-                          here?.()?.tag?.(udfName);
+                          here?.()?.tag?.(udfName, sessionId ?? null);
                         },
                       }
                     : {})}

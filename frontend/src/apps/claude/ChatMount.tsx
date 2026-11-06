@@ -200,7 +200,7 @@ export interface ChatMountProps {
   /** The chat head's place tags (ClaudeChat `pageRoot` / `onSelectNode`;
    *  shell/claude-rail PlaceTags). */
   pageRoot?: string | null;
-  onSelectNode?: (udfName: string | null) => void;
+  onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
   /** `session_id` on the frame URL (cards, peek). */
   sessionId?: string;
   /** `run` handed over by a host (the canvas fix run). */

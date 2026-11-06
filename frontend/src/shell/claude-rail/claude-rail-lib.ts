@@ -167,7 +167,7 @@ export interface RailHere {
   /** The place tags' press (PlaceTags, 2026-11-06): select the node and
    *  zoom to it, or — null — deselect everything and fit the canvas in
    *  view; the pane's chat stays either way. */
-  tag?: (udfName: string | null) => void;
+  tag?: (udfName: string | null, sessionId?: string | null) => void;
 }
 
 /** WHERE THE WHERE-CHIP GOES (owner, 2026-11-04: "click on the tag — we

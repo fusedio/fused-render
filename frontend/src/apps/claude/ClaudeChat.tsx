@@ -290,7 +290,7 @@ export interface ClaudeChatProps {
    *  and fit the canvas). With either given the head draws the tags in
    *  place of the project's name. */
   pageRoot?: string | null;
-  onSelectNode?: (udfName: string | null) => void;
+  onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's

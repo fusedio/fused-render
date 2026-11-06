@@ -25,7 +25,7 @@ export interface PlaceTagsProps {
   /** The page can select a node in place (the canvas editor, or its node
    *  pane's frame asking the editor): the second tag selects (or, null,
    *  deselects and fits) instead of navigating. */
-  onSelectNode?: (udfName: string | null) => void;
+  onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
   /** The chat's session, kept on the canvas tags' hrefs so the chat follows
    *  the reader to the view. */
   sessionId?: string | null;
@@ -55,7 +55,9 @@ export function PlaceTags({ scope, at, pageRoot, onSelectNode, sessionId, onNavi
     const door = tag.door;
     if (!door) return;
     if (door.select && onSelectNode) {
-      onSelectNode(door.select.udfName);
+      // The chat the tag stands for goes with the select: the node's pane
+      // boots on it rather than its own last chat (Bugbot on #2167).
+      onSelectNode(door.select.udfName, sessionId ?? null);
       onSelected?.(e);
       return;
     }
