@@ -983,7 +983,7 @@ export default function CanvasWorkspace({
         // Only for THIS canvas (reviewer): the frame says which it stands in.
         if (event.data?.env !== env || event.data?.name !== name) return;
         const udf = event.data?.udfName;
-        selectFromRailRef.current?.(typeof udf === "string" ? udf : null);
+        selectFromTagRef.current?.(typeof udf === "string" ? udf : null);
         return;
       }
       setSideOpen(false);
@@ -994,6 +994,7 @@ export default function CanvasWorkspace({
   // `selectFromRail` is declared further down (it needs the frame); the
   // listener above reads it through this ref.
   const selectFromRailRef = useRef<((udfName: string | null) => void) | null>(null);
+  const selectFromTagRef = useRef<((udfName: string | null) => void) | null>(null);
   // The framed chat's ask, from a same-origin child frame (the node pane). The
   // answer goes back to the asking window — `event.source` — so a pane that
   // swapped frames meanwhile never receives a picture it did not ask for.
@@ -1429,6 +1430,16 @@ export default function CanvasWorkspace({
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
+  // FIT THE WHOLE CANVAS (owner, 2026-11-06: the chat head's Canvas tag
+  // "deselects everything and fitViews the canvas"): `fused-embed-fit`,
+  // which the workbench answers with its own fitView (application
+  // embed-auth `EMBED_FIT_EVENT`); an older workbench ignores it.
+  const sendFit = useCallback(() => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    frame.contentWindow.postMessage({ type: "fused-embed-fit" }, origin);
+  }, []);
   // The rail card's node chip (RailPeek), or the rail's own last seat asking
   // for NO node (ClaudeRail, `null`): pressed before the frame is ready (no
   // window or origin yet), the ask is kept and replayed — in place of the
@@ -1448,6 +1459,17 @@ export default function CanvasWorkspace({
     [sendSelect],
   );
   selectFromRailRef.current = selectFromRail;
+  // THE CHAT HEAD'S PLACE TAG (apps/claude ui/PlaceTag): a node's tag selects
+  // it (the workbench zooms to it); the Canvas tag deselects everything and
+  // fits the whole canvas in view.
+  const selectFromTag = useCallback(
+    (udfName: string | null) => {
+      selectFromRail(udfName);
+      if (udfName === null) sendFit();
+    },
+    [selectFromRail, sendFit],
+  );
+  selectFromTagRef.current = selectFromTag;
 
   // Whether the right pane is up (see the header): an older workbench's
   // expand chip acts on this pane, so it needs the state to show itself.
@@ -3199,7 +3221,7 @@ export default function CanvasWorkspace({
               // tag deselects everything, a node's tag selects it.
               pageRoot={placeRoot(railPlace)}
               pageNode={nodeFileName}
-              onSelectNode={selectFromRail}
+              onSelectNode={selectFromTag}
               // The Screenshot seat photographs the canvas through the frame's
               // own capture (`requestCanvasShot`), not a cross-origin DOM walk.
               canvasShot={canvasShot}

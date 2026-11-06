@@ -460,9 +460,21 @@ const PANE_FOCUS_WAIT_MS = 4000;
  *  remounted under the press — and in the canvas node pane's same-origin
  *  frame. Never one inside a rail or a rail card. */
 function paneHomeComposer(rail: HTMLElement | null): HTMLTextAreaElement | null {
+  return paneComposer(rail, ".c-home textarea");
+}
+
+/** THE PANE'S CHAT COMPOSER, whichever chat it shows (owner, 2026-11-06:
+ *  "when we click on the task list item can we focus on the composer"): a
+ *  list ring's press beside the open pane opens the chat there, and the
+ *  keyboard follows into its composer — found the way the home's is. */
+function paneChatComposer(rail: HTMLElement | null): HTMLTextAreaElement | null {
+  return paneComposer(rail, ".c-composer textarea");
+}
+
+function paneComposer(rail: HTMLElement | null, selector: string): HTMLTextAreaElement | null {
   const scope: ParentNode = (rail?.isConnected && rowOf(rail)) || document;
   const pick = (root: ParentNode) =>
-    [...root.querySelectorAll<HTMLTextAreaElement>(".c-home textarea")].find(
+    [...root.querySelectorAll<HTMLTextAreaElement>(selector)].find(
       (el) => !el.closest(".claude-rail, .claude-rail-peek") && el.getClientRects().length > 0,
     ) ?? null;
   const hit = pick(scope);
@@ -1851,6 +1863,8 @@ export function ClaudeRail({
         intent.dismiss();
       }
       openChat(href);
+      // …and the keyboard into that chat's composer (`paneChatComposer`).
+      if (t.session_id) focusPaneComposer(paneChatComposer);
       return;
     }
     if (how === "card") {
@@ -1931,9 +1945,10 @@ export function ClaudeRail({
   const plusPane = plusDoor({ paneOpen, favsOn, paneHome: !!onNewChat }) === "pane";
   const paneFocusWait = useRef<(() => void) | null>(null);
   useEffect(() => () => paneFocusWait.current?.(), []);
-  const openPaneHome = () => {
-    hideHint();
-    onNewChat?.();
+  // THE KEYBOARD INTO THE PANE'S COMPOSER (the home's on the +, the chat's
+  // on a ring's press beside the open pane) — retried until it stands, and
+  // given up the moment the reader presses or types anything themselves.
+  const focusPaneComposer = (find: (rail: HTMLElement | null) => HTMLTextAreaElement | null) => {
     paneFocusWait.current?.();
     let live = true;
     let raf = 0;
@@ -1950,7 +1965,7 @@ export function ClaudeRail({
     const until = performance.now() + PANE_FOCUS_WAIT_MS;
     const attempt = () => {
       if (!live) return;
-      const box = paneHomeComposer(railRef.current);
+      const box = find(railRef.current);
       if (box) {
         box.focus({ preventScroll: true });
         if (box.ownerDocument.activeElement === box) return stop();
@@ -1959,6 +1974,11 @@ export function ClaudeRail({
       else stop();
     };
     raf = requestAnimationFrame(attempt);
+  };
+  const openPaneHome = () => {
+    hideHint();
+    onNewChat?.();
+    focusPaneComposer(paneHomeComposer);
   };
   const plusLabel = waiting ?? (plusPane ? "New chat" : newTask.on ? `New task on ${newTask.on}` : "New task");
 

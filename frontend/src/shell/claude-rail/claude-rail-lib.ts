@@ -246,8 +246,11 @@ export function chipDoor(
 export function chipWhere(scope: RailScope, at: RailPlace): string {
   if (at.kind === "canvas") return scope.kind === "whole" ? at.name : `${at.name} › ${scope.name}`;
   if (scope.kind === "file") return `${lastSegment(at.kind === "folder" ? at.dir : at.file) || "Folder"} › ${scope.name}`;
-  if (at.kind === "file") return at.file;
-  return trimSlash(at.dir);
+  // Names, never paths (owner, 2026-11-06: a full path in the head "looks
+  // quite ugly"): the folder's own name, a file's name — the chip's title
+  // still spells the path.
+  if (at.kind === "file") return lastSegment(at.file) || at.file;
+  return lastSegment(at.dir) || trimSlash(at.dir);
 }
 
 /** THE FULL PLACE A WHERE-CHIP NAMES, as words: the plain-text chip's

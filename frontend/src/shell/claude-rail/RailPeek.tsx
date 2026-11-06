@@ -1183,9 +1183,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const measureWhere = () => {
     const row = rowRef.current;
     const chip = row?.querySelector<HTMLElement>(".claude-rail-peek-scope");
-    // Up to the Archive seat (shown on the head's hover, and it must stay
-    // pressable — reviewer), else the Open button.
-    const end = row?.querySelector<HTMLElement>(".claude-rail-peek-archive, .claude-rail-peek-open");
+    // Up to the Open button: the count, the time and the Archive seat go
+    // under it (hidden meanwhile — `.has-where`; the overlay takes the
+    // pointer, so nothing under it is pressed by accident).
+    const end = row?.querySelector<HTMLElement>(".claude-rail-peek-open");
     if (!row || !chip) return;
     const r = row.getBoundingClientRect();
     const c = chip.getBoundingClientRect();
@@ -1269,18 +1270,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           // second row is the TITLE alone, full width, with the pencil on
           // hover: a recap title is a sentence, and a sentence squeezed
           // between chips on one row lost its end.
-          <div className="claude-rail-peek-head" onKeyDown={onHeadKeyDown}>
-            <div
-              className="claude-rail-peek-row"
-              ref={rowRef}
-              onPointerEnter={whereText ? measureWhere : undefined}
-              onPointerLeave={whereText ? () => setWhereBox(null) : undefined}
-            >
+          <div
+            className="claude-rail-peek-head"
+            onKeyDown={onHeadKeyDown}
+            // THE FULL PLACE shows on a hover ANYWHERE over the head (owner,
+            // 2026-11-06: "hover should be on the toolbar"), both rows.
+            onPointerEnter={whereText ? measureWhere : undefined}
+            onPointerLeave={whereText ? () => setWhereBox(null) : undefined}
+          >
+            <div className={"claude-rail-peek-row" + (whereText && whereBox ? " has-where" : "")} ref={rowRef}>
               {whereText && whereBox && (
                 // THE FULL PLACE (header `placeOverlay`): from the chip's
-                // right edge to the Open button's left, over the count and
-                // the time. Pointer-transparent: the seats under it still
-                // take the press.
+                // right edge to the Open button's left, over the count, the
+                // time and the Archive seat, which hide under it.
                 <span className="claude-rail-peek-where" style={whereBox} aria-hidden="true">
                   {whereText}
                 </span>

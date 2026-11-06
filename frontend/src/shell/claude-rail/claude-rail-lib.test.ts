@@ -889,8 +889,8 @@ describe("chipWhere (the favourite card's full place on hover, 2026-11-06)", () 
     expect(chipWhere({ kind: "node", name: "hex", file: "hex.py" }, canvas)).toBe("HLS_Data › hex");
     expect(chipWhere({ kind: "whole", word: "Canvas" }, canvas)).toBe("HLS_Data");
     expect(chipWhere({ kind: "file", name: "index.html", file: "/a/app/index.html" }, { kind: "folder", dir: "/a/app/" })).toBe("app › index.html");
-    expect(chipWhere({ kind: "whole", word: "Folder" }, { kind: "folder", dir: "/a/app/" })).toBe("/a/app");
-    expect(chipWhere({ kind: "whole", word: "File" }, { kind: "file", file: "/a/app/x.py" })).toBe("/a/app/x.py");
+    expect(chipWhere({ kind: "whole", word: "Folder" }, { kind: "folder", dir: "/a/app/" })).toBe("app");
+    expect(chipWhere({ kind: "whole", word: "File" }, { kind: "file", file: "/a/app/x.py" })).toBe("x.py");
   });
 });
 
