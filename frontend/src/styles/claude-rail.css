@@ -806,7 +806,7 @@
   opacity: 1;
   pointer-events: auto;
 }
-.claude-rail-peek-head:hover .claude-rail-peek-status .schedule-ring,
+.claude-rail-peek-head:hover .claude-rail-peek-status:has(.claude-rail-peek-archive) .schedule-ring,
 .claude-rail-peek-status:has(.claude-rail-peek-archive:focus-visible) .schedule-ring {
   opacity: 0;
   pointer-events: none;
@@ -850,7 +850,7 @@
     opacity: 1;
     pointer-events: auto;
   }
-  .claude-rail-peek-status .schedule-ring {
+  .claude-rail-peek-status:has(.claude-rail-peek-archive) .schedule-ring {
     opacity: 0;
   }
 }

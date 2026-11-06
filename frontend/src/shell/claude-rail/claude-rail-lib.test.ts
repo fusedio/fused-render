@@ -631,7 +631,7 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     const at: RailPlace = { kind: "canvas", env: "prod", name: "other", dir: OTHER };
     const door = chipDoor({ kind: "node", name: "map", file: "map.py" }, at, { env: "unstable", name: "demo", file: null })!;
     expect(door.select).toBeUndefined();
-    expect(door.href).toBe("/canvases/prod/other?node=map&node_file=map.py");
+    expect(door.href).toBe("/canvases/prod/other?node=map&node_file=map.py&focus=node");
     expect(door.title).toBe("Open map on other");
     expect(chipDoor({ kind: "whole", word: "Canvas" }, at, null)!.href).toBe("/canvases/prod/other");
   });
@@ -640,7 +640,7 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     const here = { env: "unstable" as const, name: "demo", file: "hex.py" };
     const node = chipDoor({ kind: "node", name: "grid", file: "grid.py" }, PLACE, here)!;
     expect(node.select).toEqual({ udfName: "grid" });
-    expect(node.href).toBe("/canvases/unstable/demo?node=grid&node_file=grid.py");
+    expect(node.href).toBe("/canvases/unstable/demo?node=grid&node_file=grid.py&focus=node");
     // The whole canvas while a node is selected: the press deselects.
     expect(chipDoor({ kind: "whole", word: "Canvas" }, PLACE, here)!.select).toEqual({ udfName: null });
   });

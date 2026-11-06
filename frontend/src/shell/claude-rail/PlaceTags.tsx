@@ -86,6 +86,12 @@ export function PlaceTags({ scope, at, pageRoot, onSelectNode, sessionId, onNavi
                 {...(tag.door.select && onSelectNode ? { role: "button" } : {})}
                 aria-label={tag.door.title}
                 onClick={(e) => press(tag, e)}
+                // A button answers Space too (a link answers Enter on its own).
+                onKeyDown={(e) => {
+                  if (e.key !== " " || !tag.door?.select || !onSelectNode) return;
+                  e.preventDefault();
+                  onSelectNode(tag.door.select.udfName, sessionId ?? null);
+                }}
               >
                 {tag.label}
               </a>

@@ -214,7 +214,10 @@ export function chipDoor(
   const nowhere = (door: ChipDoor): ChipDoor | null => (favsOn ? null : door);
   if (at.kind === "canvas") {
     const file = scope.kind === "node" ? scope.file : undefined;
-    const href = canvasPagePath(at.env, at.name, file ? { file } : undefined);
+    // A node's link asks for the node (`focus=node`): a page URL naming a
+    // node shows its chat only (2026-11-06), and a modified press opening
+    // this in a tab should land selected (CodeRabbit on #2167).
+    const href = canvasPagePath(at.env, at.name, file ? { file, focus: "node" } : undefined);
     const title = scope.kind === "node" ? `Open ${scope.name} on ${at.name}` : `Open the canvas ${at.name}`;
     if (!here || here.env !== at.env || here.name !== at.name) {
       // The whole canvas, named on its own page with no way to select in
@@ -303,8 +306,11 @@ export function placeTags(
           label: scope.name,
           kind: "node",
           path: `${scope.name} on ${at.name}`,
+          // The href carries the ask either way: in place a plain press
+          // selects through `select`, a modified press opens the tab
+          // selected (CodeRabbit on #2167).
           door: opts.here
-            ? { href: base, title: `Select ${scope.name} on the canvas`, select: { udfName: scope.name } }
+            ? { href: canvasPagePath(at.env, at.name, { file, sessionId, focus: "node" }), title: `Select ${scope.name} on the canvas`, select: { udfName: scope.name } }
             : { href: canvasPagePath(at.env, at.name, { file, sessionId, focus: "node" }), title: `Open ${scope.name} on ${at.name}` },
         },
       ];
@@ -316,7 +322,7 @@ export function placeTags(
         kind: "canvas",
         path: at.name,
         door: opts.here
-          ? { href: base, title: `Deselect everything and fit the canvas in view`, select: { udfName: null } }
+          ? { href: canvasPagePath(at.env, at.name, { sessionId, focus: "canvas" }), title: `Deselect everything and fit the canvas in view`, select: { udfName: null } }
           : { href: canvasPagePath(at.env, at.name, { sessionId, focus: "canvas" }), title: `Open the canvas ${at.name}, fit in view` },
       },
     ];
