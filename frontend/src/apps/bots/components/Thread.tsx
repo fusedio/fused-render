@@ -623,6 +623,11 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
     // The page keeps the last EVENT_CAP events only: a card older than the oldest one held is gone from here, so say so
     // (the hand-off line is then the only copy) instead of leaving scrollSeq armed and the thread pinned to the end.
     const js = s.scrollSeq, jumping = !!js && js.bot === botId;
+    // YOUR OWN SEND, in this thread's composer (Composer `askScrollToEnd` marks the thread it sends from): the store's
+    // flag is the render's trigger only — two threads on one store (the page's and the rail's bot card beside it) each
+    // follow their own composer (Bugbot on #2161).
+    const mine = th.dataset.scrollEnd === "1";
+    if (mine) delete th.dataset.scrollEnd;
     // A jump into the folded conversation opens it first; the next commit lands on the message.
     if (jumping && folded && js.seq < evs[ci].seq && js.seq >= evs[0].seq) { setOpenFold(foldKey); return; }
     // …and a jump at a step hidden behind its stretch's trigger opens that stretch first, the same way.
@@ -638,7 +643,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
     if (fa) restoreAnchor(th, [fa]);
     else if (jumpEl) { jumpEl.scrollIntoView({ block: "start" }); clearScrollSeq(); }
     else if (jumping && evs.length && js.seq < evs[0].seq) { clearScrollSeq(); showBanner("That message is older than this chat keeps on the page."); pinToEnd(th, botId || undefined); }
-    else if (bumped || s.scrollToEnd || wasAtEnd) pinToEnd(th, botId || undefined);
+    else if (bumped || mine || wasAtEnd) pinToEnd(th, botId || undefined);
     // Anchors only ever fall off the top, so losing all of them means you were reading history the cap has now dropped:
     // the oldest message left is the closest thing to what you were looking at, so sit at the top of it.
     else if (rebuilt && !restoreAnchor(th, anchors)) th.scrollTop = 0;

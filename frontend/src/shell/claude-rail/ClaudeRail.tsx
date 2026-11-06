@@ -1862,9 +1862,12 @@ export function ClaudeRail({
         setHeld(false);
         intent.dismiss();
       }
+      // …and the keyboard into that chat's composer (`paneChatComposer`) —
+      // the NEW chat's: the box on screen now belongs to the one being
+      // replaced, unless the ring is the pane's own chat already.
+      const before = t.session_id && t.session_id !== activeSessionId ? paneChatComposer(railRef.current) : null;
       openChat(href);
-      // …and the keyboard into that chat's composer (`paneChatComposer`).
-      if (t.session_id) focusPaneComposer(paneChatComposer);
+      if (t.session_id) focusPaneComposer(paneChatComposer, before);
       return;
     }
     if (how === "card") {
@@ -1948,7 +1951,10 @@ export function ClaudeRail({
   // THE KEYBOARD INTO THE PANE'S COMPOSER (the home's on the +, the chat's
   // on a ring's press beside the open pane) — retried until it stands, and
   // given up the moment the reader presses or types anything themselves.
-  const focusPaneComposer = (find: (rail: HTMLElement | null) => HTMLTextAreaElement | null) => {
+  // `not`: the composer on screen at the press — a ring's press that REPLACES
+  // the pane's chat waits for the new chat's box, never the old one's, which
+  // is about to unmount under the keyboard (Bugbot on #2161).
+  const focusPaneComposer = (find: (rail: HTMLElement | null) => HTMLTextAreaElement | null, not: HTMLElement | null = null) => {
     paneFocusWait.current?.();
     let live = true;
     let raf = 0;
@@ -1966,7 +1972,7 @@ export function ClaudeRail({
     const attempt = () => {
       if (!live) return;
       const box = find(railRef.current);
-      if (box) {
+      if (box && box !== not) {
         box.focus({ preventScroll: true });
         if (box.ownerDocument.activeElement === box) return stop();
       }
