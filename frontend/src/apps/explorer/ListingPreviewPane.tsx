@@ -31,7 +31,7 @@ import { useEffect } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { ChatMount } from "@apps/claude";
-import { placeRoot } from "@shell/claude-rail/ClaudeRail";
+import { placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import {
   SideCloseButton,

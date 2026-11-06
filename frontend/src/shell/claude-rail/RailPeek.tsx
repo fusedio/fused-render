@@ -1183,19 +1183,24 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const measureWhere = () => {
     const row = rowRef.current;
     const chip = row?.querySelector<HTMLElement>(".claude-rail-peek-scope");
-    const open = row?.querySelector<HTMLElement>(".claude-rail-peek-open");
+    // Up to the Archive seat (shown on the head's hover, and it must stay
+    // pressable — reviewer), else the Open button.
+    const end = row?.querySelector<HTMLElement>(".claude-rail-peek-archive, .claude-rail-peek-open");
     if (!row || !chip) return;
     const r = row.getBoundingClientRect();
     const c = chip.getBoundingClientRect();
-    const o = open?.getBoundingClientRect();
+    const o = end?.getBoundingClientRect();
     const left = Math.round(c.right - r.left + 6);
     const right = Math.round(o ? r.right - o.left + 6 : 0);
     if (r.width - left - right < 40) return;
     setWhereBox({ left, right });
   };
+  // Gone with its reason, and with the chat it was measured for (a swap
+  // under a resting pointer: the next enter measures again).
+  const whereKey = head?.t.key ?? null;
   useEffect(() => {
-    if (!whereText) setWhereBox(null);
-  }, [whereText]);
+    setWhereBox(null);
+  }, [whereText, whereKey]);
   return createPortal(
     <>
     {bridge && (
@@ -1266,7 +1271,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           // between chips on one row lost its end.
           <div className="claude-rail-peek-head" onKeyDown={onHeadKeyDown}>
             <div
-              className={"claude-rail-peek-row" + (whereText ? " has-where" : "")}
+              className="claude-rail-peek-row"
               ref={rowRef}
               onPointerEnter={whereText ? measureWhere : undefined}
               onPointerLeave={whereText ? () => setWhereBox(null) : undefined}
@@ -1276,7 +1281,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 // right edge to the Open button's left, over the count and
                 // the time. Pointer-transparent: the seats under it still
                 // take the press.
-                <span className="claude-rail-peek-where" style={whereBox} aria-hidden="true" title={whereText}>
+                <span className="claude-rail-peek-where" style={whereBox} aria-hidden="true">
                   {whereText}
                 </span>
               )}

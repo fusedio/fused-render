@@ -155,6 +155,10 @@ const SHELL_OPEN_TO_APPS = new Set([
   // (canvases, explorer) import this one module rather than keeping a copy
   // each. Its libs and flag stay shell-only.
   "shell/claude-rail/ClaudeRail",
+  // …and its pure place/chip helpers (no React, no shell imports), for the
+  // chat head's place tag (apps/claude ui/PlaceTag, 2026-11-06) — so the
+  // chat's lazy chunk does not drag the whole rail in for six functions.
+  "shell/claude-rail/claude-rail-lib",
 ]);
 
 const violations = [];

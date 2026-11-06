@@ -93,7 +93,8 @@ import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
-import { ClaudeRail, RAIL_W, paneHomeHref, placeRoot } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
+import { placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
@@ -121,8 +122,16 @@ const hidePaneInParent = () => {
 };
 // …and, in that pane, the chat head's place tag asks the editor to select
 // the node (apps/claude ui/PlaceTag; CanvasWorkspace `fused-canvas-select-node`).
+// `?_canvas=<env>:<name>` (CanvasWorkspace `nodeEmbedSrc`): the canvas this
+// node pane stands in — the tag's place root, and named in the ask so the
+// editor acts for its own canvas only.
+const FRAME_CANVAS = (() => {
+  const v = new URLSearchParams(location.search).get("_canvas");
+  const i = v ? v.indexOf(":") : -1;
+  return v && i > 0 ? { env: v.slice(0, i), name: v.slice(i + 1) } : null;
+})();
 const selectNodeInParent = (udfName: string | null) => {
-  window.parent.postMessage({ type: "fused-canvas-select-node", udfName }, location.origin);
+  window.parent.postMessage({ type: "fused-canvas-select-node", udfName, ...FRAME_CANVAS }, location.origin);
 };
 // `?_saveon=blur`: the host frames this document as a canvas node's code pane
 // (CanvasWorkspace). Forwarded onto the CONTENT frame's render URL, where the
@@ -2314,10 +2323,13 @@ function TemplatePreview({
                       { noAnnTools: true }
                     : {})}
                   {...(CANVAS_SHOT ? { canvasShot: CANVAS_SHOT_FROM_PARENT } : {})}
-                  {...(HIDE_PANE ? { onHidePane: hidePaneInParent, onSelectNode: selectNodeInParent } : {})}
-                  // The head's place tag: this file's own page (a node's chat
-                  // in the canvas pane selects its node instead).
-                  pageRoot={placeRoot({ kind: "file", file: fsPath })}
+                  {...(HIDE_PANE ? { onHidePane: hidePaneInParent } : {})}
+                  {...(HIDE_PANE && FRAME_CANVAS ? { onSelectNode: selectNodeInParent } : {})}
+                  // The head's place tag: this file's own page — or, in the
+                  // canvas pane, the canvas the pane stands in, so a node's
+                  // tag selects its node in the editor (`pageNode` unknown:
+                  // the tag always selects).
+                  pageRoot={FRAME_CANVAS ? `canvas:${FRAME_CANVAS.env}:${FRAME_CANVAS.name}` : placeRoot({ kind: "file", file: fsPath })}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}

@@ -5,37 +5,47 @@
 // (shell/claude-rail RailPeek, claude-rail-lib `chipDoor`), drawn at the
 // identity row's right end in place of the project's name. A node chat's tag
 // is the node's name, a canvas chat's the word Canvas, a folder's or file's
-// chat its own name — each a door to its place: on the chat's own canvas the
-// node is selected in the workbench (`onSelectNode`; the Canvas tag deselects
-// everything), elsewhere the tag navigates. A tag naming the place the page
-// already stands on (`pageRoot`, the selected node `pageNode`) is plain text.
+// chat its own name — each a door to its place: on the chat's own canvas,
+// when THAT is the page (`pageRoot`), the node is selected in the workbench
+// (`onSelectNode`; the Canvas tag deselects everything), elsewhere the tag
+// navigates. A tag naming the place the page already stands on (`pageRoot`,
+// the selected node `pageNode`) is plain text. Favourites on only (the rail's
+// chips' flag; ClaudeChat): off, the head keeps the project's name.
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { chipDoor, chipLabel, chipPath, ownPlace, railScope } from "@shell/claude-rail/ClaudeRail";
+import { chipDoor, chipLabel, chipPath, ownPlace, placeRoot, railScope } from "@shell/claude-rail/claude-rail-lib";
 
 export interface PlaceTagProps {
   task: Task;
   /** The page's own place (claude-rail-lib `placeRoot`): a tag naming it is
-   *  plain text. */
+   *  plain text, and only on its own canvas does a tag select in place. */
   pageRoot?: string | null;
-  /** The node file selected on the page's canvas, if the page is one (null:
-   *  none); undefined when the host cannot say (the node pane's own frame:
-   *  its tag always selects). */
+  /** The node file selected on the page's canvas (null: none). Undefined
+   *  when the host cannot say — the node pane's own frame, whose chat is
+   *  its node's: the node's tag then always selects (the workbench zooms to
+   *  it), and the frame never shows a whole-canvas chat. */
   pageNode?: string | null;
   /** The page can select a node in place (the canvas editor, or its node
    *  pane's frame asking the editor): the tag selects instead of navigating. */
   onSelectNode?: (udfName: string | null) => void;
+  /** Draw nothing for a tag that goes nowhere (the explorer's folder
+   *  sidebar, whose merged head leaves the folder's own name off). */
+  onlyDoor?: boolean;
 }
 
-export function PlaceTag({ task, pageRoot = null, pageNode, onSelectNode }: PlaceTagProps) {
+export function PlaceTag({ task, pageRoot = null, pageNode, onSelectNode, onlyDoor = false }: PlaceTagProps) {
   const at = ownPlace(task);
   const scope = railScope(task, at);
-  const here = at.kind === "canvas" && onSelectNode ? { env: at.env, name: at.name, file: pageNode ?? null } : null;
+  const here =
+    at.kind === "canvas" && onSelectNode && pageRoot === placeRoot(at)
+      ? { env: at.env, name: at.name, file: pageNode ?? null }
+      : null;
   const door = chipDoor(scope, at, here, pageRoot, true);
   const label = chipLabel(scope, at);
   const cls = "c-tb-place" + (scope.kind === "node" ? " is-node" : scope.kind === "file" ? " is-file" : "");
   if (!door) {
+    if (onlyDoor) return null;
     return (
       <span className={cls} title={chipPath(scope, at)}>
         {label}

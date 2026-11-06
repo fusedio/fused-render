@@ -618,6 +618,10 @@ export interface RingMarkInput {
    *  favourite's ring hovers nothing meanwhile — its caption, as beside an
    *  open favourite's card; a press still takes the window. */
   botHeld?: boolean;
+  /** How many rings the section holds (owner, 2026-11-06: "if it is only
+   *  one item, that would be the last selected item, so no need to show
+   *  that"): favourites on, a section of ONE wears no `.is-last`. */
+  sectionSize?: number;
 }
 
 export function ringMarks(o: RingMarkInput): {
@@ -642,6 +646,7 @@ export function ringMarks(o: RingMarkInput): {
   if (o.foot && o.openFavKey === o.key) classes.push("is-open");
   if (
     o.isLast &&
+    !(one && o.sectionSize === 1) &&
     (!one || (o.foot ? o.activeFav === o.key && o.openFavKey !== o.key : o.activeList === o.key))
   )
     classes.push("is-last");

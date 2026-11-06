@@ -229,7 +229,8 @@ import {
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
-import { ClaudeRail, paneHomeHref, placeRoot, railInset } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
+import { placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
@@ -457,7 +458,7 @@ function rememberHandle(env: string, handle: string): void {
   }
 }
 
-function nodeEmbedSrc(file: string, sessionId: string | null): string {
+function nodeEmbedSrc(file: string, sessionId: string | null, canvas: { env: WorkbenchEnv; name: string }): string {
   // `_noann=1` on the chat: its Screenshot / Annotate seats and view toggle
   // would open the chat's own preview of the file, which the workbench's own
   // code pane does here (owner, 2026-10-17). It also pins the chat to its narrow CHAT
@@ -472,7 +473,11 @@ function nodeEmbedSrc(file: string, sessionId: string | null): string {
     // handler below.
     // `_hidepane=1`: the chat draws this pane's close at its top row's left
     // end and asks for it with `fused-canvas-hide-pane` (handler below).
-    "?_mode=claude&_side=off&_noann=1&_canvasshot=1&_hidepane=1" +
+    // `_canvas=<env>:<name>`: which canvas frames this node — the chat
+    // head's place tag selects in place only on its own canvas (apps/claude
+    // ui/PlaceTag; Preview `selectNodeInParent` names it back).
+    "?_mode=claude&_side=off&_noann=1&_canvasshot=1&_hidepane=1&_canvas=" +
+      encodeURIComponent(canvas.env + ":" + canvas.name) +
       (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
   );
 }
@@ -975,6 +980,8 @@ export default function CanvasWorkspace({
       // the frame asks the editor to select its node (the workbench zooms
       // to it), or none.
       if (type === "fused-canvas-select-node") {
+        // Only for THIS canvas (reviewer): the frame says which it stands in.
+        if (event.data?.env !== env || event.data?.name !== name) return;
         const udf = event.data?.udfName;
         selectFromRailRef.current?.(typeof udf === "string" ? udf : null);
         return;
@@ -983,7 +990,7 @@ export default function CanvasWorkspace({
     };
     window.addEventListener("message", onHidePane);
     return () => window.removeEventListener("message", onHidePane);
-  }, []);
+  }, [env, name]);
   // `selectFromRail` is declared further down (it needs the frame); the
   // listener above reads it through this ref.
   const selectFromRailRef = useRef<((udfName: string | null) => void) | null>(null);
@@ -1133,7 +1140,7 @@ export default function CanvasWorkspace({
     if (nodeBootRef.current?.key !== key) {
       nodeBootRef.current = {
         key,
-        src: nodeEmbedSrc(path, nodeSessions.get(nodeSessionKey(env, name, file)) ?? null),
+        src: nodeEmbedSrc(path, nodeSessions.get(nodeSessionKey(env, name, file)) ?? null, { env, name }),
       };
     }
     return nodeBootRef.current.src;

@@ -167,6 +167,7 @@ import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { PlaceTag } from "./ui/PlaceTag";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
@@ -5586,13 +5587,17 @@ function ChatBody(props: ChatBodyProps) {
   // host's own node.
   // THE PLACE TAG (ui/PlaceTag): the identity row's right end, for a host
   // that said where it stands.
+  const placeTagOn = useTaskFavourites();
   const placeTag =
-    head.task && (props.pageRoot !== undefined || props.onSelectNode) ? (
+    placeTagOn && head.task && (props.pageRoot !== undefined || props.onSelectNode) ? (
       <PlaceTag
         task={head.task}
         pageRoot={props.pageRoot ?? null}
         {...(props.pageNode !== undefined ? { pageNode: props.pageNode } : {})}
         {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
+        // The merged head leaves the folder's own name off: a tag that goes
+        // nowhere would put it back (reviewer).
+        onlyDoor={!!props.mergedHead}
       />
     ) : null;
   const headerExtra =

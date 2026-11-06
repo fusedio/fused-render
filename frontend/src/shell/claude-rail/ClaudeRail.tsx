@@ -371,9 +371,6 @@ export { railInset } from "./rail-peek-lib";
 /** The pane's home on a page's URL, for the pages' `onNewChat` (claude-rail-
  *  lib `paneHomeHref`) — re-exported for the same reason. */
 export { paneHomeHref } from "./claude-rail-lib";
-/** The where-chip's helpers, for the chat head's place tag (apps/claude
- *  ui/PlaceTag — apps may import this module only). */
-export { chipDoor, chipLabel, chipPath, ownPlace, placeRoot, railScope } from "./claude-rail-lib";
 
 /** No pane sessions: the shut pane's answer (`paneSids`), one reference. */
 const NO_SESSIONS: readonly string[] = [];
@@ -451,10 +448,6 @@ function cardFocusSoon(cardId: string, focus: () => boolean): void {
   };
   requestAnimationFrame(attempt);
 }
-
-/** WHETHER THE READER IS ON THE BOTS PAGE (claude-rail-lib `botRingRoute`):
- *  the path, re-read on every navigation the router announces and on the
- *  history's own moves. */
 
 /** How long the +'s press beside the open pane waits for the pane's home
  *  composer (`paneHomeComposer`): the page may remount its chat first, and
@@ -1014,7 +1007,11 @@ export function ClaudeRail({
   const anchorOf = useCallback((key: string) => {
     const ring = ringEls.current.get(key) ?? null;
     if (!ring) return null;
-    return listRef.current?.querySelector<HTMLElement>("a[data-task-key]") ?? ring;
+    // Favourites on, and a ring OF THE LIST (favourites off, the blocked
+    // box's rings are window A's too, and anchor on themselves as before).
+    const list = listRef.current;
+    if (!favsOnRef.current || !list?.contains(ring)) return ring;
+    return list.querySelector<HTMLElement>("a[data-task-key]") ?? ring;
   }, []);
   const coneOf = useCallback((key: string) => ringEls.current.get(key) ?? null, []);
   // The chat's chunk, ahead of the first hover (ChatMount `preloadChat`).
@@ -1859,7 +1856,7 @@ export function ClaudeRail({
     if (how === "card") {
       // A TOGGLE (owner, 2026-11-06): the ring of the chat whose card a press
       // pinned closes it; a hover card on it is pinned by the press.
-      if (pinNow.current.pinned && pinNow.current.peekKey === t.key) {
+      if (pinNow.current.favsOn && pinNow.current.pinned && pinNow.current.peekKey === t.key) {
         hideHint();
         setHeld(false);
         intent.dismiss();
@@ -2029,11 +2026,7 @@ export function ClaudeRail({
               // Each section's own last press (header): the favourites' mark
               // in their section, the list's everywhere else.
               const lastMark = foot ? lastFavPressed : lastPressed;
-              // …and not in a section of ONE ring (owner, 2026-11-06: "if it
-              // is only one item, that would be the last selected item, so
-              // no need to show that").
-              const isLast =
-                lastMark !== null && lastChatId(t) === lastMark && (foot ? favs.length : baseSeats.length) > 1;
+              const isLast = lastMark !== null && lastChatId(t) === lastMark;
               const sessionHere = !!activeSessionId && t.session_id === activeSessionId;
               // ONE ACTIVE RING PER SECTION, no persistent wash on a
               // favourite, no hover card on the open favourite's ring in
@@ -2054,6 +2047,7 @@ export function ClaudeRail({
                 favHoverKey,
                 paneOpen,
                 botHeld: botUp !== null,
+                sectionSize: foot ? favs.length : baseSeats.length,
               });
               // The rings' own captions step aside for the card: a hover
               // shows the card, and the card IS the caption. The exception
@@ -2187,11 +2181,15 @@ export function ClaudeRail({
                       // A keyboard press: the favourite's card takes the
                       // keyboard once it stands (fav-peek-store); a pointer
                       // press takes nothing.
-                      if (e.detail === 0) requestFavFocus(t.key);
                       // A TOGGLE (owner, 2026-11-06): the open favourite's
-                      // own ring closes its card; any other opens it.
+                      // own ring closes its card; any other opens it (a
+                      // keyboard press asking for the card's keyboard then —
+                      // never for a close, or the wish would outlive it).
                       if (favRing) clearFavOpen(t.key);
-                      else openFavourite(t, href);
+                      else {
+                        if (e.detail === 0) requestFavFocus(t.key);
+                        openFavourite(t, href);
+                      }
                       return;
                     }
                     pressRing(t, href, e.detail === 0);

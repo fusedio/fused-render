@@ -388,7 +388,7 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
     ];
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
   });
-  it("a pinned bot's ring opens its card, except on the Bots page, with the card off, or with no room (2026-11-05)", () => {
+  it("a pinned bot's ring opens its card, on every page, the Bots page too, with the card off, or with no room (2026-11-05)", () => {
     expect(botRingRoute({ peekOn: true, noRoom: false })).toBe("card");
     // The Bots page is no exception any more (2026-11-06): the card there too.
     expect(botRingRoute({ peekOn: false, noRoom: false })).toBe("door");
@@ -891,5 +891,20 @@ describe("chipWhere (the favourite card's full place on hover, 2026-11-06)", () 
     expect(chipWhere({ kind: "file", name: "index.html", file: "/a/app/index.html" }, { kind: "folder", dir: "/a/app/" })).toBe("app › index.html");
     expect(chipWhere({ kind: "whole", word: "Folder" }, { kind: "folder", dir: "/a/app/" })).toBe("/a/app");
     expect(chipWhere({ kind: "whole", word: "File" }, { kind: "file", file: "/a/app/x.py" })).toBe("/a/app/x.py");
+  });
+});
+
+describe("ringMarks: a section of one ring wears no last mark (2026-11-06)", () => {
+  const base = {
+    favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null,
+    sessionHere: false, isLast: true, activeList: "a", activeFav: "a",
+  };
+  it("favourites on: one ring, no mark; two rings, the mark", () => {
+    expect(ringMarks({ ...base, key: "a", foot: false, sectionSize: 1 }).classes).not.toContain("is-last");
+    expect(ringMarks({ ...base, key: "a", foot: false, sectionSize: 2 }).classes).toContain("is-last");
+    expect(ringMarks({ ...base, key: "a", foot: true, sectionSize: 1 }).classes).not.toContain("is-last");
+  });
+  it("favourites off: as before, the mark whatever the count", () => {
+    expect(ringMarks({ ...base, favsOn: false, key: "a", foot: false, sectionSize: 1 }).classes).toContain("is-last");
   });
 });
