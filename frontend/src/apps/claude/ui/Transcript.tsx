@@ -33,7 +33,6 @@ import {
   type ReactNode,
 } from "react";
 
-import { useTurnClickOpensReplyEnabled } from "../feature-flag";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { cn } from "@platform/lib/utils";
 
@@ -942,10 +941,8 @@ export const Transcript = memo(function Transcript({
     followTail.current = false;
     bumpFold((n) => n + 1);
   }, []);
-  // A CLICK ON A USER MESSAGE TOGGLES THE REPLY UNDER IT (prefs
-  // `turn_click_open`, off by default). A TOGGLE since 2026-11-06 (owner:
-  // "clicking on it will open and collapse the response"; until then it
-  // only ever opened): the assistant rows between this message and the next
+  // A CLICK ON A USER MESSAGE TOGGLES THE REPLY UNDER IT (always on since
+  // 2026-11-06; it was an opt-in pref before): the assistant rows between this message and the next
   // one are read together — any of them folded, every one becomes
   // `manual-open`, the same pin the ✻ mark writes; all of them open, every
   // one becomes `manual-closed`, the same pin a fold's own click writes. A
@@ -955,7 +952,6 @@ export const Transcript = memo(function Transcript({
   // run is BLOCKED in (`blockedFold`, an unanswered card: `pendingCard`
   // draws it open and its own fold toggle is withheld; CodeRabbit on
   // #2154): it opens with the others, it never folds.
-  const clickOpens = useTurnClickOpensReplyEnabled();
   const turnsRef = useRef(state.turns);
   turnsRef.current = state.turns;
   const blockedFoldRef = useRef(blockedFold);
@@ -1025,7 +1021,7 @@ export const Transcript = memo(function Transcript({
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
                   {...(onPullPending ? { onPullPending } : {})}
-                  {...(clickOpens ? { onOpenReply } : {})}
+                  onOpenReply={onOpenReply}
                   {...(sendNowKey && sendNowKey === turn.key ? { sendNowHint: true } : {})}
                   {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}

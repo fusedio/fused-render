@@ -1,6 +1,6 @@
-// CLICK A USER MESSAGE, OPEN ITS REPLY — OR FOLD IT AGAIN (prefs
-// `turn_click_open`, off by default; a toggle since 2026-11-06). A click
-// that is the end of a text selection is not a click on the message.
+// CLICK A USER MESSAGE, OPEN ITS REPLY — OR FOLD IT AGAIN (always on since
+// 2026-11-06). A click that is the end of a text selection is not a click on
+// the message.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -8,19 +8,15 @@ import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import type { ChatState, Turn as TurnRow } from "../protocol/controller-api";
 const { Transcript } = await import("./Transcript");
-const { publishTurnClickOpensReplyEnabled, resetFlagsForTests } = await import("../feature-flag");
 
 const realFetch = globalThis.fetch;
 const mounted: Array<ReturnType<typeof create>> = [];
 beforeEach(() => {
-  resetFlagsForTests();
-  // Any prefs read answers "off": only the publish in `mount` turns it on.
   (globalThis as { fetch: unknown }).fetch = async () =>
     ({ ok: true, json: async () => ({}) }) as unknown as Response;
 });
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
-  resetFlagsForTests();
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 
@@ -76,17 +72,12 @@ const actions = {
   addNote: () => {},
 };
 
-async function mount(on: boolean, turns: TurnRow[] = [user("u:1"), assistant("a:1"), user("u:2"), assistant("a:2")]) {
+async function mount(turns: TurnRow[] = [user("u:1"), assistant("a:1"), user("u:2"), assistant("a:2")]) {
   let r!: ReturnType<typeof create>;
   await act(async () => {
     r = create(<Transcript state={state(turns)} actions={actions} />);
     await new Promise((res) => setTimeout(res, 0));
   });
-  // Set the flag the way a Settings PUT does, not through the async prefs read:
-  // that read is process-global and other suites in the same bun run share it,
-  // so its timing is not this test's to rely on. A publish beats any read still
-  // in flight (feature-flag `turnClickPublishedAt`).
-  act(() => publishTurnClickOpensReplyEnabled(on));
   mounted.push(r);
   return r;
 }
@@ -100,7 +91,7 @@ const click = (r: ReturnType<typeof create>, i: number) => {
 
 describe("a click on a user message", () => {
   test("opens the folded reply under it, and a second click folds it again", async () => {
-    const r = await mount(true);
+    const r = await mount();
     expect(folded(r)).toBe(1); // a:1 folded, the newest (a:2) open
     click(r, 0);
     expect(folded(r)).toBe(0);
@@ -111,7 +102,7 @@ describe("a click on a user message", () => {
   });
 
   test("a message whose reply is already open folds it", async () => {
-    const r = await mount(true);
+    const r = await mount();
     click(r, 1);
     expect(folded(r)).toBe(2);
     click(r, 1);
@@ -120,7 +111,7 @@ describe("a click on a user message", () => {
 
   test("two replies under one message move together: any folded opens both, all open folds both", async () => {
     // a:1 and a:1b both fold behind the newest (a:2).
-    const r = await mount(true, [user("u:1"), assistant("a:1"), assistant("a:1b"), user("u:2"), assistant("a:2")]);
+    const r = await mount([user("u:1"), assistant("a:1"), assistant("a:1b"), user("u:2"), assistant("a:2")]);
     expect(folded(r)).toBe(2);
     click(r, 0);
     expect(folded(r)).toBe(0);
@@ -134,11 +125,5 @@ describe("a click on a user message", () => {
       click(r, 0);
       expect(folded(r)).toBe(0);
     }
-  });
-
-  test("with the flag off the bubble is inert", async () => {
-    const r = await mount(false);
-    expect((byClass(r, "bubble")[0]!.props as { onClick?: unknown }).onClick).toBeUndefined();
-    expect(folded(r)).toBe(1);
   });
 });

@@ -25,8 +25,6 @@ let generation = 0;
 let breakoutPublishedAt = 0;
 // The same guard for the chat-recap switch.
 let recapPublishedAt = 0;
-/** The same guard for the click-opens-reply switch. */
-let turnClickPublishedAt = 0;
 
 /**
  * NOT a tri-state. It gates ONE extra call in front of a send, it DEFAULTS
@@ -49,12 +47,6 @@ let settledOnce = false;
  *  same single prefs GET. */
 let recapTitles = true;
 const recapListeners = new Set<(v: boolean) => void>();
-
-/** The click-opens-reply switch (`prefs.turn_click_open.enabled`): a click on
- *  a user message opens the folded reply under it, or folds it again (a
- *  toggle since 2026-11-06). Opt-in (default off). */
-let turnClickOpen = false;
-const turnClickOpenListeners = new Set<(v: boolean) => void>();
 
 /** The Breakout switch (`prefs.breakout.enabled`): opt-in beta, off until the
  *  prefs read says otherwise. Same shape as `recapTitles`. */
@@ -111,12 +103,6 @@ function setBreakout(next: boolean) {
   if (breakout === next) return;
   breakout = next;
   for (const listener of breakoutListeners) listener(next);
-}
-
-function setTurnClickOpen(next: boolean) {
-  if (turnClickOpen === next) return;
-  turnClickOpen = next;
-  for (const listener of turnClickOpenListeners) listener(next);
 }
 
 function setRecapTitles(next: boolean) {
@@ -188,7 +174,6 @@ function read(): Promise<void> {
   const departed = generation;
   const breakoutStamp = breakoutPublishedAt;
   const recapStamp = recapPublishedAt;
-  const turnClickStamp = turnClickPublishedAt;
   // ONE BUDGET FOR THE WHOLE READ, retry included (bugbot, 2026-09-15).
   //
   // The deadline used to wrap each ATTEMPT, so a wedged server spent 8 s, was
@@ -213,7 +198,6 @@ function read(): Promise<void> {
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
       if (recapPublishedAt === recapStamp) setRecapTitles(p.chat_recap?.enabled !== false);
-      if (turnClickPublishedAt === turnClickStamp) setTurnClickOpen(p.turn_click_open?.enabled === true);
       if (breakoutPublishedAt === breakoutStamp) setBreakout(p.breakout?.enabled === true);
       // A server that predates the field keeps "auto", the server's default.
       setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
@@ -288,20 +272,6 @@ export function publishBreakoutEnabled(next: boolean) {
   }
 }
 
-/** The same announcement for the click-opens-reply switch. */
-export const TURN_CLICK_BROADCAST_KEY = "fused-render:turn-click-open";
-
-/** Hand over a known-fresh click-opens-reply answer (a PUT's prefs payload). */
-export function publishTurnClickOpensReplyEnabled(next: boolean) {
-  turnClickPublishedAt += 1;
-  setTurnClickOpen(next);
-  try {
-    localStorage.setItem(TURN_CLICK_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
-  } catch {
-    // Storage may be unavailable; the other tabs still re-read on focus.
-  }
-}
-
 /** Hand over a known-fresh chat-recap answer (a PUT's prefs payload). */
 export function publishChatRecapEnabled(next: boolean) {
   recapPublishedAt += 1;
@@ -356,15 +326,6 @@ if (typeof window !== "undefined") {
     }
   });
   window.addEventListener("storage", (ev) => applyBreakoutFlagBroadcast(ev.key, ev.newValue));
-  window.addEventListener("storage", (ev) => {
-    if (ev.key !== TURN_CLICK_BROADCAST_KEY || !ev.newValue) return;
-    try {
-      turnClickPublishedAt += 1;
-      setTurnClickOpen((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
-    } catch {
-      // Malformed: the next focus re-reads.
-    }
-  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") void rereadFlags();
   });
@@ -407,21 +368,6 @@ export function useChatRecapEnabled(): boolean {
   return current;
 }
 
-/** Subscribe to the click-opens-reply switch (see `turnClickOpen`). Triggers
- *  the one prefs read, like `useChatRecapEnabled`. */
-export function useTurnClickOpensReplyEnabled(): boolean {
-  const [current, setCurrent] = useState<boolean>(() => turnClickOpen);
-  useEffect(() => {
-    turnClickOpenListeners.add(setCurrent);
-    setCurrent(turnClickOpen);
-    void read();
-    return () => {
-      turnClickOpenListeners.delete(setCurrent);
-    };
-  }, []);
-  return current;
-}
-
 /** Subscribe to the Breakout switch (see `breakout`). Triggers the one prefs
  *  read, like `useChatRecapEnabled`. */
 export function useBreakoutEnabled(): boolean {
@@ -457,7 +403,6 @@ export function resetFlagsForTests() {
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
   setRecapTitles(true);
-  setTurnClickOpen(false);
   setBreakout(false);
   setDefaultPermission("auto");
 }
