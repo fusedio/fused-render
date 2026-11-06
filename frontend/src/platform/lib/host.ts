@@ -10,7 +10,10 @@
 // user agent, which both lie (a Mac browser on the LAN port, a phone on
 // loopback through a tunnel).
 export function isLanHost(): boolean {
-  return typeof document !== "undefined" && document.documentElement.dataset.host === "lan";
+  // `documentElement` can be missing under a test's bare document shim —
+  // then this is not the LAN page either (2026-11-07: 139 suites red on main
+  // from the throw here).
+  return typeof document !== "undefined" && document.documentElement?.dataset?.host === "lan";
 }
 
 /** Inside the native iOS shell (its webview marks the UA; lan.py keys off the
