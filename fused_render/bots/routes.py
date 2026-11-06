@@ -1108,7 +1108,7 @@ def bots_roster():
 
 def decode_files(files) -> list:
     """`[(name, bytes, preview | None)]` from a send's `files` ({name, data (base64), preview?: {media_type, data}}),
-    checked against ATTACH_MAX. Shared by the app door (`_app_send`) and the phone (bots/phone.py), so a file is
+    checked against ATTACH_MAX. Shared by the app door (`_app_send`) and the phone (the desktop send through the LAN door, lan.py), so a file is
     a 400 for the same reasons on both before anything is stored. Non-dict rows are skipped."""
     decoded = []
     for f in files or []:
