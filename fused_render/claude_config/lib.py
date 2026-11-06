@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from typing import Any, Generator, Optional
 
 from fused_render import _platform
@@ -418,6 +419,112 @@ def claude_cli_detached(*args: str) -> dict:
         start_new_session=True, env=env, **SUBPROCESS_KWARGS,
     )
     return {"ok": True, "launched": True}
+
+
+# What a real session says about each server. `claude mcp list` is a TRANSPORT
+# health check: it opens the endpoint and calls that "✔ Connected". For a
+# claude.ai connector that is not the question — Google Drive's endpoint answers
+# the handshake for anyone, and the tools then refuse until the user has
+# authorised the connector on claude.ai. A session knows (it is what prints
+# "requires authentication" at startup), and it reports that in the `init`
+# event's `mcp_servers`. So the list's statuses are overlaid with a session's
+# verdict, taken from a headless `claude -p` that is killed the moment `init`
+# has been read — before the model is asked anything.
+_SESSION_PROBE_TIMEOUT = 12  # init lands at ~2 s; this is the hung-binary ceiling
+# Not "pending": in a session that means "still connecting" (no verdict yet),
+# whereas the CLI's "pending" is an unapproved project server — the overlay
+# must not relabel a connecting connector as "pending approval".
+_SESSION_STATUSES = ("connected", "needs-auth", "failed", "disabled")
+
+
+def claude_session_mcp_status() -> dict:
+    """{name: {status, source}} as a session sees its MCP servers, or {} when
+    no answer could be had (no binary, not signed in, timeout). Best-effort:
+    the caller falls back to the CLI list's own statuses.
+
+    An `init` that lists no server, or only servers still connecting, is not a
+    verdict: it is asked once more after a beat. Seen when another `claude`
+    process (the `mcp list` itself) was running at the same time, so the caller
+    runs this BEFORE the list rather than beside it.
+
+    No `--bare`: that drops every server, the claude.ai connectors included,
+    and the connectors are the servers this exists for. `--setting-sources ""`
+    instead: the user's SessionStart hooks do not fire for a status probe, and
+    the connectors (which come with the account, not a settings file) still
+    load. User-scope servers from ~/.claude.json drop with it and keep the
+    CLI's answer, which is a real connection for those. `--max-turns 1`,
+    `--model haiku` and the kill after `init` keep the cost at zero model
+    calls in practice and at one cheap one if the kill ever lands late.
+
+    Spawned the way D277/D292/D1310 require of anything the SERVER spawns:
+    `close_fds=False` and no `cwd`/`start_new_session`, so CPython takes
+    posix_spawn — a fork() here runs PROJ's atfork handler against the server's
+    live handle and the child dies with SIGSEGV before exec. Without its own
+    session the probe is stopped with `terminate()` on the one process; with
+    `--setting-sources ""` it has no stdio children to orphan (user-scope
+    servers are not loaded), only HTTP connectors."""
+    path_env = _augmented_path()
+    binary = _resolve_claude(path_env)
+    if binary is None:
+        return {}
+    env = {**os.environ, "PATH": path_env}
+    env.pop("CLAUDECODE", None)  # a probe is not a nested session
+    for attempt in range(2):
+        found = _session_probe_once(binary, env)
+        if found:
+            return found
+        if attempt == 0:
+            time.sleep(1.0)
+    return {}
+
+
+def _session_probe_once(binary: str, env: dict) -> dict:
+    try:
+        proc = subprocess.Popen(
+            [binary, "-p", "hi", "--output-format", "stream-json", "--verbose",
+             "--no-session-persistence", "--max-turns", "1", "--model", "haiku",
+             "--setting-sources", ""],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=env, **SUBPROCESS_KWARGS,
+        )
+    except OSError:
+        return {}
+    found = {}
+    timer = threading.Timer(_SESSION_PROBE_TIMEOUT, _stop_probe, args=(proc,))
+    timer.start()
+    try:
+        for line in proc.stdout:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict) or event.get("type") != "system" \
+                    or event.get("subtype") != "init":
+                continue
+            for row in event.get("mcp_servers") or []:
+                if not isinstance(row, dict):
+                    continue
+                name, status = row.get("name"), row.get("status")
+                if isinstance(name, str) and status in _SESSION_STATUSES:
+                    found[name] = {"status": status, "source": row.get("source") or ""}
+            break
+    finally:
+        timer.cancel()
+        _stop_probe(proc)
+        with contextlib.suppress(Exception):
+            proc.stdout.close()
+        try:
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(Exception):
+                proc.kill()
+    return found
+
+
+def _stop_probe(proc) -> None:
+    if proc.poll() is None:
+        with contextlib.suppress(OSError):
+            proc.terminate()
 
 
 # mcp.md §2: `claude mcp list` has no structured output, so parse its human-readable
