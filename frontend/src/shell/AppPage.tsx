@@ -135,6 +135,7 @@ import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { chatDoorOnApp, useAppPageClaudePane } from "./useAppPageClaudePane";
 import { ClaudeRail, paneHomeHref } from "./claude-rail/ClaudeRail";
+import { placeRoot } from "./claude-rail/claude-rail-lib";
 import { usePanePresence } from "@platform/lib/pane-presence";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ChatMount } from "@apps/claude";
@@ -1227,6 +1228,7 @@ export default function AppPage({
               // read off the URL at boot.
               key={claudeSeq}
               file={dir}
+              pageRoot={placeRoot({ kind: "folder", dir, word: "App" })}
               chatOnly
               paramsSource="url"
               prChip

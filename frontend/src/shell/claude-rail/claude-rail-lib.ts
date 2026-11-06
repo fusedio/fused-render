@@ -161,7 +161,13 @@ export interface RailHere {
   env: WorkbenchEnv;
   name: string;
   file: string | null;
+  /** Select a node in the workbench (null: back to the whole canvas — the
+   *  rail's canvas seat, the pane on the canvas chat). */
   select: (udfName: string | null) => void;
+  /** The place tags' press (PlaceTags, 2026-11-06): select the node and
+   *  zoom to it, or — null — deselect everything and fit the canvas in
+   *  view; the pane's chat stays either way. */
+  tag?: (udfName: string | null, sessionId?: string | null) => void;
 }
 
 /** WHERE THE WHERE-CHIP GOES (owner, 2026-11-04: "click on the tag — we
@@ -208,7 +214,10 @@ export function chipDoor(
   const nowhere = (door: ChipDoor): ChipDoor | null => (favsOn ? null : door);
   if (at.kind === "canvas") {
     const file = scope.kind === "node" ? scope.file : undefined;
-    const href = canvasPagePath(at.env, at.name, file ? { file } : undefined);
+    // A node's link asks for the node (`focus=node`): a page URL naming a
+    // node shows its chat only (2026-11-06), and a modified press opening
+    // this in a tab should land selected (CodeRabbit on #2167).
+    const href = canvasPagePath(at.env, at.name, file ? { file, focus: "node" } : undefined);
     const title = scope.kind === "node" ? `Open ${scope.name} on ${at.name}` : `Open the canvas ${at.name}`;
     if (!here || here.env !== at.env || here.name !== at.name) {
       // The whole canvas, named on its own page with no way to select in
@@ -235,6 +244,116 @@ export function chipDoor(
       ? { href: urlForFsPath(at.file), title: `Open ${at.file}` }
       : { href: urlForFsPath(trimSlash(at.dir)), isDir: true, title: `Open ${trimSlash(at.dir)}` };
   return placeRoot(at) === pageRoot ? nowhere(door) : door;
+}
+
+/** THE PLACE TAGS (shell/claude-rail PlaceTags; owner, 2026-11-06: "2 tags
+ *  and a chevron between — `telemetry_data › Canvas`, `telemetry_data ›
+ *  udf_1`, `folder › file`, `folder`"): the place a chat lives in, as one
+ *  or two tags. The FIRST names the place itself — the canvas, the folder,
+ *  the file — and opens its view. The SECOND says where in it: the word
+ *  Canvas (its press also deselects every node and fits the whole canvas in
+ *  view), the node (selected and zoomed to), the file under the folder (its
+ *  preview). On the chat's own canvas (`here`: the page can select in place)
+ *  the second tag acts in place through `select`; elsewhere its href carries
+ *  the ask (`canvasPagePath` `focus`) for the canvas page to spend on
+ *  arrival. A tag naming the place the page already stands on (`pageRoot`)
+ *  goes nowhere: `door` null, drawn as plain text. The canvas tags keep the
+ *  chat's session on their href (the chat follows the reader to the view,
+ *  the window-B Open's way); the explorer's tags open the folder or the
+ *  file alone. */
+export interface PlaceTag {
+  label: string;
+  kind: "place" | "canvas" | "node" | "file";
+  /** The full place in words, for the hover. */
+  path: string;
+  door: {
+    href: string;
+    isDir?: boolean;
+    title: string;
+    /** On the chat's own canvas: select this node (null: deselect
+     *  everything and fit the canvas) in place instead of navigating. */
+    select?: { udfName: string | null };
+  } | null;
+}
+
+export function placeTags(
+  scope: RailScope,
+  at: RailPlace,
+  opts: { pageRoot: string | null; here: boolean; sessionId?: string | null },
+): PlaceTag[] {
+  const own = placeRoot(at) === opts.pageRoot;
+  const sessionId = opts.sessionId || undefined;
+  if (at.kind === "canvas") {
+    // The chat's session alone on the plain doors (the node goes on the
+    // node tag's own href with `focus=node`, which selects it): the page's
+    // node is the workbench's selection, never a URL's (tasks-lib `taskHref`).
+    // `focus=view` on the plain doors: a tag's hop is a view move and never
+    // opens a shut pane (CanvasWorkspace `sideOpenFromUrl`; owner,
+    // 2026-11-07: "going from the file explorer to the canvas from a tag
+    // still opens the sidebar even when it was collapsed").
+    const file = scope.kind === "node" ? scope.file : undefined;
+    const base = canvasPagePath(at.env, at.name, { sessionId, focus: "view" });
+    const first: PlaceTag = {
+      label: at.name,
+      kind: "place",
+      path: at.name,
+      door: own ? null : { href: base, title: `Open the canvas ${at.name}` },
+    };
+    if (scope.kind === "node") {
+      return [
+        first,
+        {
+          label: scope.name,
+          kind: "node",
+          path: `${scope.name} on ${at.name}`,
+          // The href carries the ask either way: in place a plain press
+          // selects through `select`, a modified press opens the tab
+          // selected (CodeRabbit on #2167).
+          door: opts.here
+            ? { href: canvasPagePath(at.env, at.name, { file, sessionId, focus: "node" }), title: `Select ${scope.name} on the canvas`, select: { udfName: scope.name } }
+            : { href: canvasPagePath(at.env, at.name, { file, sessionId, focus: "node" }), title: `Open ${scope.name} on ${at.name}` },
+        },
+      ];
+    }
+    return [
+      first,
+      {
+        label: "Canvas",
+        kind: "canvas",
+        path: at.name,
+        door: opts.here
+          ? { href: canvasPagePath(at.env, at.name, { sessionId, focus: "canvas" }), title: `Deselect everything and fit the canvas in view`, select: { udfName: null } }
+          : { href: canvasPagePath(at.env, at.name, { sessionId, focus: "canvas" }), title: `Open the canvas ${at.name}, fit in view` },
+      },
+    ];
+  }
+  if (at.kind === "file") {
+    return [
+      {
+        label: lastSegment(at.file) || at.file,
+        kind: "place",
+        path: at.file,
+        door: own ? null : { href: urlForFsPath(at.file), title: `Open ${at.file}` },
+      },
+    ];
+  }
+  const dir = trimSlash(at.dir);
+  const first: PlaceTag = {
+    label: lastSegment(dir) || dir,
+    kind: "place",
+    path: dir,
+    door: own ? null : { href: urlForFsPath(dir), isDir: true, title: `Open ${dir}` },
+  };
+  if (scope.kind !== "file") return [first];
+  return [
+    first,
+    {
+      label: scope.name,
+      kind: "file",
+      path: scope.file,
+      door: `file:${scope.file}` === opts.pageRoot ? null : { href: urlForFsPath(scope.file), title: `Open ${scope.file}` },
+    },
+  ];
 }
 
 /** THE FULL PLACE A WHERE-CHIP NAMES, as words: the plain-text chip's

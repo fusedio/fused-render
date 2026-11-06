@@ -42,7 +42,12 @@ export default defineConfig({
     // viteBuildTarget.test.ts pins this.
     target: "es2021",
     outDir: "../fused_render/static/shell-dist",
-    emptyOutDir: true,
+    // A WATCH never empties the folder (2026-11-06): every rebuild took the
+    // served bundle away for the build's whole length (minutes on a loaded
+    // Mac), and the dev server answered 500 "No such file … shell-dist/
+    // index.html" meanwhile. Assets are content-hashed, so the old ones
+    // standing beside the new are harmless; a plain build still starts clean.
+    emptyOutDir: !process.argv.includes("--watch") && !process.argv.includes("-w"),
     rollupOptions: {
       // Four pages from one build: the shell; the phone grid the
       // local-network listener serves at its `/` (fused_render/lan.py reads

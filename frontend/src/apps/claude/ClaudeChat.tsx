@@ -167,6 +167,9 @@ import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { isLanHost } from "@platform/lib/host";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
+import { PlaceTags } from "@shell/claude-rail/PlaceTags";
+import { ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
@@ -281,6 +284,13 @@ export interface ClaudeChatProps {
    *  folder name) when the strip has no annotate seats. The explorer's folder
    *  sidebar opts in. */
   mergedHead?: boolean;
+  /** THE PLACE TAGS' facts (shell/claude-rail PlaceTags; owner,
+   *  2026-11-06): the page's own place (claude-rail-lib `placeRoot`) and
+   *  the page's way to select a node in place (null: deselect everything
+   *  and fit the canvas). With either given the head draws the tags in
+   *  place of the project's name. */
+  pageRoot?: string | null;
+  onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's
@@ -5578,6 +5588,24 @@ function ChatBody(props: ChatBodyProps) {
   // The header's last seat: the task's PR chip when the host asked for it (the
   // chip draws nothing for a task that names no pull request), then the
   // host's own node.
+  // THE PLACE TAGS (shell/claude-rail PlaceTags): the identity row's right
+  // end, for a host that said where it stands — the same tags the rail's
+  // small window wears.
+  const placeTagOn = useTaskFavourites();
+  const placeTag =
+    placeTagOn && head.task && (props.pageRoot !== undefined || props.onSelectNode) ? (
+      <PlaceTags
+        scope={railScope(head.task, ownPlace(head.task))}
+        at={ownPlace(head.task)}
+        pageRoot={props.pageRoot ?? null}
+        sessionId={head.task.session_id ?? null}
+        {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
+        // The merged head leaves the folder's own name off: a tag that goes
+        // nowhere would put it back (reviewer).
+        onlyDoor={!!props.mergedHead}
+        secondaryOnly
+      />
+    ) : null;
   const headerExtra =
     props.prChip && head.task ? (
       <>
@@ -5968,6 +5996,7 @@ function ChatBody(props: ChatBodyProps) {
                   ? { lead: backBtn, tail: kebabEl, noProject: true }
                   : {})}
                 {...(headerExtra ? { extra: headerExtra } : {})}
+                {...(placeTag ? { placeTag } : {})}
                 // The hint names where the work is; the menu would only repeat the
                 // original checkout's branch.
                 worktree={shownHint ? undefined : worktreeMenu}

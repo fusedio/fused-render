@@ -197,6 +197,10 @@ export interface ChatMountProps {
   prChip?: boolean;
   /** Fold `← Chats` and the menu into the identity row (folder sidebar). */
   mergedHead?: boolean;
+  /** The chat head's place tags (ClaudeChat `pageRoot` / `onSelectNode`;
+   *  shell/claude-rail PlaceTags). */
+  pageRoot?: string | null;
+  onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
   /** `session_id` on the frame URL (cards, peek). */
   sessionId?: string;
   /** `run` handed over by a host (the canvas fix run). */
@@ -339,6 +343,8 @@ export function ChatMount(props: ChatMountProps) {
         peek={!!props.peek}
         {...(props.headerInPeek ? { headerInPeek: true } : {})}
         {...(props.mergedHead ? { mergedHead: true } : {})}
+        {...(props.pageRoot !== undefined ? { pageRoot: props.pageRoot } : {})}
+        {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
         {...(props.headerExtra ? { headerExtra: props.headerExtra } : {})}
         {...(props.prChip ? { prChip: true } : {})}
         params={props.paramsSource === "url" ? "url" : memory}

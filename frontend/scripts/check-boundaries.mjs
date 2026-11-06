@@ -153,8 +153,14 @@ const SHELL_OPEN_TO_APPS = new Set([
   // views (2026-11-01) — it lives in shell because it hosts `@apps/claude`'s
   // chat and reads the Tasks page's row, and the two apps that draw it
   // (canvases, explorer) import this one module rather than keeping a copy
-  // each. Its libs and flag stay shell-only.
+  // each. Its flag stays shell-only.
   "shell/claude-rail/ClaudeRail",
+  // …and its place/chip helpers plus the place tags drawn from them
+  // (shell/claude-rail PlaceTags), for the chat head (apps/claude
+  // ClaudeChat, 2026-11-06) — so the chat's lazy chunk does not drag the
+  // whole rail in for a few functions and one small component.
+  "shell/claude-rail/claude-rail-lib",
+  "shell/claude-rail/PlaceTags",
 ]);
 
 const violations = [];

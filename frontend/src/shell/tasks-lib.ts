@@ -1852,10 +1852,12 @@ function taskHrefView(
    * its explorer door below, where the chat pane draws its waiting words.
    */
   if (task.session_id && task.canvas) {
-    return canvasPagePath(task.canvas.env, task.canvas.name, {
-      file: task.canvas.file,
-      sessionId: task.session_id,
-    });
+    // The SESSION alone, never the node (owner, 2026-11-06: "decouple the
+    // node selection from task opening" — the pane shows the chat; the
+    // workbench's selection is its own, and the rail and the pane's list
+    // both follow THAT, so the two never disagree). The chat head's node
+    // tag is the way to select the node.
+    return canvasPagePath(task.canvas.env, task.canvas.name, { sessionId: task.session_id });
   }
   if (task.session_id) return explorerUrl(where, task.session_id);
   /**

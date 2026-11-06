@@ -225,11 +225,15 @@ import {
   syncEventsUrl,
   type WorkbenchEnv,
   canvasNameFromPath,
+  CANVAS_FOCUS_PARAM,
+  type CanvasFocus,
+  canvasPagePath,
 } from "./api";
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
+import { placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
@@ -406,6 +410,31 @@ function nodeFile(dir: string, node: NodeSel): string {
  *  across views") — shut there, shut here; else open, the default. */
 const SIDE_OFF = "off";
 
+/** How long after a place tag's ask the workbench's selection echo leaves
+ *  the pane's chat alone (`keepPaneUntilRef`): the echo lands within a
+ *  frame or two; a second is room for a loaded Mac. */
+const KEEP_PANE_MS = 1000;
+/** How long after a hello an echo naming a node the page did not ask for
+ *  reads as an older workbench's boot pick (header `helloAtRef`). */
+const HELLO_SETTLE_MS = 1500;
+
+/** THE VIEW ASK ON THE URL (`focus=`, api `CanvasFocus`; the place tags),
+ *  taken off the address as it is read: it is spent once, on arrival —
+ *  `node` selects the URL's node in the workbench (which zooms to it),
+ *  `canvas` deselects everything and fits the canvas. Without it a URL
+ *  naming a node (a task's door, a ring's press, a reload) only shows the
+ *  node's CHAT in the pane: the workbench is not told to select, nothing
+ *  zooms (owner, 2026-11-06: "decouple the node selection and zoom-in from
+ *  task opening — for that we have the tag"). */
+function takeFocusFromUrl(): CanvasFocus | null {
+  const url = new URL(window.location.href);
+  const focus = url.searchParams.get(CANVAS_FOCUS_PARAM);
+  if (focus !== "node" && focus !== "canvas" && focus !== "view") return null;
+  url.searchParams.delete(CANVAS_FOCUS_PARAM);
+  window.history.replaceState(window.history.state, "", url);
+  return focus;
+}
+
 function sideOpenFromUrl(): boolean {
   const q = new URLSearchParams(window.location.search);
   if (q.get("side") === SIDE_OFF) return false;
@@ -418,6 +447,11 @@ function sideOpenFromUrl(): boolean {
   // open on it whatever the shared flag remembers. The flag is for a URL
   // that says nothing at all. (A node's URL opened the pane already — the
   // nav reader below; the canvas chat's never did.)
+  // …but a place TAG's hop (`focus=`, the place tags) is a view move: the
+  // pane stays as it was — open if open, shut if shut (owner, 2026-11-06:
+  // "clicking on the tag should navigate to that view; it should not open
+  // the sidebar. The Open button opens the view and the sidebar").
+  if (q.has(CANVAS_FOCUS_PARAM)) return !getSideHidden();
   if (q.has("session_id") || q.has("queued")) return true;
   return !getSideHidden();
 }
@@ -457,7 +491,7 @@ function rememberHandle(env: string, handle: string): void {
   }
 }
 
-function nodeEmbedSrc(file: string, sessionId: string | null): string {
+function nodeEmbedSrc(file: string, sessionId: string | null, canvas: { env: WorkbenchEnv; name: string }): string {
   // `_noann=1` on the chat: its Screenshot / Annotate seats and view toggle
   // would open the chat's own preview of the file, which the workbench's own
   // code pane does here (owner, 2026-10-17). It also pins the chat to its narrow CHAT
@@ -472,7 +506,11 @@ function nodeEmbedSrc(file: string, sessionId: string | null): string {
     // handler below.
     // `_hidepane=1`: the chat draws this pane's close at its top row's left
     // end and asks for it with `fused-canvas-hide-pane` (handler below).
-    "?_mode=claude&_side=off&_noann=1&_canvasshot=1&_hidepane=1" +
+    // `_canvas=<env>:<name>`: which canvas frames this node — the chat
+    // head's place tag selects in place only on its own canvas (apps/claude
+    // ui/PlaceTag; Preview `selectNodeInParent` names it back).
+    "?_mode=claude&_side=off&_noann=1&_canvasshot=1&_hidepane=1&_canvas=" +
+      encodeURIComponent(canvas.env + ":" + canvas.name) +
       (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
   );
 }
@@ -618,6 +656,9 @@ export default function CanvasWorkspace({
   // shown (a Recent row's hop onto the selected node, below): the frame's src
   // is otherwise frozen per node and tab (`nodeBootSrc`).
   const [nodeBootSeq, setNodeBootSeq] = useState(0);
+  // Bumped when the node frame's chat moves (`onNodeFrameLoad`'s mirror), so
+  // what reads `nodeSessions` at render (the rail's `activeSessionId`) sees it.
+  const [, setNodeSessionSeq] = useState(0);
   // The server's sync state (sync/state, or the events socket's `state`):
   // disk_to_embed / disk_to_server / server_to_disk, disk_rev, watcher_epoch.
   const [sync, setSync] = useState<SyncState | null>(null);
@@ -719,6 +760,41 @@ export default function CanvasWorkspace({
   // often before the page has framed the workbench — waits for it rather than
   // failing with "not loaded yet" at a moment that fixes itself in seconds.
   const frameUpRef = useRef(false);
+  // The URL's view ask (`takeFocusFromUrl`), read at mount and spent on the
+  // frame's hello; a hop's ask while the frame is up is spent at once
+  // (the nav listener).
+  // Read ONCE (a state initializer runs at mount alone; a ref's argument
+  // would run every render and drop a hop's ask off the URL — reviewer).
+  const [bootFocus] = useState<CanvasFocus | null>(() => takeFocusFromUrl());
+  const bootFocusRef = useRef<CanvasFocus | null>(bootFocus);
+  // WHAT THE WORKBENCH HOLDS SELECTED, as its echoes last said (the
+  // `fused-embed-selection` listener): the pane's node is NOT the same
+  // thing any more (2026-11-06) — a task's door shows a node's chat while
+  // the canvas stands as it was. The echo moves the pane only on a CHANGE
+  // of selection (the embed re-posts its selection after every delta it
+  // applies, and a repeat must not put a door-opened chat away); a hello
+  // puts this back, not the pane's node.
+  const wbSelRef = useRef<{ udfName: string; file: string } | null>(null);
+  // A place tag's ask is a VIEW move: the chat on screen stays (owner,
+  // 2026-11-06: the tags "navigate to that view"). The selection echo it
+  // provokes leaves the pane alone while this stands (a short window: the
+  // echo may come once, more than once, or — the same node — not at all).
+  const keepPaneRef = useRef<{ udfName: string | null; until: number } | null>(null);
+  // A Canvas tag's fit pressed before the frame is up: spent on its hello.
+  const pendingFitRef = useRef(false);
+  // The chat a node tag was pressed from (`selectFromTag`): seeded under the
+  // node when its selection echo lands, so its pane shows that chat.
+  const tagSessionRef = useRef<{ udfName: string; sessionId: string } | null>(null);
+  // When the frame last said hello: for HELLO_SETTLE_MS after it, an echo
+  // naming a node the page did not ask for is an older workbench's own
+  // boot pick (udf_1 on hydration), not the reader's — it is noted and not
+  // followed, so a chat opened from a task is not lost to it (reviewer).
+  const helloAtRef = useRef(0);
+  const helloAskedRef = useRef<string | null>(null);
+  // …and the workbench's selection as STATE too, for the favourites-off
+  // where-chip: "already selected" is the canvas's selection, not the
+  // pane's node (reviewer; claude-rail-lib `chipDoor` `current`).
+  const [wbSelFile, setWbSelFile] = useState<string | null>(null);
   const frameUpWaitersRef = useRef<Array<() => void>>([]);
   const awaitFrameUp = useCallback((timeoutMs: number): Promise<boolean> => {
     if (frameUpRef.current && frameRef.current?.contentWindow && baseOriginRef.current) {
@@ -967,14 +1043,27 @@ export default function CanvasWorkspace({
   useEffect(() => {
     const onHidePane = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
-      if (event.data?.type !== "fused-canvas-hide-pane") return;
+      const type = event.data?.type;
+      if (type !== "fused-canvas-hide-pane" && type !== "fused-canvas-select-node") return;
       const frame = document.querySelector<HTMLIFrameElement>(".canvas-node-file iframe");
       if (!frame || event.source !== frame.contentWindow) return;
+      // …and the node chat's PLACE TAG (apps/claude ui/PlaceTag, 2026-11-06):
+      // the frame asks the editor to select its node (the workbench zooms
+      // to it), or none.
+      if (type === "fused-canvas-select-node") {
+        // Only for THIS canvas (reviewer): the frame says which it stands in.
+        if (event.data?.env !== env || event.data?.name !== name) return;
+        const udf = event.data?.udfName;
+        const sid = event.data?.sessionId;
+        selectFromTagRef.current?.(typeof udf === "string" ? udf : null, typeof sid === "string" ? sid : null);
+        return;
+      }
       setSideOpen(false);
     };
     window.addEventListener("message", onHidePane);
     return () => window.removeEventListener("message", onHidePane);
-  }, []);
+  }, [env, name]);
+  const selectFromTagRef = useRef<((udfName: string | null, sessionId?: string | null) => void) | null>(null);
   // The framed chat's ask, from a same-origin child frame (the node pane). The
   // answer goes back to the asking window — `event.source` — so a pane that
   // swapped frames meanwhile never receives a picture it did not ask for.
@@ -1121,7 +1210,7 @@ export default function CanvasWorkspace({
     if (nodeBootRef.current?.key !== key) {
       nodeBootRef.current = {
         key,
-        src: nodeEmbedSrc(path, nodeSessions.get(nodeSessionKey(env, name, file)) ?? null),
+        src: nodeEmbedSrc(path, nodeSessions.get(nodeSessionKey(env, name, file)) ?? null, { env, name }),
       };
     }
     return nodeBootRef.current.src;
@@ -1147,7 +1236,60 @@ export default function CanvasWorkspace({
       if (!win) return;
       const key = nodeSessionKey(env, name, frame.dataset.file);
       const pathname = new URL(frame.src, window.location.origin).pathname;
-      const record = () => recordNodeSession(win!, key, pathname);
+      // …and the page re-renders on it: `nodeSessions` is a plain map, and
+      // the rail's `activeSessionId` reads it at render — a "← Chats" in the
+      // frame left the rail believing the chat was still up, so the ring's
+      // press on that chat did nothing (owner, 2026-11-06). A tick late: a
+      // push announces `fused:urlchange` before the address settles.
+      // Whether THIS frame has stood on a chat: only a frame that had one
+      // and then went home has pressed "← Chats" — a frame booting on its
+      // home (a node with no chat yet) is just arriving, and must not
+      // deselect the node the reader just picked.
+      let sawSession = false;
+      const record = () => {
+        recordNodeSession(win!, key, pathname);
+        setTimeout(() => {
+          recordNodeSession(win!, key, pathname);
+          const hadSession = sawSession;
+          if (nodeSessions.get(key)) sawSession = true;
+          // The page's own address follows: a frame that left its chat
+          // (home, a new chat) leaves `session_id` behind on the URL, and
+          // the next press on that very chat would hop to the address the
+          // page is on already — a no-op for the router.
+          const now = nodeSessions.get(key) ?? null;
+          // "← CHATS" ON A NODE THE CANVAS HAS NOT SELECTED (owner,
+          // 2026-11-06: "when I click a task that has a node with it and
+          // click back to chats, it shows me only one chat — it should go
+          // to the all-chats page, because that node is not selected"):
+          // the chat was a task's door into the node pane; leaving it goes
+          // back to the whole canvas's chats, not the file's own home.
+          const cur = nodeRef.current;
+          if (!now && hadSession && cur && cur.file === frame.dataset.file) {
+            // …and the node is deselected: "← Chats" is the ONE control
+            // that deselects (owner, 2026-11-06).
+            if (wbSelRef.current) {
+              keepPaneRef.current = { udfName: null, until: performance.now() + KEEP_PANE_MS };
+              askSelect(null);
+            }
+            // The address first: the canvas chat mounts on the render that
+            // follows and reads `session_id` off the URL as it is then — the
+            // node effect's own clean-up comes a beat too late.
+            const clean = new URL(window.location.href);
+            for (const k of ["session_id", "node", "node_file", "run"]) clean.searchParams.delete(k);
+            if (clean.href !== window.location.href) window.history.replaceState(window.history.state, "", clean);
+            canvasChatSidRef.current = null;
+            setNode(null);
+            return;
+          }
+          const url = new URL(window.location.href);
+          if (url.searchParams.get("session_id") !== now && url.searchParams.get("node_file") === frame.dataset.file) {
+            if (now) url.searchParams.set("session_id", now);
+            else url.searchParams.delete("session_id");
+            window.history.replaceState(window.history.state, "", url);
+          }
+          setNodeSessionSeq((n) => n + 1);
+        }, 0);
+      };
       record();
       win.addEventListener("fused:urlchange", record);
       win.addEventListener("popstate", record);
@@ -1410,6 +1552,16 @@ export default function CanvasWorkspace({
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
+  // FIT THE WHOLE CANVAS (owner, 2026-11-06: the chat head's Canvas tag
+  // "deselects everything and fitViews the canvas"): `fused-embed-fit`,
+  // which the workbench answers with its own fitView (application
+  // embed-auth `EMBED_FIT_EVENT`); an older workbench ignores it.
+  const sendFit = useCallback(() => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    frame.contentWindow.postMessage({ type: "fused-embed-fit" }, origin);
+  }, []);
   // The rail card's node chip (RailPeek), or the rail's own last seat asking
   // for NO node (ClaudeRail, `null`): pressed before the frame is ready (no
   // window or origin yet), the ask is kept and replayed — in place of the
@@ -1420,7 +1572,7 @@ export default function CanvasWorkspace({
   // that has not hydrated takes no selection, and the hello replay would
   // otherwise put the page's own node back — undoing the deselect.
   const pendingSelectRef = useRef<{ udfName: string | null } | null>(null);
-  const selectFromRail = useCallback(
+  const askSelect = useCallback(
     (udfName: string | null) => {
       const up = !!frameRef.current?.contentWindow && !!baseOriginRef.current && frameUpRef.current;
       pendingSelectRef.current = up ? null : { udfName };
@@ -1428,6 +1580,46 @@ export default function CanvasWorkspace({
     },
     [sendSelect],
   );
+  const selectFromRail = useCallback(
+    (udfName: string | null) => {
+      askSelect(udfName);
+      // The rail's canvas seat asks for the whole canvas: the pane goes back
+      // to the canvas chat here, not on the echo — the workbench may have
+      // held nothing selected while the pane showed a node's chat
+      // (a task's door, 2026-11-06), and then no change is echoed.
+      if (udfName === null) setNode(null);
+    },
+    [askSelect],
+  );
+  // THE PLACE TAGS (shell/claude-rail PlaceTags; the chat head's, the rail
+  // cards'): a node's tag selects it (the workbench zooms to it); the Canvas
+  // tag deselects everything and fits the whole canvas in view. A VIEW move:
+  // the chat on screen stays (`keepPaneUntilRef`).
+  const selectFromTag = useCallback(
+    (udfName: string | null, sessionId: string | null = null) => {
+      // A node's select is FOLLOWED by the pane (its chats = the rail's,
+      // owner, 2026-11-06: "the tag filters the rail but not the Recent
+      // chats in the expanded sidebar"); the Canvas tag's deselect alone
+      // keeps the chat on screen.
+      if (udfName === null) keepPaneRef.current = { udfName, until: performance.now() + KEEP_PANE_MS };
+      else {
+        // …and the chat the tag stands for comes along: the node's pane
+        // boots on it (`nodeSessions`), not on its own last chat — a task
+        // opened into the canvas pane seeded nothing (Bugbot on #2167).
+        // A node ask outranks a fit kept for the hello.
+        pendingFitRef.current = false;
+        tagSessionRef.current = sessionId ? { udfName, sessionId } : null;
+      }
+      askSelect(udfName);
+      if (udfName === null) {
+        // No frame yet: the fit waits for the hello with the kept select.
+        if (frameUpRef.current && frameRef.current?.contentWindow && baseOriginRef.current) sendFit();
+        else pendingFitRef.current = true;
+      }
+    },
+    [askSelect, sendFit],
+  );
+  selectFromTagRef.current = selectFromTag;
 
   // Whether the right pane is up (see the header): an older workbench's
   // expand chip acts on this pane, so it needs the state to show itself.
@@ -1948,14 +2140,29 @@ export default function CanvasWorkspace({
       const here = canvasNameFromPath(window.location.pathname);
       if (!here || here.env !== env || here.name !== name) return;
       const next = nodeFromUrl();
+      // The pane's wish and the view ask, read before the ask is taken off
+      // the URL (a tag's hop never opens a shut pane: `sideOpenFromUrl`).
+      const sideWish = sideOpenFromUrl();
+      const focus = takeFocusFromUrl();
       // A URL naming no node states the pane's own shut/open (`side=off`,
       // sideOpenFromUrl); one naming a node asks to see its pane (below).
       if (!next) {
-        setSideOpen(sideOpenFromUrl());
+        setSideOpen(sideWish);
       }
       const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
       const cur = nodeRef.current;
+      // The hop's own view ask (`focus=`, the place tags from another
+      // page): spent now, with the frame up — else on its hello.
+      const spendFocus = () => {
+        if (!focus) return;
+        if (focus === "view") return;
+        if (!frameUpRef.current) {
+          bootFocusRef.current = focus;
+          return;
+        }
+        selectFromTagRef.current?.(focus === "node" && next ? next.udfName : null);
+      };
       if (!next) {
         if (!cur) {
           // Already on the canvas chat: a URL naming a session it did not
@@ -1966,32 +2173,61 @@ export default function CanvasWorkspace({
             canvasChatSidRef.current = want;
             setCanvasChatSeq((n) => n + 1);
           }
+          spendFocus();
           return;
         }
         canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
         navHopRef.current = true;
-        // The URL outranks a rail ask kept for the frame's boot: the hello
-        // replay reads the page's node, which this sets (CodeRabbit on #2049).
-        pendingSelectRef.current = null;
-        sendSelect(null);
+        // A chat's door (a task's, the rail's — the session alone on the
+        // URL) shows it in the canvas pane and leaves the workbench's
+        // selection ALONE (owner, 2026-11-06: "opening and closing a task
+        // shouldn't select or deselect a node; only the tag selects, only
+        // back-to-chats deselects").
         setNode(null);
+        spendFocus();
         return;
       }
-      // A link naming a node is a request to see its pane: a shut one opens.
-      setSideOpen(true);
+      // A link naming a node is a request to see its pane: a shut one opens
+      // — unless it is a tag's hop (`focus`), a view move that leaves the
+      // pane as it was.
+      setSideOpen(focus ? sideWish : true);
       if (cur && cur.file === next.file) {
-        // The same node: a session the pane is not on reboots it.
-        if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
+        // The same node: a session the pane is not on reboots it. Read off
+        // the FRAME itself, not the map alone (owner, 2026-11-06: "← Chats"
+        // in the node pane, then the same task from the rail, landed on the
+        // pane's home): the frame's own moves can outrun the mirror.
+        let live: string | null | undefined;
+        const frameEl = document.querySelector<HTMLIFrameElement>(".canvas-node-file iframe");
+        try {
+          const fw = frameEl?.contentWindow;
+          live = fw ? new URLSearchParams(fw.location.search).get("session_id") : undefined;
+        } catch {
+          live = undefined;
+        }
+        if (sid && live !== undefined && live !== sid && frameEl) {
+          // The frame moved off the session its src names: a src React
+          // would set again is the same string, so no reload comes of it —
+          // the frame is sent back to the chat by hand.
+          try {
+            const target = new URL(frameEl.src);
+            target.searchParams.set("session_id", sid);
+            frameEl.contentWindow?.location.replace(target.href);
+          } catch {
+            setNodeBootSeq((n) => n + 1);
+          }
+        } else if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
+        spendFocus();
         return;
       }
       // Marked as a hop so the node effect leaves the `session_id` the link
       // carries on the URL: the pane boots off the seeded map either way,
       // but the address should still restore the task's session on reload.
+      // The node is the PANE's: the workbench is not told to select it, and
+      // nothing zooms — the node's tag does that (2026-11-06).
       navHopRef.current = true;
-      pendingSelectRef.current = null; // as above: the URL's node wins
-      sendSelect(next.udfName);
       setNodeBootSeq((n) => n + 1);
       setNode(next);
+      spendFocus();
     };
     // THE CHAT MOVING ON BY ITSELF keeps `canvasChatSidRef` honest (owner,
     // 2026-11-06: "on Recent chats, open a task from the bottom window, click
@@ -2010,7 +2246,14 @@ export default function CanvasWorkspace({
         const here = canvasNameFromPath(window.location.pathname);
         if (!here || here.env !== env || here.name !== name) return;
         if (nodeFromUrl() || nodeRef.current) return;
+        const was = canvasChatSidRef.current;
         canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
+        // The chat went home by itself ("← Chats"): the one control that
+        // deselects the workbench's node (owner, 2026-11-06).
+        if (was && !canvasChatSidRef.current && wbSelRef.current) {
+          keepPaneRef.current = { udfName: null, until: performance.now() + KEEP_PANE_MS };
+          askSelect(null);
+        }
       }, 0);
     };
     // Back / Forward move the URL without a push: `popstate`, which the
@@ -2050,7 +2293,9 @@ export default function CanvasWorkspace({
           // below), whether or not the src changed.
           frameUpRef.current = false;
           const kept = pendingSelectRef.current;
-          sendSelect(kept ? kept.udfName : nodeRef.current?.udfName ?? null);
+          // The workbench's own last selection, not the pane's node
+          // (2026-11-06; `wbSelRef`).
+          sendSelect(kept ? kept.udfName : wbSelRef.current?.udfName ?? null);
         }
       }
       if (type === "fused-embed-snapshot") {
@@ -2187,12 +2432,34 @@ export default function CanvasWorkspace({
         setRepostSeq((n) => n + 1);
         // Once more now that the canvas is there to select in: an older
         // workbench picks its first UDF on hydration, and this puts it back
-        // on the page's own node (or none). A current one already settled on
-        // the replay it was holding, and a repeat is a no-op there. A chip
-        // press that came before the frame (`selectFromRail`) is spent here.
+        // on what the workbench held (`wbSelRef`) — or nothing: the page's
+        // own node is the PANE's, and the URL that named it asked for its
+        // chat, not its selection (2026-11-06). A current workbench already
+        // settled on the replay it was holding, and a repeat is a no-op
+        // there. A chip press that came before the frame (`selectFromRail`)
+        // is spent here, and so is the URL's own view ask (`bootFocusRef`:
+        // the place tags' `focus=node` selects the page's node after all,
+        // `focus=canvas` fits the whole canvas).
         const kept = pendingSelectRef.current;
         pendingSelectRef.current = null;
-        sendSelect(kept ? kept.udfName : nodeRef.current?.udfName ?? null);
+        const focus = bootFocusRef.current;
+        bootFocusRef.current = null;
+        const ask = kept
+          ? kept.udfName
+          : focus === "node" && nodeRef.current
+            ? nodeRef.current.udfName
+            : focus === "canvas"
+              ? null
+              : wbSelRef.current?.udfName ?? null;
+        helloAtRef.current = performance.now();
+        helloAskedRef.current = ask;
+        // A kept DESELECT is a view move (the Canvas tag's): its echo leaves
+        // the pane alone; a kept node ask is followed by the pane (Bugbot
+        // on #2167). The fit goes only with a canvas ask.
+        if (kept && kept.udfName === null) keepPaneRef.current = { udfName: null, until: performance.now() + KEEP_PANE_MS };
+        sendSelect(ask);
+        if (ask === null && (focus === "canvas" || pendingFitRef.current)) sendFit();
+        pendingFitRef.current = false;
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;
@@ -2231,6 +2498,21 @@ export default function CanvasWorkspace({
         // The frame posts its settled selection once it has hydrated.
         if (!frameUpRef.current) return;
         const udfName = event.data?.udfName;
+        // The pane follows a CHANGE of selection only (`wbSelRef`): the
+        // embed re-posts its selection after every delta it applies
+        // (endEmbedRehydrate), and the pane may be on a chat the canvas
+        // did not select — a task's door (2026-11-06). A place tag's own
+        // ask moves the view alone (`keepPaneUntilRef`).
+        const was = wbSelRef.current;
+        const now = performance.now();
+        const asked = keepPaneRef.current;
+        const named = typeof udfName === "string" && udfName ? udfName : null;
+        // The ask's own echo only: a different node within the window is
+        // the reader's press, and the pane follows it (reviewer).
+        const keepPane = !!asked && now < asked.until && asked.udfName === named;
+        if (keepPane) keepPaneRef.current = null;
+        // An older workbench's boot pick, right after the hello (header).
+        const bootPick = now - helloAtRef.current < HELLO_SETTLE_MS && named !== helloAskedRef.current && named !== null;
         if (typeof udfName === "string" && udfName) {
           const kind = event.data?.kind === "widget" ? "widget" : "udf";
           const stated = event.data?.file;
@@ -2238,8 +2520,16 @@ export default function CanvasWorkspace({
             typeof stated === "string" && stated && !stated.includes("/")
               ? stated
               : `${udfName}.${kind === "widget" ? "json" : "py"}`;
-          // The node already shown: nothing to do. The embed re-posts its
-          // selection after every delta it applies (endEmbedRehydrate).
+          wbSelRef.current = { udfName, file };
+          setWbSelFile(file);
+          const tagged = tagSessionRef.current;
+          if (tagged && tagged.udfName === udfName) {
+            tagSessionRef.current = null;
+            nodeSessions.set(nodeSessionKey(env, name, file), tagged.sessionId);
+            setNodeBootSeq((n) => n + 1);
+          }
+          if ((was && was.udfName === udfName && was.file === file) || keepPane || bootPick) return;
+          // The node already shown: nothing to do.
           const cur = nodeRef.current;
           if (cur && cur.udfName === udfName && cur.file !== file) {
             // The SAME node, whose file changed kind (Claude rewrote
@@ -2261,6 +2551,11 @@ export default function CanvasWorkspace({
           }
         } else {
           pendingOpenRef.current = null;
+          wbSelRef.current = null;
+          setWbSelFile(null);
+          // A repeat of "nothing selected" — or the Canvas tag's own
+          // deselect — leaves the pane's chat where it is.
+          if (!was || keepPane) return;
           // The canvas deselected (pane click, folder node, multi-select, or
           // the node is gone after a re-hydrate): follow it back to the
           // canvas chat. Owner call — the canvas is the one source of truth
@@ -2784,12 +3079,14 @@ export default function CanvasWorkspace({
     });
   };
   // WHERE THE RAIL STANDS (claude-rail-lib `RailPlace`): this canvas, narrowed
-  // to the selected node's file while one is selected. Memoised: the rail's
-  // seats derive from it.
-  const nodeFileName = node?.file ?? null;
+  // to the node's file the WORKBENCH holds selected (`wbSelFile`) — not the
+  // pane's node (owner, 2026-11-06: "filtering is based only on selection,
+  // which happens when we click on the node or on a tag with the node's
+  // name"; a task's door shows a chat and narrows nothing). Memoised: the
+  // rail's seats derive from it.
   const railPlace = useMemo(
-    () => ({ kind: "canvas" as const, env, name, dir, file: nodeFileName }),
-    [env, name, dir, nodeFileName],
+    () => ({ kind: "canvas" as const, env, name, dir, file: wbSelFile }),
+    [env, name, dir, wbSelFile],
   );
 
   // Hand a fresh fix run to the chat: `run` goes on this page's own URL (the
@@ -3174,29 +3471,29 @@ export default function CanvasWorkspace({
               paramsSource="url"
               {...(fixRunId ? { runId: fixRunId } : {})}
               annotateTarget={() => frameRef.current}
+              // THE HEAD'S PLACE TAGS (shell/claude-rail PlaceTags): this
+              // canvas and the workbench's select — the Canvas tag deselects
+              // everything and fits the canvas, a node's tag selects it.
+              pageRoot={placeRoot(railPlace)}
+              onSelectNode={selectFromTag}
               // The Screenshot seat photographs the canvas through the frame's
               // own capture (`requestCanvasShot`), not a cross-origin DOM walk.
               canvasShot={canvasShot}
               // The pane's close, at the chat's top row's left end.
               onHidePane={() => setSideOpen(false)}
               // A Recent row that is a FILE chat on one of this canvas's nodes
-              // does not leave for the explorer: it selects the node in the
-              // workbench and opens that chat in the node pane. Everything
-              // else hops as the chat always did.
+              // does not leave for the explorer: it opens that chat in the
+              // node pane. Everything else hops as the chat always did.
               onNavigate={(url) => {
                 const hop = nodeHopFromUrl(url, dir);
-                if (!hop) {
+                if (!hop || !hop.sessionId) {
                   navigateUrl(url);
                   return;
                 }
-                sendSelect(hop.node.udfName);
-                // The hop's session is what the node pane boots on — the same
-                // memory the frame's own moves feed, so one source of truth.
-                const key = nodeSessionKey(env, name, hop.node.file);
-                if (hop.sessionId) nodeSessions.set(key, hop.sessionId);
-                else nodeSessions.delete(key);
-                setNodeBootSeq((n) => n + 1);
-                setNode(hop.node);
+                // The chat resumes HERE, in the canvas pane (2026-11-06):
+                // the node pane is the selected node's, and a Recent row
+                // selects nothing.
+                navigateUrl(canvasPagePath(env, name, { sessionId: hop.sessionId }));
               }}
             />
           ) : (
@@ -3245,6 +3542,7 @@ export default function CanvasWorkspace({
             // The card's node chip: the workbench selects the node (zooms to
             // it, shows its code); its selection echo sets `node` here.
             onSelectNode={selectFromRail}
+            onTagSelect={selectFromTag}
             onOpen={openFromRail}
             onNewChat={paneHomeFromRail}
             onPullStart={onRailPull}
