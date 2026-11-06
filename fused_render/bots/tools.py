@@ -54,6 +54,7 @@ loop.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -1410,9 +1411,14 @@ def call_key(bot, act: str, d: dict):
     elif act in MANAGE_TOOLS:
         ref = [{k: d[k] for k in sorted(d)}]
     elif act == "routine_add":
-        # The normalised fields only: the steps engine's decision carries `thought` (never the same twice) and
-        # the task under `text`, so the whole dict would let a twin routine through.
-        ref = [{k: v for k, v in _routine_args(d).items() if v not in (None, "")}]
+        # The VALIDATED schedule, not the raw call: the steps engine's decision carries `thought` (never the same
+        # twice) and the task under `text`; a retry may respace the task, reorder weekdays or capitalise the
+        # kind, and the stored routine would be the same. `anchor` is the write's clock, so it is dropped. An
+        # invalid call keys on its raw fields (it is never recorded: execute returns an error).
+        from fused_render.bots import bot as botmod
+        args = _routine_args(d)
+        fields, err = botmod.routine_check(**args)
+        ref = [{k: v for k, v in (fields or args).items() if k != "anchor" and v not in (None, "")}]
     elif act == "marketplace_install":
         ref = [_market_target(d)[0]]
     elif act == "py":
@@ -1731,7 +1737,9 @@ def _routine_add(bot, d: dict) -> tuple[str, str]:
     try:
         bot.emit("system", f"Routine added ({when}): {r['task'][:80]}", source="routine")
     except Exception:  # noqa: BLE001
-        pass
+        # The routine is saved either way; the thread line is the only loss, so say so in the log.
+        logging.getLogger(__name__).warning("bot %s: routine %s saved but its system line was not written",
+                                            getattr(bot, "id", "?"), r.get("id"), exc_info=True)
     nxt = r.get("next")
     first = (" First run " + time.strftime("%Y-%m-%d %H:%M", time.localtime(nxt)) + ".") if nxt else ""
     return f"add routine {when}", (f"ok, routine saved ({when}); the user can edit, pause or delete it under Routines.{first} "

@@ -4159,14 +4159,18 @@ def routine_words(r) -> str:
     """A routine's schedule as the user and the model read it: `every 60 min`,
     `daily at 09:00 on Mon, Wed`, `once at 2026-11-07 09:00`."""
     kind = r.get("kind")
-    if kind == "interval":
-        return f"every {int(r.get('minutes') or 0)} min"
-    if kind == "daily":
-        days = sorted({int(d) for d in (r.get("weekdays") or []) if 0 <= int(d) <= 6})
-        when = "every day" if len(days) == 7 or not days else "on " + ", ".join(WEEKDAY_NAMES[d] for d in days)
-        return f"daily at {r.get('time') or '09:00'} {when}"
-    if kind == "once":
-        return "once at " + time.strftime("%Y-%m-%d %H:%M", time.localtime(float(r.get("at") or 0)))
+    try:
+        if kind == "interval":
+            return f"every {int(r.get('minutes') or 0)} min"
+        if kind == "daily":
+            days = sorted({int(d) for d in (r.get("weekdays") or []) if 0 <= int(d) <= 6})
+            when = "every day" if len(days) == 7 or not days else "on " + ", ".join(WEEKDAY_NAMES[d] for d in days)
+            return f"daily at {r.get('time') or '09:00'} {when}"
+        if kind == "once":
+            return "once at " + time.strftime("%Y-%m-%d %H:%M", time.localtime(float(r.get("at") or 0)))
+    except (TypeError, ValueError, OverflowError, OSError):
+        # A hand-edited bot.json: one bad row must not take the guide (or a card) down with it.
+        return f"{kind} (invalid schedule)"
     return str(kind or "?")
 
 
