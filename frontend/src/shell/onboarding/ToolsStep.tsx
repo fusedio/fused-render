@@ -46,7 +46,7 @@ import { Check, Circle, Copy, Download, Minus, RefreshCw } from "lucide-react";
 import { installGit, type ClaudeHealth, type GitInstallResult } from "@platform/lib/api";
 import { claudeIssues, type ClaudeIssue } from "@platform/lib/claude-health";
 import type { ClaudeSetup } from "@platform/lib/claude-setup";
-import { bundleName, isBot } from "@platform/lib/flavor";
+import { displayName, isBot } from "@platform/lib/flavor";
 import { Button } from "@platform/shadcn/ui/button";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { IssueRow } from "@platform/ui/ClaudeHealthStrip";
@@ -348,7 +348,7 @@ export function ToolsStep({
           ? "Everything is in place."
           : "Nothing here will block you — carry on.";
   // Fused Bot builds no apps and clones nothing: its lead names what it has.
-  const lead = toolsLead({ isBot: isBot(), showGit, chromeApplies, bundleName: bundleName() });
+  const lead = toolsLead({ isBot: isBot(), showGit, chromeApplies, appName: displayName() });
 
   return (
     <div className="flex flex-col gap-6">

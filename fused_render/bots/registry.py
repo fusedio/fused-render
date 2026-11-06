@@ -127,13 +127,13 @@ class NotOwner(RuntimeError):
 
 
 class WorkspaceBusy(ValueError):
-    """This process owns its home but not the workspace claim (module docstring): another fused-render instance
+    """This process owns its home but not the workspace claim (module docstring): another Fused Render instance
     runs the bots in this workspace, so nothing here may start a bot engine. A 409 on the routes."""
 
     def __init__(self, root: str = "", holder: dict | None = None):
         self.root = root
         self.holder = holder
-        who = _owner_words(holder) if holder and holder.get("known") else "another fused-render instance"
+        who = _owner_words(holder) if holder and holder.get("known") else "another Fused Render instance"
         where = f" at {holder['origin']}" if holder and holder.get("origin") else ""
         super().__init__(f"{who}{where} owns the bots in this workspace ({root}); "
                          "use that window, quit it, or take them over here")

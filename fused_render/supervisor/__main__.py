@@ -44,7 +44,7 @@ except Exception as import_error:  # noqa: BLE001 - e.g. a broken install after 
         DesktopPaths.discover().log(str(import_error))
     except Exception:  # noqa: BLE001 - logging is best-effort, never the point of failure
         pass
-    ui.alert(f"FusedRender could not start:\n\n{import_error}")
+    ui.alert(f"Fused Render could not start:\n\n{import_error}")
     sys.exit(1)
 
 
@@ -77,9 +77,9 @@ def main() -> None:
             if isinstance(error, core.SupervisorStoppedError):
                 # The app DID start (server was ready, tray was up) and then
                 # broke — "could not start" would misreport the failure mode.
-                message = f"FusedRender stopped unexpectedly:\n\n{error}"
+                message = f"Fused Render stopped unexpectedly:\n\n{error}"
             else:
-                message = f"FusedRender could not start:\n\n{error}"
+                message = f"Fused Render could not start:\n\n{error}"
             ui.alert(message)
         sys.exit(1)
 

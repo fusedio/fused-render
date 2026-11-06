@@ -185,7 +185,7 @@ _task_roots_cache: tuple[float, list[str]] | None = None
 def task_roots() -> list[str]:
     """Every task's folder (`project`, and `target`'s folder), from the tasks
     listing the desktop's own Tasks page reads. The phone draws that page
-    (D1467), and the page STATS each task's folder to pick its chat template
+    (D1468), and the page STATS each task's folder to pick its chat template
     and LISTS it for the peek — folders anywhere on the disk, not under
     ~/Fused. So these join the READ scope (`/api/fs/stat`, `/api/fs/list`,
     `/api/fs/raw`) and never the write scope: a phone reads what a task
@@ -333,7 +333,7 @@ _EXACT: dict[str, frozenset[str]] = {
 #: assets, the engine proxy (the daemon behind it is validated by
 #: engine_host, and the browser never sees its port), job cancel/dismiss.
 _PREFIXES = ("/static/", "/template-assets/", "/template-shared/", "/api/engines/", "/api/jobs/")
-#: THE PHONE DOOR (docs/bots.md §14, D1467). The iOS app renders the desktop's
+#: THE PHONE DOOR (docs/bots.md §14, D1468). The iOS app renders the desktop's
 #: own bots app and task chat (frontend/src/lan/main.tsx mounts `@apps/bots`
 #: and the shell's Tasks page), so the routes it reaches are the DESKTOP'S OWN,
 #: not a trimmed phone shape: one UI, one wire. What keeps a paired phone from

@@ -1,5 +1,5 @@
 """`POST /api/phone/tasks/new-app` — the one route the Fused Render iOS app has
-of its own (docs/bots.md §14, D1467): the grid's "+", "describe an app and the
+of its own (docs/bots.md §14, D1468): the grid's "+", "describe an app and the
 computer names, scaffolds and builds it as a task". Everything else the phone
 draws is the desktop's own routes, allow-listed by the LAN listener (lan.py
 `_DOORS`) and rendered by the desktop's own React pages (frontend/src/lan/

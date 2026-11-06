@@ -54,7 +54,7 @@ function Box({ req }: { req: BuildDialogReq }) {
         <Field>
           <FieldLabel htmlFor="bdprompt"><span id="bdask">{app ? "What should change?" : "What should the app do?"}</span></FieldLabel>
           <Textarea id="bdprompt" rows={6} value={prompt} onChange={(e) => setPrompt(e.target.value)}
-            placeholder={app ? "Describe the change: what to add, fix or remove. Claude runs inside the app's folder with the fused-render app contract." : "Describe the app: what it shows, what data it reads, what the user can do. Claude gets the fused-render app contract on top of this."} />
+            placeholder={app ? "Describe the change: what to add, fix or remove. Claude runs inside the app's folder with the Fused Render app contract." : "Describe the app: what it shows, what data it reads, what the user can do. Claude gets the fused-render app contract on top of this."} />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field>

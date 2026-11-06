@@ -1,6 +1,6 @@
 // The phone page's router. Three sections — the Apps grid at `/`, the bots app
 // under `/bots/*`, the Tasks page under `/tasks/*` — and the two latter are the
-// DESKTOP'S OWN pages (D1467): `@apps/bots` reads `/bots/<id>` itself
+// DESKTOP'S OWN pages (D1468): `@apps/bots` reads `/bots/<id>` itself
 // (hooks/useBotsRoute) and the shell's Tasks page reads `?peek=<key>`
 // (task-peek-store). So this router only answers "which section", and leaves
 // the rest of the URL to the page it mounts. Navigation inside those pages goes

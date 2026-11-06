@@ -1367,7 +1367,8 @@ def _system_prompt(file: str) -> str:
     custom_env = _custom_env(origin, file) if origin else None
     env_note = (
         f" For Python-based inspection of {name}, invoke the exact executable "
-        f"`{sys.executable}`. Do not substitute `python` or `python3` from "
+        # Shell-quoted: the bundle path holds a space (`Fused Render.app`).
+        f"`{shlex.quote(sys.executable)}`. Do not substitute `python` or `python3` from "
         "PATH; they may refer to a different environment."
     ) if custom_env is False else ""
     return (

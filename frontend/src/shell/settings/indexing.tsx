@@ -203,7 +203,7 @@ export function SkippedFoldersControl() {
       // the FDA gate is shut. Say what actually happens.
       setNote(
         next.needs_rescan && fdaBlocked
-          ? "Saved. The index rebuilds once Full Disk Access is granted and FusedRender relaunches."
+          ? "Saved. The index rebuilds once Full Disk Access is granted and Fused Render relaunches."
           : next.needs_rescan
             ? "Saved. Rebuilding the index so the new rules apply."
             : "Saved.",
@@ -232,7 +232,7 @@ export function SkippedFoldersControl() {
             One rule per line. A bare name (<code>node_modules</code>) matches at any depth,{" "}
             <code>*.egg-info</code> matches a name pattern, and anything containing a slash (
             <code>~/Library/Caches</code>) matches that path and everything under it. Lines starting with{" "}
-            <code>#</code> are comments. The fused-render data folder is never indexed.
+            <code>#</code> are comments. The Fused Render data folder is never indexed.
           </p>
           {!config && !configError && <SkeletonLines rows={4} label="Loading skip rules" />}
           {configError && <ErrorBanner>{configError}</ErrorBanner>}

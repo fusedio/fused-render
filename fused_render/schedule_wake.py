@@ -63,7 +63,7 @@ def agent_plist_path() -> str:
 
 
 def app_bundle_path() -> str | None:
-    """The running app bundle (`…/FusedRender.app`, `…/FusedBot.app`), or None when there isn't
+    """The running app bundle (`…/Fused Render.app`, `…/FusedBot.app`), or None when there isn't
     one — a dev-from-source run, a plain wheel, a test.
 
     Nothing to relaunch is a perfectly ordinary state, not an error: `dev.sh`

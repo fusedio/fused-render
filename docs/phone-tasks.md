@@ -1,6 +1,6 @@
 # Tasks on the phone
 
-*2026-11-06, D1467. Supersedes the 2026-11-05 door (D1464).*
+*2026-11-06, D1468. Supersedes the 2026-11-05 door (D1464).*
 
 The Fused Render iOS app's Tasks section is the desktop's own Tasks page
 (`frontend/src/shell/Scheduled.tsx`, with `@apps/claude`'s chat in the peek),

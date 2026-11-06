@@ -3,7 +3,7 @@ bundle's LaunchServices metadata.
 
 An AppImage is a single relocatable file with no install step, so nothing has
 registered its `.desktop` entry, MIME types, or icon with the desktop
-environment. Historically that made "Open with FusedRender" and
+environment. Historically that made "Open with Fused Render" and
 `fused-render://` deep links work only *after* a third-party AppImage integrator
 (appimaged, Gear Lever, …) did it. This module removes that dependency: at the
 first packaged supervisor start it writes those files into the user's XDG data
@@ -49,8 +49,8 @@ _TOOL_TIMEOUT_S = 30
 _ENTRY_TEMPLATE = """\
 [Desktop Entry]
 Type=Application
-Name=FusedRender
-Comment=FusedRender desktop
+Name=Fused Render
+Comment=Fused Render desktop
 Exec={exec_line}
 Icon={icon}
 Categories=Development;Science;

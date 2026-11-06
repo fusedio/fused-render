@@ -1,5 +1,5 @@
 // The comparison chart's Share button: draws the chart, this machine's
-// hardware and the fused render mark into one PNG (`shareCard.ts`) and hands it
+// hardware and the Fused Render mark into one PNG (`shareCard.ts`) and hands it
 // to the OS share sheet, the clipboard, or a download — whichever the browser
 // actually supports.
 //

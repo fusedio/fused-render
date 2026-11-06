@@ -496,7 +496,9 @@ def setup_cli_hint() -> str:
         contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
         wrapper = os.path.join(contents, "Resources", "bin", "fused")
         if os.path.isfile(wrapper):
-            return wrapper
+            # Shell-quoted: a command to type, and the bundle path holds a
+            # space (`/Applications/Fused Render.app/...`).
+            return shlex.quote(wrapper)
     return "fused"
 
 

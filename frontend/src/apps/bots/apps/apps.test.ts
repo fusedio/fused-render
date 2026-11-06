@@ -136,6 +136,8 @@ describe("builds", () => {
     _setBuildsState([{ entryId: "e1", name: "A", dir: "", createdAt: 0 }], []);
     expect(isBuild(row({ entry_id: "e1", title: "anything" }))).toBe(true);
     expect(isBuild(row({ entry_id: "e2", title: "Build \"X\" · new fused-render app in /d" }))).toBe(true);
+    expect(isBuild(row({ entry_id: "e4", title: "Build \"X\" · new Fused Render app in /d" }))).toBe(true);
+    expect(BUILD_RE.exec("Build \"Z\" · update to the Fused Render app in /z")?.slice(1)).toEqual(["Z", "/z"]);
     expect(isBuild(row({ entry_id: "e3", title: "Task · X", messages: [{ body: "Create a new fused-render app named \"Y\"" }] }))).toBe(true);
     expect(isBuild(row({ entry_id: "e4", title: "Unrelated" }))).toBe(false);
   });
@@ -172,7 +174,7 @@ describe("builds", () => {
   });
 
   test("buildPrompt is OpenBot's text", () => {
-    expect(buildPrompt("Invoice tracker", "/A/app/invoice-tracker", "  Track invoices.\n")).toBe(`Build "Invoice tracker" · new fused-render app in /A/app/invoice-tracker
+    expect(buildPrompt("Invoice tracker", "/A/app/invoice-tracker", "  Track invoices.\n")).toBe(`Build "Invoice tracker" · new Fused Render app in /A/app/invoice-tracker
 
 You are running inside /A/app/invoice-tracker, an empty folder made for this app. Build the app there.
 Rules:

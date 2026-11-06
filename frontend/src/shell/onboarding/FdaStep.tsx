@@ -17,7 +17,7 @@ import type { ReactNode } from "react";
 // State and copy come from platform/lib/fda.ts, the same store the strip
 // reads, so this step and the strip never disagree about whether the grant
 // landed. The one state this step adds a face to is `pending_relaunch`: the
-// user turned FusedRender on, a fresh child of the app can read, and only a
+// user turned Fused Render on, a fresh child of the app can read, and only a
 // relaunch stands between them and the grant — so offer the relaunch instead
 // of a "waiting…" line that could never finish (macOS caches the running
 // process's verdict).

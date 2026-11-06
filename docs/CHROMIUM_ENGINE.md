@@ -109,7 +109,7 @@ assembles
 FusedChromium/
   FusedChromium.framework/                 our wrapper (FRChromiumEngine, FRChromiumView)
   Chromium Embedded Framework.framework/   CEF, re-laid out as Versions/A
-  FusedRender Helper.app                   + (GPU) (Renderer) (Plugin) (Alerts)
+  Fused Render Helper.app                   + (GPU) (Renderer) (Plugin) (Alerts)
   engine.json                              {cef_version, arch, app_version}
 ```
 

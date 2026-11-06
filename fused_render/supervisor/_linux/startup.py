@@ -46,8 +46,8 @@ def _exec_quote(path: str) -> str:
 _ENTRY_TEMPLATE = """\
 [Desktop Entry]
 Type=Application
-Name=FusedRender
-Comment=FusedRender desktop
+Name=Fused Render
+Comment=Fused Render desktop
 Exec={exec_line}
 Terminal=false
 X-GNOME-Autostart-enabled=true

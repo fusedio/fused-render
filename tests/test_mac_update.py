@@ -1665,11 +1665,116 @@ def test_apply_renames_the_staged_copy_into_place_and_parks_the_old_bundle(
     assert installed.bundle_version(str(bundle)) == "9.9.9"
     assert not (bundle / "Contents" / "marker").exists()
     olds = _old_bundles(tmp_path)
-    assert len(olds) == 1 and olds[0].startswith(f".FusedRender-old-{os.getpid()}-")
+    assert len(olds) == 1 and olds[0].startswith(f".{mac._BUNDLE_NAME}-old-{os.getpid()}-")
     assert (tmp_path / olds[0] / "Contents" / "marker").read_text() == "the running bundle"
     assert not (tmp_path / ".FusedRender-update.app").exists()
     assert mac.staged_version(str(bundle)) is None
     assert mac.apply_staged(str(bundle)) is None  # nothing left to apply
+
+
+def test_apply_moves_a_legacy_named_bundle_to_the_current_name(monkeypatch, tmp_path):
+    """`rename_legacy=True` (a DMG install the app manages): the update lands
+    in `FusedRender.app`, which then becomes `Fused Render.app`."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    legacy = tmp_path / "FusedRender.app"
+    _stage_through_fakes(monkeypatch, manager, tmp_path)
+
+    assert mac.apply_staged(str(legacy), rename_legacy=True) == "9.9.9"
+
+    from fused_render import installed
+    current = tmp_path / f"{mac._BUNDLE_NAME}.app"
+    assert not legacy.exists()
+    assert installed.bundle_version(str(current)) == "9.9.9"
+    assert len(_old_bundles(tmp_path)) == 1  # the previous bundle, parked
+
+
+def test_apply_keeps_the_legacy_name_unless_asked(monkeypatch, tmp_path):
+    """The default (Homebrew, or a method not known yet): the update applies
+    in place and the folder keeps the name brew's receipt names."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    legacy = tmp_path / "FusedRender.app"
+    _stage_through_fakes(monkeypatch, manager, tmp_path)
+
+    assert mac.apply_staged(str(legacy)) == "9.9.9"
+
+    assert legacy.is_dir()
+    assert not (tmp_path / f"{mac._BUNDLE_NAME}.app").exists()
+
+
+def test_apply_never_renames_over_an_existing_bundle(monkeypatch, tmp_path):
+    """Something already at `Fused Render.app` (a DMG drag): the legacy copy
+    keeps its name rather than replace it."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    legacy = tmp_path / "FusedRender.app"
+    other = tmp_path / f"{mac._BUNDLE_NAME}.app"
+    _plist(other, "10.0.0")
+    _stage_through_fakes(monkeypatch, manager, tmp_path)
+
+    assert mac.apply_staged(str(legacy), rename_legacy=True) == "9.9.9"
+
+    from fused_render import installed
+    assert installed.bundle_version(str(legacy)) == "9.9.9"
+    assert installed.bundle_version(str(other)) == "10.0.0"
+
+
+def test_renamed_bundle_path_only_for_legacy_names():
+    assert mac.renamed_bundle_path("/Applications/FusedRender.app") == \
+        f"/Applications/{mac._BUNDLE_NAME}.app"
+    assert mac.renamed_bundle_path(f"/Applications/{mac._BUNDLE_NAME}.app") is None
+    assert mac.renamed_bundle_path("/Applications/Something.app") is None
+
+
+def test_detect_method_knows_both_bundle_names(monkeypatch):
+    """A cask install is conventionally at /Applications/<name>.app, under
+    either name while installs migrate."""
+    listed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    for name in (mac._BUNDLE_NAME, "FusedRender"):
+        monkeypatch.setattr(mac.os.path, "realpath", lambda p: p)
+        assert mac.detect_method(f"/Applications/{name}.app", brew="/fake/brew",
+                                 run=lambda *a, **k: listed) == "brew"
+
+
+def _identified(bundle, version, bundle_id="io.fused.render"):
+    import plistlib
+
+    (bundle / "Contents").mkdir(parents=True, exist_ok=True)
+    with open(bundle / "Contents" / "Info.plist", "wb") as f:
+        plistlib.dump({"CFBundleShortVersionString": version,
+                       "CFBundleIdentifier": bundle_id}, f)
+
+
+def test_retire_removes_an_older_legacy_copy_beside_the_new_bundle(tmp_path):
+    """A DMG drag of `Fused Render.app` next to an old `FusedRender.app`:
+    the old copy goes, so there is one app with this bundle id."""
+    own = tmp_path / f"{mac._BUNDLE_NAME}.app"
+    legacy = tmp_path / "FusedRender.app"
+    _identified(own, "1.0.1")
+    _identified(legacy, "1.0.0")
+
+    removed = mac.retire_legacy_siblings(str(own), executables=lambda: ["/bin/ps"])
+
+    assert removed == [str(legacy)]
+    assert not legacy.exists() and own.is_dir()
+    assert _old_bundles(tmp_path) == []
+
+
+def test_retire_keeps_what_it_cannot_prove_is_an_older_idle_copy(tmp_path):
+    """Kept: a newer legacy copy, another app's bundle, one that is running,
+    and everything when `ps` says nothing. Never from a legacy-named bundle."""
+    own = tmp_path / f"{mac._BUNDLE_NAME}.app"
+    legacy = tmp_path / "FusedRender.app"
+    _identified(own, "1.0.1")
+
+    _identified(legacy, "2.0.0")
+    assert mac.retire_legacy_siblings(str(own), executables=lambda: ["/bin/ps"]) == []
+    _identified(legacy, "1.0.0", bundle_id="io.fused.bot")
+    assert mac.retire_legacy_siblings(str(own), executables=lambda: ["/bin/ps"]) == []
+    _identified(legacy, "1.0.0")
+    running = [str(legacy / "Contents" / "MacOS" / "FusedRender")]
+    assert mac.retire_legacy_siblings(str(own), executables=lambda: running) == []
+    assert mac.retire_legacy_siblings(str(own), executables=lambda: []) == []
+    assert mac.retire_legacy_siblings(str(legacy), executables=lambda: ["/bin/ps"]) == []
+    assert legacy.is_dir()
 
 
 def _exchange_available(tmp_path) -> bool:
@@ -1965,16 +2070,22 @@ def test_sweep_removes_only_dead_pids_leftovers_of_this_flavor(tmp_path):
 
 
 def test_sweep_scopes_to_the_branch_suffixed_bundle_name(monkeypatch, tmp_path):
-    """A branch build (`FusedRender-feature.app`) sweeps its own leftovers
-    only — the main build's are another install's."""
-    monkeypatch.setattr(mac, "_BUNDLE_NAME", "FusedRender-feature")
+    """A branch build (`Fused Render-feature.app`) sweeps its own leftovers,
+    under its current and its legacy name, only — the main build's are
+    another install's."""
+    monkeypatch.setattr(mac, "_BUNDLE_NAME", "Fused Render-feature")
+    monkeypatch.setattr(mac, "_LEGACY_BUNDLE_NAMES", ("FusedRender-feature",))
+    (tmp_path / ".Fused Render-feature-old-111.app").mkdir()
     (tmp_path / ".FusedRender-feature-old-222.app").mkdir()
+    (tmp_path / ".Fused Render-old-222.app").mkdir()
     (tmp_path / ".FusedRender-old-222.app").mkdir()
 
     removed = _sweep(tmp_path, alive=lambda pid: False)
 
-    assert removed == [str(tmp_path / ".FusedRender-feature-old-222.app")]
-    assert (tmp_path / ".FusedRender-old-222.app").is_dir()  # main build's, not ours
+    assert sorted(removed) == sorted([str(tmp_path / ".Fused Render-feature-old-111.app"),
+                                      str(tmp_path / ".FusedRender-feature-old-222.app")])
+    assert (tmp_path / ".Fused Render-old-222.app").is_dir()  # main build's, not ours
+    assert (tmp_path / ".FusedRender-old-222.app").is_dir()
 
 
 def test_sweep_keeps_going_past_a_bad_entry(monkeypatch, tmp_path):

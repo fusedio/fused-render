@@ -16,12 +16,14 @@ interface FlavorState {
   flavor: Flavor;
   scheme: string;
   displayName: string;
+  bundleName: string;
 }
 
 const RENDER: FlavorState = {
   flavor: "render",
   scheme: "fused-render",
   displayName: "Fused Render",
+  bundleName: "Fused Render",
 };
 
 let state: FlavorState = RENDER;
@@ -29,12 +31,13 @@ let state: FlavorState = RENDER;
 /** Seed from the config payload (main.tsx, once per load). Partial payloads
  *  fill in from the Render defaults, field by field: a `flavor: "bot"` with
  *  no `scheme` beside it is a server bug, not a reason to dial nowhere. */
-export function seedFlavor(config: Pick<Config, "flavor" | "scheme" | "display_name">): void {
+export function seedFlavor(config: Pick<Config, "flavor" | "scheme" | "display_name" | "bundle_name">): void {
   const flavor: Flavor = config.flavor === "bot" ? "bot" : "render";
   state = {
     flavor,
     scheme: config.scheme || (flavor === "bot" ? "fused-bot" : RENDER.scheme),
     displayName: config.display_name || (flavor === "bot" ? "Fused Bot" : RENDER.displayName),
+    bundleName: config.bundle_name || (flavor === "bot" ? "FusedBot" : RENDER.bundleName),
   };
 }
 
@@ -51,10 +54,12 @@ export function displayName(): string {
   return state.displayName;
 }
 
-/** The bundle's name as macOS panes list it (System Settings › Full Disk
- *  Access): "FusedRender" / "FusedBot", no space. */
+/** The bundle's name as Finder and macOS panes list it (System Settings ›
+ *  Full Disk Access): the .app folder the server runs from — "Fused Render"
+ *  (or "FusedRender" on an install from before the rename that no update
+ *  has moved yet) / "FusedBot". */
 export function bundleName(): string {
-  return state.displayName.replace(/\s+/g, "");
+  return state.bundleName;
 }
 
 /** The state home both apps share — `~/.fused-render` for Render and Bot

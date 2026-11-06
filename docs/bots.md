@@ -1329,7 +1329,7 @@ tray dismisses it.
 
 `scripts/dev.sh` (per-branch port + home), Chrome with
 `--remote-debugging-port` driven through Argent (`describe` / `tap` /
-`screenshot`), the OpenBot page open in FusedRender.app beside it for
+`screenshot`), the OpenBot page open in Fused Render.app beside it for
 comparison. `pytest -q` green; `cd frontend && bun run build` (typecheck +
 boundaries) green; `bun test` for the ported pure libs (`md`, `format`,
 `unread`, `layout`).
@@ -1337,7 +1337,7 @@ boundaries) green; `bun test` for the ported pure libs (`md`, `format`,
 ## 9. Status (2026-10-02)
 
 Landed and checked live against a dev server on 2799 (Chrome driven through
-Argent over CDP; OpenBot open in FusedRender.app in the next tab):
+Argent over CDP; OpenBot open in Fused Render.app in the next tab):
 
 - Backend: 1053 pytest green (2 skipped). Real `claude` (haiku) + real
   Chrome through the agent engine: goto → thought/action/done with step
@@ -1352,7 +1352,7 @@ Argent over CDP; OpenBot open in FusedRender.app in the next tab):
   loads an app's SKILL.md onto that same tool result (the first message is
   never rebuilt — fixed after the load silently never surfaced), and the bot
   answers from it (tip-calculator's `bill` / `tip` params and defaults);
-  `tool` runs an app's mcp.toml tools natively (no FusedRender module
+  `tool` runs an app's mcp.toml tools natively (no Fused Render module
   needed: AST-derived params, the app's own venv via `env.run_python` with
   the manifest's entrypoint) — `linkedin_list_pending` ran read-only with
   no approval card, `linkedin_add_messages` raised the approval card, ran on
@@ -2110,7 +2110,7 @@ expanded to `thumbUrl` (`/api/bots/<id>/steps/<seq>.jpg`).
 routines, skills, bot creation, an embedded chat. `stop` stops only the app's
 own task (`Bot.app_stop`, as `handoff_stop` stops only its hand-off).
 
-## 14. The phone — the iOS app renders the desktop's own pages through an allow-listed door (`lan.py`, `frontend/src/lan/`, 2026-11-06, D1467)
+## 14. The phone — the iOS app renders the desktop's own pages through an allow-listed door (`lan.py`, `frontend/src/lan/`, 2026-11-06, D1468)
 
 The Fused Render iOS app (`ios/`) is a thin native shell around the LAN
 listener's page (`lan.py`, `frontend/lan.html`). Beside the apps grid it shows

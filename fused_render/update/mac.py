@@ -30,7 +30,7 @@ nothing about what an install does, and nothing in the UI mentions Homebrew.
   bundle has landed, ours or brew's.
 - "dmg": download the signed DMG, verify, and STAGE the .app bundle as a
   hidden sibling of the installed one (`installed.staged_bundle_path`:
-  `/Applications/.FusedRender-update.app`). The staged copy is renamed into
+  `/Applications/.Fused Render-update.app`). The staged copy is renamed into
   place by `apply_staged` from the quit teardown (app.quit_teardown's
   "update" rung — every quit surface, the update dialog's Restart included),
   never while the app is serving. It used to be swapped at install time, on
@@ -117,11 +117,17 @@ MANIFEST_URL = os.environ.get(
 # "" when the flavor has no Homebrew cask (Fused Bot): `detect_method` then
 # never asks brew and every install goes the DMG way.
 CASK_NAME = _flavor.cask()
-# The installed bundle's name, branch suffix included: `FusedRender.app`,
+# The installed bundle's name, branch suffix included: `Fused Render.app`,
 # `FusedBot-feature.app`. Names the /Applications target and the parked
 # `-old-` siblings below (the staged `-update` sibling is named from the
 # bundle's own basename instead — `installed.staged_bundle_path`).
-_BUNDLE_NAME = _flavor.app_name() + branch_suffix()
+_BUNDLE_NAME = _flavor.bundle_name() + branch_suffix()
+# What the bundle was called before (`FusedRender.app`), branch suffix
+# included. An install from before the rename keeps updating in place under
+# that name (staging is basename-derived) until `apply_staged` moves it to
+# `_BUNDLE_NAME`, and its `-old-` leftovers still carry it.
+_LEGACY_BUNDLE_NAMES = tuple(name + branch_suffix()
+                             for name in _flavor.legacy_bundle_names())
 # GUI apps launch with a bare PATH, so brew is probed at its two fixed homes
 # (Apple Silicon, then Intel) rather than through the environment.
 BREW_PATHS = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
@@ -200,8 +206,9 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
     # The cask's `app` artifact moves the bundle to /Applications; `brew list`
     # output shapes vary across brew versions, so accept the conventional
     # target too when the listing didn't name the bundle directly.
-    if bundle_real == os.path.realpath(f"/Applications/{_BUNDLE_NAME}.app"):
-        return "brew"
+    for name in (_BUNDLE_NAME, *_LEGACY_BUNDLE_NAMES):
+        if bundle_real == os.path.realpath(f"/Applications/{name}.app"):
+            return "brew"
     return "dmg"
 
 
@@ -215,9 +222,11 @@ def _old_bundle_re() -> re.Pattern[str]:
     """The hidden-sibling shape the swap writes, group 1 the swapping pid.
     Built per call, not at import: `_BUNDLE_NAME` carries the branch suffix
     and tests rebind it. The stamp is optional so leftovers written before
-    it existed (`-old-<pid>.app`) are matched too."""
+    it existed (`-old-<pid>.app`) are matched too, and so are leftovers
+    named for a legacy bundle name (`.FusedRender-old-<pid>.app`)."""
+    names = "|".join(re.escape(name) for name in (_BUNDLE_NAME, *_LEGACY_BUNDLE_NAMES))
     return re.compile(
-        r"^\." + re.escape(_BUNDLE_NAME) + r"-old-(\d+)(?:-\d+)?\.app$")
+        r"^\.(?:" + names + r")-old-(\d+)(?:-\d+)?\.app$")
 
 
 def _old_bundle_path(parent: str, pid: int) -> str:
@@ -347,7 +356,8 @@ def discard_stale_staged(bundle: str) -> bool:
     return True
 
 
-def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
+def apply_staged(bundle: str, *, pid: int | None = None,
+                 rename_legacy: bool = False) -> str | None:
     """Rename the staged sibling into place of `bundle`: the one moment the
     bundle on disk changes. Returns the version now installed, or None when
     there was nothing (newer) to apply or the apply failed — the running
@@ -378,7 +388,13 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
     today refuses the next quit the same way, and `installed_version()`
     would otherwise keep raising a restart card whose restart changes
     nothing. The next check offers the update again, and that install's
-    own writability check (or this log line) says why."""
+    own writability check (or this log line) says why.
+
+    `rename_legacy=True` also moves a bundle still under a legacy name
+    (`FusedRender.app`) to `_BUNDLE_NAME` (`Fused Render.app`) once the new
+    version is in place — `_rename_legacy_bundle`. The caller passes it only
+    for installs nothing else manages (not Homebrew's, whose receipt names
+    the old path)."""
     real = os.path.realpath(bundle)
     version = installed.staged_version(real)
     if version is None:
@@ -431,7 +447,113 @@ def apply_staged(bundle: str, *, pid: int | None = None) -> str | None:
         old = staged
     logger.info("update: applied staged v%s to %s (previous bundle parked at %s)",
                 version, real, old)
+    if rename_legacy:
+        _rename_legacy_bundle(real)
     return version
+
+
+def renamed_bundle_path(bundle: str) -> str | None:
+    """Where `_rename_legacy_bundle` moves `bundle`: the same folder under
+    `_BUNDLE_NAME`, or None when `bundle` is not under a legacy name. The
+    relauncher opens this path when the one it was given is gone."""
+    parent, name = os.path.split(bundle.rstrip(os.sep))
+    if not name.endswith(".app") or name[:-4] not in _LEGACY_BUNDLE_NAMES:
+        return None
+    return os.path.join(parent, f"{_BUNDLE_NAME}.app")
+
+
+def _rename_legacy_bundle(real: str) -> str | None:
+    """Move a just-updated bundle from its legacy name to `_BUNDLE_NAME`
+    (`/Applications/FusedRender.app` -> `/Applications/Fused Render.app`), so
+    Finder, the Dock and System Settings show the current name. Returns the
+    new path, or None when nothing moved: the bundle is not under a legacy
+    name, something already sits at the new path (a DMG drag of a newer
+    release — `retire_legacy_siblings` handles that copy instead), or the
+    rename failed. Best effort and never raises: the app stays fully usable
+    at the old path.
+
+    Safe at this point for the same reason the apply is: the server has
+    drained, the children are gone, and this process is about to `os._exit`.
+    TCC grants follow the bundle id and signature, not the path; the
+    relauncher (app.spawn_relauncher) falls back to the new path, and
+    schedule_wake rewrites its LaunchAgent on the next boot."""
+    target = renamed_bundle_path(real)
+    if target is None:
+        return None
+    if os.path.lexists(target):
+        logger.info("update: kept %s under its old name: %s already exists", real, target)
+        return None
+    try:
+        os.rename(real, target)
+    except OSError:
+        logger.warning("update: could not rename %s to %s", real, target, exc_info=True)
+        return None
+    logger.info("update: renamed %s to %s", real, target)
+    return target
+
+
+def _bundle_identifier(bundle: str) -> str | None:
+    try:
+        with open(os.path.join(bundle, "Contents", "Info.plist"), "rb") as f:
+            value = plistlib.load(f).get("CFBundleIdentifier")
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def retire_legacy_siblings(bundle: str, *, executables=None) -> list[str]:
+    """Remove a copy of this same app left beside `bundle` under a legacy
+    name: someone with `/Applications/FusedRender.app` drags a newer DMG in
+    and gets `/Applications/Fused Render.app` next to it — two apps with one
+    bundle id, both in Spotlight, Launchpad and "Open With". Returns the
+    paths removed.
+
+    Only when `bundle` itself is under the current name, and only a copy
+    that is provably the same app (same CFBundleIdentifier), provably not
+    newer, not a symlink, and that no running process executes from (an
+    empty `ps` answer keeps it). The copy is renamed to the `-old-` shape
+    first, so a removal that fails half way is finished by a later boot's
+    `sweep_old_bundles`. Never raises."""
+    removed: list[str] = []
+    try:
+        real = os.path.realpath(bundle)
+        parent, name = os.path.split(real)
+        if name != f"{_BUNDLE_NAME}.app":
+            return removed
+        own_id = _bundle_identifier(real)
+        own_version = installed.bundle_version(real)
+        if own_id is None or own_version is None:
+            return removed
+        if executables is None:
+            executables = _running_executables
+        running: list[str] | None = None
+        for legacy in _LEGACY_BUNDLE_NAMES:
+            path = os.path.join(parent, f"{legacy}.app")
+            try:
+                if os.path.islink(path) or not os.path.isdir(path):
+                    continue
+                if _bundle_identifier(path) != own_id:
+                    continue
+                version = installed.bundle_version(path)
+                if version is None or common.is_newer(version, own_version):
+                    continue
+                if running is None:
+                    running = executables()
+                if not running or _in_use(path, running):
+                    continue
+                parked = _old_bundle_path(parent, os.getpid())
+                os.rename(path, parked)
+                shutil.rmtree(parked, ignore_errors=True)
+            except Exception:  # noqa: BLE001 - best effort, per copy
+                logger.debug("could not retire %s", path, exc_info=True)
+                continue
+            removed.append(path)
+    except Exception:  # noqa: BLE001
+        logger.debug("retire_legacy_siblings failed for %s", bundle, exc_info=True)
+    if removed:
+        logger.info("update: removed earlier copies beside %s: %s",
+                    bundle, ", ".join(removed))
+    return removed
 
 
 def _running_executables(run=subprocess.run) -> list[str]:
@@ -500,8 +622,8 @@ def sweep_old_bundles(parent: str, *, keep: str | None = None,
     it was. So: the process that swapped keeps its bundle, and the NEXT
     process to start sweeps whatever the dead ones left behind.
 
-    Scoped to this flavor's own `_BUNDLE_NAME` (FusedRender and FusedBot
-    share /Applications and must never sweep each other's leftovers), to the
+    Scoped to this flavor's own `_BUNDLE_NAME` and legacy names (Fused
+    Render and FusedBot share /Applications and must never sweep each other's leftovers), to the
     exact hidden-sibling shape the swap writes, and to pids that `alive`
     says are gone. A recycled pid only ever makes the sweep SKIP a bundle
     (deleted on a later boot), never delete one a live process is running
@@ -603,6 +725,11 @@ class UpdateManager(_base.UpdateManager):
             self._method = detect_method(self._bundle)
         return self._method
 
+    def known_method(self) -> str | None:
+        """`method()` if it has been worked out already, else None — never
+        runs brew. For the quit path, which must not wait on it."""
+        return self._method
+
     def _disk_version(self) -> str | None:
         """What would launch next time: the version staged beside the bundle
         when it is newer, else the bundle's own CFBundleShortVersionString
@@ -635,7 +762,7 @@ class UpdateManager(_base.UpdateManager):
         if self._bundle is None:
             raise RuntimeError("not running from an installed bundle")
         # realpath, not the stored path: `bundle_path()` only abspaths, so a
-        # bundle reached through a symlink (a /Applications/FusedRender.app
+        # bundle reached through a symlink (a /Applications/Fused Render.app
         # link into a Caskroom artifact, say) would otherwise have its LINK
         # renamed by the swap below — leaving the real bundle untouched and the
         # link pointing at a name that no longer exists.
@@ -851,7 +978,7 @@ class UpdateManager(_base.UpdateManager):
             raise RuntimeError(
                 f"update image contains version {found}, expected {version}")
         # Same key signs both flavors' manifests, so also pin the app identity:
-        # FusedRender must never swap FusedBot.app into /Applications (or vice
+        # Fused Render must never swap FusedBot.app into /Applications (or vice
         # versa) off a mispublished or swapped manifest.
         bundle = str(info.get("CFBundleIdentifier") or "")
         want = _flavor.bundle_id()
@@ -910,6 +1037,9 @@ def start() -> UpdateManager | None:
 
                 def _sweep(own=own):
                     sweep_old_bundles(os.path.dirname(own), keep=own)
+                    # A FusedRender.app a DMG drag of "Fused Render.app"
+                    # left beside it (the bundle was renamed).
+                    retire_legacy_siblings(own)
                     # A staged copy that is no longer newer than the bundle
                     # it sits beside is spent (applied, then the process
                     # died before `os._exit`; or superseded by a manual

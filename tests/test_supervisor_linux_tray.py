@@ -239,7 +239,7 @@ def test_menu_layout_structure(login_enabled):
     assert isinstance(root_id, int)
 
     labels = _labels(children)
-    assert "Open FusedRender" in labels
+    assert "Open Fused Render" in labels
     assert "Open file..." in labels
     # "app logs", not "logs": the call log (SPEC §31) is the other thing a
     # user could mean, and it is the durable one with settings.
@@ -260,13 +260,13 @@ def test_menu_layout_structure(login_enabled):
 
 
 def test_menu_layout_includes_uninstall_above_exit():
-    # The "Uninstall FusedRender..." item sits just above Exit, set off from the
+    # The "Uninstall Fused Render..." item sits just above Exit, set off from the
     # login toggle by the second separator: ..., login, _SEP2, uninstall, exit.
     _root_id, children = linux_tray._menu_layout(False, port=1777)
     labels = _labels(children)
-    assert "Uninstall FusedRender…" in labels or "Uninstall FusedRender..." in labels
+    assert "Uninstall Fused Render…" in labels or "Uninstall Fused Render..." in labels
 
-    uninstall_label = next(l for l in labels if l and l.startswith("Uninstall FusedRender"))
+    uninstall_label = next(l for l in labels if l and l.startswith("Uninstall Fused Render"))
     assert labels.index(uninstall_label) == labels.index("Exit") - 1
 
     by_id = {c["id"]: c for c in children}

@@ -1,7 +1,7 @@
 // WHICH HOST PAGE THIS CODE RUNS IN. The desktop shell (index.html) and the
 // phone page (lan.html, served by fused_render/lan.py to a paired iPhone) mount
 // the SAME React apps — `@apps/bots`, the shell's Tasks page, `@apps/claude`'s
-// ChatMount (D1467). What differs is the door: the LAN listener forwards an
+// ChatMount (D1468). What differs is the door: the LAN listener forwards an
 // allow-list of the desktop's routes (lan.py `_DOORS`) and 404s the rest
 // (take-over, pop-out, worktrees, erase, the Mac's browsers and iMessage …).
 // A component whose control would only ever 404 there hides it by asking

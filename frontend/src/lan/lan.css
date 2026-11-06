@@ -1,7 +1,7 @@
 /* The phone page's stylesheet. THE SHELL'S OWN SHEET, WHOLE (shell.css: the
    Tailwind layer, the tokens, base.css, the tasks / task-cards / task-peek /
    chat-frame / dialogs sheets …): the page mounts the desktop's bots app and
-   Tasks page unchanged (D1467), and they are styled by the same rules on both
+   Tasks page unchanged (D1468), and they are styled by the same rules on both
    hosts — one sheet, so the word-break fix a table got on the Mac is the one
    the phone draws. What follows is only the phone LAYOUT, keyed off
    `html[data-host="lan"]` (lan.html): one section at a time, the chat full

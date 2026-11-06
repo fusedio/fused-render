@@ -358,14 +358,14 @@ def _tasks_api(method, path, body=None, timeout=20):
             said = f"HTTP {e.code}"
         raise RuntimeError(str(said))
     except urllib.error.URLError as e:
-        raise RuntimeError(f"fused-render is not reachable: {e.reason}")
+        raise RuntimeError(f"Fused Render is not reachable: {e.reason}")
 
 
 def _build_prompt(name, d, ask, update=False):
     """Mirror of buildPrompt in the Builds panel. The first line is the marker the
     Builds panel adopts a task by, so it must keep this form."""
     if update:
-        return f"""Build "{name}" · update to the fused-render app in {d}
+        return f"""Build "{name}" · update to the Fused Render app in {d}
 
 You are running inside {d}, which already holds the app "{name}". Read what is there first
 (README.md, SKILL.md, index.html, any .py) and change it to match the request below; keep the parts
@@ -381,7 +381,7 @@ Rules:
 
 What to change:
 {(ask or "").strip()}"""
-    return f"""Build "{name}" · new fused-render app in {d}
+    return f"""Build "{name}" · new Fused Render app in {d}
 
 You are running inside {d}, an empty folder made for this app. Build the app there.
 Rules:
@@ -3431,7 +3431,7 @@ class Bot:
         try:
             origin = _server_origin()
         except Exception as e:  # noqa: BLE001
-            return f"py {stem} › {name}", f"error: fused-render is not reachable: {e}"
+            return f"py {stem} › {name}", f"error: Fused Render is not reachable: {e}"
         res = apptools.run_py(origin, app_dir, name, args)
         return self._deliver(f"py {stem} › {name}", res, app_dir, name, args,
                              f"py-{stem}-{name[:-3]}", tools=apptools.count_tools(app_dir))

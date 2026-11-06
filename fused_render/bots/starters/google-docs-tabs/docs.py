@@ -18,7 +18,7 @@ SCOPES = ["https://www.googleapis.com/auth/documents",
           "https://www.googleapis.com/auth/drive"]   # drive: comments live in the Drive API
 
 def _unshadow_google():
-    """FusedRender's bundled python312.zip carries its own (older, partial)
+    """Fused Render's bundled python312.zip carries its own (older, partial)
     `google` package, which hides the venv's google-* packages. Put the venv's
     google/ first on the package path and drop anything already imported."""
     import sysconfig

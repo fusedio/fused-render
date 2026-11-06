@@ -2,7 +2,7 @@
 
 The Linux AppImage build (scripts/build_linux_appimage.sh, via this module's
 `mime-types` / `mime-xml` commands) reads the exact set of file extensions
-FusedRender registers as an "Open with" handler, and each extension's icon
+Fused Render registers as an "Open with" handler, and each extension's icon
 variant, from `scripts/file_associations.json`.
 
 The JSON is *derived* from the shipping runtime's own association data
@@ -63,7 +63,7 @@ class Association:
 
     @property
     def type_name(self) -> str:
-        return f"{self.token.upper()} File (FusedRender)"
+        return f"{self.token.upper()} File (Fused Render)"
 
 
 def associations() -> list[Association]:

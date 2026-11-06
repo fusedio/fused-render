@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build FusedRender.app (or FusedBot.app, FUSED_RENDER_FLAVOR=bot) + a
+# Build Fused Render.app (or FusedBot.app, FUSED_RENDER_FLAVOR=bot) + a
 # distributable DMG via py2app (SPEC §12, D33-D35).
 #
 # Pipeline: pick/bootstrap a FRAMEWORK-build python (py2app needs one to
@@ -53,7 +53,7 @@ trap _build_failed ERR
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REF="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch ref)"
 SUFFIX="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch suffix)"
-# Product flavor (fused_render/_flavor.py): render -> FusedRender, bot ->
+# Product flavor (fused_render/_flavor.py): render -> Fused Render, bot ->
 # FusedBot. The env var is pinned to its default when unset so a stale
 # fused_render/_baked_flavor.py left in the tree by an earlier bot build (the
 # wheel build below is what removes it, and that has not run yet) cannot turn a
@@ -64,6 +64,12 @@ FLAVOR="$(FUSED_RENDER_FLAVOR="${FUSED_RENDER_FLAVOR:-render}" PYTHONPATH="$REPO
 APP_BASE="$(FUSED_RENDER_FLAVOR="$FLAVOR" PYTHONPATH="$REPO_ROOT" \
   python3 -c "from fused_render import _flavor; print(_flavor.app_name())")"
 APP_NAME="${APP_BASE}${SUFFIX}"
+# The .app folder, which differs from APP_NAME (the executable and the DMG's
+# file-name token): "Fused Render" vs "FusedRender". It holds a space, so
+# every path built from it stays quoted.
+BUNDLE_BASE="$(FUSED_RENDER_FLAVOR="$FLAVOR" PYTHONPATH="$REPO_ROOT" \
+  python3 -c "from fused_render import _flavor; print(_flavor.bundle_name())")"
+BUNDLE_NAME="${BUNDLE_BASE}${SUFFIX}"
 
 # Single source of truth is fused_render/__init__.py's __version__ (pyproject
 # derives it dynamically via [tool.hatch.version], so it has no literal version
@@ -107,16 +113,16 @@ if [[ "$ARCH" == "arm64" ]]; then
   ARCH_SUFFIX=""
 else
   BUILD_VENV="$BUILD_DIR/py2app-venv-$ARCH"
-  # In the DMG name only. The .app inside stays FusedRender.app, the name
+  # In the DMG name only. The .app inside stays "Fused Render.app", the name
   # the updater swaps in /Applications and the cask installs.
   ARCH_SUFFIX="-$ARCH"
 fi
 PY2APP_DIST="$BUILD_DIR/py2app-dist"
 ICNS_PATH="$BUILD_DIR/${APP_NAME}.icns"
-APP_DIR="$PY2APP_DIST/${APP_NAME}.app"
+APP_DIR="$PY2APP_DIST/${BUNDLE_NAME}.app"
 DMG_PATH="$DIST_DIR/${APP_NAME}-${VERSION}${ARCH_SUFFIX}.dmg"
 
-echo "==> fused-render ${VERSION} [${FLAVOR}, ${ARCH}] -> ${APP_NAME}.app (py2app) -> ${DMG_PATH##*/}"
+echo "==> fused-render ${VERSION} [${FLAVOR}, ${ARCH}] -> ${BUNDLE_NAME}.app (py2app) -> ${DMG_PATH##*/}"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 # ---------------------------------------------------------------------------
@@ -990,7 +996,7 @@ WRAPPER_PATH="$APP_DIR/Contents/Resources/bin/fused"
 mkdir -p "$(dirname "$WRAPPER_PATH")"
 cat > "$WRAPPER_PATH" <<WRAPPER
 #!/bin/sh
-# fused CLI bundled with ${APP_NAME}.app - the same interpreter + fused
+# fused CLI bundled with ${BUNDLE_NAME}.app - the same interpreter + fused
 # package the app's Deploy button uses (fused_render/_fused_cli.py, SPEC §19).
 # PYTHONHOME points the bundled python at its own runtime, exactly as the
 # app's own smoke tests / py2app launcher do. PYTHONPATH is UNSET (env -u):
@@ -1432,7 +1438,7 @@ PLIST
         $KC_OPT -s "$SIGN_IDENTITY" "$helper"
     done
     codesign --verify --strict "$CHROMIUM_DEST/FusedChromium.framework"
-    codesign --verify --strict "$CHROMIUM_DEST/FusedRender Helper.app"
+    codesign --verify --strict "$CHROMIUM_DEST/Fused Render Helper.app"
   fi
 
   echo "==> signing nested Mach-O binaries"
@@ -1550,8 +1556,11 @@ label_pos = "bottom"
 PYEOF
 
 rm -f "$DMG_PATH"
+# The volume name is what Finder shows for the mounted image: the brand, with
+# its space. The DMG's file name keeps APP_NAME (no space) for URLs and the
+# updater's download parsing.
 "$BUILD_VENV/bin/dmgbuild" -s "$DMGBUILD_SETTINGS" -D app="$APP_DIR" -D background="$DMG_BACKGROUND" \
-  "$APP_NAME" "$DMG_PATH"
+  "$BUNDLE_NAME" "$DMG_PATH"
 
 # ---------------------------------------------------------------------------
 # 6b. Notarize + staple (optional, D73). Runs only when a notarytool keychain

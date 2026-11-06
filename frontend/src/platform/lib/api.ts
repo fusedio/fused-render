@@ -69,6 +69,10 @@ export interface Config {
   scheme?: string;
   /** "Fused Render" / "Fused Bot" — the brand as copy shows it. */
   display_name?: string;
+  /** The .app folder's name as Finder and System Settings list it: "Fused
+   *  Render" / "FusedBot", or "FusedRender" for an install from before the
+   *  rename that no update has moved yet. */
+  bundle_name?: string;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge
   // (the Claude Code group of Preferences), so its availability is
@@ -1568,10 +1572,6 @@ export interface Prefs {
   // The in-chat recap fold (`chat_recap_enabled`, shell/prefs.py; DEFAULT ON).
   // Optional: absent (an older server) reads as on, like the server's default.
   chat_recap?: { enabled: boolean };
-  // A click on a user message opens the reply under it, or folds it again
-  // (`turn_click_opens_reply_enabled`, shell/prefs.py; opt-in, off by default).
-  // Optional like `queue`: absent reads as off.
-  turn_click_open?: { enabled: boolean };
   // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
   // default). Optional like `queue`: absent reads as off.
   breakout?: { enabled: boolean };
@@ -2138,10 +2138,6 @@ export function putClaudeMaxConcurrentSessions(max: number): Promise<Prefs> {
 
 export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { chat_recap_enabled: enabled });
-}
-
-export function putTurnClickOpensReplyEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { turn_click_opens_reply_enabled: enabled });
 }
 
 export function putBreakoutEnabled(enabled: boolean): Promise<Prefs> {

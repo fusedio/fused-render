@@ -213,8 +213,9 @@ test("with no install path the brief says how to FIND the app", () => {
   });
   // /Applications first: the DMG is how people actually have this, and the
   // second line is the same bundle one level in — the Python a fix edits.
-  expect(text).toContain("/Applications/FusedRender.app");
-  expect(text.indexOf("/Applications/FusedRender.app")).toBeLessThan(
+  // Quoted: the bundle name holds a space, and the line is pasted into a shell.
+  expect(text).toContain("ls -d /Applications/'Fused Render.app' ~/Applications/'Fused Render.app'");
+  expect(text.indexOf("/Applications/'Fused Render.app'")).toBeLessThan(
     text.indexOf("brew list --cask")
   );
   // brew answers a different question: not where, but who manages it.

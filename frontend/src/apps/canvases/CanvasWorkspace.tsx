@@ -1036,7 +1036,7 @@ export default function CanvasWorkspace({
               "requests.exceptions.ConnectionError: HTTPSConnectionPool(host='deere.fused.io', port=443): Max retries exceeded with url: /server/v1/collection/by-id/52e05ec7-b4e1-42bb-a71d-6f34235c4434/import-toml (Caused by ReadTimeoutError(\"HTTPSConnectionPool(host='deere.fused.io', port=443): Read timed out. (read timeout=5)\"))",
           },
         },
-        error_detail: Array.from({ length: 24 }, (_, i) => `  File "/Applications/FusedRender.app/Contents/Resources/lib/python3.12/urllib3/connection.py", line ${600 + i}, in getresponse`),
+        error_detail: Array.from({ length: 24 }, (_, i) => `  File "/Applications/Fused Render.app/Contents/Resources/lib/python3.12/urllib3/connection.py", line ${600 + i}, in getresponse`),
       };
     }
     setSync((prev) =>
@@ -1771,7 +1771,7 @@ export default function CanvasWorkspace({
             type: "fused-embed-ai-done",
             req,
             ok: false,
-            error: { type: "cancelled", message: "Cancelled in fused-render" },
+            error: { type: "cancelled", message: "Cancelled in Fused Render" },
           });
           return;
         }

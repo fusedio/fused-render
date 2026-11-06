@@ -1,4 +1,4 @@
-# FusedChromium.framework + the FusedRender Helper app, built against a CEF
+# FusedChromium.framework + the Fused Render Helper app, built against a CEF
 # binary distribution (cef-builds.spotifycdn.com). Driven by build.sh, which
 # fetches the distribution named in ../manifest.json and assembles the
 # downloadable engine directory; this file only knows how to compile.
@@ -60,7 +60,7 @@ target_include_directories(FusedRenderHelper PRIVATE ${CEF_INCLUDE_PATH} ${CMAKE
 target_link_libraries(FusedRenderHelper PRIVATE libcef_dll_wrapper ${CEF_STANDARD_LIBS})
 target_compile_options(FusedRenderHelper PRIVATE -fobjc-arc -Wno-unused-parameter)
 set_target_properties(FusedRenderHelper PROPERTIES
-    OUTPUT_NAME "FusedRender Helper"
+    OUTPUT_NAME "Fused Render Helper"
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Helper-Info.plist.in"
-    MACOSX_BUNDLE_BUNDLE_NAME "FusedRender Helper"
+    MACOSX_BUNDLE_BUNDLE_NAME "Fused Render Helper"
     MACOSX_BUNDLE_GUI_IDENTIFIER io.fused.render.chromium.helper)

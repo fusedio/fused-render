@@ -1,6 +1,6 @@
 // The phone page the local-network listener (fused_render/lan.py) serves to a
 // paired iPhone: the app grid at `/`, and under `/bots/*` and `/tasks/*` THE
-// DESKTOP'S OWN PAGES (D1467) — `@apps/bots` (list, chat, dialogs, store) and
+// DESKTOP'S OWN PAGES (D1468) — `@apps/bots` (list, chat, dialogs, store) and
 // the shell's Tasks page (the list, the peek with `@apps/claude`'s chat) —
 // mounted here unchanged, under `html[data-host="lan"]` (lan.html), which is
 // what `lan.css` keys the phone layout off and what `@platform/lib/host`'s

@@ -664,7 +664,7 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
         # say what happened rather than blaming the user.
         message = "The reply ended before this was answered."
     elif decision.get("reason") == "timeout":
-        message = ("No answer from the fused-render chat window after "
+        message = ("No answer from the Fused Render chat window after "
                    "%d minutes — treating this as denied." % (WAIT_TIMEOUT // 60))
     elif decision.get("reason") == "cancelled":
         message = "The user cancelled this turn."
@@ -887,7 +887,7 @@ def _handle_app_state(args: dict) -> dict:
     })
     answer = _await_answer(
         os.path.join(STATE_DIR, req_id + ".res.json"), APP_STATE_TIMEOUT,
-        {"error": "the fused-render window did not answer within %d seconds — "
+        {"error": "the Fused Render window did not answer within %d seconds — "
                   "it may have been closed or navigated away, so nothing is "
                   "known about the live app right now" % APP_STATE_TIMEOUT})
     if "state" in answer:
@@ -925,7 +925,7 @@ def _handle_canvas_shot(args: dict) -> dict:
     })
     answer = _await_answer(
         os.path.join(CANVAS_SHOT_DIR, req_id + ".res.json"), CANVAS_SHOT_TIMEOUT,
-        {"error": "no fused-render canvas page answered within %d seconds — the "
+        {"error": "no Fused Render canvas page answered within %d seconds — the "
                   "canvas must be open in Fused Render for a screenshot; ask the "
                   "user to open it, then try again" % CANVAS_SHOT_TIMEOUT})
     image = answer.get("image")
@@ -1018,7 +1018,7 @@ def _terminal_http(method: str, path: str, body=None):
 
 def _http_error_text(status: int, payload) -> str:
     detail = payload.get("error") if isinstance(payload, dict) else None
-    return "%s (HTTP %d)" % (detail or "the fused-render server refused the request",
+    return "%s (HTTP %d)" % (detail or "the Fused Render server refused the request",
                              status)
 
 
@@ -1143,7 +1143,7 @@ _TERMINAL_HANDLERS = {
 TOOL_SCHEMA = {
     "name": TOOL_NAME,
     "description": (
-        "Ask the fused-render chat window whether a tool call may proceed. "
+        "Ask the Fused Render chat window whether a tool call may proceed. "
         "Called by Claude Code as the --permission-prompt-tool; not for model use."
     ),
     "inputSchema": {

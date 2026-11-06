@@ -124,7 +124,7 @@ static const int64_t kMaxTimerDelayMs = 1000 / 30;
   NSString *framework = [engineDir stringByAppendingPathComponent:@"Chromium Embedded Framework.framework"];
   NSString *libcef = [framework stringByAppendingPathComponent:@"Chromium Embedded Framework"];
   NSString *helper = [engineDir stringByAppendingPathComponent:
-                      @"FusedRender Helper.app/Contents/MacOS/FusedRender Helper"];
+                      @"Fused Render Helper.app/Contents/MacOS/Fused Render Helper"];
   NSFileManager *fm = [NSFileManager defaultManager];
   if (![fm isExecutableFileAtPath:libcef]) {
     g_lastError = [NSString stringWithFormat:@"missing %@", libcef];
@@ -178,7 +178,7 @@ static const int64_t kMaxTimerDelayMs = 1000 / 30;
   // other host borrows the helper's.
   NSString *mainBundle = [[NSBundle mainBundle] bundlePath];
   if (![mainBundle hasSuffix:@".app"]) {
-    mainBundle = [engineDir stringByAppendingPathComponent:@"FusedRender Helper.app"];
+    mainBundle = [engineDir stringByAppendingPathComponent:@"Fused Render Helper.app"];
   }
   CefString(&settings.main_bundle_path) = mainBundle.fileSystemRepresentation;
   CefString(&settings.browser_subprocess_path) = helper.fileSystemRepresentation;

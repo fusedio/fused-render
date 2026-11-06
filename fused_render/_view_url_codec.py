@@ -153,7 +153,7 @@ def open_target_path(raw: str) -> str:
       raises OSError. There is no local filesystem path behind either, and
       decoding/falling through used to open a garbage /view page; raising an
       OSError makes `_safe_open` answer status 1 and the caller show the
-      "FusedRender could not open" dialog, exactly like a missing file;
+      "Fused Render could not open" dialog, exactly like a missing file;
     - anything else (a plain absolute path, a folder) -> `view_url_path`.
     """
     if raw.lower().startswith(_flavor.scheme() + ":"):

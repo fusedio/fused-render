@@ -636,7 +636,7 @@ async def api_claude_agent_ws(ws: WebSocket):
             shell_calls.finish(call, status=500, elapsed_ms=dur, outcome="error",
                                err_id=err_id)
             await reply(frame(rid, 500, json.dumps({
-                "error": f"fused-render internal error on WS {route} "
+                "error": f"Fused Render internal error on WS {route} "
                          f"(err_id {err_id}):\n\n{tb}",
             })))
             return

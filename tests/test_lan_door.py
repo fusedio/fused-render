@@ -1,4 +1,4 @@
-"""The phone door (lan.py `_DOORS`, D1467): the iOS app renders the desktop's
+"""The phone door (lan.py `_DOORS`, D1468): the iOS app renders the desktop's
 own bots app and Tasks page, so the LAN listener forwards the DESKTOP'S routes
 for a paired device — an allow-list that fails closed. These tests pin the
 shape: what a paired phone may reach is device-stamped and forwarded, what it

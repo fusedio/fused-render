@@ -102,8 +102,7 @@ export interface TurnProps {
    *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
   onPullPending?: (key: string) => void;
   /** A click on a user bubble opens the reply under it — or folds it again
-   *  (prefs `turn_click_open`, off by default; a toggle since 2026-11-06):
-   *  present only with the flag on, one callback for the log, keyed by the
+   *  (always on since 2026-11-06): one callback for the log, keyed by the
    *  turn. */
   onOpenReply?: (key: string) => void;
   /** The newest queued bubble's tag: "(Ctrl+X to send now)". Other queued bubbles show no tag. */
