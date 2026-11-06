@@ -674,7 +674,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
     if (sharedScroll) {
       if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
       updateToBottom(th);
-    }
+    } else localPinned.current = gapOf(th) <= END_GAP; // the card's own pin, as the layout left the thread (CodeRabbit)
     // Sitting at the end with the tab visible means you are following along: keep "seen" current so a reload or re-open
     // does not draw a New line above messages you already watched arrive. In Stage the thread stays beside the page,
     // except in the narrow fallback (.sfull), where the live view covers it: nothing is seen then.
