@@ -445,16 +445,8 @@
 #claude-rail-bot-peek {
   z-index: 46;
 }
-.claude-rail-favs > .claude-rail-seat,
-.claude-rail-held > .claude-rail-seat {
+.claude-rail-favs > .claude-rail-seat {
   flex: 0 0 auto;
-}
-/* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
-   of a pinned chat that is not the selected node's, above the canvas glyph
-   and under the hairline, so it reads as "pinned, outside this list". */
-.claude-rail-held {
-  display: flex;
-  justify-content: center;
 }
 /* The ring whose chat the hover card shows (ClaudeRail `.peeked`, behind
    `canvas_rail_peek_enabled`): the hover wash stays on while the pointer is

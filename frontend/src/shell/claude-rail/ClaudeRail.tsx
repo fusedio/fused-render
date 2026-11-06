@@ -274,7 +274,6 @@ import {
   activeRing,
   dotCleared,
   favSeats,
-  inPlace,
   keepMarks,
   listHidden,
   listSeats,
@@ -962,12 +961,11 @@ export function ClaudeRail({
   // folder or file to the next, and a card pinned on the last place is not
   // this place's to hold — by key alone it would ride into the foot here
   // (Bugbot on #2069). A place change lets the card go. A NODE SELECTION IS
-  // NOT A PLACE CHANGE (owner, 2026-11-03: the canvas chat pinned, a node
-  // selected — "we showed it with a button above back to canvas button and
-  // we didn't hide or close that chat"): the canvas `place` is remade with
-  // the node's file, but it is the same canvas, so the held card stays and
-  // its ring rides into the foot (`heldExtra`). Compared by `placeRoot`,
-  // which leaves the node out.
+  // NOT A PLACE CHANGE: the canvas `place` is remade with the node's file,
+  // but it is the same canvas — compared by `placeRoot`, which leaves the
+  // node out. (From 2026-11-03 to 2026-11-06 a held card whose chat was not
+  // the node's stayed, its ring riding into the foot above the canvas glyph
+  // — `heldExtra`. Gone: see below.)
   //
   // EXCEPT A FAVOURITE'S OPEN CARD (header): it was not opened on this place,
   // it is the reader's, and it travels (owner, 2026-11-03).
@@ -979,39 +977,27 @@ export function ClaudeRail({
     setHeld(false);
     intent.dismiss();
   }, [root, intent]);
+  // THE HELD CARD GOES WHEN ITS RING LEAVES THE LIST (owner, 2026-11-06:
+  // "when you have a click preview open and the tasks in that list get
+  // filtered because of selection and the task is no longer in the list, we
+  // close the window"): a node selected narrows the list to its chats, and a
+  // card pinned on a chat that is not among them closes — no outsider's ring
+  // in the foot any more. In the layout phase, with the list. Favourites
+  // off, a blocked chat's held card keeps its ring in the favourites' box.
   const heldKey = held ? peekKey : null;
-  const heldExtra = useMemo((): RailRow | null => {
-    // A favourite's held card (a hover on its ring, then a press inside) has
-    // its ring in the favourites section already.
-    // …and so has a blocked chat's (at the head of that section, Bugbot).
-    // …but with the favourites on a favourite's ring never pins THIS card
-    // (window B's), so a held chat that is also starred is the list's held
-    // outsider like any other (Bugbot): only the list's own seats are
-    // excluded. Favourites off, `favs` is empty.
-    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return null;
-    if (!favsOn && favs.some((s) => s.pulse.key === heldKey)) return null;
-    const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
-    if (!pulse) return null;
-    // WITH THE FAVOURITES ON the list scrolls, so nothing is "past its room":
-    // the one outsider left is the selected node's neighbour on this canvas.
-    // A chat of ANOTHER place — a blocked chat from elsewhere whose card was
-    // held while it was answered, and which left the section the moment it
-    // unblocked — is not drawn, and its card goes with it (owner, 2026-11-05:
-    // "should close preview and not show up unless the task belongs to the
-    // same view / same page").
-    if (favsOn && !inPlace(pulse, place)) return null;
-    return { pulse, row: full.get(heldKey) ?? null };
-  }, [baseSeats, heldKey, rows, full, favs, favsOn, place]);
-  // Every seat this rail's card may show — the list's, plus the held
-  // outsider, plus the favourites (a hover on their rings, header) — for the
-  // card's anchors, the kept mounts and the prune; the LIST itself is
-  // `baseSeats`, the outsider draws in the foot and the favourites in their
-  // own section (below). A favourite's OPEN card is the shell's
-  // (FavouritePeek), never this one.
-  const seats = useMemo(
-    () => (heldExtra || favs.length > 0 ? [...baseSeats, ...(heldExtra ? [heldExtra] : []), ...favs] : baseSeats),
-    [baseSeats, heldExtra, favs],
-  );
+  useLayoutEffect(() => {
+    if (!heldKey) return;
+    if (baseSeats.some((s) => s.pulse.key === heldKey)) return;
+    if (!favsOn && favs.some((s) => s.pulse.key === heldKey)) return;
+    setHeld(false);
+    intent.dismiss();
+  }, [heldKey, baseSeats, favs, favsOn, intent]);
+  // Every seat this rail's card may show — the list's, plus the favourites
+  // (a hover on their rings, header) — for the card's anchors, the kept
+  // mounts and the prune; the LIST itself is `baseSeats`, the favourites
+  // draw in their own section (below). A favourite's OPEN card is the
+  // shell's (FavouritePeek), never this one.
+  const seats = useMemo(() => (favs.length > 0 ? [...baseSeats, ...favs] : baseSeats), [baseSeats, favs]);
   const favKeys = useMemo(() => new Set(favs.map((s) => s.pulse.key)), [favs]);
   // Read at the moment, not at the render that made the callback: the chip's
   // hand-over runs after the hop (`onChipLeave`).
@@ -1157,9 +1143,8 @@ export function ClaudeRail({
   // star): the list no longer holds it (header, `listSeats`), so this card
   // lets go and the ring is the favourites section's. Only on the TURN to
   // starred while shown: a favourite's ring now opens this card on a hover
-  // (header), and that card must stay. In the layout phase, so the held
-  // outsider's ring (`heldExtra`) never paints beside the section's — and
-  // while it is still a seat, so `letGo` finds its draft to flush.
+  // (header), and that card must stay. In the layout phase, while it is
+  // still a seat, so `letGo` finds its draft to flush.
   // A star pressed on in this rail's card: the ring moved to the favourites
   // section, so this card lets go now, and the favourite's card opens in
   // this window — a star you just pressed is a card you want to see
@@ -1965,9 +1950,9 @@ export function ClaudeRail({
   const plusLabel = waiting ?? (plusPane ? "New chat" : newTask.on ? `New task on ${newTask.on}` : "New task");
 
   // ONE ACTIVE RING PER SECTION (header; rail-peek-lib `activeRing`). The
-  // list's section is its rings plus the held outsider in the foot. With the
+  // list's section is its rings (no outsider in the foot since 2026-11-06). With the
   // favourites off the list keeps every mark it had (flag-off parity).
-  const listSection = heldExtra ? [...baseSeats, heldExtra] : baseSeats;
+  const listSection = baseSeats;
   const activeList = activeRing(
     listSection.map((s) => s.pulse.key),
     [
@@ -2004,7 +1989,7 @@ export function ClaudeRail({
     measureEdges();
   }, [place, activeList, measureEdges, hideList]);
 
-  // ONE RING, as the list draws it — and as the foot draws the held outsider.
+  // ONE RING, as the list draws it (and as the favourites' section does).
   const ringOf = ({ pulse: t, row }: RailRow, foot = false) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
@@ -2300,19 +2285,14 @@ export function ClaudeRail({
             {baseSeats.map((seat) => ringOf(seat))}
           </div>
         )}
-        {(node || heldExtra) && (
-          // THE FOOT, under the list's hairline: the held outsider's ring
-          // (header), then the way back to the whole canvas — the canvas
-          // glyph, which deselects the node in the workbench. BELOW the list,
-          // not its last row: the list clips to the rings that fit, and a
-          // way out that was clipped off is no way out.
+        {node && (
+          // THE FOOT, under the list's hairline: the way back to the whole
+          // canvas — the canvas glyph, which deselects the node in the
+          // workbench. BELOW the list, not its last row: the list clips to
+          // the rings that fit, and a way out that was clipped off is no
+          // way out.
           <div className="claude-rail-all-seat">
-            {heldExtra && (
-              <div className="claude-rail-held" role="list" aria-label={node ? "Pinned chat, not on this node" : "Pinned chat, past the list's room"}>
-                {ringOf(heldExtra)}
-              </div>
-            )}
-            {node && onSelectNode && (
+            {onSelectNode && (
             <button
               ref={allRef}
               type="button"
