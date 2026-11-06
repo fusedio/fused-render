@@ -190,7 +190,6 @@ import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { getSideHidden, setSideHidden } from "@platform/lib/side-hidden";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, SyntheticEvent } from "react";
-import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
@@ -203,7 +202,6 @@ import {
   applyRename,
   applySnapshot,
   catalogPath,
-  canvasProjectPath,
   canvasWorkspacePath,
   cloneCanvas,
   fixWithClaude,
@@ -571,44 +569,9 @@ function seedNodeSessionFromUrl(env: WorkbenchEnv, canvas: string, node: NodeSel
 export default function CanvasWorkspace({
   env,
   name,
-  embedded = false,
-  onWorkbenchUrl,
-  syncSlot = null,
-  railCardPinned = false,
 }: {
   env: WorkbenchEnv;
   name: string;
-  /** FRAMED BY THE PROJECT PAGE (shell/CanvasPage.tsx, /canvases-project/…)
-   *  as its read-only Overview: the workbench is loaded as a VIEWER
-   *  (`fused_embed_readonly=1` — no drag, connect, add, rename, delete, no
-   *  autosave; the host's deltas still patch it in place, so a Claude task
-   *  editing the clone shows live), there is no right pane at all (no canvas
-   *  chat, no node pane — a selection is ignored), and the sync strip drops
-   *  the back arrow, env chip and workbench link, which the page's own
-   *  header carries. The sync loops run as they do in the editor: the
-   *  watcher is still this process's. Off (the default) this is the editor
-   *  at /canvases/<env>/<name>: two panes, canvas + Claude. */
-  embedded?: boolean;
-  /** The hosted workbench editor's URL for this canvas (no embed flags), once
-   *  the base URL and handle are known; null until then. The project page's
-   *  header draws it as "Open in Workbench". */
-  onWorkbenchUrl?: (url: string | null) => void;
-  /** `embedded` only: the project page's SYNC TAB panel. The sync chrome —
-   *  the strip, the log (pinned open, no Close), Pull / Hard pull, a failed
-   *  push's detail with Fix with Claude — is portalled INTO it instead of
-   *  drawn over the canvas (owner, 2026-10-20: "remove the sync row from the
-   *  overview. Add a sync tab with all the sync panel details"). The state
-   *  stays here, with the sync loops, which the Overview keeps running
-   *  behind every tab; the panel is only where it is shown. Null while the
-   *  Sync tab is not the one on screen: nothing is drawn, nothing stops. */
-  syncSlot?: HTMLElement | null;
-  /** `embedded` only: the PROJECT PAGE's rail has a card pinned or held
-   *  (ClaudeRail `onCardPinned`, CanvasPage). The viewer draws no rail of its
-   *  own, but it still hands the frame focus on a pointer ENTER
-   *  (`focusCanvasOnEnter`), which would take the keyboard out of the card's
-   *  composer as the pointer crosses the workbench — the editor's own rail
-   *  sets `railCardPinnedRef` for the same reason (Bugbot on #2091). */
-  railCardPinned?: boolean;
 }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   // The workbench's own origin, for links a person opens: `baseUrl` is the
@@ -711,11 +674,10 @@ export default function CanvasWorkspace({
   );
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
-  // The failed-push detail panel under the strip: shut by default in the
-  // editor (the strip already says why in one line and wears an "N errors"
-  // pill; the pill folds it open and shut), open on the project page's Sync
-  // tab, which exists to show exactly this.
-  const [pushDetailOpen, setPushDetailOpen] = useState(embedded);
+  // The failed-push detail panel under the strip: shut by default (the strip
+  // already says why in one line and wears an "N errors" pill; the pill folds
+  // it open and shut).
+  const [pushDetailOpen, setPushDetailOpen] = useState(false);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
   // watcher holds its push while the server_to_disk leg is stale; this button
   // is the user's pull. The result reaches the embed as a delta like any other
@@ -1451,18 +1413,15 @@ export default function CanvasWorkspace({
   // Sent on every change, and on every frame load below. `code` is always
   // false: the pane has no Code tab (the workbench's own code pane is the
   // code view).
-  // The viewer (`embedded`) renders no pane at all: it reports shut, so the
-  // frame draws no chip.
   // The pane shares the row with the frame (it never covers it), so the
   // width it reports over the frame is always 0: the frame's collapse chip
   // sits at its own right edge.
   // Written after commit, not during render: a discarded render must not
   // leave a pane state the message handler reads that was never shown.
-  const paneOpen = !embedded && sideOpen;
-  const sidePanelStateRef = useRef({ open: paneOpen, code: false, width: 0 });
+  const sidePanelStateRef = useRef({ open: sideOpen, code: false, width: 0 });
   useLayoutEffect(() => {
-    sidePanelStateRef.current = { open: paneOpen, code: false, width: 0 };
-  }, [paneOpen]);
+    sidePanelStateRef.current = { open: sideOpen, code: false, width: 0 };
+  }, [sideOpen]);
   const sendCodePanelState = useCallback(() => {
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
@@ -1474,7 +1433,7 @@ export default function CanvasWorkspace({
   }, []);
   useEffect(() => {
     sendCodePanelState();
-  }, [sideOpen, embedded, sendCodePanelState]);
+  }, [sideOpen, sendCodePanelState]);
 
   // Tell the canvas whether THIS window is focused (see the header): on every
   // change, and whenever the frame (re)loads or re-hydrates, since it starts
@@ -1534,11 +1493,11 @@ export default function CanvasWorkspace({
   const focusCanvasOnEnter = useCallback(
     (e: React.MouseEvent) => {
       if (e.buttons !== 0) return;
-      if (railCardPinnedRef.current || railCardPinned) return;
+      if (railCardPinnedRef.current) return;
       if (activeElementIsEditable(document)) return;
       frameRef.current?.focus({ preventScroll: true });
     },
-    [railCardPinned],
+    [],
   );
 
   // One embed snapshot → the clone, answered to the frame. A 409 is retried
@@ -2221,9 +2180,6 @@ export default function CanvasWorkspace({
         }
       }
       if (type === "fused-embed-selection") {
-        // The viewer has no pane to follow a selection into (see `embedded`);
-        // ignoring it here also keeps `?node=` off the project page's URL.
-        if (embedded) return;
         // Before its first hello the frame has not hydrated: what it holds
         // selected is the shell's boot default (`udf_1`), not a node of this
         // canvas, and following it opened that file's pane over the chat the
@@ -2272,7 +2228,6 @@ export default function CanvasWorkspace({
         // A legacy workbench's node toolbar code button (header): show the
         // node's pane. The workbench frame's own window only, on top of the
         // origin check above.
-        if (embedded) return;
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
         const udfName = event.data?.udfName;
         if (typeof udfName !== "string" || !udfName) return;
@@ -2294,8 +2249,7 @@ export default function CanvasWorkspace({
       }
       if (type === "fused-embed-delete") {
         // The canvas menu's confirmed "Delete canvas" (header). The editor
-        // frame's own window only; the project page's viewer never sends it.
-        if (embedded) return;
+        // frame's own window only.
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
         const reject = (reason: string) => {
           const origin = baseOriginRef.current;
@@ -2326,7 +2280,6 @@ export default function CanvasWorkspace({
         // frame's own window only. Another process owning the clone is no
         // reason to stay here: the workspace shows who owns it (as the list
         // page's own open does).
-        if (embedded) return;
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
         const target = event.data?.name;
         if (typeof target !== "string" || !target) return;
@@ -2354,7 +2307,6 @@ export default function CanvasWorkspace({
       if (type === "fused-embed-open-side" || type === "fused-embed-close-side") {
         // An older workbench's right-edge chips (header). A close also drops
         // an open-code still waiting on its selection echo: the close wins.
-        if (embedded) return;
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
         const open = type === "fused-embed-open-side";
         if (!open) pendingOpenRef.current = null;
@@ -2363,16 +2315,13 @@ export default function CanvasWorkspace({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, sendAiModels, relaySnapshot, relayBody, relayAi, relayAiToolResult, abortAi, relayDelta, enqueueRelay, env, name, embedded, settleShot]);
+  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, sendAiModels, relaySnapshot, relayBody, relayAi, relayAiToolResult, abortAi, relayDelta, enqueueRelay, env, name, settleShot]);
 
-  // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
+  // The hosted editor's URL, for the sync strip's workbench link.
   const workbenchUrl =
     workbenchBase && handle
       ? `${workbenchBase}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
       : null;
-  useEffect(() => {
-    onWorkbenchUrl?.(workbenchUrl);
-  }, [workbenchUrl, onWorkbenchUrl]);
 
   // Mirror the node onto this page's URL so a reload lands on it, and drop the
   // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
@@ -2418,7 +2367,6 @@ export default function CanvasWorkspace({
   // and the shared flag with it, so the explorer and the app page open the
   // way this page was left (platform/lib/side-hidden).
   useEffect(() => {
-    if (embedded) return;
     setSideHidden(!sideOpen);
     const url = new URL(window.location.href);
     if (sideOpen) url.searchParams.delete("side");
@@ -2426,7 +2374,7 @@ export default function CanvasWorkspace({
     if (url.href !== window.location.href) {
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [sideOpen, embedded]);
+  }, [sideOpen]);
 
   // After every push, tell the workbench's save chip it is published. This
   // is informational only — the frame never reloads or re-fetches on it (the
@@ -2578,9 +2526,9 @@ export default function CanvasWorkspace({
   // Back to the default once a push lands, so the next failure starts the
   // same way; open while Claude works on it, so its state stays in view.
   useEffect(() => {
-    if (!pushError) setPushDetailOpen(embedded);
+    if (!pushError) setPushDetailOpen(false);
     else if (fixActive || fixBusy) setPushDetailOpen(true);
-  }, [pushError, fixActive, fixBusy, embedded]);
+  }, [pushError, fixActive, fixBusy]);
   const stateFixActive = sync?.fix_active;
   useEffect(() => {
     if (stateFixActive !== undefined) setFixActive(stateFixActive);
@@ -2822,13 +2770,6 @@ export default function CanvasWorkspace({
       // (the server answers it 409, a confusing thing to show right after a
       // successful click).
       setFixActive(true);
-      if (embedded) {
-        // The project page has no chat to hand the run to: the fix is a
-        // task on the clone, so the Tasks tab is where it shows. No `run=`
-        // on this page's URL — nothing here reads it (CodeRabbit on #1795).
-        navigateUrl(canvasProjectPath(env, name, { tab: "tasks" }));
-        return;
-      }
       // The fix runs on the CLONE (canvases.py spawns on the dir), so it is
       // the canvas chat's to show: leave the node, on both sides.
       if (nodeRef.current) {
@@ -2851,11 +2792,7 @@ export default function CanvasWorkspace({
   // relay's busy loop — the relay running in all but name.
   const frameSrc =
     baseUrl && handle && dir && !owned
-      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=3` +
-        // The viewer flag rides the flagged URL only; a flagged URL without
-        // it is the editor, and the workbench records that per load
-        // (application embed-auth.ts), so the editor never inherits it.
-        (embedded ? "&fused_embed_readonly=1" : "")
+      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=3`
       : null;
   // A frame that reloads (new src) is down again until its next hello, and
   // the AI runs it had in flight have no reader left.
@@ -2872,26 +2809,15 @@ export default function CanvasWorkspace({
 
   const pushLeg = sync?.legs.disk_to_server;
 
-  // The sync chrome. In the editor it sits above the panes (the strip, the
-  // drawer on click, the failed-push banner). Embedded, it goes to the
-  // project page's Sync tab (`syncSlot`) — the log pinned open, since the
-  // tab IS the log — and nothing of it over the Overview.
-  const pinned = embedded;
-  // The page's own errors (no handle, sync/start failing) stay with the
-  // frame on EVERY tab, embedded or not: a frame stuck on "Loading
-  // workbench…" must say why where the reader is looking, not on the Sync
-  // tab (CodeRabbit on #1795).
-  const banners = (
+  // The sync chrome, above the panes: the page's own errors (no handle,
+  // sync/start failing), the strip, the drawer on click, the failed-push
+  // banner.
+  const chrome = (
     <>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {startError && !error && (
         <ErrorBanner>{`Could not start syncing this canvas (retrying): ${startError}`}</ErrorBanner>
       )}
-    </>
-  );
-  const chrome = (
-    <>
-      {!embedded && banners}
       {/* Always up ("Connecting…" before the first state): it carries the
           way back to the listing, which must not wait on sync. */}
       <SyncStrip
@@ -2902,17 +2828,15 @@ export default function CanvasWorkspace({
         failure={relayFailure}
         owned={owned}
         live={live}
-        open={pinned || drawerOpen}
+        open={drawerOpen}
         // No drawer to open before the first state: arming it now would pop
-        // it unprompted when that state lands. Pinned, there is nothing to
-        // toggle.
+        // it unprompted when that state lands.
         onToggle={() => {
-          if (!pinned && (sync || owned)) setDrawerOpen((o) => !o);
+          if (sync || owned) setDrawerOpen((o) => !o);
         }}
         // Back to the environment this canvas lives in, not the default.
         onBack={() => navigateUrl(catalogPath(env))}
         workbenchUrl={workbenchUrl}
-        embedded={embedded}
         pushErrors={
           pushError
             ? { count: pushErrorCount, open: pushDetailOpen, onToggle: () => setPushDetailOpen((o) => !o) }
@@ -2925,7 +2849,7 @@ export default function CanvasWorkspace({
           onPull: () => void onPull(),
         }}
       />
-      {(pinned || drawerOpen) && (sync || owned) && (
+      {drawerOpen && (sync || owned) && (
         <SyncDrawer
           env={env}
           name={name}
@@ -2948,7 +2872,7 @@ export default function CanvasWorkspace({
               pushLeg?.state === "pushing",
             onPull: () => void onPull(true),
           }}
-          {...(pinned ? {} : { onClose: () => setDrawerOpen(false) })}
+          onClose={() => setDrawerOpen(false)}
         />
       )}
       {pushBannerShown && pushLeg && sync && (
@@ -2975,9 +2899,7 @@ export default function CanvasWorkspace({
               title="Start a Claude session on the local clone, primed with these errors"
             >
               {fixActive
-                ? embedded
-                  ? "Claude is on it — see Tasks →"
-                  : "Claude is on it — see chat →"
+                ? "Claude is on it — see chat →"
                 : fixBusy
                   ? "Starting…"
                   : "Fix with Claude"}
@@ -3014,14 +2936,7 @@ export default function CanvasWorkspace({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
-      {embedded ? (
-        <>
-          {banners}
-          {syncSlot ? createPortal(chrome, syncSlot) : null}
-        </>
-      ) : (
-        chrome
-      )}
+      {chrome}
       {frameSrc && (
         <SyncFramePoster
           name={name}
@@ -3044,12 +2959,12 @@ export default function CanvasWorkspace({
           // the wrapper's mouseenter still fires as the pointer crosses in.
           onMouseEnter={focusCanvasOnEnter}
           style={{
-            // The viewer has no right pane, and a shut pane leaves the row to
-            // the canvas; up, the seam's drag sets the split (`leftFrac`).
+            // A shut pane leaves the row to the canvas; up, the seam's drag
+            // sets the split (`leftFrac`).
             // `0 1`: the canvas yields when the window narrows under the
             // pane's floor (the pane column's minWidth below), never the
             // other way round.
-            flex: embedded || !sideOpen ? "1 1 auto" : `0 1 ${leftFrac * 100}%`,
+            flex: !sideOpen ? "1 1 auto" : `0 1 ${leftFrac * 100}%`,
             minWidth: 0,
             position: "relative",
             pointerEvents: dragging ? "none" : "auto",
@@ -3129,7 +3044,7 @@ export default function CanvasWorkspace({
             </div>
           )}
         </div>
-        {!embedded && sideOpen && (
+        {sideOpen && (
           <div
             // The right pane's column: the seam and the pane, the rest of
             // the row past the canvas's share. Its floor is
@@ -3246,7 +3161,7 @@ export default function CanvasWorkspace({
         </div>
           </div>
         )}
-        {!embedded && (!sideOpen || railAlways) && (
+        {(!sideOpen || railAlways) && (
           // The pane shut: the rail takes its edge (ClaudeRail.tsx) — the way
           // back in, plus Claude's state on this canvas, which is what the
           // pane was showing. With favourites on it stands past the OPEN pane

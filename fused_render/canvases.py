@@ -5155,8 +5155,8 @@ def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(def
         from fused_render.server.routers.current_apps import _archive_folder
 
         # The CONFIGURED spelling, not the resolved one: the desk row and the
-        # tasks' project were recorded as `canvases_dir + "/" + name`
-        # (CanvasPage), and canonical_fs_path resolves no symlinks.
+        # tasks' project were recorded as `canvases_dir + "/" + name`,
+        # and canonical_fs_path resolves no symlinks.
         desk_dir = _canvas_dir(env, name)
         current_apps.remove(desk_dir)
         _archive_folder(desk_dir)

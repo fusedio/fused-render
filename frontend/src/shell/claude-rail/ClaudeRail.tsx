@@ -25,7 +25,7 @@
 //     should be at the top of the list and it should show a new task modal
 //     when we click it, instead of opening the sidebar"). It opens the Tasks
 //     page's own card (shell/NewJobModal) over the canvas, prefilled and
-//     locked on the clone the way the project page's Tasks tab opens it —
+//     locked on the clone —
 //     the pane stays shut, and the task lands on the rail through the pulse
 //     like any other. (Beside the OPEN pane it is the pane's new chat
 //     instead — below.)
@@ -2595,11 +2595,10 @@ export function ClaudeRail({
           initialDraft={card.draft ?? null}
           chatKey={card.chatKey ?? ""}
           // SCOPED TO THE PLACE — the clone or the selected node's file in
-          // it, the app folder, the explorer's folder or file — the project
-          // page's Tasks tab's way (CanvasPage.tsx `scope.project`,
-          // Scheduled.tsx `lockTarget`): a task made from a page is a task
-          // about that page, so the path is stated, not asked (the + is held
-          // until the page can say it).
+          // it, the app folder, the explorer's folder or file — the app
+          // page's Tasks tab's way (Scheduled.tsx `lockTarget`): a task
+          // made from a page is a task about that page, so the path is
+          // stated, not asked (the + is held until the page can say it).
           initialTarget={card.target}
           lockTarget={card.target !== null}
           // …and on a canvas SAID as the canvas and the node, not as that

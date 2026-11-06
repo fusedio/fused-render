@@ -2440,7 +2440,7 @@ def main() -> None:
 
         def _open_page_native(path: str) -> None:
             """A shell PAGE picked in the launcher (the Bots page row, a
-            canvas row's project page): a window already on it comes
+            canvas row's editor): a window already on it comes
             forward, else one opens (`WindowManager.show_page`); a browser
             tab with the windows off. Main thread."""
             manager = state["windows"]
