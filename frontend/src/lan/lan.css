@@ -130,7 +130,7 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
 }
 .lan-header {
   flex: none;
-  padding: max(10px, env(safe-area-inset-top)) 12px 6px;
+  padding: max(12px, env(safe-area-inset-top)) 16px 8px;
   background: var(--bg);
 }
 .lan-host {
@@ -199,9 +199,21 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
 .lan-bots--chat .bots-page main > .bots {
   display: none;
 }
-/* The list header's Mac-only buttons: Browsers (/api/bots/browsers is a 404 on
-   the LAN door), Usage (same), and the collapse-to-rail toggle (one column). */
-.lan-bots .bots-page :is(#browsers, #usage, #lcol) {
+/* The list's own header row ("Bots", calls today, Browsers, New bot, the
+   collapse-to-rail toggle) and its footer (Builds / Apps / Preferences) are the
+   Mac's: the section switch above is the title here, New bot is the header's
+   "+", and the rest is a 404 on the LAN door. The search stays, aligned to
+   the page gutter. */
+.lan-bots .bots-page .bots > header,
+.lan-bots .bots-page .bots > .botfoot {
+  display: none;
+}
+.lan-bots .bots-page .bots > label.search {
+  margin: 0 16px 8px;
+}
+/* The Tasks page's own title ("Tasks") repeats the switch; the toolbar
+   (List / Board, filters, New task) stays and aligns to the page gutter. */
+.lan-tasks .schedule-page > header.schedule-header {
   display: none;
 }
 /* Thumb-sized: a card's buttons, the question options, the composer's send. */
@@ -248,4 +260,13 @@ html[data-host="lan"] [data-slot="alert-dialog-content"] {
   max-height: 92dvh !important;
   border-radius: 16px 16px 0 0 !important;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+/* Tailwind v4's -translate-x-1/2 / -translate-y-1/2 is the `translate`
+   PROPERTY, not a transform. Its own block: Lightning CSS folds a `translate`
+   that sits beside `transform` in one block into the transform and drops the
+   reset. */
+html[data-host="lan"] body [data-slot="dialog-content"],
+html[data-host="lan"] body [data-slot="alert-dialog-content"] {
+  translate: 0 0 !important;
+  scale: 1 !important;
 }

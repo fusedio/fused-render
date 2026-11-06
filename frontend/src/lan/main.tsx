@@ -44,7 +44,12 @@ function BotsSection({ id }: { id: string | null }) {
   return (
     <div className={`lan-section lan-bots ${id ? "lan-bots--chat" : "lan-bots--list"}`}>
       <div className="lan-header">
-        <HeaderRow active="bots" back={id ? { href: "/bots", label: "Bots" } : undefined} />
+        <HeaderRow
+          active="bots"
+          back={id ? { href: "/bots", label: "Bots" } : undefined}
+          addLabel="New bot"
+          onAdd={id ? undefined : () => void import("@apps/bots/state/store").then((m) => m.openDialog({ kind: "newBot" }))}
+        />
       </div>
       <div className="lan-host" id="content">
         <Suspense fallback={null}>
