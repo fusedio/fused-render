@@ -1349,11 +1349,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // way, handing a favourite's chat over at the push; the
                     // favourite's window walks the Open door (`onOpenChat`:
                     // the page's door, the card closed once the hop went).
-                    // Neither closes the card here: the favourite's window
-                    // closes itself once the hop went (its leave guard may
-                    // refuse), and the rail's card goes with its rail.
+                    // A tag is a VIEW move, not a door out: the favourite's
+                    // window stays up across the hop (owner, 2026-11-07:
+                    // "why does the fav window close?") — a plain
+                    // navigation, never the Open door, which closes it. The
+                    // rail's card hops the where-chip's way, handing a
+                    // favourite's chat over at the push.
                     if (onChipLeave) walkDoor(head.t.key, href, o.isDir, o.keyboard);
-                    else onOpenChat(href);
+                    else void navigateUrl(href, o.isDir === undefined ? undefined : { isDir: o.isDir });
                   }}
                   onSelected={(e) => {
                     // Back to the composer (the where-chip's rule below).
