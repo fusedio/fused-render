@@ -33,7 +33,6 @@ import {
   type ReactNode,
 } from "react";
 
-import { useTurnClickOpensReplyEnabled } from "../feature-flag";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { cn } from "@platform/lib/utils";
 
@@ -942,27 +941,38 @@ export const Transcript = memo(function Transcript({
     followTail.current = false;
     bumpFold((n) => n + 1);
   }, []);
-  // A CLICK ON A USER MESSAGE OPENS THE REPLY UNDER IT (prefs `turn_click_open`,
-  // off by default). Open only, never a toggle: every assistant row between
-  // this message and the next one that is folded becomes `manual-open`, the
-  // same pin the ✻ mark writes. A reply already open, or a one-liner (no
-  // fold state at all), is left as it is.
-  const clickOpens = useTurnClickOpensReplyEnabled();
+  // A CLICK ON A USER MESSAGE TOGGLES THE REPLY UNDER IT (always on since
+  // 2026-11-06; it was an opt-in pref before): the assistant rows between this message and the next
+  // one are read together — any of them folded, every one becomes
+  // `manual-open`, the same pin the ✻ mark writes; all of them open, every
+  // one becomes `manual-closed`, the same pin a fold's own click writes. A
+  // one-liner (no fold state at all) and a reply still streaming are left
+  // as they are: the first is never folded, the second is never folded
+  // while it is being written (the seed's rule) — and so is the reply the
+  // run is BLOCKED in (`blockedFold`, an unanswered card: `pendingCard`
+  // draws it open and its own fold toggle is withheld; CodeRabbit on
+  // #2154): it opens with the others, it never folds.
   const turnsRef = useRef(state.turns);
   turnsRef.current = state.turns;
+  const blockedFoldRef = useRef(blockedFold);
+  blockedFoldRef.current = blockedFold;
   const onOpenReply = useCallback((key: string) => {
     const turns = turnsRef.current;
     const at = turns.findIndex((t) => t.key === key);
     if (at < 0) return;
-    let opened = false;
+    const ids: string[] = [];
     for (let i = at + 1; i < turns.length && turns[i].role !== "user"; i++) {
-      if (turns[i].role !== "assistant") continue;
-      const id = foldIds.current.get(turns[i].key);
-      if (id === undefined || !isFolded(folds.current.get(id))) continue;
-      folds.current.set(id, "manual-open");
-      opened = true;
+      const t = turns[i];
+      if (t.role !== "assistant" || t.streaming) continue;
+      const id = foldIds.current.get(t.key);
+      if (id !== undefined) ids.push(id);
     }
-    if (!opened) return;
+    if (ids.length === 0) return;
+    const open = ids.some((id) => isFolded(folds.current.get(id)));
+    for (const id of ids) {
+      if (!open && id === blockedFoldRef.current) continue;
+      folds.current.set(id, open ? "manual-open" : "manual-closed");
+    }
     // Same rule as `onToggleCollapse`: the reader asked to READ something.
     followTail.current = false;
     bumpFold((n) => n + 1);
@@ -1011,7 +1021,7 @@ export const Transcript = memo(function Transcript({
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
                   {...(onPullPending ? { onPullPending } : {})}
-                  {...(clickOpens ? { onOpenReply } : {})}
+                  onOpenReply={onOpenReply}
                   {...(sendNowKey && sendNowKey === turn.key ? { sendNowHint: true } : {})}
                   {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}

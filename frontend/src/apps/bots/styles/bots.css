@@ -305,8 +305,12 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 /* GFM table: full width of the bubble, hairline rows, cells wrap (a comparison table's cells are sentences). The
    md() renderer wraps it in .tablewrap, which scrolls sideways when min-content beats the bubble (Bugbot, #1556). */
 .bots-page .msg.md .tablewrap { overflow-x: auto; max-width: 100%; }
-.bots-page .msg.md table { width: 100%; border-collapse: collapse; font-size: .95em; }
-.bots-page .msg.md th, .bots-page .msg.md td { padding: .3em .6em; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+/* `min-width`, not `width`: the table fills the bubble when it can and grows past it when its content needs to; the
+   wrapper scrolls the rest. Cells break at words, never inside one: the bubble's `word-break: break-word` would be
+   inherited, and under auto table layout that makes every cell's min-content ONE CHARACTER, so an over-constrained row
+   pays for a long column by shredding another into "8 / 4 / 8 / 4" (same collapse transcript.css fixed, 2026-10-18). */
+.bots-page .msg.md table { min-width: 100%; border-collapse: collapse; font-size: .95em; }
+.bots-page .msg.md th, .bots-page .msg.md td { padding: .3em .6em; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; word-break: normal; overflow-wrap: normal; }
 .bots-page .msg.md th { font-weight: 500; color: var(--muted); }
 .bots-page .msg.md tr:last-child td { border-bottom: 0; }
 /* A bubble holding a wide block (md.ts .wide: a 4+ column table or a long-lined code fence) takes the whole thread

@@ -1166,7 +1166,17 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
   sweep and the workspace steps (v3 migration, Super Bot seed, the takeover
   walk, which would stop the claimant's running tasks as stale, the browser
   sweep); the pass that later wins the claim runs those steps once, and the
-  doors open after that pass. The seed also waits while a legacy BOT remains
+  doors open after that pass. **The claim moves without a quit** (2026-11-06):
+  the claimant writes its record (`{pid, origin, app, version, home}`) into
+  `.routines.lock`, the 409 carries `reason: "workspace_busy"` and `holder`
+  (`registry.workspace_info`), and the page keeps that banner up (sticky; the
+  poll hides only passing ones) with a "Take over here" button → `POST
+  /api/bots/workspace/take`, which posts `/api/bots/workspace/yield` to the
+  holder's origin (it stops its tasks and Chromes, drops the claim, forgets its
+  Bots so they rebuild read-only, and skips re-claiming for 30 s) and then
+  claims here and runs the workspace steps inline under `ws_lock` (the pass
+  takes the same lock), so the doors open on return. A holder without a
+  record (an older build) cannot be asked: the 409 says to quit it. The seed also waits while a legacy BOT remains
   (a `bot.json` in the legacy data dir or under `.unmigrated/<id>/`; strays
   never count): it could be a Super Bot the seed cannot see.
 - `server.py`: include `bots.routes.router` and `apps` routes; `/` →
@@ -1909,7 +1919,43 @@ gates or widen its reach). Model and effort checks are the Settings
 dialog's, lifted into `bot.check_settings`; the face rules into
 `bot.check_face` (`routes._settings` / `_flag` call the same two).
 
-**Always ask.** `tools.ALWAYS_ASK = frozenset(MANAGE_TOOLS)`.
+**A bot's own routines — `routine_add` (`tools.ROUTINE_TOOLS`, 2026-11-06).**
+Owner's ask: "bots should be able to create routine themself" (a bot had
+answered "I can't create routines myself, add one in Settings"). Every bot,
+Super Bot included, gets `routine_add {task, kind: interval|daily|once,
+minutes?, time?, weekdays?, at?}` on its roster (both engines; the steps
+engine's JSON carries the task in `text` and the time in `value`,
+`tools._routine_args` reads either). It schedules a routine on the CALLING
+bot only: a routine for another bot stays the user's (or a `handoff` so that
+bot schedules its own), since `bot_settings` must not widen another bot's
+reach. `bot.routine_check` validates without writing (task non-empty and
+under `ROUTINE_TASK_CAP`, `minutes` a whole number, `weekdays` a list of
+0..6, a `once` time parsed by `bot.parse_when` from a local
+"YYYY-MM-DD HH:MM" or epoch seconds, then `Bot._routine_fields`, the
+dialog's own clamps) and returns the schedule exactly as it will be stored,
+so the card (`tools._routine_preview`: `add routine every 60 min: "<task>"`,
+`bot.routine_words` for the schedule, the task text capped like
+instructions) shows the floor-clamped interval the write will keep. A call
+that fails validation gets no card (`risk()` is "") and the `error:` back;
+so does a call from a scheduled run (`tools.routine_run`, `task_via` kind
+`routine`): nobody is at that card, and one unanswered ask in a routine
+wedges every later slot (the 2026-10-13 audit), so the run gets "a
+scheduled run cannot add routines" and the chip for a saved one reads
+`routine saved · every 60 min` (`ui_summary`, the model's "Tell the user…"
+tail stays off the chip). The write is `Bot.routine_add` (the dialog's path: `next` computed, wake
+agent synced), plus `system "Routine added (…)"` (`source: "routine"`) on
+the thread; the Routines panel reads bot.json on its next poll, no new
+route. ALWAYS_ASK (a standing task is the user's call every time, never
+approved forever, under "Never ask" too), `call_key` keyed on the args so a
+repeated identical add in one instruction is refused like a repeated
+`bot_create`. The guide's "Counts now" line (`bot.routines_brief`) now lists
+every routine's schedule and task, not just a count, so "check Slack every
+hour" on a bot that already does is answered, not duplicated. Edit,
+disable, run now and delete stay the user's: `APP_GUIDE` says so, and the
+BOT MANAGEMENT paragraph of `SUPER_PROMPT` keeps other bots' routines out of
+Super Bot's hands.
+
+**Always ask.** `tools.ALWAYS_ASK = frozenset(MANAGE_TOOLS + ROUTINE_TOOLS + ("marketplace_install",))`.
 `agent_engine._act` raises the card when `risk()` is non-empty and (the
 name is in `ALWAYS_ASK` or `effective_approval != "auto"`), so a Super Bot
 on "Never ask" still asks, and a phone-started task asks as it always did

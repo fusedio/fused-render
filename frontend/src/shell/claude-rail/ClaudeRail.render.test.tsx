@@ -221,10 +221,11 @@ describe("ClaudeRail beside the pane", () => {
     expect(favPeekState().rail).toBeNull();
   });
 
-  test("pane open on its HOME, favourites on, a chat here: the list steps aside and, with nothing else to draw, the rail hides (2026-11-05)", async () => {
+  test("pane open on its HOME, favourites on, a chat here: the list stands as beside any chat (2026-11-06; it stepped aside until then)", async () => {
     const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a")] });
-    expect(aside(r).props.hidden).toBe(true);
-    expect(favPeekState().rail).toBeNull();
+    expect(aside(r).props.hidden).toBeUndefined();
+    expect(r.root.findAll((n) => n.type === "a" && typeof n.props["data-task-key"] === "string")).toHaveLength(1);
+    expect(favPeekState().rail).not.toBeNull();
   });
 
   test("pane open, favourites on, a chat here: standing and registered, still no glyph or seam", async () => {

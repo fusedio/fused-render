@@ -1,9 +1,10 @@
 // The rail's two windows (owner, 2026-11-05): A (the list's card) and B (the
-// favourites'), their independence, B's hover mode, and the pane collapsing
-// giving A back. The parts without a DOM.
-import { afterEach, describe, expect, it } from "bun:test";
+// favourites'), their independence and B's hover mode. The parts without a
+// DOM. (The pane collapsing gave A back until 2026-11-06; it gives nothing
+// of A back now — claude-rail-lib.)
+import { describe, expect, it } from "bun:test";
 import type { TaskPulseTask } from "@platform/lib/api";
-import { collapseRestore, paneHoldAfter, paneWas, ringMarks, type RingMarkInput } from "./claude-rail-lib";
+import { ringMarks, type RingMarkInput } from "./claude-rail-lib";
 import { PEEK_CLOSE_MS, PEEK_OPEN_MS, PeekIntent, favHoverRow, listCardWish, favCardWish, type Timers } from "./rail-peek-lib";
 import { dismissFavHover, favHoverKey, resetFavHoverForTests } from "./fav-peek-store";
 
@@ -113,6 +114,12 @@ describe("tooltip-only rules per window", () => {
     expect(ringMarks({ ...base, key: "g", foot: true, openFavKey: "f" }).hovers).toBe(false);
     expect(ringMarks({ ...base, key: "a", foot: false, openFavKey: "f" }).hovers).toBe(true);
   });
+  it("a bot's card holds B: favourite rings are tooltip-only, list rings still hover (A)", () => {
+    expect(ringMarks({ ...base, key: "g", foot: true, botHeld: true }).hovers).toBe(false);
+    expect(ringMarks({ ...base, key: "g", foot: true, botHeld: true }).titleOnly).toBe(true);
+    expect(ringMarks({ ...base, key: "a", foot: false, botHeld: true }).hovers).toBe(true);
+    expect(ringMarks({ ...base, key: "g", foot: true, botHeld: false }).hovers).toBe(true);
+  });
   it("A pinned: a favourite's ring still hovers (B); another list ring is tooltip-only", () => {
     const a = { peekKey: "a", pinned: true };
     expect(ringMarks({ ...base, ...a, key: "f", foot: true }).titleOnly).toBe(false);
@@ -134,43 +141,3 @@ describe("sizes per window", () => {
   });
 });
 
-describe("the pane collapsing gives window A back", () => {
-  const was = (o: Partial<Parameters<typeof paneWas>[0]>) =>
-    paneWas({ paneOpen: true, paneKey: null, anySession: false, remembered: null, holdUntil: 0, now: 100, ...o });
-  it("a pane on a list chat remembers it; a pane on another chat remembers nothing", () => {
-    expect(was({ paneKey: "A" })).toBe("A");
-    expect(was({ anySession: true, remembered: "A" })).toBeNull();
-  });
-  it("a pane on home forgets — except while a taken chat is still mounting; shut keeps", () => {
-    expect(was({ remembered: "A" })).toBeNull();
-    expect(was({ remembered: "A", holdUntil: 200 })).toBe("A");
-    expect(was({ paneOpen: false, remembered: "A" })).toBe("A");
-  });
-  const restore = (o: Partial<Parameters<typeof collapseRestore>[0]>) =>
-    collapseRestore({ wasOpen: true, open: false, favsOn: true, key: "A", isList: true, ...o });
-  it("restores on the open -> shut turn only, for a list chat; home restores nothing", () => {
-    expect(restore({})).toBe("A");
-    expect(restore({ wasOpen: false })).toBeNull();
-    expect(restore({ open: true })).toBeNull();
-    expect(restore({ key: null })).toBeNull();
-    expect(restore({ favsOn: false })).toBeNull();
-    expect(restore({ isList: false })).toBeNull();
-  });
-  it("pin -> expand -> collapse -> expand -> home -> collapse restores nothing", () => {
-    // Expand takes pinned A: held 4 s while its chat mounts.
-    let st = { key: "A" as string | null, hold: 4100 };
-    const step = (o: { paneKey: string | null; anySession: boolean; now: number }) => {
-      st.key = was({ ...o, remembered: st.key, holdUntil: st.hold });
-      st.hold = paneHoldAfter(st.hold, o.anySession);
-    };
-    step({ paneKey: "A", anySession: true, now: 200 }); // chat mounted on A
-    expect(st).toEqual({ key: "A", hold: 0 });
-    expect(restore({ key: st.key })).toBe("A"); // collapse gives A back
-    st = { key: "A", hold: 4100 }; // expand again, A taken again
-    step({ paneKey: "A", anySession: true, now: 300 });
-    step({ paneKey: null, anySession: false, now: 400 }); // Back to chats, within 4 s
-    expect(st.key).toBeNull();
-    expect(restore({ key: st.key })).toBeNull();
-  });
-  afterEach(() => resetFavHoverForTests());
-});

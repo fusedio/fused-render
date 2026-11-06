@@ -28,7 +28,7 @@ export interface CurrentApp {
   kind: "workspace" | "linked";
   /** The canvas this row is a clone of, or null for an app folder — the
    *  sidebar splits the desk on it (Projects / Canvases) and a canvas row
-   *  opens the canvas's project page. The server's answer (current_apps
+   *  opens the canvas's editor. The server's answer (current_apps
    *  `_canvas_of`), never derived from the path here. */
   canvas: { env: string; name: string } | null;
   /** The folder is still on disk. A missing one still lists — removing it is

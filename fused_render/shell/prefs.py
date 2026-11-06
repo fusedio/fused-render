@@ -497,14 +497,6 @@ def chat_recap_enabled() -> bool:
     return read_prefs().get("chat_recap_enabled") is not False
 
 
-def turn_click_opens_reply_enabled() -> bool:
-    """Whether clicking a user message in a Claude task chat opens the reply
-    under it when that reply is folded (default off). It only ever opens: a
-    click on an already-open reply leaves it open. Only a stored `true` is on.
-    """
-    return read_prefs().get("turn_click_opens_reply_enabled") is True
-
-
 def breakout_enabled() -> bool:
     """Whether Breakout (research-only side chats seeded from selected messages)
     is available (default off — opt-in beta). Off, no Breakout buttons render
@@ -1242,9 +1234,6 @@ def _prefs_response() -> dict:
         # Whether the in-chat recap fold is shown (default on,
         # `chat_recap_enabled`). Does not touch Tasks titles.
         "chat_recap": {"enabled": chat_recap_enabled()},
-        # A click on a user message opens the reply under it
-        # (`turn_click_opens_reply_enabled`; off by default).
-        "turn_click_open": {"enabled": turn_click_opens_reply_enabled()},
         # Breakout side chats (opt-in beta, `breakout_enabled`).
         "breakout": {"enabled": breakout_enabled()},
         # The slow in-canvas screenshot fallback on a Mac
@@ -1587,13 +1576,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'chat_recap_enabled' must be a boolean"},
                                     status_code=400)
             prefs["chat_recap_enabled"] = value
-            changed = True
-        if "turn_click_opens_reply_enabled" in body:
-            value = body.get("turn_click_opens_reply_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'turn_click_opens_reply_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["turn_click_opens_reply_enabled"] = value
             changed = True
         if "breakout_enabled" in body:
             value = body.get("breakout_enabled")
@@ -1942,7 +1924,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
-                          "'chat_recap_enabled', 'turn_click_opens_reply_enabled', 'breakout_enabled', "
+                          "'chat_recap_enabled', 'breakout_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
                           "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
                           "'task_summary_titles_enabled', "

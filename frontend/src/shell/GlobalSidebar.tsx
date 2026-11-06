@@ -52,7 +52,7 @@ import CurrentAppsSection, {
   canvasRowHref,
   useDeskAppsOrdered,
 } from "@shell/CurrentAppsSection";
-import { canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
+import { canvasNameFromPath } from "@apps/canvases/api";
 import { CanvasGlyph } from "@apps/canvases/glyph";
 import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
 import { useRestartFlow } from "@platform/lib/restart-store";
@@ -872,10 +872,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     active: onAppPath === app.path,
     scrolls: true,
   }));
-  // A canvas door lights on its project page OR its editor, the section's own
-  // rule (both are "the canvas open"); the href is the row's (canvasRowHref),
-  // with the row's fallback for a clone of an unknown environment.
-  const onCanvas = canvasProjectFromPath(pathname) ?? canvasNameFromPath(pathname);
+  // A canvas door lights on its editor, the section's own rule; the href is
+  // the row's (canvasRowHref), with the row's fallback for a clone of an
+  // unknown environment.
+  const onCanvas = canvasNameFromPath(pathname);
   // The Canvases section's "+ Canvas" row, on the rail: the catalog
   // (/canvases), at the head of the canvases group, behind the section's gate
   // — the one door in, since the primary nav has no Canvases row. Plain

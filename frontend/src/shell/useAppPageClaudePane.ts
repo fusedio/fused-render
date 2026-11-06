@@ -100,8 +100,21 @@ export function useAppPageClaudePane(splitRef: RefObject<HTMLElement | null>): A
     const next = withClaudePaneParam(location.pathname + location.search + location.hash, open);
     if (next !== location.pathname + location.search + location.hash) replaceSearch(next);
   }, [open]);
-  const show = useCallback(() => setOpen(true), []);
-  const hide = useCallback(() => setOpen(false), []);
+  // THE SHARED FLAG IS WRITTEN WITH THE STATE, NOT AFTER IT (owner,
+  // 2026-11-06: a card's Open door left the pane shut): a door that changes
+  // the URL in the same gesture (`replaceSearch` with the chat's session,
+  // then `show()`) bumps `urlVersion`, and the re-read above ran in the
+  // same commit as the `open` effect below — BEFORE it, in declaration
+  // order — so it still saw the flag say "hidden" and set the pane shut
+  // again over the show. Setting the flag first makes the re-read agree.
+  const show = useCallback(() => {
+    setSideHidden(false);
+    setOpen(true);
+  }, []);
+  const hide = useCallback(() => {
+    setSideHidden(true);
+    setOpen(false);
+  }, []);
 
   // THE WIDTH: the explorer's shared number, else the share of this split.
   const [hostW, setHostW] = useState(0);
@@ -242,33 +255,6 @@ export function chatDoorOnApp(href: string, dir: string): { params: Record<strin
   path = path.replace(/^\/explorer\/(view|embed)/, "").replace(/^\/(?=[A-Za-z]:)/, "");
   const base = dir.replace(/\/+$/, "");
   if (!(path === base || path.startsWith(base + "/"))) return null;
-  const params: Record<string, string> = {};
-  for (const k of ["session_id", "queued", "backend"]) {
-    const v = url.searchParams.get(k);
-    if (v) params[k] = v;
-  }
-  if (!params.session_id && !params.queued) return null;
-  return { params };
-}
-
-/**
- * THE SAME QUESTION ON THE CANVAS PROJECT PAGE (CanvasPage `openChatHere`;
- * owner, 2026-11-03: the pane and rail on the canvas page as on the app
- * page). A canvas task's door is the EDITOR's URL (tasks-lib `taskHref` →
- * canvasPagePath: `/canvases/<env>/<name>?session_id=`, with `node=` +
- * `node_file=` for a node's chat). The canvas chat — no node named — opens
- * in this page's own pane; a NODE's chat is the editor's to show (its right
- * pane on that node), so that door answers null and navigates as it says.
- */
-export function chatDoorOnCanvas(
-  href: string,
-  env: string,
-  name: string,
-): { params: Record<string, string> } | null {
-  const url = new URL(href, "http://x");
-  const m = /^\/canvases\/([a-z]+)\/([A-Za-z0-9_]+)$/.exec(url.pathname);
-  if (!m || m[1] !== env || m[2] !== name) return null;
-  if (url.searchParams.get("node") || url.searchParams.get("node_file")) return null;
   const params: Record<string, string> = {};
   for (const k of ["session_id", "queued", "backend"]) {
     const v = url.searchParams.get(k);
