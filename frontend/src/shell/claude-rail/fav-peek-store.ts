@@ -136,7 +136,7 @@ const heres = new WeakMap<HTMLElement, () => RailHere | null>();
 /** Each rail's page, as its rail last said (header). */
 const pages = new WeakMap<HTMLElement, RailPage>();
 /** Each rail's chat door (`railDoor`). */
-const doors = new WeakMap<HTMLElement, (href: string) => void>();
+const doors = new WeakMap<HTMLElement, (href: string) => void | Promise<boolean>>();
 
 function settleRail(): void {
   const top = topRail();
@@ -147,7 +147,11 @@ function settleRail(): void {
 /** A rail mounted: it goes on top of the stack (header). The answer takes it
  *  off again — itself only, wherever it stands in the stack. `here`: the
  *  page's canvas, where the page can select a node in place (header). */
-export function registerRail(el: HTMLElement, here?: () => RailHere | null, door?: (href: string) => void): () => void {
+export function registerRail(
+  el: HTMLElement,
+  here?: () => RailHere | null,
+  door?: (href: string) => void | Promise<boolean>,
+): () => void {
   rails = [...rails.filter((r) => r !== el), el];
   if (here) heres.set(el, here);
   else heres.delete(el);
@@ -170,7 +174,7 @@ export function registerRail(el: HTMLElement, here?: () => RailHere | null, door
  *  its chat on the href (CanvasPage `openChatHere`, AppPage), behind the
  *  composer's leave guard — registered with the rail. Null for a rail that
  *  gave none (the shell's fallback: the href navigates). */
-export function railDoor(rail: HTMLElement | null): ((href: string) => void) | null {
+export function railDoor(rail: HTMLElement | null): ((href: string) => void | Promise<boolean>) | null {
   return (rail && doors.get(rail)) ?? null;
 }
 

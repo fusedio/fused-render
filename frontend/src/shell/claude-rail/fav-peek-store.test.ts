@@ -502,7 +502,9 @@ describe("window B's two holders (bot card, fav restore)", () => {
   it("a rail registers its door; the fallback has none", () => {
     const el = rail("door");
     const hops: string[] = [];
-    const off = registerRail(el, undefined, (href) => hops.push(href));
+    const off = registerRail(el, undefined, (href) => {
+      hops.push(href);
+    });
     railDoor(el)?.("/x?session_id=1");
     expect(hops).toEqual(["/x?session_id=1"]);
     off();

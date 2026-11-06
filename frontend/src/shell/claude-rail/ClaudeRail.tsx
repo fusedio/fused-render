@@ -612,7 +612,11 @@ export function ClaudeRail({
   /** Open the pane as it is. */
   onOpen: () => void;
   /** Open one of the canvas's chats: its Tasks-page door (`taskHref`). */
-  onOpenChat: (href: string) => void;
+  /** …answering, when it can, whether the hop went: a page door behind the
+   *  composer's leave guard resolves false when the reader stayed
+   *  (CanvasPage / AppPage `openChatHere`, `navigateUrl`). The favourite
+   *  card's Open waits for that answer before closing (FavouritePeek). */
+  onOpenChat: (href: string) => void | Promise<boolean>;
   /** The card's node chip: select that node in the workbench (RailPeek);
    *  canvas pages only — without it the chip is a label and the foot's
    *  canvas seat is not drawn. Null — the rail's last seat while a node is

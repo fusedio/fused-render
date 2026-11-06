@@ -296,17 +296,16 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
   // behind the composer's leave guard; a NODE's chat, or anything else,
   // navigates as it says — the editor shows a node's chat on that node.
   const [claudeSeq, setClaudeSeq] = useState(0);
-  const openChatHere = (href: string) => {
+  // Answers whether the hop went (the leave guard may refuse): the favourite
+  // card's Open closes its card only then (FavouritePeek, Bugbot on #2154).
+  const openChatHere = (href: string): Promise<boolean> => {
     const door = chatDoorOnCanvas(href, env, name) ?? (dir ? chatDoorOnApp(href, dir) : null);
-    if (!door) {
-      navigateUrl(href);
-      return;
-    }
-    openChatDoor(door);
+    if (!door) return navigateUrl(href);
+    return openChatDoor(door);
   };
-  const openChatDoor = (door: { params: Record<string, string> }) => {
-    void confirmLeave().then((ok) => {
-      if (!ok) return;
+  const openChatDoor = (door: { params: Record<string, string> }): Promise<boolean> => {
+    return confirmLeave().then((ok) => {
+      if (!ok) return false;
       const next = new URL(location.href);
       for (const k of ["session_id", "queued", "backend"]) {
         const v = door.params[k];
@@ -317,6 +316,7 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
       if (next.href !== location.href) replaceSearch(next.pathname + next.search + next.hash);
       setClaudeSeq((n) => n + 1);
       claude.show();
+      return true;
     });
   };
   // THE RAIL'S + BESIDE THE OPEN PANE (ClaudeRail `onNewChat`): the pane's

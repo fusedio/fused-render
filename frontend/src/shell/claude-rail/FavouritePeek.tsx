@@ -296,33 +296,44 @@ export function FavouritePeek() {
   // The page's canvas, off the rail this card stands beside (header).
   const here = useCallback(() => railHere(rail), [rail]);
   const place = useMemo(() => (seat ? placeOf(seat.pulse, seat.row) : null), [seat]);
-  // The × (RailPeek `onDismiss`), an unstar here, and the Open door: this
-  // window's card closes, nothing is written (header). The door leaves the
-  // key for the pane's collapse to give back.
+  // The × (RailPeek `onDismiss`) and an unstar here: this window's card
+  // closes, nothing is written (header). The Open door closes it too — but
+  // from `openChat` below, once the hop went: RailPeek's `onDismiss("door")`
+  // is a no-op here.
   const close = useCallback(
     (why?: "door" | "unstar") => {
       if (hovering) {
         dismissFavHover();
         return;
       }
-      if (!open) return;
+      if (!open || why === "door") return;
       if (why === "unstar") unstarred.current = open.key;
       clearFavOpen(open.key);
-      if (why === "door") setFavRestore(open.key);
     },
     [open, hovering],
   );
   // THE OPEN DOOR (header): the favourites' own last mark, then the page
   // rail's door — the pane expands on the chat, whatever it showed — or,
-  // with no rail door (the shell's fallback), the href itself.
+  // with no rail door (the shell's fallback), the href itself. THE CARD
+  // CLOSES ONCE THE HOP WENT (Bugbot on #2154): a door behind the
+  // composer's leave guard answers false when the reader cancelled the
+  // prompt, and the card then stays as it was — closing on the click would
+  // have lost the window to a cancelled hop, its restore unconfirmed and
+  // expiring. A door that answers nothing (void) is taken as gone.
   const openChat = useCallback(
     (href: string) => {
       if (seat) setLastFav(lastChatId(seat.pulse));
       const door = railDoor(rail);
-      if (door) door(href);
-      else void navigateUrl(href);
+      const went = door ? door(href) : navigateUrl(href);
+      const key = open?.key ?? null;
+      if (!key) return;
+      void Promise.resolve(went).then((ok) => {
+        if (ok === false) return;
+        clearFavOpen(key);
+        setFavRestore(key);
+      });
     },
-    [seat, rail],
+    [seat, rail, open],
   );
   // A press inside the hover card keeps it: the hover becomes the open key.
   const pressInside = useCallback(() => {
