@@ -36,8 +36,16 @@ ENV = "FUSED_RENDER_FLAVOR"
 # here (or be derived from one of these) rather than spelling the brand out.
 _IDENTITY = {
     RENDER: {
-        "app_name": "FusedRender",          # bundle, binary, DMG, /Applications
+        "app_name": "FusedRender",          # binary, DMG/PKG/AppImage file names
         "display_name": "Fused Render",     # window title, copy
+        # The .app folder (/Applications/Fused Render.app) and CFBundleName.
+        # Matches display_name; the space is what Finder, the Dock and the
+        # System Settings privacy lists show.
+        "bundle_name": "Fused Render",
+        # Earlier bundle names. Installs from before the rename still sit at
+        # /Applications/FusedRender.app until an in-app update moves them
+        # (update/mac.py `apply_staged`).
+        "legacy_bundle_names": ("FusedRender",),
         "bundle_id": "io.fused.render",
         "home_dir_name": ".fused-render",   # ~/.fused-render — shared by both
         "app_support_name": "fused-render",  # ~/Library/Application Support/<name>
@@ -50,6 +58,8 @@ _IDENTITY = {
     BOT: {
         "app_name": "FusedBot",
         "display_name": "Fused Bot",
+        "bundle_name": "FusedBot",
+        "legacy_bundle_names": (),
         "bundle_id": "io.fused.bot",
         "home_dir_name": ".fused-render",   # one state tree, see module doc
         "app_support_name": "fused-bot",
@@ -102,13 +112,28 @@ def _get(key: str) -> str:
 
 
 def app_name() -> str:
-    """``FusedRender`` / ``FusedBot`` — no branch suffix; callers that want it
-    append ``_branch.branch_suffix()``."""
+    """``FusedRender`` / ``FusedBot`` — the executable and the release
+    artifacts' file-name token, no branch suffix; callers that want it append
+    ``_branch.branch_suffix()``. The .app folder is ``bundle_name()``."""
     return _get("app_name")
 
 
 def display_name() -> str:
     return _get("display_name")
+
+
+def bundle_name() -> str:
+    """``Fused Render`` / ``FusedBot`` — the .app folder's name and the
+    bundle's CFBundleName, no branch suffix. Not the executable: that stays
+    ``app_name()`` (``Contents/MacOS/FusedRender``), which process probes
+    and log predicates match."""
+    return _get("bundle_name")
+
+
+def legacy_bundle_names() -> tuple[str, ...]:
+    """Names this flavor's bundle shipped under before, no branch suffix
+    (``("FusedRender",)`` for Render)."""
+    return tuple(_IDENTITY[flavor()]["legacy_bundle_names"])
 
 
 def bundle_id() -> str:

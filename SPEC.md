@@ -10821,7 +10821,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   with no directory is a brief an agent answers by guessing or by asking. So the
   location is a FACT when the snapshot carries it (`- The installed app: …`) and
   a TASK when it does not — and the order is the order
-  people actually install this. `/Applications/FusedRender.app` first, because
+  people actually install this. `/Applications/Fused Render.app` first, because
   the DMG is the install; then the same bundle one level in
   (`Contents/Resources/lib/python3.*/fused_render`), which is the code a fix
   session edits and not something anyone would guess from the .app; then `brew
@@ -12246,7 +12246,7 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
     before the user commits (PF-5).
   - CLI **`fused-render diagnose [--since 2h] [--out DIR]`**. The packaged
     app puts no `fused-render` wrapper on PATH, so support instructions give
-    `/Applications/FusedRender.app/Contents/MacOS/python -m fused_render.cli diagnose`.
+    `"/Applications/Fused Render.app/Contents/MacOS/python" -m fused_render.cli diagnose`.
 
   **Rejected:** a button in the red down card — it cannot reach a dead
   server, and in the false-positive case the moment has passed by the time

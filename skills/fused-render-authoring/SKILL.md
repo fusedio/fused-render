@@ -179,7 +179,7 @@ Real browser against the server that is ALREADY running. Never assume a port —
 
 1. `$FUSED_RENDER_ORIGIN` — exported by both servers to every process they spawn (a session opened from the app has it).
 2. `~/.fused-render/server.json` (Render App: `~/.fused-render-app/server.json`) — `origin` field, for a terminal session. Probe `<origin>/api/config` before trusting it; a crashed server leaves the file behind.
-3. Neither → nothing is running; start one (`fused-render --no-browser --port <free>`; Render App: `open -a RenderApp`, it writes `server.json`).
+3. Neither → nothing is running; start one (`fused-render --no-browser --port <free>`; Fused Render: `open -a "Fused Render"`, it writes `server.json`).
 
 URLs under that origin:
 

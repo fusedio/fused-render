@@ -275,7 +275,7 @@ class Sampler:
             if pid in resolved:
                 return resolved[pid]
             if pid == root:
-                owner = labels.Owner("app", "fused-render", {})
+                owner = labels.Owner("app", "Fused Render", {})
             elif pid in owners:
                 owner = owners[pid]
             else:
@@ -502,10 +502,10 @@ def stop(sampler: Sampler, pid: int, started_at=None) -> str:
     start stamp no longer matches the `started_at` the client saw."""
     found = sampler.lookup(pid)
     if found is None:
-        raise StopRefused("not one of fused-render's processes", 404)
+        raise StopRefused("not one of Fused Render's processes", 404)
     kind, ref, start = found
     if kind == "app":
-        raise StopRefused("refusing to stop fused-render itself")
+        raise StopRefused("refusing to stop Fused Render itself")
     b = sampler.backend
     current = b.proc_sample(pid) if b is not None else None
     if current is None or current.start != start:
@@ -554,7 +554,7 @@ def kill(sampler: Sampler, pid: int, force: bool = False, started_at=None) -> di
     if pid <= 1:
         raise StopRefused(f"refusing to signal pid {pid}")
     if pid in {sampler.root_pid or os.getpid(), os.getpid()}:
-        raise StopRefused("refusing to kill fused-render itself")
+        raise StopRefused("refusing to kill Fused Render itself")
     stamp = sampler.stamp(pid)
     if stamp is None:
         raise StopRefused("not in the last sample", 404)

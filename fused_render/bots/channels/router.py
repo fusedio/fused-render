@@ -41,7 +41,7 @@ POLL_S = 3
 SEND_RETRIES = 3
 SEND_RETRY_WAIT_S = 5
 # The one line a sender gets when this home does not hold the workspace claim (registry.workspace_claimed).
-BUSY_REPLY = "another fused-render instance owns the bots in this workspace"
+BUSY_REPLY = "another Fused Render instance owns the bots in this workspace"
 CLOCK_SLACK_S = 2  # the phone's clock may run a little behind the Mac's: a reply this much older than the card still counts
 
 

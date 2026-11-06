@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=FusedRender
-Comment=FusedRender desktop
+Name=Fused Render
+Comment=Fused Render desktop
 Exec=AppRun %u
 Icon=fused-render
 Categories=Development;Science;

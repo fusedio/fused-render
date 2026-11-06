@@ -61,7 +61,7 @@ jobs:
           # here — pin it explicitly (empty on the very first release).
           PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -n1 || true)"
           gh release create "$TAG" --target "${{ github.sha }}" \
-            --title "FusedRender $TAG" \
+            --title "Fused Render $TAG" \
             --generate-notes ${PREV_TAG:+--notes-start-tag "$PREV_TAG"}
 
   # The PyPI wheel, built on its own runner rather than lifted out of the DMG
@@ -366,7 +366,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" "$DMG_PATH" "$WHL_PATH" ${PKG_PATH:+"$PKG_PATH"} --clobber
 
-  # FusedRender.app for Intel Macs: the render job above with
+  # Fused Render.app for Intel Macs: the render job above with
   # FUSED_RENDER_ARCH=x86_64 on an Intel runner. A plain copy, like the bot job
   # below. Not wired into publish-download-page or bump-homebrew yet: the Intel
   # DMG ships through the GitHub Release, S3 and its own update manifest only,
@@ -788,7 +788,7 @@ jobs:
           APPIMAGE="$(ls dist/FusedRender-*-x86_64.AppImage)"
           # Version from the built artifact, not the tag — same rule as the DMG.
           VERSION="$(basename "$APPIMAGE" | sed -E 's/^FusedRender-(.*)-x86_64\.AppImage$/\1/')"
-          echo "Publishing FusedRender $VERSION Linux AppImage"
+          echo "Publishing Fused Render $VERSION Linux AppImage"
           aws s3 cp "$APPIMAGE" "s3://${S3_BUCKET}/${LINUX_PREFIX}/$(basename "$APPIMAGE")"
           # Exposed as job outputs for the publish-download-page job, right
           # after the one command that makes appimage_url actually true —
@@ -962,10 +962,21 @@ jobs:
           set -euo pipefail
           git clone --depth 1 "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/fusedio/homebrew-tap.git" /tmp/homebrew-tap
           cd /tmp/homebrew-tap
+          # The bundle is "Fused Render.app" (was FusedRender.app before the
+          # rename): the `app` stanza must name what the DMG holds, and `name`
+          # is what `brew info` shows. Both edits are no-ops once applied.
           sed -i \
             -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
             -e "s/^  sha256 \".*\"/  sha256 \"${DMG_SHA256}\"/" \
+            -e 's/^  app "FusedRender\.app"/  app "Fused Render.app"/' \
+            -e 's/^  name "FusedRender"/  name "Fused Render"/' \
             Casks/fused-render.rb
+          # A cask that still names another bundle would install nothing:
+          # brew fails with "It seems the App source ... is not there".
+          if ! grep -q '^  app "Fused Render.app"' Casks/fused-render.rb; then
+            echo "Casks/fused-render.rb has no 'app \"Fused Render.app\"' stanza; fix the cask by hand" >&2
+            exit 1
+          fi
           git config user.name "fused-render-ci"
           git config user.email "ci@fused.io"
           git add Casks/fused-render.rb

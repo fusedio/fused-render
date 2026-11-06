@@ -98,7 +98,7 @@ export function updatesDetail(
   if (status.state === "available") {
     return status.check_only
       ? status.manual_command
-        ? { title: "Update available", detail: `${v} is out. Quit fused-render, then run in your terminal:`, command: status.manual_command, action: null }
+        ? { title: "Update available", detail: `${v} is out. Quit Fused Render, then run in your terminal:`, command: status.manual_command, action: null }
         : { title: "Update available", detail: `${v} is out. This build does not install updates itself.`, action: null }
       : { title: "Update available", detail: `${v} is ready to download.`, action: { label: "Download", run: () => void installUpdate(status) } };
   }

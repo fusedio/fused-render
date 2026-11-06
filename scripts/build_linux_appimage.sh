@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the FusedRender Linux desktop app as a single-file AppImage.
+# Build the Fused Render Linux desktop app as a single-file AppImage.
 #
 # Stages: wheel build → relocatable CPython → pip install the desktop extra →
 # pre-install DuckDB extensions → copy uv → smoke tests → package. The result
@@ -37,7 +37,7 @@ require curl
 VERSION="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
     "$REPO_ROOT/fused_render/__init__.py")"
 [ -n "$VERSION" ] || { echo "could not read __version__" >&2; exit 1; }
-log "Building FusedRender (Linux AppImage) $VERSION"
+log "Building Fused Render (Linux AppImage) $VERSION"
 
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 rm -rf "$STAGE_DIR"

@@ -11,7 +11,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Check, Mail, Sparkles } from "lucide-react";
 
 import { getNewsletter, subscribeNewsletter } from "@platform/lib/api";
-import { bundleName } from "@platform/lib/flavor";
+import { displayName } from "@platform/lib/flavor";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 
@@ -72,7 +72,7 @@ export function NewsletterStep({
       <StepHeader
         eyebrow={eyebrow}
         title="Get new apps as we build them"
-        lead={`We keep shipping new ${bundleName()} apps and features. Leave your email and we'll send the occasional update — no spam, unsubscribe anytime. This step is optional.`}
+        lead={`We keep shipping new ${displayName()} apps and features. Leave your email and we'll send the occasional update — no spam, unsubscribe anytime. This step is optional.`}
       />
 
       <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-5">

@@ -2,7 +2,7 @@
 
 The packaged .app is launched by Finder, so stderr goes nowhere a user can
 reach — an "Internal Server Error" traceback, or a failed right-click "Open
-with FusedRender", used to exist for a moment in a hidden stream and then
+with Fused Render", used to exist for a moment in a hidden stream and then
 vanish. `setup_logging()` gives every entry point (CLI and menu-bar app) a
 rotating log file in a stable, user-findable location, so the diagnostics
 bundle (`fused_render.diagnostics`) is a complete bug report.

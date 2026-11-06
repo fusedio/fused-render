@@ -712,7 +712,14 @@ def _apply_staged_update() -> None:
         return
     from fused_render.update import mac as mac_update
 
-    mac_update.apply_staged(bundle)
+    # A DMG install still under the pre-rename name (`FusedRender.app`)
+    # moves to `Fused Render.app` with this update. Only when the install
+    # method is already known to be "dmg": a Homebrew install keeps the path
+    # its receipt names (the cask's own upgrade moves it), and an unknown
+    # one would mean running brew on the quit path to find out.
+    manager = mac_update.manager()
+    method = manager.known_method() if manager is not None else None
+    mac_update.apply_staged(bundle, rename_legacy=method == "dmg")
 
 
 def start_quit(server, *, terminate, server_thread=None, teardown=None,
@@ -880,7 +887,7 @@ def bundle_path() -> str | None:
     """The .app bundle root when running packaged, None otherwise.
 
     sys.executable is …/<app_name><branch_suffix>.app/Contents/MacOS/python
-    under py2app (FusedRender.app / FusedBot.app)
+    under py2app (Fused Render.app / FusedBot.app)
     (same anatomy fusedcli.setup_cli_hint and installed.installed_version
     rely on).
     """
@@ -1125,6 +1132,10 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         f"while /bin/kill -0 {int(pid)} 2>/dev/null; do /bin/sleep {RELAUNCH_POLL_S}; done; "
         f'say "pid {int(pid)} has exited"; '
         f"/bin/sleep {RELAUNCH_SETTLE_S}; "
+        # The quit's "update" rung may have moved the bundle from its
+        # pre-rename name (update/mac.py `_rename_legacy_bundle`): open it
+        # where it is now. Same executable name, new folder.
+        + _relaunch_renamed_fragment(bundle) +
         # `open -a <bundle> <scheme>://launch`, not a plain `open <bundle>`:
         # a plain open is a normal launch, which boots onto a fresh home tab and
         # steals focus from the page that asked for the restart. Delivering the
@@ -1169,6 +1180,27 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+    )
+
+
+def _relaunch_renamed_fragment(bundle: str) -> str:
+    """Shell that repoints `bundle`/`exe` at the renamed bundle when the
+    given one is gone and the renamed one exists; "" when `bundle` is not
+    under a legacy name (nothing can move it)."""
+    try:
+        from fused_render.update.mac import renamed_bundle_path
+
+        renamed = renamed_bundle_path(bundle)
+    except Exception:  # noqa: BLE001 - the relaunch must not fail over this
+        logger.debug("could not work out the renamed bundle path", exc_info=True)
+        renamed = None
+    if renamed is None:
+        return ""
+    exe = posixpath.join(renamed, "Contents", "MacOS", bundle_executable(bundle))
+    return (
+        f'if [ ! -d "$bundle" ] && [ -d {shlex.quote(renamed)} ]; then '
+        f"bundle={shlex.quote(renamed)}; exe={shlex.quote(exe)}; "
+        'say "bundle moved to $bundle"; fi; '
     )
 
 
@@ -1894,13 +1926,13 @@ def main() -> None:
             logger.info("queuing file view until server is ready: %s", target)
             state["pending"].append(target)
 
-    # ---- Finder "Open with FusedRender" -------------------------------------
+    # ---- Finder "Open with Fused Render" -------------------------------------
     # AppKit delivers double-clicked documents to the app delegate's
     # application:openFiles:. rumps's delegate (rumps.rumps.NSApp, a pyobjc
     # NSObject subclass) doesn't implement it — adding the method to the class
     # is all that's needed; pyobjc registers the selector automatically.
     def application_openFiles_(self, _app, filenames):
-        # This is the "Right-Click open" path: Finder "Open with FusedRender".
+        # This is the "Right-Click open" path: Finder "Open with Fused Render".
         # Log the raw filenames the OS handed us — if a view later 500s, the
         # log ties the failing URL back to the file the user actually clicked.
         names = [str(n) for n in filenames]

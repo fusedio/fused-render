@@ -3635,7 +3635,7 @@ class _SyncManager:
         except OSError:
             pass
         self.log_event("disk_to_server", "push stopped", ok=False,
-                       detail="fused-render is quitting")
+                       detail="Fused Render is quitting")
         return True
 
     def _push(self, *, lock_wait: float | None = None) -> str:
@@ -5191,7 +5191,7 @@ def _sync_start_response(env: str, name: str):
     except OSError as exc:
         return _error(f"could not take the canvas sync lock: {exc}", 500)
     if manager is None:
-        return _busy("fused-render is quitting; canvas sync is not starting")
+        return _busy("Fused Render is quitting; canvas sync is not starting")
     # The page calls this when it OPENS a canvas (and again whenever sync/state
     # or the events socket shows no watcher — `watcher_epoch` null — to heal a
     # dropped one), which makes it the hook that covers a canvas cloned

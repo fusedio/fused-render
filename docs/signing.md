@@ -1,6 +1,6 @@
 # Code signing & notarization
 
-`scripts/build_dmg.sh` signs `FusedRender.app` using a **Developer ID identity
+`scripts/build_dmg.sh` signs `Fused Render.app` using a **Developer ID identity
 from your keychain**, and can **notarize + staple** the DMG. Both are optional:
 with no credentials the build ad-hoc signs (local testing only, unchanged from
 before). This is the D73 realization of the D35 "future signing hook".
@@ -41,7 +41,7 @@ FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY bash scripts/build_dmg.sh
 > without a Gatekeeper warning offline. The app inside is notarized and launches
 > normally. If you also distribute the raw `.app` (outside the DMG) and want it
 > stapled for offline first launch, submit an app zip separately and
-> `xcrun stapler staple FusedRender.app` before packaging.
+> `xcrun stapler staple "Fused Render.app"` before packaging.
 
 ## Getting a Developer ID signing identity (high level)
 

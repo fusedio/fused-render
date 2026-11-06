@@ -229,6 +229,12 @@ export function troubleReport(ctx: TroubleContext): string {
   return lines.join("\n");
 }
 
+/** POSIX single-quoting for a word going into a pasted command, left bare
+ *  when it needs none (`FusedBot.app`). */
+function shellQuote(s: string): string {
+  if (/^[A-Za-z0-9._\/-]+$/.test(s)) return s;
+  return "'" + s.replace(/'/g, `'\\''`) + "'";
+}
 
 /** How to find the installation when we cannot state it.
  *
@@ -254,7 +260,7 @@ export function troubleReport(ctx: TroubleContext): string {
  *
  * So the path is a FACT when we have it and a TASK when we do not, and the
  * order is the order people actually install this: the DMG drops
- * `FusedRender.app` into Applications, and that is where to look first. The
+ * `Fused Render.app` into Applications, and that is where to look first. The
  * second line is the same bundle one level in — the Python the app runs, which
  * is what a fix session edits, and not something anyone would guess from the
  * .app alone.
@@ -275,10 +281,13 @@ export function troubleReport(ctx: TroubleContext): string {
 // A function, not a constant: the bundle is the flavor's (`FusedBot.app` for
 // Fused Bot, platform/lib/flavor.ts), seeded after this module is evaluated.
 export function findInstallCommands(): string[] {
-  const app = bundleName();
+  // Quoted: the bundle name holds a space ("Fused Render.app"). The `~` and
+  // the `python3.*` glob stay outside the quotes so the shell still expands
+  // them.
+  const app = shellQuote(`${bundleName()}.app`);
   return [
-    `ls -d /Applications/${app}.app ~/Applications/${app}.app`,
-    `ls -d /Applications/${app}.app/Contents/Resources/lib/python3.*/fused_render   # the code a fix edits`,
+    `ls -d /Applications/${app} ~/Applications/${app}`,
+    `ls -d /Applications/${app}/Contents/Resources/lib/python3.*/fused_render   # the code a fix edits`,
     "brew list --cask fused-render   # if this answers, Homebrew manages that copy",
   ];
 }

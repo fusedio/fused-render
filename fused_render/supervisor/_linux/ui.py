@@ -16,7 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-_TITLE = "FusedRender"
+_TITLE = "Fused Render"
 _DIALOG_TIMEOUT_S = 300  # a modal dialog a user never answers must not hang forever
 _XDG_OPEN_WAIT_S = 5  # long enough for a failing handler to exit before we call it a success
 
@@ -52,8 +52,8 @@ def alert(message: str, title: str = _TITLE) -> None:
 
 
 def confirm_exit() -> bool:
-    message = "Stop FusedRender and all running render processes?"
-    title = "Exit FusedRender"
+    message = "Stop Fused Render and all running render processes?"
+    title = "Exit Fused Render"
     tool = _dialog_tool()
     if tool == "zenity":
         result = _run(["zenity", "--question", "--title", title, "--text", message])
@@ -66,11 +66,11 @@ def confirm_exit() -> bool:
 
 def confirm_uninstall() -> bool:
     message = (
-        "Remove FusedRender's desktop integration (Open-with entries, MIME "
+        "Remove Fused Render's desktop integration (Open-with entries, MIME "
         "types, autostart) and quit?\n\n"
         "This does not delete your data or the app file."
     )
-    title = "Uninstall FusedRender"
+    title = "Uninstall Fused Render"
     tool = _dialog_tool()
     if tool == "zenity":
         result = _run(["zenity", "--question", "--title", title, "--text", message])
@@ -82,7 +82,7 @@ def confirm_uninstall() -> bool:
 
 
 def report_open_rejected(path: str) -> None:
-    alert(f"FusedRender could not open:\n\n{path}")
+    alert(f"Fused Render could not open:\n\n{path}")
 
 
 def pick_file(types: list[str] | None = None) -> str | None:

@@ -207,13 +207,37 @@ def test_the_update_rung_applies_what_the_updater_staged(quit_ctx, monkeypatch):
     applied = []
     monkeypatch.setattr(app_mod, "bundle_path", lambda: "/Applications/FusedRender.app")
     monkeypatch.setattr(mac_update, "apply_staged",
-                        lambda bundle: applied.append(bundle) or "9.9.9")
+                        lambda bundle, rename_legacy=False:
+                        applied.append((bundle, rename_legacy)) or "9.9.9")
+    monkeypatch.setattr(mac_update, "manager", lambda: None)
 
     steps = app_mod.quit_teardown(_FakeServer())
 
-    assert applied == ["/Applications/FusedRender.app"]
+    # No manager, so no known install method: the legacy name is kept.
+    assert applied == [("/Applications/FusedRender.app", False)]
     assert steps.index("update") > steps.index("children")
     assert steps.index("update") < steps.index("exit-record")
+
+
+@pytest.mark.parametrize("method, rename", [("dmg", True), ("brew", False), (None, False)])
+def test_the_update_rung_renames_a_legacy_bundle_only_for_a_dmg_install(
+        quit_ctx, monkeypatch, method, rename):
+    """`FusedRender.app` -> `Fused Render.app` rides the apply only when the
+    install is known to be the app's own (a DMG): a Homebrew receipt names
+    the old path, and finding out would mean running brew on the quit path."""
+    from fused_render.update import mac as mac_update
+
+    applied = []
+    monkeypatch.setattr(app_mod, "bundle_path", lambda: "/Applications/FusedRender.app")
+    monkeypatch.setattr(mac_update, "apply_staged",
+                        lambda bundle, rename_legacy=False:
+                        applied.append(rename_legacy) or "9.9.9")
+    monkeypatch.setattr(mac_update, "manager",
+                        lambda: types.SimpleNamespace(known_method=lambda: method))
+
+    app_mod.quit_teardown(_FakeServer())
+
+    assert applied == [rename]
 
 
 def test_the_update_rung_is_a_noop_unpackaged(quit_ctx, monkeypatch):

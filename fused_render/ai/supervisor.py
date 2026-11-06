@@ -1130,7 +1130,7 @@ def refuse_new_workers() -> None:
 
 def _refuse_if_quitting() -> None:
     if _stopping.is_set():
-        raise SupervisorError("fused-render is quitting; not starting a worker")
+        raise SupervisorError("Fused Render is quitting; not starting a worker")
 
 
 def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:

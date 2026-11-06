@@ -98,8 +98,8 @@ def _linux_installed_version(appimage: str | None) -> str | None:
 
 
 # The hidden sibling update/mac.py stages a downloaded bundle under, next to
-# the installed bundle: `/Applications/.FusedRender-update.app` for
-# `/Applications/FusedRender.app` (`FusedBot-feature.app` ->
+# the installed bundle: `/Applications/.Fused Render-update.app` for
+# `/Applications/Fused Render.app` (`FusedBot-feature.app` ->
 # `.FusedBot-feature-update.app`). Derived from the bundle's own basename
 # rather than from a flavor constant so this module stays below `update/`
 # and so a Caskroom bundle reached through a symlink stages beside the REAL
@@ -154,6 +154,21 @@ def staged_version(bundle: str) -> str | None:
     except ValueError:
         return None
     return version
+
+
+def running_bundle_name() -> str | None:
+    """The .app folder this process runs from, without `.app` ("Fused
+    Render", or "FusedRender" on an install from before the rename that no
+    update has moved yet), else None (not a py2app bundle). It is the name
+    Finder and the System Settings privacy lists show, so copy that sends
+    the user there says this rather than the flavor's default."""
+    if getattr(sys, "frozen", None) != "macosx_app":
+        return None
+    contents = os.path.dirname(os.path.dirname(os.path.realpath(sys.executable)))
+    name = os.path.basename(os.path.dirname(contents))
+    if not name.endswith(".app") or len(name) <= 4:
+        return None
+    return name[:-4]
 
 
 def installed_version() -> str | None:

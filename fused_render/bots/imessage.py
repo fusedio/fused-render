@@ -219,7 +219,7 @@ def open_db():
     except sqlite3.OperationalError as e:
         msg = str(e)
         if "unable to open" in msg or "authorization" in msg or "not a database" in msg:
-            raise RuntimeError("no Full Disk Access to Messages: grant it to fused-render in System Settings > "
+            raise RuntimeError("no Full Disk Access to Messages: grant it to Fused Render in System Settings > "
                                "Privacy & Security, or run `python -m fused_render.bots.imessage` from a "
                                "Terminal that has it") from e
         raise
@@ -336,7 +336,7 @@ def chunks(text):
 # ---------------------------------------------------------------------- cli ---
 def main(argv):
     if argv[:1] != ["--status"]:
-        print("The iMessage bridge runs inside the fused-render server (bots/channels/imessage.py).\n"
+        print("The iMessage bridge runs inside the Fused Render server (bots/channels/imessage.py).\n"
               "  python -m fused_render.bots.imessage --status   # what this Mac can see")
         return 2
     sid, handle = super_door()

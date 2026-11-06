@@ -227,7 +227,7 @@ async def api_run_ws(ws: WebSocket):
                                err_id=err_id)
             await reply(json.dumps({
                 "id": rid, "status": 500,
-                "error": f"fused-render internal error on WS {_WS_ROUTE} "
+                "error": f"Fused Render internal error on WS {_WS_ROUTE} "
                          f"(err_id {err_id}):\n\n{tb}",
             }))
             return

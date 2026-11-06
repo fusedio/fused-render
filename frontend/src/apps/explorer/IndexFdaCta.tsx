@@ -25,13 +25,13 @@ import { fdaCopy, relaunchHref, pokeFda, useFda } from "@platform/lib/fda";
 export const SEARCH_FDA_COPY = {
   blocked:
     "Search needs Full Disk Access to index your files — nothing is scanned until you grant it.",
-  pending: "Full Disk Access is granted — relaunch FusedRender to start indexing your files.",
+  pending: "Full Disk Access is granted — relaunch Fused Render to start indexing your files.",
 } as const;
 
 export const INDEXING_FDA_COPY = {
   blocked:
     "Indexing needs Full Disk Access on macOS — no scan can start until you grant it. Search still works by walking folders live.",
-  pending: "Full Disk Access is granted — relaunch FusedRender and the startup scan will build the index.",
+  pending: "Full Disk Access is granted — relaunch Fused Render and the startup scan will build the index.",
 } as const;
 
 export function IndexFdaCta({

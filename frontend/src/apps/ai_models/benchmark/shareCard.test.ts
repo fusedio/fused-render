@@ -52,12 +52,12 @@ describe("hardwareLine", () => {
 
 describe("provenanceLine", () => {
   it("names the version the runs were measured under", () => {
-    expect(provenanceLine("0.7.3", new Date("2026-08-24T10:00:00Z"))).toContain("fused render 0.7.3");
+    expect(provenanceLine("0.7.3", new Date("2026-08-24T10:00:00Z"))).toContain("Fused Render 0.7.3");
   });
 
   it("still brands the card when no run reported a version", () => {
     const line = provenanceLine(null, new Date("2026-08-24T10:00:00Z"));
-    expect(line.startsWith("fused render · ")).toBe(true);
+    expect(line.startsWith("Fused Render · ")).toBe(true);
   });
 });
 

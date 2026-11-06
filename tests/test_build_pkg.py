@@ -84,9 +84,11 @@ def test_release_env_contract():
     build = _read(_BUILD_PKG)
     post = _read(_POSTINSTALL)
     written = set(re.findall(r"(?m)^([A-Z0-9_]+)='\$\{[A-Z0-9_]+\}'$", build))
-    assert written == {"APP_NAME", "DISPLAY_NAME", "VERSION", "ARCH", "DMG_URL", "DMG_SHA256"}
+    assert written == {"APP_NAME", "BUNDLE_NAME", "LEGACY_BUNDLE_NAMES", "DISPLAY_NAME", "VERSION",
+                       "ARCH", "DMG_URL", "DMG_SHA256"}
     assert 'source "$HERE/release.env"' in post
-    for var in ("APP_NAME", "VERSION", "ARCH", "DMG_URL", "DMG_SHA256"):
+    for var in ("APP_NAME", "BUNDLE_NAME", "LEGACY_BUNDLE_NAMES", "DISPLAY_NAME", "VERSION", "ARCH",
+                "DMG_URL", "DMG_SHA256"):
         assert f"${var}" in post or f"${{{var}" in post, f"postinstall never reads {var}"
 
 

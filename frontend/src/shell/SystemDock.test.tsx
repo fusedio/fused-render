@@ -216,7 +216,7 @@ test("the popover shows the headline, reason links, Claude line and the three st
   );
   const tree = r.toJSON() as ReactTestRendererJSON;
   expect(texts(byClass(tree, "sys-reasons")[0])).toContain("All 6 browser connections held");
-  expect(texts(byClass(tree, "sys-claude")[0])).toBe("Claude CLIs: 3 (fused-render 2 · other 1) · 1.5 GB");
+  expect(texts(byClass(tree, "sys-claude")[0])).toBe("Claude CLIs: 3 (Fused Render 2 · other 1) · 1.5 GB");
   expect(byClass(tree, "monitor-tl-row").length).toBe(0);
   expect(byClass(tree, "sys-keys").length).toBe(0);
   const stats = byClass(tree, "sys-stats")[0];
@@ -259,11 +259,11 @@ test("the chip's accessible name carries a warn/bad verdict, not ok or unknown",
       <SystemCardView data={{ ...PAYLOAD, verdict }} collapsed onToggle={() => {}} onOpenMonitor={() => {}} />,
     ).root.find((n) => n.type === "button").props["aria-label"] as string;
   expect(label({ level: "bad", headline: "All 6 connections held" })).toBe(
-    "fused-render is using CPU 60% · 1.4 GB · All 6 connections held",
+    "Fused Render is using CPU 60% · 1.4 GB · All 6 connections held",
   );
   expect(label({ level: "warn", headline: "Swap growing" })).toContain("· Swap growing");
-  expect(label({ level: "ok", headline: "Nothing wrong" })).toBe("fused-render is using CPU 60% · 1.4 GB");
-  expect(label({ level: "unknown", headline: "" })).toBe("fused-render is using CPU 60% · 1.4 GB");
+  expect(label({ level: "ok", headline: "Nothing wrong" })).toBe("Fused Render is using CPU 60% · 1.4 GB");
+  expect(label({ level: "unknown", headline: "" })).toBe("Fused Render is using CPU 60% · 1.4 GB");
 });
 
 test("an unknown verdict paints no dot", () => {

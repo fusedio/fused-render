@@ -119,6 +119,12 @@ def api_config(
     config["flavor"] = _flavor.flavor()
     config["scheme"] = _flavor.scheme()
     config["display_name"] = _flavor.display_name()
+    # The .app folder's name as Finder and System Settings list it: the one
+    # this process runs from when packaged (an install from before the
+    # rename may still be "FusedRender"), else the flavor's.
+    from fused_render import installed
+
+    config["bundle_name"] = installed.running_bundle_name() or _flavor.bundle_name()
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

@@ -575,7 +575,7 @@ def test_main_sets_app_identity_and_a_sigterm_handler_before_serving(monkeypatch
     code = wh.main(["--port", "1", "--socket", str(tmp_path / "s"), "--state", str(tmp_path)])
     assert code == 0
     assert ("prgname", "fused-render") in calls
-    assert ("app_name", "FusedRender") in calls
+    assert ("app_name", "Fused Render") in calls
     assert ("icon", "fused-render") in calls
     assert ("signal", signal.SIGTERM) in calls
     assert ("main",) in calls

@@ -3,7 +3,7 @@
 A GUI app launched from Finder gets launchd's PATH (/usr/bin:/bin:...), not the
 one a terminal has. Everything the server spawns inherits it — Claude sessions,
 git, template tools — so anything installed through a shell manager (fnm, nvm,
-volta, asdf, pyenv) is invisible: `npm: command not found` from a FusedRender
+volta, asdf, pyenv) is invisible: `npm: command not found` from a Fused Render
 session whose very same command works in Terminal. Those managers only edit
 rc files (~/.zshrc, ~/.zprofile), so the only thing that knows the real PATH is
 the user's shell. claude_health._shell_probe already asks it, but only where
