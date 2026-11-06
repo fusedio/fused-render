@@ -12,7 +12,7 @@ import { canClear, commandFor, matchCommands, slashQuery, type Command } from ".
 import { jobNote } from "../lib/dictation";
 import { runningStatusText } from "../lib/derive";
 import { fmtBytes, fmtSecs } from "../lib/format";
-import { act, errMsg, eventsOf, markSeen, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
+import { act, bannerError, errMsg, eventsOf, markSeen, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
 
 export interface ReplyTo { seq: number; text: string }
 
@@ -315,7 +315,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
       await act(() => api.send(b.id, text, r ? r.seq : null));
       const th = threadRef.current; if (th) th.scrollTop = th.scrollHeight;
     } catch (e) {
-      showBanner(errMsg(e));
+      bannerError(e);  // an attach refused by the workspace gate gets the sticky banner with Override
       // Give the text (and the quote) back so nothing is lost: to the box when it still shows this bot, else to its draft
       // (the box was switched to another bot while the send was in flight; the quote belongs to the thread that left).
       if (liveId.current === b.id) { t.value = text; fitInput(); setReply(r); }

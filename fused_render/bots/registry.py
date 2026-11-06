@@ -585,11 +585,18 @@ def workspace_info() -> dict | None:
             "app": rec.get("app") or "", "version": rec.get("version") or "", "home": rec.get("home") or ""}
 
 
+class StillStopping(RuntimeError):
+    """yield_workspace: a task thread outlived the budget, so the claim is kept (two writers otherwise)."""
+
+
 def yield_workspace(budget_s: float = WS_YIELD_BUDGET_S) -> bool:
     """Let another home's server take the workspace claim (module docstring): stop every loaded bot's task and
-    every Chrome this process launched, join the task threads on the budget, drop the claim, forget the Bots (the
-    next `get()` rebuilds them read-only from disk, so nothing here writes over the taker's state) and skip
-    re-claiming for WS_YIELD_COOLDOWN_S. True when this process held the claim; False (nothing done) otherwise."""
+    every Chrome this process launched (the idle-sleep stop: a later launch relaunches), join the task threads on
+    the budget, drop the claim, forget the Bots (their browser views detach; the next `get()` rebuilds them
+    read-only from disk, so nothing here writes over the taker's state) and skip re-claiming for
+    WS_YIELD_COOLDOWN_S. True when this process held the claim; False (nothing done) otherwise. StillStopping when
+    a task thread is still alive after the budget: the claim stays, since that thread would write bot.json over
+    the taker's state — the asker retries in a few seconds (the stop is already requested)."""
     from fused_render.bots import browsers
     with _OWNER["ws_lock"]:
         if _OWNER["ws_fh"] is None:
@@ -605,14 +612,25 @@ def yield_workspace(budget_s: float = WS_YIELD_BUDGET_S) -> bool:
             browsers.stop_all(budget_s)
         except Exception:  # noqa: BLE001
             logger.warning("stopping the bots' Chromes failed while yielding the workspace", exc_info=True)
+        alive = []
         for b in bots:
             t = getattr(b, "thread", None)
             if t is not None and t.is_alive():
                 t.join(max(0.0, started + budget_s - time.monotonic()))
+                if t.is_alive():
+                    alive.append(getattr(b, "id", "?"))
+        if alive:
+            logger.info("bots: not yielding the workspace yet: task(s) still stopping on %s", ", ".join(alive))
+            raise StillStopping(f"a task is still stopping ({', '.join(alive)}); try again in a few seconds")
         _OWNER["ws_yield_until"] = time.monotonic() + WS_YIELD_COOLDOWN_S
         _drop_workspace_claim()
         with _lock:
             _bots.clear()
+        for b in bots:
+            try:
+                b.browser.proc.detach(b.browser)
+            except Exception:  # noqa: BLE001
+                pass
         logger.info("bots: yielded the workspace claim for %s on request", bpaths.bots_root())
         return True
 

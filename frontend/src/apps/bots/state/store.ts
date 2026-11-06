@@ -628,6 +628,8 @@ export async function act<T>(call: () => Promise<T>, silent = false): Promise<T 
   try { const r = await call(); await poll(); return r; }
   catch (e) { if (isWorkspaceBusy(e)) showWorkspaceBusy(e); else if (!silent) showBanner(errMsg(e)); return undefined; }
 }
+/** A failed call outside act(): the workspace-busy 409 gets its sticky banner with Override, anything else the plain one. */
+export function bannerError(e: unknown): void { if (isWorkspaceBusy(e)) showWorkspaceBusy(e); else showBanner(errMsg(e)); }
 
 /** The live view (Stage) opened/closed: poll every 400 ms while open. The thread stays beside the page, so nothing re-pins. */
 export function setFast(on: boolean): void {

@@ -10,12 +10,12 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { AppCard } from "../apps/AppCard";
 import { appFromText, showAppBeside, useAppsRoot } from "../apps/apps";
 import { openBuilds, getBuildRows } from "../builds/builds";
-import { ApiError, api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
+import { ApiError, api, isWorkspaceBusy, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
-import { act, clearScrollSeq, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
+import { act, bannerError, clearScrollSeq, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { approvalParts } from "@platform/lib/approvalParts";
 import { GateCard } from "@platform/ui/GateCard";
@@ -162,6 +162,7 @@ export function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: {
     void (async () => {
       try { await api.send(relay!.bot, t, null, false, relay!.seq); }
       catch (e) {
+        if (isWorkspaceBusy(e)) { setSent(false); bannerError(e); return; }  // the sticky banner with Override; the buttons come back
         if (!(e instanceof ApiError && e.status === 409)) { setSent(false); showBanner(errMsg(e)); return; }  // no poll: it would hide the banner
       }
       await poll();

@@ -558,7 +558,10 @@ def bots_workspace_yield(x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard:
         return guard
-    return {"yielded": registry.yield_workspace()}
+    try:
+        return {"yielded": registry.yield_workspace()}
+    except registry.StillStopping as e:
+        return _error(str(e), 409)
 
 
 @router.get("/api/bots/usage")
