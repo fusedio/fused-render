@@ -16,12 +16,8 @@ html[data-host="lan"] body {
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
 }
-/* The frame is the VISUAL viewport (main.tsx useVisualViewportVar): with the
-   keyboard up it shrinks and the composer stays above the keys. */
 html[data-host="lan"] #root {
-  position: relative;
-  top: var(--vvtop, 0px);
-  height: var(--vvh, 100%);
+  height: 100%;
 }
 /* No double-tap zoom, no pinch zoom (the native shell disables the gesture
    too, WebView.swift lockZoom): the page is an app. `manipulation` keeps
@@ -126,10 +122,16 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
 }
 
 /* ---- a section: the header row and the desktop page under it ------------ */
+/* A section is the VISUAL viewport (main.tsx useVisualViewportVar): with the
+   keyboard up it shrinks and the composer stays above the keys. On the
+   section, not #root — the React root is `display: contents`, a box-less
+   element a height does nothing to. */
 .lan-section {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  position: relative;
+  top: var(--vvtop, 0px);
+  height: var(--vvh, 100%);
   background: var(--bg);
 }
 .lan-header {
