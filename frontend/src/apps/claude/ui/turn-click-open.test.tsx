@@ -1,5 +1,5 @@
-// CLICK A USER MESSAGE, OPEN ITS REPLY (prefs `turn_click_open`, off by
-// default). It only ever opens: a reply already open stays open, and a click
+// CLICK A USER MESSAGE, OPEN ITS REPLY — OR FOLD IT AGAIN (prefs
+// `turn_click_open`, off by default; a toggle since 2026-11-06). A click
 // that is the end of a text selection is not a click on the message.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
@@ -104,17 +104,21 @@ const click = (r: ReturnType<typeof create>, i: number) => {
 };
 
 describe("a click on a user message", () => {
-  test("opens the folded reply under it, and a second click leaves it open", async () => {
+  test("opens the folded reply under it, and a second click folds it again", async () => {
     const r = await mount(true);
     expect(folded(r)).toBe(1); // a:1 folded, the newest (a:2) open
     click(r, 0);
     expect(folded(r)).toBe(0);
     click(r, 0);
+    expect(folded(r)).toBe(1);
+    click(r, 0);
     expect(folded(r)).toBe(0);
   });
 
-  test("a message whose reply is already open changes nothing", async () => {
+  test("a message whose reply is already open folds it", async () => {
     const r = await mount(true);
+    click(r, 1);
+    expect(folded(r)).toBe(2);
     click(r, 1);
     expect(folded(r)).toBe(1);
   });

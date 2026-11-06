@@ -1109,6 +1109,9 @@ describe("favCardWish (the favourite's card, never taller than half the window)"
   });
   it("capped at half the window on open: a 1400x900 window holds 450", () => {
     expect(favMaxHeight(900)).toBe(450);
+    // No window to measure (a test DOM): no ceiling, never NaN.
+    expect(favMaxHeight(NaN)).toBe(Infinity);
+    expect(favCardWish(base, null, NaN).maxHeight).toBe(520);
     expect(favCardWish(base, { width: 400, height: 800 }, 900).maxHeight).toBe(450);
     // The default 520 is over half of 900 too.
     expect(favCardWish(base, null, 900).maxHeight).toBe(450);

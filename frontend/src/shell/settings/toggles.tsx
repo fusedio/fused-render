@@ -81,7 +81,7 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
 }
 
 // The in-chat recap fold. Default on: one haiku call per recap.
-// A click on a user message opens the folded reply under it.
+// A click on a user message opens the folded reply under it, or folds it again.
 export function TurnClickOpensReplyControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow

@@ -13,14 +13,26 @@
 // WHAT IT IS: the bot's chat itself — apps/bots `BotChat`: the Bots page's
 // thread and composer for one bot, fed without the page — in the card the
 // rail's own card draws: the same classes (`.claude-rail-peek`, claude-
-// rail.css), the same placement (rail-peek-lib `placeClear` off the ring,
-// clamped to the bots' scrolled box, clear of the favourite's card), the same
-// size (the list card's remembered `canvasRailPeek`, one size hovered or
-// pinned, dragged from the same grips), the same two-frame show, the same
-// fade, the same bridge and safe cone, the same inert-while-hidden rule. The
-// chat chunk is lazy (`BotChat` behind React.lazy): the Bots page's thread
-// and its markdown stack are not the shell's to carry until a bot's ring is
-// hovered (`preloadBotChat`, the intent's `warm`).
+// rail.css), the same two-frame show, the same fade, the same bridge and
+// safe cone, the same inert-while-hidden rule. The chat chunk is lazy
+// (`BotChat` behind React.lazy): the Bots page's thread and its markdown
+// stack are not the shell's to carry until a bot's ring is hovered
+// (`preloadBotChat`, the intent's `warm`).
+//
+// IT IS WINDOW B (owner, 2026-11-06: "in FAV make the bot and the chat the
+// same — sharing the same window B; whether you open a fav task or a bot,
+// both share the same window; the UI inside may differ, but no resize, no
+// jitter, no overlap"): it stands where the favourite's card stands
+// (FavouritePeek) — its bottom on the rail's, bottom right, the rail itself
+// the anchor (rail-peek-lib `peekPlacement`, `align: "bottom"`) — at that
+// card's size (`FAV_WIDTH` × `FAV_HEIGHT` until dragged; the drag lands in
+// the favourite card's own `canvasRailFav`, so the two are one size from
+// then on; never taller than half the window, `favCardWish`), hovered or
+// pinned. One of the two is up at a time (ClaudeRail; fav-peek-store
+// `setBotCard`), and while this one is PINNED it publishes its box as window
+// B's (`publishFavBox`, owner "bot"), which the rail's own card keeps clear
+// of, as it does the favourite's. Until 2026-11-06 it hung off its ring at
+// the list card's size.
 //
 // ONE MOUNT, AND NONE WHILE CLOSED: the shown bot's chat, kept through the
 // fade-out and UNMOUNTED once that is done (`chatKey`, CHAT_LINGER_MS past
@@ -58,20 +70,21 @@ import { ChatChunkBoundary } from "@apps/claude/ChatMount";
 import { Face } from "@apps/bots/components/Face";
 import type { FaceSubject } from "@apps/bots/lib/face";
 import { botStatusWords } from "./claude-rail-lib";
+import { publishFavBox } from "./fav-peek-store";
 import {
-  PEEK_MAX_HEIGHT,
+  FAV_HEIGHT,
+  FAV_WIDTH,
   PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
-  PEEK_WIDTH,
-  bottomClear,
-  clampAnchor,
   dragResize,
+  favCardWish,
+  favMaxHeight,
   inSafeCone,
-  listCardWish,
-  placeClear,
+  peekPlacement,
   rowOf,
   type Box,
+  type PeekWish,
   type ResizeEdge,
 } from "./rail-peek-lib";
 
@@ -93,12 +106,15 @@ export function botHref(id: string): string {
   return "/bots/" + encodeURIComponent(id);
 }
 
-/** The list card's remembered size (RailPeek `storedPeekSize`, ui-layout
- *  `canvasRailPeek`): this card is the same size as that one — a bot's card
- *  dragged wider is the task card dragged wider (owner: "the same exact
- *  behavior"). */
+/** Window B's size (header): the favourite card's fixed wish, its bottom on
+ *  the rail's (FavouritePeek `FAV_SIZE`). */
+const FAV_SIZE: PeekWish = { width: FAV_WIDTH, maxHeight: FAV_HEIGHT, align: "bottom" };
+
+/** The favourite card's remembered size (RailPeek `storedPeekSize`,
+ *  ui-layout `canvasRailFav`): this card is that size — a bot's card dragged
+ *  wider is the favourite's card dragged wider (header). */
 function storedPeekSize(): { width: number; height: number } | null {
-  const s = getUiLayout().canvasRailPeek;
+  const s = getUiLayout().canvasRailFav;
   if (!s) return null;
   return {
     width: Math.min(PEEK_MAX_WIDTH, Math.max(PEEK_MIN_WIDTH, s.width)),
@@ -124,10 +140,9 @@ export interface BotPeekProps {
   shown: BotPulseRow | null;
   /** The ring element for a bot (its anchor), or null if it is not drawn. */
   anchorOf: (id: string) => HTMLElement | null;
-  /** The rail, for its edge and for the row it stands in. */
+  /** The rail: the card's anchor (its bottom on the rail's, header), its
+   *  edge, and the row it stands in. */
   railEl: HTMLElement | null;
-  /** The favourite's card's box, to keep clear of (RailPeek `avoid`). */
-  avoid?: Box | null;
   onPointerEnter: () => void;
   onPointerLeave: () => void;
   /** In (`true`) or out (`false`) of the safe cone / the bridge. */
@@ -151,7 +166,7 @@ export interface BotPeekProps {
 }
 
 export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
-  { id, shown, anchorOf, railEl, avoid = null, onPointerEnter, onPointerLeave, onCone, onPressInside, onHold, onDismiss, onNoRoom, onOpen, held, onHeld, pinned },
+  { id, shown, anchorOf, railEl, onPointerEnter, onPointerLeave, onCone, onPressInside, onHold, onDismiss, onNoRoom, onOpen, held, onHeld, pinned },
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -174,73 +189,44 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     return () => window.clearTimeout(id);
   }, [shownKey]);
 
-  // GROWN (RailPeek): the pinned card takes the remembered size at once for
-  // a ring press, after the pointer comes up for a press inside the card.
-  const [grown, setGrown] = useState(false);
-  const grownRef = useRef(false);
-  grownRef.current = grown;
-  const pressingInside = useRef(false);
-  const growAfterPress = useRef(false);
-  const onPressInsideCapture = () => {
-    pressingInside.current = true;
-    onPressInside();
-  };
-  useEffect(() => {
-    const up = () => {
-      pressingInside.current = false;
-      if (growAfterPress.current) {
-        growAfterPress.current = false;
-        setGrown(true);
-      }
-    };
-    window.addEventListener("pointerup", up, true);
-    window.addEventListener("pointercancel", up, true);
-    return () => {
-      window.removeEventListener("pointerup", up, true);
-      window.removeEventListener("pointercancel", up, true);
-    };
-  }, []);
-  useEffect(() => {
-    if (!pinned) {
-      growAfterPress.current = false;
-      setGrown(false);
-    } else if (pressingInside.current) growAfterPress.current = true;
-    else setGrown(true);
-  }, [pinned]);
-  // ONE SIZE, hovered or pinned (RailPeek `oneSize`: the pinned bots stand
-  // only with the favourites on, where the list card is one size too).
-  const wish = () => listCardWish({ hasSession: true, stored: storedPeekSize(), grown: grownRef.current, oneSize: true });
+  // A PRESS INSIDE (ClaudeRail's outside-press rule reads the flag).
+  const onPressInsideCapture = () => onPressInside();
+  // ONE SIZE, hovered or pinned, the favourite card's (header).
+  const wish = () => favCardWish(FAV_SIZE, storedPeekSize(), window.innerHeight);
   const railLeft = useRef(0);
   const row = useMemo(() => rowOf(railEl), [railEl]);
+  // WHERE IT STANDS (header): the rail is the anchor — with `align:
+  // "bottom"` the card's bottom lands on the rail's, clamped inside the row
+  // — bottom right, whichever ring opened it (FavouritePeek `anchorOf`).
   const place = (key: string): Box | null => {
-    const anchor = anchorOf(key);
-    if (!anchor || !railEl || !row) return null;
+    if (!anchorOf(key) || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
-    // A ring scrolled past the bots' box anchors at the box's edge.
-    const scroller = anchor.closest(".claude-rail-bots");
-    const at = clampAnchor(anchor.getBoundingClientRect(), scroller ? scroller.getBoundingClientRect() : null);
-    return placeClear(at, rail, row.getBoundingClientRect(), avoid, wish());
+    return peekPlacement(rail, rail, row.getBoundingClientRect(), wish());
   };
 
-  // THE GRIPS AND THEIR DRAG (RailPeek, the same key: `canvasRailPeek`).
+  // THE GRIPS AND THEIR DRAG (RailPeek; the favourite card's key,
+  // `canvasRailFav` — header).
   const [resizing, setResizing] = useState<ResizeEdge | null>(null);
   const resizingRef = useRef<ResizeEdge | null>(null);
   resizingRef.current = resizing;
-  const dragStart = useRef<{ x: number; y: number; box: Box; pointerId: number; corner: ResizeEdge; el: HTMLElement; floor: number | undefined } | null>(null);
+  const dragStart = useRef<{ x: number; y: number; box: Box; pointerId: number; corner: ResizeEdge; el: HTMLElement; floor: number | undefined; cap: number } | null>(null);
   const dragLast = useRef<Box | null>(null);
   const onGripDown = (corner: ResizeEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || !box) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floor: bottomClear(box, avoid) };
+    // The card stands on the rail's bottom: a bottom drag stops there, and
+    // the height never passes half the window (RailPeek, the favourite's).
+    const floor = railEl ? railEl.getBoundingClientRect().bottom : undefined;
+    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner, el: e.currentTarget, floor, cap: favMaxHeight(window.innerHeight) };
     dragLast.current = null;
     setResizing(corner);
   };
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     if (!start || start.pointerId !== e.pointerId || !row) return;
-    const next = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, row.getBoundingClientRect(), start.floor);
+    const next = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, row.getBoundingClientRect(), start.floor, start.cap);
     dragLast.current = next;
     setBox((prev) => (prev && prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height ? prev : next));
   };
@@ -257,10 +243,10 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     const prev = storedPeekSize();
     const pick = (changed: boolean, got: number, min: number, kept: number | undefined, fallback: number) =>
       changed && got >= min ? got : (kept ?? fallback);
-    const width = pick(lastBox.width !== start.box.width, lastBox.width, PEEK_MIN_WIDTH, prev?.width, PEEK_WIDTH);
-    const height = pick(lastBox.height !== start.box.height, lastBox.height, PEEK_MIN_HEIGHT, prev?.height, PEEK_MAX_HEIGHT);
+    const width = pick(lastBox.width !== start.box.width, lastBox.width, PEEK_MIN_WIDTH, prev?.width, FAV_WIDTH);
+    const height = pick(lastBox.height !== start.box.height, lastBox.height, PEEK_MIN_HEIGHT, prev?.height, FAV_HEIGHT);
     patchUiLayout((d) =>
-      d.canvasRailPeek?.width === width && d.canvasRailPeek?.height === height ? d : { ...d, canvasRailPeek: { width, height } },
+      d.canvasRailFav?.width === width && d.canvasRailFav?.height === height ? d : { ...d, canvasRailFav: { width, height } },
     );
   };
   const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -270,6 +256,13 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   };
   const visible = on && box !== null && shownKey !== null;
   const gripsOn = visible;
+  // WINDOW B'S BOX (header): published while PINNED — what the rail's own
+  // card keeps clear of; a hover overlaps, as the favourite's does. As the
+  // bot owner: a close here never clears a box the favourite's card holds.
+  useEffect(() => {
+    publishFavBox(visible && pinned ? box : null, "bot");
+  }, [visible, pinned, box]);
+  useEffect(() => () => publishFavBox(null, "bot"), []);
   const dragKey = useRef<string | null>(null);
   useEffect(() => {
     if (dragStart.current && (!gripsOn || dragKey.current !== shownKey)) endDrag(false);

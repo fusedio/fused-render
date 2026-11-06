@@ -111,9 +111,11 @@ export const FAV_HEIGHT = 520;
  *  shrinks (`favCardWish`), and through a drag (`dragResize`'s `maxHeight`). */
 export const FAV_MAX_SHARE = 0.5;
 
-/** The favourite card's ceiling in a window `viewportH` tall. */
+/** The favourite card's ceiling in a window `viewportH` tall. No window to
+ *  measure (a test DOM's `innerHeight` is undefined): no ceiling — a NaN
+ *  here made a card's box unequal to itself and re-placed it every render. */
 export function favMaxHeight(viewportH: number): number {
-  return Math.floor(viewportH * FAV_MAX_SHARE);
+  return Number.isFinite(viewportH) ? Math.floor(viewportH * FAV_MAX_SHARE) : Infinity;
 }
 
 /** A card's size as the reader last dragged it (ui-layout), or null. */

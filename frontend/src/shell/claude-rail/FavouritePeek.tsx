@@ -36,11 +36,24 @@
 // The STARS stay the server's: an unstar, an erase or an archive of the open
 // chat, in any window, closes it here once the pulse says so (rail-peek-lib
 // `favOpenVerdict`); an archived favourite never shows a card. Nothing else
-// closes it — not an outside press, not Escape, not a place change. The Open
-// door opens the pane; the card stays this window's open favourite (RailPeek
-// `onDismiss("door")`) and is back when the rail is. A rail with no room for
+// closes it — not an outside press, not Escape, not a place change — BUT
+// ITS OPEN DOOR (owner, 2026-11-06: "if I have a fav window and I click
+// Open, the sidebar should expand and show me the chat, and close the fav
+// window; if the sidebar is expanded it should open the chat, whatever
+// chat it is in; and when I close that sidebar it should open the fav
+// popup again"): Open goes through the page rail's own door (fav-peek-store
+// `railDoor` — the page's pane door, which expands the pane and puts the
+// chat in it, in place of whatever it showed), closes this card, and leaves
+// the key for the pane's collapse to give back (`setFavRestore`; ClaudeRail
+// opens it again on the turn from open to shut). A rail with no room for
 // it (a window shrunk to nothing) hides it until the window, the rail or the
 // row it stands in changes shape, or the next rail stands.
+//
+// ONE WINDOW B WITH THE BOTS (owner, 2026-11-06: "treat fav bots and fav
+// tasks as one window"): a pinned bot's card (BotPeek) stands exactly here,
+// at this card's size, and the two never stand together — while a bot's
+// card holds the window (fav-peek-store `useBotCard`) this one shows no
+// hover, and a bot's press closes this window's open favourite (ClaudeRail).
 //
 // A HOVER MODE (owner, 2026-11-05: two sections, two windows): with NO
 // favourite open, resting on a favourite's ring previews it HERE — bottom
@@ -75,7 +88,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { type Task, type TaskPulseTask } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
-import { clearFavOpen, setFavOpen } from "@platform/lib/last-chat";
+import { clearFavOpen, lastChatId, setFavOpen, setLastFav } from "@platform/lib/last-chat";
 import { RailPeek } from "./RailPeek";
 import {
   dismissFavHover,
@@ -83,8 +96,11 @@ import {
   focusRail,
   publishFavBox,
   publishFavBoxFor,
+  railDoor,
   railHere,
+  setFavRestore,
   takeFavFocus,
+  useBotCard,
   useFavHoverKey,
   useFavOpenRow,
   useFavPeekState,
@@ -163,9 +179,11 @@ export function FavouritePeek() {
   // stars — closed (the key cleared) once an unstar, an erase or an archive
   // reaches the pulse (fav-peek-store `useFavOpenRow`).
   const open = useFavOpenRow(on, rows);
-  // …or, with none open, the one a hover wants (header): a live favourite only.
+  // …or, with none open, the one a hover wants (header): a live favourite
+  // only — and not while a bot's card holds the window (header).
   const hoverKey = useFavHoverKey();
-  const hoverRow = useMemo(() => (on && !open ? favHoverRow(hoverKey, null, rows) : null), [on, open, hoverKey, rows]);
+  const botUp = useBotCard() !== null;
+  const hoverRow = useMemo(() => (on && !open && !botUp ? favHoverRow(hoverKey, null, rows) : null), [on, open, botUp, hoverKey, rows]);
   const hovering = !open && !!hoverRow;
   const shownRow = open ?? hoverRow;
   const seat = useMemo((): RailRow | null => {
@@ -177,6 +195,11 @@ export function FavouritePeek() {
   useEffect(() => {
     if (open || !on) dismissFavHover();
   }, [open, on]);
+  // A card that opens is the window moving on: a restore left by an earlier
+  // door is forgotten (header). The door itself sets it AFTER closing.
+  useEffect(() => {
+    if (open) setFavRestore(null);
+  }, [open]);
   useEffect(() => {
     dismissFavHover();
   }, [rail]);
@@ -273,20 +296,33 @@ export function FavouritePeek() {
   // The page's canvas, off the rail this card stands beside (header).
   const here = useCallback(() => railHere(rail), [rail]);
   const place = useMemo(() => (seat ? placeOf(seat.pulse, seat.row) : null), [seat]);
-  // The × (RailPeek `onDismiss`), and an unstar here: this window's card
-  // closes, nothing is written (header).
+  // The × (RailPeek `onDismiss`), an unstar here, and the Open door: this
+  // window's card closes, nothing is written (header). The door leaves the
+  // key for the pane's collapse to give back.
   const close = useCallback(
     (why?: "door" | "unstar") => {
-      // The Open door is not a close: the pane takes over, the card stays open.
       if (hovering) {
         dismissFavHover();
         return;
       }
-      if (why === "door" || !open) return;
+      if (!open) return;
       if (why === "unstar") unstarred.current = open.key;
       clearFavOpen(open.key);
+      if (why === "door") setFavRestore(open.key);
     },
     [open, hovering],
+  );
+  // THE OPEN DOOR (header): the favourites' own last mark, then the page
+  // rail's door — the pane expands on the chat, whatever it showed — or,
+  // with no rail door (the shell's fallback), the href itself.
+  const openChat = useCallback(
+    (href: string) => {
+      if (seat) setLastFav(lastChatId(seat.pulse));
+      const door = railDoor(rail);
+      if (door) door(href);
+      else void navigateUrl(href);
+    },
+    [seat, rail],
   );
   // A press inside the hover card keeps it: the hover becomes the open key.
   const pressInside = useCallback(() => {
@@ -296,8 +332,8 @@ export function FavouritePeek() {
   }, [hovering, hoverRow]);
   // Only an OPEN card makes the rail's own card give way (`avoid`); a hover
   // overlaps it and publishes nothing.
-  const onBox = useCallback((b: Parameters<typeof publishFavBox>[0]) => publishFavBoxFor(hovering, b), [hovering]);
-  useEffect(() => () => publishFavBox(null), []);
+  const onBox = useCallback((b: Parameters<typeof publishFavBox>[0]) => publishFavBoxFor(hovering, b, "fav"), [hovering]);
+  useEffect(() => () => publishFavBox(null, "fav"), []);
   if (!on || !seat || !place) return null;
   return (
     <RailPeek
@@ -320,7 +356,7 @@ export function FavouritePeek() {
       onDismiss={close}
       dismissOnUnstar
       onNoRoom={() => setNoRoom(true)}
-      onOpenChat={(href) => navigateUrl(href)}
+      onOpenChat={openChat}
       here={here}
       pageRoot={page?.root ?? null}
       onPin={noop}

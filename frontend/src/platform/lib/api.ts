@@ -1568,7 +1568,7 @@ export interface Prefs {
   // The in-chat recap fold (`chat_recap_enabled`, shell/prefs.py; DEFAULT ON).
   // Optional: absent (an older server) reads as on, like the server's default.
   chat_recap?: { enabled: boolean };
-  // A click on a user message opens the reply under it
+  // A click on a user message opens the reply under it, or folds it again
   // (`turn_click_opens_reply_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   turn_click_open?: { enabled: boolean };

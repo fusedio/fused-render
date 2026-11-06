@@ -596,6 +596,11 @@ export interface RingMarkInput {
   /** A favourite's ring whose chat the pane or the Tasks peek already shows
    *  (rail-peek-lib `favRingRoute` is not "card"): caption only. */
   chatElsewhere?: boolean;
+  /** WINDOW B IS HELD BY A BOT'S CARD (ClaudeRail `botPinned`; owner,
+   *  2026-11-06: "treat fav bots and fav tasks as one window"): a
+   *  favourite's ring hovers nothing meanwhile — its caption, as beside an
+   *  open favourite's card; a press still takes the window. */
+  botHeld?: boolean;
 }
 
 export function ringMarks(o: RingMarkInput): {
@@ -623,9 +628,10 @@ export function ringMarks(o: RingMarkInput): {
     (!one || (o.foot ? o.activeFav === o.key && o.openFavKey !== o.key : o.activeList === o.key))
   )
     classes.push("is-last");
-  // While ANY favourite's card is open, every favourite-section ring (and
-  // the just-starred one still in the list) shows its caption only.
-  const silenced = o.openFavKey !== null && o.favsOn && fav;
+  // While ANY favourite's card is open — or a bot's card holds window B
+  // (`botHeld`) — every favourite-section ring (and the just-starred one
+  // still in the list) shows its caption only.
+  const silenced = (o.openFavKey !== null || !!o.botHeld) && o.favsOn && fav;
   // A favourite's ring always hovers (window B), whatever the pane shows:
   // the chat may stand in the pane and in the card at once (owner,
   // 2026-11-05). `chatElsewhere` is kept on the input for callers that
@@ -734,65 +740,14 @@ export function ringPress(o: {
   return "door";
 }
 
-/** THE PANE OPENING UNDER A PINNED LIST CARD (ClaudeRail; owner,
- *  2026-11-05): the pane takes that chat and the card goes — on the turn
- *  from shut to open only, favourites on, a list card (not a favourite's
- *  ring hovered over it) with a conversation to open. The pane shutting
- *  forces nothing. */
-export function paneTakesPinned(o: {
-  wasOpen: boolean;
-  open: boolean;
-  favsOn: boolean;
-  pinnedKey: string | null;
-  isFav: boolean;
-  hasSession: boolean;
-}): boolean {
-  return !o.wasOpen && o.open && o.favsOn && o.pinnedKey !== null && !o.isFav && o.hasSession;
-}
-
-/** WHERE THE PANE LAST SHOWED (ClaudeRail `paneWas`; owner, 2026-11-05: a
- *  pinned list card, the pane expanded over it, then collapsed — the card
- *  comes back on the chat the pane was on, unless the pane stood on its
- *  Recent / home page): the key of the list chat the pane shows now, or
- *  null for home. Read only while the pane is open — shut, it keeps what it
- *  had. `paneKey`: the list chat whose session a pane chat holds; `anySession`:
- *  a pane chat holds some session (a chat that is no list ring: a
- *  favourite's, another place's — nothing to pin); `remembered`: the last
- *  answer; `holdUntil`: the pane taking a pinned chat has not mounted it yet,
- *  so an empty pane is not "home" until then. */
-export function paneWas(o: {
-  paneOpen: boolean;
-  paneKey: string | null;
-  anySession: boolean;
-  remembered: string | null;
-  holdUntil: number;
-  now: number;
-}): string | null {
-  if (!o.paneOpen) return o.remembered;
-  if (o.paneKey) return o.paneKey;
-  if (o.anySession) return null;
-  return o.now < o.holdUntil ? o.remembered : null;
-}
-
-/** The hold on an empty pane ends the moment a pane chat holds a session:
- *  the chat mounted, so a later empty pane is the home page. */
-export function paneHoldAfter(holdUntil: number, anySession: boolean): number {
-  return anySession ? 0 : holdUntil;
-}
-
-/** THE PANE COLLAPSING (owner, 2026-11-05): the list's card comes back,
- *  pinned, on the chat the pane was showing — on the turn from open to shut
- *  only, favourites on, a list chat (not a favourite's: that is window B's)
- *  with a conversation; the pane on its home page restores nothing. */
-export function collapseRestore(o: {
-  wasOpen: boolean;
-  open: boolean;
-  favsOn: boolean;
-  key: string | null;
-  isList: boolean;
-}): string | null {
-  return o.wasOpen && !o.open && o.favsOn && o.key !== null && o.isList ? o.key : null;
-}
+/** THE PANE COLLAPSING RESTORES NOTHING OF WINDOW A (owner, 2026-11-06:
+ *  "if I click Open from a normal task and close the sidebar it pops the
+ *  window up again — this shouldn't be the case; we already show the
+ *  highlight by last selected, that should be enough"): the list's card
+ *  comes back on no chat; the list's `.is-last` ring says where the pane
+ *  was. The one thing the collapse gives back is WINDOW B — the favourite
+ *  whose Open door expanded the pane (fav-peek-store `takeFavRestore`,
+ *  FavouritePeek). */
 
 /** The params that name the pane chat's conversation on a page's URL: a
  *  session, a queued entry, the backend it runs on (shell/useAppPageClaudePane `chatDoorOnApp`). */

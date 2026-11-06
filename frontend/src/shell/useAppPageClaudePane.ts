@@ -100,8 +100,21 @@ export function useAppPageClaudePane(splitRef: RefObject<HTMLElement | null>): A
     const next = withClaudePaneParam(location.pathname + location.search + location.hash, open);
     if (next !== location.pathname + location.search + location.hash) replaceSearch(next);
   }, [open]);
-  const show = useCallback(() => setOpen(true), []);
-  const hide = useCallback(() => setOpen(false), []);
+  // THE SHARED FLAG IS WRITTEN WITH THE STATE, NOT AFTER IT (owner,
+  // 2026-11-06: a card's Open door left the pane shut): a door that changes
+  // the URL in the same gesture (`replaceSearch` with the chat's session,
+  // then `show()`) bumps `urlVersion`, and the re-read above ran in the
+  // same commit as the `open` effect below — BEFORE it, in declaration
+  // order — so it still saw the flag say "hidden" and set the pane shut
+  // again over the show. Setting the flag first makes the re-read agree.
+  const show = useCallback(() => {
+    setSideHidden(false);
+    setOpen(true);
+  }, []);
+  const hide = useCallback(() => {
+    setSideHidden(true);
+    setOpen(false);
+  }, []);
 
   // THE WIDTH: the explorer's shared number, else the share of this split.
   const [hostW, setHostW] = useState(0);

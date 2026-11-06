@@ -2,7 +2,7 @@
 // reply behind the spark avatar (T:13446-13504, and the skin note at T:7-12 —
 // "right-aligned user bubbles, full-width assistant prose behind a spark
 // avatar", the shape claude.ai / v0 / ChatGPT all settled on).
-import { memo, useId, useMemo } from "react";
+import { memo, useId, useMemo, type MouseEvent as ReactMouseEvent } from "react";
 
 import { SquareTerminal, Undo2 } from "lucide-react";
 import { PickCheck, pickContextHandler, pickRootProps, type TurnPick } from "./TurnPick";
@@ -101,9 +101,10 @@ export interface TurnProps {
    *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
    *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
   onPullPending?: (key: string) => void;
-  /** A click on a user bubble opens the reply under it (prefs
-   *  `turn_click_open`, off by default): present only with the flag on, one
-   *  callback for the log, keyed by the turn. It only ever OPENS. */
+  /** A click on a user bubble opens the reply under it — or folds it again
+   *  (prefs `turn_click_open`, off by default; a toggle since 2026-11-06):
+   *  present only with the flag on, one callback for the log, keyed by the
+   *  turn. */
   onOpenReply?: (key: string) => void;
   /** The newest queued bubble's tag: "(Ctrl+X to send now)". Other queued bubbles show no tag. */
   sendNowHint?: boolean;
@@ -260,9 +261,14 @@ export const Turn = memo(function Turn({
             className={cn("bubble", termAsk && "is-terminal-ask")}
             {...(onOpenReply && !pick
               ? {
-                  onClick: () => {
-                    // Selecting words to copy is not a click on the message.
+                  onClick: (e: ReactMouseEvent<HTMLDivElement>) => {
+                    // Selecting words to copy is not a click on the message,
+                    // and neither is a press on a link, a chip or a button
+                    // inside it (reviewer: a toggle would fold the reply
+                    // under a link the reader followed).
                     if (window.getSelection?.()?.toString()) return;
+                    const t = e?.target as Element | null;
+                    if (t && typeof t.closest === "function" && t.closest("a, button, [role='button'], input, textarea, select")) return;
                     onOpenReply(turn.key);
                   },
                 }
