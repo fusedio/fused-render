@@ -474,9 +474,12 @@ export interface ThreadProps {
 }
 
 export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply, markRead = true, sharedScroll = true, onOpenBot }: ThreadProps) {
-  // The card's own end-pin (`sharedScroll` false): at the end until the reader scrolls up.
+  // The card's own end-pin (`sharedScroll` false): at the end until the reader scrolls up. Read through a ref: the
+  // observers below are the mount's closures (Bugbot on #2159 — a card carried onto /bots must switch too).
   const localPinned = useRef(true);
-  const pinnedNow = () => (sharedScroll ? getState().pinned : localPinned.current);
+  const sharedRef = useRef(sharedScroll);
+  sharedRef.current = sharedScroll;
+  const pinnedNow = () => (sharedRef.current ? getState().pinned : localPinned.current);
   const onThreadScroll = () => {
     const th = threadRef.current;
     if (sharedScroll) updateToBottom(th);
@@ -687,7 +690,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
         const seq = (en.target.closest(".ev") as HTMLElement | null)?.dataset.seq;
         if (en.isIntersecting && seq) { set.add(Number(seq)); hit = true; }
       }
-      if (hit && sharedScroll) { setNewCount(unviewed(c, eventsOf(c.id)).length); updateToBottom(th); }
+      if (hit && sharedRef.current) { setNewCount(unviewed(c, eventsOf(c.id)).length); updateToBottom(th); }
     }, { root: th, threshold: 0.4 });
     viewer.current = io;
     th.querySelectorAll<HTMLElement>(".ev[data-seq]").forEach((el) => { el.dataset.obs = "1"; const m = evBox(el); if (m) io.observe(m); });
