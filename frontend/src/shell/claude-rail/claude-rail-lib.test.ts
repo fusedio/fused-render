@@ -368,7 +368,8 @@ describe("favSeats: the blocked at the head", () => {
 
 describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
   it("the list hides beside the open pane on its home, favourites on, and only then", () => {
-    expect(listHidden({ paneOpen: true, favsOn: true, paneHome: true })).toBe(true);
+    // Since 2026-11-06 the list stands beside the pane's home too.
+    expect(listHidden({ paneOpen: true, favsOn: true, paneHome: true })).toBe(false);
     expect(listHidden({ paneOpen: true, favsOn: true, paneHome: false })).toBe(false);
     expect(listHidden({ paneOpen: false, favsOn: true, paneHome: true })).toBe(false);
     expect(listHidden({ paneOpen: true, favsOn: false, paneHome: true })).toBe(false);

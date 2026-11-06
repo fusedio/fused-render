@@ -80,8 +80,9 @@
 // as favourites in all but the star — temporary favourites. The starred
 // stand newest star first.
 // The PINNED BOTS (`pinnedBots`, platform/lib/botsPulse `useBotsRows`) stand
-// under them, each a door to its page. Beside the open pane on its HOME the
-// list is not drawn (`listHidden`). The + is a page rail's only
+// under them, each a door to its page. The list stands beside the open pane
+// on its HOME too (owner, 2026-11-06; `listHidden` answers never now: the
+// same rings whether a chat is open or the pane is on Recent). The + is a page rail's only
 // (`plusShown`). While the rail stands the document carries its width
 // (`railUp`, `--claude-rail-w`) and the notification column and the shadcn
 // menus keep off it (platform/lib/rail-gutter).
@@ -727,11 +728,11 @@ export function ClaudeRail({
     () => (favouritesOnly ? [] : listSeats(railRows(rows, full, seatPlace), favsOn)),
     [rows, full, seatPlace, favsOn, favouritesOnly],
   );
-  // THE LIST STEPS ASIDE FOR THE PANE'S HOME (claude-rail-lib `listHidden`):
-  // the pane is home when the page's URL names no session (`activeSessionId`
-  // — every page's pane routes by `session_id`: present, that chat; absent,
-  // the home page) — known the moment the pane opens, no wait on a mount
-  // (owner, 2026-11-05: "there is still some delay").
+  // THE LIST STOOD ASIDE FOR THE PANE'S HOME until 2026-11-06 (claude-rail-
+  // lib `listHidden`, never true now): the rings stand whatever the pane
+  // shows. The pane is home when the page's URL names no session
+  // (`activeSessionId` — every page's pane routes by `session_id`: present,
+  // that chat; absent, the home page).
   const paneHome = !activeSessionId;
   // The +'s New task card (`openNewTask`, below) — declared up here because
   // an open one keeps the rail standing (`shown`).

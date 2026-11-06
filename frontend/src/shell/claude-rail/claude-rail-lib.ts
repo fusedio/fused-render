@@ -460,15 +460,15 @@ export function listSeats(seats: RailRow[], _favsOn: boolean): RailRow[] {
   return seats;
 }
 
-/** THE LIST STEPS ASIDE FOR THE PANE'S HOME (owner, 2026-11-05: "when in
- *  new chat [list in view] we don't show the normal tasks in the sidebar
- *  rail"): beside the open pane on its home page — its Recent list is the
- *  list, drawn large — the rail's own list of the place's chats is not
- *  drawn; the blocked and the favourites still are. Favourites off: the
- *  rail of 2026-11-04, nothing hidden (the rail is not beside an open pane
- *  then anyway). */
-export function listHidden(o: { paneOpen: boolean; favsOn: boolean; paneHome: boolean }): boolean {
-  return o.paneOpen && o.favsOn && o.paneHome;
+/** THE LIST STOOD ASIDE FOR THE PANE'S HOME from 2026-11-05 (owner then:
+ *  "when in new chat we don't show the normal tasks in the sidebar rail")
+ *  until 2026-11-06 — see below. */
+export function listHidden(_o: { paneOpen: boolean; favsOn: boolean; paneHome: boolean }): boolean {
+  // NEVER, since 2026-11-06 (owner: "no matter if we see Recent chats or
+  // not, all chats should be shown below the + — in all views except a
+  // selected node, the same number of chats whether a chat is open or the
+  // pane is on its Recent page"). The input is kept for the callers.
+  return false;
 }
 
 /** WHERE THE + STANDS (owner, 2026-11-05: "plus icon should only be in

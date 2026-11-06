@@ -2034,13 +2034,36 @@ export default function CanvasWorkspace({
       setNodeBootSeq((n) => n + 1);
       setNode(next);
     };
+    // THE CHAT MOVING ON BY ITSELF keeps `canvasChatSidRef` honest (owner,
+    // 2026-11-06: "on Recent chats, open a task from the bottom window, click
+    // Open — nothing happens"): the canvas chat's own moves — "← Chats", a
+    // new chat, a session landing on a brand-new chat — rewrite the URL with
+    // replaceState and announce `fused:urlchange`, no nav event; the ref
+    // kept the session the chat had left, and a hop back onto that very
+    // session read as "already there" and remounted nothing. Deferred a
+    // tick: a PUSH announces `fused:urlchange` first and the nav event
+    // right after (main.tsx, router `navigateUrl`), and `onNav` must read
+    // the ref as it was. Only the canvas chat's URL: a node's is its frame's.
+    let sync = 0;
+    const onUrl = () => {
+      window.clearTimeout(sync);
+      sync = window.setTimeout(() => {
+        const here = canvasNameFromPath(window.location.pathname);
+        if (!here || here.env !== env || here.name !== name) return;
+        if (nodeFromUrl() || nodeRef.current) return;
+        canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
+      }, 0);
+    };
     // Back / Forward move the URL without a push: `popstate`, which the
     // router does not re-announce, lands on this same reader.
     window.addEventListener(NAV_EVENT, onNav);
     window.addEventListener("popstate", onNav);
+    window.addEventListener("fused:urlchange", onUrl);
     return () => {
+      window.clearTimeout(sync);
       window.removeEventListener(NAV_EVENT, onNav);
       window.removeEventListener("popstate", onNav);
+      window.removeEventListener("fused:urlchange", onUrl);
     };
   }, [env, name, sendSelect]);
 
