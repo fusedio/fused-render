@@ -16,7 +16,6 @@ import itertools
 import json
 import os
 import shutil
-import signal
 import subprocess
 import threading
 import time
@@ -431,7 +430,7 @@ def claude_cli_detached(*args: str) -> dict:
 # event's `mcp_servers`. So the list's statuses are overlaid with a session's
 # verdict, taken from a headless `claude -p` that is killed the moment `init`
 # has been read — before the model is asked anything.
-_SESSION_PROBE_TIMEOUT = 20
+_SESSION_PROBE_TIMEOUT = 12  # init lands at ~2 s; this is the hung-binary ceiling
 # Not "pending": in a session that means "still connecting" (no verdict yet),
 # whereas the CLI's "pending" is an unapproved project server — the overlay
 # must not relabel a connecting connector as "pending approval".
@@ -455,9 +454,15 @@ def claude_session_mcp_status() -> dict:
     load. User-scope servers from ~/.claude.json drop with it and keep the
     CLI's answer, which is a real connection for those. `--max-turns 1`,
     `--model haiku` and the kill after `init` keep the cost at zero model
-    calls in practice and at one cheap one if the kill ever lands late. Run
-    from the home dir rather than a project: a project's `.mcp.json` servers
-    are about that project, and the Preferences page is about the user."""
+    calls in practice and at one cheap one if the kill ever lands late.
+
+    Spawned the way D277/D292/D1310 require of anything the SERVER spawns:
+    `close_fds=False` and no `cwd`/`start_new_session`, so CPython takes
+    posix_spawn — a fork() here runs PROJ's atfork handler against the server's
+    live handle and the child dies with SIGSEGV before exec. Without its own
+    session the probe is stopped with `terminate()` on the one process; with
+    `--setting-sources ""` it has no stdio children to orphan (user-scope
+    servers are not loaded), only HTTP connectors."""
     path_env = _augmented_path()
     binary = _resolve_claude(path_env)
     if binary is None:
@@ -480,13 +485,12 @@ def _session_probe_once(binary: str, env: dict) -> dict:
              "--no-session-persistence", "--max-turns", "1", "--model", "haiku",
              "--setting-sources", ""],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            start_new_session=True, cwd=os.path.expanduser("~"), env=env,
-            **SUBPROCESS_KWARGS,
+            env=env, **SUBPROCESS_KWARGS,
         )
     except OSError:
         return {}
     found = {}
-    timer = threading.Timer(_SESSION_PROBE_TIMEOUT, _kill_tree, args=(proc,))
+    timer = threading.Timer(_SESSION_PROBE_TIMEOUT, _stop_probe, args=(proc,))
     timer.start()
     try:
         for line in proc.stdout:
@@ -506,27 +510,21 @@ def _session_probe_once(binary: str, env: dict) -> dict:
             break
     finally:
         timer.cancel()
-        _kill_tree(proc)
+        _stop_probe(proc)
         with contextlib.suppress(Exception):
             proc.stdout.close()
-        with contextlib.suppress(Exception):
+        try:
             proc.wait(5)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(Exception):
+                proc.kill()
     return found
 
 
-def _kill_tree(proc) -> None:
-    """End the probe and everything it spawned (its own session, so the group
-    is exactly its children — MCP stdio servers included)."""
-    if proc.poll() is not None:
-        return
-    try:
-        if _platform.IS_WINDOWS:
-            proc.kill()
-        else:
-            os.killpg(proc.pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
-        with contextlib.suppress(Exception):
-            proc.kill()
+def _stop_probe(proc) -> None:
+    if proc.poll() is None:
+        with contextlib.suppress(OSError):
+            proc.terminate()
 
 
 # mcp.md §2: `claude mcp list` has no structured output, so parse its human-readable

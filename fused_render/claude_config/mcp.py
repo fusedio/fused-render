@@ -36,6 +36,11 @@ import time
 from . import lib
 
 _LIST_TIMEOUT = 28
+# What one refresh can take at worst: two probe attempts and the pause between
+# them (lib.claude_session_mcp_status), then the list. The waiters in main()
+# wait THIS long, so a hung probe cannot turn a refresh still under way into a
+# reported failure.
+_REFRESH_BUDGET = 2 * lib._SESSION_PROBE_TIMEOUT + 1 + _LIST_TIMEOUT + 5
 
 _lock = threading.Lock()
 _inflight = None
@@ -181,12 +186,12 @@ def main(action: str = "list", name: str = "", **kwargs) -> dict:
     if action == "list":
         if _truthy(kwargs.get("fresh")):
             flight = _flight()
-            flight.done.wait(_LIST_TIMEOUT + 5)
+            flight.done.wait(_REFRESH_BUDGET)
             return flight.result
         cached = _read_cache()
         if cached is None:
             flight = _flight()
-            flight.done.wait(_LIST_TIMEOUT + 5)
+            flight.done.wait(_REFRESH_BUDGET)
             return flight.result
         _flight()
         return {"ok": True, "servers": cached["servers"],
