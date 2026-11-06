@@ -166,6 +166,7 @@ import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
 import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
+import { PlaceTag } from "./ui/PlaceTag";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
@@ -280,6 +281,13 @@ export interface ClaudeChatProps {
    *  folder name) when the strip has no annotate seats. The explorer's folder
    *  sidebar opts in. */
   mergedHead?: boolean;
+  /** THE PLACE TAG's facts (ui/PlaceTag; owner, 2026-11-06): the page's own
+   *  place (claude-rail-lib `placeRoot`), the node selected on its canvas,
+   *  and the page's way to select a node in place. With any of them given
+   *  the head draws the tag in place of the project's name. */
+  pageRoot?: string | null;
+  pageNode?: string | null;
+  onSelectNode?: (udfName: string | null) => void;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's
@@ -5576,6 +5584,17 @@ function ChatBody(props: ChatBodyProps) {
   // The header's last seat: the task's PR chip when the host asked for it (the
   // chip draws nothing for a task that names no pull request), then the
   // host's own node.
+  // THE PLACE TAG (ui/PlaceTag): the identity row's right end, for a host
+  // that said where it stands.
+  const placeTag =
+    head.task && (props.pageRoot !== undefined || props.onSelectNode) ? (
+      <PlaceTag
+        task={head.task}
+        pageRoot={props.pageRoot ?? null}
+        {...(props.pageNode !== undefined ? { pageNode: props.pageNode } : {})}
+        {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
+      />
+    ) : null;
   const headerExtra =
     props.prChip && head.task ? (
       <>
@@ -5966,6 +5985,7 @@ function ChatBody(props: ChatBodyProps) {
                   ? { lead: backBtn, tail: kebabEl, noProject: true }
                   : {})}
                 {...(headerExtra ? { extra: headerExtra } : {})}
+                {...(placeTag ? { placeTag } : {})}
                 // The hint names where the work is; the menu would only repeat the
                 // original checkout's branch.
                 worktree={shownHint ? undefined : worktreeMenu}

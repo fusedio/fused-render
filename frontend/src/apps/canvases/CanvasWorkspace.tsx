@@ -229,7 +229,7 @@ import {
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
-import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, paneHomeHref, placeRoot, railInset } from "@shell/claude-rail/ClaudeRail";
 import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
@@ -967,14 +967,26 @@ export default function CanvasWorkspace({
   useEffect(() => {
     const onHidePane = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
-      if (event.data?.type !== "fused-canvas-hide-pane") return;
+      const type = event.data?.type;
+      if (type !== "fused-canvas-hide-pane" && type !== "fused-canvas-select-node") return;
       const frame = document.querySelector<HTMLIFrameElement>(".canvas-node-file iframe");
       if (!frame || event.source !== frame.contentWindow) return;
+      // …and the node chat's PLACE TAG (apps/claude ui/PlaceTag, 2026-11-06):
+      // the frame asks the editor to select its node (the workbench zooms
+      // to it), or none.
+      if (type === "fused-canvas-select-node") {
+        const udf = event.data?.udfName;
+        selectFromRailRef.current?.(typeof udf === "string" ? udf : null);
+        return;
+      }
       setSideOpen(false);
     };
     window.addEventListener("message", onHidePane);
     return () => window.removeEventListener("message", onHidePane);
   }, []);
+  // `selectFromRail` is declared further down (it needs the frame); the
+  // listener above reads it through this ref.
+  const selectFromRailRef = useRef<((udfName: string | null) => void) | null>(null);
   // The framed chat's ask, from a same-origin child frame (the node pane). The
   // answer goes back to the asking window — `event.source` — so a pane that
   // swapped frames meanwhile never receives a picture it did not ask for.
@@ -1428,6 +1440,7 @@ export default function CanvasWorkspace({
     },
     [sendSelect],
   );
+  selectFromRailRef.current = selectFromRail;
 
   // Whether the right pane is up (see the header): an older workbench's
   // expand chip acts on this pane, so it needs the state to show itself.
@@ -3174,6 +3187,12 @@ export default function CanvasWorkspace({
               paramsSource="url"
               {...(fixRunId ? { runId: fixRunId } : {})}
               annotateTarget={() => frameRef.current}
+              // THE HEAD'S PLACE TAG (apps/claude ui/PlaceTag): this canvas,
+              // the node selected now, and the workbench's select — the Canvas
+              // tag deselects everything, a node's tag selects it.
+              pageRoot={placeRoot(railPlace)}
+              pageNode={nodeFileName}
+              onSelectNode={selectFromRail}
               // The Screenshot seat photographs the canvas through the frame's
               // own capture (`requestCanvasShot`), not a cross-origin DOM walk.
               canvasShot={canvasShot}

@@ -90,6 +90,34 @@
   color: var(--c-fg-strong);
   white-space: nowrap;
 }
+/* THE PLACE TAG (ui/PlaceTag; owner, 2026-11-06): the rail cards' where-chip
+   at the identity row's right end — a pill, filled only when it is a door
+   (the same rule as the cards': claude-rail.css `.claude-rail-peek-scope`). */
+.c-tb-place {
+  flex: 0 0 auto;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+.c-tb-place.is-file,
+.c-tb-place.is-node {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+a.c-tb-place.is-door {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+a.c-tb-place.is-door:hover {
+  background: rgba(var(--tint), 0.14);
+}
 .c-tb-file {
   color: var(--c-faint);
   font-size: 12px;

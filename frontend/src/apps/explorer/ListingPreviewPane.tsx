@@ -31,6 +31,7 @@ import { useEffect } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { ChatMount } from "@apps/claude";
+import { placeRoot } from "@shell/claude-rail/ClaudeRail";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import {
   SideCloseButton,
@@ -176,6 +177,7 @@ export default function ListingPreviewPane({
           <ChatMount
             onBreakout={breakoutOpener()}
             file={folder}
+            pageRoot={placeRoot({ kind: "folder", dir: folder })}
             // Asked once (pane-modes.test pins that: one call).
             chatOnly={paneChatOnly(side)}
             noFocus

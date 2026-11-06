@@ -370,6 +370,7 @@ export function FavouritePeek() {
       onOpenChat={openChat}
       here={here}
       pageRoot={page?.root ?? null}
+      placeOverlay
       onPin={noop}
       held={!hovering}
       onHeld={noop}

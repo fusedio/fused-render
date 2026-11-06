@@ -237,6 +237,19 @@ export function chipDoor(
   return placeRoot(at) === pageRoot ? nowhere(door) : door;
 }
 
+/** THE FULL PLACE, AS THE FAVOURITE CARD'S HEAD SAYS IT ON HOVER (RailPeek
+ *  `placeOverlay`; owner, 2026-11-06: "we only show Canvas as a tag, not a
+ *  name or location, and it can be big, or have a node selected — show the
+ *  full name of the canvas › node, folder › file, from the tag to the Open
+ *  button"): the canvas and its node, the folder and its file, by name — a
+ *  folder's full path, since two folders can share a name. */
+export function chipWhere(scope: RailScope, at: RailPlace): string {
+  if (at.kind === "canvas") return scope.kind === "whole" ? at.name : `${at.name} › ${scope.name}`;
+  if (scope.kind === "file") return `${lastSegment(at.kind === "folder" ? at.dir : at.file) || "Folder"} › ${scope.name}`;
+  if (at.kind === "file") return at.file;
+  return trimSlash(at.dir);
+}
+
 /** THE FULL PLACE A WHERE-CHIP NAMES, as words: the plain-text chip's
  *  `title` (RailPeek, a chip that goes nowhere) — the door's `Open …` caption
  *  without the verb. */
@@ -502,8 +515,12 @@ export function pinnedBots<B extends { pinned?: boolean; hidden?: boolean }>(bot
  *  own would be two threads on one store; there the ring is the page's door,
  *  as it was. The door is the bot's page (`/bots/<id>`) in every case the
  *  card is not. */
-export function botRingRoute(o: { onBotsPage: boolean; peekOn: boolean; noRoom: boolean }): "door" | "card" {
-  if (o.onBotsPage || !o.peekOn || o.noRoom) return "door";
+export function botRingRoute(o: { peekOn: boolean; noRoom: boolean }): "door" | "card" {
+  // ON THE BOTS PAGE TOO (owner, 2026-11-06: "in the Bots page we should
+  // change the view only when we click Open; clicking a bot should open the
+  // window, and Open then opens that bot" — the favourites' rule): the ring
+  // is a door only with the card off or no room for one.
+  if (!o.peekOn || o.noRoom) return "door";
   return "card";
 }
 

@@ -685,11 +685,33 @@
   flex: 0 0 auto;
 }
 .claude-rail-peek-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
   min-height: 26px;
   min-width: 0;
+}
+/* THE FULL PLACE ON HOVER (RailPeek `placeOverlay`, the favourite's card;
+   owner, 2026-11-06): the canvas › node or folder › file, laid over the
+   head row from the where-chip to the Open button (RailPeek measures the
+   two), on the card's own background so the count and the time under it
+   go quiet. Pointer-transparent: the seats beneath still take the press. */
+.claude-rail-peek-where {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 1;
 }
 /* The flexible gap: everything before it hugs the left, everything after
    it the right, and a long node name shrinks before any seat does. */

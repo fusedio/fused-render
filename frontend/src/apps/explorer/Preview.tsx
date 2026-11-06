@@ -93,7 +93,7 @@ import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
-import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
+import { ClaudeRail, RAIL_W, paneHomeHref, placeRoot } from "@shell/claude-rail/ClaudeRail";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
@@ -118,6 +118,11 @@ const CANVAS_SHOT = new URLSearchParams(location.search).get("_canvasshot") === 
 const HIDE_PANE = new URLSearchParams(location.search).get("_hidepane") === "1";
 const hidePaneInParent = () => {
   window.parent.postMessage({ type: "fused-canvas-hide-pane" }, location.origin);
+};
+// …and, in that pane, the chat head's place tag asks the editor to select
+// the node (apps/claude ui/PlaceTag; CanvasWorkspace `fused-canvas-select-node`).
+const selectNodeInParent = (udfName: string | null) => {
+  window.parent.postMessage({ type: "fused-canvas-select-node", udfName }, location.origin);
 };
 // `?_saveon=blur`: the host frames this document as a canvas node's code pane
 // (CanvasWorkspace). Forwarded onto the CONTENT frame's render URL, where the
@@ -2309,7 +2314,10 @@ function TemplatePreview({
                       { noAnnTools: true }
                     : {})}
                   {...(CANVAS_SHOT ? { canvasShot: CANVAS_SHOT_FROM_PARENT } : {})}
-                  {...(HIDE_PANE ? { onHidePane: hidePaneInParent } : {})}
+                  {...(HIDE_PANE ? { onHidePane: hidePaneInParent, onSelectNode: selectNodeInParent } : {})}
+                  // The head's place tag: this file's own page (a node's chat
+                  // in the canvas pane selects its node instead).
+                  pageRoot={placeRoot({ kind: "file", file: fsPath })}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}
@@ -2506,6 +2514,7 @@ function TemplatePreview({
                 onBreakout={breakoutOpener()}
                 key={claudeMountKey(CHAT_MODE)}
                 file={fsPath}
+                pageRoot={placeRoot({ kind: "file", file: fsPath })}
                 chatOnly
                 /* `chat_only` takes the chat's OWN pane away, not the pane:
                    the app is still on screen in the middle column, and that

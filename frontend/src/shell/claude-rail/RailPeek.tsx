@@ -149,7 +149,18 @@ import {
   type CardTitle,
 } from "@shell/tasks-lib";
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
-import { chipDoor, chipLabel, chipPath, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import {
+  chipDoor,
+  chipLabel,
+  chipPath,
+  chipPlace,
+  chipWhere,
+  placeRoot,
+  railScope,
+  type RailHere,
+  type RailPlace,
+  type RailRow,
+} from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -355,6 +366,13 @@ export interface RailPeekProps {
    *  beside (fav-peek-store `page`). A where-chip naming it goes nowhere and
    *  is plain text (`chipDoor`) — favourites on only. */
   pageRoot?: string | null;
+  /** THE FULL PLACE ON HOVER (the favourite's card; owner, 2026-11-06): resting
+   *  on the head row lays the chat's full place — canvas › node, folder ›
+   *  file (claude-rail-lib `chipWhere`) — over the row from the where-chip to
+   *  the Open button, covering the message count and the time, and only
+   *  while the page is NOT that place (`pageRoot`): on its own canvas the
+   *  name says nothing new. */
+  placeOverlay?: boolean;
   /** The where-chip NAVIGATED away from this page with chat `key` in the
    *  card (not a select in place, not a modified press), heard at the push —
    *  only once the router's leave guard let it (rail-peek-lib `onHop`): the
@@ -470,6 +488,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onOpenChat,
     here,
     pageRoot,
+    placeOverlay,
     onChipLeave,
     onPin,
     held,
@@ -1151,6 +1170,32 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
       : null;
 
+  // THE FULL PLACE ON HOVER (header `placeOverlay`): measured on the row's
+  // enter — the chip's right edge and the Open button's left — so the words
+  // sit exactly between the two whatever the chip's width.
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [whereBox, setWhereBox] = useState<{ left: number; right: number } | null>(null);
+  const whereText = useMemo(() => {
+    if (!placeOverlay || !head) return null;
+    if (placeRoot(head.at) === (pageRoot ?? null)) return null;
+    return chipWhere(head.scope, head.at);
+  }, [placeOverlay, head, pageRoot]);
+  const measureWhere = () => {
+    const row = rowRef.current;
+    const chip = row?.querySelector<HTMLElement>(".claude-rail-peek-scope");
+    const open = row?.querySelector<HTMLElement>(".claude-rail-peek-open");
+    if (!row || !chip) return;
+    const r = row.getBoundingClientRect();
+    const c = chip.getBoundingClientRect();
+    const o = open?.getBoundingClientRect();
+    const left = Math.round(c.right - r.left + 6);
+    const right = Math.round(o ? r.right - o.left + 6 : 0);
+    if (r.width - left - right < 40) return;
+    setWhereBox({ left, right });
+  };
+  useEffect(() => {
+    if (!whereText) setWhereBox(null);
+  }, [whereText]);
   return createPortal(
     <>
     {bridge && (
@@ -1220,7 +1265,21 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           // hover: a recap title is a sentence, and a sentence squeezed
           // between chips on one row lost its end.
           <div className="claude-rail-peek-head" onKeyDown={onHeadKeyDown}>
-            <div className="claude-rail-peek-row">
+            <div
+              className={"claude-rail-peek-row" + (whereText ? " has-where" : "")}
+              ref={rowRef}
+              onPointerEnter={whereText ? measureWhere : undefined}
+              onPointerLeave={whereText ? () => setWhereBox(null) : undefined}
+            >
+              {whereText && whereBox && (
+                // THE FULL PLACE (header `placeOverlay`): from the chip's
+                // right edge to the Open button's left, over the count and
+                // the time. Pointer-transparent: the seats under it still
+                // take the press.
+                <span className="claude-rail-peek-where" style={whereBox} aria-hidden="true" title={whereText}>
+                  {whereText}
+                </span>
+              )}
               {!favsOn ? (
                 // FAVOURITES OFF (favourites-flag): the head of 2026-11-02,
                 // unchanged — the pin, which pressed IS the ×.

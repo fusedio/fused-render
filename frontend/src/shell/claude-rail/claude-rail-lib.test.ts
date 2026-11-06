@@ -10,6 +10,7 @@ import {
   activeRing,
   chipDoor,
   chipPath,
+  chipWhere,
   chipLabel,
   chipPlace,
   dotCleared,
@@ -388,10 +389,10 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
   });
   it("a pinned bot's ring opens its card, except on the Bots page, with the card off, or with no room (2026-11-05)", () => {
-    expect(botRingRoute({ onBotsPage: false, peekOn: true, noRoom: false })).toBe("card");
-    expect(botRingRoute({ onBotsPage: true, peekOn: true, noRoom: false })).toBe("door");
-    expect(botRingRoute({ onBotsPage: false, peekOn: false, noRoom: false })).toBe("door");
-    expect(botRingRoute({ onBotsPage: false, peekOn: true, noRoom: true })).toBe("door");
+    expect(botRingRoute({ peekOn: true, noRoom: false })).toBe("card");
+    // The Bots page is no exception any more (2026-11-06): the card there too.
+    expect(botRingRoute({ peekOn: false, noRoom: false })).toBe("door");
+    expect(botRingRoute({ peekOn: true, noRoom: true })).toBe("door");
   });
   it("the bot card's status words are the page's", () => {
     expect(botStatusWords("waiting")).toBe("waiting for you");
@@ -879,5 +880,16 @@ describe("ringMarks with the Claude pane open", () => {
     expect(held.hovers).toBe(true);
     expect(held.titleOnly).toBe(false);
     expect(ringMarks({ ...o, key: "a", foot: false, paneOpen: false }).hovers).toBe(true);
+  });
+});
+
+describe("chipWhere (the favourite card's full place on hover, 2026-11-06)", () => {
+  const canvas = { kind: "canvas" as const, env: "prod" as const, name: "HLS_Data", dir: "/c/HLS_Data" };
+  it("canvas › node, the canvas alone, folder › file, a folder's full path, a file's path", () => {
+    expect(chipWhere({ kind: "node", name: "hex", file: "hex.py" }, canvas)).toBe("HLS_Data › hex");
+    expect(chipWhere({ kind: "whole", word: "Canvas" }, canvas)).toBe("HLS_Data");
+    expect(chipWhere({ kind: "file", name: "index.html", file: "/a/app/index.html" }, { kind: "folder", dir: "/a/app/" })).toBe("app › index.html");
+    expect(chipWhere({ kind: "whole", word: "Folder" }, { kind: "folder", dir: "/a/app/" })).toBe("/a/app");
+    expect(chipWhere({ kind: "whole", word: "File" }, { kind: "file", file: "/a/app/x.py" })).toBe("/a/app/x.py");
   });
 });

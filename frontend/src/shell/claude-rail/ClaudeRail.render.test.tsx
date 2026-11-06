@@ -347,14 +347,14 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
     expect(chats()).toHaveLength(0);
   });
 
-  test("on the Bots page the ring is the page's door: no popup, the name as its caption", async () => {
+  test("on the Bots page the ring is still the card's (2026-11-06): a popup, the card its caption; Open is the door", async () => {
     loc.pathname = "/bots/b1";
     const r = await mountRail({ paneOpen: false, favourites: true });
     await act(async () => {
       publishBots([BOT]);
     });
-    expect(ring(r).props["aria-haspopup"]).toBeUndefined();
-    expect(ring(r).props["data-hint"]).toBe("Helper");
+    expect(ring(r).props["aria-haspopup"]).toBe("dialog");
+    expect(ring(r).props["data-hint"]).toBe("");
     expect(ring(r).props.href).toBe("/bots/b1");
   });
 });
