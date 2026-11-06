@@ -342,6 +342,21 @@ describe("buildBreakoutContext", () => {
     expect(block).toContain("- /w/only.py");
     expect(block).not.toContain("Assistant:");
   });
+  test("a tool-only turn before the first text message still contributes its files", () => {
+    const t = [
+      { role: "assistant", key: "a", text: "", segments: [{ kind: "tool", name: "Read", input: { file_path: "/a/early.ts" } }] },
+      { role: "user", key: "u", text: "then this" },
+    ] as const;
+    const { block, count } = buildBreakoutContext(t, ["a", "u"], "t");
+    expect(count).toBe(1);
+    expect(block).toContain("- /a/early.ts");
+  });
+  test("a selection of only tool-only turns still counts 0", () => {
+    const t = [
+      { role: "assistant", key: "a", text: "", segments: [{ kind: "tool", name: "Read", input: { file_path: "/a/early.ts" } }] },
+    ] as const;
+    expect(buildBreakoutContext(t, ["a"], "t").count).toBe(0);
+  });
   test("the files list is still capped and tool inputs stay out", () => {
     const segs = Array.from({ length: 200 }, (_, i) => ({
       kind: "tool",

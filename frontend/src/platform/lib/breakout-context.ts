@@ -100,13 +100,11 @@ export function buildBreakoutContext(
   );
   const textOf = (t: HandoffTurn): string => messageText(t);
   const readable = wanted.filter((t) => !!textOf(t));
-  const kept = readable;
   // A tool-only assistant turn has no words to quote but its calls still name
-  // files: collect from every selected turn from the oldest kept message on.
-  const from = kept.length ? wanted.indexOf(kept[0]!) : wanted.length;
+  // files, so files are collected from every selected turn.
   const files: string[] = [];
   let filesUsed = 0;
-  for (const t of wanted.slice(from)) {
+  for (const t of wanted) {
     const segs = t.role === "assistant" && "segments" in t ? t.segments : undefined;
     for (const seg of segs ?? []) {
       if (seg.kind !== "tool") continue;
@@ -123,10 +121,10 @@ export function buildBreakoutContext(
   const block = formatBreakoutContext({
     ...(title ? { title } : {}),
     ...(first ? { firstPrompt: textOf(first) } : {}),
-    messages: kept.map((t) => ({ role: t.role, text: textOf(t) })),
+    messages: readable.map((t) => ({ role: t.role, text: textOf(t) })),
     files,
   });
-  return { block, count: kept.length, ...(title ? { title } : {}) };
+  return { block, count: readable.length, ...(title ? { title } : {}) };
 }
 
 /** The exchange the clicked turn belongs to: a user prompt plus every
