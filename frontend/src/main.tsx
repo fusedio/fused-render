@@ -6,6 +6,7 @@ import { ShellErrorBoundary } from "@platform/ui/ShellErrorBoundary";
 import { installShellErrorReporter, reportShellError } from "@platform/lib/shell-errors";
 import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
 import { installNetTiming, shellPageIdentity } from "@platform/lib/netTiming";
+import { installVisibilityDiag } from "@platform/lib/visibility-diag";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
@@ -27,6 +28,7 @@ installShellErrorReporter();
 // Browser-side request queue time for the Monitor's Network tab. Collects and
 // beacons only while a dashboard is open (lib/netTiming.ts).
 installNetTiming(() => shellPageIdentity(window.location));
+installVisibilityDiag(() => shellPageIdentity(window.location));
 
 // The preview iframe's injected runtime writes view params via
 // parent.history.replaceState (same history object), which fires no event.

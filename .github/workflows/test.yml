@@ -55,6 +55,11 @@ jobs:
               # The apple tier's Swift helper ships inside the DMG (D700).
               - 'scripts/build_apple_helper.sh'
               - 'fused_render/ai/apple/helper/**'
+              # The Chromium engine is compiled into the DMG by native/build.sh
+              # (D1415); PR CI is the only compile of that Objective-C++ before a
+              # release, so an engine or CEF-pin change must run the smoke build.
+              - 'fused_render/chromium/native/**'
+              - 'fused_render/chromium/manifest.json'
             app:
               - 'fused_render/**'
               - 'tests/**'
@@ -778,6 +783,19 @@ jobs:
         # The apple tier helper is built in place (step 4e, Xcode 26 above).
         if: needs.detect-changes.outputs.macos_packaging == 'true'
         run: bash scripts/build_dmg.sh
+
+      # The smoke DMG, kept a few days: an ad-hoc signed build of this PR that
+      # runs locally (or whose Frameworks/FusedChromium a dev checkout can point
+      # FUSED_RENDER_CHROMIUM_ENGINE_DIR at), for QA of native engine changes
+      # that cannot be compiled where the CEF CDN is unreachable.
+      - name: Upload the smoke DMG
+        if: needs.detect-changes.outputs.macos_packaging == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-dmg-arm64-${{ github.sha }}
+          path: dist/*.dmg
+          retention-days: 3
+          if-no-files-found: error
 
   # The Intel DMG (release.yml's build-sign-notarize-release-intel), smoke-built
   # on the same packaging changes as the arm64 one above. Native Intel runner:

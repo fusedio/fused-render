@@ -120,6 +120,34 @@ def record_outage(record: dict, *, source: str = "client") -> dict:
     return row
 
 
+_VISIBILITY_LOCK = threading.Lock()
+VISIBILITY_FIELDS = (
+    "ev", "page", "state", "hasFocus", "rafGap", "sinceRaf", "t", "engine", "build",
+)
+
+
+def visibility_path() -> str:
+    """Page-side visibility reports (`visibilitychange`, focus, rAF stalls),
+    beside `outages.jsonl` — the page half of the black-window diagnostics
+    (`chromium.mac._ChromiumDelegate._log_visibility` is the window half)."""
+    return os.path.join(log_dir(), "visibility.jsonl")
+
+
+def record_visibility(record: dict) -> dict:
+    """Append one page-side visibility report and echo it to the log, so the
+    app log reads as one timeline with the window-side lines."""
+    row = {k: record.get(k) for k in VISIBILITY_FIELDS if k in record}
+    row["kind"] = "visibility"
+    row["received_at"] = time.time()
+    row["boot_id_now"] = _BOOT_ID
+    row["pid_now"] = os.getpid()
+    _append_jsonl(visibility_path(), row, _VISIBILITY_LOCK, MAX_OUTAGE_BYTES)
+    logger.info("page visibility %s: page=%s state=%s hasFocus=%s rafGap=%s sinceRaf=%s",
+                row.get("ev"), row.get("page"), row.get("state"), row.get("hasFocus"),
+                row.get("rafGap"), row.get("sinceRaf"))
+    return row
+
+
 def record_event(kind: str, **fields) -> dict:
     """Append a server-side event (`server-thread-died`, `quit`, …)."""
     row = {"kind": kind, "source": "server", "received_at": time.time(),

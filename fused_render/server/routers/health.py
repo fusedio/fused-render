@@ -110,6 +110,33 @@ async def api_health_outage(request: Request):
     return {"ok": True}
 
 
+@router.post("/api/health/visibility")
+async def api_health_visibility(request: Request, x_fused: str | None = Header(default=None)):
+    """One page-side visibility report (`visibilitychange`, focus/blur, a
+    requestAnimationFrame stall while visible), appended to `visibility.jsonl`
+    and echoed to the app log. Same shape and limits as the outage record;
+    guarded by `X-Fused` since it is sent with `fetch` keepalive, never a
+    beacon."""
+    denied = _require_fused(x_fused)
+    if denied is not None:
+        return denied
+    raw = await request.body()
+    if len(raw) > MAX_OUTAGE_BODY:
+        return _error("visibility record too large", status=413)
+    try:
+        body = json.loads(raw or b"null")
+    except (ValueError, UnicodeDecodeError):
+        return _error("visibility record is not JSON")
+    if not isinstance(body, dict):
+        return _error("visibility record must be a JSON object")
+    try:
+        await run_in_threadpool(health.record_visibility, body)
+    except OSError as exc:
+        logger.warning("could not record visibility: %s", exc)
+        return _error(f"could not record visibility: {exc}", status=500)
+    return {"ok": True}
+
+
 def _since_from_body(body) -> float | None:
     if not isinstance(body, dict):
         return None
