@@ -6,7 +6,7 @@
 //
 // What the rows ARE is the server's call, by flavor: under Fused Render apps (app/appfile) and, by typing, bots
 // and — with Canvases on (launcher.py `_canvases_offered`; this page never reads the flag) — cloned canvases
-// (`kind: "canvas"`, opening the canvas's project page), then files and folders, then the bottom rows (the shell home and the Bots page, `home: true`, kinds "home" and
+// (`kind: "canvas"`, opening the canvas's editor), then files and folders, then the bottom rows (the shell home and the Bots page, `home: true`, kinds "home" and
 // "bots"); under Fused Bot bots (`kind: "bot"`, `files` always empty), then its one home row. The bottom rows sit
 // under the list while the query is empty; a typed query ranks them with everything else (launcher.py `results`),
 // so the page keeps the server's `apps` order as it came. The page's copy keys off `settings.kind`

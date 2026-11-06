@@ -87,7 +87,6 @@ export function SyncStrip({
   onToggle,
   onBack,
   workbenchUrl,
-  embedded = false,
   pushErrors = null,
 }: {
   /** The canvas's environment, shown as a chip beside the way back: with a
@@ -113,10 +112,6 @@ export function SyncStrip({
    *  until the base URL and handle are known. Shown as "Open in workbench"
    *  while every leg is green. */
   workbenchUrl: string | null;
-  /** Inside the project page's Overview (CanvasWorkspace `embedded`): the
-   *  page header owns the way back, the env chip and the workbench link, so
-   *  the strip draws none of them. */
-  embedded?: boolean;
   /** A failed push's errors, as a count pill at the strip's right: click
    *  folds the detail panel (reason, Fix with Claude, the CLI's lines) open
    *  and shut under the strip. Null while the push leg is not in error. */
@@ -171,8 +166,6 @@ export function SyncStrip({
         userSelect: "none",
       }}
     >
-      {!embedded && (
-        <>
       <button
         type="button"
         style={{
@@ -200,8 +193,6 @@ export function SyncStrip({
       <span className="canvases-env-chip" title={`${name} syncs with ${ENV_NAMES[env].label}`}>
         {ENV_NAMES[env].tag}
       </span>
-        </>
-      )}
       <Dot level={level} />
       <span
         style={{
@@ -259,7 +250,7 @@ export function SyncStrip({
           </button>
         </span>
       )}
-      {!embedded && !owned && server && level === "ok" && !inFlight && workbenchUrl && (
+      {!owned && server && level === "ok" && !inFlight && workbenchUrl && (
         // All green and nothing moving: the canvas on the server is what
         // this folder holds, so the hosted editor is worth a look. A plain
         // link in a new tab. (A pending/pushing push is "ok" to worstLeg but

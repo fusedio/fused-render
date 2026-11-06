@@ -499,7 +499,7 @@ def list_apps() -> list[dict]:
             "kind": "linked" if path in linked else "workspace",
             # Which canvas this row is (`{env, name}`), None for an app
             # folder: the sidebar splits the desk into Projects and Canvases
-            # on it, and a canvas row opens the canvas's project page.
+            # on it, and a canvas row opens the canvas's editor.
             "canvas": _canvas_of(path),
             "entry": canonical_fs_path(entry) if entry else None,
             "exists": exists,

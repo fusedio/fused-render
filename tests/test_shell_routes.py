@@ -133,7 +133,6 @@ def test_the_canvas_workspace_survives_a_refresh(client):
     than a bare 404."""
     for path in (
         "/canvases/prod/alpha", "/canvases/unstable/canvas_1", "/canvases/alpha",
-        "/canvases-project/prod/alpha", "/canvases-project/unstable/canvas_1?_tab=tasks",
     ):
         res = client.get(path)
         assert res.status_code == 200, (path, res.status_code)
