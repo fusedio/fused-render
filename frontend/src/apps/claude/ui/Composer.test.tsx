@@ -2061,6 +2061,44 @@ test("a folded chat card says its model · effort top-right; an open one hides t
     .props.className)).toContain("is-hidden");
 });
 
+test("a rail card's composer types folded, opens on the model · effort label, and stays open until the card shows another chat (Akshil, 2026-11-07)", () => {
+  const m = mount({ smallCard: true, smallCardShown: true, controls: { ...controls, model: "opus", effort: "max" } });
+  const form = () => m.root.findByType("form");
+  const cls = () => String(form().props.className);
+  const meta = () => m.root.findAll((n) => n.props?.["data-testid"] === "composer-meta")[0];
+  const outside = {
+    relatedTarget: null,
+    currentTarget: { contains: () => false, ownerDocument: { querySelector: () => null } },
+  };
+  expect(cls()).toContain("is-idle");
+  // Focus and typing never open it here.
+  act(() => form().props.onFocus({ target: { closest: () => null } }));
+  m.type("hello");
+  expect(cls()).toContain("is-idle");
+  // The label is a button, and the one press that opens the card.
+  expect(meta().type).toBe("button");
+  expect(meta().props.tabIndex).toBe(0);
+  act(() => meta().props.onClick());
+  expect(cls()).not.toContain("is-idle");
+  expect(meta().props.tabIndex).toBe(-1);
+  // Focus leaving the form does NOT fold it.
+  act(() => form().props.onBlur(outside));
+  expect(cls()).not.toContain("is-idle");
+  // The card showing another chat (or closing) folds it back.
+  m.rerender({ smallCard: true, smallCardShown: false, controls: { ...controls, model: "opus", effort: "max" } });
+  expect(cls()).toContain("is-idle");
+  m.rerender({ smallCard: true, smallCardShown: true, controls: { ...controls, model: "opus", effort: "max" } });
+  expect(cls()).toContain("is-idle");
+});
+
+test("a rail card with no model to name has no label door, so focus opens it as anywhere else", () => {
+  const m = mount({ smallCard: true, smallCardShown: true, controls: { ...controls, model: "", ready: true } });
+  const form = () => m.root.findByType("form");
+  expect(String(form().props.className)).toContain("is-idle");
+  act(() => form().props.onFocus({ target: { closest: () => null } }));
+  expect(String(form().props.className)).not.toContain("is-idle");
+});
+
 // ---- ↑/↓ prompt history, Claude Code's -------------------------------------
 
 test("↑ recalls the newest prompt, ↑ again the one before; ↓ walks back and returns the draft", () => {

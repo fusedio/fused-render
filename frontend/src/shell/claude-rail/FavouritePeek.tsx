@@ -366,6 +366,7 @@ export function FavouritePeek() {
       onHold={hovering ? (on) => favHoverIntent().hold(on) : noop}
       onDismiss={close}
       dismissOnUnstar
+      openIcon
       onNoRoom={() => setNoRoom(true)}
       onOpenChat={openChat}
       here={here}

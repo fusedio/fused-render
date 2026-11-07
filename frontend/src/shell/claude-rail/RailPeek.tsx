@@ -123,7 +123,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, MessageSquare, Pencil, Star, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUpRight, MessageSquare, Pencil, Star, X } from "lucide-react";
 import { notify } from "@platform/lib/notifications";
 import { archiveTask, renameTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
@@ -403,6 +403,10 @@ export interface RailPeekProps {
    *  gone). The rail's card leaves it false — it lets go on the star
    *  itself (`onStarred`), so an unstar never reaches it. */
   dismissOnUnstar?: boolean;
+  /** The head's Open is an ↗ icon, not the word (the favourite's card, Akshil
+   *  2026-11-07: Open there changes the window — the card goes, the pane
+   *  takes the chat — so it reads as a door out, not a button in place). */
+  openIcon?: boolean;
   /** Where the card stands now, or null while it is closed — for a host
    *  that places another card around it. */
   onBox?: (box: Box | null) => void;
@@ -485,6 +489,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     oneSize = false,
     avoid = null,
     dismissOnUnstar = false,
+    openIcon = false,
     onBox,
     pinned,
   },
@@ -1509,8 +1514,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               {head.href && (
                 <button
                   type="button"
-                  className="btn claude-rail-peek-open"
+                  className={openIcon ? "claude-rail-peek-btn claude-rail-peek-open-icon" : "btn claude-rail-peek-open"}
                   title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
+                  {...(openIcon ? { "aria-label": head.draft ? "Open the draft" : "Open this chat in the Claude panel" } : {})}
                   onClick={() => {
                     onOpenChat(head.href!);
                     // The door closes the card too — a held one as well: a
@@ -1520,7 +1526,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     onDismiss("door");
                   }}
                 >
-                  Open
+                  {openIcon ? <ArrowUpRight size={14} aria-hidden="true" /> : "Open"}
                 </button>
               )}
               {head.t.session_id && shownKey && (
@@ -1700,6 +1706,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // A hop out of the chat (a Recent row, a link) is the ring's
                     // own navigation: the canvas page's hop reader does the rest.
                     onNavigate={onOpenChat}
+                    // ONE LINE UNTIL ASKED (ComposerCard `smallCard`): typing
+                    // in a card never opens the shelf; it folds back when the
+                    // card shows another chat or closes.
+                    smallCard
+                    smallCardShown={!!shown && t.key === shown.pulse.key}
                   />
                 ) : (
                   // NO SESSION YET — a draft, or a scheduled task that has not
