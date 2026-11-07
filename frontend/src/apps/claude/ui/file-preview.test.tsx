@@ -102,7 +102,7 @@ test("a missing file says so instead of framing", async () => {
   await tick();
   expect(byType(r, "iframe")).toHaveLength(0);
   expect(textOf(r.root.findAll((n) => n.props.className === "c-fp-missing")[0])).toBe(
-    "File no longer exists",
+    "Can’t open this file: it no longer exists or isn’t readable",
   );
 });
 

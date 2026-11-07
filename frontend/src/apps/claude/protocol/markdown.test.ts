@@ -123,3 +123,29 @@ test("a non-shell language never gets a run text", () => {
 test("a blank or whitespace-only block is not runnable", () => {
   expect(shellRunText("bash", "   \n")).toBeNull();
 });
+
+test("a link to a local file points at the viewer and carries the path (chat links outside the canvas)", () => {
+  const html = md("see [the spec](/Users/u/.claude/skills/fused-udf-spec/SKILL.md)\n");
+  expect(html).toContain('href="/render?path=%2FUsers%2Fu%2F.claude%2Fskills%2Ffused-udf-spec%2FSKILL.md"');
+  expect(html).toContain('data-path="/Users/u/.claude/skills/fused-udf-spec/SKILL.md"');
+  expect(html).toContain('rel="noopener noreferrer"');
+  expect(html).toContain(">the spec</a>");
+});
+
+test("file:// and ~/ links are local too; a space survives the round trip", () => {
+  const file = md("[a](file:///Users/u/a%20b.md)\n");
+  expect(file).toContain('href="/render?path=%2FUsers%2Fu%2Fa%20b.md"');
+  expect(file).toContain('data-path="/Users/u/a b.md"');
+  const home = md("[n](~/notes/x.md)\n");
+  expect(home).toContain('data-path="~/notes/x.md"');
+});
+
+test("a web link is still a plain web link, and a quote in a path cannot escape the attribute", () => {
+  const web = md("[x](https://x.test/a.md)\n");
+  expect(web).toContain('href="https://x.test/a.md"');
+  expect(web).not.toContain("data-path");
+  const quoted = md('[q](</p/a"b.md>)\n');
+  expect(quoted).not.toMatch(/data-path="[^"]*"[^ >]/);
+  expect(quoted).toContain("&quot;");
+});
+

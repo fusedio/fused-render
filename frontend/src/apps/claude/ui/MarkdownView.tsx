@@ -9,6 +9,8 @@ import { memo, useEffect, useMemo, useRef } from "react";
 
 import { useHome } from "@platform/lib/home-path";
 
+import { paneSrcFor } from "../pane/paneUrl";
+import { resolveAgainst } from "../protocol/filePaths";
 import { enhanceCodeBlocks, renderMd, renderMdInert } from "../protocol/markdown";
 import { useFilePreview } from "./filePreview";
 import { linkifyEnabled, linkifyPaths, PATH_LINK_CLASS } from "./linkifyPaths";
@@ -20,6 +22,11 @@ import { linkifyEnabled, linkifyPaths, PATH_LINK_CLASS } from "./linkifyPaths";
  *  this single component, so the list is one entry long and the parity test
  *  asserts nothing else in `ui/` reaches for it. */
 export const INNER_HTML_SITES = ["MarkdownView"] as const;
+
+/** What a click or Enter opens in the preview: inline code `linkifyPaths`
+ *  marked, or a markdown link the renderer rewrote to a local file
+ *  (`protocol/markdown.ts` `link`). Both carry the path in `data-path`. */
+export const PATH_ACTIVATE_SELECTOR = "." + PATH_LINK_CLASS + ", a[data-path]";
 
 export interface MarkdownViewProps {
   text: string;
@@ -72,10 +79,17 @@ export const MarkdownView = memo(function MarkdownView({
     void linkifyPaths(root, { cwd, home, live: () => ref.current === root });
   }, [html, enhance, links, cwd, home, openPreview]);
   const onPathActivate = (target: EventTarget | null) => {
-    const el = (target as Element | null)?.closest?.("." + PATH_LINK_CLASS);
-    const path = el?.getAttribute("data-path");
-    if (!path || !openPreview) return false;
-    openPreview(path);
+    const el = (target as Element | null)?.closest?.(PATH_ACTIVATE_SELECTOR);
+    const raw = el?.getAttribute("data-path");
+    if (!raw) return false;
+    // An inline-code link was only marked where an opener exists (linkifyPaths);
+    // a markdown link to a local file is marked at render time and still has to
+    // open somewhere without one — the viewer in a new tab, its href.
+    const path = resolveAgainst(raw, cwd, home);
+    if (openPreview) openPreview(path);
+    else if (typeof window !== "undefined") {
+      window.open(paneSrcFor({ mode: "_render", path: "" }, path), "_blank", "noopener");
+    }
     return true;
   };
   return (
