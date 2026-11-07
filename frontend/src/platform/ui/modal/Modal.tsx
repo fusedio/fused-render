@@ -156,8 +156,8 @@ export interface ModalProps {
    *   • placed to the LEFT of `beside` (or `anchor`), top-aligned with
    *     `anchor`, clamped inside the viewport (`popover-place.ts`), and kept
    *     there as the card's height or the window changes;
-   *   • an OUTSIDE PRESS closes it like the ✕ — except a press on the anchor
-   *     (its own toggle, `closeSignal`), inside another dialog stacked over
+   *   • an OUTSIDE PRESS closes it like the ✕ (unless `pinned`) — except a
+   *     press on the anchor (the opener's own), inside another dialog stacked over
    *     it, or inside a portaled popper (`[data-radix-popper-content-wrapper]`,
    *     `[data-modal-popover-keep]`): the card's own pill menus live inside
    *     the dialog, so containment already covers them;
@@ -171,8 +171,26 @@ export interface ModalProps {
     /** Whose LEFT edge the card stands beside (the rail); `anchor`'s if absent. */
     beside?: RefObject<HTMLElement | null>;
     /** Bumped by the opener to close the card the chassis' own way (the
-     *  anchor pressed again). */
+     *  exit animation, the busy and dirty guards) — the rail's hover preview
+     *  timing out. */
     closeSignal?: number;
+    /**
+     * HOVER PREVIEW AND PIN (owner, 2026-11-07: "hover on plus icon should
+     * show the card as well, and click does cement it unless you click on the
+     * cross icon"). Absent: the popover above, unchanged. Otherwise:
+     *   • `false` — a PREVIEW: it takes no focus at mount (a hover must not
+     *     pull the caret off the page) and gives none back at close; an
+     *     outside press and Escape close it; the first thing the reader does
+     *     INSIDE it — a press, the focus arriving on a field — calls `onPin`;
+     *   • `true` — PINNED: only its ✕ (and the caller's own actions, Create)
+     *     close it — an outside press and Escape do not.
+     */
+    pinned?: boolean;
+    /** The reader acted inside a preview (`pinned: false`): pin it. */
+    onPin?: () => void;
+    /** The pointer entered / left the card (the opener's hover grace). */
+    onPointerEnter?: () => void;
+    onPointerLeave?: () => void;
   };
 }
 
@@ -215,6 +233,10 @@ export function Modal({
   const dialogRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<Element | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
+  // The popover's pin, as it is NOW — read by the document listeners and the
+  // unmount below, which are bound once.
+  const pinnedRef = useRef(popover?.pinned);
+  pinnedRef.current = popover?.pinned;
 
   // Store the previously-focused element, move focus into the dialog on mount,
   // and restore it on unmount. Callers win: an `initialFocus` ref takes
@@ -230,7 +252,10 @@ export function Modal({
     // (the default) -> `document === ownerDoc`, so nothing changes.
     restoreRef.current = document.activeElement;
     const dialog = dialogRef.current;
-    if (initialFocus?.current) {
+    // A hover preview takes no focus (header of `popover.pinned`).
+    if (popover?.pinned === false) {
+      // nothing
+    } else if (initialFocus?.current) {
       initialFocus.current.focus();
     } else if (!(dialog && dialog.contains(ownerDoc.activeElement))) {
       const focusables = Array.from(
@@ -249,7 +274,10 @@ export function Modal({
         // reader sent it. Only focus that would be LOST (left on the card that
         // is going, or nowhere) goes back — to the anchor, the door it came by.
         const active = ownerDoc.activeElement as Element | null;
-        const lost = !active || active === ownerDoc.body || !active.isConnected || !!dialog?.contains(active);
+        const onCard = !!active && !!dialog?.contains(active);
+        // A preview never had the caret unless it is on it now: nothing lost.
+        if (pinnedRef.current === false && !onCard) return;
+        const lost = !active || active === ownerDoc.body || !active.isConnected || onCard;
         if (!lost) return;
         const back = (popover.anchor.current ?? restoreRef.current) as HTMLElement | null;
         back?.focus?.({ preventScroll: true });
@@ -381,6 +409,8 @@ export function Modal({
   useEffect(() => {
     const onDocKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // A pinned popover closes by its ✕ only (header of `popover.pinned`).
+      if (pinnedRef.current === true) return;
       if (!isTopmost(token.current)) return;
       attemptClose();
     };
@@ -389,8 +419,8 @@ export function Modal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attemptClose]);
 
-  // POPOVER: the anchor pressed again closes it the chassis' own way (the exit
-  // animation, the busy and dirty guards) — `closeSignal` bumped by the opener.
+  // POPOVER: the opener closes it the chassis' own way (the exit animation,
+  // the busy and dirty guards) — `closeSignal` bumped by the opener.
   const closeSignal = popover?.closeSignal ?? 0;
   const seenSignal = useRef(closeSignal);
   useEffect(() => {
@@ -420,6 +450,8 @@ export function Modal({
       if (el?.closest?.(POPOVER_KEEP)) return;
       // A dialog stacked over this one owns the press.
       if (!isTopmost(token.current)) return;
+      // A pinned popover closes by its ✕ only (header of `popover.pinned`).
+      if (pinnedRef.current === true) return;
       attemptCloseRef.current();
     };
     ownerDoc.addEventListener("pointerdown", onDown, true);
@@ -549,6 +581,21 @@ export function Modal({
           : { "aria-labelledby": titleId })}
         tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
+        {...(popover
+          ? {
+              // The reader acting inside a preview pins it (header of
+              // `popover.pinned`). React's own events, so a pill's menu
+              // portaled out of the card still counts as inside it.
+              onPointerDownCapture: () => {
+                if (pinnedRef.current === false) popover.onPin?.();
+              },
+              onFocusCapture: () => {
+                if (pinnedRef.current === false) popover.onPin?.();
+              },
+              onPointerEnter: () => popover.onPointerEnter?.(),
+              onPointerLeave: () => popover.onPointerLeave?.(),
+            }
+          : {})}
       >
         <div className="modal-head deploy-head">
           {titleAside || titleLead ? (

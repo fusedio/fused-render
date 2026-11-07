@@ -51,6 +51,82 @@ describe("Modal popover presentation", () => {
   });
 });
 
+describe("Modal popover pinned (the rail's +: hover previews, a press pins)", () => {
+  type Listener = (e: unknown) => void;
+  const doc = (globalThis as unknown as { document: { addEventListener: unknown; removeEventListener: unknown } }).document;
+  let listeners: { type: string; fn: Listener }[] = [];
+  const realAdd = doc.addEventListener;
+  const realRemove = doc.removeEventListener;
+  function capture(): void {
+    listeners = [];
+    doc.addEventListener = (type: string, fn: Listener) => listeners.push({ type, fn });
+    doc.removeEventListener = (type: string, fn: Listener) => {
+      listeners = listeners.filter((l) => !(l.type === type && l.fn === fn));
+    };
+  }
+  afterEach(() => {
+    doc.addEventListener = realAdd;
+    doc.removeEventListener = realRemove;
+  });
+  const fire = (type: string, e: unknown) => listeners.filter((l) => l.type === type).forEach((l) => l.fn(e));
+  const outside = { nodeType: 1, closest: () => null, parentElement: null };
+
+  function mountPinned(pinned: boolean) {
+    installPortalContainer();
+    capture();
+    const anchor = createRef<HTMLElement>();
+    const closes: number[] = [];
+    const pins: number[] = [];
+    const el = (p: boolean) => (
+      <Modal title="New task" onClose={() => closes.push(1)} popover={{ anchor, pinned: p, onPin: () => pins.push(1) }}>
+        <span>body</span>
+      </Modal>
+    );
+    let r!: ReactTestRenderer;
+    act(() => {
+      r = create(el(pinned));
+    });
+    const closing = () =>
+      String(
+        r.root.find((n) => typeof n.type === "string" && String(n.props.className ?? "").includes("modal-overlay")).props
+          .className,
+      ).includes("closing");
+    return { r, closing, closes, pins, rerender: (p: boolean) => act(() => r.update(el(p))) };
+  }
+
+  test("pinned: a press outside and Escape leave it up — only its × closes it", () => {
+    const m = mountPinned(true);
+    act(() => fire("pointerdown", { target: outside }));
+    act(() => fire("keydown", { key: "Escape" }));
+    expect(m.closing()).toBe(false);
+    act(() => m.r.unmount());
+  });
+
+  test("a preview (pinned: false): a press outside closes it, a press inside pins it", () => {
+    const m = mountPinned(false);
+    const dialog = m.r.root.find((n) => n.props.role === "dialog");
+    act(() => dialog.props.onPointerDownCapture());
+    expect(m.pins.length).toBe(1);
+    act(() => fire("pointerdown", { target: outside }));
+    expect(m.closing()).toBe(true);
+    act(() => m.r.unmount());
+  });
+
+  test("a preview closes on Escape; once pinned, Escape does nothing and the pin is not asked again", () => {
+    const m = mountPinned(false);
+    m.rerender(true);
+    act(() => fire("keydown", { key: "Escape" }));
+    expect(m.closing()).toBe(false);
+    const dialog = m.r.root.find((n) => n.props.role === "dialog");
+    act(() => dialog.props.onFocusCapture());
+    expect(m.pins.length).toBe(0);
+    m.rerender(false);
+    act(() => fire("keydown", { key: "Escape" }));
+    expect(m.closing()).toBe(true);
+    act(() => m.r.unmount());
+  });
+});
+
 describe("popoverPlacement", () => {
   const view = { width: 1400, height: 900 };
   test("left of the rail's edge, a gap away, top level with the anchor", () => {

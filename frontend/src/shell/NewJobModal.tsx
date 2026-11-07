@@ -3799,6 +3799,22 @@ export default function NewJobModal({
   // measure. Measured on every change because "auto then scrollHeight" is the
   // one reflow-safe way to shrink back when lines are deleted.
   const askRef = useRef<HTMLTextAreaElement>(null);
+  // THE PREVIEW PINNED (the rail's +, Modal `popover.pinned`): a preview took
+  // no caret, so the pin gives the ask box the one it would have had at
+  // mount — unless the reader already put it somewhere in the card.
+  const popPinned = popover?.pinned;
+  const popPinnedWas = useRef(popPinned);
+  useEffect(() => {
+    const was = popPinnedWas.current;
+    popPinnedWas.current = popPinned;
+    if (was !== false || popPinned !== true) return;
+    const box = askRef.current;
+    if (!box) return;
+    const active = document.activeElement;
+    const card = box.closest('[role="dialog"]');
+    if (active && active !== document.body && card?.contains(active)) return;
+    box.focus({ preventScroll: true });
+  }, [popPinned]);
   // The box (`askRef` above) and the path (`pathRef`) are the two fields a
   // refused Save can send the caret to (see trySubmit). Refs rather than a
   // querySelector, because the card is a portal and there can be a second one
@@ -5288,7 +5304,9 @@ export default function NewJobModal({
                 e.preventDefault();
                 if (!busy) trySubmit();
               }}
-              autoFocus
+              // A hover's preview takes no caret (Modal `popover.pinned`); the
+              // pin hands it over (`popPinned` below).
+              autoFocus={popover?.pinned !== false}
             />
             {menuOpen && (
               <CommandMenu

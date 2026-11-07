@@ -340,6 +340,7 @@ import { FAV_PEEK_ID } from "./FavouritePeek";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useRailGit } from "./rail-git";
 import { publishRailGit, registerRailGit } from "./rail-git-store";
+import { PlusPopIntent } from "./plus-pop-lib";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platform/lib/botsPulse";
@@ -528,6 +529,10 @@ interface Card {
    *  floating beside the rail, no scrim, like the rail's chat card. Only the
    *  +'s; a draft's card stays the modal. */
   pop?: boolean;
+  /** …PINNED, or a hover's preview (owner, 2026-11-07: "hover gives you quick
+   *  preview", a click cements it; plus-pop-lib.ts). A pinned card closes by
+   *  its × only. */
+  pinned?: boolean;
 }
 
 /** What the +'s New task card is about, from the page: the page knows what
@@ -1796,12 +1801,60 @@ export function ClaudeRail({
     plusRef.current?.focus({ preventScroll: true });
   }, [node]);
   const waiting = newTask.waiting;
-  // The popover card's own close, the chassis' way (Modal `popover.closeSignal`):
-  // the + pressed again while it is up.
+  // THE +'s HOVER PREVIEW AND PIN (owner, 2026-11-07; plus-pop-lib.ts), with
+  // the nav doors: the pointer resting on the + shows the card unpinned, a
+  // press on the + (or inside the card) pins it, and a pinned card closes by
+  // its × only. The preview's own close is the chassis' way (Modal
+  // `popover.closeSignal`), so it fades like any other.
   const [cardCloseSignal, setCardCloseSignal] = useState(0);
+  const newTaskRef = useRef(newTask);
+  newTaskRef.current = newTask;
+  const plusSeedSeq = useRef(0);
+  const plusSeed = useRef<{
+    target: string | null;
+    where: NewTaskSeed["where"];
+    got: { modes: string[]; recents: string[] };
+  } | null>(null);
+  const plusIntentRef = useRef<PlusPopIntent | null>(null);
+  if (!plusIntentRef.current) {
+    plusIntentRef.current = new PlusPopIntent({
+      seed: () => {
+        const seq = ++plusSeedSeq.current;
+        plusSeed.current = null;
+        // As they were at the hover's start (header of `Card`).
+        const target = newTaskRef.current.target;
+        const where = newTaskRef.current.where;
+        void cardSeed().then((got) => {
+          if (!alive.current || seq !== plusSeedSeq.current) return;
+          plusSeed.current = { target, where, got };
+          plusIntentRef.current?.seeded();
+        });
+      },
+      cancelSeed: () => {
+        plusSeedSeq.current++;
+        plusSeed.current = null;
+        setOpening(false);
+      },
+      open: (pinned) => {
+        const seed = plusSeed.current;
+        setOpening(false);
+        if (!seed) return;
+        setCard({ seq: Date.now(), target: seed.target, where: seed.where, ...seed.got, pop: true, pinned });
+      },
+      pin: () => setCard((c) => (c?.pop ? { ...c, pinned: true } : c)),
+      close: () => setCardCloseSignal((n) => n + 1),
+    });
+  }
+  const plusIntent = plusIntentRef.current;
+  useEffect(() => () => plusIntent.dispose(), [plusIntent]);
+  // A hover on the + previews only where its press opens the popover card,
+  // and never over a draft's (modal) card.
+  const plusHovers = () => navDoors && !waiting && !(card && !card.pop);
   const openNewTask = () => {
-    if (card?.pop) {
-      setCardCloseSignal((n) => n + 1);
+    if (navDoors) {
+      if (waiting || (card && !card.pop)) return;
+      if (plusIntent.state === "closed" || plusIntent.state === "pending") setOpening(true);
+      plusIntent.press();
       return;
     }
     if (opening || card || waiting) return;
@@ -1812,7 +1865,7 @@ export function ClaudeRail({
     void cardSeed().then((got) => {
       if (!alive.current) return;
       setOpening(false);
-      setCard({ seq: Date.now(), target: at, where, ...got, ...(navDoors ? { pop: true } : {}) });
+      setCard({ seq: Date.now(), target: at, where, ...got });
     });
   };
   // A DRAFT'S DOOR, IN PLACE (header of `Card.draft`): the same New task card
@@ -2397,8 +2450,15 @@ export function ClaudeRail({
             aria-label={plusLabel}
             {...(plusPane ? {} : { "aria-haspopup": "dialog" as const, "aria-expanded": !!card?.pop })}
             aria-busy={opening || waiting !== null || undefined}
-            disabled={opening || waiting !== null}
+            // Never held while the card's read is out: a press during a
+            // hover's read is the pin (plus-pop-lib.ts), and a disabled
+            // button would swallow it.
+            disabled={waiting !== null}
             onClick={plusPane ? openPaneHome : openNewTask}
+            onPointerEnter={(e) => {
+              if (!plusPane && e.pointerType !== "touch" && plusHovers()) plusIntent.enterPlus();
+            }}
+            onPointerLeave={() => plusIntent.leavePlus()}
           >
             <Plus size={16} aria-hidden="true" />
           </button>
@@ -2835,7 +2895,10 @@ export function ClaudeRail({
           // which the pulse never carries — re-read so its ring shows now.
           onClose={() => {
             setCard(null);
-            refreshListing();
+            if (card.pop) plusIntent.closed();
+            // A preview nobody touched left nothing behind: the reader's
+            // first act inside it pins it (plus-pop-lib.ts).
+            if (!card.pop || card.pinned) refreshListing();
           }}
           // "Something changed, re-read": the pulse will move the new row
           // onto the rail; the listing is re-read now so its caption and
@@ -2843,8 +2906,20 @@ export function ClaudeRail({
           onCreated={() => refreshListing()}
           // The +'s card with the rail flag on: the same card as a popover
           // beside the rail (`Card.pop`), top-level with the +, left of the
-          // rail's edge; the + again closes it.
-          {...(card.pop ? { popover: { anchor: plusRef, beside: railRef, closeSignal: cardCloseSignal } } : {})}
+          // rail's edge; a hover's preview until a press pins it (`pinned`).
+          {...(card.pop
+            ? {
+                popover: {
+                  anchor: plusRef,
+                  beside: railRef,
+                  closeSignal: cardCloseSignal,
+                  pinned: !!card.pinned,
+                  onPin: () => plusIntent.pinInside(),
+                  onPointerEnter: () => plusIntent.enterCard(),
+                  onPointerLeave: () => plusIntent.leaveCard(),
+                },
+              }
+            : {})}
         />
       )}
     </aside>
