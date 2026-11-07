@@ -152,4 +152,18 @@ describe("PlusPopIntent", () => {
     clock.tick(PEEK_OPEN_MS);
     expect(log).toEqual(["seed", "open pinned", "seed", "open preview"]);
   });
+
+  it("a draft's card (another door) is adopted as pinned: a hover shows nothing, a press keeps it, a + read still out is dropped", () => {
+    const { clock, log, intent } = plus();
+    intent.enterPlus();
+    intent.adopt();
+    expect(intent.state).toBe("pinned");
+    intent.seeded();
+    clock.tick(PEEK_OPEN_MS * 2);
+    intent.enterPlus();
+    intent.press();
+    expect(log).toEqual(["seed", "cancel"]);
+    intent.closed();
+    expect(intent.state).toBe("closed");
+  });
 });

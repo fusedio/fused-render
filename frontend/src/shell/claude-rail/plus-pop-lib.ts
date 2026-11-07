@@ -16,6 +16,8 @@
 //     or anything the reader does inside the card (`pinInside`: a press, the
 //     focus on a field). A pinned card closes by its × only — the chassis
 //     (Modal `popover.pinned`) ignores a press outside and Escape.
+//   - A DRAFT'S CARD (a draft ring's press) is the same popover, pinned:
+//     `adopt` takes it as the +'s own.
 //   - The card closing by ANY path (×, Create, Escape or a press outside a
 //     preview, the grace) is reported back (`closed`), and the + starts over.
 import { PEEK_CLOSE_MS, PEEK_OPEN_MS, type Timers } from "./rail-peek-lib";
@@ -128,6 +130,17 @@ export class PlusPopIntent {
     if (this.phase !== "pending") return;
     this.ready = true;
     this.maybeOpen();
+  }
+
+  /** A card another door opened (a draft's ring, pinned): the + treats it
+   *  as its own pinned card — a hover shows nothing over it, a press keeps
+   *  it — until it closes (`closed`). A read of the +'s own still out is
+   *  dropped. */
+  adopt(): void {
+    const reading = this.phase === "pending";
+    this.reset();
+    this.phase = "pinned";
+    if (reading) this.sink.cancelSeed();
   }
 
   /** The card closed, whichever way. */

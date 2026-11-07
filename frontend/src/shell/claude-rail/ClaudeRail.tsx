@@ -1847,6 +1847,44 @@ export function ClaudeRail({
   }
   const plusIntent = plusIntentRef.current;
   useEffect(() => () => plusIntent.dispose(), [plusIntent]);
+  // ONE CARD BESIDE THE RAIL (owner, 2026-11-07: "either new task thing
+  // should be open or window A — new task thing is like window A but diff
+  // UI"): the New task popover and the rail's other cards — window A (the
+  // list's chat card), window B (a favourite's hover or open card, a bot's
+  // card) — never stand together, hover or pinned. Whichever opened last
+  // wins: the popover opening (a + hover, a + press, a draft's ring) puts
+  // the others down; one of them opening closes the popover the chassis'
+  // way (its draft autosave keeps the words) — unless the card is mid-Create
+  // (its × held, `busy`), when the other one goes instead.
+  const popSeq = card?.pop ? card.seq : null;
+  const openFavKeyRef = useRef(openFavKey);
+  openFavKeyRef.current = openFavKey;
+  useEffect(() => {
+    if (popSeq === null) return;
+    setHeld(false);
+    intent.dismiss();
+    dismissFavHover();
+    if (openFavKeyRef.current) setFavOpen(null);
+    setBotHeld(false);
+    botIntent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popSeq]);
+  const otherCard = peekKey ?? favHoverKey ?? openFavKey ?? botKey ?? null;
+  useEffect(() => {
+    if (otherCard === null || popSeq === null) return;
+    const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
+    if (shut?.disabled) {
+      setHeld(false);
+      intent.dismiss();
+      dismissFavHover();
+      if (openFavKeyRef.current) setFavOpen(null);
+      setBotHeld(false);
+      botIntent.dismiss();
+      return;
+    }
+    setCardCloseSignal((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peekKey, favHoverKey, openFavKey, botKey]);
   // A hover on the + previews only where its press opens the popover card,
   // and never over a draft's (modal) card.
   const plusHovers = () => navDoors && !waiting && !(card && !card.pop);
@@ -1887,7 +1925,11 @@ export function ClaudeRail({
   //     autosave a blank form over the stored one: the press takes the
   //     Tasks page's door instead (`href`), which reads the record itself.
   const openDraftCard = (row: Task, href: string) => {
-    if (opening || card) return;
+    // With the nav doors a draft opens in the +'s popover (`Card.pop`,
+    // pinned — a press), over whatever New task popover is up; a draft's
+    // modal card, or a popover mid-Create, keeps its place.
+    if (opening || (card && !(navDoors && card.pop))) return;
+    if (card && railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close")?.disabled) return;
     const chat = isChatDraftTask(row);
     if (!chat && !row.draft_id) return;
     setOpening(true);
@@ -1933,6 +1975,10 @@ export function ClaudeRail({
         onOpenChat(href);
         return;
       }
+      // A popover it replaces flushes its own draft as it unmounts
+      // (NewJobModal's autosave): re-read so that ring shows.
+      if (card) refreshListing();
+      if (navDoors) plusIntent.adopt();
       setCard({
         seq: Date.now(),
         ...base,
@@ -1940,6 +1986,7 @@ export function ClaudeRail({
         draft: read.seed,
         chatKey: chat ? row.key : "",
         time: reopenTime(read.seed),
+        ...(navDoors ? { pop: true, pinned: true } : {}),
       });
     });
   };
@@ -1991,6 +2038,18 @@ export function ClaudeRail({
       return;
     }
     if (how === "card") {
+      // A DRAFT'S RING, with the nav doors (owner, 2026-11-07: "drafts open
+      // should open in the new thing we added"): the New task popover on
+      // the draft, pinned — not window A. A hover's card coming on this ring
+      // is called off first.
+      const seat = seatByHref.get(href);
+      if (navDoors && seat?.row && isDraftTask(seat.row)) {
+        hideHint();
+        setHeld(false);
+        intent.dismiss();
+        openChat(href);
+        return;
+      }
       // A TOGGLE (owner, 2026-11-06): the ring of the chat whose card a press
       // pinned closes it; a hover card on it is pinned by the press.
       if (pinNow.current.favsOn && pinNow.current.pinned && pinNow.current.peekKey === t.key) {
