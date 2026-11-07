@@ -19,10 +19,10 @@
 // SPLIT INTO A PURE VIEW (`GitDockView`) AND A STATEFUL WRAPPER, the
 // TerminalDock/ModelsDock split: the view renders with fixed props in tests.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, GitBranch, Loader2, RefreshCw } from "lucide-react";
 import StatusChip from "@platform/ui/StatusChip";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
-import { timeAgo } from "@platform/lib/format";
 import { useCanvasRailPeek } from "./claude-rail/rail-peek-flag";
 import { useRailGitDoor, type RailGitDoor } from "./claude-rail/rail-git-store";
 import { gitBranch, gitChipDot, gitCounts } from "./git-dock-lib";
@@ -52,6 +52,12 @@ export function GitDockView({
   const counts = gitCounts(r);
   const dot = gitChipDot({ checking: git.checking, checked: git.checked, behind: r.behind });
   const door = git.onOpenGit;
+  // Ahead / behind as ↑n ↓n tags beside the branch, only when non-zero
+  // (owner, 2026-11-07: "show a number with an arrow, like other interfaces";
+  // the "0 ahead · 0 behind main" line is gone). The words stay in the hint.
+  const base = r.default_branch ?? "the default branch";
+  const ahead = r.ahead ?? 0;
+  const behind = r.behind ?? 0;
   const take = () => {
     onClose();
     door?.();
@@ -73,71 +79,82 @@ export function GitDockView({
       {open && (
         <div className="dl-panel git-panel" role="dialog" aria-label="Git">
           <div className="git-panel-head">
-            <div className="git-panel-branch">
-              On <strong>{branch}</strong>
+            {/* One row: the branch on the left, its two actions on the right —
+                Check for updates as an icon (the Updates chip's), the Git
+                panel's door as an outlined Open (owner, 2026-11-07). */}
+            <div className="git-panel-top">
+              <div className="git-panel-branch">
+                <GitBranch size={13} aria-hidden="true" className="git-panel-branch-icon" />
+                <span className="git-panel-branch-name" title={counts}>
+                  {branch}
+                </span>
+                {ahead > 0 && (
+                  <span className="git-panel-tag" data-hint={`${ahead} ahead of ${base}`} aria-label={`${ahead} ahead of ${base}`}>
+                    <ArrowUp size={11} aria-hidden="true" />
+                    {ahead}
+                  </span>
+                )}
+                {behind > 0 && (
+                  <span className="git-panel-tag" data-hint={`${behind} behind ${base}`} aria-label={`${behind} behind ${base}`}>
+                    <ArrowDown size={11} aria-hidden="true" />
+                    {behind}
+                  </span>
+                )}
+              </div>
+              <div className="git-panel-tools">
+                <button
+                  type="button"
+                  className="upd-check-btn git-panel-check"
+                  disabled={!r.has_remote || git.checking}
+                  aria-busy={git.checking || undefined}
+                  aria-label={git.checking ? "Checking for updates…" : "Check for updates"}
+                  data-hint={!r.has_remote ? "No remote to check" : git.checking ? "Checking for updates…" : "Check for updates"}
+                  onClick={() => git.check()}
+                >
+                  {git.checking ? (
+                    <Loader2 size={13} className="update-card-spin" aria-hidden="true" />
+                  ) : (
+                    <RefreshCw size={13} aria-hidden="true" />
+                  )}
+                </button>
+                {door && (
+                  <button type="button" className="git-panel-open" onClick={take}>
+                    Open
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="git-panel-counts">{counts}</div>
             {git.checked === false && !git.checking && (
               <div className="git-panel-warn" role="status">
                 No fresh answer from the remote yet
               </div>
             )}
           </div>
-          <div className="git-panel-actions">
-            <button
-              type="button"
-              className="update-card-btn"
-              disabled={!r.has_remote || git.checking}
-              aria-busy={git.checking || undefined}
-              onClick={() => git.check()}
-            >
-              {git.checking ? "Checking…" : "Check for updates"}
-            </button>
-            {door && (
-              <button type="button" className="update-card-ghost" onClick={take}>
-                Open Git panel
-              </button>
-            )}
-          </div>
           {r.commits.length > 0 && (
-            <div className="dl-section">
-              <div className="dl-section-head">
-                Recent commits <span className="dl-section-count">{r.commits.length}</span>
-              </div>
-              <ul className="git-panel-commits">
-                {r.commits.map((c) => {
-                  const when = timeAgo(c.when) ?? "";
-                  const who = [c.author, when].filter(Boolean).join(" · ");
-                  const body = (
-                    <>
-                      <span className="git-commit-subject">{c.subject}</span>
-                      <span className="git-commit-meta">
-                        <span className="git-commit-who">{who}</span>
-                        <span className="git-commit-sha">{c.short}</span>
-                      </span>
-                    </>
-                  );
-                  return (
-                    <li key={c.sha}>
-                      {door ? (
-                        <button
-                          type="button"
-                          className="git-commit"
-                          title={`${c.subject} — open the Git panel`}
-                          onClick={take}
-                        >
-                          {body}
-                        </button>
-                      ) : (
-                        <div className="git-commit" title={c.subject}>
-                          {body}
-                        </div>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
+            // One line a commit: its subject, its short sha on the right.
+            <ul className="git-panel-commits" aria-label="Recent commits">
+              {r.commits.map((c) => {
+                const body = (
+                  <>
+                    <span className="git-commit-subject">{c.subject}</span>
+                    <span className="git-commit-sha">{c.short}</span>
+                  </>
+                );
+                return (
+                  <li key={c.sha}>
+                    {door ? (
+                      <button type="button" className="git-commit" title={`${c.subject} — open the Git panel`} onClick={take}>
+                        {body}
+                      </button>
+                    ) : (
+                      <div className="git-commit" title={c.subject}>
+                        {body}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </div>
       )}
