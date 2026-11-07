@@ -1191,6 +1191,13 @@ a.claude-rail-peek-scope:focus-visible {
   font-size: 12px;
   line-height: 22px;
 }
+/* The favourite's door: the word, then an ↗ (RailPeek `openIcon`). */
+.claude-rail-peek-open.has-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 8px 0 10px;
+}
 /* The chat's own ⋮ (apps/claude/ui/Kebab), in a head seat: its button takes
    the head's size and hover wash so it sits level with the close beside it. */
 .claude-rail-peek-kebab {

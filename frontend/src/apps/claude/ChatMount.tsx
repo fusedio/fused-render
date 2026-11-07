@@ -306,6 +306,12 @@ export interface ChatMountProps {
    * a peek, a thumbnail or a listing preview.
    */
   recap?: boolean;
+  /** THE RAIL CARDS' COMPOSER (ClaudeChat / ComposerCard `smallCard`): one
+   *  line while typing; opens on the model · effort label or a draft longer
+   *  than the line, and stays open until the card shows another chat. */
+  smallCard?: boolean;
+  /** With `smallCard`: this chat is the one the card shows. */
+  smallCardShown?: boolean;
 }
 
 export function ChatMount(props: ChatMountProps) {
@@ -380,6 +386,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
         {...(props.onWorktreeRemoved ? { onWorktreeRemoved: props.onWorktreeRemoved } : {})}
         {...(props.recap ? { recap: true } : {})}
+        {...(props.smallCard ? { smallCard: true, smallCardShown: !!props.smallCardShown } : {})}
       />
      </Suspense>
     </div>

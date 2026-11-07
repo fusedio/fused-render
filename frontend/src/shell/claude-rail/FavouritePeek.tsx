@@ -136,6 +136,11 @@ function placeOf(t: TaskPulseTask, row: Task | null): RailPlace {
 }
 
 const noop = () => {};
+/** How long a press's focus waits for the favourite chat's composer to mount
+ *  before settling for the × — WALL-CLOCK, as ClaudeRail's FOCUS_WAIT_MS: a
+ *  cold chat chunk loads in time, not frames, and a frame count is a shorter
+ *  wait on a faster display (Bugbot on #2170). */
+const FAV_COMPOSER_WAIT_MS = 2500;
 
 export function FavouritePeek() {
   const peekOn = useCanvasRailPeek();
@@ -268,21 +273,60 @@ export function FavouritePeek() {
   // Taking the wish clears it in the store, which re-runs this effect: the
   // wait is a ref, not this run's cleanup, so that does not cancel it.
   const focusWait = useRef(0);
-  useEffect(() => () => cancelAnimationFrame(focusWait.current), []);
+  // The running wait's stop — its frame AND its document listeners — so a
+  // new wait supersedes it and an unmount ends it (CodeRabbit on #2170).
+  const focusStop = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(focusWait.current);
+      focusStop.current?.();
+    },
+    [],
+  );
+  // THE COMPOSER FIRST (Akshil, 2026-11-07: the list card's press lands in
+  // its composer, so the favourite's does too): retried by frame while the
+  // chat mounts, for FAV_COMPOSER_WAIT_MS at most; the × only when no composer
+  // came (a slow chat). Over the moment the reader presses or types anything
+  // themselves, or the keyboard goes somewhere outside the card.
   useEffect(() => {
     if (!shownKey || pendingFocus !== shownKey) return;
     if (!takeFavFocus(shownKey)) return;
     cancelAnimationFrame(focusWait.current);
-    let tries = 0;
+    focusStop.current?.();
+    const until = performance.now() + FAV_COMPOSER_WAIT_MS;
+    let live = true;
+    const stop = () => {
+      live = false;
+      cancelAnimationFrame(focusWait.current);
+      document.removeEventListener("pointerdown", stop, true);
+      document.removeEventListener("keydown", stop, true);
+      if (focusStop.current === stop) focusStop.current = null;
+    };
+    focusStop.current = stop;
+    document.addEventListener("pointerdown", stop, true);
+    document.addEventListener("keydown", stop, true);
+    const take = (el: HTMLElement | null) => {
+      if (!el || el.closest("[inert]")) return false;
+      el.focus({ preventScroll: true });
+      return document.activeElement === el;
+    };
     const attempt = () => {
-      const btn = document.querySelector<HTMLElement>(`#${FAV_PEEK_ID}.is-on .claude-rail-peek-close`);
-      if (btn && !btn.closest("[inert]")) {
-        btn.focus({ preventScroll: true });
-        if (document.activeElement === btn) return;
+      if (!live) return;
+      const card = document.querySelector<HTMLElement>(`#${FAV_PEEK_ID}.is-on`);
+      const a = document.activeElement;
+      if (a && a !== document.body && card && !card.contains(a) && !a.closest(".claude-rail")) return stop();
+      const box = card?.querySelector<HTMLElement>(".claude-rail-peek-chat.is-shown form.c-composer textarea:not([disabled])") ?? null;
+      if (take(box)) return stop();
+      if (performance.now() < until) {
+        focusWait.current = requestAnimationFrame(attempt);
+        return;
       }
-      if (++tries < 30) focusWait.current = requestAnimationFrame(attempt);
+      take(card?.querySelector<HTMLElement>(".claude-rail-peek-close") ?? null);
+      stop();
     };
     focusWait.current = requestAnimationFrame(attempt);
+    // No cleanup: taking the wish clears it in the store, which re-runs this
+    // effect — the wait must outlive that run (it ends itself, above).
   }, [shownKey, pendingFocus]);
   // The rail itself is the anchor, hover or open: with `align: "bottom"` the
   // card's bottom lands on the rail's, clamped inside the row — the bottom
@@ -366,6 +410,7 @@ export function FavouritePeek() {
       onHold={hovering ? (on) => favHoverIntent().hold(on) : noop}
       onDismiss={close}
       dismissOnUnstar
+      openIcon
       onNoRoom={() => setNoRoom(true)}
       onOpenChat={openChat}
       here={here}

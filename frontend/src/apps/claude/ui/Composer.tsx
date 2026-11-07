@@ -344,6 +344,22 @@ export interface ComposerCardProps {
    *  Bugbot #1046 closed on the Back button's twin. */
   navLockedReason?: string;
   autoFocus?: boolean;
+  /**
+   * THE RAIL CARDS' COMPOSER (Akshil, 2026-11-07: "only for small windows …
+   * it should let me type without expanding, and it will not expand unless we
+   * click on model and effort, and then we don't close it after that unless
+   * the window changes; and after typing more than the space it will expand
+   * and not close"). The rail's list card and the favourite's card are too
+   * short for the shelf to come and go under the reader's hands, so here
+   * FOCUS NEVER OPENS THE CARD: the reader types in the one-line box. Two
+   * things open it — a press on the model · effort label beside Send, or a
+   * draft that no longer fits the line — and once open it STAYS open (no fold
+   * on blur, on an outside press, or on a send) until the card shows another
+   * chat (`smallCardShown` going false).
+   */
+  smallCard?: boolean;
+  /** With `smallCard`: the card is showing THIS chat. False folds it back. */
+  smallCardShown?: boolean;
   // `focusRequest` IS GONE (Bugbot review of caef75eb1, LOW). It was the seat
   // for "a never-sent chat's row was pressed, put the caret in the box", and
   // that road went with the draft MOVE out of the Recent list — a press now
@@ -604,7 +620,13 @@ export function ComposerCard({
   onHeldGone,
   slashCommands,
   onLocalCommand,
+  smallCard: smallCardProp = false,
+  smallCardShown = false,
 }: ComposerCardProps) {
+  // THE LABEL IS THE DOOR, so the mode needs one: a settled chat with no model
+  // to name (no label drawn) falls back to the ordinary focus-opens card.
+  // While the pills are still settling the line stays folded — briefly.
+  const smallCard = smallCardProp && (controls.ready === false || !!controls.model);
   // WHAT IS IN THE BOX DEPENDS ON WHETHER THERE IS A CONVERSATION BEHIND IT —
   // the one fork this file has, and every rule below hangs off it (see "THE
   // DRAFT, AND THE TWO BOXES THAT KEEP ONE DIFFERENTLY").
@@ -665,13 +687,20 @@ export function ComposerCard({
    * Listened on the document only WHILE the card is open, and a press inside
    * the form or inside a surface the form opened does not count.
    */
-  const active = variant === "chat" && within;
+  // THE RAIL CARDS (`smallCard`): `opened` is the whole of "in it" there —
+  // set by the label or by a draft past the line, cleared only when the card
+  // stops showing this chat.
+  const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    if (smallCard && !smallCardShown) setOpened(false);
+  }, [smallCard, smallCardShown]);
+  const active = variant === "chat" && (smallCard ? opened : within);
   /** A pointer is down somewhere in the document / a fold was decided during
    *  that press and waits for its click — see the effect below. */
   const pressRef = useRef(false);
   const foldPendingRef = useRef(false);
   useEffect(() => {
-    if (!active) return;
+    if (!active || smallCard) return;
     const form = formRef.current;
     if (!form) return;
     const doc = form.ownerDocument;
@@ -715,7 +744,7 @@ export function ComposerCard({
       doc.removeEventListener("pointerup", onDocPointerUp, true);
       doc.removeEventListener("pointercancel", onDocPointerUp, true);
     };
-  }, [active]);
+  }, [active, smallCard]);
   const onFormBlur = useCallback((ev: React.FocusEvent<HTMLFormElement>) => {
     // Focus moving BETWEEN the form's own controls is a blur too; only one
     // that leaves the form is a leave.
@@ -2229,6 +2258,33 @@ export function ComposerCard({
   );
 
   const collapsed = variant === "chat" && !active && !blocked;
+  // …AND A DRAFT PAST THE LINE OPENS IT (`smallCard`): the folded box is one
+  // line tall with its overflow hidden, so the moment the words need a second
+  // line the card opens to show them, and stays open. The words can outgrow
+  // the line without a keystroke too — a card dragged narrower rewraps them —
+  // so the box's width is watched while folded. Only the chat the card SHOWS,
+  // and only WITH THE READER IN IT (Akshil, 2026-11-07: "a draft that is two
+  // lines — on hover show me the compressed one, but if I click it should
+  // open the expanded view"): a hover leaves a long draft folded; the press
+  // that puts the caret in the box opens it.
+  useLayoutEffect(() => {
+    if (!smallCard || !smallCardShown || !within || !collapsed) return;
+    const box = boxRef.current;
+    if (!box) return;
+    const check = () => {
+      // A box with no width yet (mid-mount) wraps everything: not a reading.
+      if (box.clientWidth > 0 && box.scrollHeight > box.clientHeight + 1) setOpened(true);
+    };
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(check);
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [smallCard, smallCardShown, within, collapsed, text, boxRef]);
+  const openSmallCard = useCallback(() => {
+    setOpened(true);
+    boxRef.current?.focus({ preventScroll: true });
+  }, [boxRef]);
   // WHICH AGENT THE BOX SPEAKS TO (D18): the pill's answer, else the catalog's
   // default. Subscribed, so the first read and a Preferences switch repaint.
   const agents = useAgentBackends();
@@ -2280,27 +2336,43 @@ export function ComposerCard({
             to its corner, so the label is seated against Send). It fades as the
             shelf opens and the pills take over saying the same thing, and it
             says nothing while the pills are still settling. */}
-        {variant === "chat" ? (
-          <div
-            className={
-              collapsed && controls.ready !== false && controls.model
-                ? "c-composer-meta"
-                : "c-composer-meta is-hidden"
-            }
-            aria-hidden={!collapsed}
-            data-testid="composer-meta"
-          >
-            <span>{modelLabelsOf(controls.backend)[controls.model] ?? MODEL_LABELS[controls.model] ?? controls.model}</span>
-            {/* No effort to say for a model that takes none (the pill is
-                hidden too): the model alone, without a dangling dot. */}
-            {controls.effort ? (
-              <>
-                <span className="c-composer-meta-dot" aria-hidden="true" />
-                <span>{controls.effort}</span>
-              </>
-            ) : null}
-          </div>
-        ) : null}
+        {variant === "chat" ? (() => {
+          const metaShown = collapsed && controls.ready !== false && !!controls.model;
+          const metaClass = metaShown ? "c-composer-meta" : "c-composer-meta is-hidden";
+          const words = (
+            <>
+              <span>{modelLabelsOf(controls.backend)[controls.model] ?? MODEL_LABELS[controls.model] ?? controls.model}</span>
+              {/* No effort to say for a model that takes none (the pill is
+                  hidden too): the model alone, without a dangling dot. */}
+              {controls.effort ? (
+                <>
+                  <span className="c-composer-meta-dot" aria-hidden="true" />
+                  <span>{controls.effort}</span>
+                </>
+              ) : null}
+            </>
+          );
+          // THE RAIL CARDS' DOOR INTO THE SHELF (`smallCard`): the label is a
+          // button there, and the one press that opens the card.
+          return smallCard ? (
+            <button
+              type="button"
+              className={metaClass + " is-opener"}
+              data-testid="composer-meta"
+              aria-label="Show model and effort"
+              title="Show model and effort"
+              tabIndex={metaShown ? 0 : -1}
+              aria-hidden={!metaShown}
+              onClick={openSmallCard}
+            >
+              {words}
+            </button>
+          ) : (
+            <div className={metaClass} aria-hidden={!collapsed} data-testid="composer-meta">
+              {words}
+            </div>
+          );
+        })() : null}
         {menuOpen ? (
           <CommandMenu
             id={menuId}

@@ -1703,6 +1703,33 @@ select.c-pill {
   opacity: 0;
   transition: opacity 0.08s ease-out;
 }
+/* THE RAIL CARDS' LABEL IS A BUTTON (`smallCard`, ui/Composer.tsx): the one
+   press that opens the shelf there. Same words, same seat; a hover wash says
+   it can be pressed. Hidden, it neither shows nor catches a press. */
+.c-composer-meta.is-opener {
+  margin: 0;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--c-dim);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.c-composer-meta.is-opener:hover,
+.c-composer-meta.is-opener:focus-visible {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.c-composer-meta.is-opener.is-hidden {
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 0.08s ease-out,
+    visibility 0s 0.08s;
+}
 @media (prefers-reduced-motion: reduce) {
   .c-composer-meta {
     transition: none;

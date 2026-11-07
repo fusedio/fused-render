@@ -399,6 +399,9 @@ export interface ClaudeChatProps {
    * how this bug arrived. (.claude-design/session-recap.md, "Trigger".)
    */
   recap?: boolean;
+  /** The rail cards' composer (ComposerCard `smallCard`). */
+  smallCard?: boolean;
+  smallCardShown?: boolean;
   /**
    * `/tasks` (SPEC C-1): toggle the background-tasks panel. Optional — the
    * panel's host fills it; absent, the command is answered and does nothing.
@@ -5191,6 +5194,7 @@ function ChatBody(props: ChatBodyProps) {
       // prop: no focus on the landing, focus the moment a conversation is
       // entered, which is `enterChat` exactly.
       autoFocus: props.autoFocus && inChat,
+      ...(props.smallCard ? { smallCard: true, smallCardShown: !!props.smallCardShown } : {}),
       columnRef,
       back: currentUrl(),
       onNavigate,
@@ -5364,6 +5368,8 @@ function ChatBody(props: ChatBodyProps) {
       onFollowUp,
       onStop,
       props.autoFocus,
+      props.smallCard,
+      props.smallCardShown,
       // The enter transition IS the focus trigger (see `autoFocus` above).
       inChat,
       onNavigate,

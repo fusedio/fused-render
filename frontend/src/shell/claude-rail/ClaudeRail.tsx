@@ -2218,16 +2218,18 @@ export function ClaudeRail({
                       hideHint();
                       // The hover (window B) becomes the open card, or goes.
                       dismissFavHover();
-                      // A keyboard press: the favourite's card takes the
-                      // keyboard once it stands (fav-peek-store); a pointer
-                      // press takes nothing.
+                      // ANY press — pointer or keyboard — lands in the
+                      // favourite card's composer once it stands (fav-peek-
+                      // store; Akshil, 2026-11-07: "when I click to open the
+                      // window in normal tasks it focuses the input, but for
+                      // fav tasks it doesn't"), the list card's own rule.
                       // A TOGGLE (owner, 2026-11-06): the open favourite's
-                      // own ring closes its card; any other opens it (a
-                      // keyboard press asking for the card's keyboard then —
-                      // never for a close, or the wish would outlive it).
+                      // own ring closes its card; any other opens it (asking
+                      // for the card's keyboard then — never for a close, or
+                      // the wish would outlive it).
                       if (favRing) clearFavOpen(t.key);
                       else {
-                        if (e.detail === 0) requestFavFocus(t.key);
+                        requestFavFocus(t.key);
                         openFavourite(t, href);
                       }
                       return;

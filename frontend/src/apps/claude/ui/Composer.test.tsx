@@ -2061,6 +2061,178 @@ test("a folded chat card says its model · effort top-right; an open one hides t
     .props.className)).toContain("is-hidden");
 });
 
+test("a rail card's composer types folded, opens on the model · effort label, and stays open until the card shows another chat (Akshil, 2026-11-07)", () => {
+  const m = mount({ smallCard: true, smallCardShown: true, controls: { ...controls, model: "opus", effort: "max" } });
+  const form = () => m.root.findByType("form");
+  const cls = () => String(form().props.className);
+  const meta = () => m.root.findAll((n) => n.props?.["data-testid"] === "composer-meta")[0];
+  const outside = {
+    relatedTarget: null,
+    currentTarget: { contains: () => false, ownerDocument: { querySelector: () => null } },
+  };
+  expect(cls()).toContain("is-idle");
+  // Focus and typing never open it here.
+  act(() => form().props.onFocus({ target: { closest: () => null } }));
+  m.type("hello");
+  expect(cls()).toContain("is-idle");
+  // The label is a button, and the one press that opens the card.
+  expect(meta().type).toBe("button");
+  expect(meta().props.tabIndex).toBe(0);
+  act(() => meta().props.onClick());
+  expect(cls()).not.toContain("is-idle");
+  expect(meta().props.tabIndex).toBe(-1);
+  // Focus leaving the form does NOT fold it.
+  act(() => form().props.onBlur(outside));
+  expect(cls()).not.toContain("is-idle");
+  // The card showing another chat (or closing) folds it back.
+  m.rerender({ smallCard: true, smallCardShown: false, controls: { ...controls, model: "opus", effort: "max" } });
+  expect(cls()).toContain("is-idle");
+  m.rerender({ smallCard: true, smallCardShown: true, controls: { ...controls, model: "opus", effort: "max" } });
+  expect(cls()).toContain("is-idle");
+});
+
+test("a rail card with no model to name has no label door, so focus opens it as anywhere else", () => {
+  const m = mount({ smallCard: true, smallCardShown: true, controls: { ...controls, model: "", ready: true } });
+  const form = () => m.root.findByType("form");
+  expect(String(form().props.className)).toContain("is-idle");
+  act(() => form().props.onFocus({ target: { closest: () => null } }));
+  expect(String(form().props.className)).not.toContain("is-idle");
+});
+
+// ---- the rail card's overflow door, against a measured box -----------------
+
+/** A rail-card composer whose textarea is a stub with box metrics the test
+ *  moves (`createNodeMock`), and a ResizeObserver the test fires. */
+function mountMeasured(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
+  const node = {
+    focus: () => {},
+    style: {} as Record<string, string>,
+    clientWidth: 200,
+    clientHeight: 32,
+    scrollHeight: 32,
+  };
+  const observers: Array<() => void> = [];
+  const G = globalThis as Record<string, unknown>;
+  const realCS = G.getComputedStyle;
+  const realRO = G.ResizeObserver;
+  G.getComputedStyle = () => ({ paddingTop: "0px", paddingBottom: "0px", lineHeight: "16px", fontSize: "14px" });
+  G.ResizeObserver = class {
+    cb: () => void;
+    constructor(cb: () => void) {
+      this.cb = cb;
+    }
+    observe() {
+      observers.push(this.cb);
+    }
+    disconnect() {
+      const i = observers.indexOf(this.cb);
+      if (i >= 0) observers.splice(i, 1);
+    }
+  };
+  const sent: string[] = [];
+  const props = (extra: Partial<Parameters<typeof ComposerCard>[0]> = {}) => (
+    <ComposerCard
+      variant="chat"
+      file="/p/app.py"
+      sessionId=""
+      controls={{ ...controls, model: "opus", effort: "max" }}
+      status="idle"
+      back="/explorer/view/p"
+      onSend={(text: string) => sent.push(text)}
+      onFollowUp={() => {}}
+      onStop={() => {}}
+      smallCard
+      smallCardShown
+      {...over}
+      {...extra}
+    />
+  );
+  let renderer!: ReactTestRenderer;
+  act(() => {
+    renderer = create(props(), { createNodeMock: (el) => (el.type === "textarea" ? node : null) });
+  });
+  mounted.push(renderer);
+  const form = () => renderer.root.findByType("form");
+  return {
+    node,
+    sent,
+    idle: () => String(form().props.className).includes("is-idle"),
+    focusIn: () => act(() => form().props.onFocus({ target: { closest: () => null } })),
+    leave: () =>
+      act(() =>
+        form().props.onBlur({
+          relatedTarget: null,
+          currentTarget: { contains: () => false, ownerDocument: { querySelector: () => null } },
+        }),
+      ),
+    type: (value: string, scrollHeight: number) => {
+      node.scrollHeight = scrollHeight;
+      act(() => renderer.root.findByType("textarea").props.onChange({ currentTarget: { value } }));
+    },
+    resize: (scrollHeight: number) => {
+      node.scrollHeight = scrollHeight;
+      act(() => observers.slice().forEach((cb) => cb()));
+    },
+    submit: () => act(() => form().props.onSubmit({ preventDefault() {} })),
+    rerender: (extra: Partial<Parameters<typeof ComposerCard>[0]>) => act(() => renderer.update(props(extra))),
+    restore: () => {
+      if (realCS === undefined) delete G.getComputedStyle;
+      else G.getComputedStyle = realCS;
+      if (realRO === undefined) delete G.ResizeObserver;
+      else G.ResizeObserver = realRO;
+    },
+  };
+}
+
+test("a rail card opens on a draft past the line only with the reader in it — a hover keeps it folded (Akshil, 2026-11-07)", () => {
+  const c = mountMeasured();
+  try {
+    // Words past the line with nobody in the box (a hover's seeded draft).
+    c.type("a long draft", 60);
+    expect(c.idle()).toBe(true);
+    // The press that puts the caret in the box opens it.
+    c.focusIn();
+    expect(c.idle()).toBe(false);
+    // …and it stays open: a leave, then a send, fold nothing.
+    c.leave();
+    expect(c.idle()).toBe(false);
+    c.submit();
+    expect(c.sent).toEqual(["a long draft"]);
+    expect(c.idle()).toBe(false);
+  } finally {
+    c.restore();
+  }
+});
+
+test("a rail card with the reader in it opens when a narrower card rewraps the line; a card not showing the chat never does", () => {
+  const c = mountMeasured();
+  try {
+    c.focusIn();
+    c.type("fits", 32);
+    expect(c.idle()).toBe(true);
+    c.resize(60);
+    expect(c.idle()).toBe(false);
+  } finally {
+    c.restore();
+  }
+  const h = mountMeasured({ smallCardShown: false });
+  try {
+    h.focusIn();
+    h.type("a long draft", 60);
+    h.resize(60);
+    expect(h.idle()).toBe(true);
+    // A box with no width yet is no reading either.
+    h.node.clientWidth = 0;
+    h.rerender({ smallCardShown: true });
+    expect(h.idle()).toBe(true);
+    h.node.clientWidth = 200;
+    h.resize(60);
+    expect(h.idle()).toBe(false);
+  } finally {
+    h.restore();
+  }
+});
+
 // ---- ↑/↓ prompt history, Claude Code's -------------------------------------
 
 test("↑ recalls the newest prompt, ↑ again the one before; ↓ walks back and returns the draft", () => {
