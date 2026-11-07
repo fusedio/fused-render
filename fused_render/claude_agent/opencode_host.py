@@ -123,7 +123,6 @@ _CALL_ARG = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*): (?P<val>.*?)(?=, [A-Za
 #: argument-bearing or server-prefixed title is matched against.
 _FUSED_TOOLS = frozenset({"app_state", "canvas_screenshot", "terminal_list",
                           "terminal_read", "terminal_send"})
-_MCP_UNDERSCORE = re.compile(r"^(?P<server>[A-Za-z0-9-]+)_(?P<tool>[A-Za-z0-9_.-]+)$")
 #: D3: `session/load` answers around its replay (the history streams as
 #: `user_message_chunk` / `agent_message_chunk` updates, Gemini's road), so
 #: the replay is over only once the updates have been quiet for a beat —
@@ -580,16 +579,14 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
         acp["raw"] = raw
         m = _MCP_TITLE.match(title)
         call = None if m else _MCP_CALL.match(title)
-        under = None if (m or call) else _MCP_UNDERSCORE.match(title)
+        bare = title[len(_MCP_SERVER) + 1:] if title.startswith(_MCP_SERVER + "_") else title
         if m and m.group("server") == _MCP_SERVER:
             name = "mcp__%s__%s" % (_MCP_SERVER, m.group("tool"))
         elif m:
             name = "%s-%s" % (m.group("server"), m.group("tool"))
-        elif title in _FUSED_TOOLS:
-            name = "mcp__%s__%s" % (_MCP_SERVER, title)
-        elif under and under.group("server") == _MCP_SERVER \
-                and under.group("tool") in _FUSED_TOOLS:
-            name = "mcp__%s__%s" % (_MCP_SERVER, under.group("tool"))
+        elif bare in _FUSED_TOOLS:
+            # `app_state` or `fused_approvals_app_state`: fused's own tool.
+            name = "mcp__%s__%s" % (_MCP_SERVER, bare)
         elif call and call.group("tool") in _FUSED_TOOLS:
             # `<tool>(key: value, …)`: fused's own tool with arguments. The
             # pairs are parsed best-effort into the input the card shows
