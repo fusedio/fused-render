@@ -1042,6 +1042,10 @@ describe("messageTone", () => {
     expect(messageTone(msg({ state: "sent", turn: "done" }))).toMatchObject({
       column: "done", failed: false,
     });
+    expect(messageTone(msg({ state: "sent", turn: "error" }))).toMatchObject({
+      column: "done", failed: true, label: "Failed",
+    });
+    expect(messageTone(msg({ state: "sent", turn: "error", limited: true })).label).toBe("Usage limit");
     // Sent, no verdict yet: still running. The ONLY value that means that.
     expect(messageTone(msg({ state: "sent", turn: "" })).column).toBe("in_progress");
     expect(messageTone(msg({ state: "pending" })).column).toBe("upcoming");

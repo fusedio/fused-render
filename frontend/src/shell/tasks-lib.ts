@@ -364,6 +364,8 @@ export function messageTone(m: TaskMessage): MessageTone {
           // Not "Running…": nothing is watching it any more, and saying
           // otherwise is the frozen-progress-bar lie.
           return { column: "done", failed: true, label: "Stopped reporting" };
+        case "failed":
+          return { column: "done", failed: true, label: m.limited ? "Usage limit" : "Failed" };
         case "running":
           return { column: "in_progress", failed: false, label: "Running…" };
         // "done", "idle", or whatever a newer server writes — the turn ended.

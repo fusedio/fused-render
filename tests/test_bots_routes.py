@@ -7,6 +7,7 @@ import base64
 import io
 import json
 import os
+import threading
 import urllib.parse
 import urllib.request
 import zipfile
@@ -16,7 +17,7 @@ import pytest
 from fused_render.bots import apptools
 from fused_render.bots import bot as botmod
 from fused_render.bots import paths as bpaths
-from fused_render.bots import registry
+from fused_render.bots import registry, store
 
 MARKED = '<!doctype html><html><head><meta name="fused-app" /><title>Price watch</title></head><body></body></html>'
 
@@ -508,3 +509,30 @@ def test_clone_copies_terminal_opt_in(client, ws):
     bid = make(client, engine="agent", terminal=True)
     st, out = j(client.post(f"/api/bots/{bid}/clone", {"name": "Copy"}))
     assert one(status(client), out["id"])["terminal"] is True
+
+
+def test_busy_follows_the_task_thread_not_the_status_word(client, ws):
+    bid = make(client)
+    b = registry.get(bid)
+
+    def seen():
+        dock = j(client.get("/api/dock"))[1]
+        tile = next(r for r in dock["pinned"] + dock["recent"] if r["id"] == bid)
+        app = next(r for r in j(client.get("/api/bots/roster"))[1]["bots"] if r["id"] == bid)
+        return tile["running"], app["status"], app["busy"]
+
+    b.set_status("error", note="boom")
+    assert seen() == (False, "error", False)
+    b.set_status("paused")
+    assert seen() == (False, "idle", False)
+    gate = threading.Event()
+    b.thread = threading.Thread(target=gate.wait, daemon=True)
+    b.thread.start()
+    try:
+        assert seen() == (True, "paused", True)
+    finally:
+        gate.set()
+        b.thread.join()
+    b.read_only = True
+    store.write_meta(bid, {**store.read_meta(bid), "status": "running"})
+    assert seen()[0] is True

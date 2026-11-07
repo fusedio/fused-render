@@ -72,10 +72,6 @@ RECENT_CAP = 3
 TILESIZE_DEFAULT = 52
 TILESIZE_MIN = 16
 TILESIZE_MAX = 128
-#: Bot statuses a NEW Bot resets to idle (bots/bot.py: a status left over from
-#: a process that died). A bot this process never loaded is shown that way too —
-#: unless another live app owns the bots, whose bot.json is then current.
-_STALE_STATUSES = ("running", "waiting", "paused")
 
 
 def kind() -> str:
@@ -320,8 +316,8 @@ def _bot_rows() -> list[dict]:
     rows = []
     for bid in store.list_ids():
         b = live.get(bid)
-        if b is not None:
-            meta, status = dict(b.meta), b.meta.get("status") or "idle"
+        if b is not None and not b.read_only:
+            meta, stale = dict(b.meta), not b.running()
         else:
             try:
                 meta = store.read_meta(bid)
@@ -329,14 +325,15 @@ def _bot_rows() -> list[dict]:
                 continue
             if not isinstance(meta, dict):
                 continue
-            status = meta.get("status") or "idle"
-            if status in _STALE_STATUSES and not other_owner:
-                status = "idle"
+            stale = b is None and not other_owner
+        status = meta.get("status") or "idle"
+        if status in store.BUSY_STATUSES and stale:
+            status = "idle"
         if meta.get("hidden"):
             continue
         face = meta.get("face") if isinstance(meta.get("face"), dict) else {}
         rows.append({"kind": "bot", "id": bid, "name": str(meta.get("name") or "Bot"),
-                     "face": face, "status": str(status), "running": str(status) != "idle",
+                     "face": face, "status": str(status), "running": status in store.BUSY_STATUSES,
                      "updated": float(meta.get("updated") or 0), "pinned": bool(meta.get("pinned"))})
     return rows
 

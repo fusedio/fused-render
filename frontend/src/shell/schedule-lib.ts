@@ -47,7 +47,7 @@ export function relativeDue(iso: string): string {
 //
 //   ""         nothing written yet ⇒ the turn is still live
 //   "unknown"  the watch ended without a verdict ⇒ nobody is reporting any more
-//   anything   the turn ENDED and said so — "done", "idle", "ok", "failed", and
+//   anything   the turn ENDED and said so — "done", "idle", "ok", and
 //   else       whatever word a newer server invents next
 //
 // The default is the whole point. A value this client has not heard of is a
@@ -55,12 +55,12 @@ export function relativeDue(iso: string): string {
 // field until it ends. Defaulting the other way is what made `idle` — a turn
 // that finished and reported — paint as "Running…" on the calendar for as long
 // as the row existed.
-export type TurnPhase = "running" | "ended" | "unreported";
+export type TurnPhase = "running" | "ended" | "failed" | "unreported";
 
 export function turnPhase(turn: string | undefined | null): TurnPhase {
   if (!turn) return "running";
   if (turn === "unknown") return "unreported";
-  return "ended";
+  return turn === "error" || turn === "failed" ? "failed" : "ended";
 }
 
 // Not finished with: waiting for its time, being sent, sent with a turn still
@@ -857,6 +857,7 @@ export function messageTone(m: TaskMessage): string {
       return "sending";
     case "sent":
       switch (turnPhase(m.turn)) {
+        case "failed":
         // Nothing is watching it any more; "Running" would be the frozen
         // progress bar.
         case "unreported":

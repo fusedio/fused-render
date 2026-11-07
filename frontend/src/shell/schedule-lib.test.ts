@@ -692,7 +692,8 @@ describe("turnPhase", () => {
     expect(turnPhase("idle")).toBe("ended");
     // …ScheduledMessage's…
     expect(turnPhase("ok")).toBe("ended");
-    expect(turnPhase("failed")).toBe("ended");
+    expect(turnPhase("failed")).toBe("failed");
+    expect(turnPhase("error")).toBe("failed");
     expect(turnPhase("cancelled")).toBe("ended");
     // …and a word neither of them has invented yet. It ENDED: the server did
     // not write the field until it did, so guessing "in flight" is the one
@@ -712,6 +713,7 @@ describe("messageTone", () => {
     expect(messageTone(msg({ at: 1, state: "sending" }))).toBe("sending");
     // A turn that stopped reporting is a failure, not work in progress.
     expect(messageTone(msg({ at: 1, state: "sent", turn: "unknown" }))).toBe("error");
+    expect(messageTone(msg({ at: 1, state: "sent", turn: "error" }))).toBe("error");
     // And an unheard-of word is a turn that finished.
     expect(
       messageTone(msg({ at: 1, state: "sent", turn: "settled" as TaskMessage["turn"] })),
