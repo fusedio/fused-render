@@ -239,6 +239,7 @@ import {
 import { GitBranch, GitCommitHorizontal, Plus, RefreshCw } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { getSchedule, markWholeTaskRead, type Task, type TaskPulseTask } from "@platform/lib/api";
+import { useBotsAvailable } from "@platform/lib/bots-available";
 import {
   onDraftChange,
   readListing,
@@ -744,7 +745,11 @@ export function ClaudeRail({
   const blockedCount = useMemo(() => favs.filter((s) => !s.pulse.starred).length, [favs]);
   // THE PINNED BOTS, UNDER THE FAVOURITES (claude-rail-lib `pinnedBots`;
   // owner, 2026-11-05): their faces, each a door to the bot's page.
-  const botRows = useBotsRows(favsOn);
+  // Only where the server offers Bots (`botsAvailable`, the left sidebar's
+  // own gate) — no pulse poll on Windows — and the config is read only when
+  // something here would use the answer (favourites or the nav doors).
+  const botsOffered = useBotsAvailable(favsOn || peekOn);
+  const botRows = useBotsRows(favsOn && botsOffered);
   const bots = useMemo(() => pinnedBots(botRows), [botRows]);
   const allSeats = useMemo(
     () => (favouritesOnly ? [] : listSeats(railRows(rows, full, seatPlace), favsOn)),
@@ -2247,7 +2252,9 @@ export function ClaudeRail({
   // red waits on the reader, yellow runs, green is news not yet seen (the
   // Tasks one suppressed while the Tasks page is the one on screen).
   const tasksPulse = useTasksPulse();
-  const botsPulse = useBotsPulse(navDoors);
+  // The Bots door only where the server offers Bots (`botsOffered`, above).
+  const botsDoor = botsOffered && navDoors;
+  const botsPulse = useBotsPulse(botsDoor);
   const here = typeof location === "undefined" ? "" : location.pathname;
   const tasksHere = here === "/tasks";
   const botsHere = isBotsPath(here);
@@ -2937,7 +2944,7 @@ export function ClaudeRail({
             </div>
           </>
         )}
-        {navDoors && (
+        {botsDoor && (
           // THE NAV DOORS' FOOT (`navDoors`): the Bots page, under the
           // pinned bots — the left sidebar's Bots row, moved here.
           <>

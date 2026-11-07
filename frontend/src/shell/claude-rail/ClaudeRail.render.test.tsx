@@ -20,6 +20,7 @@ const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import(
 const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-store");
 const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
+const { setBotsAvailableForTests } = await import("@platform/lib/bots-available");
 const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 const { railGitNow, resetRailGitStoreForTests } = await import("./rail-git-store");
@@ -130,8 +131,9 @@ beforeEach(() => {
   resetListingFeedForTests();
   forgetListing();
   // Nothing from the server: every read waits forever, so only what a test
-  // publishes is ever on screen.
+  // publishes is ever on screen. Bots are offered (a Mac's server).
   (globalThis as { fetch: unknown }).fetch = () => new Promise<Response>(() => {});
+  setBotsAvailableForTests(true);
 });
 
 const mounted: ReactTestRenderer[] = [];
@@ -143,6 +145,7 @@ afterEach(() => {
   resetFavPeekStoreForTests();
   resetTaskFavouritesFlagForTests();
   resetCanvasRailPeekFlagForTests();
+  setBotsAvailableForTests(null);
   (globalThis as { fetch: unknown }).fetch = realFetch;
   for (const [name, was] of saved) {
     if (was === MISSING) delete g[name];
@@ -212,6 +215,19 @@ describe("ClaudeRail beside the pane", () => {
       expect(seam(r)).toBe(1);
       expect(aside(r).props.hidden).toBeUndefined();
       expect(favPeekState().rail).not.toBeNull();
+    });
+  }
+
+  for (const favourites of [false, true]) {
+    test(`a server without Bots (Windows), favourites ${favourites ? "on" : "off"}: Tasks stands, no Bots door, no pinned bots (Bugbot, #2175/#2177)`, async () => {
+      setBotsAvailableForTests(false);
+      resetBotsPulseForTests();
+      publishBots([{ id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" }]);
+      const r = await mountRail({ paneOpen: false, favourites });
+      expect(byLabel(r, "Tasks").length).toBe(1);
+      expect(byLabel(r, "Bots").length).toBe(0);
+      expect(r.root.findAll((n) => n.props?.className === "claude-rail-bots").length).toBe(0);
+      resetBotsPulseForTests();
     });
   }
 
