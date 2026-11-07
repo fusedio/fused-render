@@ -19,6 +19,7 @@
 // SPLIT INTO A PURE VIEW (`GitDockView`) AND A STATEFUL WRAPPER, the
 // TerminalDock/ModelsDock split: the view renders with fixed props in tests.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { GitBranch, Loader2, RefreshCw } from "lucide-react";
 import StatusChip from "@platform/ui/StatusChip";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
@@ -73,30 +74,44 @@ export function GitDockView({
       {open && (
         <div className="dl-panel git-panel" role="dialog" aria-label="Git">
           <div className="git-panel-head">
-            <div className="git-panel-branch">
-              On <strong>{branch}</strong>
+            {/* One row: the branch on the left, its two actions on the right —
+                Check for updates as an icon (the Updates chip's), the Git
+                panel's door as an outlined Open (owner, 2026-11-07). */}
+            <div className="git-panel-top">
+              <div className="git-panel-branch">
+                <GitBranch size={13} aria-hidden="true" className="git-panel-branch-icon" />
+                <span>
+                  On <strong>{branch}</strong>
+                </span>
+              </div>
+              <div className="git-panel-tools">
+                <button
+                  type="button"
+                  className="upd-check-btn git-panel-check"
+                  disabled={!r.has_remote || git.checking}
+                  aria-busy={git.checking || undefined}
+                  aria-label={git.checking ? "Checking for updates…" : "Check for updates"}
+                  data-hint={!r.has_remote ? "No remote to check" : git.checking ? "Checking for updates…" : "Check for updates"}
+                  onClick={() => git.check()}
+                >
+                  {git.checking ? (
+                    <Loader2 size={13} className="update-card-spin" aria-hidden="true" />
+                  ) : (
+                    <RefreshCw size={13} aria-hidden="true" />
+                  )}
+                </button>
+                {door && (
+                  <button type="button" className="git-panel-open" onClick={take}>
+                    Open
+                  </button>
+                )}
+              </div>
             </div>
             <div className="git-panel-counts">{counts}</div>
             {git.checked === false && !git.checking && (
               <div className="git-panel-warn" role="status">
                 No fresh answer from the remote yet
               </div>
-            )}
-          </div>
-          <div className="git-panel-actions">
-            <button
-              type="button"
-              className="update-card-btn"
-              disabled={!r.has_remote || git.checking}
-              aria-busy={git.checking || undefined}
-              onClick={() => git.check()}
-            >
-              {git.checking ? "Checking…" : "Check for updates"}
-            </button>
-            {door && (
-              <button type="button" className="update-card-ghost" onClick={take}>
-                Open Git panel
-              </button>
             )}
           </div>
           {r.commits.length > 0 && (

@@ -2398,11 +2398,56 @@ a.sys-link {
   min-width: 0;
 }
 
+.git-panel-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .git-panel-branch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
+}
+
+.git-panel-branch > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.git-panel-branch-icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.git-panel-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+/* The Git panel's door: an outlined button, top right. */
+.git-panel-open {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.git-panel-open:hover {
+  border-color: var(--fg-faint);
+  background: var(--ctl-quiet-bg);
 }
 
 .git-panel-branch strong {
@@ -2418,23 +2463,6 @@ a.sys-link {
 .git-panel-warn {
   font-size: 11px;
   color: var(--status-failed);
-}
-
-.git-panel-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 10px 10px;
-}
-
-.git-panel .update-card-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-  filter: none;
-}
-
-.git-panel .update-card-ghost:hover {
-  color: var(--fg);
 }
 
 .git-panel-commits {
