@@ -81,13 +81,9 @@ def _agent_knows_opencode(agent) -> bool:
 
 
 def _opencode_root() -> str:
-    """`agent_roots.opencode_dir()` (WS-A), or the host's own fallback
-    spelling of the same root until it lands."""
+    """`agent_roots.opencode_dir()`: fused's own root for OpenCode (D3)."""
     import agent_roots  # importable once agent.py seeded the shared dir
-    fn = getattr(agent_roots, "opencode_dir", None)
-    if callable(fn):
-        return fn()
-    return os.path.join(os.environ["FUSED_RENDER_HOME"], "opencode")
+    return agent_roots.opencode_dir()
 
 
 def _wait_for(predicate, timeout=15.0, interval=0.05):

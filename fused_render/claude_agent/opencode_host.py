@@ -147,36 +147,6 @@ _EVENT_RETRY_SECONDS = 1.0
 
 # ----------------------------------------------------------------- plumbing
 
-def _opencode_dir() -> str:
-    """fused's own root for OpenCode sessions: `agent_roots.opencode_dir()`
-    (WS-A's root, the fifth twin of `copilot_dir()`), spelled here once more
-    only as the fallback for a shared dir that predates it."""
-    fn = getattr(agent_roots, "opencode_dir", None)
-    if callable(fn):
-        return fn()
-    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    return os.path.join(home, "opencode")
-
-
-def _projects_dir() -> str:
-    return os.path.join(_opencode_dir(), "projects")
-
-
-def _sessions_dir() -> str:
-    return os.path.join(_opencode_dir(), "sessions")
-
-
-def _find_transcript(session_id: str, workdir: str) -> str:
-    """`agent_roots.find_transcript` for this backend's root alone: the
-    cwd's bucket first, then every bucket under it. "" when none."""
-    import glob
-    p = os.path.join(_projects_dir(), agent_roots.munge(workdir), session_id + ".jsonl")
-    if os.path.isfile(p):
-        return p
-    hits = glob.glob(os.path.join(_projects_dir(), "*", session_id + ".jsonl"))
-    return max(hits, key=os.path.getmtime) if hits else ""
-
-
 def _now_iso() -> str:
     """ISO 8601 UTC with a `Z`, the way Claude Code stamps every record —
     `tasks_store.epoch` and `agent._row_ts` parse exactly this."""
@@ -695,7 +665,10 @@ class _Host:
         # the tasks scan to list.
         self._tx = None
         self.parent_uuid = None
-        self.registry_path = os.path.join(_sessions_dir(), "%d.json" % cli.pid)
+        # Under `agent_roots.opencode_dir()` (D3), the fifth twin of
+        # `copilot_dir()`: fused's own root, never OpenCode's store.
+        self.registry_path = os.path.join(agent_roots.sessions_dir(BACKEND),
+                                          "%d.json" % cli.pid)
         _private_dirs(os.path.dirname(self.registry_path))
         self.perm_dir = os.path.join(self.run_dir, "perm")
         # Turn state (§5 of the contract).
@@ -758,11 +731,11 @@ class _Host:
         if not self.sid:
             return ""
         if self.resume and not self.agent._bad_id(self.sid):
-            found = _find_transcript(self.sid, self.cwd)
-            if found:
-                return found
-        return os.path.join(_projects_dir(), agent_roots.munge(self.cwd),
-                            self.sid + ".jsonl")
+            found = agent_roots.find_transcript(self.sid, self.cwd)
+            if found and found[0] == BACKEND:
+                return found[1]
+        return os.path.join(agent_roots.projects_dir(BACKEND),
+                            agent_roots.munge(self.cwd), self.sid + ".jsonl")
 
     def _emit_out(self, row: dict) -> None:
         if self.closed:
