@@ -1964,14 +1964,14 @@ export const TASK_MODELS: readonly { key: string; label: string }[] = [
   { key: "fable", label: "Fable" },
 ];
 
-// `--effort`'s five levels, cheapest first, said the way the card says things
-// rather than in the CLI's spelling: "xhigh" is the flag's word, "Extra high" is
-// the English one, and the key is what goes on the wire.
+// `--effort`'s five levels, cheapest first. "xhigh" is said as the CLI says it
+// (Akshil, 2026-11-07: "call it xhigh instead of extra high"); the key is what
+// goes on the wire.
 export const TASK_EFFORTS: readonly { key: string; label: string }[] = [
   { key: "low", label: "Low" },
   { key: "medium", label: "Medium" },
   { key: "high", label: "High" },
-  { key: "xhigh", label: "Extra high" },
+  { key: "xhigh", label: "xhigh" },
   { key: "max", label: "Max" },
 ];
 

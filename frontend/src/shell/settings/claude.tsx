@@ -242,7 +242,13 @@ export function ClaudePrefRow({ entry }: { entry: ClaudePrefEntry }) {
                 // The value on disk when the catalog doesn't list it: a key that
                 // IS set (model: "fable") must not render as "Claude default".
                 ...(isSet && !(d.options || []).includes(String(val))
-                  ? [{ key: String(val), label: storedOptionLabel(d, String(val)) }]
+                  ? [{
+                      key: String(val),
+                      label: storedOptionLabel(d, String(val)),
+                      ...(d.key === "model" && modelDescription(String(val))
+                        ? { desc: modelDescription(String(val)) }
+                        : {}),
+                    }]
                   : []),
                 ...(d.options || []).map((o) => {
                   // The model menu says what each model is for, like the chat's.

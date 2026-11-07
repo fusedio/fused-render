@@ -48,6 +48,8 @@ test("every Claude model says what it is for, under any spelling; other ids say 
   ]);
   expect(modelDescription("opus[1m]")).toBe("Deep reasoning");
   expect(modelDescription("claude-fable-5-1")).toBe("Autonomous agents");
+  expect(modelDescription("claude-opus-4-6")).toBe("Deep reasoning");
+  expect(modelDescription("claude-haiku-4-5[1m]")).toBe("Fast");
   expect(modelDescription("default")).toBe("");
   expect(modelDescription("gpt-5")).toBe("");
   expect(modelDescription("toString")).toBe("");

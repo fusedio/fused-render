@@ -2454,9 +2454,8 @@ describe("what a task can be run with", () => {
     expect(TASK_EFFORTS.map((o) => o.key)).toEqual([
       "low", "medium", "high", "xhigh", "max",
     ]);
-    // The flag's word is "xhigh"; the card's word is "Extra high". The key is
-    // what goes on the wire, so the label is free to be readable.
-    expect(taskRunLabel(TASK_EFFORTS, "xhigh")).toBe("Extra high");
+    // Said the CLI's way, "xhigh" — not "Extra high" (Akshil, 2026-11-07).
+    expect(taskRunLabel(TASK_EFFORTS, "xhigh")).toBe("xhigh");
   });
 
   it("keeps a value it has never heard of, rather than resetting the task to the default", () => {

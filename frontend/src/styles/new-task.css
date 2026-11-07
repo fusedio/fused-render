@@ -1090,14 +1090,6 @@ button.new-task-source:focus-visible {
   color: var(--fg-faint);
 }
 
-.pp-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success-bright);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success-bright) 25%, transparent);
-}
-
 .nt-pop {
   width: 250px;
   padding: 6px;

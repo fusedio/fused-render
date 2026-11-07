@@ -62,21 +62,26 @@ export const MODEL_DESCRIPTIONS: Readonly<Record<string, string>> = {
   fable: "Autonomous agents",
 };
 
-/** The description for any spelling of a Claude model (`opus[1m]`, a legacy
- *  Fable id), or "" for a model with none (another agent's ids). */
+// A full Claude id names its family second: `claude-opus-4-6`, `claude-sonnet-5`.
+const FAMILY_ID = /^claude-(haiku|sonnet|opus|fable)\b/i;
+
+/** The description for any spelling of a Claude model (`opus[1m]`, a full
+ *  id like `claude-opus-4-6`, a legacy Fable id), or "" for a model with none
+ *  (another agent's ids). */
 export function modelDescription(value: string | null | undefined): string {
   const base = normalizeModel(value).replace(QUALIFIER, "");
-  return Object.prototype.hasOwnProperty.call(MODEL_DESCRIPTIONS, base) ? MODEL_DESCRIPTIONS[base] : "";
+  const family = FAMILY_ID.exec(base)?.[1]?.toLowerCase() ?? base;
+  return Object.prototype.hasOwnProperty.call(MODEL_DESCRIPTIONS, family) ? MODEL_DESCRIPTIONS[family] : "";
 }
 
 /** How each `--effort` level is SAID in a menu — the New task card's words
- *  ("Extra high", not the flag's "xhigh"). A level this map has never heard
+ *  ("High"; "xhigh" as the CLI says it). A level this map has never heard
  *  of says itself. */
 export const EFFORT_LABELS: Readonly<Record<string, string>> = {
   low: "Low",
   medium: "Medium",
   high: "High",
-  xhigh: "Extra high",
+  xhigh: "xhigh",
   max: "Max",
 };
 

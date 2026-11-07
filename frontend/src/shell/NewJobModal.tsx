@@ -5923,9 +5923,7 @@ export default function NewJobModal({
             k=""
             icon={ICON_CLOCK}
             ariaLabel="When"
-            value={timePicked
-              ? whenText
-              : <><span className="pp-dot" aria-hidden="true" />Now</>}
+            value={timePicked ? whenText : "Now"}
             open={whenOpen}
             onToggle={() => togglePill("when")}
             onDismiss={() => dismissPill("when")}
@@ -5938,13 +5936,13 @@ export default function NewJobModal({
               <>
                 <div className="nt-pop-h">Run</div>
                 <div className="nt-menu" role="menu" aria-label="Run">
-                  {/* NOW is the default and says so with the green dot — the
-                      pill reads the same until somebody states an opinion about
-                      when (`timePicked`). It clears that opinion, so the card
-                      runs immediately and says Create. */}
+                  {/* NOW is the default, ticked — the pill reads the same until
+                      somebody states an opinion about when (`timePicked`). No
+                      green dot (Akshil, 2026-11-07): the pill is a bare word
+                      like its neighbours. Picking it clears that opinion, so
+                      the card runs immediately and says Create. */}
                   <button type="button" role="menuitemradio" aria-checked={!timePicked}
                           onClick={runNow}>
-                    <span className="pp-dot" aria-hidden="true" />
                     Now
                     {!timePicked && ICON_CHECK}
                   </button>
