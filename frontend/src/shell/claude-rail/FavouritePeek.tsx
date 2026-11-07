@@ -137,8 +137,10 @@ function placeOf(t: TaskPulseTask, row: Task | null): RailPlace {
 
 const noop = () => {};
 /** How long a press's focus waits for the favourite chat's composer to mount
- *  (~2.5 s of frames, ClaudeRail's FOCUS_WAIT_MS) before settling for the ×. */
-const FAV_COMPOSER_FRAMES = 150;
+ *  before settling for the × — WALL-CLOCK, as ClaudeRail's FOCUS_WAIT_MS: a
+ *  cold chat chunk loads in time, not frames, and a frame count is a shorter
+ *  wait on a faster display (Bugbot on #2170). */
+const FAV_COMPOSER_WAIT_MS = 2500;
 
 export function FavouritePeek() {
   const peekOn = useCanvasRailPeek();
@@ -274,14 +276,14 @@ export function FavouritePeek() {
   useEffect(() => () => cancelAnimationFrame(focusWait.current), []);
   // THE COMPOSER FIRST (Akshil, 2026-11-07: the list card's press lands in
   // its composer, so the favourite's does too): retried by frame while the
-  // chat mounts, for FAV_COMPOSER_FRAMES at most; the × only when no composer
+  // chat mounts, for FAV_COMPOSER_WAIT_MS at most; the × only when no composer
   // came (a slow chat). Over the moment the reader presses or types anything
   // themselves, or the keyboard goes somewhere outside the card.
   useEffect(() => {
     if (!shownKey || pendingFocus !== shownKey) return;
     if (!takeFavFocus(shownKey)) return;
     cancelAnimationFrame(focusWait.current);
-    let tries = 0;
+    const until = performance.now() + FAV_COMPOSER_WAIT_MS;
     let live = true;
     const stop = () => {
       live = false;
@@ -303,7 +305,7 @@ export function FavouritePeek() {
       if (a && a !== document.body && card && !card.contains(a) && !a.closest(".claude-rail")) return stop();
       const box = card?.querySelector<HTMLElement>(".claude-rail-peek-chat.is-shown form.c-composer textarea:not([disabled])") ?? null;
       if (take(box)) return stop();
-      if (++tries < FAV_COMPOSER_FRAMES) {
+      if (performance.now() < until) {
         focusWait.current = requestAnimationFrame(attempt);
         return;
       }
