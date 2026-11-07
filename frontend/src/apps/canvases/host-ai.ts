@@ -62,7 +62,12 @@ export function hostAiModels(catalog: AgentCatalog): HostAiModels {
   const models = catalog.backends.filter((b) => b.enabled).flatMap(rowsOf);
   const def = catalog.backends.find((b) => b.id === catalog.default && b.enabled);
   const wanted = def ? hostAiModelId(def.id, def.default_model) : "";
-  const fallback = models[0]?.id ?? "";
+  // Lists run lightest model first (Haiku), so "the first row" would quietly
+  // start a frame on the smallest model: fall back to the first enabled
+  // agent's OWN default model, and only then to its first row.
+  const first = catalog.backends.find((b) => b.enabled);
+  const firstDefault = first ? hostAiModelId(first.id, first.default_model) : "";
+  const fallback = models.some((m) => m.id === firstDefault) ? firstDefault : (models[0]?.id ?? "");
   return { models, default: models.some((m) => m.id === wanted) ? wanted : fallback };
 }
 

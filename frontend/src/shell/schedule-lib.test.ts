@@ -2427,7 +2427,7 @@ describe("what a task can be run with", () => {
     // four, above the alias naming the same model — the same thing twice, so
     // the menu asked a question with one answer (Akshil, 2026-09-18).
     expect(TASK_MODELS.map((o) => o.key)).toEqual([
-      "fable", "opus", "sonnet", "haiku",
+      "haiku", "sonnet", "opus", "fable",
     ]);
     expect(TASK_EFFORTS.map((o) => o.key)).toEqual([
       "low", "medium", "high", "xhigh", "max",

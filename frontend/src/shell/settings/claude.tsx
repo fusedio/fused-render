@@ -15,6 +15,7 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { refreshClaudeDefaults } from "@platform/lib/claude-defaults";
+import { modelDescription } from "@platform/lib/model-vocab";
 import { cn } from "@platform/lib/utils";
 import type { SettingEntry } from "./registry";
 import { labelId, SettingRow, SettingSelect } from "./SettingRow";
@@ -243,7 +244,11 @@ export function ClaudePrefRow({ entry }: { entry: ClaudePrefEntry }) {
                 ...(isSet && !(d.options || []).includes(String(val))
                   ? [{ key: String(val), label: storedOptionLabel(d, String(val)) }]
                   : []),
-                ...(d.options || []).map((o) => ({ key: o, label: optionLabel(d, o) })),
+                ...(d.options || []).map((o) => {
+                  // The model menu says what each model is for, like the chat's.
+                  const desc = d.key === "model" ? modelDescription(o) : "";
+                  return desc ? { key: o, label: optionLabel(d, o), desc } : { key: o, label: optionLabel(d, o) };
+                }),
               ]}
               onChange={(v) => patch(v === "" ? null : v)}
             />

@@ -1850,6 +1850,13 @@ input.schedule-when-field {
   text-overflow: ellipsis;
 }
 
+/* A word or two beside an option's label (a model's "Fast"), quieter. */
+.schedule-menu-desc {
+  margin-left: 8px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+
 /* The menus mirror the TIME LIST exactly (Akshil, 2026-08-16): hover wash
    follows the pointer; the selection is lit when nothing is hovered and
    yields while something is. The keyboard cursor resets on mouse-leave in

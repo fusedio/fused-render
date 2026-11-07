@@ -49,3 +49,22 @@ export function listedModelIn(
   const base = v.replace(QUALIFIER, "");
   return base !== v && list.includes(base) ? base : "";
 }
+
+/** WHAT EACH CLAUDE MODEL IS FOR, in a word or two — printed small beside the
+ *  name in every model menu while it is open (Akshil, 2026-11-07). The pill
+ *  itself stays the bare name. Keyed by the alias the pickers offer; every
+ *  model list reads Haiku → Sonnet → Opus → Fable, lightest to heaviest, the
+ *  same way the Thinking list reads Low → Max. */
+export const MODEL_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  haiku: "Fast",
+  sonnet: "Balanced",
+  opus: "Deep reasoning",
+  fable: "Autonomous agents",
+};
+
+/** The description for any spelling of a Claude model (`opus[1m]`, a legacy
+ *  Fable id), or "" for a model with none (another agent's ids). */
+export function modelDescription(value: string | null | undefined): string {
+  const base = normalizeModel(value).replace(QUALIFIER, "");
+  return Object.prototype.hasOwnProperty.call(MODEL_DESCRIPTIONS, base) ? MODEL_DESCRIPTIONS[base] : "";
+}

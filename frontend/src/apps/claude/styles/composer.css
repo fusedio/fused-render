@@ -997,6 +997,11 @@ select.c-pill {
   cursor: pointer;
   text-align: left;
 }
+/* A model's word or two ("Fast"), quieter than its name. */
+.c-selpop-desc {
+  font-size: 11px;
+  color: var(--c-faint);
+}
 .c-selpop-opt:hover,
 .c-selpop-opt:focus-visible {
   background: var(--c-surface-2);

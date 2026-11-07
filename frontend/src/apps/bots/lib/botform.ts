@@ -3,7 +3,7 @@
 import type { Bot } from "./api";
 
 export const MODELS: [string, string][] = [
-  ["haiku", "Haiku · fastest"], ["sonnet", "Sonnet · balanced"], ["opus", "Opus · strongest"], ["fable", "Fable · most capable"],
+  ["haiku", "Haiku · Fast"], ["sonnet", "Sonnet · Balanced"], ["opus", "Opus · Deep reasoning"], ["fable", "Fable · Autonomous agents"],
   ["local-4b", "Gemma 4B · local model"], ["local-9b", "Gemma 12B · local model"],
 ];
 /** Super Bot runs on Claude Code: no local models (the backend refuses them too). */

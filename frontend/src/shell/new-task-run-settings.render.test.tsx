@@ -180,6 +180,8 @@ function textOf(n: unknown): string {
   if (typeof n === "string") return n;
   // A row's screen-reader-only description is not what it SAYS on screen.
   if ((n as { props?: { className?: string } }).props?.className === "sr-only") return "";
+  // Nor is a model row's small description ("Fast") part of its NAME.
+  if ((n as { props?: { className?: string } }).props?.className === "nt-menu-desc") return "";
   const kids = (n as { children?: unknown[] }).children;
   return Array.isArray(kids) ? kids.map(textOf).join("") : "";
 }
@@ -248,6 +250,21 @@ test("picking a model and a thinking level is what the card then says", async ()
   // value: a picker wired to its neighbour's setter would still look right in
   // the assertion above.
   expect(label(b, "Permissions")).toBe("Auto");
+});
+
+test("the model menu reads lightest to heaviest, each row saying what it is for", async () => {
+  const b = await openCard({}, []);
+  await act(async () => { pillOf(b, "Model").props.onClick(); });
+  const menu = b.root.findAll((n) => n.props?.role === "group" && n.props["aria-label"] === "Model")[0];
+  const rows = menu.findAll((n) => n.type === "button" && n.props.role === "menuitemradio");
+  const descOf = (row: (typeof rows)[number]) =>
+    row.findAll((n) => n.props?.className === "nt-menu-desc").map((n) => n.children.join(""))[0];
+  expect(rows.map((r) => [textOf(r), descOf(r)])).toEqual([
+    ["Haiku", "Fast"],
+    ["Sonnet", "Balanced"],
+    ["Opus", "Deep reasoning"],
+    ["Fable", "Autonomous agents"],
+  ]);
 });
 
 test("what was picked is what Create sends", async () => {

@@ -1958,10 +1958,10 @@ export function popoverPos(
 // resolved out of sight. `taskRunOptions` still carries a stored "" through
 // without inventing a row for it; the card fills it in before it is drawn.
 export const TASK_MODELS: readonly { key: string; label: string }[] = [
-  { key: "fable", label: "Fable" },
-  { key: "opus", label: "Opus" },
-  { key: "sonnet", label: "Sonnet" },
   { key: "haiku", label: "Haiku" },
+  { key: "sonnet", label: "Sonnet" },
+  { key: "opus", label: "Opus" },
+  { key: "fable", label: "Fable" },
 ];
 
 // `--effort`'s five levels, cheapest first, said the way the card says things

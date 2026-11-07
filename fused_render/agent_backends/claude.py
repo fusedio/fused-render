@@ -10,10 +10,10 @@ import shlex
 from fused_render.agent_backends.base import Backend, Caps, Model
 
 MODELS = (
-    Model("fable", "Fable"),
-    Model("opus", "Opus"),
-    Model("sonnet", "Sonnet"),
     Model("haiku", "Haiku"),
+    Model("sonnet", "Sonnet"),
+    Model("opus", "Opus"),
+    Model("fable", "Fable"),
 )
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")

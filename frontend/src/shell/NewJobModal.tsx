@@ -77,7 +77,7 @@ import { listingAddress } from "@apps/explorer/listing/listing-address";
 import { THUMB_SEAL } from "@platform/lib/frame-focus";
 import { thumbUrl } from "@platform/lib/thumb-frame";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
+import { listedModelIn, modelDescription, normalizeModel } from "@platform/lib/model-vocab";
 import { navigateUrl } from "@platform/lib/router";
 import {
   chatKeySession,
@@ -5466,7 +5466,9 @@ export default function NewJobModal({
                 unrecognised stored value selectable instead of silently
                 resetting the task to the default on the next edit. */}
             <div className="nt-menu" role="group" aria-label="Model">
-              {taskRunOptions(runModels, model).map((o) => (
+              {taskRunOptions(runModels, model).map((o) => {
+                const desc = modelDescription(o.key);
+                return (
                 <button
                   key={o.key}
                   type="button"
@@ -5476,9 +5478,11 @@ export default function NewJobModal({
                   onClick={() => { pickModel(o.key); setModelOpen(false); }}
                 >
                   {o.label}
+                  {desc ? <span className="nt-menu-desc">{desc}</span> : null}
                   {model === o.key && ICON_CHECK}
                 </button>
-              ))}
+                );
+              })}
             </div>
           </PropPill>
           {/* "Thinking", not "Effort" (the CLI's word for the flag): what the

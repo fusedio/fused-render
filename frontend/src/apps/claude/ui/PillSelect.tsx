@@ -29,6 +29,9 @@ export interface PillOption {
   /** One line on what the option MEANS, shown on hover of its menu row
    *  (`data-hint`, platform/lib/hints) and never printed in the row. */
   hint?: string;
+  /** A word or two printed small BESIDE the label in the open menu (a
+   *  model's "Fast" / "Deep reasoning"); never on the pill. */
+  desc?: string;
 }
 
 export interface PillSelectProps {
@@ -182,6 +185,7 @@ export function PillSelect({
                 }}
               >
                 <span>{option.label}</span>
+                {option.desc ? <span className="c-selpop-desc">{option.desc}</span> : null}
               </button>
               {/* A SIBLING, not a child: inside the button it would join the
                   row's accessible name. */}

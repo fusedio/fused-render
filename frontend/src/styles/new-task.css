@@ -1129,6 +1129,12 @@ button.new-task-source:focus-visible {
   background: var(--border);
 }
 
+/* A model's word or two ("Fast") beside its name, quieter than it. */
+.nt-menu-desc {
+  color: var(--fg-faint);
+  font-size: 11.5px;
+}
+
 .nt-menu-off {
   margin-left: auto;
   color: var(--fg-faint);

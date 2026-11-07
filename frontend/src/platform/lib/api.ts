@@ -1845,7 +1845,7 @@ export interface EngineChoice {
 
 // Short model names, matching shell/prefs.py's VALID_DEFAULT_MODELS. "" is the
 // unset member, not an absence — it is what the "Automatic" option writes.
-export type DefaultModel = "" | "fable" | "opus" | "sonnet" | "haiku";
+export type DefaultModel = "" | "haiku" | "sonnet" | "opus" | "fable";
 
 export type CallsParamsMode = "full" | "keys" | "off";
 
