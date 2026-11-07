@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 
+from fused_render import tasks_store
 from fused_render.crashlog import describe_exit, report_child_exit
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import MountGuard, norm
@@ -228,6 +229,11 @@ def start(cfg: IndexConfig, root: str, full: bool = False,
             f"{root} is inside a fused-render home; it is never indexed")
     if not os.path.isdir(root):
         raise ValueError(f"not a directory: {root}")
+    with tasks_store.locked_path(os.path.join(cfg.runs_dir, ".start.lock")):
+        return _start_locked(cfg, root, full, hint)
+
+
+def _start_locked(cfg: IndexConfig, root: str, full: bool, hint) -> dict:
     sig = cfg.rules.sig()
     req_hint_key = _hint_key(hint)
     live = active_run(cfg, root)
@@ -584,9 +590,7 @@ def _scans(cfg: IndexConfig) -> dict:
 
 
 def _record_scan(cfg: IndexConfig, root: str) -> None:
-    scans = _scans(cfg)
-    scans[root] = time.time()
-    storage.write_json(cfg.scans_json, scans)
+    storage.write_json(cfg.scans_json, {**_scans(cfg), root: time.time()})
 
 
 def last_scan(cfg: IndexConfig, root: str):
