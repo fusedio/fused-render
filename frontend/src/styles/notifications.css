@@ -2414,10 +2414,26 @@ a.sys-link {
   font-size: 12px;
 }
 
-.git-panel-branch > span {
+.git-panel-branch-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
+}
+
+/* ↑n / ↓n beside the branch: how far it stands from the default branch. */
+.git-panel-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--ctl-quiet-bg);
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .git-panel-branch-icon {
@@ -2450,16 +2466,6 @@ a.sys-link {
   background: var(--ctl-quiet-bg);
 }
 
-.git-panel-branch strong {
-  font-weight: 600;
-}
-
-.git-panel-counts {
-  font-size: 11px;
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-}
-
 .git-panel-warn {
   font-size: 11px;
   color: var(--status-failed);
@@ -2468,16 +2474,18 @@ a.sys-link {
 .git-panel-commits {
   list-style: none;
   margin: 0;
-  padding: 0 0 4px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
 }
 
+/* One line a commit: subject left, short sha right. */
 .git-commit {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: baseline;
+  gap: 10px;
   width: 100%;
   min-width: 0;
-  padding: 6px 10px;
+  padding: 5px 10px;
   border: 0;
   background: none;
   color: var(--fg);
@@ -2499,23 +2507,9 @@ button.git-commit:focus-visible {
 }
 
 .git-commit-subject {
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.git-commit-meta {
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-
-.git-commit-who {
   flex: 1 1 auto;
   min-width: 0;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2523,5 +2517,7 @@ button.git-commit:focus-visible {
 
 .git-commit-sha {
   flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
