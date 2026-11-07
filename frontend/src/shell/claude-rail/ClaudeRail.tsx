@@ -2309,6 +2309,7 @@ export function ClaudeRail({
         // keeps its room (claude-rail.css).
         (favsOn && !chrome && !navDoors ? " no-glyph" : "") +
         (favsOn ? " is-scroll" : "") +
+        (navDoors ? " has-nav" : "") +
         (favouritesOnly ? " is-fallback" : "")
       }
       aria-label="Claude"
@@ -2688,7 +2689,6 @@ export function ClaudeRail({
           // THE NAV DOORS' FOOT (`navDoors`): the Bots page, under the
           // pinned bots — the left sidebar's Bots row, moved here.
           <>
-            <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
             <a
               href="/bots"
               className={"sidebar-rail-btn claude-rail-item" + (botsHere ? " active" : "")}

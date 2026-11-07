@@ -1474,3 +1474,11 @@ a.claude-rail-peek-scope:focus-visible {
   padding: 12px;
   opacity: 0.7;
 }
+
+/* NO HAIRLINES AROUND THE NAV DOORS (owner, 2026-11-07: "don't add
+   separators"): Tasks and + run straight into the items column, and the Bots
+   door sits under the pinned bots with no rule of its own. */
+.claude-rail.has-nav .sidebar-rail-items {
+  border-top: 0;
+  padding-top: 0;
+}
