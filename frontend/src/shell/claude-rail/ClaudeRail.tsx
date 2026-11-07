@@ -309,6 +309,7 @@ import { CanvasGlyph } from "@apps/canvases/glyph";
 import {
   FAV_SETTLE_MS,
   PeekIntent,
+  clampAnchor,
   favChatElsewhere,
   favLike,
   keepAlive,
@@ -1868,7 +1869,12 @@ export function ClaudeRail({
       open: (door, pinned) => {
         const seed = plusSeed.current;
         if (!seed || seed.door !== door) return;
-        popAnchor.current = door === PLUS_DOOR ? plusRef.current : (ringEls.current.get(door) ?? plusRef.current);
+        // A draft's card stands where window A does — level with the list's
+        // first ring (`draftCardBox`) — whichever draft's ring opened it; its
+        // anchor is the whole list, so a press on another draft's ring is
+        // that door's press, not a press outside the card.
+        popAnchor.current =
+          door === PLUS_DOOR ? plusRef.current : (listRef.current ?? ringEls.current.get(door) ?? plusRef.current);
         // A popover it replaces flushes its own draft as it unmounts
         // (NewJobModal's autosave): re-read so that ring shows.
         if (cardRef.current?.pop) refreshListing();
@@ -1921,6 +1927,17 @@ export function ClaudeRail({
   // A hover on the + previews only where its press opens the popover card,
   // and never over a draft's (modal) card.
   const plusHovers = () => navDoors && !waiting && !(card && !card.pop);
+  // WHERE A DRAFT'S POPOVER STANDS (owner, 2026-11-07: it "jumps" from ring
+  // to ring; "it must stand like window A does"): its top level with the
+  // list's FIRST ring, clamped to the list's scrolled box (rail-peek-lib
+  // `clampAnchor`, RailPeek's own) — so moving between draft rings changes
+  // the card's words, never its place. Null off the list (the + then).
+  const draftCardBox = useCallback(() => {
+    const first = listRef.current?.querySelector<HTMLElement>("a[data-task-key]");
+    if (!first) return null;
+    const scroller = first.closest(".claude-rail-chats");
+    return clampAnchor(first.getBoundingClientRect(), scroller ? scroller.getBoundingClientRect() : null);
+  }, []);
   // A DRAFT'S RING IS A POPOVER DOOR (owner, 2026-11-07: a draft "behaves
   // exactly like the +"): its hover previews the New task popover on its
   // record — window A's draft summary is gone — and its press pins it
@@ -3046,6 +3063,7 @@ export function ClaudeRail({
             ? {
                 popover: {
                   anchor: popAnchor,
+                  ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
                   beside: railRef,
                   closeSignal: cardCloseSignal,
                   pinned: !!card.pinned,

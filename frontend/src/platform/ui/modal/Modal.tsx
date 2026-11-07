@@ -170,6 +170,10 @@ export interface ModalProps {
     anchor: RefObject<HTMLElement | null>;
     /** Whose LEFT edge the card stands beside (the rail); `anchor`'s if absent. */
     beside?: RefObject<HTMLElement | null>;
+    /** Where the card's top is level with, when not `anchor`'s own box (the
+     *  rail's draft cards stand at the list's first ring, as window A does,
+     *  whichever ring opened them). Null: `anchor`'s. */
+    anchorBox?: () => { left: number; top: number } | null;
     /** Bumped by the opener to close the card the chassis' own way (the
      *  exit animation, the busy and dirty guards) — the rail's hover preview
      *  timing out. */
@@ -469,7 +473,7 @@ export function Modal({
     const anchor = popover?.anchor.current;
     const view = ownerDoc.defaultView;
     if (!anchor || !view || typeof anchor.getBoundingClientRect !== "function") return null;
-    const a = anchor.getBoundingClientRect();
+    const a = popover?.anchorBox?.() ?? anchor.getBoundingClientRect();
     const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
     return popoverPlacement(a, b, { width: wantWidth, height: 0 }, { width: view.innerWidth, height: view.innerHeight });
   });
@@ -480,7 +484,7 @@ export function Modal({
       const anchor = popover?.anchor.current;
       const dialog = dialogRef.current;
       if (!anchor || !dialog || !view) return;
-      const a = anchor.getBoundingClientRect();
+      const a = popover?.anchorBox?.() ?? anchor.getBoundingClientRect();
       const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
       const next = popoverPlacement(
         a,
