@@ -316,7 +316,7 @@ def _bot_rows() -> list[dict]:
     rows = []
     for bid in store.list_ids():
         b = live.get(bid)
-        if b is not None:
+        if b is not None and not b.read_only:
             meta, stale = dict(b.meta), not b.running()
         else:
             try:
@@ -325,7 +325,7 @@ def _bot_rows() -> list[dict]:
                 continue
             if not isinstance(meta, dict):
                 continue
-            stale = not other_owner
+            stale = b is None and not other_owner
         status = meta.get("status") or "idle"
         if status in store.BUSY_STATUSES and stale:
             status = "idle"

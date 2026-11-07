@@ -17,7 +17,7 @@ import pytest
 from fused_render.bots import apptools
 from fused_render.bots import bot as botmod
 from fused_render.bots import paths as bpaths
-from fused_render.bots import registry
+from fused_render.bots import registry, store
 
 MARKED = '<!doctype html><html><head><meta name="fused-app" /><title>Price watch</title></head><body></body></html>'
 
@@ -533,3 +533,6 @@ def test_busy_follows_the_task_thread_not_the_status_word(client, ws):
     finally:
         gate.set()
         b.thread.join()
+    b.read_only = True
+    store.write_meta(bid, {**store.read_meta(bid), "status": "running"})
+    assert seen()[0] is True
