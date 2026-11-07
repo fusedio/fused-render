@@ -212,12 +212,18 @@ describe("ClaudeRail beside the pane", () => {
     });
   }
 
-  test("a server without Bots (Windows): Tasks stands, no Bots door (Bugbot, #2175)", async () => {
-    setBotsAvailableForTests(false);
-    const r = await mountRail({ paneOpen: false, favourites: false });
-    expect(byLabel(r, "Tasks").length).toBe(1);
-    expect(byLabel(r, "Bots").length).toBe(0);
-  });
+  for (const favourites of [false, true]) {
+    test(`a server without Bots (Windows), favourites ${favourites ? "on" : "off"}: Tasks stands, no Bots door, no pinned bots (Bugbot, #2175/#2177)`, async () => {
+      setBotsAvailableForTests(false);
+      resetBotsPulseForTests();
+      publishBots([{ id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" }]);
+      const r = await mountRail({ paneOpen: false, favourites });
+      expect(byLabel(r, "Tasks").length).toBe(1);
+      expect(byLabel(r, "Bots").length).toBe(0);
+      expect(r.root.findAll((n) => n.props?.className === "claude-rail-bots").length).toBe(0);
+      resetBotsPulseForTests();
+    });
+  }
 
   test("pane open, favourites off: no glyph, no seam, the nav doors keep it standing, registered", async () => {
     const r = await mountRail({ paneOpen: true, favourites: false, chats: [chat("a")] });

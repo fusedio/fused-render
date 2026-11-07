@@ -727,7 +727,11 @@ export function ClaudeRail({
   const blockedCount = useMemo(() => favs.filter((s) => !s.pulse.starred).length, [favs]);
   // THE PINNED BOTS, UNDER THE FAVOURITES (claude-rail-lib `pinnedBots`;
   // owner, 2026-11-05): their faces, each a door to the bot's page.
-  const botRows = useBotsRows(favsOn);
+  // Only where the server offers Bots (`botsAvailable`, the left sidebar's
+  // own gate) — no pulse poll on Windows — and the config is read only when
+  // something here would use the answer (favourites or the nav doors).
+  const botsOffered = useBotsAvailable(favsOn || peekOn);
+  const botRows = useBotsRows(favsOn && botsOffered);
   const bots = useMemo(() => pinnedBots(botRows), [botRows]);
   const allSeats = useMemo(
     () => (favouritesOnly ? [] : listSeats(railRows(rows, full, seatPlace), favsOn)),
@@ -2021,9 +2025,8 @@ export function ClaudeRail({
   // red waits on the reader, yellow runs, green is news not yet seen (the
   // Tasks one suppressed while the Tasks page is the one on screen).
   const tasksPulse = useTasksPulse();
-  // The Bots door only where the server offers Bots (`botsAvailable`, the
-  // left sidebar's own gate): no door and no pulse poll on Windows.
-  const botsDoor = useBotsAvailable() && navDoors;
+  // The Bots door only where the server offers Bots (`botsOffered`, above).
+  const botsDoor = botsOffered && navDoors;
   const botsPulse = useBotsPulse(botsDoor);
   const here = typeof location === "undefined" ? "" : location.pathname;
   const tasksHere = here === "/tasks";
