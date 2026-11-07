@@ -239,6 +239,7 @@ import {
 import { GitBranch, GitCommitHorizontal, Plus, RefreshCw } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { getSchedule, markWholeTaskRead, type Task, type TaskPulseTask } from "@platform/lib/api";
+import { useBotsAvailable } from "@platform/lib/bots-available";
 import {
   onDraftChange,
   readListing,
@@ -2020,7 +2021,10 @@ export function ClaudeRail({
   // red waits on the reader, yellow runs, green is news not yet seen (the
   // Tasks one suppressed while the Tasks page is the one on screen).
   const tasksPulse = useTasksPulse();
-  const botsPulse = useBotsPulse(navDoors);
+  // The Bots door only where the server offers Bots (`botsAvailable`, the
+  // left sidebar's own gate): no door and no pulse poll on Windows.
+  const botsDoor = useBotsAvailable() && navDoors;
+  const botsPulse = useBotsPulse(botsDoor);
   const here = typeof location === "undefined" ? "" : location.pathname;
   const tasksHere = here === "/tasks";
   const botsHere = isBotsPath(here);
@@ -2685,7 +2689,7 @@ export function ClaudeRail({
             </div>
           </>
         )}
-        {navDoors && (
+        {botsDoor && (
           // THE NAV DOORS' FOOT (`navDoors`): the Bots page, under the
           // pinned bots — the left sidebar's Bots row, moved here.
           <>

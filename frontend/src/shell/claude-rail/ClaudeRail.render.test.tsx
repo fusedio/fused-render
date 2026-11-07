@@ -20,6 +20,7 @@ const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import(
 const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-store");
 const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
+const { setBotsAvailableForTests } = await import("@platform/lib/bots-available");
 const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 
@@ -129,8 +130,9 @@ beforeEach(() => {
   resetListingFeedForTests();
   forgetListing();
   // Nothing from the server: every read waits forever, so only what a test
-  // publishes is ever on screen.
+  // publishes is ever on screen. Bots are offered (a Mac's server).
   (globalThis as { fetch: unknown }).fetch = () => new Promise<Response>(() => {});
+  setBotsAvailableForTests(true);
 });
 
 const mounted: ReactTestRenderer[] = [];
@@ -142,6 +144,7 @@ afterEach(() => {
   resetFavPeekStoreForTests();
   resetTaskFavouritesFlagForTests();
   resetCanvasRailPeekFlagForTests();
+  setBotsAvailableForTests(null);
   (globalThis as { fetch: unknown }).fetch = realFetch;
   for (const [name, was] of saved) {
     if (was === MISSING) delete g[name];
@@ -208,6 +211,13 @@ describe("ClaudeRail beside the pane", () => {
       expect(favPeekState().rail).not.toBeNull();
     });
   }
+
+  test("a server without Bots (Windows): Tasks stands, no Bots door (Bugbot, #2175)", async () => {
+    setBotsAvailableForTests(false);
+    const r = await mountRail({ paneOpen: false, favourites: false });
+    expect(byLabel(r, "Tasks").length).toBe(1);
+    expect(byLabel(r, "Bots").length).toBe(0);
+  });
 
   test("pane open, favourites off: no glyph, no seam, the nav doors keep it standing, registered", async () => {
     const r = await mountRail({ paneOpen: true, favourites: false, chats: [chat("a")] });
