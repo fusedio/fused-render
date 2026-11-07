@@ -18,7 +18,7 @@
 //
 // SPLIT INTO A PURE VIEW (`GitDockView`) AND A STATEFUL WRAPPER, the
 // TerminalDock/ModelsDock split: the view renders with fixed props in tests.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import StatusChip from "@platform/ui/StatusChip";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
@@ -153,6 +153,12 @@ export default function GitDock() {
   const shown = peekOn && git !== null;
   const isOpen = open && shown;
   const close = useCallback(() => setOpen(false), []);
+  // The chip going (a path change clears the repo, a page without one, the
+  // flag off) closes its panel: coming back to a repo must not reopen it on
+  // its own and take the bar's one panel from whatever is open there (Bugbot).
+  useEffect(() => {
+    if (!shown) setOpen(false);
+  }, [shown]);
   useExclusiveSection("git", isOpen, close);
   useDismissOnOutside(hostRef, isOpen, close);
   if (!shown) return null;
