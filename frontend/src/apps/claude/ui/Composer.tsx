@@ -2262,10 +2262,13 @@ export function ComposerCard({
   // line tall with its overflow hidden, so the moment the words need a second
   // line the card opens to show them, and stays open. The words can outgrow
   // the line without a keystroke too — a card dragged narrower rewraps them —
-  // so the box's width is watched while folded. Only the chat the card SHOWS:
-  // a kept mount behind it opens when it comes back on screen, not before.
+  // so the box's width is watched while folded. Only the chat the card SHOWS,
+  // and only WITH THE READER IN IT (Akshil, 2026-11-07: "a draft that is two
+  // lines — on hover show me the compressed one, but if I click it should
+  // open the expanded view"): a hover leaves a long draft folded; the press
+  // that puts the caret in the box opens it.
   useLayoutEffect(() => {
-    if (!smallCard || !smallCardShown || !collapsed) return;
+    if (!smallCard || !smallCardShown || !within || !collapsed) return;
     const box = boxRef.current;
     if (!box) return;
     const check = () => {
@@ -2277,7 +2280,7 @@ export function ComposerCard({
     const ro = new ResizeObserver(check);
     ro.observe(box);
     return () => ro.disconnect();
-  }, [smallCard, smallCardShown, collapsed, text, boxRef]);
+  }, [smallCard, smallCardShown, within, collapsed, text, boxRef]);
   const openSmallCard = useCallback(() => {
     setOpened(true);
     boxRef.current?.focus({ preventScroll: true });

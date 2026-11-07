@@ -403,9 +403,9 @@ export interface RailPeekProps {
    *  gone). The rail's card leaves it false — it lets go on the star
    *  itself (`onStarred`), so an unstar never reaches it. */
   dismissOnUnstar?: boolean;
-  /** The head's Open is an ↗ icon, not the word (the favourite's card, Akshil
-   *  2026-11-07: Open there changes the window — the card goes, the pane
-   *  takes the chat — so it reads as a door out, not a button in place). */
+  /** The head's Open carries an ↗ after the word (the favourite's card,
+   *  Akshil 2026-11-07: Open there changes the window — the card goes, the
+   *  pane takes the chat — so it reads as a door out). */
   openIcon?: boolean;
   /** Where the card stands now, or null while it is closed — for a host
    *  that places another card around it. */
@@ -1514,9 +1514,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               {head.href && (
                 <button
                   type="button"
-                  className={openIcon ? "claude-rail-peek-btn claude-rail-peek-open-icon" : "btn claude-rail-peek-open"}
+                  className={openIcon ? "btn claude-rail-peek-open has-icon" : "btn claude-rail-peek-open"}
                   title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
-                  {...(openIcon ? { "aria-label": head.draft ? "Open the draft" : "Open this chat in the Claude panel" } : {})}
                   onClick={() => {
                     onOpenChat(head.href!);
                     // The door closes the card too — a held one as well: a
@@ -1526,7 +1525,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     onDismiss("door");
                   }}
                 >
-                  {openIcon ? <ArrowUpRight size={14} aria-hidden="true" /> : "Open"}
+                  Open
+                  {openIcon ? <ArrowUpRight size={13} aria-hidden="true" /> : null}
                 </button>
               )}
               {head.t.session_id && shownKey && (
