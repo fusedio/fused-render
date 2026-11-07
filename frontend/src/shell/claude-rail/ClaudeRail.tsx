@@ -309,6 +309,7 @@ import { CanvasGlyph } from "@apps/canvases/glyph";
 import {
   FAV_SETTLE_MS,
   PeekIntent,
+  clampAnchor,
   favChatElsewhere,
   favLike,
   keepAlive,
@@ -339,6 +340,8 @@ import {
 import { FAV_PEEK_ID } from "./FavouritePeek";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useRailGit } from "./rail-git";
+import { publishRailGit, registerRailGit } from "./rail-git-store";
+import { PLUS_DOOR, PlusPopIntent } from "./plus-pop-lib";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platform/lib/botsPulse";
@@ -523,7 +526,22 @@ interface Card {
   chatKey?: string;
   /** The time the stored form chose, or null (Scheduled `reopenTime`). */
   time?: Date | null;
+  /** THE +'s CARD AS A POPOVER (owner, 2026-11-07, the rail flag — `navDoors`):
+   *  floating beside the rail, no scrim, like the rail's chat card. Only the
+   *  +'s; a draft's card stays the modal. */
+  pop?: boolean;
+  /** …PINNED, or a hover's preview (owner, 2026-11-07: "hover gives you quick
+   *  preview", a click cements it; plus-pop-lib.ts). A pinned card closes by
+   *  its × only. */
+  pinned?: boolean;
+  /** Which popover door opened it (plus-pop-lib): `PLUS_DOOR`, or the draft
+   *  ring's key. */
+  door?: string;
 }
+
+/** A draft's fresh record read for its New task card (`readDraftCard`):
+ *  the card to open, or the record GONE, or NO ANSWER. */
+type DraftRead = { kind: "card"; card: Omit<Card, "seq"> } | { kind: "gone" } | { kind: "unknown" };
 
 /** What the +'s New task card is about, from the page: the page knows what
  *  the pane's own composer would make a task on, and the rail restates it. */
@@ -741,6 +759,8 @@ export function ClaudeRail({
   // The +'s New task card (`openNewTask`, below) — declared up here because
   // an open one keeps the rail standing (`shown`).
   const [card, setCard] = useState<Card | null>(null);
+  const cardRef = useRef(card);
+  cardRef.current = card;
   // WHETHER THE RAIL STANDS (header, claude-rail-lib `railShown`): with the
   // pane shut, always; beside the open pane (favourites on), only while it
   // has a chat or a favourite to draw — or the +'s card is up, which must
@@ -761,6 +781,33 @@ export function ClaudeRail({
   // (the shell's fallback stands on every page without a page rail,
   // claude-rail-lib `fallbackRailUp`). Off, the rail of 2026-11-06.
   const navDoors = peekOn;
+  // THE GIT SECTION MOVES TO THE STATUS BAR with the nav doors (owner,
+  // 2026-11-07: "remove git icons from the sidebar, and instead beside
+  // Terminal say Git"): the rail still reads the page's repository and hands
+  // it, with the page's Git panel door, to the status bar's Git chip
+  // (rail-git-store.ts, shell/GitDock.tsx) — and draws no Git section.
+  const gitToken = useRef({});
+  const openGitRef = useRef(git?.onOpenGit);
+  openGitRef.current = git?.onOpenGit;
+  const gitOn = !!git;
+  const gitDoor = !!git?.onOpenGit;
+  useEffect(() => (navDoors ? registerRailGit(gitToken.current) : undefined), [navDoors]);
+  useEffect(() => {
+    if (!navDoors) return;
+    const repo = gitOn ? railGit.repo : null;
+    publishRailGit(
+      gitToken.current,
+      repo
+        ? {
+            repo,
+            checking: railGit.checking,
+            checked: railGit.checked,
+            check: railGit.check,
+            ...(gitDoor ? { onOpenGit: () => openGitRef.current?.() } : {}),
+          }
+        : null,
+    );
+  }, [navDoors, gitOn, gitDoor, railGit.repo, railGit.checking, railGit.checked, railGit.check]);
   const hideList = listHidden({ paneOpen, favsOn, paneHome });
   const stands =
     navDoors ||
@@ -1764,7 +1811,153 @@ export function ClaudeRail({
     plusRef.current?.focus({ preventScroll: true });
   }, [node]);
   const waiting = newTask.waiting;
+  // THE POPOVER'S HOVER PREVIEW AND PIN (owner, 2026-11-07; plus-pop-lib.ts),
+  // with the nav doors: the pointer resting on the + — or on a DRAFT's ring,
+  // "exactly like the +", on that draft's record — shows the card unpinned,
+  // a press on the door (or inside the card) pins it, and a pinned card
+  // closes by its × only. The preview's own close is the chassis' way (Modal
+  // `popover.closeSignal`), so it fades like any other.
+  const [cardCloseSignal, setCardCloseSignal] = useState(0);
+  const newTaskRef = useRef(newTask);
+  newTaskRef.current = newTask;
+  const plusSeedSeq = useRef(0);
+  const plusSeed = useRef<{ door: string; card: Omit<Card, "seq"> } | null>(null);
+  // The draft rings' doors, by key: the row and its href as the ring last
+  // handed them over (hover or press), for the read and its fallbacks.
+  const draftDoors = useRef(new Map<string, { row: Task; href: string }>());
+  // What the popover stands beside: the + or the draft's ring (Modal
+  // `popover.anchor`), set as its card opens.
+  const popAnchor = useRef<HTMLElement | null>(null);
+  const readDraftRef = useRef<(row: Task) => Promise<DraftRead>>(null!);
+  const plusIntentRef = useRef<PlusPopIntent | null>(null);
+  if (!plusIntentRef.current) {
+    plusIntentRef.current = new PlusPopIntent({
+      seed: (door) => {
+        const seq = ++plusSeedSeq.current;
+        plusSeed.current = null;
+        const live = () => alive.current && seq === plusSeedSeq.current;
+        if (door === PLUS_DOOR) {
+          // As they were at the hover's start (header of `Card`).
+          const target = newTaskRef.current.target;
+          const where = newTaskRef.current.where;
+          void cardSeed().then((got) => {
+            if (!live()) return;
+            plusSeed.current = { door, card: { target, where, ...got } };
+            plusIntentRef.current?.seeded(door);
+          });
+          return;
+        }
+        const at = draftDoors.current.get(door);
+        void (at ? readDraftRef.current(at.row) : Promise.resolve<DraftRead>({ kind: "gone" })).then((read) => {
+          if (!live()) return;
+          if (read.kind === "card") {
+            plusSeed.current = { door, card: read.card };
+            plusIntentRef.current?.seeded(door);
+            return;
+          }
+          // Nothing to show: a hover shows nothing; a press takes the
+          // draft door's own fallbacks (`openDraftCard`'s header).
+          const pressed = plusIntentRef.current?.failed(door) ?? false;
+          if (read.kind === "gone") refreshListing();
+          else if (pressed && at) onOpenChatRef.current(at.href);
+        });
+      },
+      cancelSeed: () => {
+        plusSeedSeq.current++;
+        plusSeed.current = null;
+      },
+      open: (door, pinned) => {
+        const seed = plusSeed.current;
+        if (!seed || seed.door !== door) return;
+        // A draft's card stands where window A does — level with the list's
+        // first ring (`draftCardBox`) — whichever draft's ring opened it; its
+        // anchor is the whole list, so a press on another draft's ring is
+        // that door's press, not a press outside the card.
+        popAnchor.current =
+          door === PLUS_DOOR ? plusRef.current : (listRef.current ?? ringEls.current.get(door) ?? plusRef.current);
+        // A popover it replaces flushes its own draft as it unmounts
+        // (NewJobModal's autosave): re-read so that ring shows.
+        if (cardRef.current?.pop) refreshListing();
+        setCard({ seq: Date.now(), ...seed.card, pop: true, pinned, door });
+      },
+      pin: () => setCard((c) => (c?.pop ? { ...c, pinned: true } : c)),
+      close: () => setCardCloseSignal((n) => n + 1),
+    });
+  }
+  const plusIntent = plusIntentRef.current;
+  useEffect(() => () => plusIntent.dispose(), [plusIntent]);
+  // ONE CARD BESIDE THE RAIL (owner, 2026-11-07: "either new task thing
+  // should be open or window A — new task thing is like window A but diff
+  // UI"): the New task popover and the rail's other cards — window A (the
+  // list's chat card), window B (a favourite's hover or open card, a bot's
+  // card) — never stand together, hover or pinned. Whichever opened last
+  // wins: the popover opening (a + hover, a + press, a draft's ring) puts
+  // the others down; one of them opening closes the popover the chassis'
+  // way (its draft autosave keeps the words) — unless the card is mid-Create
+  // (its × held, `busy`), when the other one goes instead.
+  const popSeq = card?.pop ? card.seq : null;
+  const openFavKeyRef = useRef(openFavKey);
+  openFavKeyRef.current = openFavKey;
+  useEffect(() => {
+    if (popSeq === null) return;
+    setHeld(false);
+    intent.dismiss();
+    dismissFavHover();
+    if (openFavKeyRef.current) setFavOpen(null);
+    setBotHeld(false);
+    botIntent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popSeq]);
+  const otherCard = peekKey ?? favHoverKey ?? openFavKey ?? botKey ?? null;
+  useEffect(() => {
+    if (otherCard === null || popSeq === null) return;
+    const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
+    if (shut?.disabled) {
+      setHeld(false);
+      intent.dismiss();
+      dismissFavHover();
+      if (openFavKeyRef.current) setFavOpen(null);
+      setBotHeld(false);
+      botIntent.dismiss();
+      return;
+    }
+    setCardCloseSignal((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peekKey, favHoverKey, openFavKey, botKey]);
+  // A hover on the + previews only where its press opens the popover card,
+  // and never over a draft's (modal) card.
+  const plusHovers = () => navDoors && !waiting && !(card && !card.pop);
+  // WHERE A DRAFT'S POPOVER STANDS (owner, 2026-11-07: it "jumps" from ring
+  // to ring; "it must stand like window A does"): its top level with the
+  // list's FIRST ring, clamped to the list's scrolled box (rail-peek-lib
+  // `clampAnchor`, RailPeek's own) — so moving between draft rings changes
+  // the card's words, never its place. Null off the list (the + then).
+  const draftCardBox = useCallback(() => {
+    const first = listRef.current?.querySelector<HTMLElement>("a[data-task-key]");
+    if (!first) return null;
+    const scroller = first.closest(".claude-rail-chats");
+    return clampAnchor(first.getBoundingClientRect(), scroller ? scroller.getBoundingClientRect() : null);
+  }, []);
+  // A DRAFT'S RING IS A POPOVER DOOR (owner, 2026-11-07: a draft "behaves
+  // exactly like the +"): its hover previews the New task popover on its
+  // record — window A's draft summary is gone — and its press pins it
+  // (`pressRing` → `openDraftCard`). The ring's own reshape guard
+  // (`stillAt`, `enterRing`) applies.
+  const enterDraftDoor = (row: Task, href: string, e: ReactPointerEvent<HTMLAnchorElement>) => {
+    const at = stillAt.current;
+    if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
+    stillAt.current = null;
+    if (e.pointerType === "touch" || (card && !card.pop)) return;
+    if (!isChatDraftTask(row) && !row.draft_id) return;
+    draftDoors.current.set(row.key, { row, href });
+    plusIntent.enterPlus(row.key);
+  };
   const openNewTask = () => {
+    if (navDoors) {
+      if (waiting || (card && !card.pop)) return;
+      plusIntent.press(PLUS_DOOR);
+      return;
+    }
     if (opening || card || waiting) return;
     setOpening(true);
     // As they were at the press (header of `Card`).
@@ -1794,11 +1987,8 @@ export function ClaudeRail({
   //   * NO ANSWER (failed or timed out) — no card on a guess, which could
   //     autosave a blank form over the stored one: the press takes the
   //     Tasks page's door instead (`href`), which reads the record itself.
-  const openDraftCard = (row: Task, href: string) => {
-    if (opening || card) return;
+  const readDraftCard = (row: Task): Promise<DraftRead> => {
     const chat = isChatDraftTask(row);
-    if (!chat && !row.draft_id) return;
-    setOpening(true);
     // Where the row lives (claude-rail-lib `railScope`): on a canvas the
     // card's WHERE pill says the canvas and the node; elsewhere the locked
     // path says it (`NewTaskSeed.where`).
@@ -1812,6 +2002,7 @@ export function ClaudeRail({
     };
     type Read = { kind: "seed"; seed: DraftSeed | null } | { kind: "gone" } | { kind: "unknown" };
     const stored = new Promise<Read>((resolve) => {
+      if (!chat && !row.draft_id) return resolve({ kind: "gone" });
       const timer = window.setTimeout(() => resolve({ kind: "unknown" }), SCHEDULE_WAIT_MS);
       fetchDrafts().then(
         (all) => {
@@ -1830,7 +2021,38 @@ export function ClaudeRail({
         },
       );
     });
-    void Promise.all([cardSeed(), stored]).then(([got, read]) => {
+    return Promise.all([cardSeed(), stored]).then(([got, read]): DraftRead =>
+      read.kind !== "seed"
+        ? read
+        : {
+            kind: "card",
+            card: {
+              ...base,
+              ...got,
+              draft: read.seed,
+              chatKey: chat ? row.key : "",
+              time: reopenTime(read.seed),
+            },
+          },
+    );
+  };
+  readDraftRef.current = readDraftCard;
+  const openDraftCard = (row: Task, href: string) => {
+    if (!isChatDraftTask(row) && !row.draft_id) return;
+    // With the nav doors (owner, 2026-11-07: "drafts open should open in the
+    // new thing we added"): the popover's door for this draft — pinned, a
+    // press — over whatever popover is up; a draft's modal card, or a
+    // popover mid-Create, keeps its place.
+    if (navDoors) {
+      if (card && !card.pop) return;
+      if (card && railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close")?.disabled) return;
+      draftDoors.current.set(row.key, { row, href });
+      plusIntent.press(row.key);
+      return;
+    }
+    if (opening || card) return;
+    setOpening(true);
+    void readDraftCard(row).then((read) => {
       if (!alive.current) return;
       setOpening(false);
       if (read.kind === "gone") {
@@ -1841,14 +2063,7 @@ export function ClaudeRail({
         onOpenChat(href);
         return;
       }
-      setCard({
-        seq: Date.now(),
-        ...base,
-        ...got,
-        draft: read.seed,
-        chatKey: chat ? row.key : "",
-        time: reopenTime(read.seed),
-      });
+      setCard({ seq: Date.now(), ...read.card });
     });
   };
   // THE RAIL'S ONE DOOR: a draft's href opens its card here; every other
@@ -1899,6 +2114,18 @@ export function ClaudeRail({
       return;
     }
     if (how === "card") {
+      // A DRAFT'S RING, with the nav doors (owner, 2026-11-07: "drafts open
+      // should open in the new thing we added"): the New task popover on
+      // the draft, pinned — not window A. A hover's card coming on this ring
+      // is called off first.
+      const seat = seatByHref.get(href);
+      if (navDoors && seat?.row && isDraftTask(seat.row)) {
+        hideHint();
+        setHeld(false);
+        intent.dismiss();
+        openChat(href);
+        return;
+      }
       // A TOGGLE (owner, 2026-11-06): the ring of the chat whose card a press
       // pinned closes it; a hover card on it is pinned by the press.
       if (pinNow.current.favsOn && pinNow.current.pinned && pinNow.current.peekKey === t.key) {
@@ -2098,6 +2325,9 @@ export function ClaudeRail({
               // moment: it still gets its ring, the press waits for the
               // listing.
               const draft = !!row && isDraftTask(row);
+              // A list draft's ring, with the nav doors: the popover's door
+              // (`enterDraftDoor`), not window A's.
+              const popDoor = navDoors && peekOn && !foot && draft && !!row;
               const href = seatHref({ pulse: t, row });
               // No door, no ring (as before): a form-scheduled row with no
               // session, or a pulse-only draft the listing has not named yet.
@@ -2185,7 +2415,12 @@ export function ClaudeRail({
                   // Beside the ring, not at the pointer (platform/lib/hints
                   // `placeBeside`): a 48px column at the window's edge.
                   data-hint-side="left"
-                  {...(peekOn && wears.hovers
+                  {...(popDoor
+                    ? {
+                        "aria-haspopup": "dialog" as const,
+                        "aria-expanded": !!card?.pop && card.door === t.key,
+                      }
+                    : peekOn && wears.hovers
                     ? {
                         "aria-haspopup": "dialog" as const,
                         "aria-expanded": peeked,
@@ -2212,7 +2447,16 @@ export function ClaudeRail({
                             onKeyDown: onFavRingKey(t, href),
                           }
                         : {})}
-                  {...(peekOn
+                  {...(popDoor && row && href
+                    ? {
+                        onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterDraftDoor(row, href, e),
+                        onPointerLeave: () => {
+                          plusIntent.leavePlus();
+                          win.leaveRing("pointer");
+                        },
+                        onBlur: () => win.leaveRing("focus"),
+                      }
+                    : peekOn
                     ? {
                         // The open favourite's ring opens no hover card, but
                         // a leave is always heard: the intent must not think
@@ -2356,10 +2600,17 @@ export function ClaudeRail({
             className="sidebar-rail-btn claude-rail-item"
             title={plusLabel}
             aria-label={plusLabel}
-            {...(plusPane ? {} : { "aria-haspopup": "dialog" as const })}
+            {...(plusPane ? {} : { "aria-haspopup": "dialog" as const, "aria-expanded": !!card?.pop })}
             aria-busy={opening || waiting !== null || undefined}
-            disabled={opening || waiting !== null}
+            // Never held while the card's read is out: a press during a
+            // hover's read is the pin (plus-pop-lib.ts), and a disabled
+            // button would swallow it.
+            disabled={waiting !== null}
             onClick={plusPane ? openPaneHome : openNewTask}
+            onPointerEnter={(e) => {
+              if (!plusPane && e.pointerType !== "touch" && plusHovers()) plusIntent.enterPlus();
+            }}
+            onPointerLeave={() => plusIntent.leavePlus()}
           >
             <Plus size={16} aria-hidden="true" />
           </button>
@@ -2459,8 +2710,9 @@ export function ClaudeRail({
             )}
           </div>
         )}
-        {git && railGit.repo && (
-          // THE GIT SECTION (header): past the left rail's own separator
+        {!navDoors && git && railGit.repo && (
+          // THE GIT SECTION (header), off with the nav doors — the status
+          // bar's Git chip draws it then (rail-git-store.ts): past the left rail's own separator
           // (sidebar.css `.sidebar-rail-sep`), the repository the page sits
           // in. Each seat wears the app's hint (platform/lib/hints), beside
           // the rail like the rings' — a 48px column has no room for words.
@@ -2795,12 +3047,32 @@ export function ClaudeRail({
           // which the pulse never carries — re-read so its ring shows now.
           onClose={() => {
             setCard(null);
-            refreshListing();
+            if (card.pop) plusIntent.closed();
+            // A preview nobody touched left nothing behind: the reader's
+            // first act inside it pins it (plus-pop-lib.ts).
+            if (!card.pop || card.pinned) refreshListing();
           }}
           // "Something changed, re-read": the pulse will move the new row
           // onto the rail; the listing is re-read now so its caption and
           // rank are not 600ms behind its ring.
           onCreated={() => refreshListing()}
+          // The +'s card with the rail flag on: the same card as a popover
+          // beside the rail (`Card.pop`), top-level with the +, left of the
+          // rail's edge; a hover's preview until a press pins it (`pinned`).
+          {...(card.pop
+            ? {
+                popover: {
+                  anchor: popAnchor,
+                  ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
+                  beside: railRef,
+                  closeSignal: cardCloseSignal,
+                  pinned: !!card.pinned,
+                  onPin: () => plusIntent.pinInside(),
+                  onPointerEnter: () => plusIntent.enterCard(),
+                  onPointerLeave: () => plusIntent.leaveCard(),
+                },
+              }
+            : {})}
         />
       )}
     </aside>

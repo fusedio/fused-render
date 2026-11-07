@@ -1480,5 +1480,10 @@ a.claude-rail-peek-scope:focus-visible {
    door sits under the pinned bots with no rule of its own. */
 .claude-rail.has-nav .sidebar-rail-items {
   border-top: 0;
-  padding-top: 0;
+  /* …but a seat's gap under the + (owner, 2026-11-07: the first ring's wash
+     sat flush under the +): the wash (`.claude-rail-chat::after`, 2px past
+     the ring) stands the nav's own 4px off the +, and the 2px of padding
+     keeps it inside this column's clip (`.has-favs` overflow). */
+  margin-top: 4px;
+  padding-top: 2px;
 }

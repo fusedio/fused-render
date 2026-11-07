@@ -69,6 +69,24 @@ test("the System chip renders first, alone in the left-hugging start slot", () =
   ]);
 });
 
+test("the Git chip sits right beside Terminal, before Models (rail flag, 2026-11-07)", () => {
+  const tree = create(
+    <StatusBar
+      terminalDock={<div className="fake-terminal">t</div>}
+      git={<div className="fake-git">g</div>}
+      models={<div className="fake-models">m</div>}
+      activity={<div className="fake-activity">a</div>}
+    />,
+  ).toJSON();
+  const bar = tree as ReactTestRendererJSON;
+  expect(classesOf(bar.children as unknown as ReactTestRendererJSON[])).toEqual([
+    "fake-terminal",
+    "fake-git",
+    "fake-models",
+    "fake-activity",
+  ]);
+});
+
 test("the Updates chip sits in the start slot before System", () => {
   const tree = create(
     <StatusBar

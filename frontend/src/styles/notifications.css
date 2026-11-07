@@ -2264,6 +2264,20 @@ a.sys-link {
   background: var(--error);
 }
 
+/* The left rail's own dot hues (sidebar.css `.sidebar-rail-dot`), for a chip
+   that says what a rail seat used to (the Git chip, shell/GitDock.tsx). */
+.sc-dot.is-attention {
+  background: var(--status-failed);
+}
+
+.sc-dot.is-running {
+  background: var(--status-progress);
+}
+
+.sc-dot.is-unread {
+  background: var(--status-done);
+}
+
 /* The System popover's verdict, Claude line, timeline and key numbers. */
 .sys-reasons {
   margin: 0 10px 8px;
@@ -2363,4 +2377,123 @@ a.sys-link {
 .sys-record:disabled {
   color: var(--fg-muted);
   cursor: default;
+}
+
+/* ---- The Git chip's panel (shell/GitDock.tsx; rail flag) ----------------
+   What the rail's Git section said in glyphs and hints, in words: the branch
+   and its counts, Check for updates (the Updates panel's own accent button,
+   sidebar.css `.update-card-btn`), the last commits as rows — each the page's
+   Git panel door when it has one. */
+.git-panel {
+  width: min(340px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+}
+
+.git-panel-head {
+  padding: 10px 10px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.git-panel-branch {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-panel-branch strong {
+  font-weight: 600;
+}
+
+.git-panel-counts {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.git-panel-warn {
+  font-size: 11px;
+  color: var(--status-failed);
+}
+
+.git-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px 10px;
+}
+
+.git-panel .update-card-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  filter: none;
+}
+
+.git-panel .update-card-ghost:hover {
+  color: var(--fg);
+}
+
+.git-panel-commits {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 4px;
+}
+
+.git-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+}
+
+button.git-commit {
+  cursor: pointer;
+}
+
+button.git-commit:hover {
+  background: var(--status-item-hover);
+}
+
+button.git-commit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.git-commit-subject {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-meta {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.git-commit-who {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-sha {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }

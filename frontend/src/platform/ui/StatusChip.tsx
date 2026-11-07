@@ -13,6 +13,7 @@
 //             failure   a failed job — red text (existing `.is-failure` rule)
 //   progress  undefined no line; null indeterminate sweep; 0..1 a fill
 export type ChipTone = "idle" | "on" | "failure";
+export type ChipDot = "none" | "warn" | "bad" | "attention" | "running" | "unread";
 
 export interface StatusChipProps {
   label: string;
@@ -28,8 +29,10 @@ export interface StatusChipProps {
   ariaLabel?: string;
   /** A small status dot after the label. `none` reserves its width without
    *  painting it, so the chip does not jump when the dot appears. Omit it and
-   *  the chip has no dot slot at all. */
-  dot?: "none" | "warn" | "bad";
+   *  the chip has no dot slot at all. `attention` / `running` / `unread` are
+   *  the left rail's own dot hues (sidebar.css `.sidebar-rail-dot`: red,
+   *  yellow, green) — the Git chip's (shell/GitDock.tsx). */
+  dot?: ChipDot;
 }
 
 export default function StatusChip({

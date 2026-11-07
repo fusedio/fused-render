@@ -36,7 +36,7 @@ import {
   isUnlistedEffort,
   useAgentBackends,
 } from "@platform/lib/agent-backends";
-import { Modal } from "@platform/ui/modal/Modal";
+import { Modal, type ModalProps } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
   getClaudeSessionFolders,
@@ -2805,6 +2805,7 @@ export default function NewJobModal({
   recentTargets,
   projects = NO_PROJECTS,
   planning = false,
+  popover,
   onClose,
   onCreated,
 }: {
@@ -2941,6 +2942,15 @@ export default function NewJobModal({
   // scheduled": that is `timePicked` below, which reads what the user actually
   // did rather than which view they came from.
   planning?: boolean;
+  /**
+   * THE SAME CARD AS A POPOVER (owner, 2026-11-07, behind the rail flag): the
+   * rail's + opens it floating beside the rail, no scrim, the page still live
+   * — "like the popover for task chats". The chassis' `popover` presentation
+   * (platform/ui/modal/Modal.tsx), passed straight through; every field,
+   * autosave and Create are this card's own either way. Absent (every other
+   * opener — the Tasks page, a draft's row), the modal it always was.
+   */
+  popover?: ModalProps["popover"];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -3789,6 +3799,22 @@ export default function NewJobModal({
   // measure. Measured on every change because "auto then scrollHeight" is the
   // one reflow-safe way to shrink back when lines are deleted.
   const askRef = useRef<HTMLTextAreaElement>(null);
+  // THE PREVIEW PINNED (the rail's +, Modal `popover.pinned`): a preview took
+  // no caret, so the pin gives the ask box the one it would have had at
+  // mount — unless the reader already put it somewhere in the card.
+  const popPinned = popover?.pinned;
+  const popPinnedWas = useRef(popPinned);
+  useEffect(() => {
+    const was = popPinnedWas.current;
+    popPinnedWas.current = popPinned;
+    if (was !== false || popPinned !== true) return;
+    const box = askRef.current;
+    if (!box) return;
+    const active = document.activeElement;
+    const card = box.closest('[role="dialog"]');
+    if (active && active !== document.body && card?.contains(active)) return;
+    box.focus({ preventScroll: true });
+  }, [popPinned]);
   // The box (`askRef` above) and the path (`pathRef`) are the two fields a
   // refused Save can send the caret to (see trySubmit). Refs rather than a
   // querySelector, because the card is a portal and there can be a second one
@@ -5110,6 +5136,7 @@ export default function NewJobModal({
       onClose={onClose}
       busy={busy}
       width={580}
+      {...(popover ? { popover } : {})}
       // THE CLOSE-TWICE GUARD IS OFF WHENEVER THERE IS A DRAFT TO CLOSE INTO
       // (design.md, Decisions: "Modal close keeps the draft silently; Discard in
       // footer. No prompt."). The guard exists to stop a ✕ discarding typed
@@ -5121,9 +5148,9 @@ export default function NewJobModal({
       footer={
         <>
           <div className="nt-foot-left">
-          <span className="nt-foot-hint">
-            <kbd className="nt-kbd">⇧</kbd><kbd className="nt-kbd">↵</kbd> new line
-          </span>
+          {/* NO KEY GLYPHS (owner, 2026-11-07): no "⇧↵ new line" hint here
+              and no ↵ in the action button — Enter still creates, Shift+Enter
+              still adds a line. */}
           {/* Destructive, so it sits at the far left of the footer, away from
               Save — `.btn-danger-text` carries the margin-right:auto that
               anchors it there. Present only on an Edit, and only when the
@@ -5200,10 +5227,6 @@ export default function NewJobModal({
           <button type="button" className="btn btn-primary schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
-            {/* The key that presses it. Enter creates from either field, so the
-                badge states a chord that is true (the ⌘↩ it once advertised is
-                gone — Akshil, 2026-09-23). */}
-            <kbd className="nt-kbd nt-kbd--on-dark" aria-hidden="true">↵</kbd>
           </button>
         </>
       }
@@ -5277,7 +5300,9 @@ export default function NewJobModal({
                 e.preventDefault();
                 if (!busy) trySubmit();
               }}
-              autoFocus
+              // A hover's preview takes no caret (Modal `popover.pinned`); the
+              // pin hands it over (`popPinned` below).
+              autoFocus={popover?.pinned !== false}
             />
             {menuOpen && (
               <CommandMenu

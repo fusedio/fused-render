@@ -61,6 +61,52 @@
     transform var(--dur-med) var(--ease-out);
 }
 
+/* POPOVER PRESENTATION (Modal `popover`; owner, 2026-11-07): the same card,
+   floating beside its anchor with no scrim — the page under it stays live, so
+   the layer takes no pointer and only the card does. Above page content and
+   the rail's chat cards (claude-rail.css `.claude-rail-peek`, 45–46), under
+   every true modal (`.deploy-overlay`, 1000). The card wears the rail chat
+   card's chrome (`.claude-rail-peek-card`): a border a few steps brighter
+   than --border, a halo of our own tone, the soft drop shadow. Position and
+   width are inline (Modal `dialogStyle`). */
+.modal-popover {
+  position: fixed;
+  inset: 0;
+  z-index: 48;
+  pointer-events: none;
+}
+
+.modal-popover .modal-dialog {
+  pointer-events: auto;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--fg) 24%, var(--bg));
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--bg) 70%, transparent),
+    0 14px 36px var(--shadow-sm),
+    0 2px 6px var(--shadow-ink-soft);
+}
+
+/* It slides in from the rail's side, as the chat card does, rather than
+   scaling up in the middle of the window. */
+.modal-overlay.modal-popover .modal-dialog {
+  animation-name: modal-popover-in;
+}
+
+@keyframes modal-popover-in {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+}
+
+.modal-overlay.modal-popover.closing .modal-dialog {
+  transform: translateX(6px);
+  /* The layer's own `pointer-events: none` does not reach a card that set
+     `auto`: a card already leaving takes no press either. */
+  pointer-events: none;
+}
+
 .deploy-dialog {
   background: var(--bg-alt);
   border: 1px solid var(--border);
