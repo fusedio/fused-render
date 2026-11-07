@@ -16,11 +16,16 @@
 //
 // MOUNTED ONCE, IN THE SHELL (App.tsx, beside FavouritePeek), for the same
 // reason the favourite's card is: the rail is a page's and comes and goes with
-// it, and a card inside it would lose its view, filters, scroll and open chat
-// on every hop. This one stands beside whichever rail is up (fav-peek-store's
-// rail stack), level with that rail's Tasks door (tasks-peek-store
+// it, and a card inside it would lose its view, filters and scroll on every
+// hop. This one stands beside whichever rail is up (fav-peek-store's rail
+// stack), level with that rail's Tasks door (tasks-peek-store
 // `railTasksDoor`), and HIDES — never unmounts — when closed or when no rail
 // stands. Its content mounts on the first opening and stays until a reload.
+// THE OPEN CHAT DOES NOT SURVIVE A CLOSE (owner, 2026-11-08: "you close the
+// window and click on the Tasks button again — it should open the Tasks page,
+// not the last task I opened; a window change resets the selection"): the
+// card going down by any road — its toggle, Escape, another card taking its
+// place, a page hop — lets the chat go, and the next opening is the list.
 //
 // WINDOW A'S CHASSIS: the rail card's classes (`.claude-rail-peek`, claude-
 // rail.css), its two-frame show and fade, bridge and safe cone, inert while
@@ -188,8 +193,12 @@ export function TasksPeek() {
   }, [up]);
 
   // THE CHAT IN THE CARD (header): what `openPeek` hands over for a press in
-  // the card; Back (or the views' own close) lets it go.
+  // the card; Back (or the views' own close) lets it go — and so does the
+  // card going down (header): the next opening is the list.
   const [chat, setChat] = useState<{ key: string; anchor: string | null } | null>(null);
+  useEffect(() => {
+    if (!up) setChat(null);
+  }, [up]);
   const token = useRef({});
   useEffect(
     () =>

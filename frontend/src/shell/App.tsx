@@ -1368,7 +1368,7 @@ export default function App({ config }: { config: Config }) {
       {!IS_EMBED && <FavouritePeek />}
       {/* The Tasks card off the rail's Tasks door (shell/claude-rail
           TasksPeek): mounted once here for the same reason — its view,
-          filters, scroll and open chat survive a hop (owner, 2026-11-07). */}
+          filters and scroll survive a hop (owner, 2026-11-07). */}
       {!IS_EMBED && <TasksPeek />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
