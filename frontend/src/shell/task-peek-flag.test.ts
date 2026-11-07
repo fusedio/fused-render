@@ -173,7 +173,9 @@ describe("the markup adds nothing when the feature is off", () => {
     // Since 2026-09-20 the scope no longer disarms the peek — the app page's
     // Tasks tab hosts the same panel (TaskPeekFrame.tsx) — so the flag is the
     // whole gate on the Tasks page, and the app page adds its own tab test.
-    expect(PAGE).toContain("const peekable = peekOn;");
+    // …except in the rail's Tasks card (TasksPeek, `inCard`; owner,
+    // 2026-11-07), which hosts no side peek of its own.
+    expect(PAGE).toContain("const peekable = peekFlag && !inCard;");
     expect(PAGE).toContain("if (!peekable) return page;");
     expect(FRAME).toContain('<div className="peek-shell">');
     // …and the OFF shells share no name with the peek's host, so no rule reaches them.
@@ -689,7 +691,8 @@ describe("the middle pane's floor", () => {
     // Since 2026-09-15 the switch is `tight`, not `floored`: the list scrolls
     // rather than folding its marks from the first pixel the frame is under
     // the column (Scheduled.tsx `scrolls`).
-    expect(PAGE).toContain("const scrolls = peek.open && peek.tight;");
+    // (Never in the rail's Tasks card: the page's peek layout is the page's.)
+    expect(PAGE).toContain("const scrolls = peekable && peek.open && peek.tight;");
     // The frame itself moved to TaskPeekFrame.tsx (2026-09-20) so the app page
     // can draw the same one; the switch and the number are written there.
     expect(FRAME).toContain("const scrolls = layout.open && layout.tight;");

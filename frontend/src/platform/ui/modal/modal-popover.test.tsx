@@ -145,4 +145,16 @@ describe("popoverPlacement", () => {
     expect(at.left + at.width).toBeLessThanOrEqual(500 - POPOVER_INSET);
     expect(at.width).toBeLessThan(580);
   });
+  test("a SIZED card (the rail's +, window A's size) takes its height, clamped inside the window", () => {
+    const tall = popoverPlacement({ left: 1360, top: 60 }, { left: 1352, top: 0 }, { width: 420, height: 640 }, view, true);
+    expect(tall).toEqual({ left: 1352 - POPOVER_GAP - 420, top: 60, width: 420, height: 640 });
+    const short = popoverPlacement({ left: 1360, top: 60 }, { left: 1352, top: 0 }, { width: 420, height: 640 }, { width: 1400, height: 500 }, true);
+    expect(short.height).toBe(500 - 2 * POPOVER_INSET);
+    expect(short.top).toBe(POPOVER_INSET);
+    expect(short.top + short.height!).toBeLessThanOrEqual(500 - POPOVER_INSET);
+  });
+  test("an unsized card says no height", () => {
+    const at = popoverPlacement({ left: 1360, top: 60 }, { left: 1352, top: 0 }, { width: 580, height: 400 }, view);
+    expect(at.height).toBeUndefined();
+  });
 });

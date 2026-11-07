@@ -13,6 +13,9 @@ export interface PopoverBox {
   left: number;
   top: number;
   width: number;
+  /** Set only for a SIZED card (`popoverPlacement`'s `height`): its height,
+   *  clamped inside the viewport. Absent, the card is its content's height. */
+  height?: number;
 }
 
 interface Rect {
@@ -24,17 +27,24 @@ export const POPOVER_GAP = 8;
 export const POPOVER_INSET = 8;
 const MIN_WIDTH = 320;
 
+/** A SIZED CARD (owner, 2026-11-07: the +'s popover "same width/height as
+ *  window A"): `height` is the height it asks for, not its content's — it is
+ *  given that height, never more than the viewport less an inset on each side,
+ *  and its content scrolls inside (deploy.css `.modal-popover .is-sized`). */
 export function popoverPlacement(
   anchor: Rect,
   beside: Rect,
   want: { width: number; height: number },
   viewport: { width: number; height: number },
+  sized = false,
 ): PopoverBox {
   const room = beside.left - POPOVER_GAP - POPOVER_INSET;
   const width = Math.max(0, Math.min(want.width, viewport.width - 2 * POPOVER_INSET, Math.max(room, MIN_WIDTH)));
   const leftWanted = beside.left - POPOVER_GAP - width;
   const left = Math.max(POPOVER_INSET, Math.min(leftWanted, viewport.width - POPOVER_INSET - width));
-  const maxTop = viewport.height - POPOVER_INSET - want.height;
+  const height = sized ? Math.max(0, Math.min(want.height, viewport.height - 2 * POPOVER_INSET)) : want.height;
+  const maxTop = viewport.height - POPOVER_INSET - height;
   const top = Math.max(POPOVER_INSET, Math.min(anchor.top, maxTop));
-  return { left: Math.round(left), top: Math.round(top), width: Math.round(width) };
+  const box: PopoverBox = { left: Math.round(left), top: Math.round(top), width: Math.round(width) };
+  return sized ? { ...box, height: Math.round(height) } : box;
 }

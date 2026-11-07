@@ -311,6 +311,7 @@ import {
   FAV_SETTLE_MS,
   PeekIntent,
   clampAnchor,
+  railCardSize,
   favChatElsewhere,
   favLike,
   keepAlive,
@@ -350,6 +351,16 @@ import { navigateUrl } from "@platform/lib/router";
 import { Face } from "@apps/bots/components/Face";
 import type { FaceSubject } from "@apps/bots/lib/face";
 import { BotPeek, BOT_PEEK_ID, botHref, preloadBotChat, type BotPeekHandle } from "./BotPeek";
+import { getUiLayout } from "@platform/lib/ui-layout";
+import {
+  TASKS_CARD_KEY,
+  TASKS_PEEK_ID,
+  closeTasksCard,
+  registerTasksDoor,
+  tasksCardIntent,
+  tasksDoorAction,
+  useTasksCard,
+} from "./tasks-peek-store";
 
 /** THE RAIL'S WIDTH, SAID TO THE DOCUMENT (owner, 2026-11-05: "move the
  *  notification modal to the right a little bit so it doesn't cover the mini
@@ -1929,6 +1940,55 @@ export function ClaudeRail({
     setCardCloseSignal((n) => n + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [peekKey, favHoverKey, openFavKey, botKey]);
+  // …AND THE TASKS CARD (TasksPeek; owner, 2026-11-07) IS WINDOW A'S: it
+  // stands where the list's card and the + popover stand, and takes their
+  // turns with them — its opening (a hover's preview or a press) puts down
+  // the list's card and the + popover (unless that one is mid-Create, when
+  // the Tasks card goes instead), and either of those opening closes it.
+  // NEVER WINDOW B (owner, 2026-11-08: "why does window B close when the
+  // Tasks window is open — that is a regression; the Tasks window is like
+  // window A, it shouldn't affect anything else"): the favourite's card, its
+  // hover and the bot's card are the other section's, untouched both ways;
+  // the Tasks card keeps clear of them instead (TasksPeek `avoid`).
+  const tasksCard = useTasksCard();
+  const tasksSeq = navDoors && tasksCard.up ? tasksCard.seq : null;
+  const tasksUpRef = useRef(false);
+  tasksUpRef.current = tasksSeq !== null;
+  useEffect(() => {
+    if (tasksSeq === null) return;
+    if (cardRef.current?.pop) {
+      const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
+      if (!shut || shut.disabled) {
+        closeTasksCard();
+        return;
+      }
+      setCardCloseSignal((n) => n + 1);
+    }
+    setHeld(false);
+    intent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasksSeq]);
+  useEffect(() => {
+    if (!tasksUpRef.current) return;
+    if ((peekKey ?? popSeq) !== null) closeTasksCard();
+  }, [peekKey, popSeq]);
+  // BESIDE THE OPEN PANE IT GOES THE WAY WINDOW A GOES (owner, 2026-11-08:
+  // "if the sidebar is open, a press opens in the sidebar and closes window
+  // A; in the expanded sidebar, when the sidebar's chat changes, close window
+  // A"): the pane opening under it, and the pane's chat changing while the
+  // pane is open, both put the Tasks card down — the list card's own two
+  // rules (`paneWasOpen` below, and a ring's pane press). On the turns only,
+  // read off refs.
+  const tasksPaneWasOpen = useRef(paneOpen);
+  const paneChatWas = useRef(activeSessionId);
+  useLayoutEffect(() => {
+    const wasOpen = tasksPaneWasOpen.current;
+    tasksPaneWasOpen.current = paneOpen;
+    const chatWas = paneChatWas.current;
+    paneChatWas.current = activeSessionId;
+    if (!tasksUpRef.current || !paneOpen) return;
+    if (!wasOpen || chatWas !== activeSessionId) closeTasksCard();
+  }, [paneOpen, activeSessionId]);
   // A hover on the + previews only where its press opens the popover card,
   // and never over a draft's (modal) card.
   const plusHovers = () => navDoors && !waiting && !(card && !card.pop);
@@ -2110,6 +2170,8 @@ export function ClaudeRail({
         setHeld(false);
         intent.dismiss();
       }
+      // …and the Tasks card, window A's too (owner, 2026-11-08).
+      closeTasksCard();
       // …and the keyboard into that chat's composer (`paneChatComposer`) —
       // the NEW chat's: the box on screen now belongs to the one being
       // replaced, unless the ring is the pane's own chat already.
@@ -2275,6 +2337,33 @@ export function ClaudeRail({
     e.preventDefault();
     hideHint();
     void navigateUrl(href);
+  };
+  // THE TASKS DOOR OPENS THE TASKS CARD (TasksPeek; owner, 2026-11-07):
+  // resting on it previews the card (window A's timings, tasks-peek-store's
+  // intent), a press pins it, a press while pinned closes it; a modified press
+  // is still the link's, and with no card to show (none mounted, no room) the
+  // door is the plain link to /tasks it was (tasks-peek-store
+  // `tasksDoorAction`). The rail registers the door so the card stands level
+  // with it.
+  const tasksDoorRef = useRef<HTMLAnchorElement | null>(null);
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    const door = tasksDoorRef.current;
+    return navDoors && shown && el && door ? registerTasksDoor(el, door) : undefined;
+  }, [navDoors, shown]);
+  const tasksUp = navDoors && tasksCard.up;
+  const pressTasksDoor = (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    const act = tasksDoorAction({
+      modified: e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0,
+      ready: tasksCard.ready,
+      pinned: tasksCard.up && tasksCard.pinned,
+    });
+    if (act === "native") return;
+    e.preventDefault();
+    hideHint();
+    if (act === "navigate") void navigateUrl("/tasks");
+    else if (act === "close") closeTasksCard();
+    else tasksCardIntent().press(TASKS_CARD_KEY);
   };
 
   // ONE ACTIVE RING PER SECTION (header; rail-peek-lib `activeRing`). The
@@ -2591,12 +2680,28 @@ export function ClaudeRail({
       {navDoors && (
         <div className="claude-rail-nav">
           <a
+            ref={tasksDoorRef}
             href="/tasks"
             className={"sidebar-rail-btn claude-rail-item" + (tasksHere ? " active" : "")}
             title={tasksTip ? `Tasks — ${tasksTip}` : "Tasks"}
             aria-label="Tasks"
             {...(tasksHere ? { "aria-current": "page" as const } : {})}
-            onClick={navPress("/tasks")}
+            {...(tasksCard.ready
+              ? { "aria-haspopup": "dialog" as const, "aria-expanded": tasksUp, "aria-controls": TASKS_PEEK_ID }
+              : {})}
+            onClick={pressTasksDoor}
+            onPointerEnter={(e) => {
+              if (e.pointerType !== "touch" && tasksCard.ready) tasksCardIntent().enterRing(TASKS_CARD_KEY, "pointer");
+            }}
+            onPointerLeave={() => tasksCardIntent().leaveRing("pointer")}
+            onKeyDown={(e) => {
+              // Escape lets a PREVIEW go (a pinned card closes by its ×, or
+              // this door's press).
+              if (e.key === "Escape" && tasksUp && !tasksCard.pinned) {
+                e.preventDefault();
+                closeTasksCard(true);
+              }
+            }}
           >
             {TASKS_ICON}
             {tasksDot && <span className={`sidebar-rail-dot ${tasksDot}`} aria-hidden="true" />}
@@ -3070,6 +3175,10 @@ export function ClaudeRail({
             ? {
                 popover: {
                   anchor: popAnchor,
+                  // WINDOW A'S SIZE (owner, 2026-11-07): the remembered
+                  // `canvasRailPeek`, else 420×640 — clamped inside the window
+                  // by the chassis, the form scrolling inside it.
+                  size: railCardSize(getUiLayout().canvasRailPeek ?? null),
                   ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
                   beside: railRef,
                   closeSignal: cardCloseSignal,

@@ -87,6 +87,21 @@
     0 2px 6px var(--shadow-ink-soft);
 }
 
+/* A SIZED CARD (Modal `popover.size`; owner, 2026-11-07: the rail's + "same
+   width/height as window A"): the height is inline and fixed, so the head and
+   the footer keep their rows and the body between them scrolls — the ✕ and
+   Create are never clipped, however short the window. */
+.modal-popover .modal-dialog.is-sized > .modal-head,
+.modal-popover .modal-dialog.is-sized > .modal-footer {
+  flex: 0 0 auto;
+}
+
+.modal-popover .modal-dialog.is-sized > .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 /* It slides in from the rail's side, as the chat card does, rather than
    scaling up in the middle of the window. */
 .modal-overlay.modal-popover .modal-dialog {

@@ -2697,7 +2697,8 @@ describe("the source-task chip", () => {
 
   test("where there is no peek, the chip is a statement and not a dead button", () => {
     // The page hands over the name alone…
-    expect(page()).toContain("onOpen: peekable ? () => openSourceTask(sourceTask) : null,");
+    // (The rail's Tasks card is a door too: it opens the task in itself.)
+    expect(page()).toContain("onOpen: peekable || inCard ? () => openSourceTask(sourceTask) : null,");
     // …and the card draws a span for it.
     expect(card()).toContain(
       '<span className="new-task-source">from {shortTaskId(sourceTask.taskId)}</span>');

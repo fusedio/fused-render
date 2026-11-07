@@ -1487,3 +1487,42 @@ a.claude-rail-peek-scope:focus-visible {
   margin-top: 4px;
   padding-top: 2px;
 }
+
+/* THE TASKS CARD (shell/claude-rail TasksPeek; owner, 2026-11-07): the Tasks
+   page in window A's chassis, off the rail's Tasks door. One step above the
+   rail's own card, as window B is: where a too-small window makes the two
+   meet, its × stays reachable (one card stands at a time anyway). */
+#claude-rail-tasks-peek {
+  z-index: 46;
+}
+/* The head's title — "Tasks", or the open chat's — in the bot card's name
+   seat's type: small, one line, ellipsised; never the page's big heading. */
+.claude-rail-tasks-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-left: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--fg);
+}
+/* The page itself fills the card's body and scrolls inside, as it does on
+   /tasks (schedule.css "Full-height page"): no 1050px column, a gutter the
+   card's width can spare. The list stays mounted under an open chat — its
+   layer hidden, its scroll kept (`.claude-rail-peek-chat`). */
+.claude-rail-tasks-list > .prefs-page.schedule-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px 10px;
+  gap: 8px;
+}
+.claude-rail-tasks-list > .prefs-page.schedule-page > *,
+.claude-rail-tasks-list > .schedule-page > .prefs-section {
+  max-width: none;
+}
+.claude-rail-tasks-list > .schedule-page > .prefs-section.schedule-main {
+  gap: 8px;
+}

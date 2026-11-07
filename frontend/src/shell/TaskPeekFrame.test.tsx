@@ -187,7 +187,8 @@ describe("the two hosts", () => {
 
   it("the Tasks page arms the peek scoped or not, and portals its panel into a frame someone else drew", () => {
     // The scope used to be half the gate; the app page's Tasks tab is a host now.
-    expect(PAGE).toContain("const peekable = peekOn;");
+    // (The rail's Tasks card, `inCard`, is the one Scheduled that hosts none.)
+    expect(PAGE).toContain("const peekable = peekFlag && !inCard;");
     expect(PAGE).not.toContain("!scope && peekOn");
     expect(PAGE).toContain("const slot = useTaskPeekSlot();");
     expect(PAGE).toContain("{slot ? createPortal(panel, slot) : null}");

@@ -141,6 +141,18 @@ export function listCardWish(o: {
   return s ? { width: s.width, maxHeight: s.height } : { maxHeight: PEEK_MAX_HEIGHT };
 }
 
+/** WINDOW A'S SIZE, AS THE OTHER CARDS AT THE TOP OF THE RAIL WEAR IT (owner,
+ *  2026-11-07: the Tasks card and the + popover "same width/height as window
+ *  A"): the remembered `canvasRailPeek` size under the grips' clamps, else the
+ *  list card's default 420×640. */
+export function railCardSize(stored: StoredSize | null): StoredSize {
+  if (!stored) return { width: PEEK_WIDTH, height: PEEK_MAX_HEIGHT };
+  return {
+    width: Math.min(PEEK_MAX_WIDTH, Math.max(PEEK_MIN_WIDTH, stored.width)),
+    height: Math.max(PEEK_MIN_HEIGHT, stored.height),
+  };
+}
+
 /** WHAT SIZE THE FAVOURITE'S CARD ASKS FOR (RailPeek `wishFor`, `size` +
  *  `resizeKey`): its own remembered size over its fixed wish `base`, its
  *  height capped at half the window (`favMaxHeight`). */

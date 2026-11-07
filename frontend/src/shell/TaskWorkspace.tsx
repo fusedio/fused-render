@@ -27,7 +27,7 @@ import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
 import { closedToastText } from "@shell/teardown-notice";
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
-import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey } from "@shell/task-peek-store";
+import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey, workspaceOwnsKey } from "@shell/task-peek-store";
 import { useNow } from "@platform/lib/clock";
 import { ICON_ARCHIVE, ICON_UNARCHIVE, IdChip, IdentityChip, PrNumChip, StatusIcon } from "@shell/ScheduleTaskViews";
 import {
@@ -470,6 +470,7 @@ export function TaskWorkspace({
   onOpenDraft?: (task: Task) => void;
 }) {
   const peekedKey = usePeekedKey();
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(readCollapsed);
@@ -712,6 +713,9 @@ export function TaskWorkspace({
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.defaultPrevented) return;
+      // TWO WORKSPACES MAY BE MOUNTED — the page's and the rail's Tasks card's
+      // (owner, 2026-11-07): each answers only the keys typed on its side.
+      if (!workspaceOwnsKey(rootRef.current, e.target)) return;
       // Keys inside the PR overflow popover (a portal) are the popover's own:
       // Space/Enter on a link must not select or archive the card behind it.
       if ((e.target as HTMLElement | null)?.closest?.(".task-pr-pop")) return;
@@ -816,6 +820,7 @@ export function TaskWorkspace({
   useEffect(() => {
     const onChord = (e: KeyboardEvent): void => {
       if (e.isComposing || e.defaultPrevented || !isMod(e) || e.altKey || e.key.toLowerCase() !== "k") return;
+      if (!workspaceOwnsKey(rootRef.current, e.target)) return;
       if (document.querySelector("[aria-modal='true'], dialog[open]") !== null) return;
       e.preventDefault();
       e.stopPropagation();
@@ -827,13 +832,13 @@ export function TaskWorkspace({
 
   useEffect(() => {
     if (!selected) return;
-    for (const el of Array.from(document.querySelectorAll<HTMLElement>(".ws-card"))) {
+    for (const el of Array.from((rootRef.current ?? document).querySelectorAll<HTMLElement>(".ws-card"))) {
       if (el.dataset.key === selected) el.scrollIntoView?.({ block: "nearest" });
     }
   }, [selected]);
 
   return (
-    <div className="ws-root" data-workspace>
+    <div ref={rootRef} className="ws-root" data-workspace>
       <BulkBar count={selection.size} onArchive={archiveSelected} onClear={selection.clear} />
       {groups.length === 0 ? (
         <p className="schedule-tv-empty">{emptyLabel}</p>

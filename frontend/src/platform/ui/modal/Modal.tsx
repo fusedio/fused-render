@@ -195,6 +195,12 @@ export interface ModalProps {
     /** The pointer entered / left the card (the opener's hover grace). */
     onPointerEnter?: () => void;
     onPointerLeave?: () => void;
+    /** A FIXED SIZE (owner, 2026-11-07: the rail's + "same width/height as
+     *  window A"): the card takes this width and height — clamped inside the
+     *  viewport, an inset on every side (popover-place.ts) — and its body
+     *  scrolls inside, so the ✕ and the footer are never clipped. Absent:
+     *  `width`, and the content's own height. */
+    size?: { width: number; height: number };
   };
 }
 
@@ -468,14 +474,23 @@ export function Modal({
   // anchor alone (the card's height is not known yet): never hidden while it
   // is measured, because the card's field takes the caret in this very
   // commit and a `visibility: hidden` box cannot hold focus.
-  const wantWidth = typeof width === "number" ? width : 580;
+  const sizeW = popover?.size?.width;
+  const sizeH = popover?.size?.height;
+  const sized = sizeW !== undefined && sizeH !== undefined;
+  const wantWidth = sizeW ?? (typeof width === "number" ? width : 580);
   const [place, setPlace] = useState<PopoverBox | null>(() => {
     const anchor = popover?.anchor.current;
     const view = ownerDoc.defaultView;
     if (!anchor || !view || typeof anchor.getBoundingClientRect !== "function") return null;
     const a = popover?.anchorBox?.() ?? anchor.getBoundingClientRect();
     const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
-    return popoverPlacement(a, b, { width: wantWidth, height: 0 }, { width: view.innerWidth, height: view.innerHeight });
+    return popoverPlacement(
+      a,
+      b,
+      { width: wantWidth, height: sizeH ?? 0 },
+      { width: view.innerWidth, height: view.innerHeight },
+      sized,
+    );
   });
   useLayoutEffect(() => {
     if (!popoverOn) return;
@@ -489,11 +504,16 @@ export function Modal({
       const next = popoverPlacement(
         a,
         b,
-        { width: wantWidth, height: dialog.offsetHeight },
+        // A sized card asks for its size, not for what it now measures (its
+        // own last placement).
+        { width: wantWidth, height: sizeH ?? dialog.offsetHeight },
         { width: view.innerWidth, height: view.innerHeight },
+        sized,
       );
       setPlace((was) =>
-        was && was.left === next.left && was.top === next.top && was.width === next.width ? was : next,
+        was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height
+          ? was
+          : next,
       );
     };
     measure();
@@ -506,7 +526,7 @@ export function Modal({
       view?.removeEventListener("resize", measure);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popoverOn, wantWidth]);
+  }, [popoverOn, wantWidth, sizeH]);
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
     if (e.key !== "Tab") return;
@@ -545,6 +565,7 @@ export function Modal({
         top: place?.top ?? 0,
         width: place?.width ?? wantWidth,
         maxHeight: "calc(100vh - 16px)",
+        ...(sized && place?.height !== undefined ? { height: place.height } : {}),
       }
     : width !== undefined
       ? { width }
@@ -572,7 +593,9 @@ export function Modal({
     >
       <div
         ref={dialogRef}
-        className={"modal-dialog deploy-dialog" + (dialogClassName ? " " + dialogClassName : "")}
+        className={
+          "modal-dialog deploy-dialog" + (popover && sized ? " is-sized" : "") + (dialogClassName ? " " + dialogClassName : "")
+        }
         style={dialogStyle}
         role="dialog"
         {...(popover ? {} : { "aria-modal": "true" as const })}
