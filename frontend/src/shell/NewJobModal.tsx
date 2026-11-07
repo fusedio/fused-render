@@ -5148,14 +5148,9 @@ export default function NewJobModal({
       footer={
         <>
           <div className="nt-foot-left">
-          {/* THE POPOVER DRAWS NO KEY GLYPHS (owner, 2026-11-07): the rail's
-              + card and a draft's card beside the rail drop the "⇧↵ new line"
-              hint and the ↵ in Create — the keys still do what they did. */}
-          {!popover && (
-            <span className="nt-foot-hint">
-              <kbd className="nt-kbd">⇧</kbd><kbd className="nt-kbd">↵</kbd> new line
-            </span>
-          )}
+          {/* NO KEY GLYPHS (owner, 2026-11-07): no "⇧↵ new line" hint here
+              and no ↵ in the action button — Enter still creates, Shift+Enter
+              still adds a line. */}
           {/* Destructive, so it sits at the far left of the footer, away from
               Save — `.btn-danger-text` carries the margin-right:auto that
               anchors it there. Present only on an Edit, and only when the
@@ -5232,10 +5227,6 @@ export default function NewJobModal({
           <button type="button" className="btn btn-primary schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
-            {/* The key that presses it. Enter creates from either field, so the
-                badge states a chord that is true (the ⌘↩ it once advertised is
-                gone — Akshil, 2026-09-23). */}
-            {!popover && <kbd className="nt-kbd nt-kbd--on-dark" aria-hidden="true">↵</kbd>}
           </button>
         </>
       }

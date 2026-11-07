@@ -1205,39 +1205,7 @@ button.new-task-source:focus-visible {
   margin-right: 0;
 }
 
-.nt-foot-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
-.nt-kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  background: var(--ctl-quiet-bg);
-  font-size: 11px;
-  font-family: inherit;
-  color: var(--fg-muted);
-}
-
 .new-task-dialog .schedule-save {
   border-radius: 8px;
   gap: 8px;
-}
-
-.nt-kbd--on-dark {
-  margin-left: 2px;
-  border-color: color-mix(in srgb, currentColor 45%, transparent);
-  background: transparent;
-  color: inherit;
-  opacity: 0.8;
 }
