@@ -825,6 +825,10 @@ describe("fallbackRailUp", () => {
   it("favourites off: no fallback", () => {
     expect(fallbackRailUp({ favsOn: false, pageRails: 0 })).toBe(false);
   });
+  it("the rail's nav doors (rail flag) put it up with favourites off, never beside a page rail", () => {
+    expect(fallbackRailUp({ favsOn: false, pageRails: 0, navDoors: true })).toBe(true);
+    expect(fallbackRailUp({ favsOn: false, pageRails: 1, navDoors: true })).toBe(false);
+  });
 });
 
 // ---- THE + AND A RING'S PRESS BY THE PANE (owner, 2026-11-05) --------------

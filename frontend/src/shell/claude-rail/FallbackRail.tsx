@@ -22,7 +22,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { ClaudeRail, type NewTaskSeed } from "./ClaudeRail";
 import { usePageRailCount } from "./fav-peek-store";
-import { useRailFeatureOn } from "./rail-peek-flag";
+import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import { fallbackRailUp, type RailPlace } from "./claude-rail-lib";
 
 /** No place (header): a folder no row lives in, so nothing rides the list
@@ -36,8 +36,11 @@ export function FallbackRail() {
   // The favourites switch AND the card's (ClaudeRail `favsOn`): the star
   // lives on the card.
   const favsOn = useRailFeatureOn();
+  // The rail flag alone puts Tasks, the + and Bots on the rail (ClaudeRail
+  // `navDoors`): the fallback then stands on every page without a page rail.
+  const navDoors = useCanvasRailPeek();
   const pageRails = usePageRailCount();
-  if (!fallbackRailUp({ favsOn, pageRails })) return null;
+  if (!fallbackRailUp({ favsOn, pageRails, navDoors })) return null;
   return (
     <ClaudeRail
       favouritesOnly

@@ -839,8 +839,11 @@ export function rememberRail(up: boolean): void {
  *  is mounted (fav-peek-store `registerPageRail` — one count, so a page rail
  *  and the fallback never stand together). Whether it then shows is
  *  `railShown`'s `favouritesOnly` (a favourite to draw). */
-export function fallbackRailUp(o: { favsOn: boolean; pageRails: number }): boolean {
-  return o.favsOn && o.pageRails === 0;
+export function fallbackRailUp(o: { favsOn: boolean; pageRails: number; navDoors?: boolean }): boolean {
+  // `navDoors` (owner, 2026-11-07; the rail flag `canvas_rail_peek_enabled`):
+  // the rail carries Tasks, the + and Bots on every page, so the fallback
+  // stands wherever no page rail does, favourites or not.
+  return (o.favsOn || o.navDoors === true) && o.pageRails === 0;
 }
 
 /** WHAT THE + DOES (ClaudeRail; owner, 2026-11-05): beside the OPEN pane

@@ -233,6 +233,7 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type FocusEvent as ReactFocusEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { GitBranch, GitCommitHorizontal, Plus, RefreshCw } from "lucide-react";
@@ -243,8 +244,12 @@ import {
   readListing,
   refreshListing,
   subscribeListing,
+  useTasksPulse,
   useTasksPulseRows,
 } from "@shell/tasksPulse";
+import { BOTS_ICON, TASKS_ICON } from "@shell/nav-icons";
+import { pulseTitle } from "@shell/tasks-lib";
+import { isBotsPath } from "@apps/bots/routes";
 import {
   cardTitleLine,
   draftRing,
@@ -336,7 +341,7 @@ import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useRailGit } from "./rail-git";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
-import { botHasUnread, useBotsRows } from "@platform/lib/botsPulse";
+import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platform/lib/botsPulse";
 import { navigateUrl } from "@platform/lib/router";
 import { Face } from "@apps/bots/components/Face";
 import type { FaceSubject } from "@apps/bots/lib/face";
@@ -748,8 +753,17 @@ export function ClaudeRail({
   // THE PANEL GLYPH AND THE PULL SEAM: only while the pane is shut, and
   // never on the shell's fallback (no pane to show).
   const chrome = !paneOpen && !favouritesOnly;
+  // THE RAIL'S NAV DOORS (owner, 2026-11-07; behind the rail flag
+  // `canvas_rail_peek_enabled` — `peekOn`): Tasks and the + at the top, in
+  // place of the panel glyph, and Bots at the foot — the left sidebar drops
+  // its own Tasks and Bots rows (GlobalSidebar). They are on every rail,
+  // always: the rail stands whatever it holds and whatever the pane does
+  // (the shell's fallback stands on every page without a page rail,
+  // claude-rail-lib `fallbackRailUp`). Off, the rail of 2026-11-06.
+  const navDoors = peekOn;
   const hideList = listHidden({ paneOpen, favsOn, paneHome });
   const stands =
+    navDoors ||
     railShown({
       list: hideList ? 0 : allSeats.length,
       favs: favs.length - blockedCount,
@@ -2001,6 +2015,33 @@ export function ClaudeRail({
     focusPaneComposer(paneHomeComposer);
   };
   const plusLabel = waiting ?? (plusPane ? "New chat" : newTask.on ? `New task on ${newTask.on}` : "New task");
+  // THE NAV DOORS' DOTS (`navDoors`): the left sidebar's Tasks and Bots row
+  // dots (GlobalSidebar `tasksDot` / `botsDot`), read from the same pulses —
+  // red waits on the reader, yellow runs, green is news not yet seen (the
+  // Tasks one suppressed while the Tasks page is the one on screen).
+  const tasksPulse = useTasksPulse();
+  const botsPulse = useBotsPulse(navDoors);
+  const here = typeof location === "undefined" ? "" : location.pathname;
+  const tasksHere = here === "/tasks";
+  const botsHere = isBotsPath(here);
+  const tasksDot =
+    tasksPulse.attention + tasksPulse.blocked > 0
+      ? "is-attention"
+      : tasksPulse.running > 0
+        ? "is-running"
+        : !tasksHere && tasksPulse.unseen > 0
+          ? "is-unread"
+          : null;
+  const botsDot =
+    botsPulse.waiting > 0 ? "is-attention" : botsPulse.running > 0 ? "is-running" : botsPulse.unread > 0 ? "is-unread" : null;
+  const tasksTip = pulseTitle(tasksPulse);
+  const botsTip = botsPulseTitle(botsPulse);
+  const navPress = (href: string) => (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    e.preventDefault();
+    hideHint();
+    void navigateUrl(href);
+  };
 
   // ONE ACTIVE RING PER SECTION (header; rail-peek-lib `activeRing`). The
   // list's section is its rings (no outsider in the foot since 2026-11-06). With the
@@ -2266,8 +2307,9 @@ export function ClaudeRail({
         (favs.length + bots.length > 0 ? " has-favs" : "") +
         // No glyph above the + (beside the open pane, the fallback): nothing
         // keeps its room (claude-rail.css).
-        (favsOn && !chrome ? " no-glyph" : "") +
+        (favsOn && !chrome && !navDoors ? " no-glyph" : "") +
         (favsOn ? " is-scroll" : "") +
+        (navDoors ? " has-nav" : "") +
         (favouritesOnly ? " is-fallback" : "")
       }
       aria-label="Claude"
@@ -2293,7 +2335,37 @@ export function ClaudeRail({
           onPointerDown={onPullStart}
         />
       )}
-      {chrome && (
+      {/* THE NAV DOORS' TOP (`navDoors`): Tasks where the panel glyph stood,
+          the + right under it — on every rail, always. */}
+      {navDoors && (
+        <div className="claude-rail-nav">
+          <a
+            href="/tasks"
+            className={"sidebar-rail-btn claude-rail-item" + (tasksHere ? " active" : "")}
+            title={tasksTip ? `Tasks — ${tasksTip}` : "Tasks"}
+            aria-label="Tasks"
+            {...(tasksHere ? { "aria-current": "page" as const } : {})}
+            onClick={navPress("/tasks")}
+          >
+            {TASKS_ICON}
+            {tasksDot && <span className={`sidebar-rail-dot ${tasksDot}`} aria-hidden="true" />}
+          </a>
+          <button
+            ref={plusRef}
+            type="button"
+            className="sidebar-rail-btn claude-rail-item"
+            title={plusLabel}
+            aria-label={plusLabel}
+            {...(plusPane ? {} : { "aria-haspopup": "dialog" as const })}
+            aria-busy={opening || waiting !== null || undefined}
+            disabled={opening || waiting !== null}
+            onClick={plusPane ? openPaneHome : openNewTask}
+          >
+            <Plus size={16} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      {chrome && !navDoors && (
         <button
           type="button"
           className="sidebar-rail-btn"
@@ -2312,7 +2384,7 @@ export function ClaudeRail({
       )}
       <div className="sidebar-rail-items">
         {/* THE +: a page rail's only (claude-rail-lib `plusShown`). */}
-        {plusShown({ favouritesOnly }) && (
+        {!navDoors && plusShown({ favouritesOnly }) && (
           <button
             ref={plusRef}
             type="button"
@@ -2611,6 +2683,23 @@ export function ClaudeRail({
                 );
               })}
             </div>
+          </>
+        )}
+        {navDoors && (
+          // THE NAV DOORS' FOOT (`navDoors`): the Bots page, under the
+          // pinned bots — the left sidebar's Bots row, moved here.
+          <>
+            <a
+              href="/bots"
+              className={"sidebar-rail-btn claude-rail-item" + (botsHere ? " active" : "")}
+              title={botsTip ? `Bots — ${botsTip}` : "Bots"}
+              aria-label="Bots"
+              {...(botsHere ? { "aria-current": "page" as const } : {})}
+              onClick={navPress("/bots")}
+            >
+              {BOTS_ICON}
+              {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}
+            </a>
           </>
         )}
       </div>
