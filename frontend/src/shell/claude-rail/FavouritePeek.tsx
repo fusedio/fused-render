@@ -273,7 +273,16 @@ export function FavouritePeek() {
   // Taking the wish clears it in the store, which re-runs this effect: the
   // wait is a ref, not this run's cleanup, so that does not cancel it.
   const focusWait = useRef(0);
-  useEffect(() => () => cancelAnimationFrame(focusWait.current), []);
+  // The running wait's stop — its frame AND its document listeners — so a
+  // new wait supersedes it and an unmount ends it (CodeRabbit on #2170).
+  const focusStop = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(focusWait.current);
+      focusStop.current?.();
+    },
+    [],
+  );
   // THE COMPOSER FIRST (Akshil, 2026-11-07: the list card's press lands in
   // its composer, so the favourite's does too): retried by frame while the
   // chat mounts, for FAV_COMPOSER_WAIT_MS at most; the × only when no composer
@@ -283,6 +292,7 @@ export function FavouritePeek() {
     if (!shownKey || pendingFocus !== shownKey) return;
     if (!takeFavFocus(shownKey)) return;
     cancelAnimationFrame(focusWait.current);
+    focusStop.current?.();
     const until = performance.now() + FAV_COMPOSER_WAIT_MS;
     let live = true;
     const stop = () => {
@@ -290,7 +300,9 @@ export function FavouritePeek() {
       cancelAnimationFrame(focusWait.current);
       document.removeEventListener("pointerdown", stop, true);
       document.removeEventListener("keydown", stop, true);
+      if (focusStop.current === stop) focusStop.current = null;
     };
+    focusStop.current = stop;
     document.addEventListener("pointerdown", stop, true);
     document.addEventListener("keydown", stop, true);
     const take = (el: HTMLElement | null) => {
