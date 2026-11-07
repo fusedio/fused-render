@@ -78,15 +78,17 @@ export const MarkdownView = memo(function MarkdownView({
     if (!root || !linkifyEnabled({ links, enhance, hasOpener: !!openPreview })) return;
     void linkifyPaths(root, { cwd, home, live: () => ref.current === root });
   }, [html, enhance, links, cwd, home, openPreview]);
-  const onPathActivate = (target: EventTarget | null) => {
+  const onPathActivate = (target: EventTarget | null, newTab = false) => {
     const el = (target as Element | null)?.closest?.(PATH_ACTIVATE_SELECTOR);
     const raw = el?.getAttribute("data-path");
     if (!raw) return false;
     // An inline-code link was only marked where an opener exists (linkifyPaths);
     // a markdown link to a local file is marked at render time and still has to
-    // open somewhere without one — the viewer in a new tab, its href.
+    // open somewhere without one — the viewer in a new tab, its href. A
+    // Cmd/Ctrl/Shift or middle click asks for that tab too; it is opened here,
+    // not by the href, so `~` is resolved first.
     const path = resolveAgainst(raw, cwd, home);
-    if (openPreview) openPreview(path);
+    if (openPreview && !newTab) openPreview(path);
     else if (typeof window !== "undefined") {
       window.open(paneSrcFor({ mode: "_render", path: "" }, path), "_blank", "noopener");
     }
@@ -98,7 +100,12 @@ export const MarkdownView = memo(function MarkdownView({
       className={className}
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={(ev) => {
-        if (onPathActivate(ev.target)) ev.preventDefault();
+        const newTab = ev.metaKey || ev.ctrlKey || ev.shiftKey;
+        if (onPathActivate(ev.target, newTab)) ev.preventDefault();
+      }}
+      onAuxClick={(ev) => {
+        if (ev.button !== 1) return;
+        if (onPathActivate(ev.target, true)) ev.preventDefault();
       }}
       onKeyDown={(ev) => {
         if (ev.key !== "Enter" && ev.key !== " ") return;
