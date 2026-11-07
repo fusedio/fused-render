@@ -21,7 +21,9 @@ from fused_render import engine, projectenv
 
 
 class SourceEncodingTests(unittest.TestCase):
+    """Check source-encoding parity between the fused engine and Python file imports."""
     def check_source(self, encoding, newline='\n'):
+        """Run an encoded fixture through both loaders and compare the bound results."""
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             target = directory / 'target.py'
@@ -76,12 +78,15 @@ class SourceEncodingTests(unittest.TestCase):
             self.assertEqual(result['result']['marker'], '\ufeff')
 
     def test_utf8(self):
+        """Verify ordinary UTF-8 source retains Unicode content and parameter coercion."""
         self.check_source('utf-8')
 
     def test_utf8_bom(self):
+        """Verify an initial UTF-8 BOM is consumed without altering string contents."""
         self.check_source('utf-8-sig')
 
     def test_utf8_bom_crlf(self):
+        """Verify BOM-prefixed source also executes with Windows CRLF line endings."""
         self.check_source('utf-8-sig', '\r\n')
 
 

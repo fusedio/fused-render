@@ -1232,6 +1232,7 @@ def _split_error(cleaned: str) -> tuple[str, str]:
 
 
 async def run_python(path: str, params: dict) -> dict:
+    """Execute a Python file through the fused backend and return its wire result."""
     ensure_warm()  # backstop for a server used without the UI; no-op after the first call
     if not os.path.isfile(path):
         return _error_dict("FileNotFoundError", f"no such Python file: {path}")
