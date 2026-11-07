@@ -3181,8 +3181,8 @@ def _live_mode(meta: dict, permissions: list) -> str:
     vanished from every card built afterwards.
 
     Derived rather than stored, so it survives a re-attach and cannot drift
-    from the decisions claude actually received: the spawn mode, re-pointed by
-    each landed decision that MOVED it, in the order they were answered.
+    from the decisions claude actually received: meta's mode (the spawn's, or a
+    `_set_mode` switch), re-pointed by each later decision that MOVED it.
 
     Two kinds of decision move it, and the second one is not ours:
 
@@ -3203,18 +3203,16 @@ def _live_mode(meta: dict, permissions: list) -> str:
     mode = meta.get("mode")
     if mode not in PERMISSION_MODES:
         mode = DEFAULT_PERMISSION_MODE
-    moves = []
-    for perm in permissions:
-        if perm.get("decision") != "allow":
-            continue
-        if perm.get("mode") in SWITCHABLE_MODES:
-            moves.append((perm, perm["mode"]))
-        elif perm.get("tool") == PLAN_TOOL:
-            moves.append((perm, DEFAULT_PERMISSION_MODE))
     # by created_at, not by id: ids lead with HH%M%S, which misorders a run
     # spanning midnight.
-    for _perm, landed in sorted(moves, key=lambda m: m[0].get("created_at") or 0):
-        mode = landed
+    for perm in sorted(permissions, key=lambda p: p.get("created_at") or 0):
+        if perm.get("decision") != "allow" or \
+                (perm.get("created_at") or 0) <= meta.get("mode_at", 0):
+            continue
+        if perm.get("mode") in SWITCHABLE_MODES:
+            mode = perm["mode"]
+        elif perm.get("tool") == PLAN_TOOL:
+            mode = DEFAULT_PERMISSION_MODE
     return mode
 
 
@@ -6476,17 +6474,19 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
         # session id): re-read
         # just before writing, change only "mode", replace atomically. Gone by
         # now (the host reaped) -> nothing to record into.
-        try:
-            with open(path, encoding="utf-8") as fh:
-                fresh = json.load(fh)
-            if isinstance(fresh, dict):
-                fresh["mode"] = cli_mode
-                tmp = f"{path}.{os.urandom(4).hex()}.tmp"
-                with _private_open(tmp) as f:
-                    json.dump(fresh, f)
-                os.replace(tmp, path)
-        except (OSError, ValueError):
-            pass
+        for name, update in (("host.json", {"mode": cli_mode}),
+                             ("meta.json", {"mode": page_mode, "mode_at": time.time()})):
+            target = os.path.join(run_dir, name)
+            try:
+                with open(target, encoding="utf-8") as fh:
+                    fresh = json.load(fh)
+                if isinstance(fresh, dict):
+                    tmp = f"{target}.{os.urandom(4).hex()}.tmp"
+                    with _private_open(tmp) as f:
+                        json.dump({**fresh, **update}, f)
+                    os.replace(tmp, target)
+            except (OSError, ValueError):
+                pass
     return {"ok": True, "mode": page_mode}
 
 

@@ -1601,6 +1601,11 @@ def test_set_mode_writes_control_request_and_host_json_without_a_turn(agent, tmp
                                              "mode": "acceptEdits"}]
     with open(os.path.join(run_dir, "host.json")) as fh:
         assert json.load(fh)["mode"] == "acceptEdits"
+    with open(os.path.join(run_dir, "meta.json")) as fh:
+        meta = json.load(fh)
+    grant = {"decision": "allow", "mode": "auto", "created_at": meta["mode_at"] - 1}
+    assert agent._live_mode(meta, [grant]) == "acceptEdits"
+    assert agent._live_mode(meta, [{**grant, "created_at": meta["mode_at"] + 1}]) == "auto"
     # Already there: no second request.
     assert agent._set_mode("run-1", "acceptEdits")["ok"] is True
     assert len(_inbox_rows(run_dir)) == 1
