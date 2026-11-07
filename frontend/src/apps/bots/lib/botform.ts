@@ -9,7 +9,7 @@ export const MODELS: [string, string][] = [
 /** Super Bot runs on Claude Code: no local models (the backend refuses them too). */
 export const modelsFor = (isSuper: boolean): [string, string][] => (isSuper ? MODELS.filter(([v]) => !v.startsWith("local-")) : MODELS);
 
-export const EFFORTS: [string, string][] = [["low", "Low · quickest"], ["medium", "Medium"], ["high", "High · careful"], ["xhigh", "xhigh · slowest"]];
+export const EFFORTS: [string, string][] = [["low", "Low · quickest"], ["medium", "Medium"], ["high", "High · careful"], ["xhigh", "Xhigh · slowest"]];
 
 /** Trusted apps: the backend stores folders normalised (lower, -/_/space → "-"); match the listing the same way so a
  *  saved entry ticks its row whatever the folder's spelling on disk. */

@@ -75,16 +75,17 @@ export function modelDescription(value: string | null | undefined): string {
 }
 
 /** How each `--effort` level is SAID in a menu — the New task card's words
- *  ("High"; "xhigh" as the CLI says it). A level this map has never heard
- *  of says itself. */
+ *  ("High"; "Xhigh", the CLI's word capitalised). A level this map has never
+ *  heard of says itself, first letter capitalised ("minimal" → "Minimal"). */
 export const EFFORT_LABELS: Readonly<Record<string, string>> = {
   low: "Low",
   medium: "Medium",
   high: "High",
-  xhigh: "xhigh",
+  xhigh: "Xhigh",
   max: "Max",
 };
 
 export function effortLabel(value: string): string {
-  return Object.prototype.hasOwnProperty.call(EFFORT_LABELS, value) ? EFFORT_LABELS[value] : value;
+  if (Object.prototype.hasOwnProperty.call(EFFORT_LABELS, value)) return EFFORT_LABELS[value];
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
 }

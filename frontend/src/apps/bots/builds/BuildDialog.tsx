@@ -70,7 +70,7 @@ function Box({ req }: { req: BuildDialogReq }) {
             <NativeSelect className="w-full" id="bdeffort" value={effort} onChange={(e) => setEffort(e.target.value)}>
               <NativeSelectOption value="medium">Medium</NativeSelectOption>
               <NativeSelectOption value="high">High · careful</NativeSelectOption>
-              <NativeSelectOption value="xhigh">xhigh · slowest</NativeSelectOption>
+              <NativeSelectOption value="xhigh">Xhigh · slowest</NativeSelectOption>
             </NativeSelect>
           </Field>
         </div>

@@ -965,19 +965,27 @@ select.c-pill {
 }
 
 /* ---- the pills' menu (T:2860-2905) ------------------------------------- */
+/* THE NEW TASK CARD'S MENU, row for row (Akshil, 2026-11-07: "make these
+   identical dropdowns, all three model effort and mode"): its `.nt-pop-h`
+   heading and `.nt-menu` rows — uppercase 11px heading, 28px rows of 13px
+   type, a neutral wash on hover, a TICK on the current row rather than a
+   tinted fill. Restated in the chat's own tokens (`--c-*`) so it follows the
+   pane's theme. */
 .c-selpop {
-  padding: 4px;
+  padding: 6px;
   background: var(--c-panel);
   border: 1px solid var(--c-border-strong);
   border-radius: 10px;
   box-shadow: 0 6px 24px var(--c-shadow);
 }
 .c-selpop-head {
-  padding: 4px 9px 6px;
+  padding: 4px 8px 6px;
   font-size: 11px;
+  font-weight: 600;
   line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--c-faint);
-  letter-spacing: 0.02em;
   user-select: none;
 }
 .c-selpop-opt {
@@ -985,13 +993,14 @@ select.c-pill {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 9px;
+  height: 28px;
+  padding: 0 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1;
   white-space: nowrap;
   border: 0;
-  border-radius: 7px;
+  border-radius: 6px;
   background: none;
   color: var(--c-fg);
   cursor: pointer;
@@ -999,20 +1008,19 @@ select.c-pill {
 }
 /* A model's word or two ("Fast"), quieter than its name. */
 .c-selpop-desc {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--c-faint);
+}
+.c-selpop-check {
+  flex: none;
+  margin-left: auto;
+  padding-left: 12px;
+  box-sizing: content-box;
 }
 .c-selpop-opt:hover,
 .c-selpop-opt:focus-visible {
   background: var(--c-surface-2);
-}
-/* The wash alone carries the state — no tick glyph — and the ink stays --c-fg:
-   accent is a fill here, never text on its own tint (T:2900). */
-.c-selpop-opt.is-on {
-  background: color-mix(in srgb, var(--c-accent) 16%, transparent);
-}
-.c-selpop-opt.is-on:hover {
-  background: color-mix(in srgb, var(--c-accent) 26%, transparent);
+  outline: none;
 }
 
 /* ---- the Schedule confirm (T:2917-2954) -------------------------------- */

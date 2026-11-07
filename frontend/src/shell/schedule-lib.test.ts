@@ -2454,8 +2454,8 @@ describe("what a task can be run with", () => {
     expect(TASK_EFFORTS.map((o) => o.key)).toEqual([
       "low", "medium", "high", "xhigh", "max",
     ]);
-    // Said the CLI's way, "xhigh" — not "Extra high" (Akshil, 2026-11-07).
-    expect(taskRunLabel(TASK_EFFORTS, "xhigh")).toBe("xhigh");
+    // The CLI's word, capitalised — not "Extra high" (Akshil, 2026-11-07).
+    expect(taskRunLabel(TASK_EFFORTS, "xhigh")).toBe("Xhigh");
   });
 
   it("keeps a value it has never heard of, rather than resetting the task to the default", () => {

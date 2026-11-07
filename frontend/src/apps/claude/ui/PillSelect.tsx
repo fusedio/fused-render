@@ -22,6 +22,15 @@ import {
 } from "@platform/shadcn/ui/popover";
 import { useDismissOnWindow } from "./useDismissOnWindow";
 
+/** The tick on the current row — the New task card's (`ICON_CHECK`): the
+ *  composer's menus and the card's are one design (Akshil, 2026-11-07). */
+const SELPOP_CHECK = (
+  <svg className="c-selpop-check" width="11" height="11" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
 export interface PillOption {
   value: string;
   /** What the MENU shows — always the full spelling (T:12537). */
@@ -186,6 +195,7 @@ export function PillSelect({
               >
                 <span>{option.label}</span>
                 {option.desc ? <span className="c-selpop-desc">{option.desc}</span> : null}
+                {option.value === value ? SELPOP_CHECK : null}
               </button>
               {/* A SIBLING, not a child: inside the button it would join the
                   row's accessible name. */}

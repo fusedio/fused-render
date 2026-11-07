@@ -3353,7 +3353,7 @@ export default function NewJobModal({
     // that takes none, or fewer levels) becomes the new model's default,
     // which is "" for one that takes none. So does an EMPTY effort, left
     // by a model that took none, when the new model takes one: the
-    // Thinking rows must show the level the run gets. A level it does
+    // Effort rows must show the level the run gets. A level it does
     // take stays.
     setEffort((e) =>
       !e || isUnlistedEffort(e, agentRef.current, value)
@@ -4034,7 +4034,7 @@ export default function NewJobModal({
     && (sessionAgent ? agent !== sessionAgent : pickedHere.current);
   const continuesSession = !leavesSession;
   const runModels = taskModelsOf(agent);
-  // The Thinking rows are the CHOSEN MODEL's (per model where the catalog
+  // The Effort rows are the CHOSEN MODEL's (per model where the catalog
   // knows them per model); empty, the section is not drawn.
   const runEfforts = taskEffortsOf(agent, model);
   // ANOTHER AGENT'S CARD OPENS ON ITS OWN DEFAULTS: the global pair above is
@@ -4065,7 +4065,7 @@ export default function NewJobModal({
     // that model's default ("" for one that takes none) and corrected to
     // it for ANY level the model does not take, a stored one included. A
     // level the spawn would drop is nothing an edit can keep lossless, and
-    // the Thinking rows (hidden for a model that takes none) must agree
+    // the Effort rows (hidden for a model that takes none) must agree
     // with what is sent.
     setEffort((e) => {
       const forModel = nextModel(isForeignModel(model, agent) ? defaultModelOf(agent) : model);
@@ -4402,7 +4402,7 @@ export default function NewJobModal({
   const [accessOpen, setAccessOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [effortOpen, setEffortOpen] = useState(false);
-  // The Thinking pill is not drawn for a model that takes no levels; an open
+  // The Effort pill is not drawn for a model that takes no levels; an open
   // flag left behind would reopen the popover the moment the pill came back.
   useEffect(() => { if (!runEfforts.length) setEffortOpen(false); }, [runEfforts.length]);
   const [agentOpen, setAgentOpen] = useState(false);
@@ -5032,7 +5032,7 @@ export default function NewJobModal({
       title={editing ? "Edit task" : "New task"}
       titleLead={(
         <>
-          {/* THE AGENT FIRST (D18): the Permissions, Model and Thinking are that
+          {/* THE AGENT FIRST (D18): the Permissions, Model and Effort are that
               agent's. A card out of a session opens on that session's agent and
               may still pick another — the task then starts fresh there
               (`continuesSession`). A dropdown even with one agent on, so a
@@ -5485,10 +5485,9 @@ export default function NewJobModal({
               })}
             </div>
           </PropPill>
-          {/* "Thinking", not "Effort" (the CLI's word for the flag): what the
-              user is choosing is how long Claude gets to think before it
-              acts, and the chat's own pill says the same thing. The wire is
-              untouched — this is the label. NOT DRAWN for a model that
+          {/* "Effort", not "Thinking" (Akshil, 2026-11-07: thinking is a
+              different thing): the CLI's word for the flag and the chat
+              composer's heading for the same list. NOT DRAWN for a model that
               takes no effort (a Copilot model whose catalog row lists
               none): a pill of levels the spawn would drop is a choice
               that does nothing. */}
@@ -5496,7 +5495,7 @@ export default function NewJobModal({
             <PropPill
               k=""
               className="pp--bare"
-              ariaLabel="Thinking"
+              ariaLabel="Effort"
               value={effortText}
               open={effortOpen}
               onToggle={() => togglePill("effort")}
@@ -5505,8 +5504,8 @@ export default function NewJobModal({
               popWidth={200}
               popHeight={taskRunOptions(runEfforts, effort).length * 28 + 40}
             >
-              <div className="nt-pop-h">Thinking</div>
-              <div className="nt-menu" role="group" aria-label="Thinking">
+              <div className="nt-pop-h">Effort</div>
+              <div className="nt-menu" role="group" aria-label="Effort">
                 {taskRunOptions(runEfforts, effort).map((o) => (
                   <button
                     key={o.key}
@@ -5536,7 +5535,7 @@ export default function NewJobModal({
             popHeight={permissionOptions.length * 28 + 40}
           >
             {/* "Mode" — the composer's word for the same list (Akshil,
-                2026-11-02) and the heading the Model and Thinking menus have.
+                2026-11-02) and the heading the Model and Effort menus have.
                 The KEY is what gets submitted; the label is only how the mode
                 is said. The raw keys ("acceptEdits") were the server's
                 vocabulary printed at the user (audit 2026-08-16), and an unknown

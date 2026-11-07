@@ -1017,7 +1017,7 @@ export function HeroComposer({
               {effortChoices(agent, model).length ? (
                 <ComposerPick
                   glyph="effort"
-                  label="Thinking"
+                  label="Effort"
                   value={effort}
                   choices={effortChoices(agent, model)}
                   disabled={busy}
