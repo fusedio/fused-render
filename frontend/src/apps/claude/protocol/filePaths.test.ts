@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { pathCandidate, resolveAgainst, touchedFiles } from "./filePaths";
+import { localPathFromHref, pathCandidate, resolveAgainst, touchedFiles } from "./filePaths";
 import type { Segment } from "./types";
 
 const tool = (name: string, input: Record<string, unknown>, children?: Segment[]): Segment =>
@@ -61,3 +61,30 @@ test("resolveAgainst: ~/ expands to home, never joins cwd", () => {
   expect(resolveAgainst("~/a/b.html", "/w", "C:\\Users\\x")).toBe("C:/Users/x/a/b.html");
   expect(resolveAgainst("~/a.html", "/w", undefined)).toBe("~/a.html");
 });
+
+test("localPathFromHref: absolute, ~/ and file:// hrefs are local files, decoded", () => {
+  expect(localPathFromHref("/Users/u/.claude/skills/x/SKILL.md")).toBe("/Users/u/.claude/skills/x/SKILL.md");
+  expect(localPathFromHref("~/notes/a.md")).toBe("~/notes/a.md");
+  expect(localPathFromHref("file:///Users/u/a%20b.md")).toBe("/Users/u/a b.md");
+  expect(localPathFromHref("file://localhost/Users/u/a.md")).toBe("/Users/u/a.md");
+  expect(localPathFromHref("file:///C:/x/a.md")).toBe("C:/x/a.md");
+  expect(localPathFromHref("C:\\x\\a.md")).toBe("C:\\x\\a.md");
+  expect(localPathFromHref("/p/100%25.md")).toBe("/p/100%.md");
+  // Undecodable stays as written rather than throwing out of the renderer.
+  expect(localPathFromHref("/p/%E0%A4%A.md")).toBe("/p/%E0%A4%A.md");
+});
+
+test("localPathFromHref: web URLs, relative links, fragments and the shell's own routes are not", () => {
+  expect(localPathFromHref("https://x.test/a.md")).toBeNull();
+  expect(localPathFromHref("http://127.0.0.1:1777/render?path=%2Fa.md")).toBeNull();
+  expect(localPathFromHref("src/a.ts")).toBeNull();
+  expect(localPathFromHref("./a.md")).toBeNull();
+  expect(localPathFromHref("#top")).toBeNull();
+  expect(localPathFromHref("mailto:a@b.c")).toBeNull();
+  expect(localPathFromHref("")).toBeNull();
+  expect(localPathFromHref("/render?path=%2Fa.md")).toBeNull();
+  expect(localPathFromHref("/api/fs/stat?path=x")).toBeNull();
+  // …but a folder that merely starts with those letters is a path.
+  expect(localPathFromHref("/renderings/a.md")).toBe("/renderings/a.md");
+});
+

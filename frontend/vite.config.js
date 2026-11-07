@@ -100,6 +100,9 @@ export default defineConfig({
       "/render": "http://127.0.0.1:1777",
       "/static": "http://127.0.0.1:1777",
       "/template-assets": "http://127.0.0.1:1777",
+      // Templates import their shared modules from here (ro-badge.js,
+      // graph-canvas.js): unproxied, every framed viewer 404s and spins.
+      "/template-shared": "http://127.0.0.1:1777",
     },
   },
 });

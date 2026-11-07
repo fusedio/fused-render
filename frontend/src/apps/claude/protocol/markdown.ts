@@ -7,6 +7,8 @@ import { Marked } from "marked";
 
 import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 
+import { localPathFromHref } from "./filePaths";
+
 let md: ((t: string) => string) | null = null;
 let stage: Marked | null = null;
 
@@ -58,8 +60,19 @@ function mdSetup(): (t: string) => string {
       // document-level sanitize enforces the URI allow-list; this only keeps
       // the raw href from breaking out of the attribute.
       link(href: string, _title: string | null | undefined, text: string) {
-        const h = (href || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-        return `<a href="${h}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+        // A link to a LOCAL file (`/Users/…`, `~/x`, `file:///…`) is rewritten
+        // to the viewer's own URL and tagged `data-path` for MarkdownView's
+        // click handler. Left alone, `file:` fails DOMPurify's URI allow-list
+        // (the href is dropped and the click does nothing) and a bare `/x`
+        // opens a 404 under the shell's origin.
+        const local = localPathFromHref(href);
+        if (local) {
+          return (
+            `<a href="/render?path=${attr(encodeURIComponent(local))}" data-path="${attr(local)}"` +
+            ` target="_blank" rel="noopener noreferrer">${text}</a>`
+          );
+        }
+        return `<a href="${attr(href || "")}" target="_blank" rel="noopener noreferrer">${text}</a>`;
       },
     },
   });
@@ -75,6 +88,11 @@ function mdSetup(): (t: string) => string {
 export function parseMarkdownStage(text: string): string {
   mdSetup();
   return stage!.parse(text, { async: false }) as string;
+}
+
+/** An attribute value: keeps a raw href or path from breaking out of its quotes. */
+function attr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
 function escapeHtml(text: string): string {

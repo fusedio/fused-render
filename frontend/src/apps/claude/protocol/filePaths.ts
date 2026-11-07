@@ -77,3 +77,32 @@ export function pathCandidate(text: string): PathCandidate | null {
   if (!path.includes("/") && !/\.[A-Za-z0-9]{1,8}$/.test(path)) return null;
   return m?.[2] ? { path, line: Number(m[2]) } : { path };
 }
+
+/** A markdown link whose href names a LOCAL file rather than a web address:
+ *  `file:///x` (and `file://localhost/x`), an absolute POSIX or drive path, or
+ *  `~/x`. Returns the filesystem path, percent-decoded (marked encodes the
+ *  href it hands the renderer: a space is `%20` by then), or `null` for a web
+ *  URL, a relative link, a fragment and the one site route a reply may name
+ *  on purpose (`/render?path=…`). The caller still resolves `~`. */
+export function localPathFromHref(href: string): string | null {
+  const h = (href || "").trim();
+  if (!h) return null;
+  let raw: string;
+  const file = /^file:\/\/(?:localhost)?(\/.*)$/i.exec(h);
+  if (file) {
+    raw = file[1]!;
+    // `file:///C:/x` is the drive path `C:/x`.
+    if (/^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
+  } else if (h.startsWith("~/") || isAbsolutePath(h)) {
+    if (/^\/(?:render|api)(?:[/?#]|$)/.test(h)) return null;
+    raw = h;
+  } else {
+    return null;
+  }
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
