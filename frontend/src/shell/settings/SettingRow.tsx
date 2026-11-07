@@ -164,7 +164,7 @@ export function SettingSelect({
 }: {
   id: SettingId | string;
   value: string;
-  options: { key: string; label: string; disabled?: boolean }[];
+  options: { key: string; label: string; disabled?: boolean; desc?: string }[];
   onChange: (key: string) => void;
   disabled?: boolean;
   ariaLabel?: string;

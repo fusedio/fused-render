@@ -18,12 +18,13 @@ const {
 } = await import("./composer-defaults");
 
 test("the lists and labels are the CLI's vocabulary, verbatim (T:11823-11876)", () => {
-  expect(MODELS).toEqual(["fable", "opus", "sonnet", "haiku"]);
+  // Lightest to heaviest, the way the effort list reads (Akshil, 2026-11-07).
+  expect(MODELS).toEqual(["haiku", "sonnet", "opus", "fable"]);
   expect(MODELS.map((m) => MODEL_LABELS[m])).toEqual([
-    "Fable",
-    "Opus",
-    "Sonnet",
     "Haiku",
+    "Sonnet",
+    "Opus",
+    "Fable",
   ]);
   expect(EFFORTS).toEqual(["low", "medium", "high", "xhigh", "max"]);
   expect(PERMISSION_MODES).toEqual(["plan", "prompt", "acceptEdits", "auto"]);

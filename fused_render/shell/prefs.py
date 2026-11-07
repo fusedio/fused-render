@@ -112,7 +112,7 @@ VALID_CALLS_PARAMS = ("full", "keys", "off")
 # the global model is `model` in ~/.claude/settings.json (server/ai.py
 # `default_model`). The relay wants a full API id, so the short→id mapping
 # lives THERE, in one place, next to the caller that needs it.
-VALID_DEFAULT_MODELS = ("", "fable", "opus", "sonnet", "haiku")
+VALID_DEFAULT_MODELS = ("", "haiku", "sonnet", "opus", "fable")
 DEFAULT_CALLS_RETENTION_DAYS = 14
 #: How long a resident local model may sit idle before the reaper unloads it
 #: (SPEC AI-13). Minutes, not seconds — a sensible window is measured in

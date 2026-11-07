@@ -41,10 +41,12 @@ import { appLandingUrl } from "@platform/lib/appLanding";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { useAutoGrow } from "@platform/lib/autoGrow";
+import { effortLabel, modelDescription } from "@platform/lib/model-vocab";
+import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import { startersFor } from "./starterPrompts";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
-import { Select, TextArea, TextInput } from "@platform/ui/field/fields";
+import { TextArea, TextInput } from "@platform/ui/field/fields";
 import { type AppAnnotation } from "@platform/lib/appAnnotation";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
@@ -214,18 +216,20 @@ const SAMPLE_ROW = 4;
 // settings page. Another agent's pair is its own catalog default; the global
 // pair is Claude's and is neither read nor written for it.
 //
-// The labels are BARE — "Opus", "high" — not "high effort": each pill's glyph
-// names its axis, so repeating it in the text is the same word twice.
-const modelChoices = (agent: string): { value: ComposerPicks["model"]; label: string }[] =>
-  modelsOf(agent).map((m) => ({
-    value: m,
-    label: modelLabelsOf(agent)[m] ?? m,
-  }));
+// The labels are BARE — "Opus", "High" — not "High effort": each pill's glyph
+// names its axis, so repeating it in the text is the same word twice. The
+// menu says them the way the New task card does (Akshil, 2026-11-07): models
+// lightest first with a word on what each is for, levels in the card's words.
+const modelChoices = (agent: string): PickChoice<ComposerPicks["model"]>[] =>
+  modelsOf(agent).map((m) => {
+    const desc = modelDescription(m);
+    return { value: m, label: modelLabelsOf(agent)[m] ?? m, ...(desc ? { desc } : {}) };
+  });
 
 // THE CHOSEN MODEL'S levels (per model where the catalog knows them per
 // model — a Copilot model may take none, and then no effort pick is drawn).
-const effortChoices = (agent: string, model: string): { value: ComposerPicks["effort"]; label: string }[] =>
-  effortsForModel(agent, model).map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
+const effortChoices = (agent: string, model: string): PickChoice<ComposerPicks["effort"]>[] =>
+  effortsForModel(agent, model).map((e) => ({ value: e as ComposerPicks["effort"], label: effortLabel(e) }));
 
 // A composer attachment — NewJobModal's TaskImage shape. `path` is "" until the
 // upload answers; `thumb` is a blob: URL for a picture the browser can draw.
@@ -290,10 +294,26 @@ export const PICK_GLYPHS = {
   ),
 };
 
-// One borderless picker: glyph, then a native select carrying its own chevron.
-// A <label> around both so the glyph is part of the control's hit area rather
-// than decoration beside it — the pill has no border to aim at, so the target
-// has to be the whole thing.
+interface PickChoice<T extends string> {
+  value: T;
+  label: string;
+  /** A word or two printed small beside the label in the open menu. */
+  desc?: string;
+}
+
+const PICK_CHECK = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
+// One borderless picker: glyph, word, chevron — and on press the SAME MENU the
+// New task card's pills open (Akshil, 2026-11-07: one look for every model and
+// thinking list): the list's name as a heading, one row per choice, a model's
+// word on what it is for, a tick on the current one. A button rather than the
+// native select it used to be, because the OS popup can print neither the
+// heading nor a description.
 function ComposerPick<T extends string>({
   glyph,
   label,
@@ -305,40 +325,69 @@ function ComposerPick<T extends string>({
   glyph: keyof typeof PICK_GLYPHS;
   label: string;
   value: T;
-  choices: { value: T; label: string }[];
+  choices: PickChoice<T>[];
   disabled: boolean;
   onPick: (next: T) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const said = choices.find((c) => c.value === value)?.label ?? value;
   return (
-    <label className="home-composer-pick">
-      <span className="home-composer-pick-glyph" aria-hidden="true">
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          {PICK_GLYPHS[glyph]}
-        </svg>
-      </span>
-      <Select
-        className="home-composer-pick-sel"
-        aria-label={label}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onPick(e.target.value as T)}
+    <Popover open={open && !disabled} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className={"home-composer-pick" + (open ? " is-open" : "")}
+            aria-label={`${label}: ${said}`}
+            aria-haspopup="menu"
+            disabled={disabled}
+          />
+        }
       >
-        {choices.map((c) => (
-          <option key={c.value} value={c.value}>
-            {c.label}
-          </option>
-        ))}
-      </Select>
-    </label>
+        <span className="home-composer-pick-glyph" aria-hidden="true">
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            {PICK_GLYPHS[glyph]}
+          </svg>
+        </span>
+        <span className="home-composer-pick-val">{said}</span>
+      </PopoverTrigger>
+      <PopoverContent
+        side="bottom"
+        align="start"
+        sideOffset={6}
+        className="home-pick-pop w-auto min-w-[180px] gap-0 p-1"
+      >
+        <div className="home-pick-head">{label}</div>
+        <div role="menu" aria-label={label}>
+          {choices.map((c) => (
+            <button
+              key={c.value}
+              type="button"
+              role="menuitemradio"
+              aria-checked={c.value === value}
+              className="home-pick-opt"
+              onClick={() => {
+                setOpen(false);
+                onPick(c.value);
+              }}
+            >
+              <span>{c.label}</span>
+              {c.desc ? <span className="home-pick-desc">{c.desc}</span> : null}
+              {c.value === value ? PICK_CHECK : null}
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

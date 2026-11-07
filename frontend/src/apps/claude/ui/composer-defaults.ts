@@ -73,12 +73,12 @@ import { useChatParams } from "../params/useChatParams";
  *  of Fable resolves onto the alias now — see `normalizeModel`, which is what
  *  keeps a chat, a task or a `?model=` that still carries the old id reading as
  *  Fable instead of blanking the pill. */
-export const MODELS = ["fable", "opus", "sonnet", "haiku"] as const;
+export const MODELS = ["haiku", "sonnet", "opus", "fable"] as const;
 export const MODEL_LABELS: Record<string, string> = {
-  fable: "Fable",
-  opus: "Opus",
-  sonnet: "Sonnet",
   haiku: "Haiku",
+  sonnet: "Sonnet",
+  opus: "Opus",
+  fable: "Fable",
 };
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;

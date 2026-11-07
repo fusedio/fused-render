@@ -60,9 +60,9 @@ function Box({ req }: { req: BuildDialogReq }) {
           <Field>
             <FieldLabel htmlFor="bdmodel">Model</FieldLabel>
             <NativeSelect className="w-full" id="bdmodel" value={model} onChange={(e) => setModel(e.target.value)}>
-              <NativeSelectOption value="sonnet">Sonnet · balanced</NativeSelectOption>
-              <NativeSelectOption value="opus">Opus · strongest</NativeSelectOption>
-              <NativeSelectOption value="fable">Fable · most capable</NativeSelectOption>
+              <NativeSelectOption value="sonnet">Sonnet · Balanced</NativeSelectOption>
+              <NativeSelectOption value="opus">Opus · Deep reasoning</NativeSelectOption>
+              <NativeSelectOption value="fable">Fable · Autonomous agents</NativeSelectOption>
             </NativeSelect>
           </Field>
           <Field>
@@ -70,7 +70,7 @@ function Box({ req }: { req: BuildDialogReq }) {
             <NativeSelect className="w-full" id="bdeffort" value={effort} onChange={(e) => setEffort(e.target.value)}>
               <NativeSelectOption value="medium">Medium</NativeSelectOption>
               <NativeSelectOption value="high">High · careful</NativeSelectOption>
-              <NativeSelectOption value="xhigh">Extra high · slowest</NativeSelectOption>
+              <NativeSelectOption value="xhigh">Xhigh · slowest</NativeSelectOption>
             </NativeSelect>
           </Field>
         </div>

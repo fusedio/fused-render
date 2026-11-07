@@ -48,10 +48,10 @@ export const CLAUDE_FALLBACK: AgentBackendRow = {
   label: "Claude",
   enabled: true,
   models: [
-    { id: "fable", label: "Fable" },
-    { id: "opus", label: "Opus" },
-    { id: "sonnet", label: "Sonnet" },
     { id: "haiku", label: "Haiku" },
+    { id: "sonnet", label: "Sonnet" },
+    { id: "opus", label: "Opus" },
+    { id: "fable", label: "Fable" },
   ],
   default_model: "sonnet",
   efforts: ["low", "medium", "high", "xhigh", "max"],

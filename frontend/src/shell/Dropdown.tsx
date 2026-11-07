@@ -169,7 +169,8 @@ export function Dropdown({
   labelledBy,
 }: {
   value: string; // the current choice's LABEL
-  options: { key: string; label: string; disabled?: boolean }[];
+  /** `desc`: a word or two printed small beside the label in the open menu. */
+  options: { key: string; label: string; disabled?: boolean; desc?: string }[];
   onPick: (key: string) => void;
   ariaLabel?: string;
   className?: string;
@@ -330,7 +331,21 @@ export function Dropdown({
           className="schedule-pop schedule-pop--menu"
           role="listbox"
           aria-label={ariaLabel}
-          style={popStyle(btnRef.current, options.length * 34 + 10, true)}
+          style={
+            // A menu whose rows carry a description ("opus[1m]  Deep
+            // reasoning") is wider than the control: it grows to fit its rows,
+            // never narrower than the trigger, and hangs from the trigger's
+            // RIGHT edge so the extra width opens leftward over the row
+            // instead of off the page.
+            options.some((o) => o.desc)
+              ? {
+                  ...popStyle(btnRef.current, options.length * 34 + 10, true, false, true, 280),
+                  width: "max-content",
+                  maxWidth: `calc(100vw - ${2 * POP_EDGE}px)`,
+                  minWidth: btnRef.current?.getBoundingClientRect().width ?? 140,
+                }
+              : popStyle(btnRef.current, options.length * 34 + 10, true)
+          }
           onMouseDown={(e) => e.preventDefault()}
           onMouseLeave={() => setActive(-1)}
         >
@@ -356,6 +371,7 @@ export function Dropdown({
               }}
             >
               {o.label}
+              {o.desc ? <span className="schedule-menu-desc">{o.desc}</span> : null}
             </button>
           ))}
         </div>

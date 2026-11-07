@@ -270,7 +270,7 @@ describe("the payload", () => {
     );
     // The KEY travels, not the label: "opus" is what `--model` takes, "Opus" is
     // only how the card says it. Same for "high", whose field is labelled
-    // Thinking.
+    // Effort.
     expect(picked.model).toBe("opus");
     expect(picked.effort).toBe("high");
 
@@ -2903,9 +2903,9 @@ describe("property pills", () => {
     expect(s).toContain("PERMISSION_ORDER.indexOf(m)");
   });
 
-  test("the pill row starts with Model, Thinking, Access, then Where, When", () => {
+  test("the pill row starts with Model, Effort, Access, then Where, When", () => {
     const s = src();
-    const order = ["Model", "Thinking", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
+    const order = ["Model", "Effort", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(order.every((i) => i > -1)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
@@ -2914,16 +2914,16 @@ describe("property pills", () => {
     expect(src()).toMatch(/pastNoteFor\(timePicked && pickedOk \? picked : null,/);
   });
 
-  test("the MODEL pill says the model alone; Thinking is its own pill (the composer's row)", () => {
+  test("the MODEL pill says the model alone; Effort is its own pill (the composer's row)", () => {
     const s = src();
     expect(s).toContain('const modelText = taskRunLabel(runModels, model) || "Default";');
     expect(s).not.toContain("effortText.toLowerCase()");
     // The three run words are bare pills; where and when are the chips, pushed
     // to the right edge by the gap between the two groups.
     expect(s.match(/className="pp--bare"/g)?.length).toBe(3);
-    // No Thinking pill for a model whose catalog row lists no levels: the
+    // No Effort pill for a model whose catalog row lists no levels: the
     // whole pill is behind the guard, not just its rows.
-    const think = s.indexOf('ariaLabel="Thinking"');
+    const think = s.indexOf('ariaLabel="Effort"');
     expect(s.lastIndexOf("{runEfforts.length ? (", think)).toBeGreaterThan(s.indexOf('ariaLabel="Model"'));
     const group = s.indexOf('<div className="nt-pills-right">');
     expect(group).toBeGreaterThan(s.indexOf('ariaLabel="Permissions"'));
@@ -2965,9 +2965,9 @@ describe("property pills", () => {
     expect(initialTextOf({ title: "a", text: "a\nb" }, undefined, "a", "b")).toBe("a\nb");
   });
 
-  test("five pills, in source order: Model, Thinking, Access, Where, When", () => {
+  test("five pills, in source order: Model, Effort, Access, Where, When", () => {
     const s = src();
-    const at = ["Model", "Thinking", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
+    const at = ["Model", "Effort", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     // …and they sit in the row that replaced the folder row.
@@ -2990,8 +2990,8 @@ describe("property pills", () => {
 
   test("the controls keep the aria-labels the rest of the suite finds them by", () => {
     const s = src();
-    for (const l of ['ariaLabel="Permissions"', 'ariaLabel="Model"', 'ariaLabel="Thinking"',
-      'aria-label="Thinking"', 'ariaLabel="Repeats"']) {
+    for (const l of ['ariaLabel="Permissions"', 'ariaLabel="Model"', 'ariaLabel="Effort"',
+      'aria-label="Effort"', 'ariaLabel="Repeats"']) {
       expect(s).toContain(l);
     }
   });

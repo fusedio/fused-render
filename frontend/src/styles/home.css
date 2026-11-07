@@ -298,25 +298,39 @@
    two more outlined pills inside that same box turned its footer into a row of
    competing buttons. The wash arrives on hover, which is where a reader is
    asking whether this is a control at all. */
-.home-composer-pick {
+/* Scoped under the composer: the New app modal's `.deploy-body button`
+   (fields.css) paints a border, fill and padding on every button. */
+.home-composer .home-composer-pick {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding-left: 6px;
+  height: auto;
+  padding: 3px 8px 3px 6px;
+  border: none;
   border-radius: 999px;
+  background-color: transparent;
+  box-shadow: none;
   color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
   cursor: pointer;
   transition:
     color 120ms ease,
     background-color 120ms ease;
 }
 
-.home-composer-pick:hover:not(:has(:disabled)) {
+/* Focus is the HOVER WASH on the whole pill, and no ring: the glyph and the
+   word are one control. `:focus-visible`, not `:focus`: a click already gets
+   the hover wash, so keyboard is the only case that still needs saying. */
+.home-composer .home-composer-pick:hover:not(:disabled),
+.home-composer .home-composer-pick.is-open,
+.home-composer .home-composer-pick:focus-visible {
   color: var(--fg);
   background-color: var(--bg-alt);
+  outline: none;
 }
 
-.home-composer-pick:has(:disabled) {
+.home-composer .home-composer-pick:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -327,39 +341,64 @@
   margin-top: -1px;
 }
 
-/* `background-COLOR`, never the `background` shorthand: the chevron is a
-   background-image on .field-control, and a shorthand here would erase it and
-   leave the select with no affordance at all now that the border is gone. The
-   right padding is the space that glyph is drawn in. */
-.home-composer .home-composer-pick-sel {
-  height: auto;
-  padding: 3px 18px 3px 2px;
-  font-size: 12px;
-  color: inherit;
-  background-color: transparent;
-  background-position: right 4px center;
-  border: none;
-  border-radius: 999px;
-  cursor: inherit;
+/* The chevron the New task card's bare pills hang off their word. */
+.home-composer-pick-val::after {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin: 0 2px 2px 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0.7;
+  vertical-align: middle;
 }
 
-/* Focus is the HOVER WASH, on the whole pill, and no ring at all. An outline
-   drawn on the <select> traces the select alone — the glyph is the label's
-   child, not the select's, so the ring cut the pill in half and boxed the word
-   while the icon sat outside it. Washing the label instead marks the same thing
-   the pointer marks, at the size the control actually is. `:has(:focus-visible)`
-   and not `:focus-within`: a click already gets the hover wash, so keyboard is
-   the only case that still needs saying. */
-.home-composer-pick:has(:focus-visible) {
+/* THE MENU — the New task card's `.nt-pop-h` / `.nt-menu` look, restated
+   here because the shell's stylesheet is not this app's to lean on. */
+.home-pick-pop .home-pick-head {
+  padding: 6px 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.home-pick-pop .home-pick-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
   color: var(--fg);
-  background-color: var(--bg-alt);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-/* The "Auto" option is muted by fields.css's placeholder rule (it is the
-   `value=""` one). Here that fights the pill's own hover, which lifts the whole
-   control to --fg — so the select keeps `inherit` and the pill decides. */
-.home-composer .home-composer-pick-sel:has(option[value=""]:checked) {
-  color: inherit;
+.home-pick-pop .home-pick-opt:hover,
+.home-pick-pop .home-pick-opt:focus-visible {
+  background: var(--ctl-quiet-bg);
+  outline: none;
+}
+
+.home-pick-pop .home-pick-desc {
+  color: var(--fg-faint);
+  font-size: 11.5px;
+}
+
+.home-pick-pop .home-pick-opt svg {
+  margin-left: auto;
+  padding-left: 12px;
+  box-sizing: content-box;
 }
 
 .home-composer-hint {
@@ -2666,7 +2705,6 @@ a.hw-more:hover {
 .hw-ph .files-search-input { padding: 12px 0; font-size: 14px; line-height: 1.4; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hw-ph .home-composer-input { min-height: 83px; padding: 14px 16px 6px; font-size: 14px; line-height: 1.5; }
 .hw-ph .home-composer-wrap { margin-bottom: 0; }
-.hw-ph .hw-ph-sel { display: inline-flex; align-items: center; gap: 3px; padding: 3px 2px; font-size: 12px; }
 
 .hw-widget.is-build { text-align: left; padding: 0; }
 
