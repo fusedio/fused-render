@@ -1,7 +1,6 @@
 // The Apps page's "What do you want to build?" composer as a Home widget.
 // HeroComposer owns the whole create path (name → scaffold → navigate to the
 // new app's chat), so the widget only mounts it; onCreated has nothing to do.
-import { ChevronDown } from "lucide-react";
 import { HeroComposer, PICK_GLYPHS } from "@apps/builder/HomeHero";
 
 export function BuildWidget({ edit }: { edit: boolean }) {
@@ -21,13 +20,13 @@ export function BuildWidget({ edit }: { edit: boolean }) {
                     <span className="home-composer-pick-glyph">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{PICK_GLYPHS.model}</svg>
                     </span>
-                    <span className="home-composer-pick-sel hw-ph-sel">Fable<ChevronDown size={12} /></span>
+                    <span className="home-composer-pick-val">Sonnet</span>
                   </span>
                   <span className="home-composer-pick">
                     <span className="home-composer-pick-glyph">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{PICK_GLYPHS.effort}</svg>
                     </span>
-                    <span className="home-composer-pick-sel hw-ph-sel">medium<ChevronDown size={12} /></span>
+                    <span className="home-composer-pick-val">Medium</span>
                   </span>
                 </div>
                 <span className="home-composer-send">

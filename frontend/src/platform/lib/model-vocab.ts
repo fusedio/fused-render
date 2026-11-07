@@ -68,3 +68,18 @@ export function modelDescription(value: string | null | undefined): string {
   const base = normalizeModel(value).replace(QUALIFIER, "");
   return Object.prototype.hasOwnProperty.call(MODEL_DESCRIPTIONS, base) ? MODEL_DESCRIPTIONS[base] : "";
 }
+
+/** How each `--effort` level is SAID in a menu — the New task card's words
+ *  ("Extra high", not the flag's "xhigh"). A level this map has never heard
+ *  of says itself. */
+export const EFFORT_LABELS: Readonly<Record<string, string>> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+export function effortLabel(value: string): string {
+  return Object.prototype.hasOwnProperty.call(EFFORT_LABELS, value) ? EFFORT_LABELS[value] : value;
+}
