@@ -726,6 +726,22 @@ test("a failed write reverts only its own key; the last write carries the other 
   expect(r.root.findByProps({ "data-key": "a" }).findAllByProps({ "aria-label": "Unpin" })).toHaveLength(0);
 });
 
+// The page's Workspace and the rail's Tasks card's, both up (CodeRabbit,
+// 2026-11-08): a pin on one side shows on the other, and the other's next
+// write carries it — not its own stale copy.
+test("two Workspaces share one pin list: the second write carries the first's pin", async () => {
+  const posts = serve();
+  const rows = [task({ key: "a", status: "needs_attention" }), task({ key: "b", status: "needs_attention", started: 0 })];
+  const page = await render(rows);
+  const card = await render(rows);
+  await clickPin(page, "a", "Pin to top");
+  expect(card.root.findByProps({ "data-key": "a" }).findAllByProps({ "aria-label": "Unpin" }).length).toBeGreaterThan(0);
+  await clickPin(card, "b", "Pin to top");
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([["a"], ["a", "b"]]);
+  expect(page.root.findByProps({ "data-key": "b" }).findAllByProps({ "aria-label": "Unpin" }).length).toBeGreaterThan(0);
+});
+
 test("a toggle after a failed pin load re-reads the stored pins first, so they are not wiped", async () => {
   const posts = serve();
   const base = globalThis.fetch;

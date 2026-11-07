@@ -468,9 +468,15 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
   // Escape = Cancel (or close the + menu first), wherever focus is: a removed
   // chip takes the focus with it, so a listener on the strip alone missed the
   // key right after the most natural edit.
+  // …but not from an editor put away with the rail's Tasks card, or under
+  // its chat: that editor is inert, which a window listener cannot see, and
+  // the key is someone else's then — the page's own menu's, say (CodeRabbit,
+  // 2026-11-08: a closed card's editor cancelling its draft and eating the
+  // Escape meant for the More menu).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (stripRef.current?.closest("[inert]")) return;
       e.stopPropagation();
       if (adding) setAdding(false);
       else if (sorting) closeSort();

@@ -1821,10 +1821,17 @@ function cardDoorNow(): CardPeekDoors | null {
  *  page and the rail's Tasks card can each mount a Workspace, and a hidden
  *  card's must never act on a key typed elsewhere. A Workspace inside a rail
  *  card owns only keys typed inside that card; one on the page, every key
- *  but those typed in a rail card. `root` is the Workspace's own element. */
+ *  but those typed in a rail card. `root` is the Workspace's own element.
+ *
+ *  A Workspace under `inert` owns NO key (Bugbot and CodeRabbit, 2026-11-08):
+ *  the card's list goes inert under an open chat (and the whole card while
+ *  it is down), but the Workspace's listener sits on the window, which
+ *  `inert` does not reach — so `n`, `x`, `j` or ⌘K typed on the chat's Back
+ *  would have created, archived or re-selected in the list behind it. */
 export const RAIL_CARD_SELECTOR = ".claude-rail-peek";
 
 export function workspaceOwnsKey(root: Element | null, target: EventTarget | null): boolean {
+  if (root?.closest("[inert]")) return false;
   const el = target && typeof (target as Element).closest === "function" ? (target as Element) : null;
   const card = root?.closest(RAIL_CARD_SELECTOR) ?? null;
   if (card) return !!el && card.contains(el);

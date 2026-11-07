@@ -1775,13 +1775,15 @@ describe("the rail's Tasks card", () => {
 describe("workspaceOwnsKey", () => {
   // Elements as far as the rule reads them: an ancestor chain, `closest` on
   // the card's selector, `contains`.
-  function el(parent: FakeEl | null, card = false): FakeEl {
+  function el(parent: FakeEl | null, card = false, inert = false): FakeEl {
     const me: FakeEl = {
       parent,
       card,
+      inert,
       closest(sel: string) {
-        if (sel !== ".claude-rail-peek") return null;
-        for (let n: FakeEl | null = me; n; n = n.parent) if (n.card) return n;
+        if (sel !== ".claude-rail-peek" && sel !== "[inert]") return null;
+        const hit = sel === "[inert]" ? (n: FakeEl) => n.inert : (n: FakeEl) => n.card;
+        for (let n: FakeEl | null = me; n; n = n.parent) if (hit(n)) return n;
         return null;
       },
       contains(other: FakeEl) {
@@ -1794,6 +1796,7 @@ describe("workspaceOwnsKey", () => {
   interface FakeEl {
     parent: FakeEl | null;
     card: boolean;
+    inert: boolean;
     closest(sel: string): FakeEl | null;
     contains(other: FakeEl): boolean;
   }
@@ -1816,5 +1819,18 @@ describe("workspaceOwnsKey", () => {
     expect(own(cardWs, inCard)).toBe(true);
     expect(own(cardWs, onPage)).toBe(false);
     expect(own(cardWs, null)).toBe(false);
+  });
+
+  // The list goes inert under the card's chat, the card while it is down:
+  // a key typed on the chat's Back (inside the card, outside the list) must
+  // not reach the Workspace behind (Bugbot, 2026-11-08).
+  it("a Workspace under inert owns nothing, not even a key typed in its card", () => {
+    const hiddenList = el(cardBox, false, true);
+    const hiddenWs = el(hiddenList);
+    const onBack = el(cardBox);
+    expect(own(hiddenWs, onBack)).toBe(false);
+    expect(own(hiddenWs, el(hiddenWs))).toBe(false);
+    const downCard = el(null, true, true);
+    expect(own(el(downCard), el(downCard))).toBe(false);
   });
 });

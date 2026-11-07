@@ -6,8 +6,10 @@ import { PEEK_CLOSE_MS, PEEK_OPEN_MS, type Timers } from "./rail-peek-lib";
 import {
   TASKS_CARD_KEY,
   closeTasksCard,
+  focusTasksCard,
   railTasksDoor,
   registerTasksCard,
+  registerTasksCardFocus,
   registerTasksDoor,
   resetTasksCardForTests,
   setTasksCardRoom,
@@ -121,5 +123,20 @@ describe("the door registry", () => {
     offA();
     expect(railTasksDoor(rail)).toBe(b);
     expect(railTasksDoor(null)).toBeNull();
+  });
+});
+
+// The door's Enter puts the keyboard in the card (CodeRabbit, 2026-11-08):
+// the card says how; with none mounted the ask is a no.
+describe("focusTasksCard", () => {
+  beforeEach(() => resetTasksCardForTests());
+  it("asks the registered card, and is false with none", () => {
+    expect(focusTasksCard()).toBe(false);
+    let asked = 0;
+    const off = registerTasksCardFocus(() => (asked += 1) > 0);
+    expect(focusTasksCard()).toBe(true);
+    expect(asked).toBe(1);
+    off();
+    expect(focusTasksCard()).toBe(false);
   });
 });

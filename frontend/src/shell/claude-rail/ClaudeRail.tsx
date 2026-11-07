@@ -356,6 +356,7 @@ import {
   TASKS_CARD_KEY,
   TASKS_PEEK_ID,
   closeTasksCard,
+  focusTasksCard,
   registerTasksDoor,
   tasksCardIntent,
   tasksDoorAction,
@@ -2363,7 +2364,13 @@ export function ClaudeRail({
     hideHint();
     if (act === "navigate") void navigateUrl("/tasks");
     else if (act === "close") closeTasksCard();
-    else tasksCardIntent().press(TASKS_CARD_KEY);
+    else {
+      tasksCardIntent().press(TASKS_CARD_KEY);
+      // An Enter on the door (`detail` 0: no pointer) takes the keyboard into
+      // the card, as a ring's does into the list card (CodeRabbit,
+      // 2026-11-08: left on the door, the next Tab reached the + instead).
+      if (e.detail === 0) cardFocusSoon(TASKS_PEEK_ID, focusTasksCard);
+    }
   };
 
   // ONE ACTIVE RING PER SECTION (header; rail-peek-lib `activeRing`). The

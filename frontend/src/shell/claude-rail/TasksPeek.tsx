@@ -103,6 +103,7 @@ import {
   closeTasksCard,
   railTasksDoor,
   registerTasksCard,
+  registerTasksCardFocus,
   setTasksCardRoom,
   tasksCardIntent,
   tasksCardState,
@@ -438,6 +439,17 @@ export function TasksPeek() {
     if (chatKey && !was && lost) backRef.current?.focus({ preventScroll: true });
     else if (!chatKey && was && lost) closeRef.current?.focus({ preventScroll: true });
   }, [chatKey, visible]);
+
+  // THE DOOR'S ENTER LANDS THE KEYBOARD HERE (tasks-peek-store
+  // `focusTasksCard`): on Back over a chat, else on the ×.
+  useEffect(
+    () =>
+      registerTasksCardFocus(() => {
+        (backRef.current ?? closeRef.current)?.focus({ preventScroll: true });
+        return !!cardRef.current?.contains(document.activeElement);
+      }),
+    [],
+  );
 
   // WHICH FOCUS HOLDS THE CARD (RailPeek): an editable, a popup of its own,
   // or focus the keyboard brought.

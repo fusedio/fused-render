@@ -147,7 +147,28 @@ export function railTasksDoor(rail: HTMLElement | null): HTMLElement | null {
   return (rail && doors.get(rail)) ?? null;
 }
 
+/** THE KEYBOARD INTO THE CARD (CodeRabbit, 2026-11-08): an Enter on the door
+ *  pins the card, and the keyboard should land in it — on its × (or its
+ *  chat's Back) — as an Enter on a ring lands in the list card; left on the
+ *  door, the next Tab reached the + and the reader had to walk the rail to
+ *  get in. The card registers how (TasksPeek); the door asks, by frame, until
+ *  the card is drawn (ClaudeRail `cardFocusSoon`). */
+let focuser: (() => boolean) | null = null;
+
+export function registerTasksCardFocus(fn: () => boolean): () => void {
+  focuser = fn;
+  return () => {
+    if (focuser === fn) focuser = null;
+  };
+}
+
+/** Put the keyboard in the card; true once it is there. */
+export function focusTasksCard(): boolean {
+  return focuser?.() ?? false;
+}
+
 export function resetTasksCardForTests(timers?: Timers): void {
+  focuser = null;
   intent?.dispose();
   intent = null;
   testTimers = timers;
