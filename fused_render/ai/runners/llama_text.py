@@ -216,12 +216,27 @@ import worker_base  # noqa: E402 - the path insert above is what makes it import
 #: The loaded `Llama` instance. One per process.
 _loaded = {}
 
-#: How much context this runner asks llama.cpp to allocate. 8192 rather than a
-#: GGUF's own trained maximum (Qwen3.5 supports far more): this runner exists
-#: to serve ordinary chat turns on a CPU, where a larger KV cache is memory and
-#: prompt-processing time spent on headroom nobody asked for. Raising it is a
-#: one-line change if a curated model's use case needs it.
-_N_CTX = 8192
+#: How much context this runner asks llama.cpp to allocate. 8192 by default
+#: rather than a GGUF's own trained maximum (Qwen3.5 supports far more): this
+#: runner exists to serve ordinary chat turns on a CPU, where a larger KV
+#: cache is memory and prompt-processing time spent on headroom nobody asked
+#: for. The supervisor overrides it per load through `FUSED_AI_N_CTX`
+#: (`supervisor.load(n_ctx=)`, docs/LOCAL_MODEL_GATEWAY.md §3) — the `/v1`
+#: gateway passes a catalog row's `context` so an agent CLI's long
+#: transcripts fit; an unreadable value falls back to the default.
+_DEFAULT_N_CTX = 8192
+
+
+def _n_ctx_from_env(default: int = _DEFAULT_N_CTX) -> int:
+    raw = os.environ.get("FUSED_AI_N_CTX", "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+_N_CTX = _n_ctx_from_env()
 
 #: Curated `(repo, file)` pairs — see the module docstring for why this lives
 #: in `formats.py` rather than here, and why the key is a filename rather than
@@ -1013,9 +1028,14 @@ def _eos_token_for_template(llm):
     return _token_text(llm, llm.token_eos())
 
 
-def _render_chat(template_str, llm, messages, enable_thinking=True):
+def _render_chat(template_str, llm, messages, enable_thinking=True, tools=None):
     """The model's own chat template, with reasoning ON by default (D886,
     reversing AI-11d).
+
+    `tools` (a list of OpenAI function schemas, or None) rides into the
+    render context under the name every tools-aware template reads
+    (docs/LOCAL_MODEL_GATEWAY.md §2); a template with no `tools` branch
+    simply never sees it.
 
     See the module docstring for why an `enable_thinking` that a template
     never reads needs no retry here, where the removed
@@ -1034,7 +1054,8 @@ def _render_chat(template_str, llm, messages, enable_thinking=True):
     return template.render(
         messages=messages, add_generation_prompt=True,
         bos_token=_bos_token_for_template(llm),
-        eos_token=_eos_token_for_template(llm), enable_thinking=enable_thinking)
+        eos_token=_eos_token_for_template(llm), enable_thinking=enable_thinking,
+        tools=tools)
 
 
 def _content_text(content):
@@ -1056,7 +1077,7 @@ def _content_text(content):
     return ""
 
 
-def _prompt_text(llm, messages, raw_prompt, enable_thinking=True):
+def _prompt_text(llm, messages, raw_prompt, enable_thinking=True, tools=None):
     """The text to hand `create_completion`: raw, templated, or a plain join.
 
     Three paths, in the order the removed `torch_text._encode` tried them
@@ -1086,7 +1107,7 @@ def _prompt_text(llm, messages, raw_prompt, enable_thinking=True):
 
         try:
             return _render_chat(template_str, llm, messages,
-                                enable_thinking=enable_thinking)
+                                enable_thinking=enable_thinking, tools=tools)
         except jinja2.exceptions.TemplateError as error:
             print(f"llamacpp-text: chat template failed to render, falling back "
                   f"to a plain join: {error}", file=sys.stderr)
@@ -1166,25 +1187,35 @@ def generate(body, write):
     enable_thinking = body.get("enable_thinking")
     if enable_thinking is None:
         enable_thinking = True
+    # `tools`/`stop`/`max_tokens` through the shared validator (docs/
+    # LOCAL_MODEL_GATEWAY.md §3): the handler already refused a malformed
+    # body with a 400, so this cannot raise here.
+    options = worker_base.generation_options(body)
     prompt = _prompt_text(llm, messages, body.get("prompt") or "",
-                          enable_thinking=enable_thinking)
+                          enable_thinking=enable_thinking, tools=options["tools"])
     # What the model READ, reported as `input_tokens` (SPEC AI-3) — counted
     # before the first token, so a cancelled generation still reports it.
     prompt_tokens = _prompt_tokens(llm, prompt)
-    max_tokens = int(body.get("max_tokens") or 1024)
+    max_tokens = options["max_tokens"] or 1024
     temperature = float(body.get("temperature", 0.7))
     top_p = float(body.get("top_p", 0.95))
 
     completion = llm.create_completion(
         prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p,
-        stream=True)
+        stream=True, stop=options["stop"] or None)
 
     count = 0
     started = time.time()
+    # llama.cpp names its own reason on the LAST chunk (`"stop"` for an EOS
+    # or a stop string, `"length"` for the budget); read when present, else
+    # derived from the count below.
+    reported = None
     for chunk in completion:
         if worker_base.CANCEL.is_set():
             break
-        text = chunk["choices"][0]["text"]
+        choice = chunk["choices"][0]
+        reported = choice.get("finish_reason") or reported
+        text = choice["text"]
         if not text:
             continue
         count += 1
@@ -1192,12 +1223,17 @@ def generate(body, write):
 
     if worker_base.CANCEL.is_set():
         write({"type": "done", "ok": True, "cancelled": True, "tokens": count,
-               "input_tokens": prompt_tokens})
+               "input_tokens": prompt_tokens, "finish_reason": "cancel"})
         return
+    if reported in ("stop", "length"):
+        finish = reported
+    else:
+        finish = worker_base.finish_reason(count=count, max_tokens=max_tokens)
     write({
         "type": "done", "ok": True, "tokens": count,
         "input_tokens": prompt_tokens,
         "seconds": round(time.time() - started, 2),
+        "finish_reason": finish,
     })
 
 

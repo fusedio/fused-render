@@ -12,6 +12,9 @@ The user's own skills live in the dirs the three CLIs read:
   ~/.copilot/skills           Copilot   (COPILOT_HOME moves it)
   ~/.codex/skills             Codex     (CODEX_HOME moves it)
   ~/.gemini/skills            Gemini    (GEMINI_CLI_HOME moves it)
+  <opencode config dir>/skills  OpenCode (its config-dir variable moves it; it
+                              also reads a project's `.opencode/skills`,
+                              which is not a user dir and is not listed)
 
 A skill reachable from several of them by symlink is ONE row whose `readers`
 are the union. Dot-dirs (Codex's bundled .system) are not the user's.
@@ -29,7 +32,7 @@ installed_plugins.json's installPath, never a path from the caller.
 main(action=...):
   list -> {skills: [{slug, name, description, source, plugin?, marketplace?,
                      linked, path, location, paths, readers}]}
-          readers: ["claude" | "copilot" | "codex" | "gemini"]; paths: every entry (copy
+          readers: ["claude" | "copilot" | "codex" | "gemini" | "opencode"]; paths: every entry (copy
           and link) that is this skill
   available -> {skills: [{slug, name, description, plugin, pluginDescription,
                           marketplace, path, pluginInstalled, added}], skipped}
@@ -94,13 +97,14 @@ import urllib.parse
 import urllib.request
 
 from fused_render import codex_health, copilot_health, gemini_health
+from fused_render.agent_backends import opencode_config
 from fused_render.shell import prefs, storage
 
 from . import lib, marketplaces, plugins
 
 SKILLS_DIR = os.path.join(lib.CLAUDE_DIR, "skills")
 
-_CLIS = ("claude", "copilot", "codex", "gemini")
+_CLIS = ("claude", "copilot", "codex", "gemini", "opencode")
 
 
 # A plugin ships its skills across at most a few dozen dirs; the walk budget
@@ -123,6 +127,10 @@ def _user_dirs() -> list:
         (os.path.join(copilot_health.config_dir(), "skills"), ["copilot"]),
         (os.path.join(codex_health.config_dir(), "skills"), ["codex"]),
         (os.path.join(gemini_health.config_dir(), "skills"), ["gemini"]),
+        # OpenCode reads `<config dir>/skills` (and a project's own
+        # `.opencode/skills`, not a user dir). `opencode_config.config_dir`
+        # is the one reader of its config-dir rule outside the health files.
+        (os.path.join(opencode_config.config_dir(), "skills"), ["opencode"]),
     ]
     merged: dict = {}
     for path, readers in dirs:

@@ -358,6 +358,58 @@ def snapshot():
         return dict(STATE)
 
 
+class BadRequest(ValueError):
+    """A `/generate` body this worker refuses before touching the model —
+    answered 400 by the handler rather than as a failed generation."""
+
+
+def generation_options(body) -> dict:
+    """The gateway-facing knobs of a `/generate` body, validated
+    (docs/LOCAL_MODEL_GATEWAY.md §3): `tools` (a list of OpenAI function
+    schemas, or None), `stop` (a list of strings, always a list), and
+    `max_tokens` (int, None when unset). Raises `BadRequest` naming the
+    first malformed one. Shared by the text runners so neither grows its own
+    reading of the same three keys; unrelated keys are left to the runner.
+    """
+    if not isinstance(body, dict):
+        raise BadRequest("body must be a JSON object")
+    tools = body.get("tools")
+    if tools is not None:
+        if not isinstance(tools, list) or not all(isinstance(t, dict) for t in tools):
+            raise BadRequest("'tools' must be a list of objects")
+        if not tools:
+            tools = None
+    stop = body.get("stop")
+    if stop is None:
+        stop = []
+    elif isinstance(stop, str):
+        stop = [stop]
+    elif not isinstance(stop, list) or not all(isinstance(x, str) for x in stop):
+        raise BadRequest("'stop' must be a string or a list of strings")
+    stop = [x for x in stop if x]
+    max_tokens = body.get("max_tokens")
+    if max_tokens is not None:
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            raise BadRequest("'max_tokens' must be an integer") from None
+        if max_tokens <= 0:
+            raise BadRequest("'max_tokens' must be positive")
+    return {"tools": tools, "stop": stop, "max_tokens": max_tokens}
+
+
+def finish_reason(*, cancelled: bool = False, count: int = 0,
+                  max_tokens: int | None = None, hit_stop: bool = False) -> str:
+    """The `done` row's `finish_reason`: `cancel` when the ✕ landed, `length`
+    when the token budget ran out before the model stopped on its own,
+    `stop` otherwise (an EOS, or a `stop` string)."""
+    if cancelled:
+        return "cancel"
+    if not hit_stop and max_tokens is not None and count >= max_tokens:
+        return "length"
+    return "stop"
+
+
 def describe_failure(exc):
     """What a user should be told about `exc` — the CHAIN, never the top frame.
 
@@ -4573,6 +4625,15 @@ def _handler(generate, streaming):
             if self.path.startswith("/generate"):
                 if snapshot()["state"] != "ready":
                     self._json({"error": "the model is not loaded"}, status=409)
+                    return
+                # `tools`/`stop`/`max_tokens` are refused HERE when malformed
+                # (400), before the lock and the model: a runner that reads
+                # them later gets the validated shapes, and one that does not
+                # read them is unaffected.
+                try:
+                    generation_options(body)
+                except BadRequest as e:
+                    self._json({"error": str(e)}, status=400)
                     return
                 # NOT cleared here. `CANCEL` belongs to the generation that is
                 # RUNNING, and this handler may be a second request waiting for

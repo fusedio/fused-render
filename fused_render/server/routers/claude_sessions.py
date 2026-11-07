@@ -953,8 +953,9 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
     reply comes back RAW for `_title_parse`.
 
     A COPILOT session is recapped by Copilot (`_recap_copilot`), a CODEX
-    session by Codex (`_recap_codex`) and a GEMINI session by Gemini
-    (`_recap_gemini`), each from the same tail; everything below is the
+    session by Codex (`_recap_codex`), a GEMINI session by Gemini
+    (`_recap_gemini`) and an OPENCODE session by OpenCode
+    (`_recap_opencode`), each from the same tail; everything below is the
     Claude run.
 
     `--no-session-persistence` is the load-bearing flag: this run mints a
@@ -1012,6 +1013,8 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         return _recap_codex(agent, tail, prompts, raw)
     if backend == "gemini":
         return _recap_gemini(agent, tail, prompts, raw)
+    if backend == "opencode":
+        return _recap_opencode(agent, tail, prompts, raw)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": prompts[1] % tail}]}})
@@ -1065,13 +1068,14 @@ _COPILOT_SESSION_ID_RE = agent_oneshot.COPILOT_SESSION_ID_RE
 
 def _recap_oneshot(agent, backend: str, tail: str,
                    prompts: tuple[str, str] | None, raw: bool) -> str:
-    """The Copilot / Codex / Gemini twin of the Claude run above, through the
+    """The Copilot / Codex / Gemini / OpenCode twin of the Claude run above, through the
     ONE one-shot runner (`agent_oneshot`, D1433) that `/api/ai`'s agent tiers
     also use — the argv, the no-tools flags, the session cleanup and the
     spawn rule live there, once. None of the three has a system-prompt flag,
     so the system text leads the one user message (the runner prepends it).
     The model is the registry row's default (`auto` for Copilot and Gemini,
-    the plan's default for Codex): the job is small and that is the model
+    the plan's default for Codex, the seeded first for OpenCode): the job is
+    small and that is the model
     the user's plan certainly runs. Every failure is "", as the Claude run's."""
     system, template = prompts or (_RECAP_SYSTEM, _RECAP_PROMPT)
     try:
@@ -1101,6 +1105,15 @@ def _recap_gemini(agent, tail: str,
                   prompts: tuple[str, str] | None = None,
                   raw: bool = False) -> str:
     return _recap_oneshot(agent, "gemini", tail, prompts, raw)
+
+
+def _recap_opencode(agent, tail: str,
+                    prompts: tuple[str, str] | None = None,
+                    raw: bool = False) -> str:
+    """`opencode run --format json -m <model> <pointer>` with the prompt on
+    stdin and every tool denied through an injected `permission` block
+    (docs/OPENCODE_BACKEND.md D12/D16) — `agent_oneshot._prepare_opencode`."""
+    return _recap_oneshot(agent, "opencode", tail, prompts, raw)
 
 
 # Kept as names for readers that import them; the facts live in agent_oneshot.

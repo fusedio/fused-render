@@ -420,8 +420,28 @@ def _cache_trimmable(entries):
     return True
 
 
-def _messages_to_prompt(processor, messages, prompt, enable_thinking=None):
+#: The context window the supervisor asked for (`FUSED_AI_N_CTX`, set by
+#: `supervisor.load(n_ctx=)`, docs/LOCAL_MODEL_GATEWAY.md §3), read for
+#: parity with `llama_text._N_CTX`. mlx-vlm sizes its KV cache DYNAMICALLY —
+#: there is no fixed context allocation to hand it at load time — so this is
+#: a declared ceiling, not a buffer: `generate` caps `max_tokens` to it and
+#: the gateway reports it as `fused.context`. A missing/unreadable value is 0,
+#: i.e. no cap.
+_N_CTX = 0
+try:
+    _N_CTX = max(0, int(os.environ.get("FUSED_AI_N_CTX", "") or 0))
+except ValueError:
+    _N_CTX = 0
+
+
+def _messages_to_prompt(processor, messages, prompt, enable_thinking=None,
+                        tools=None):
     """The model's own chat template, never a hand-rolled one.
+
+    `tools` (a list of OpenAI function schemas, or None) goes to
+    `apply_chat_template(tools=…)` — transformers' own keyword, which the
+    template reads as `tools` (docs/LOCAL_MODEL_GATEWAY.md §2). Only passed
+    when given, so a request without tools is byte-identical to before.
 
     Every instruct model has its own turn markers, and getting them wrong
     produces output that looks almost right — which is worse than an error.
@@ -488,14 +508,16 @@ def _messages_to_prompt(processor, messages, prompt, enable_thinking=None):
         kwargs = {}
         if enable_thinking is not None:
             kwargs["enable_thinking"] = enable_thinking
+        if tools:
+            kwargs["tools"] = tools
         try:
             return template(messages, tokenize=False, add_generation_prompt=True,
                             **kwargs)
         except TypeError:
             if not kwargs:
                 raise
-            print(f"mlx-text: chat template rejected enable_thinking="
-                  f"{enable_thinking!r}, retrying without it", file=sys.stderr)
+            print(f"mlx-text: chat template rejected {sorted(kwargs)}, "
+                  f"retrying without them", file=sys.stderr)
             return template(messages, tokenize=False, add_generation_prompt=True)
     return "\n\n".join(m.get("content", "") for m in messages if isinstance(m, dict))
 
@@ -570,6 +592,11 @@ def generate(body, write):
     enable_thinking = body.get("enable_thinking")
     if enable_thinking is None:
         enable_thinking = True
+    # `tools`/`stop`/`max_tokens` through the shared validator (docs/
+    # LOCAL_MODEL_GATEWAY.md §3); the handler already refused a malformed
+    # body with a 400. `tools` reaches the TEXT template path only — mlx-vlm's
+    # own image-aware `apply_chat_template` below takes no such keyword.
+    options = worker_base.generation_options(body)
 
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     # A list of absolute paths (`server/ai.py`'s `_images_problem` validates the
@@ -690,8 +717,12 @@ def generate(body, write):
             enable_thinking=enable_thinking)
     else:
         text = _messages_to_prompt(processor, messages, body.get("prompt") or "",
-                                   enable_thinking=enable_thinking)
-    max_tokens = int(body.get("max_tokens") or 1024)
+                                   enable_thinking=enable_thinking,
+                                   tools=options["tools"])
+    max_tokens = options["max_tokens"] or 1024
+    if _N_CTX:
+        max_tokens = min(max_tokens, _N_CTX)
+    stop_strings = options["stop"]
     sampler = make_sampler(
         temp=float(body.get("temperature", 0.7)),
         top_p=float(body.get("top_p", 0.95)),
@@ -827,20 +858,63 @@ def generate(body, write):
 
     count = 0
     started = time.time()
+    # `stop` strings are matched HERE, on the decoded text, because
+    # `stream_generate` has no stop-string argument of its own: `held` is
+    # the tail not yet written because it could be the start of a stop
+    # string, flushed once it provably is not (or at the end).
+    held = ""
+    hit_stop = False
+    reported = None
     for response in stream_generate(model, processor, text, image=images or None,
                                     max_tokens=max_tokens, sampler=sampler,
                                     **cache_kwargs):
         if worker_base.CANCEL.is_set():
             write({"type": "done", "ok": True, "cancelled": True, "tokens": count,
-                   "input_tokens": prompt_tokens})
+                   "input_tokens": prompt_tokens, "finish_reason": "cancel"})
             return
         count += 1
-        write({"type": "chunk", "text": response.text})
+        reported = getattr(response, "finish_reason", None) or reported
+        if not stop_strings:
+            write({"type": "chunk", "text": response.text})
+            continue
+        held += response.text
+        cut = min((held.find(s) for s in stop_strings if s in held), default=-1)
+        if cut >= 0:
+            if held[:cut]:
+                write({"type": "chunk", "text": held[:cut]})
+            held = ""
+            hit_stop = True
+            break
+        keep = _stop_prefix_len(held, stop_strings)
+        if len(held) > keep:
+            write({"type": "chunk", "text": held[:len(held) - keep]})
+            held = held[len(held) - keep:]
+    if held:
+        write({"type": "chunk", "text": held})
+    if hit_stop:
+        finish = "stop"
+    elif reported in ("stop", "length"):
+        finish = reported
+    else:
+        finish = worker_base.finish_reason(count=count, max_tokens=max_tokens)
     write({
         "type": "done", "ok": True, "tokens": count,
         "input_tokens": prompt_tokens,
         "seconds": round(time.time() - started, 2),
+        "finish_reason": finish,
     })
+
+
+def _stop_prefix_len(text, stop_strings):
+    """How many trailing characters of `text` could still turn into one of
+    `stop_strings` once more text arrives — the part to hold back."""
+    longest = 0
+    for stop in stop_strings:
+        for n in range(min(len(stop) - 1, len(text)), 0, -1):
+            if text.endswith(stop[:n]):
+                longest = max(longest, n)
+                break
+    return longest
 
 
 if __name__ == "__main__":

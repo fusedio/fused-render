@@ -305,6 +305,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
             "nickname": "Liquid 2.5",
             "size_gb": 0.7,
+            "context": 32768,
+            "tool_family": "lfm",
+            "tools": True,
             "note": "The smallest here and the one a bare call loads — quick "
                     "to fetch and to answer, and weaker than every other row.",
         },
@@ -317,6 +320,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Qwen3.5 4B (OptiQ 4-bit)",
             "nickname": "Qwen 3.5",
             "size_gb": 4.0,
+            "context": 32768,
+            "tool_family": "qwen",
+            "tools": True,
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
         },
@@ -353,6 +359,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # been re-measured on a completed download, so where the AI Models
             # page's scan disagrees with this figure, the scan wins.
             "size_gb": 8.6,
+            "context": 32768,
+            "tool_family": "hermes",
+            "tools": True,
             "note": "27B-class answers for well under half the Qwen3.8 27B's "
                     "download. Ternary quantization is new, so measure it "
                     "against a 4-bit model you already trust.",
@@ -370,6 +379,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "LFM2.5 24B-A2B (MLX 4-bit)",
             "nickname": "Liquid 2.5",
             "size_gb": 13.6,
+            "context": 32768,
+            "tool_family": "lfm",
+            "tools": True,
             "note": "24B of knowledge answering at about a 2B's speed, though "
                     "its 14GB of weights want a 24GB machine or more — a "
                     "16GB laptop is not enough. Under Liquid's own license "
@@ -388,6 +400,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Gemma 4 26B-A4B (MLX 4-bit)",
             "nickname": "Gemma 4",
             "size_gb": 15.4,
+            "context": 32768,
+            "tool_family": "gemma",
+            "tools": True,
             "note": "A second family beside Qwen: 26B of knowledge at about "
                     "a 4B's speed, though its 15GB of weights want a 24GB "
                     "machine or more.",
@@ -407,6 +422,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Qwen3-Coder 30B-A3B (MLX 4-bit)",
             "nickname": "Qwen3 Coder",
             "size_gb": 17.2,
+            "context": 32768,
+            "tool_family": "qwen",
+            "tools": True,
             "note": "The code-tuned model: writes, explains and fixes code at "
                     "about a 3B's speed, but its 17GB of weights want a 32GB "
                     "machine.",
@@ -432,6 +450,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Qwen3.8 27B (OptiQ 4-bit)",
             "nickname": "Qwen 3.8",
             "size_gb": 20.7,
+            "context": 32768,
+            "tool_family": "qwen",
+            "tools": True,
             "note": "The best answers here, and it needs 32GB — on a 16GB "
                     "machine this swaps rather than runs.",
         },
@@ -545,6 +566,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
             "nickname": "Liquid 2.5",
             "size_gb": 0.7,
+            "context": 32768,
+            "tool_family": "lfm",
+            "tools": True,
             "note": "The smallest here and the one a bare call loads — a "
                     "hybrid architecture built for CPU decode, so it answers "
                     "immediately where a 4B thinks.",
@@ -558,6 +582,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Qwen3.5 4B (Q4_K_M)",
             "nickname": "Qwen 3.5",
             "size_gb": 2.7,
+            "context": 32768,
+            "tool_family": "qwen",
+            "tools": True,
             "note": "The first row here strong enough for real work: current-"
                     "gen Qwen, and a fifth of the unquantized 4B's download.",
         },
@@ -569,6 +596,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Gemma 4 E4B (Q4_K_M)",
             "nickname": "Gemma 4",
             "size_gb": 5.0,
+            "context": 32768,
+            "tool_family": "gemma",
+            "tools": True,
             "note": "A second family, worth trying on a prompt the Qwen 4B "
                     "above handles badly — it answers above its size class "
                     "for the download.",
@@ -583,6 +613,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
             "nickname": "Qwen 3.8",
             "size_gb": 13.1,
+            "context": 32768,
+            "tool_family": "qwen",
+            "tools": True,
             "note": "The newest and largest model here, quantized hard to fit "
                     "the download — expect a bigger quality hit than the "
                     "Qwen3.5 4B above, and a laptop GPU to run it mostly "
@@ -618,6 +651,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "LFM2.5 24B-A2B (Q4_K_M)",
             "nickname": "Liquid 2.5",
             "size_gb": 14.5,
+            "context": 32768,
+            "tool_family": "lfm",
+            "tools": True,
             "note": "24B of knowledge answering at about a 2B's speed, though "
                     "its 14.5GB file is resident whole — it wants a 24GB "
                     "machine or a big GPU, and a 16GB laptop is not "
@@ -634,6 +670,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Gemma 4 26B-A4B (UD-Q4_K_M)",
             "nickname": "Gemma 4",
             "size_gb": 17.0,
+            "context": 32768,
+            "tool_family": "gemma",
+            "tools": True,
             "note": "The strong second family: 26B of knowledge at about a "
                     "4B's speed, but its 17GB of weights want a 24GB machine "
                     "or a big GPU.",
@@ -650,6 +689,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Qwen3-Coder 30B-A3B (Q4_K_M)",
             "nickname": "Qwen3 Coder",
             "size_gb": 18.6,
+            "context": 32768,
+            "tool_family": "qwen",
+            "tools": True,
             "note": "The code-tuned model: a mixture of experts, so only about "
                     "3B of it runs per token — but the whole 18GB must be "
                     "held, so it wants a 32GB machine or a big GPU.",
@@ -1879,6 +1921,112 @@ def entry_for(capability: str, model_id: str) -> dict | None:
         if entry["id"] == model_id:
             return entry
     return None
+
+
+# ------------------------------------------------ the /v1 gateway's questions
+# docs/LOCAL_MODEL_GATEWAY.md §2: every text row above carries `context` (the
+# window the loader allocates and `fit` sizes its KV term for), `tool_family`
+# (which marker shape `ai/toolcalls.py` parses the reply with) and `tools`
+# (whether the model's chat template has a `tools` branch at all). A model the
+# curation does not name — a repo the user fetched themselves — gets the same
+# answers by NAME PREFIX, so the gateway never has to special-case "uncurated".
+
+#: Agent-capable rows: 32768 of context and a tools branch in the template.
+AGENT_CONTEXT_TOKENS = 32768
+#: Everything else: the same figure `fit.KV_CACHE_CONTEXT_TOKENS` sizes by.
+DEFAULT_CONTEXT_TOKENS = 8192
+#: What a row without `max_output` lets one reply run to.
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
+
+#: (basename prefix, lowercase) -> (context, tool_family, tools). First match
+#: wins; `toolcalls.parse_family` is the family fallback past this table.
+_AGENT_TRAITS_BY_PREFIX: tuple[tuple[str, tuple[int, str, bool]], ...] = (
+    ("qwen", (AGENT_CONTEXT_TOKENS, "qwen", True)),
+    ("qwq", (AGENT_CONTEXT_TOKENS, "qwen", True)),
+    ("gemma-4", (AGENT_CONTEXT_TOKENS, "gemma", True)),
+    ("lfm2.5", (AGENT_CONTEXT_TOKENS, "lfm", True)),
+    ("lfm", (AGENT_CONTEXT_TOKENS, "lfm", True)),
+    ("ternary-bonsai", (AGENT_CONTEXT_TOKENS, "hermes", True)),
+    ("hermes", (AGENT_CONTEXT_TOKENS, "hermes", True)),
+    ("llama", (AGENT_CONTEXT_TOKENS, "llama3", True)),
+)
+
+
+def _default_agent_traits(model_id: str) -> tuple[int, str, bool]:
+    from fused_render.ai import toolcalls
+
+    base = (model_id or "").rsplit("/", 1)[-1].lower()
+    for prefix, traits in _AGENT_TRAITS_BY_PREFIX:
+        if base.startswith(prefix):
+            return traits
+    return DEFAULT_CONTEXT_TOKENS, toolcalls.parse_family(model_id), False
+
+
+def _text_row(model_id: str) -> dict | None:
+    """The curated text row for `model_id` on ANY text runner's list — the
+    gateway routes on the id alone, and a GGUF filename id names one row
+    whichever runner resolves."""
+    for code in ("mlx-text", "llamacpp-text"):
+        for entry in for_runner(code):
+            if entry.get("id") == model_id:
+                return entry
+    return None
+
+
+def agent_traits(model_id: str) -> dict:
+    """`{context, tool_family, tools, max_output}` for a text model: the
+    curated row's own fields where it has them, the prefix defaults where
+    it does not (and for an uncurated id entirely)."""
+    row = _text_row(model_id) or {}
+    context, family, tools = _default_agent_traits(model_id)
+    ctx = row.get("context")
+    out = row.get("max_output")
+    return {
+        "context": int(ctx) if isinstance(ctx, int) and ctx > 0 else context,
+        "tool_family": row.get("tool_family") or family,
+        "tools": bool(row["tools"]) if "tools" in row else tools,
+        "max_output": int(out) if isinstance(out, int) and out > 0 else DEFAULT_MAX_OUTPUT_TOKENS,
+    }
+
+
+def tool_family(model_id: str) -> str:
+    return agent_traits(model_id)["tool_family"]
+
+
+def context_for(model_id: str) -> int:
+    return agent_traits(model_id)["context"]
+
+
+def supports_tools(model_id: str) -> bool:
+    return agent_traits(model_id)["tools"]
+
+
+def local_agent_models() -> list[dict]:
+    """`[{id, label, context, max_output, tools}]` — every INSTALLED text
+    model the resolved text runner can load, smallest first as the curation
+    orders them: what `GET /v1/models` lists.
+
+    "Installed" is `hub_cache.is_downloaded` over one `cached_models()` read
+    — the one place that question is answered — never the network. Only the
+    curated rows are consulted here; the resolved runner's own uncurated
+    cached repos are a Discover-page concern and not listed to an agent.
+    """
+    from fused_render.ai import hub_cache
+
+    runner = _runner_for(registry.TEXT_GENERATION)
+    if runner is None:
+        return []
+    cached = hub_cache.cached_models()
+    out = []
+    for entry in for_runner(runner.code):
+        model_id = entry.get("id")
+        if not model_id or not hub_cache.is_downloaded(model_id, cached):
+            continue
+        traits = agent_traits(model_id)
+        out.append({"id": model_id, "label": entry.get("label") or model_id,
+                    "context": traits["context"], "max_output": traits["max_output"],
+                    "tools": traits["tools"]})
+    return out
 
 
 def all_suggested_ids() -> set[str]:

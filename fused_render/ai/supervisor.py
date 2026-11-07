@@ -156,6 +156,13 @@ def is_user_requester(requester_id: str) -> bool:
     return requester_id == USER_REQUESTER_ID
 
 
+#: The `/v1` gateway's own requester identity (docs/LOCAL_MODEL_GATEWAY.md
+#: §2, "Eviction"): a non-user requester like any page, so a cold load it
+#: triggers for an agent CLI goes through `_request_path_conflict` exactly as
+#: a Playground load would — and is refused the same way once it loops.
+GATEWAY_REQUESTER_ID = "gateway"
+
+
 JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-model:"
 #: One row per RENDER, not per model: two images from the same pipeline are two
 #: pieces of work with two progress bars, and a shared id would have the second
@@ -330,6 +337,10 @@ class Worker:
     #: take" — see `_request_path_conflict`.
     requester_id: str = ""
     requester_label: str = ""
+    #: The context window the loader was asked for (`load(n_ctx=)`), carried
+    #: into the worker's environment as `FUSED_AI_N_CTX` by `_child_env`.
+    #: None leaves the runner on its own default (8192 for `llama_text`).
+    n_ctx: int | None = None
     #: Unique per bring-up, and the reason the status and log files are named
     #: after it rather than after the capability. Two workers for one capability
     #: DO overlap — an eviction's replacement starts while the old one is still
@@ -982,7 +993,8 @@ def _await_hardware_cache() -> hw_detect.HardwareInfo | None:
     return None
 
 
-def _child_env(token: str, model: str = "", capability: str = "") -> dict:
+def _child_env(token: str, model: str = "", capability: str = "",
+               n_ctx: int | None = None) -> dict:
     """Environment for a worker process.
 
     The PYTHON* vars are stripped for the reason `local_chat/chat.py` documents
@@ -1036,6 +1048,13 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
         env.pop(name, None)
     env["FUSED_AI_WORKER_TOKEN"] = token
+    # The requested context window (docs/LOCAL_MODEL_GATEWAY.md §3): the text
+    # runners read it at load time. POPPED when unset, for the same "this
+    # environment is a copy of the server's" reason the two below are.
+    if n_ctx:
+        env["FUSED_AI_N_CTX"] = str(int(n_ctx))
+    else:
+        env.pop("FUSED_AI_N_CTX", None)
     permitted = _mirror_ok(model)
     if permitted:
         # The id the WORKER will name to the mirror, which is not always the id
@@ -1150,7 +1169,8 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
 
     job = job_id_for(worker.model)
     log = _log_path(worker)
-    env = _child_env(worker.token, worker.model, worker.capability)
+    env = _child_env(worker.token, worker.model, worker.capability,
+                     n_ctx=worker.n_ctx)
     # The bundled interpreter's stdlib dir carries the app's own packages and
     # precedes the venv's site-packages, shadowing the runner's pins (Pillow 13
     # breaking mflux's `_IntegralLike` import). See `prefer_venv_site_packages`.
@@ -1849,8 +1869,13 @@ def _start_resident(model: str, capability: str, *,
                     request_path: bool = False,
                     respect_holds: bool = False,
                     hold: "ConflictState | None" = None,
-                    requester_id: str = "", requester_label: str = "") -> tuple[dict, Worker]:
+                    requester_id: str = "", requester_label: str = "",
+                    n_ctx: int | None = None) -> tuple[dict, Worker]:
     """`load`'s residency path, handing back the WORKER RECORD beside the reply.
+
+    `n_ctx` (docs/LOCAL_MODEL_GATEWAY.md §3) is stamped on the new worker
+    record and reaches the runner as `FUSED_AI_N_CTX`; a join onto a model
+    already loading/loaded keeps that worker's own value.
 
     Two callers, two needs. `load` is answering an endpoint, so the reply is all
     it wants. `_wait_ready` is about to sit and watch — and watching the
@@ -2006,7 +2031,8 @@ def _start_resident(model: str, capability: str, *,
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24),
-                        requester_id=requester_id, requester_label=requester_label)
+                        requester_id=requester_id, requester_label=requester_label,
+                        n_ctx=n_ctx)
         _workers[capability] = worker
         _worker_tokens.add(worker.token)
 
@@ -2058,8 +2084,13 @@ def _start_resident(model: str, capability: str, *,
 def load(model: str, capability: str, *, weights_only: bool = False,
          file: str | None = None, request_path: bool = False,
          hold: "ConflictState | None" = None,
-         requester_id: str = "", requester_label: str = "") -> dict:
+         requester_id: str = "", requester_label: str = "",
+         n_ctx: int | None = None) -> dict:
     """Make `model` resident for `capability`; returns `{jobId, model, state}`.
+
+    `n_ctx` is the context window to allocate (docs/LOCAL_MODEL_GATEWAY.md
+    §3) — forwarded to `_start_resident` and from there into the worker's
+    `FUSED_AI_N_CTX`; None leaves the runner on its own default.
 
     `weights_only` downloads and stops — the AI Models page's "Download", which
     must not evict whatever is currently loaded.
@@ -2094,7 +2125,7 @@ def load(model: str, capability: str, *, weights_only: bool = False,
     if not weights_only:
         return _start_resident(model, capability, request_path=request_path,
                                hold=hold, requester_id=requester_id,
-                               requester_label=requester_label)[0]
+                               requester_label=requester_label, n_ctx=n_ctx)[0]
 
     runner = _runner_or_raise(capability, model)
     _require_build_tools()
@@ -3414,6 +3445,12 @@ def generate_text(model: str, body: dict, *,
     `requester_id`/`requester_label` identify who is asking (SPEC-model-
     slot-conflict.md §1) — forwarded to the miss-handling `load()` below so a
     contending eviction can be attributed to them.
+
+    `body` reaches the worker's `/generate` VERBATIM — so the gateway's
+    `tools` (OpenAI function schemas, rendered by the model's own chat
+    template) and `stop` (strings that end a generation) pass through here
+    with nothing to add (docs/LOCAL_MODEL_GATEWAY.md §3); a runner that
+    does not read them simply ignores them.
     """
     worker = ready_worker(registry.TEXT_GENERATION, model)
     if worker is None:
@@ -3443,6 +3480,54 @@ def generate_text(model: str, body: dict, *,
                     continue
                 _touch(worker)
                 yield event
+
+
+def await_loaded(model: str, capability: str = registry.TEXT_GENERATION, *,
+                 timeout: float = 600.0, n_ctx: int | None = None,
+                 requester_id: str = GATEWAY_REQUESTER_ID,
+                 requester_label: str = "Local model gateway",
+                 poll: float = 0.5) -> Worker:
+    """Make `model` resident and BLOCK until it is ready — the `/v1`
+    gateway's cold-load path (docs/LOCAL_MODEL_GATEWAY.md §2).
+
+    Unlike `generate_text`, which fails fast with a job id for a page to
+    watch, an agent CLI holding an open HTTP request has nowhere to go but
+    wait; the router keeps its socket alive with SSE comments while this
+    sits here. Unlike `_wait_ready`, there is no caller row to merge into:
+    the load's own row is the only one, and it is what the AI Models page
+    shows. A request-path load (`request_path=True`), so the one-resident-
+    model rule and `ModelSlotConflict` apply exactly as to any page.
+
+    Raises `ModelSlotConflict` (terminal, from the load itself) and
+    `SupervisorError` for a failed load, an eviction mid-wait, or `timeout`
+    seconds elapsed — the router maps all three to its own envelopes.
+    """
+    worker = ready_worker(capability, model)
+    if worker is not None:
+        return worker
+    started, pending = _start_resident(model, capability, request_path=True,
+                                       requester_id=requester_id,
+                                       requester_label=requester_label,
+                                       n_ctx=n_ctx)
+    deadline = time.monotonic() + timeout
+    while True:
+        worker = ready_worker(capability, model)
+        if worker is not None:
+            return worker
+        # One critical section for the same reason `_wait_ready` gives: the
+        # failure path stamps the error and drops the record under one lock.
+        with _lock:
+            state, error = pending.state, pending.error
+            evicted = _workers.get(capability) is not pending
+        if state == "error":
+            raise SupervisorError(error or "the model failed to load")
+        if evicted:
+            raise SupervisorError(f"{model} was unloaded before it could be used")
+        if time.monotonic() >= deadline:
+            raise SupervisorError(
+                f"{model} did not finish loading within {int(timeout)}s "
+                f"(job {started['jobId']} is still running)")
+        time.sleep(poll)
 
 
 def _generate_sync(capability: str, model: str, body: dict,

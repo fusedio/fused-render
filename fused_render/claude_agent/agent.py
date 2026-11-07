@@ -16,16 +16,18 @@ streams in. Stdlib only (plus ../shared/procutil).
 `claude` is looked up on PATH and then in its known install locations
 (_claude_bin).
 
-FOUR AGENT BACKENDS (docs/COPILOT_BACKEND.md, docs/CODEX_BACKEND.md,
-docs/GEMINI_BACKEND.md): Claude Code (`claude`, the default,
-`session_host.py`), GitHub Copilot CLI (`copilot`, `copilot_host.py`, driven
-over ACP), OpenAI Codex CLI (`codex`, `codex_host.py`, driven over `codex
-app-server`) and Google Gemini CLI (`gemini`, `gemini_host.py`, driven over
-ACP too). `backend` is
+FIVE AGENT BACKENDS (docs/COPILOT_BACKEND.md, docs/CODEX_BACKEND.md,
+docs/GEMINI_BACKEND.md, docs/OPENCODE_BACKEND.md): Claude Code (`claude`,
+the default, `session_host.py`), GitHub Copilot CLI (`copilot`,
+`copilot_host.py`, driven over ACP), OpenAI Codex CLI (`codex`,
+`codex_host.py`, driven over `codex app-server`), Google Gemini CLI
+(`gemini`, `gemini_host.py`, driven over ACP too) and OpenCode (`opencode`,
+`opencode_host.py`, ACP again). `backend` is
 chosen at a chat's first turn and never changes (`_backend_for_session`);
 every host writes the same run-dir files and stream rows, so everything
 below the spawn reads one shape. Where they differ it is named: the argv
-builders (`_copilot_argv`, `_codex_argv`, `_gemini_argv`), `_backend_enabled` (the prefs
+builders (`_copilot_argv`, `_codex_argv`, `_gemini_argv`, `_opencode_argv`),
+`_backend_enabled` (the prefs
 gate), `_send` (what a live session of each can and cannot take), the
 self-minted session id (`_SELF_MINTED_ID_BACKENDS`), and the caps gating on
 snapshots / background tasks / plan mode, which is "Claude only" — every
@@ -264,6 +266,13 @@ _CODEX_CANDIDATES = ("~/.npm-global/bin/codex", "/opt/homebrew/bin/codex",
 _GEMINI_CANDIDATES = ("~/.npm-global/bin/gemini", "/opt/homebrew/bin/gemini",
                       "/usr/local/bin/gemini", "~/.local/bin/gemini",
                       "~/.bun/bin/gemini", "~/Library/pnpm/gemini")
+# ...and where OpenCode installs `opencode`: its own installer's dir first,
+# then npm -g, Homebrew, the system prefix, the user-local bin and bun. A
+# COPY of `opencode_health.POSIX_CANDIDATES` (docs/OPENCODE_BACKEND.md D10),
+# pinned equal by a test as the others are.
+_OPENCODE_CANDIDATES = ("~/.opencode/bin/opencode", "~/.npm-global/bin/opencode",
+                        "/opt/homebrew/bin/opencode", "/usr/local/bin/opencode",
+                        "~/.local/bin/opencode", "~/.bun/bin/opencode")
 
 # Where `gh` gets installed, for the D10 login substitute — a COPY of
 # `github_setup.candidates()`: the app's own install dir first (derived at
@@ -281,24 +290,27 @@ _COPILOT_HEALTH_FILE = "copilot-health.json"
 # (`_backend_disabled_error`). `agent_backends.<id>.label` is the app-side
 # copy; a test pins the two equal.
 _BACKEND_LABELS = {"claude": "Claude", "copilot": "Copilot", "codex": "Codex",
-                   "gemini": "Gemini"}
+                   "gemini": "Gemini", "opencode": "OpenCode"}
 
 # The backends whose session id is the CLI's OWN, minted after the spawn and
 # announced on the host's init row — never fused's `--session-id` (D2 of the
 # three contracts: `copilot --acp` refuses the flag, Codex's thread id comes
-# out of `thread/start`, Gemini's `session/new` mints a uuid4 of its own). A
+# out of `thread/start`, Gemini's `session/new` mints a uuid4 of its own,
+# OpenCode's a `ses_<id>`). A
 # fresh chat on one of these has no id in `_start`; `_poll` learns it, and
 # `_record_minted_session` writes the record `_start` could not.
-_SELF_MINTED_ID_BACKENDS = ("copilot", "codex", "gemini")
+_SELF_MINTED_ID_BACKENDS = ("copilot", "codex", "gemini", "opencode")
 # The backends whose shell command has no allow-list flag (CODEX D9, GEMINI
-# D9): a bare `fused` asks like any other command under the ask mode, so the
-# prompt's "pre-approved" clause is dropped for them (`_fused_cli_note`).
-_NO_PREAPPROVE_BACKENDS = ("codex", "gemini")
+# D9, OPENCODE D9): a bare `fused` asks like any other command under the ask
+# mode, so the prompt's "pre-approved" clause is dropped for them
+# (`_fused_cli_note`).
+_NO_PREAPPROVE_BACKENDS = ("codex", "gemini", "opencode")
 
 # What a NEW chat's model pill opens on, per non-Claude backend (Claude's
 # comes from ~/.claude/settings.json, `_global_defaults`). A COPY of each
 # `agent_backends/<id>.py` `default_model`, pinned equal by a test.
-_NEW_CHAT_MODELS = {"copilot": "auto", "codex": "gpt-6-luna", "gemini": "auto"}
+_NEW_CHAT_MODELS = {"copilot": "auto", "codex": "gpt-6-luna", "gemini": "auto",
+                    "opencode": "anthropic/claude-sonnet-5-5"}
 
 # Copilot models the CLI refuses `--reasoning-effort` for (1.0.102 fails
 # `session/new`: "Reasoning effort is not supported when using the "auto"
@@ -314,7 +326,8 @@ _COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
 
 # Error-text markers per backend — substrings (lower-cased) of a `result` row
 # or stderr that mean "signed out / no access" and "usage or credit limit".
-# COPIED from `agent_backends/claude.py`, `copilot.py`, `codex.py` and `gemini.py`
+# COPIED from `agent_backends/claude.py`, `copilot.py`, `codex.py`, `gemini.py`
+# and `opencode.py`
 # (`account_error_markers` / `limit_error_markers`): this module may not import
 # the package, and a test pins the tuples equal so the two cannot drift.
 _ACCOUNT_ERROR_MARKERS = {
@@ -327,6 +340,8 @@ _ACCOUNT_ERROR_MARKERS = {
     "gemini": ("api key is missing", "authentication required", "not logged in",
                "not signed in", "unauthenticated", "invalid_grant", "login required",
                "sign in", "unauthorized"),
+    "opencode": ("no api key", "not authenticated", "unauthorized", "invalid api key",
+                 "provider not found", "model not found", "not signed in"),
 }
 _LIMIT_ERROR_MARKERS = {
     # Claude's are the two this function matched before a second backend
@@ -338,6 +353,7 @@ _LIMIT_ERROR_MARKERS = {
               "spend control", "too many requests", "429"),
     "gemini": ("resource_exhausted", "rate limit", "quota", "too many requests",
                "429"),
+    "opencode": ("rate limit", "quota", "too many requests", "429", "overloaded"),
 }
 
 # The MCP server + tool that `--permission-prompt-tool` names. The CLI addresses
@@ -775,16 +791,39 @@ def _gemini_bin() -> str:
     )
 
 
+def _opencode_bin() -> str:
+    """Path to the `opencode` executable — `_gemini_bin`'s twin, same ladder:
+    FUSED_RENDER_OPENCODE_BIN (where `opencode_health` publishes a binary
+    only the user's login shell could find), then PATH, then the known
+    install prefixes (`_OPENCODE_CANDIDATES`). A stale override is ignored."""
+    override = os.environ.get("FUSED_RENDER_OPENCODE_BIN")
+    if override and os.path.isfile(override):
+        return override
+    found = shutil.which("opencode")
+    if found:
+        return found
+    for candidate in _OPENCODE_CANDIDATES:
+        resolved = os.path.expanduser(os.path.expandvars(candidate))
+        if os.path.isfile(resolved):
+            return resolved
+    raise FileNotFoundError(
+        "opencode CLI not found — install with `npm install -g opencode-ai`, "
+        "put `opencode` on the PATH of the environment that launched "
+        "fused-render, or set FUSED_RENDER_OPENCODE_BIN to its full path. Also "
+        "looked in: " + ", ".join(_OPENCODE_CANDIDATES)
+    )
+
+
 # ------------------------------------------------------------ agent backends
 
 def _backend_enabled(backend: str) -> bool:
     """Whether `backend` may be SPAWNED — the one check in `_start` that keeps
     a disabled agent from ever starting (docs/COPILOT_BACKEND.md invariant 10).
 
-    A stdlib read of `<home>/prefs.json`, the same file and the same four
+    A stdlib read of `<home>/prefs.json`, the same file and the same five
     keys `shell/prefs.py` keeps (`claude_enabled` is on unless stored False,
-    `copilot_enabled`, `codex_enabled` and `gemini_enabled` are off unless
-    stored True),
+    `copilot_enabled`, `codex_enabled`, `gemini_enabled` and
+    `opencode_enabled` are off unless stored True),
     because this module cannot import the package. The home is
     `appenv.home_dir()` — the BRANCH-RESOLVED one the server exports, which
     is where prefs.json actually lives — not the unnested `_state_file` root
@@ -802,14 +841,17 @@ def _backend_enabled(backend: str) -> bool:
     copilot_on = prefs.get("copilot_enabled") is True
     codex_on = prefs.get("codex_enabled") is True
     gemini_on = prefs.get("gemini_enabled") is True
+    opencode_on = prefs.get("opencode_enabled") is True
     if backend == "copilot":
         return copilot_on
     if backend == "codex":
         return codex_on
     if backend == "gemini":
         return gemini_on
+    if backend == "opencode":
+        return opencode_on
     if backend == "claude":
-        return claude_on or not (copilot_on or codex_on or gemini_on)
+        return claude_on or not (copilot_on or codex_on or gemini_on or opencode_on)
     return False
 
 
@@ -1128,12 +1170,12 @@ def _fused_cli_note(backend: str = "") -> str:
     server-side push. Telling a session not to push now means telling it to
     finish blind.
 
-    A non-Claude `backend` (Copilot, Codex, Gemini) drops the closing pointer
+    A non-Claude `backend` (Copilot, Codex, Gemini, OpenCode) drops the closing pointer
     to the clone's CLAUDE.md: that file is Claude Code's project memory, and
     naming it to another agent sends it to instructions written for a
-    different one (D18). Codex and Gemini also lose the "pre-approved"
-    clause (`_NO_PREAPPROVE_BACKENDS`): neither has an allow-list flag
-    (CODEX D9, GEMINI D9), so a bare `fused` asks like any other command
+    different one (D18). Codex, Gemini and OpenCode also lose the "pre-approved"
+    clause (`_NO_PREAPPROVE_BACKENDS`): none has an allow-list flag
+    (CODEX D9, GEMINI D9, OPENCODE D9), so a bare `fused` asks like any other command
     under the ask mode, and a prompt promising otherwise would be wrong."""
     if not _fused_cli_dir():
         return ""
@@ -1165,7 +1207,7 @@ def _fused_cli_note(backend: str = "") -> str:
 
 # The `_fused_cli_note` sentence only Claude gets (see its docstring).
 _CANVAS_CLAUDE_MD = " See that folder's CLAUDE.md for the details."
-# ...and the clause Codex and Gemini do not get: nothing pre-approves `fused` there.
+# ...and the clause Codex, Gemini and OpenCode do not get: nothing pre-approves `fused` there.
 _FUSED_PREAPPROVED = (" — that exact form is pre-approved, while compound "
                       "commands (`cd x && fused ...`) ask the user first —")
 
@@ -1618,7 +1660,7 @@ def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dic
     which has no equivalent in a terminal session. Codex's is `codex resume
     <sid>` (CODEX D12), with nothing else: its system prompt and pane tools
     are spawn-only too; Gemini's is `gemini --resume <sid>` (GEMINI D12),
-    likewise bare. The `fused` PATH prefix below is for every agent, for
+    likewise bare; OpenCode's is `opencode --session <sid>` (OPENCODE D12). The `fused` PATH prefix below is for every agent, for
     the same reason each time.
 
     Same session, same ground: the cwd is `_workdir` (the key everything else
@@ -1668,6 +1710,10 @@ def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dic
         argv = ["gemini"]
         if session_id:
             argv += ["--resume", session_id]
+    elif backend == "opencode":
+        argv = ["opencode"]
+        if session_id:
+            argv += ["--session", session_id]
     else:
         if shutil.which("claude"):
             binary = "claude"
@@ -4417,6 +4463,137 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
     return cmd
 
 
+#: The fused modes OpenCode offers, by the CLI-wire mode `_start` records
+#: (OPENCODE D5): each is a `permission` block of the injected config
+#: (`opencode_config.PERMISSIONS`), fixed at spawn — so a switch is a
+#: respawn (`_set_mode`). `plan` is never sent (refused before the spawn).
+#: A COPY of `opencode_config.PERMISSIONS`' keys minus the page spelling,
+#: pinned equal by a test.
+_OPENCODE_MODES = {"default": "default", "acceptEdits": "acceptEdits", "auto": "auto"}
+#: `<run_dir>/opencode/` holds what the spawn env is built from: the
+#: AGENTS.md the config's `instructions` names (D8) and `spawn.json`, the
+#: `{model, mode, instructions}` triple `_spawn_env(run_dir=...)` turns into
+#: `OPENCODE_CONFIG_CONTENT` (D19) — the argv itself is bare (`opencode acp`).
+_OPENCODE_SPAWN_FILE = "spawn.json"
+_OPENCODE_KEY_FILE = "key"
+_OPENCODE_CONFIG_PY = os.path.join(os.path.dirname(HERE), "agent_backends",
+                                   "opencode_config.py")
+
+
+def _opencode_config():
+    """The stdlib `agent_backends/opencode_config.py`, loaded BY PATH (this
+    module never imports `fused_render`; the host process cannot). Cached
+    on the function."""
+    mod = getattr(_opencode_config, "_mod", None)
+    if mod is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("fused_render_opencode_config",
+                                                      _OPENCODE_CONFIG_PY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _opencode_config._mod = mod
+    return mod
+
+
+def _opencode_context_dir(run_dir: str, file: str, pane: bool,
+                          extra_read_dirs: list | None = None) -> str:
+    """Write `<run_dir>/opencode/AGENTS.md` and return the dir.
+
+    The body IS the appended prompt (`_appended_prompt`): OpenCode has no
+    system-prompt flag and ACP's `session/new` takes no instructions, but the
+    injected config's `instructions` list names files it reads into the
+    system prompt (OPENCODE D8). OpenCode's tools are not workspace-bound
+    (D9), so the readable directories are NAMED here rather than granted:
+    SHOTS and every `extra_read_dirs` entry that exists. The pane tool is
+    spelled `<server>_<tool>` (OpenCode's MCP naming, single underscores),
+    never Claude's `mcp__<server>__<tool>`."""
+    ctx = os.path.join(run_dir, "opencode")
+    os.makedirs(ctx, exist_ok=True)
+    body = _appended_prompt(file, pane, "opencode").replace(
+        f"mcp__{PERMISSION_SERVER}__", f"{PERMISSION_SERVER}_")
+    dirs = []
+    try:
+        shots = _shots_dir()
+    except Exception as exc:  # noqa: BLE001
+        shots = {"error": str(exc)}
+    if shots.get("error"):
+        sys.stderr.write("opencode: no screenshot grant: %s\n" % shots["error"])
+    elif os.path.isdir(SHOTS):
+        dirs.append(SHOTS)
+    dirs += [d for d in (extra_read_dirs or []) if os.path.isdir(d)]
+    if dirs:
+        body += (" Besides the working folder, you may also read these "
+                 "directories: " + ", ".join(dirs) + ".")
+    with _private_open(os.path.join(ctx, "AGENTS.md")) as fh:
+        fh.write(body + "\n")
+    return ctx
+
+
+def _opencode_argv(run_dir: str, pane: bool, cli_mode: str | None,
+                   session_id: str, model: str, effort: str,
+                   extra_read_dirs: list | None, file: str) -> list:
+    """The OPENCODE CLI's argv — `_gemini_argv`'s twin, same parameters in
+    the same order so `_start` builds any of them from one call site, per
+    docs/OPENCODE_BACKEND.md §3. Driven over ACP (`opencode acp`, JSON-RPC
+    on stdio) by `opencode_host.py`, never `opencode run` (D16).
+    `session_id` names no flag: a resume is the host's `session/load`, and a
+    fresh chat's id is OpenCode's own (D2).
+
+    The argv is BARE: everything else rides the injected config on the spawn
+    env (`OPENCODE_CONFIG_CONTENT`, D19), which `_spawn_env(run_dir=...)`
+    builds from the `spawn.json` written here:
+      * the system prompt → `<run_dir>/opencode/AGENTS.md`, named in the
+        config's `instructions` (D8);
+      * `--model` → the config's `model` (D7); the host switches it live
+        later (`session/set_model`). No effort: OpenCode has none;
+      * the mode → the config's `permission` block (D5), so a mode change
+        is a respawn;
+      * readable directories → named in the AGENTS.md prompt (D9): no flag,
+        no grant, no respawn;
+      * the permission bridge → NOTHING here: ACP carries permission
+        requests to the host itself (D4). `mcp.json` is written when the
+        pane or terminal tools exist, or the target sits in a canvas clone
+        (the `canvas_screenshot` channel), with `--no-approve`, and the
+        HOST hands it to `session/new` as the request's `mcpServers`."""
+    cmd = [_opencode_bin(), "acp"]
+    ctx = _opencode_context_dir(run_dir, file, pane, extra_read_dirs)
+    mode = _OPENCODE_MODES.get(cli_mode or "default", "default")
+    with _private_open(os.path.join(ctx, _OPENCODE_SPAWN_FILE)) as fh:
+        json.dump({"model": model or "", "mode": mode,
+                   "instructions": os.path.join(ctx, "AGENTS.md")}, fh)
+    canvas = _in_workbench_root(file)
+    if pane or _terminal_tools_supported() or canvas:
+        _write_mcp_config(run_dir, pane, approve=False, canvas=canvas)
+    return cmd
+
+
+def _opencode_spawn_facts(run_dir: str) -> dict:
+    """`spawn.json`'s `{model, mode, instructions}` for a run, or `{}`."""
+    try:
+        with open(os.path.join(run_dir, "opencode", _OPENCODE_SPAWN_FILE),
+                  encoding="utf-8") as fh:
+            facts = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return facts if isinstance(facts, dict) else {}
+
+
+def _opencode_release_key(run_dir: str) -> None:
+    """Forget the gateway key a run's spawn minted (`<run_dir>/opencode/key`,
+    written 0600 by `_spawn_env`), once the host is gone. Never raises."""
+    path = os.path.join(run_dir, "opencode", _OPENCODE_KEY_FILE)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            key = fh.read().strip()
+        os.remove(path)
+    except OSError:
+        return
+    try:
+        _opencode_config().release_key(key)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _copilot_listed_efforts(model: str):
     """The effort levels the cached Copilot health snapshot says `model`
     takes — a tuple (empty: the CLI takes no `--reasoning-effort` for it),
@@ -4620,7 +4797,47 @@ _STRIPPED_PYTHON_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
                         "PYTHONUSERBASE", "PYTHONINSPECT")
 
 
-def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
+def _opencode_env(env: dict, run_dir: str = "") -> None:
+    """`_spawn_env`'s OpenCode half (OPENCODE D19/D20), in place on `env`.
+
+    `OPENCODE_DISABLE_AUTOUPDATE=1` always (not setdefault: a child that
+    updates itself mid-session is nobody's wish). `OPENCODE_CONFIG_CONTENT`:
+    with `run_dir`, the full config — `spawn.json`'s model, mode and
+    AGENTS.md path, plus the `fused` provider when the local catalog has a
+    model, the server publishes an origin and the gateway mints a key (the
+    key rides `FUSED_RENDER_V1_KEY` and is kept 0600 under the run dir for
+    `_opencode_release_key`). Without `run_dir`: the two variables are kept
+    as found when the parent already set them (the host process inheriting
+    `_start`'s env), else a bare config (Ask mode, no model, no provider)
+    so a probe or a one-shot still runs under a known policy."""
+    cfg = _opencode_config()
+    env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
+    if not run_dir:
+        if env.get(cfg.CONTENT_ENV):
+            return
+        env[cfg.CONTENT_ENV] = json.dumps(cfg.build(
+            model=None, mode="default", instructions_path=None, local=[],
+            origin=None, key=None))
+        return
+    facts = _opencode_spawn_facts(run_dir)
+    local = cfg.local_models()
+    origin = _origin() or None
+    key = cfg.session_key() if (local and origin) else None
+    if key:
+        env[cfg.KEY_ENV] = key
+        try:
+            with _private_open(os.path.join(run_dir, "opencode", _OPENCODE_KEY_FILE)) as fh:
+                fh.write(key)
+        except OSError:
+            pass
+    env[cfg.CONTENT_ENV] = json.dumps(cfg.build(
+        model=str(facts.get("model") or "") or None,
+        mode=str(facts.get("mode") or "default"),
+        instructions_path=str(facts.get("instructions") or "") or None,
+        local=local, origin=origin, key=key))
+
+
+def _spawn_env(chat_id: str = "", backend: str = "", run_dir: str = "") -> dict:
     """`os.environ`, adjusted the same way for every `claude` spawn — the
     session host's own CLI Popen and (nothing else now, but kept as its own
     function so the two never drift again the way _start's inline copy could
@@ -4650,6 +4867,17 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     the Google credential variables left as found, plus `NO_BROWSER=1`
     (setdefault) so a session whose login lapsed fails at the handshake
     instead of opening a browser window from a background task.
+    `backend="opencode"` is the same branch again (OPENCODE §3/D19): the
+    CLI's own config-dir variable and the user's own config left alone,
+    `OPENCODE_DISABLE_AUTOUPDATE=1`, and the injected config on
+    `OPENCODE_CONFIG_CONTENT` — built from `<run_dir>/opencode/spawn.json`
+    (the model, the mode's `permission` block, the AGENTS.md path) when
+    `run_dir` names a run, with the local gateway as the `fused` provider
+    (D20) and a per-spawn `FUSED_RENDER_V1_KEY` minted for it. The mint and
+    the catalog live in the package, which only the SERVER process imports:
+    `_start` passes `run_dir` so the HOST process inherits both variables,
+    and a call without `run_dir` (the host re-deriving its CLI's env) keeps
+    them as found instead of rebuilding a bare config over them.
 
     The session must not inherit an ambient FUSED_ENV from the server's own
     process: the `fused` wrapper (fusedcli._wrapper_text) only picks FUSED_ENV
@@ -4704,13 +4932,15 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     # PYTHONHOME ("No module named 'encodings'") and fails every Bash command.
     for name in _STRIPPED_PYTHON_ENV:
         env.pop(name, None)
-    if backend in ("codex", "gemini"):
+    if backend in ("codex", "gemini", "opencode"):
         for name in [k for k in env if k.startswith("CLAUDE_CODE_")]:
             env.pop(name, None)
         cli_dir = _fused_cli_dir()
         if cli_dir:
             parts = [p for p in env["PATH"].split(os.pathsep) if p != cli_dir]
             env["PATH"] = os.pathsep.join([cli_dir] + parts)
+        if backend == "opencode":
+            _opencode_env(env, run_dir)
         if backend == "gemini":
             env.setdefault("NO_BROWSER", "1")
             # Not setdefault: the `gemini` entry point is a launcher that
@@ -5067,8 +5297,11 @@ _COPILOT_HOST = os.path.join(HERE, "copilot_host.py")
 _CODEX_HOST = os.path.join(HERE, "codex_host.py")
 # ...and Gemini's: ACP again, the Copilot host's twin (docs/GEMINI_BACKEND.md §0).
 _GEMINI_HOST = os.path.join(HERE, "gemini_host.py")
+# ...and OpenCode's: ACP once more, the Gemini host's twin (docs/OPENCODE_BACKEND.md §0).
+_OPENCODE_HOST = os.path.join(HERE, "opencode_host.py")
 _HOST_FILES = {"claude": _SESSION_HOST, "copilot": _COPILOT_HOST,
-               "codex": _CODEX_HOST, "gemini": _GEMINI_HOST}
+               "codex": _CODEX_HOST, "gemini": _GEMINI_HOST,
+               "opencode": _OPENCODE_HOST}
 
 
 def _fork_point(transcript_path: str, prompt_uuid: str):
@@ -5295,7 +5528,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # no inbox — that nothing lists as a chat.
     argv = None
     build_argv = {"copilot": _copilot_argv, "codex": _codex_argv,
-                  "gemini": _gemini_argv}.get(backend)
+                  "gemini": _gemini_argv, "opencode": _opencode_argv}.get(backend)
     if build_argv is not None:
         try:
             argv = build_argv(run_dir, pane, cli_mode, session_id, model,
@@ -5438,7 +5671,7 @@ def _start(file: str, message: str, session_id: str, model: str,
         proc = subprocess.Popen(
             [sys.executable, _HOST_FILES[backend]],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=host_err, env=_spawn_env(backend=backend),
+            stderr=host_err, env=_spawn_env(backend=backend, run_dir=run_dir),
             **_HOST_SPAWN)
     finally:
         os.close(host_err)
@@ -5449,7 +5682,12 @@ def _start(file: str, message: str, session_id: str, model: str,
     # wait(): the cheapest reaper, and it dies with the host. Started BEFORE
     # the request is written (D1310): a host that dies before reading stdin
     # makes that write raise, and a reaper started after it would never run.
-    threading.Thread(target=proc.wait, name=f"claude-host-wait-{run_id}",
+    def _wait_host():
+        proc.wait()
+        if backend == "opencode":
+            # The gateway key this spawn minted (D20) dies with the host.
+            _opencode_release_key(run_dir)
+    threading.Thread(target=_wait_host, name=f"claude-host-wait-{run_id}",
                      daemon=True).start()
     try:
         proc.stdin.write(json.dumps(req).encode("utf-8"))
@@ -6463,6 +6701,12 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
                 "reason": "unsupported", "backend": backend}
     cli_mode = _backend_mode(backend, PERMISSION_MODES[page_mode])
     if cli_mode != host.get("mode", ""):
+        if backend == "opencode":
+            # The mode is the injected config's `permission` block, fixed
+            # at spawn (OPENCODE D5, `caps.live_mode_switch = False`): a
+            # change is a respawn, Copilot's road.
+            _cancel(run_id, interrupt_first=False)
+            return {"respawn": True}
         if backend == "copilot" and "acceptEdits" in (cli_mode, host.get("mode")):
             # `acceptEdits` is an argv grant (`--allow-tool write`, D5): it can
             # neither be added nor taken back from a live process.
@@ -6584,10 +6828,13 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # Gemini respawns for a NEW DIRECTORY only: `--include-directories` is
     # the workspace grant and spawn-time (GEMINI D9); its model is a live
     # `session/set_model` (D7) and it has no effort to differ on.
+    # OpenCode never respawns from here (OPENCODE §7): its tools are not
+    # workspace-bound (D9), its model is live (D7), it has no effort; the
+    # one respawn it has — a mode change (D5) — is `_set_mode`'s below.
     effort_respawn = bool(effort) and effort != host.get("effort", "") \
-        and backend != "gemini"
-    if backend != "codex" and (
-            not wanted <= granted or effort_respawn or model_respawn):
+        and backend not in ("gemini", "opencode")
+    dir_respawn = not wanted <= granted and backend != "opencode"
+    if backend != "codex" and (dir_respawn or effort_respawn or model_respawn):
         # interrupt_first=False: unlike the stop button, this call means the
         # session can no longer serve this caller as it stands — leaving the
         # host up (an `interrupt` would) is not an option here, so it skips
@@ -7595,7 +7842,7 @@ def _account_error(error: str, backend: str = "") -> str:
     login words.
 
     The markers are PER BACKEND (`_ACCOUNT_ERROR_MARKERS` /
-    `_LIMIT_ERROR_MARKERS`, D13): Copilot, Codex and Gemini word a
+    `_LIMIT_ERROR_MARKERS`, D13): Copilot, Codex, Gemini and OpenCode word a
     signed-out session and an exhausted plan budget in their own terms, and
     so does the fix. Neither carries a guide link: the troubleshooting page has panels
     for Claude only."""
@@ -7618,6 +7865,11 @@ def _account_error(error: str, backend: str = "") -> str:
             return ("Gemini CLI isn't signed in. Sign in from Preferences "
                     "→ Agents (or run `gemini` in a terminal and finish the "
                     "sign-in), then start a new chat here. (%s)" % error)
+        if backend == "opencode":
+            return ("OpenCode has no usable provider for this model. Sign in "
+                    "from Preferences → Agents (or run `opencode auth login` "
+                    "in a terminal), or pick a local model, then start a new "
+                    "chat here. (%s)" % error)
         return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
                 "type /login and finish the sign-in, then start a new chat "
                 "here. Help: %s-login (%s)" % (GUIDE_URL, error))
@@ -7634,6 +7886,10 @@ def _account_error(error: str, backend: str = "") -> str:
             return ("Your Gemini quota was reached. Wait for it to reset, or "
                     "switch to a plan or key with more, then try again. "
                     "(%s)" % error)
+        if backend == "opencode":
+            return ("The provider behind this OpenCode model reported a rate "
+                    "or usage limit. Wait for it to reset, switch model or "
+                    "provider, then try again. (%s)" % error)
         return ("Your Claude plan's usage limit was reached. Wait for it to "
                 "reset, or upgrade the plan, then try again. Help: %s-limit (%s)"
                 % (GUIDE_URL, error))

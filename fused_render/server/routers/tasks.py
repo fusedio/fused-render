@@ -7321,7 +7321,7 @@ def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
     """The turns as Markdown, in the Bots export's vocabulary. Lossy by
     design (tool results are not inlined); `format=json` is the full record."""
     who = {"copilot": "Copilot", "codex": "Codex",
-           "gemini": "Gemini"}.get(str(backend or ""), "Claude")
+           "gemini": "Gemini", "opencode": "OpenCode"}.get(str(backend or ""), "Claude")
     title = " ".join(str(task.get("title") or "Task").split())
     out = [f"# {title} — transcript", ""]
     if task.get("target"):
@@ -8842,6 +8842,10 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     (`.json` for older releases). Found by `_gemini_chat_files` under the same
     discipline — a leaf named by the id's first eight characters whose text
     carries the whole id, resolving inside the dir it was globbed under.
+
+    A transcript from under the OPENCODE root takes NOTHING else with it
+    (docs/OPENCODE_BACKEND.md D15): OpenCode's own record is one SQLite
+    store shared by every session, and deleting rows from it is not ours.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
