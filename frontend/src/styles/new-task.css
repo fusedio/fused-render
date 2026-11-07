@@ -1017,6 +1017,32 @@ button.new-task-source:focus-visible {
   opacity: 0.7;
 }
 
+/* WHERE and WHEN wear the bare pills' skin too (Akshil, 2026-11-07: "the
+   right side design doesn't match the left"): no box, no fill, no shadow —
+   the icon and the word, muted at rest, the same quiet wash on hover and
+   while open. A bad path is said in the error ink instead of a red border. */
+.new-task-dialog .nt-pills .nt-pills-right .pp {
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  color: var(--fg-muted);
+}
+
+.new-task-dialog .nt-pills .nt-pills-right .pp:hover,
+.new-task-dialog .nt-pills .nt-pills-right .pp.pp--open {
+  border-color: transparent;
+  background: var(--ctl-quiet-bg);
+  color: var(--fg);
+}
+
+.new-task-dialog .nt-pills .nt-pills-right .pp.pp--bad {
+  color: var(--error);
+}
+
+.new-task-dialog .nt-pills .nt-pills-right .pp--static:hover {
+  border-color: transparent;
+}
+
 /* WHERE and WHEN as one right-hand group: takes the row's slack, and on a row
    too narrow for all five pills drops to its own line, still flush right. */
 .nt-pills-right {
