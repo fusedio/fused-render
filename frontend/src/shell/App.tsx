@@ -65,6 +65,7 @@ import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
+import { TasksPeek } from "@shell/claude-rail/TasksPeek";
 import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
@@ -1365,6 +1366,10 @@ export default function App({ config }: { config: Config }) {
           is up (shell/claude-rail FavouritePeek): mounted once here so a hop
           between pages never remounts it. */}
       {!IS_EMBED && <FavouritePeek />}
+      {/* The Tasks card off the rail's Tasks door (shell/claude-rail
+          TasksPeek): mounted once here for the same reason — its view,
+          filters and scroll survive a hop (owner, 2026-11-07). */}
+      {!IS_EMBED && <TasksPeek />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

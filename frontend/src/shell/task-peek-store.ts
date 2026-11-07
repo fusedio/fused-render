@@ -14,7 +14,7 @@
 // step. Those are the rules worth testing (task-peek-store.test.ts) and the
 // ones a DOM makes untestable; the store below is the thin layer that reads
 // the window, writes history and pokes the sidebar.
-import { useSyncExternalStore } from "react";
+import { createContext, useContext, useSyncExternalStore } from "react";
 import { forgetAppsCache, resetPreviewHeight } from "./peek-preview";
 import { SIDE_PANE_MIN_WIDTH } from "@platform/lib/pane-metrics";
 import {
@@ -1279,6 +1279,14 @@ export function openPeek(
   key: string,
   opts?: { push?: boolean; anchor?: string | null },
 ): boolean {
+  // A PRESS IN THE RAIL'S TASKS CARD opens its chat in the card, never this
+  // page's peek or URL (`cardDoorNow`, below).
+  const card = cardDoorNow();
+  if (card) {
+    if (!key) return false;
+    card.open(key, opts?.anchor ?? null);
+    return true;
+  }
   if (!host || !key) return false;
   const anchor = opts?.anchor ?? null;
   // RE-PRESSING THE OPEN TASK IS ORDINARILY A NO-OP — except from a message
@@ -1349,6 +1357,11 @@ function spendOpenTimeCollapse(): void {
 }
 
 export function closePeek(opts?: { push?: boolean }): void {
+  const card = cardDoorNow();
+  if (card) {
+    card.close();
+    return;
+  }
   if (state.key === null) return;
   if (opts?.push !== false) pushPeekUrl(null);
   dropPeek(false);
@@ -1697,9 +1710,12 @@ function peekKey(): string | null {
   return state.key;
 }
 
-/** Which task is open — what each of the four views asks to draw the halo. */
+/** Which task is open — what each of the four views asks to draw the halo.
+ *  Inside the rail's Tasks card, the card's own chat (`CardPeekContext`). */
 export function usePeekedKey(): string | null {
-  return useSyncExternalStore(subscribePeek, peekKey, peekKey);
+  const card = useContext(CardPeekContext);
+  const key = useSyncExternalStore(subscribePeek, peekKey, peekKey);
+  return card ? card.key : key;
 }
 
 function peekAnchor(): string | null {
@@ -1709,7 +1725,9 @@ function peekAnchor(): string | null {
 /** Which TURN of it to land on, when the press that opened the panel addressed
  *  one (`PeekState.anchor`). */
 export function usePeekAnchor(): string | null {
-  return useSyncExternalStore(subscribePeek, peekAnchor, peekAnchor);
+  const card = useContext(CardPeekContext);
+  const anchor = useSyncExternalStore(subscribePeek, peekAnchor, peekAnchor);
+  return card ? null : anchor;
 }
 
 function peekHost(): boolean {
@@ -1727,12 +1745,104 @@ function peekHost(): boolean {
  * "off" from meaning four slightly different things.
  */
 export function usePeekHost(): boolean {
-  return useSyncExternalStore(subscribePeek, peekHost, peekHost);
+  const card = useContext(CardPeekContext);
+  const on = useSyncExternalStore(subscribePeek, peekHost, peekHost);
+  // The rail's Tasks card is a peek host of its own: its views stamp their
+  // items and send their presses through `openPeek`, which the card answers.
+  return card ? true : on;
+}
+
+// ---- the rail's Tasks card ----------------------------------------------------
+//
+// THE TASKS PAGE, IN A CARD OFF THE RAIL (owner, 2026-11-07; shell/claude-rail
+// TasksPeek): the same `Scheduled`, whose views open a task through
+// `openPeek` — and a press in the card opens that task's chat INSIDE THE CARD,
+// never this page's peek or its URL, while a press on the /tasks page under
+// the card still opens the page's own. Two halves:
+//   - READING: inside the card, `CardPeekContext` answers the three hooks
+//     above (a host; the card's chat as the peeked key; no anchor).
+//   - PRESSING: `openPeek` and `closePeek` are plain functions, called from
+//     handlers, so a context cannot reach them. Every press (pointerdown,
+//     click, keydown) first clears the scope at the window's capture phase;
+//     the card's container then claims it from React's capture phase
+//     (`notePressInCard`) — React's, so a press in a menu or modal one of the
+//     card's views portalled out still counts as the card's. The scope lasts
+//     until the next press, so an open that lands a beat after its press (a
+//     reopen after an unarchive) still goes to the card.
+
+/** What the card tells its views (header). */
+export interface CardPeek {
+  /** The task whose chat the card shows, or null on its list. */
+  key: string | null;
+}
+
+export const CardPeekContext = createContext<CardPeek | null>(null);
+
+/** How the card answers `openPeek` / `closePeek` for a press in it. */
+export interface CardPeekDoors {
+  open(key: string, anchor: string | null): void;
+  close(): void;
+}
+
+const cardDoors = new Map<object, CardPeekDoors>();
+let pressedCard: object | null = null;
+let watching = false;
+
+function watchPresses(): void {
+  if (watching || typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+  watching = true;
+  const clear = () => {
+    pressedCard = null;
+  };
+  for (const type of ["pointerdown", "click", "keydown"]) window.addEventListener(type, clear, true);
+}
+
+/** A card is mounted, under `token` (header). The answer takes it off. */
+export function registerPeekCard(token: object, doors: CardPeekDoors): () => void {
+  watchPresses();
+  cardDoors.set(token, doors);
+  return () => {
+    cardDoors.delete(token);
+    if (pressedCard === token) pressedCard = null;
+  };
+}
+
+/** The card's container heard a press (React's capture phase, header). */
+export function notePressInCard(token: object): void {
+  pressedCard = token;
+}
+
+/** The doors of the card the current press landed in, or null. */
+function cardDoorNow(): CardPeekDoors | null {
+  return (pressedCard && cardDoors.get(pressedCard)) ?? null;
+}
+
+/** WHOSE KEYS (TaskWorkspace's window shortcuts — j/k, Enter, n, x, ⌘K): the
+ *  page and the rail's Tasks card can each mount a Workspace, and a hidden
+ *  card's must never act on a key typed elsewhere. A Workspace inside a rail
+ *  card owns only keys typed inside that card; one on the page, every key
+ *  but those typed in a rail card. `root` is the Workspace's own element.
+ *
+ *  A Workspace under `inert` owns NO key (Bugbot and CodeRabbit, 2026-11-08):
+ *  the card's list goes inert under an open chat (and the whole card while
+ *  it is down), but the Workspace's listener sits on the window, which
+ *  `inert` does not reach — so `n`, `x`, `j` or ⌘K typed on the chat's Back
+ *  would have created, archived or re-selected in the list behind it. */
+export const RAIL_CARD_SELECTOR = ".claude-rail-peek";
+
+export function workspaceOwnsKey(root: Element | null, target: EventTarget | null): boolean {
+  if (root?.closest("[inert]")) return false;
+  const el = target && typeof (target as Element).closest === "function" ? (target as Element) : null;
+  const card = root?.closest(RAIL_CARD_SELECTOR) ?? null;
+  if (card) return !!el && card.contains(el);
+  return !el?.closest(RAIL_CARD_SELECTOR);
 }
 
 /** Test seam: the store is module-level and bun shares one process per run. */
 export function resetPeekStoreForTests(): void {
   unwatchSidebar();
+  cardDoors.clear();
+  pressedCard = null;
   host = false;
   ours = false;
   baselineCandidate = null;

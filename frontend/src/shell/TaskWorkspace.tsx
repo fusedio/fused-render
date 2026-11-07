@@ -27,7 +27,7 @@ import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
 import { closedToastText } from "@shell/teardown-notice";
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
-import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey } from "@shell/task-peek-store";
+import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey, workspaceOwnsKey } from "@shell/task-peek-store";
 import { useNow } from "@platform/lib/clock";
 import { ICON_ARCHIVE, ICON_UNARCHIVE, IdChip, IdentityChip, PrNumChip, StatusIcon } from "@shell/ScheduleTaskViews";
 import {
@@ -72,6 +72,21 @@ import {
 
 /** How long the Undo toast stays up after a close. */
 export const UNDO_MS = 8000;
+// ONE PIN LIST ACROSS WORKSPACES (CodeRabbit, 2026-11-08): the page's
+// Workspace and the rail's Tasks card's can both stand in Detailed view, and
+// each sends the WHOLE `pinned_tasks` list on a write. Left to their own
+// copies, a pin in one and then a pin in the other would send the second's
+// stale copy and drop the first. So every change a Workspace makes is told
+// to the others (`tellPins` — each adopts it as the stored list), and the
+// writes of all of them queue on one chain, so the last PUT carries every
+// toggle, whichever side made it.
+const pinEars = new Set<(pins: string[], from: object) => void>();
+let pinQueue: Promise<void> = Promise.resolve();
+
+function tellPins(pins: string[], from: object): void {
+  for (const ear of [...pinEars]) ear(pins, from);
+}
+
 const POLL_MS = 15000;
 /** The server answers at most this many ids per read. */
 const MAX_IDS = 100;
@@ -470,6 +485,7 @@ export function TaskWorkspace({
   onOpenDraft?: (task: Task) => void;
 }) {
   const peekedKey = usePeekedKey();
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(readCollapsed);
@@ -484,7 +500,6 @@ export function TaskWorkspace({
   const [pinnedKeys, setPinnedKeys] = useState<readonly string[]>([]);
   const pinsRef = useRef<string[]>([]);
   const pinsLoaded = useRef(false);
-  const pinWrites = useRef<Promise<void>>(Promise.resolve());
   const archivedKnown = useRef<ReadonlySet<string>>(new Set());
   archivedKnown.current = useMemo(
     () => new Set(allTasks.filter((t) => t.status === "archived").map((t) => t.key)),
@@ -495,6 +510,28 @@ export function TaskWorkspace({
     pinsRef.current = next;
     setPinnedKeys(next);
   }, []);
+  // A change of this Workspace's own: kept here and told to the others
+  // (module header). What another tells is adopted as the stored list — it
+  // had read that list before it could write.
+  const pinSelf = useRef({});
+  const sharePins = useCallback(
+    (next: string[]): void => {
+      setPins(next);
+      tellPins(next, pinSelf.current);
+    },
+    [setPins],
+  );
+  useEffect(() => {
+    const ear = (pins: string[], from: object) => {
+      if (from === pinSelf.current) return;
+      pinsLoaded.current = true;
+      setPins(pins);
+    };
+    pinEars.add(ear);
+    return () => {
+      pinEars.delete(ear);
+    };
+  }, [setPins]);
   const readPins = useCallback(async (fresh: boolean): Promise<void> => {
     if (fresh) dropSharedPrefsRead();
     const p = await getPrefsShared();
@@ -564,14 +601,15 @@ export function TaskWorkspace({
   const live = useRef({ rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected });
   live.current = { rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected };
 
-  // Writes run one at a time and each sends the list as it is when it starts,
-  // so the last PUT always carries every toggle. Keys of tasks known to be
-  // archived are pruned from every write (an archived card has no pin button).
+  // Writes run one at a time (across every Workspace — module header) and
+  // each sends the list as it is when it starts, so the last PUT always
+  // carries every toggle. Keys of tasks known to be archived are pruned from
+  // every write (an archived card has no pin button).
   const writePins = useCallback(
     (onFail?: () => void): void => {
-      pinWrites.current = pinWrites.current.then(async () => {
+      pinQueue = pinQueue.then(async () => {
         const kept = pinsRef.current.filter((k) => !archivedKnown.current.has(k));
-        if (kept.length !== pinsRef.current.length) setPins(kept);
+        if (kept.length !== pinsRef.current.length) sharePins(kept);
         try {
           await putPinnedTasks([...pinsRef.current]);
         } catch (e) {
@@ -580,20 +618,20 @@ export function TaskWorkspace({
         }
       });
     },
-    [setPins],
+    [sharePins],
   );
   const applyToggle = useCallback(
     (key: string): void => {
       const was = pinsRef.current.includes(key);
-      setPins(was ? pinsRef.current.filter((k) => k !== key) : [...pinsRef.current, key]);
+      sharePins(was ? pinsRef.current.filter((k) => k !== key) : [...pinsRef.current, key]);
       // A failure undoes only this key, against whatever the list is by then.
       writePins(() => {
         const has = pinsRef.current.includes(key);
-        if (was && !has) setPins([...pinsRef.current, key]);
-        else if (!was && has) setPins(pinsRef.current.filter((k) => k !== key));
+        if (was && !has) sharePins([...pinsRef.current, key]);
+        else if (!was && has) sharePins(pinsRef.current.filter((k) => k !== key));
       });
     },
-    [setPins, writePins],
+    [sharePins, writePins],
   );
   const togglePin = useCallback(
     (key: string): void => {
@@ -609,10 +647,10 @@ export function TaskWorkspace({
   const dropPins = useCallback(
     (gone: readonly string[]): void => {
       if (!pinsLoaded.current || !gone.some((k) => pinsRef.current.includes(k))) return;
-      setPins(pinsRef.current.filter((k) => !gone.includes(k)));
+      sharePins(pinsRef.current.filter((k) => !gone.includes(k)));
       writePins();
     },
-    [setPins, writePins],
+    [sharePins, writePins],
   );
 
   dropPinsRef.current = dropPins;
@@ -712,6 +750,9 @@ export function TaskWorkspace({
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.defaultPrevented) return;
+      // TWO WORKSPACES MAY BE MOUNTED — the page's and the rail's Tasks card's
+      // (owner, 2026-11-07): each answers only the keys typed on its side.
+      if (!workspaceOwnsKey(rootRef.current, e.target)) return;
       // Keys inside the PR overflow popover (a portal) are the popover's own:
       // Space/Enter on a link must not select or archive the card behind it.
       if ((e.target as HTMLElement | null)?.closest?.(".task-pr-pop")) return;
@@ -816,6 +857,7 @@ export function TaskWorkspace({
   useEffect(() => {
     const onChord = (e: KeyboardEvent): void => {
       if (e.isComposing || e.defaultPrevented || !isMod(e) || e.altKey || e.key.toLowerCase() !== "k") return;
+      if (!workspaceOwnsKey(rootRef.current, e.target)) return;
       if (document.querySelector("[aria-modal='true'], dialog[open]") !== null) return;
       e.preventDefault();
       e.stopPropagation();
@@ -827,13 +869,13 @@ export function TaskWorkspace({
 
   useEffect(() => {
     if (!selected) return;
-    for (const el of Array.from(document.querySelectorAll<HTMLElement>(".ws-card"))) {
+    for (const el of Array.from((rootRef.current ?? document).querySelectorAll<HTMLElement>(".ws-card"))) {
       if (el.dataset.key === selected) el.scrollIntoView?.({ block: "nearest" });
     }
   }, [selected]);
 
   return (
-    <div className="ws-root" data-workspace>
+    <div ref={rootRef} className="ws-root" data-workspace>
       <BulkBar count={selection.size} onArchive={archiveSelected} onClear={selection.clear} />
       {groups.length === 0 ? (
         <p className="schedule-tv-empty">{emptyLabel}</p>

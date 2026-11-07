@@ -18,6 +18,7 @@ import {
   PEEK_WARM_MS,
   PEEK_WIDTH,
   PeekIntent,
+  railCardSize,
   STAR_MARK_MS,
   FAV_SETTLE_MS,
   bottomClear,
@@ -1198,3 +1199,14 @@ describe("favOpenVerdict on a blocked chat", () => {
   });
 });
 
+
+describe("railCardSize (the Tasks card and the + popover wear window A's size)", () => {
+  it("the default 420×640 with nothing remembered", () => {
+    expect(railCardSize(null)).toEqual({ width: PEEK_WIDTH, height: PEEK_MAX_HEIGHT });
+  });
+  it("the remembered size, under the grips' clamps", () => {
+    expect(railCardSize({ width: 500, height: 700 })).toEqual({ width: 500, height: 700 });
+    expect(railCardSize({ width: 100, height: 50 })).toEqual({ width: PEEK_MIN_WIDTH, height: PEEK_MIN_HEIGHT });
+    expect(railCardSize({ width: 5000, height: 900 }).width).toBe(PEEK_MAX_WIDTH);
+  });
+});
