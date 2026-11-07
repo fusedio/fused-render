@@ -95,10 +95,11 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
 
 /**
  * The same machine for EVERY agent — `/api/claude/*`, `/api/copilot/*`,
- * `/api/codex/*` (docs/CODEX_BACKEND.md D10) or `/api/gemini/*`
- * (docs/GEMINI_BACKEND.md D10), which answer the same bodies.
+ * `/api/codex/*` (docs/CODEX_BACKEND.md D10), `/api/gemini/*`
+ * (docs/GEMINI_BACKEND.md D10) or `/api/opencode/*` (docs/OPENCODE_BACKEND.md
+ * D10), which answer the same bodies.
  * `doctor` is a Claude-only repair; `agentIssues` never offers it for another
- * agent, so it is not generalised here. `link-path` is, for Codex and Gemini.
+ * agent, so it is not generalised here. `link-path` is, for Codex, Gemini and OpenCode.
  */
 export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
   const [health, setHealth] = useState<ClaudeHealth | null>(cached.get(backend) ?? null);
@@ -260,7 +261,7 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
         (res) => {
           done();
           // The route segment is the CLI's name for every agent.
-          const cli = backend === "copilot" || backend === "codex" || backend === "gemini" ? backend : "claude";
+          const cli = backend === "copilot" || backend === "codex" || backend === "gemini" || backend === "opencode" ? backend : "claude";
           setLinkedNote(
             `Added to ${res.rc_file ?? "your shell profile"}. Terminals ` +
               `opened from now on will find \`${cli}\` — one that is already ` +

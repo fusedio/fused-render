@@ -132,6 +132,7 @@ const AGENT_WORDS: Record<string, { cli: string; agent: string }> = {
   copilot: { cli: "Copilot CLI", agent: "Copilot" },
   codex: { cli: "Codex CLI", agent: "Codex" },
   gemini: { cli: "Gemini CLI", agent: "Gemini" },
+  opencode: { cli: "OpenCode", agent: "OpenCode" },
 };
 
 function saidFor(kind: TroubleKind, backend: string): { title: string; explain: string } | undefined {

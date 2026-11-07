@@ -2,7 +2,7 @@
 // change writes the pane param, which is where `curModel()` reads it back
 // (T:12185).
 import { useMemo } from "react";
-import { backendOf, useAgentBackends } from "@platform/lib/agent-backends";
+import { backendOf, modelTagOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { modelDescription } from "@platform/lib/model-vocab";
 import { GROUP_LABELS, PILL_ARIA } from "./composer-defaults";
 import { PillSelect } from "./PillSelect";
@@ -23,7 +23,9 @@ export function ModelSelect({ backend, value, onChange, disabled, loading }: Mod
   const options = useMemo(
     () =>
       backendOf(backend).models.map((m) => {
-        const desc = modelDescription(m.id);
+        // OpenCode's `fused/…` rows say "local" where a Claude row says
+        // what it is for (docs/OPENCODE_BACKEND.md D20).
+        const desc = modelDescription(m.id) || modelTagOf(backend, m.id);
         return desc ? { value: m.id, label: m.label, desc } : { value: m.id, label: m.label };
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps

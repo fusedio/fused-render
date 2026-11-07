@@ -29,6 +29,7 @@ import {
   isBackendEnabled,
   isUnlistedEffort,
   modelLabelsOf,
+  modelTagOf,
   modelsOf,
   useAgentBackends,
 } from "@platform/lib/agent-backends";
@@ -222,7 +223,8 @@ const SAMPLE_ROW = 4;
 // lightest first with a word on what each is for, levels in the card's words.
 const modelChoices = (agent: string): PickChoice<ComposerPicks["model"]>[] =>
   modelsOf(agent).map((m) => {
-    const desc = modelDescription(m);
+    // OpenCode's `fused/…` rows say "local" (docs/OPENCODE_BACKEND.md D20).
+    const desc = modelDescription(m) || modelTagOf(agent, m);
     return { value: m, label: modelLabelsOf(agent)[m] ?? m, ...(desc ? { desc } : {}) };
   });
 

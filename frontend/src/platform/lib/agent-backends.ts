@@ -177,11 +177,47 @@ export const GEMINI_FALLBACK: AgentBackendRow = {
   health: null,
 };
 
+/** The OpenCode row (docs/OPENCODE_BACKEND.md §8), the fourth twin: an
+ *  OpenCode chat answers with OpenCode's caps from the first frame. Off
+ *  until the server says otherwise (D17). Model is a live ACP request
+ *  (`session/set_model`, D7) but a mode change is a respawn (D5), so only
+ *  the model switch is live. Ids are `provider/model` throughout (D7);
+ *  `fused/…` rows are the local catalog. NO EFFORT CONTROL (D7): an empty
+ *  `efforts` and every model `reasoning: false`.
+ *  KEEP IN SYNC BY HAND with fused_render/agent_backends/opencode.py — pinned
+ *  field for field by tests/test_agent_backend_pins.py. */
+export const OPENCODE_FALLBACK: AgentBackendRow = {
+  id: "opencode",
+  label: "OpenCode",
+  enabled: false,
+  models: [
+    { id: "anthropic/claude-sonnet-5-5", label: "Claude Sonnet 5.5", reasoning: false },
+    { id: "openai/gpt-5.5", label: "GPT-5.5", reasoning: false },
+    { id: "fused/local", label: "Local model (Fused)", reasoning: false },
+  ],
+  default_model: "anthropic/claude-sonnet-5-5",
+  efforts: [],
+  modes: ["prompt", "acceptEdits", "auto"],
+  caps: {
+    plan_mode: false,
+    live_model_switch: true,
+    live_mode_switch: false,
+    snapshots: false,
+    artifacts: false,
+    worktrees: false,
+    bg_tasks: false,
+    ask_user: false,
+    terminal_mirror: false,
+    mid_turn_messages: false,
+  },
+  health: null,
+};
+
 const FALLBACK: AgentCatalog = {
   // ENABLED: Claude alone, the defaults of every switch (D17).
   backends: [CLAUDE_FALLBACK],
   default: "claude",
-  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK],
+  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK, OPENCODE_FALLBACK],
 };
 
 export interface AgentCatalogState extends AgentCatalog {
@@ -354,7 +390,7 @@ export function backendOf(id: string | null | undefined): AgentBackendRow {
   return current.all.find((b) => b.id === want) ?? current.backends.find((b) => b.id === want) ?? CLAUDE_FALLBACK;
 }
 
-/** "Claude" / "Copilot" / "Codex" / "Gemini" — the word every surface names the agent by. */
+/** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" — the word every surface names the agent by. */
 export function agentLabel(id: string | null | undefined): string {
   return backendOf(id).label;
 }
@@ -373,6 +409,15 @@ export function modelLabelsOf(id: string | null | undefined): Record<string, str
   const out: Record<string, string> = {};
   for (const m of backendOf(id).models) out[m.id] = m.label;
   return out;
+}
+
+/** A small word printed after a model's label in the pickers, or "". Only
+ *  OpenCode's `fused/…` rows carry one — "local" — since those are the app's
+ *  own local catalog served through OpenCode (docs/OPENCODE_BACKEND.md D7,
+ *  D11a, D20); a discovered row has the same `{id, label}` shape as a seeded
+ *  one, so the prefix is the whole test. Ids with a `/` are displayed as is. */
+export function modelTagOf(id: string | null | undefined, model: string | null | undefined): string {
+  return (id || "claude") === "opencode" && (model || "").startsWith("fused/") ? "local" : "";
 }
 
 export function effortsOf(id: string | null | undefined): string[] {

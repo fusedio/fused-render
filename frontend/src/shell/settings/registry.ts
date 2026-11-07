@@ -257,6 +257,14 @@ const ENTRIES = [
     keywords: "google gemini agent backend cli sign in login api key",
   },
   {
+    id: "agent-opencode",
+    group: "ai",
+    section: "Agents",
+    label: "OpenCode",
+    description: "Runs chats and tasks with any provider OpenCode knows, or a local model with no account at all. Bots keep using Claude.",
+    keywords: "opencode open code agent backend cli sign in login api key local model provider",
+  },
+  {
     id: "agent-default",
     group: "ai",
     section: "Agents",
@@ -264,10 +272,10 @@ const ENTRIES = [
     description: "With more than one agent on, new chats and tasks start here. A conversation keeps the agent it started with.",
     keywords: "default agent backend",
     child: true,
-    // Two or more of the four on: a default only means something when there
+    // Two or more of the five on: a default only means something when there
     // is a choice to make.
     available: ({ prefs }) =>
-      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex, prefs.agents?.gemini]
+      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex, prefs.agents?.gemini, prefs.agents?.opencode]
         .filter(Boolean).length >= 2,
   },
   {
@@ -631,9 +639,9 @@ const ENTRIES = [
     id: "agent-signin",
     group: "integrations",
     section: ELSEWHERE,
-    label: "Claude Code, Copilot, Codex and Gemini sign-in",
+    label: "Claude Code, Copilot, Codex, Gemini and OpenCode sign-in",
     description: "Shown with each agent's health under Coding agents.",
-    keywords: "claude login anthropic copilot github codex openai chatgpt gemini google sign in",
+    keywords: "claude login anthropic copilot github codex openai chatgpt gemini google opencode sign in",
     elsewhere: true,
   },
 

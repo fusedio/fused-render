@@ -260,7 +260,7 @@ export const memory = {
 // -- skills -------------------------------------------------------------------
 
 /** The coding agents whose skills directories the page reads. */
-export type CliId = "claude" | "copilot" | "codex" | "gemini";
+export type CliId = "claude" | "copilot" | "codex" | "gemini" | "opencode";
 
 export interface Skill {
   slug: string;

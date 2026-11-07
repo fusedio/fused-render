@@ -8,6 +8,7 @@ import {
   CODEX_FALLBACK,
   COPILOT_FALLBACK,
   GEMINI_FALLBACK,
+  OPENCODE_FALLBACK,
   agentLabel,
   agentNamed,
   backendOf,
@@ -16,6 +17,7 @@ import {
   defaultModelOf,
   isBackendEnabled,
   isForeignModel,
+  modelTagOf,
   modesOf,
   resetAgentBackendsForTests,
 } from "./agent-backends";
@@ -83,6 +85,51 @@ test("a Gemini chat answers with Gemini's row before the catalog lands (docs/GEM
   expect(isForeignModel("gpt-6-luna", "gemini")).toBe(true);
   expect(isForeignModel("gemini-2.5-pro", "gemini")).toBe(false);
   expect(isForeignModel("gemini-9-unknown", "gemini")).toBe(false);
+});
+
+test("an OpenCode chat answers with OpenCode's row before the catalog lands (docs/OPENCODE_BACKEND.md §7)", () => {
+  resetAgentBackendsForTests();
+  expect(backendOf("opencode")).toBe(OPENCODE_FALLBACK);
+  expect(agentLabel("opencode")).toBe("OpenCode");
+  expect(defaultModelOf("opencode")).toBe("anthropic/claude-sonnet-5-5");
+  expect(modesOf("opencode")).toEqual(["prompt", "acceptEdits", "auto"]);
+  const caps = capsOf("opencode");
+  expect(caps.plan_mode).toBe(false);
+  // Model is a live ACP request (D7); a mode change is a respawn (D5).
+  expect(caps.live_model_switch).toBe(true);
+  expect(caps.live_mode_switch).toBe(false);
+  expect(caps.worktrees).toBe(false);
+  expect(caps.ask_user).toBe(false);
+  // No effort control at all (D7).
+  expect(effortsOf("opencode")).toEqual([]);
+  expect(effortsForModel("opencode", "anthropic/claude-sonnet-5-5")).toEqual([]);
+  expect(effortsForModel("opencode", "fused/local")).toEqual([]);
+  expect(effortsForModel("opencode", "openai/gpt-9-unknown")).toEqual([]);
+  expect(defaultEffortFor("opencode", "openai/gpt-5.5")).toBe("");
+  expect(OPENCODE_FALLBACK.models.every((m) => m.reasoning === false)).toBe(true);
+  // Off until the server says otherwise (D17), and named even so.
+  expect(OPENCODE_FALLBACK.enabled).toBe(false);
+  expect(isBackendEnabled("opencode")).toBe(false);
+  expect(agentNamed("opencode")).toBe(true);
+  // Ids are `provider/model` (D7): foreign on a Claude chat and the other way round.
+  expect(isForeignModel("anthropic/claude-sonnet-5-5", "claude")).toBe(true);
+  expect(isForeignModel("sonnet", "opencode")).toBe(true);
+  expect(isForeignModel("gemini-2.5-pro", "opencode")).toBe(true);
+  expect(isForeignModel("openai/gpt-5.5", "opencode")).toBe(false);
+  expect(isForeignModel("openai/gpt-9-unknown", "opencode")).toBe(false);
+  // Only OpenCode's `fused/…` rows carry the "local" tag (D20).
+  expect(modelTagOf("opencode", "fused/local")).toBe("local");
+  expect(modelTagOf("opencode", "fused/qwen3-8b-q4")).toBe("local");
+  expect(modelTagOf("opencode", "anthropic/claude-sonnet-5-5")).toBe("");
+  expect(modelTagOf("gemini", "fused/local")).toBe("");
+  expect(modelTagOf("opencode", "")).toBe("");
+});
+
+test("with all five on, the server's default can be OpenCode", () => {
+  const rows = [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK, OPENCODE_FALLBACK].map((r) => ({ ...r, enabled: true }));
+  resetAgentBackendsForTests({ backends: rows, default: "opencode", all: rows });
+  expect(defaultBackend()).toBe("opencode");
+  expect(isBackendEnabled("opencode")).toBe(true);
 });
 
 test("with all four on, the server's default can be Gemini", () => {

@@ -19,6 +19,7 @@ import {
   CLAUDE_INSTALL_COMMAND_WINDOWS,
   CODEX_INSTALL_COMMAND,
   GEMINI_INSTALL_COMMAND,
+  OPENCODE_INSTALL_COMMAND,
   isClaudeTrouble,
   troubleHelpUrl,
   troubleInstructions,
@@ -65,6 +66,28 @@ const SAID: Record<string, { title: string; explain: string }> = {
 // beside "Install Codex" named the wrong agent in the one line the user reads
 // first (CodeRabbit on the Codex PR). `raw` is shared — it names nobody.
 const SAID_BY_AGENT: Record<string, Record<string, { title: string; explain: string }>> = {
+  opencode: {
+    notfound: {
+      title: "The app can't find OpenCode",
+      explain:
+        "Fused Render uses OpenCode on this computer for this task, " +
+        "and it could not find it. Either it was never installed, or it is " +
+        "somewhere the app cannot see.",
+    },
+    login: {
+      title: "OpenCode has no usable provider",
+      explain:
+        "OpenCode is installed but no provider is signed in (and no local " +
+        "model is loaded), so nothing can run. Sign in from Preferences → " +
+        "Coding agents (it opens a terminal running `opencode auth login`), once.",
+    },
+    limit: {
+      title: "Your OpenCode provider's limit was reached",
+      explain:
+        "Nothing is broken — the provider behind this model has a set amount " +
+        "of use and it is spent for now. The message below says when it resets.",
+    },
+  },
   gemini: {
     notfound: {
       title: "The app can't find Gemini CLI",
@@ -212,7 +235,8 @@ export function TroubleCard({
   /** Which agent failed — "claude" when absent (docs/COPILOT_BACKEND.md D13).
    *  Picks the classifier's subject and the brief's steps, and the install
    *  line: Claude's, Codex's own (docs/CODEX_BACKEND.md D10), Gemini's own
-   *  (docs/GEMINI_BACKEND.md D10), none on a Copilot card. */
+   *  (docs/GEMINI_BACKEND.md D10), OpenCode's own (docs/OPENCODE_BACKEND.md
+   *  D10), none on a Copilot card. */
   backend?: string;
   /** Extra actions belonging to the calling surface (e.g. "Fix this"). */
   children?: React.ReactNode;
@@ -227,16 +251,19 @@ export function TroubleCard({
     ? { name: "Codex", command: CODEX_INSTALL_COMMAND }
     : backend === "gemini"
       ? { name: "Gemini CLI", command: GEMINI_INSTALL_COMMAND }
-      : backend === "copilot"
-        ? null
-        : { name: "Claude Code", command: isWindows ? CLAUDE_INSTALL_COMMAND_WINDOWS : CLAUDE_INSTALL_COMMAND };
+      : backend === "opencode"
+        ? { name: "OpenCode", command: OPENCODE_INSTALL_COMMAND }
+        : backend === "copilot"
+          ? null
+          : { name: "Claude Code", command: isWindows ? CLAUDE_INSTALL_COMMAND_WINDOWS : CLAUDE_INSTALL_COMMAND };
   // The brief behind the second copy button is written for THIS agent
   // (`troubleInstructions`), so the button names that agent — a Codex card
   // labelling its brief "Claude Code instructions" hands the wrong agent's
   // name to whoever gets the paste.
   const agentName = backend === "codex" ? "Codex"
     : backend === "gemini" ? "Gemini"
-      : backend === "copilot" ? "Copilot" : "Claude Code";
+      : backend === "opencode" ? "OpenCode"
+        : backend === "copilot" ? "Copilot" : "Claude Code";
   const copyBriefLabel = `Copy ${agentName} instructions`;
 
   if (compact) {
