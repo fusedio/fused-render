@@ -19,6 +19,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -29,6 +30,7 @@ import {
 import { createPortal } from "react-dom";
 import { useDeferredClose } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "./esc-stack";
+import { popoverPlacement, type PopoverBox } from "./popover-place";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 import {
   CLOSE_CONTROL_SELECTOR,
@@ -144,7 +146,38 @@ export interface ModalProps {
   // container is a different (top) document than the one this script's own
   // `document` global points at.
   getContainer?: () => Element | null;
+  /**
+   * POPOVER PRESENTATION (owner, 2026-11-07: the rail's + opens the New task
+   * card "like the popover for task chats" — the same card, floating beside
+   * the rail, not a modal). The same head, body, footer, Esc stack, busy and
+   * dirty guards; what changes:
+   *   • no scrim — the page stays live (`.modal-popover`, pointer-events only
+   *     on the card), no `aria-modal`, no Tab trap, no focus reclaim;
+   *   • placed to the LEFT of `beside` (or `anchor`), top-aligned with
+   *     `anchor`, clamped inside the viewport (`popover-place.ts`), and kept
+   *     there as the card's height or the window changes;
+   *   • an OUTSIDE PRESS closes it like the ✕ — except a press on the anchor
+   *     (its own toggle, `closeSignal`), inside another dialog stacked over
+   *     it, or inside a portaled popper (`[data-radix-popper-content-wrapper]`,
+   *     `[data-modal-popover-keep]`): the card's own pill menus live inside
+   *     the dialog, so containment already covers them;
+   *   • focus goes back to the anchor on close only when it would otherwise
+   *     be lost (on the card, or nowhere) — an outside press that put the
+   *     caret elsewhere keeps it there.
+   * Absent: the modal, byte-identical.
+   */
+  popover?: {
+    anchor: RefObject<HTMLElement | null>;
+    /** Whose LEFT edge the card stands beside (the rail); `anchor`'s if absent. */
+    beside?: RefObject<HTMLElement | null>;
+    /** Bumped by the opener to close the card the chassis' own way (the
+     *  anchor pressed again). */
+    closeSignal?: number;
+  };
 }
+
+/** Presses inside these never dismiss a popover-mode dialog (Modal `popover`). */
+const POPOVER_KEEP = '.modal-overlay, [role="dialog"], [data-radix-popper-content-wrapper], [data-modal-popover-keep]';
 
 export function Modal({
   title,
@@ -164,6 +197,7 @@ export function Modal({
   plainBody = false,
   headActions,
   getContainer,
+  popover,
 }: ModalProps) {
   const titleId = useId();
   // Resolved ONCE, at mount — see `getContainer`'s doc comment above.
@@ -210,6 +244,17 @@ export function Modal({
       target?.focus();
     }
     return () => {
+      if (popover) {
+        // A popover closed by a press elsewhere: the caret went where the
+        // reader sent it. Only focus that would be LOST (left on the card that
+        // is going, or nowhere) goes back — to the anchor, the door it came by.
+        const active = ownerDoc.activeElement as Element | null;
+        const lost = !active || active === ownerDoc.body || !active.isConnected || !!dialog?.contains(active);
+        if (!lost) return;
+        const back = (popover.anchor.current ?? restoreRef.current) as HTMLElement | null;
+        back?.focus?.({ preventScroll: true });
+        return;
+      }
       const el = restoreRef.current as HTMLElement | null;
       el?.focus?.();
     };
@@ -281,7 +326,8 @@ export function Modal({
   // nested [role="dialog"] (a popover) that legitimately holds focus.
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (!dialog) return;
+    // A popover is not modal: focus may leave it for the page.
+    if (!dialog || popover) return;
     const onFocusOut = (e: FocusEvent) => {
       const next = e.relatedTarget as Node | null;
       if (next && dialog.contains(next)) return;
@@ -343,8 +389,93 @@ export function Modal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attemptClose]);
 
+  // POPOVER: the anchor pressed again closes it the chassis' own way (the exit
+  // animation, the busy and dirty guards) — `closeSignal` bumped by the opener.
+  const closeSignal = popover?.closeSignal ?? 0;
+  const seenSignal = useRef(closeSignal);
+  useEffect(() => {
+    if (closeSignal === seenSignal.current) return;
+    seenSignal.current = closeSignal;
+    attemptClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [closeSignal]);
+
+  // POPOVER: an outside press closes it, as the ✕ would (header of `popover`).
+  // Capture phase, pointerdown — the house rule (platform/lib/dismissOnOutside):
+  // the card is gone before whatever the reader aimed at reacts, and a row
+  // that stops propagation cannot leave it undismissable.
+  const popoverOn = !!popover;
+  const attemptCloseRef = useRef(attemptClose);
+  attemptCloseRef.current = attemptClose;
+  useEffect(() => {
+    if (!popoverOn) return;
+    const onDown = (e: Event) => {
+      const t = e.target as Element | null;
+      if (!t || typeof (t as Node).nodeType !== "number") return;
+      const dialog = dialogRef.current;
+      if (dialog && dialog.contains(t)) return;
+      const anchor = popover?.anchor.current;
+      if (anchor && anchor.contains(t)) return;
+      const el = t.nodeType === 1 ? t : t.parentElement;
+      if (el?.closest?.(POPOVER_KEEP)) return;
+      // A dialog stacked over this one owns the press.
+      if (!isTopmost(token.current)) return;
+      attemptCloseRef.current();
+    };
+    ownerDoc.addEventListener("pointerdown", onDown, true);
+    return () => ownerDoc.removeEventListener("pointerdown", onDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popoverOn]);
+
+  // POPOVER: where it stands (popover-place.ts), re-measured as the card's
+  // height or the window changes. The first guess is taken at mount, off the
+  // anchor alone (the card's height is not known yet): never hidden while it
+  // is measured, because the card's field takes the caret in this very
+  // commit and a `visibility: hidden` box cannot hold focus.
+  const wantWidth = typeof width === "number" ? width : 580;
+  const [place, setPlace] = useState<PopoverBox | null>(() => {
+    const anchor = popover?.anchor.current;
+    const view = ownerDoc.defaultView;
+    if (!anchor || !view || typeof anchor.getBoundingClientRect !== "function") return null;
+    const a = anchor.getBoundingClientRect();
+    const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
+    return popoverPlacement(a, b, { width: wantWidth, height: 0 }, { width: view.innerWidth, height: view.innerHeight });
+  });
+  useLayoutEffect(() => {
+    if (!popoverOn) return;
+    const view = ownerDoc.defaultView;
+    const measure = () => {
+      const anchor = popover?.anchor.current;
+      const dialog = dialogRef.current;
+      if (!anchor || !dialog || !view) return;
+      const a = anchor.getBoundingClientRect();
+      const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
+      const next = popoverPlacement(
+        a,
+        b,
+        { width: wantWidth, height: dialog.offsetHeight },
+        { width: view.innerWidth, height: view.innerHeight },
+      );
+      setPlace((was) =>
+        was && was.left === next.left && was.top === next.top && was.width === next.width ? was : next,
+      );
+    };
+    measure();
+    const RO = (view as (Window & { ResizeObserver?: typeof ResizeObserver }) | null)?.ResizeObserver;
+    const ro = RO && dialogRef.current ? new RO(measure) : null;
+    if (ro && dialogRef.current) ro.observe(dialogRef.current);
+    view?.addEventListener("resize", measure);
+    return () => {
+      ro?.disconnect();
+      view?.removeEventListener("resize", measure);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popoverOn, wantWidth]);
+
   const onKeyDown = (e: ReactKeyboardEvent) => {
     if (e.key !== "Tab") return;
+    // A popover is not modal: Tab walks on into the page.
+    if (popover) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
     const nodes = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
@@ -369,15 +500,31 @@ export function Modal({
     }
   };
 
-  const dialogStyle: CSSProperties | undefined = width !== undefined ? { width } : undefined;
+  const dialogStyle: CSSProperties | undefined = popover
+    ? {
+        // Inline, so no stylesheet's `position`/`left` (schedule.css shifts a
+        // centred card for its side panels) can move it off its anchor.
+        position: "fixed",
+        left: place?.left ?? 0,
+        top: place?.top ?? 0,
+        width: place?.width ?? wantWidth,
+        maxHeight: "calc(100vh - 16px)",
+      }
+    : width !== undefined
+      ? { width }
+      : undefined;
 
   // Portal to <body>: modals mount from arbitrary spots (e.g. AI Models'
   // NewJobModal inside a page's toolbar), and ancestor-scoped `button` rules
   // were leaking into the dialog chrome (a boxed ✕ from just one caller's styles).
   return createPortal(
     <div
-      className={"modal-overlay deploy-overlay" + (closing ? " closing" : "")}
+      className={(popover ? "modal-overlay modal-popover" : "modal-overlay deploy-overlay") + (closing ? " closing" : "")}
+      // The card's left edge, for side panels that stand beside it (Browse,
+      // Custom recurrence — schedule.css `.modal-popover`).
+      {...(popover && place ? { style: { "--modal-pop-left": `${place.left}px` } as CSSProperties } : {})}
       onMouseDown={(e) => {
+        if (popover) return;
         // Only the scrim itself, and not in its first moments: the second press
         // of a double-click on whatever opened this dialog lands here, on the
         // spot the pointer never left (dirty-guard `backdropPressCloses`).
@@ -392,7 +539,7 @@ export function Modal({
         className={"modal-dialog deploy-dialog" + (dialogClassName ? " " + dialogClassName : "")}
         style={dialogStyle}
         role="dialog"
-        aria-modal="true"
+        {...(popover ? {} : { "aria-modal": "true" as const })}
         {...(ariaLabel
           ? // An explicit name WINS over `aria-labelledby`, so the two are
             // mutually exclusive rather than both set — leaving the heading

@@ -2273,6 +2273,22 @@ input.schedule-when-field {
   left: max(-235px, calc(12px - 50vw + min(290px, 50vw - 16px)));
 }
 
+/* THE CARD AS A POPOVER BESIDE THE RAIL (Modal `popover`, 2026-11-07): it
+   hugs the window's right edge, so the side panel stands on its LEFT — 10px
+   off the card's left edge (`--modal-pop-left`, set by the chassis), giving
+   up width before it would run off the window. The card itself never moves
+   for it (its position is inline). */
+.modal-popover .schedule-explorer,
+.modal-popover .schedule-recur {
+  --pop-panel-w: min(460px, max(240px, var(--modal-pop-left, 480px) - 18px));
+  left: max(8px, calc(var(--modal-pop-left, 480px) - 10px - var(--pop-panel-w)));
+  width: var(--pop-panel-w);
+}
+
+.modal-popover .schedule-recur {
+  --pop-panel-w: min(380px, max(240px, var(--modal-pop-left, 400px) - 18px));
+}
+
 /* `top` and `height` are set INLINE by NewJobModal, measured off the dialog's
    own rect and recomputed on resize: a panel centred on the viewport while the
    card is centred on its own content lined up with nothing — the two shared an

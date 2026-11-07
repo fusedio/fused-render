@@ -36,7 +36,7 @@ import {
   isUnlistedEffort,
   useAgentBackends,
 } from "@platform/lib/agent-backends";
-import { Modal } from "@platform/ui/modal/Modal";
+import { Modal, type ModalProps } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
   getClaudeSessionFolders,
@@ -2805,6 +2805,7 @@ export default function NewJobModal({
   recentTargets,
   projects = NO_PROJECTS,
   planning = false,
+  popover,
   onClose,
   onCreated,
 }: {
@@ -2941,6 +2942,15 @@ export default function NewJobModal({
   // scheduled": that is `timePicked` below, which reads what the user actually
   // did rather than which view they came from.
   planning?: boolean;
+  /**
+   * THE SAME CARD AS A POPOVER (owner, 2026-11-07, behind the rail flag): the
+   * rail's + opens it floating beside the rail, no scrim, the page still live
+   * — "like the popover for task chats". The chassis' `popover` presentation
+   * (platform/ui/modal/Modal.tsx), passed straight through; every field,
+   * autosave and Create are this card's own either way. Absent (every other
+   * opener — the Tasks page, a draft's row), the modal it always was.
+   */
+  popover?: ModalProps["popover"];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -5110,6 +5120,7 @@ export default function NewJobModal({
       onClose={onClose}
       busy={busy}
       width={580}
+      {...(popover ? { popover } : {})}
       // THE CLOSE-TWICE GUARD IS OFF WHENEVER THERE IS A DRAFT TO CLOSE INTO
       // (design.md, Decisions: "Modal close keeps the draft silently; Discard in
       // footer. No prompt."). The guard exists to stop a ✕ discarding typed

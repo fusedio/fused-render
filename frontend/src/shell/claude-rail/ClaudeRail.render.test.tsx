@@ -22,6 +22,7 @@ const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-sto
 const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
 const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
+const { railGitNow, resetRailGitStoreForTests } = await import("./rail-git-store");
 
 const DIR = "/home/me/apps/demo";
 
@@ -158,9 +159,13 @@ async function mountRail(o: {
   /** The session the page's URL names — beside the open pane, the chat it
    *  shows; null is the pane's home (2026-11-05, `listHidden`). */
   activeSessionId?: string | null;
+  /** The rail flag; on unless said. */
+  peek?: boolean;
+  /** The page's git (ClaudeRail `git`). */
+  git?: { path: string; onOpenGit?: () => void };
 }) {
   // The card's flag and the favourites' pair, as Settings would publish them.
-  publishCanvasRailPeek({ enabled: true });
+  publishCanvasRailPeek({ enabled: o.peek ?? true });
   publishFavouritesParent({ enabled: true });
   publishTaskFavourites({ enabled: o.favourites });
   const rows = o.chats ?? [];
@@ -177,6 +182,7 @@ async function mountRail(o: {
         onOpen={() => {}}
         onOpenChat={o.onOpenChat ?? (() => {})}
         onPullStart={() => {}}
+        {...(o.git ? { git: o.git } : {})}
       />,
       { createNodeMock: () => fakeEl() },
     );
@@ -362,5 +368,56 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
     expect(ring(r).props["aria-haspopup"]).toBe("dialog");
     expect(ring(r).props["data-hint"]).toBe("");
     expect(ring(r).props.href).toBe("/bots/b1");
+  });
+});
+
+// THE GIT SECTION MOVES TO THE STATUS BAR (owner, 2026-11-07, the rail flag):
+// with the nav doors the rail draws no Git section and publishes the page's
+// repository for the status bar's Git chip (rail-git-store.ts, GitDock);
+// flag off, the rail of before.
+describe("ClaudeRail's git with the rail flag", () => {
+  const REPO = {
+    root: DIR,
+    branch: "feature",
+    has_remote: true,
+    default_branch: "main",
+    ahead: 0,
+    behind: 2,
+    commits: [{ sha: "abc1234def", short: "abc1234", subject: "Fix it", author: "me", when: 1_000 }],
+  };
+  beforeEach(() => {
+    resetRailGitStoreForTests();
+    (globalThis as { fetch: unknown }).fetch = (url: string) =>
+      String(url).includes("/api/git/rail")
+        ? Promise.resolve(new Response(JSON.stringify({ ok: true, repo: REPO }), { status: 200 }))
+        : new Promise<Response>(() => {});
+  });
+  afterEach(() => resetRailGitStoreForTests());
+  const gitGroup = (r: ReactTestRenderer) =>
+    r.root.findAll((n) => typeof n.type === "string" && n.props.role === "group" && n.props["aria-label"] === "Git");
+
+  test("flag on: no Git section on the rail; the repository and the Git panel door go to the store", async () => {
+    let opened = 0;
+    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR, onOpenGit: () => opened++ } });
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 0));
+    });
+    expect(gitGroup(r)).toHaveLength(0);
+    const door = railGitNow();
+    expect(door?.repo.branch).toBe("feature");
+    door?.onOpenGit?.();
+    expect(opened).toBe(1);
+    act(() => r.unmount());
+    mounted.splice(mounted.indexOf(r), 1);
+    expect(railGitNow()).toBeNull();
+  });
+
+  test("flag off: the rail's Git section as before, nothing published", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: false, peek: false, git: { path: DIR } });
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 0));
+    });
+    expect(gitGroup(r)).toHaveLength(1);
+    expect(railGitNow()).toBeNull();
   });
 });

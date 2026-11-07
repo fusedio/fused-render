@@ -83,6 +83,7 @@ import BreakoutCards from "@shell/breakout/BreakoutCards";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import NativeAppSyncNotices from "@shell/NativeAppSyncNotices";
 import TerminalDock from "@shell/TerminalDock";
+import GitDock from "@shell/GitDock";
 import TerminalDrawer from "@shell/TerminalDrawer";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
@@ -1311,6 +1312,7 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             terminalDock={terminalOn && <TerminalDock />}
+            git={<GitDock />}
             updates={<UpdatesDock version={config.version} hasUpdater={config.update != null} />}
             system={monitorOn === true && <SystemDock />}
             models={<ModelsDock />}

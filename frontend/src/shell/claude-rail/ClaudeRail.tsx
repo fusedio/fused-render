@@ -339,6 +339,7 @@ import {
 import { FAV_PEEK_ID } from "./FavouritePeek";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useRailGit } from "./rail-git";
+import { publishRailGit, registerRailGit } from "./rail-git-store";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platform/lib/botsPulse";
@@ -523,6 +524,10 @@ interface Card {
   chatKey?: string;
   /** The time the stored form chose, or null (Scheduled `reopenTime`). */
   time?: Date | null;
+  /** THE +'s CARD AS A POPOVER (owner, 2026-11-07, the rail flag — `navDoors`):
+   *  floating beside the rail, no scrim, like the rail's chat card. Only the
+   *  +'s; a draft's card stays the modal. */
+  pop?: boolean;
 }
 
 /** What the +'s New task card is about, from the page: the page knows what
@@ -761,6 +766,33 @@ export function ClaudeRail({
   // (the shell's fallback stands on every page without a page rail,
   // claude-rail-lib `fallbackRailUp`). Off, the rail of 2026-11-06.
   const navDoors = peekOn;
+  // THE GIT SECTION MOVES TO THE STATUS BAR with the nav doors (owner,
+  // 2026-11-07: "remove git icons from the sidebar, and instead beside
+  // Terminal say Git"): the rail still reads the page's repository and hands
+  // it, with the page's Git panel door, to the status bar's Git chip
+  // (rail-git-store.ts, shell/GitDock.tsx) — and draws no Git section.
+  const gitToken = useRef({});
+  const openGitRef = useRef(git?.onOpenGit);
+  openGitRef.current = git?.onOpenGit;
+  const gitOn = !!git;
+  const gitDoor = !!git?.onOpenGit;
+  useEffect(() => (navDoors ? registerRailGit(gitToken.current) : undefined), [navDoors]);
+  useEffect(() => {
+    if (!navDoors) return;
+    const repo = gitOn ? railGit.repo : null;
+    publishRailGit(
+      gitToken.current,
+      repo
+        ? {
+            repo,
+            checking: railGit.checking,
+            checked: railGit.checked,
+            check: railGit.check,
+            ...(gitDoor ? { onOpenGit: () => openGitRef.current?.() } : {}),
+          }
+        : null,
+    );
+  }, [navDoors, gitOn, gitDoor, railGit.repo, railGit.checking, railGit.checked, railGit.check]);
   const hideList = listHidden({ paneOpen, favsOn, paneHome });
   const stands =
     navDoors ||
@@ -1764,7 +1796,14 @@ export function ClaudeRail({
     plusRef.current?.focus({ preventScroll: true });
   }, [node]);
   const waiting = newTask.waiting;
+  // The popover card's own close, the chassis' way (Modal `popover.closeSignal`):
+  // the + pressed again while it is up.
+  const [cardCloseSignal, setCardCloseSignal] = useState(0);
   const openNewTask = () => {
+    if (card?.pop) {
+      setCardCloseSignal((n) => n + 1);
+      return;
+    }
     if (opening || card || waiting) return;
     setOpening(true);
     // As they were at the press (header of `Card`).
@@ -1773,7 +1812,7 @@ export function ClaudeRail({
     void cardSeed().then((got) => {
       if (!alive.current) return;
       setOpening(false);
-      setCard({ seq: Date.now(), target: at, where, ...got });
+      setCard({ seq: Date.now(), target: at, where, ...got, ...(navDoors ? { pop: true } : {}) });
     });
   };
   // A DRAFT'S DOOR, IN PLACE (header of `Card.draft`): the same New task card
@@ -2356,7 +2395,7 @@ export function ClaudeRail({
             className="sidebar-rail-btn claude-rail-item"
             title={plusLabel}
             aria-label={plusLabel}
-            {...(plusPane ? {} : { "aria-haspopup": "dialog" as const })}
+            {...(plusPane ? {} : { "aria-haspopup": "dialog" as const, "aria-expanded": !!card?.pop })}
             aria-busy={opening || waiting !== null || undefined}
             disabled={opening || waiting !== null}
             onClick={plusPane ? openPaneHome : openNewTask}
@@ -2459,8 +2498,9 @@ export function ClaudeRail({
             )}
           </div>
         )}
-        {git && railGit.repo && (
-          // THE GIT SECTION (header): past the left rail's own separator
+        {!navDoors && git && railGit.repo && (
+          // THE GIT SECTION (header), off with the nav doors — the status
+          // bar's Git chip draws it then (rail-git-store.ts): past the left rail's own separator
           // (sidebar.css `.sidebar-rail-sep`), the repository the page sits
           // in. Each seat wears the app's hint (platform/lib/hints), beside
           // the rail like the rings' — a 48px column has no room for words.
@@ -2801,6 +2841,10 @@ export function ClaudeRail({
           // onto the rail; the listing is re-read now so its caption and
           // rank are not 600ms behind its ring.
           onCreated={() => refreshListing()}
+          // The +'s card with the rail flag on: the same card as a popover
+          // beside the rail (`Card.pop`), top-level with the +, left of the
+          // rail's edge; the + again closes it.
+          {...(card.pop ? { popover: { anchor: plusRef, beside: railRef, closeSignal: cardCloseSignal } } : {})}
         />
       )}
     </aside>
