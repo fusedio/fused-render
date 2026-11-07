@@ -1138,6 +1138,27 @@ def _prompt_tokens(llm, prompt):
         return None
 
 
+def _generation_options(body):
+    """`worker_base.generation_options` where the base has it; the same
+    reading inline for a base that predates it (a test's stub module)."""
+    reader = getattr(worker_base, "generation_options", None)
+    if reader is not None:
+        return reader(body)
+    tools = body.get("tools") if isinstance(body.get("tools"), list) else None
+    stop = body.get("stop")
+    stop = [stop] if isinstance(stop, str) else [s for s in (stop or []) if isinstance(s, str) and s]
+    max_tokens = body.get("max_tokens")
+    return {"tools": tools or None, "stop": stop,
+            "max_tokens": int(max_tokens) if max_tokens else None}
+
+
+def _finish_reason(count, max_tokens):
+    reader = getattr(worker_base, "finish_reason", None)
+    if reader is not None:
+        return reader(count=count, max_tokens=max_tokens)
+    return "length" if max_tokens is not None and count >= max_tokens else "stop"
+
+
 def generate(body, write):
     """Stream one completion as NDJSON: {chunk} lines, then {done}.
 
@@ -1190,7 +1211,7 @@ def generate(body, write):
     # `tools`/`stop`/`max_tokens` through the shared validator (docs/
     # LOCAL_MODEL_GATEWAY.md §3): the handler already refused a malformed
     # body with a 400, so this cannot raise here.
-    options = worker_base.generation_options(body)
+    options = _generation_options(body)
     prompt = _prompt_text(llm, messages, body.get("prompt") or "",
                           enable_thinking=enable_thinking, tools=options["tools"])
     # What the model READ, reported as `input_tokens` (SPEC AI-3) — counted
@@ -1228,7 +1249,7 @@ def generate(body, write):
     if reported in ("stop", "length"):
         finish = reported
     else:
-        finish = worker_base.finish_reason(count=count, max_tokens=max_tokens)
+        finish = _finish_reason(count, max_tokens)
     write({
         "type": "done", "ok": True, "tokens": count,
         "input_tokens": prompt_tokens,
