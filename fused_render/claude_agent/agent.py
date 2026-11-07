@@ -2797,6 +2797,7 @@ def _permissions(run_dir: str) -> list:
             "tool_use_id": str(req.get("tool_use_id") or ""),
             "input": req.get("input") if isinstance(req.get("input"), dict) else {},
             "created_at": req.get("created_at") or 0,
+            "decided_at": res.get("decided_at") or req.get("created_at") or 0,
             "decision": str(res.get("decision") or ""),
             # ANSWERED, NOT YET DELIVERED — the project queue is holding this
             # decision until the folder frees. Never true alongside a
@@ -3100,7 +3101,7 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
         if scope == "exact" and (tool in WHOLE_TOOL_GRANTABLE
                                  or _exact_rule_content(tool, asked) is None):
             scope = "once"
-        payload = {"decision": verdict,
+        payload = {"decision": verdict, "decided_at": time.time(),
                    "scope": scope if scope in ("session", "exact") else "once"}
         if verdict == "allow" and payload["scope"] != "once" \
                 and tool != ANSWERABLE_TOOL and tool != PLAN_TOOL:
@@ -3181,8 +3182,8 @@ def _live_mode(meta: dict, permissions: list) -> str:
     vanished from every card built afterwards.
 
     Derived rather than stored, so it survives a re-attach and cannot drift
-    from the decisions claude actually received: the spawn mode, re-pointed by
-    each landed decision that MOVED it, in the order they were answered.
+    from the decisions claude actually received: meta's mode (the spawn's, or a
+    `_set_mode` switch), re-pointed by each later decision that MOVED it.
 
     Two kinds of decision move it, and the second one is not ours:
 
@@ -3203,18 +3204,16 @@ def _live_mode(meta: dict, permissions: list) -> str:
     mode = meta.get("mode")
     if mode not in PERMISSION_MODES:
         mode = DEFAULT_PERMISSION_MODE
-    moves = []
-    for perm in permissions:
-        if perm.get("decision") != "allow":
+    # by when it was answered, not by id: ids lead with HH%M%S, which misorders
+    # a run spanning midnight.
+    for perm in sorted(permissions, key=lambda p: p.get("decided_at") or 0):
+        if perm.get("decision") != "allow" or \
+                (perm.get("decided_at") or 0) <= meta.get("mode_at", 0):
             continue
         if perm.get("mode") in SWITCHABLE_MODES:
-            moves.append((perm, perm["mode"]))
+            mode = perm["mode"]
         elif perm.get("tool") == PLAN_TOOL:
-            moves.append((perm, DEFAULT_PERMISSION_MODE))
-    # by created_at, not by id: ids lead with HH%M%S, which misorders a run
-    # spanning midnight.
-    for _perm, landed in sorted(moves, key=lambda m: m[0].get("created_at") or 0):
-        mode = landed
+            mode = DEFAULT_PERMISSION_MODE
     return mode
 
 
@@ -6462,7 +6461,7 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
                          + _BACKEND_LABELS.get(backend, backend),
                 "reason": "unsupported", "backend": backend}
     cli_mode = _backend_mode(backend, PERMISSION_MODES[page_mode])
-    if cli_mode != host.get("mode", ""):
+    if page_mode != _live_mode(meta, _permissions(run_dir)):
         if backend == "copilot" and "acceptEdits" in (cli_mode, host.get("mode")):
             # `acceptEdits` is an argv grant (`--allow-tool write`, D5): it can
             # neither be added nor taken back from a live process.
@@ -6474,19 +6473,18 @@ def _set_mode(run_id: str, permission_mode: str) -> dict:
         # TWO WRITERS (the Claude host writes host.json at spawn, the Copilot
         # and Codex hosts rewrite it after their handshake to add their
         # session id): re-read
-        # just before writing, change only "mode", replace atomically. Gone by
+        # just before writing, change only the mode, replace atomically. Gone by
         # now (the host reaped) -> nothing to record into.
-        try:
-            with open(path, encoding="utf-8") as fh:
-                fresh = json.load(fh)
-            if isinstance(fresh, dict):
-                fresh["mode"] = cli_mode
-                tmp = f"{path}.{os.urandom(4).hex()}.tmp"
-                with _private_open(tmp) as f:
-                    json.dump(fresh, f)
-                os.replace(tmp, path)
-        except (OSError, ValueError):
-            pass
+        for target, update in ((path, {"mode": cli_mode}),
+                               (os.path.join(run_dir, "meta.json"),
+                                {"mode": page_mode, "mode_at": time.time()})):
+            try:
+                with open(target, encoding="utf-8") as fh:
+                    fresh = json.load(fh)
+                if isinstance(fresh, dict):
+                    _write_json_atomic(target, {**fresh, **update})
+            except (OSError, ValueError):
+                pass
     return {"ok": True, "mode": page_mode}
 
 

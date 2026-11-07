@@ -1044,7 +1044,8 @@ def _live_run(agent, tmp_path, backend="copilot", mode=None, model="auto"):
                    "backend": backend}, fh)
     with open(os.path.join(run_dir, "meta.json"), "w") as fh:
         json.dump({"file": "/f", "message": "m", "resumed_from": "",
-                   "mode": "prompt", "session_id": SID_COPILOT, "backend": backend}, fh)
+                   "mode": "prompt" if mode in (None, "default") else mode,
+                   "session_id": SID_COPILOT, "backend": backend}, fh)
     return run_dir
 
 
@@ -1116,14 +1117,6 @@ def test_a_claude_switch_back_to_prompt_writes_an_explicit_default(agent, tmp_pa
                                                   "mode": "default"}
     with open(os.path.join(run_dir, "host.json")) as fh:
         assert json.load(fh)["mode"] == "default"
-    # A host written before the fix (mode None) is moved to `default` too.
-    with open(os.path.join(run_dir, "host.json")) as fh:
-        host = json.load(fh)
-    host["mode"] = None
-    with open(os.path.join(run_dir, "host.json"), "w") as fh:
-        json.dump(host, fh)
-    assert agent._send("run-1", "m", permission_mode="prompt") == {"sent": True}
-    assert _inbox_rows(run_dir)[-2]["request"]["mode"] == "default"
 
 
 def test_leaving_accept_edits_respawns_and_plan_is_refused(agent, tmp_path, send_env):
@@ -1593,7 +1586,8 @@ def test_the_router_answers_the_handlers_own_refusal_with_400(client, monkeypatc
     assert r.status_code == 200
 
 
-def test_set_mode_writes_control_request_and_host_json_without_a_turn(agent, tmp_path, send_env):
+def test_set_mode_writes_control_request_and_host_json_without_a_turn(
+        agent, tmp_path, send_env, monkeypatch):
     run_dir = _live_run(agent, tmp_path, backend="claude", mode="default")
     assert agent._set_mode("run-1", "acceptEdits") == {"ok": True, "mode": "acceptEdits"}
     rows = _inbox_rows(run_dir)
@@ -1601,9 +1595,23 @@ def test_set_mode_writes_control_request_and_host_json_without_a_turn(agent, tmp
                                              "mode": "acceptEdits"}]
     with open(os.path.join(run_dir, "host.json")) as fh:
         assert json.load(fh)["mode"] == "acceptEdits"
+    with open(os.path.join(run_dir, "meta.json")) as fh:
+        meta = json.load(fh)
+    assert agent._live_mode(meta, agent._permissions(run_dir)) == "acceptEdits"
     # Already there: no second request.
     assert agent._set_mode("run-1", "acceptEdits")["ok"] is True
     assert len(_inbox_rows(run_dir)) == 1
+    # A card raised before the switch, escalated after it, moves the session;
+    # the pill can then take it back.
+    monkeypatch.setattr(agent, "_alive", lambda _: True)
+    os.makedirs(agent._perm_dir(run_dir))
+    with open(os.path.join(agent._perm_dir(run_dir), "req-1.req.json"), "w") as fh:
+        json.dump({"id": "req-1", "tool": "Bash", "input": {"command": "ls"},
+                   "created_at": meta["mode_at"] - 1}, fh)
+    assert agent._decide("run-1", "req-1", "allow", "once", mode="auto")["mode"] == "auto"
+    assert agent._live_mode(meta, agent._permissions(run_dir)) == "auto"
+    assert agent._set_mode("run-1", "acceptEdits")["ok"] is True
+    assert _inbox_rows(run_dir)[-1]["request"]["mode"] == "acceptEdits"
     assert agent._set_mode("nope", "auto") == {"error": "no such run"}
 
 
