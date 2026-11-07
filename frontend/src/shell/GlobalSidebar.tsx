@@ -11,7 +11,9 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
-import { ListTodo, Sparkles, Store } from "lucide-react";
+import { Sparkles, Store } from "lucide-react";
+import { BOTS_ICON, TASKS_ICON as SCHEDULED_ICON } from "@shell/nav-icons";
+import { useCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
@@ -68,18 +70,8 @@ const HOME_ICON = (
   </svg>
 );
 
-// Bot head (lucide `bot`) — the Bots page (/bots): browser bots, each driving
-// its own Chrome window.
-const BOTS_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M12 8V4H8" />
-    <rect width="16" height="12" x="4" y="8" rx="2" />
-    <path d="M2 14h2" />
-    <path d="M20 14h2" />
-    <path d="M15 13v2" />
-    <path d="M9 13v2" />
-  </svg>
-);
+// The Bots and Tasks glyphs live in shell/nav-icons.tsx (the Claude rail
+// wears them too).
 
 // The Inbox tray icon lived here. Inbox is GONE, not merely unadvertised
 // (Akshil, 2026-08-18: "why do we have sessions route? i thought we remove
@@ -107,12 +99,6 @@ const TEMPLATES_ICON = (
     <rect x="14" y="14" width="7" height="7" rx="1" />
   </svg>
 );
-
-// A to-do list (lucide ListTodo, sized like the hand-drawn icons around it):
-// Tasks is the page about work, and the app page's Tasks tab wears the same
-// glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
-// page was "Scheduled".
-const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
 
 // The Claude mark, as Preferences' Claude Code group draws it (scale 0.85: the
 // mark fills its 512 box edge to edge, lucide's icons carry ~2px of padding):
@@ -694,6 +680,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // No Bots row, and no poll behind it, where the server runs no bots (Windows).
   const botsOn = botsAvailable(config);
   const botsPulse = useBotsPulse(botsOn);
+  // THE CLAUDE RAIL CARRIES TASKS AND BOTS (behind the rail flag,
+  // `canvas_rail_peek_enabled`; owner, 2026-11-07): its Tasks door and + at
+  // the top, its Bots door at the foot (ClaudeRail). On, this column drops
+  // its own Tasks and Bots rows — both widths. The pulses above still run
+  // (the Tasks visit stamp, the rail's dots read the same stores). Off, as
+  // ever.
+  const railNav = useCanvasRailPeek();
+  const botsRow = botsOn && !railNav;
   const botsTip = botsPulseTitle(botsPulse);
   const botsDot = botsPulse.waiting > 0 ? (
     <span className="sidebar-rail-dot is-attention" title={botsTip} />
@@ -937,7 +931,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ...(bot
       ? []
       : [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }]),
-    ...(botsOn
+    ...(botsRow
       ? [
           {
             key: "bots",
@@ -949,14 +943,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           },
         ]
       : []),
-    {
-      key: "tasks",
-      label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
-      icon: SCHEDULED_ICON,
-      href: "/tasks",
-      active: tasksActive,
-      badge: tasksDot,
-    },
+    ...(railNav
+      ? []
+      : [
+          {
+            key: "tasks",
+            label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
+            icon: SCHEDULED_ICON,
+            href: "/tasks",
+            active: tasksActive,
+            badge: tasksDot,
+          },
+        ]),
     // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
     // the canvases, and its "+ Canvas" row is the door to the catalog.
     ...(bot
@@ -1044,7 +1042,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               active={homeActive}
             />
           )}
-          {botsOn && (
+          {botsRow && (
             <NavItem
               href="/bots"
               id="bots-link"
@@ -1061,15 +1059,17 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           {/* Tasks took Inbox's place as well as its job: the two pages showed
               the same pile of work from two ends, and the one that survives is
               the one that can say when the work runs. Inbox is deleted. */}
-          <NavItem
-            href="/tasks"
-            id="tasks-link"
-            label="Tasks"
-            icon={SCHEDULED_ICON}
-            active={tasksActive}
-            extra={tasksDot}
-            trailing={tasksTrailing}
-          />
+          {!railNav && (
+            <NavItem
+              href="/tasks"
+              id="tasks-link"
+              label="Tasks"
+              icon={SCHEDULED_ICON}
+              active={tasksActive}
+              extra={tasksDot}
+              trailing={tasksTrailing}
+            />
+          )}
           {/* No Canvases row (owner, 2026-10-20): the Canvases section below
               is the listing, its "+ Canvas" row the way to the catalog. */}
           {!bot && (

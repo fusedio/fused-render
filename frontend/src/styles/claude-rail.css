@@ -143,6 +143,16 @@
 .claude-rail-item {
   position: relative;
 }
+/* THE NAV DOORS' TOP (ClaudeRail `.claude-rail-nav`, behind the rail flag;
+   owner, 2026-11-07): Tasks where the panel glyph stood and the + under it,
+   spaced like the items column's seats; the column's own divider follows. */
+.claude-rail-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
 /* The rail's inner edge (ClaudeRail `.claude-rail-seam`): pulled left, it opens
    the pane. 6px of hit area straddling the rail's border, and the app's seam
    hairline on hover — the explorer's reopen edge (.preview-side-reopen). */

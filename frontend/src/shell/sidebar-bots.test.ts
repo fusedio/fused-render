@@ -157,8 +157,10 @@ describe("Bots are hidden where the server runs none (Windows)", () => {
 
   it("the sidebar drops the row, the rail item and the poll", () => {
     expect(SIDEBAR).toContain("useBotsPulse(botsOn)");
-    expect(SIDEBAR).toContain("{botsOn && (");
-    expect(SIDEBAR).toMatch(/\.\.\.\(botsOn\s*\?\s*\[\s*\{\s*key: "bots"/);
+    // `botsRow` = botsOn and not moved to the Claude rail (rail flag).
+    expect(SIDEBAR).toContain("const botsRow = botsOn && !railNav;");
+    expect(SIDEBAR).toContain("{botsRow && (");
+    expect(SIDEBAR).toMatch(/\.\.\.\(botsRow\s*\?\s*\[\s*\{\s*key: "bots"/);
   });
 
   it("the route redirects Home and the page never mounts", () => {

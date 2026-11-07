@@ -193,32 +193,38 @@ const byLabel = (r: ReactTestRenderer, label: string): ReactTestInstance[] =>
   r.root.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === label);
 const glyph = (r: ReactTestRenderer) => byLabel(r, "Show the Claude panel").length;
 const seam = (r: ReactTestRenderer) => byLabel(r, "Drag to show the Claude panel").length;
+// THE NAV DOORS (rail flag on, as every mount here; owner, 2026-11-07): Tasks
+// and the + where the panel glyph stood, Bots at the foot — always standing.
+const doors = (r: ReactTestRenderer) => byLabel(r, "Tasks").length + byLabel(r, "Bots").length;
 
 describe("ClaudeRail beside the pane", () => {
   for (const favourites of [false, true]) {
-    test(`pane shut, favourites ${favourites ? "on" : "off"}: glyph and seam, standing even empty, registered`, async () => {
+    test(`pane shut, favourites ${favourites ? "on" : "off"}: Tasks and Bots doors in place of the glyph, seam, standing even empty, registered`, async () => {
       const r = await mountRail({ paneOpen: false, favourites });
-      expect(glyph(r)).toBe(1);
+      expect(glyph(r)).toBe(0);
+      expect(doors(r)).toBe(2);
       expect(seam(r)).toBe(1);
       expect(aside(r).props.hidden).toBeUndefined();
       expect(favPeekState().rail).not.toBeNull();
     });
   }
 
-  test("pane open, favourites off: no glyph, no seam, hidden even with a chat, not registered", async () => {
+  test("pane open, favourites off: no glyph, no seam, the nav doors keep it standing, registered", async () => {
     const r = await mountRail({ paneOpen: true, favourites: false, chats: [chat("a")] });
     expect(glyph(r)).toBe(0);
     expect(seam(r)).toBe(0);
-    expect(aside(r).props.hidden).toBe(true);
-    expect(favPeekState().rail).toBeNull();
+    expect(doors(r)).toBe(2);
+    expect(aside(r).props.hidden).toBeUndefined();
+    expect(favPeekState().rail).not.toBeNull();
   });
 
-  test("pane open, favourites on, nothing to draw: hidden and off the rail stack", async () => {
+  test("pane open, favourites on, nothing to draw: the nav doors keep it standing", async () => {
     const r = await mountRail({ paneOpen: true, favourites: true });
     expect(glyph(r)).toBe(0);
     expect(seam(r)).toBe(0);
-    expect(aside(r).props.hidden).toBe(true);
-    expect(favPeekState().rail).toBeNull();
+    expect(doors(r)).toBe(2);
+    expect(aside(r).props.hidden).toBeUndefined();
+    expect(favPeekState().rail).not.toBeNull();
   });
 
   test("pane open on its HOME, favourites on, a chat here: the list stands as beside any chat (2026-11-06; it stepped aside until then)", async () => {
