@@ -201,6 +201,11 @@ class LauncherController:
         self._loaded = False
         self._monitor = None
         self._height = INITIAL_HEIGHT
+        # Where the Claude rail's Search door put us (`show(anchor)`): the
+        # rail's left edge and the door's top on screen, and that window's
+        # screen; None = the usual mid-screen place. Cleared on close.
+        self._anchor: tuple[float, float] | None = None
+        self._anchor_screen = None
         self._hotkey: hotkey.HotKey | None = None
         self._bound: bool | None = None
         self._pinned: hotkey.HotKeySet | None = None
@@ -221,9 +226,20 @@ class LauncherController:
         else:
             self.show()
 
-    def show(self) -> None:
+    def show(self, anchor: dict | None = None) -> None:
+        """``anchor`` (POST /api/launcher/show, the Claude rail's Search
+        door): ``{"left", "top"}`` in CSS px of the KEY window's web view —
+        the rail's left edge and the door's top. The panel then stands beside
+        the rail like the rail's window A card (launcher.beside_frame); the
+        shortcut and the menu pass nothing and get the mid-screen place."""
         if not self._loaded:
             self._load()
+        placed = self._anchor_on_screen(anchor)
+        # Already up and key (the shortcut, the menu, a second press while
+        # it stands): the key window is this panel, whose content view says
+        # nothing about the rail — keep the place we have.
+        if placed is not None:
+            self._anchor, self._anchor_screen = placed
         self._place()
         self._panel.setAlphaValue_(1.0)
         self._panel.makeKeyAndOrderFront_(None)
@@ -242,6 +258,7 @@ class LauncherController:
             self._monitor = None
         if self._panel.isVisible():
             self._panel.orderOut_(None)
+        self._anchor, self._anchor_screen = None, None
         self._resume_pinned()
 
     def open_row(self, kind: str, key: str) -> None:
@@ -379,8 +396,43 @@ class LauncherController:
                 return s
         return NSScreen.mainScreen() or (NSScreen.screens()[0] if NSScreen.screens() else None)
 
+    def _anchor_on_screen(self, anchor: dict | None):
+        """The door's anchor (CSS px in the key window's web view) as a screen
+        point ``(x, top)`` plus that window's screen; ``(None, None)`` with no
+        anchor, no key window, or a view that cannot say — and None (keep the
+        current place) when the key window is this panel itself. The web view
+        fills the window's content view (mac_window.py, no full-size content
+        view, no zoom), so its CSS px are the content view's points; a
+        flipped view (WKWebView) counts from the top, any other from the
+        bottom."""
+        if not anchor:
+            return None, None
+        try:
+            win = NSApp.keyWindow()
+            if win is not None and win == self._panel:
+                return None
+            view = win.contentView() if win is not None else None
+            if view is None:
+                return None, None
+            left, top = float(anchor["left"]), float(anchor["top"])
+            y = top if view.isFlipped() else view.bounds().size.height - top
+            in_window = view.convertRect_toView_(NSMakeRect(left, y, 0, 0), None)
+            on_screen = win.convertRectToScreen_(in_window)
+            return (float(on_screen.origin.x), float(on_screen.origin.y)), win.screen()
+        except Exception:  # noqa: BLE001 — the usual place is the fallback
+            logger.exception("launcher anchor could not be placed")
+            return None, None
+
     def _rest_frame(self):
         h = self._height
+        if self._anchor is not None:
+            screen = self._anchor_screen or self._screen()
+            if screen is not None:
+                vis = screen.visibleFrame()
+                x, y = launcher.beside_frame(
+                    self._anchor[0], self._anchor[1], WIDTH, h,
+                    (vis.origin.x, vis.origin.y, vis.size.width, vis.size.height))
+                return NSMakeRect(x, y, WIDTH, h)
         screen = self._screen()
         if screen is None:
             f = self._panel.frame()

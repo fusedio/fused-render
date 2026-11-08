@@ -53,17 +53,18 @@
 // lib `railShown`; shut, it always stands: it is the way back in). A hidden
 // rail registers nothing, so the favourite's card stands only beside a rail
 // on screen. Beside the open pane, this rail's card mounts no chat the pane
-// already holds (`paneSids`): one chat, one composer — the favourite's card's
-// rule (FavouritePeek). With favourites off, the rail stands only while the
+// already holds TOO (owner, 2026-11-08; the favourite's card's rule since
+// 2026-11-05): the chat stands in the pane and in the card at once. With favourites off, the rail stands only while the
 // pane is shut, as it did. Beside the open pane (owner, 2026-11-05):
 //   - NO GAP AT THE TOP: no glyph, and nothing keeps its room — the + sits
 //     on the rail's own padding (claude-rail.css `.no-glyph`).
 //   - THE + IS THE PANE'S HOME (`onNewChat`, claude-rail-lib `plusDoor`): the
 //     pane's Recent chats page, the keyboard in its new-chat composer
 //     (`paneHomeComposer`) — not the New task card, which is the shut pane's.
-//   - A LIST RING'S PRESS OPENS THAT CHAT IN THE PANE (claude-rail-lib
-//     `ringPress`): no card is pinned, and a card that is up goes; a hover
-//     still shows the card. A favourite's ring is unchanged (its card).
+//   - A LIST RING'S PRESS PINS ITS CARD, AS SHUT (claude-rail-lib
+//     `ringPress`; owner, 2026-11-08): the pane keeps its chat until the
+//     card's Open door; a hover previews the card. (Until 2026-11-08 the
+//     press opened the chat in the pane.) A favourite's ring is unchanged.
 //   - THE PANE OPENING UNDER A PINNED LIST CARD closes it; the pane stands
 //     on its home (2026-11-05 evening). The pane SHUTTING brings back no
 //     list card (2026-11-06) — only the favourite whose Open expanded it
@@ -133,7 +134,7 @@
 // the card's Open does, and a modified press still follows the link. THE PRESS LANDS IN THE
 // COMPOSER: a plain press puts the keyboard in the card's composer
 // (`focusComposerSoon`), ready to type. With no room for a card, the press
-// opens the pane as before (the first such press included).
+// is the chat's door (`openChat`; the first such press included).
 //
 // FAVOURITES (owner, 2026-11-03): the card's STAR (RailPeek) makes a chat a
 // favourite — server-side, global, so every rail lists the same ones (api
@@ -236,10 +237,10 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { GitBranch, GitCommitHorizontal, Plus, RefreshCw } from "lucide-react";
+import { GitBranch, GitCommitHorizontal, Plus, RefreshCw, Search } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
-import { getSchedule, markWholeTaskRead, type Task, type TaskPulseTask } from "@platform/lib/api";
-import { useBotsAvailable } from "@platform/lib/bots-available";
+import { getSchedule, markWholeTaskRead, showLauncher, type Task, type TaskPulseTask } from "@platform/lib/api";
+import { useBotsAvailable, useLauncherAvailable } from "@platform/lib/bots-available";
 import {
   onDraftChange,
   readListing,
@@ -266,7 +267,9 @@ import { fetchDrafts } from "@platform/lib/drafts";
 import {
   clearFavOpen,
   favOpenedAtMs,
+  botOpen,
   lastChatId,
+  setBotOpen,
   setFavOpen,
   setLastChat,
   setLastFav,
@@ -292,7 +295,6 @@ import {
   RAIL_WARM_MS,
   railRemembered,
   rememberRail,
-  plusDoor,
   ringPress,
   placeName,
   placeRoot,
@@ -316,7 +318,6 @@ import {
   PeekIntent,
   clampAnchor,
   railCardSize,
-  favChatElsewhere,
   favLike,
   keepAlive,
   railOnChipLeave,
@@ -327,7 +328,6 @@ import {
   placeClear,
   bottomClear,
 } from "./rail-peek-lib";
-import { usePaneSessions } from "@platform/lib/peek-session";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import {
   dismissFavHover,
@@ -337,6 +337,7 @@ import {
   registerRail,
   confirmFavRestore,
   requestFavFocus,
+  setFavRestore,
   setRailPage,
   takeFavRestore,
   takeQuietFocus,
@@ -354,7 +355,21 @@ import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platfo
 import { navigateUrl } from "@platform/lib/router";
 import { Face } from "@apps/bots/components/Face";
 import type { FaceSubject } from "@apps/bots/lib/face";
-import { BotPeek, BOT_PEEK_ID, botHref, preloadBotChat, type BotPeekHandle } from "./BotPeek";
+import { BOT_PEEK_ID, botHref } from "./BotPeek";
+import {
+  botCardHandle,
+  botCardIntent,
+  botCardState,
+  botPress,
+  botPressed,
+  botRing,
+  clearBotRing,
+  setBotCardHeld,
+  setBotCardHoldsOnPin,
+  setBotCardNoRoom,
+  setBotRing,
+  useBotCardState,
+} from "./bot-card-store";
 import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import {
   TASKS_CARD_KEY,
@@ -397,8 +412,6 @@ export { railInset } from "./rail-peek-lib";
  *  lib `paneHomeHref`) — re-exported for the same reason. */
 export { paneHomeHref } from "./claude-rail-lib";
 
-/** No pane sessions: the shut pane's answer (`paneSids`), one reference. */
-const NO_SESSIONS: readonly string[] = [];
 
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
 const PEEK_ID = "claude-rail-peek";
@@ -472,51 +485,6 @@ function cardFocusSoon(cardId: string, focus: () => boolean): void {
     if (++tries < 12) requestAnimationFrame(attempt);
   };
   requestAnimationFrame(attempt);
-}
-
-/** How long the +'s press beside the open pane waits for the pane's home
- *  composer (`paneHomeComposer`): the page may remount its chat first, and
- *  the composer's leave guard may ask. */
-// Ten seconds, not four (2026-11-06): a node chat's pane is a frame that
-// boots its chat — on a loaded Mac the composer lands late, and the wait is
-// harmless (the reader's own press or key ends it).
-const PANE_FOCUS_WAIT_MS = 10_000;
-
-/** THE OPEN PANE'S HOME COMPOSER (the +, header "BESIDE THE OPEN PANE"): the
- *  new-chat composer on the pane's Recent chats page (`.c-home`), looked for
- *  in the row the rail stands in — else the whole document, for a page that
- *  remounted under the press — and in the canvas node pane's same-origin
- *  frame. Never one inside a rail or a rail card. */
-function paneHomeComposer(rail: HTMLElement | null): HTMLTextAreaElement | null {
-  return paneComposer(rail, ".c-home textarea");
-}
-
-/** THE PANE'S CHAT COMPOSER, whichever chat it shows (owner, 2026-11-06:
- *  "when we click on the task list item can we focus on the composer"): a
- *  list ring's press beside the open pane opens the chat there, and the
- *  keyboard follows into its composer — found the way the home's is. */
-function paneChatComposer(rail: HTMLElement | null): HTMLTextAreaElement | null {
-  return paneComposer(rail, ".c-composer textarea");
-}
-
-function paneComposer(rail: HTMLElement | null, selector: string): HTMLTextAreaElement | null {
-  const scope: ParentNode = (rail?.isConnected && rowOf(rail)) || document;
-  const pick = (root: ParentNode) =>
-    [...root.querySelectorAll<HTMLTextAreaElement>(selector)].find(
-      (el) => !el.closest(".claude-rail, .claude-rail-peek") && el.getClientRects().length > 0,
-    ) ?? null;
-  const hit = pick(scope);
-  if (hit) return hit;
-  for (const f of scope.querySelectorAll<HTMLIFrameElement>("iframe.preview-side-frame")) {
-    try {
-      const doc = f.contentDocument;
-      const got = doc ? pick(doc) : null;
-      if (got) return got;
-    } catch {
-      /* not ours to read */
-    }
-  }
-  return null;
 }
 
 /** What the New task card needs from the schedule before it can open: the
@@ -766,10 +734,7 @@ export function ClaudeRail({
   // something here would use the answer (favourites or the nav doors).
   const botsOffered = useBotsAvailable(favsOn || peekOn);
   const botRows = useBotsRows(favsOn && botsOffered);
-  // With the rail flag (the nav doors) they head the rail, in the Bots
-  // page's own order (owner, 2026-11-08: "order of bots should be same as
-  // order of bots when pinned in the Bots page").
-  const bots = useMemo(() => pinnedBots(botRows, { pageOrder: peekOn }), [botRows, peekOn]);
+  const bots = useMemo(() => pinnedBots(botRows, { footOrder: peekOn }), [botRows, peekOn]);
   const allSeats = useMemo(
     () => (favouritesOnly ? [] : listSeats(railRows(rows, full, seatPlace), favsOn)),
     [rows, full, seatPlace, favsOn, favouritesOnly],
@@ -868,8 +833,6 @@ export function ClaudeRail({
   // — the card says where it is instead (`bodyNote`), as the favourite's card
   // does (FavouritePeek). Only while the pane is open: shut, nothing is
   // mounted there, and the rail is the rail of 2026-11-04.
-  const paneSidsLive = usePaneSessions();
-  const paneSids = paneOpen ? paneSidsLive : NO_SESSIONS;
   // WITH FAVOURITES ON, THE LIST SCROLLS (owner, 2026-11-05: "remove the
   // clip-not-scroll restriction"): every ring is drawn and the list scrolls
   // in its share of the column, its scrollbar hidden like the favourites'
@@ -1129,7 +1092,7 @@ export function ClaudeRail({
   // fires a leave, and a chat that left the rail (archived, the node changed)
   // takes its card with it; the kept set drops the same keys so a stale chat
   // never holds one of the three warm slots.
-  const peekSeat = peekOn ? seats.find((s) => s.pulse.key === peekKey) ?? null : null; // (a chat the pane holds is not in `keptSeats`: no card for it)
+  const peekSeat = peekOn ? seats.find((s) => s.pulse.key === peekKey) ?? null : null;
   useEffect(() => {
     if (!peekOn && peekKey) intent.dismiss();
   }, [peekOn, peekKey, intent]);
@@ -1315,14 +1278,14 @@ export function ClaudeRail({
     intent.prune(live);
     setKept((k) => (k.every((key) => live.has(key)) ? k : k.filter((key) => live.has(key))));
   }, [seatKeys, intent]);
+  // …the pane's own chat included (owner, 2026-11-08: "why is the same task
+  // blank in window A when the sidebar shows it, while window B works? it
+  // should work in window A as well"): the chat stands in the pane and in
+  // the card at once, the favourite's card's rule of 2026-11-05. The
+  // one-chat-one-composer exclusion (`paneSids`) is retired.
   const keptSeats = useMemo(
-    () =>
-      peekOn
-        ? kept
-            .map((k) => seats.find((s) => s.pulse.key === k))
-            .filter((s): s is NonNullable<typeof s> => !!s && !favChatElsewhere(s.pulse, paneSids, null))
-        : [],
-    [peekOn, kept, seats, paneSids],
+    () => (peekOn ? kept.map((k) => seats.find((s) => s.pulse.key === k)).filter((s): s is NonNullable<typeof s> => !!s) : []),
+    [peekOn, kept, seats],
   );
   // While the card is up: a press anywhere but the rail and the card closes
   // it. A click INTO the workbench frame is not a press this document sees,
@@ -1389,8 +1352,8 @@ export function ClaudeRail({
   // the rings keep their one-line caption until a resize gives the card room
   // again — a hover that shows nothing at all is the one outcome to avoid.
   // A PRESS that found no room is answered the way the
-  // press answers with no room from then on: it opens the chat in the pane
-  // (`pressedHref`, set on the press, read during the commit it causes —
+  // press answers with no room from then on: it follows the chat's door
+  // (`openChat`; `pressedHref`, set on the press, read during the commit it causes —
   // RailPeek places in a layout effect — and dropped on the next frame, so
   // a later resize that squeezes the card out only closes it).
   const [noRoom, setNoRoom] = useState(false);
@@ -1480,44 +1443,71 @@ export function ClaudeRail({
   // card up when the reader lands there closes. The rules below are the
   // list card's, one each (the outside press, Escape with the focus nowhere,
   // the press into the workbench frame), on the bot card's own state.
-  const [botKey, setBotKey] = useState<string | null>(null);
-  const [botPinned, setBotPinned] = useState(false);
-  const [botHeld, setBotHeld] = useState(false);
+  // THE CARD IS THE SHELL'S (bot-card-store, BotCardHost; owner, 2026-11-08:
+  // a view switch remounts this rail, and a card that lived here flickered
+  // out and back): the state and the intent machine are the store's, the
+  // rings this rail's own (registered by id for the card to stand level with).
+  const botCard = useBotCardState();
+  const botKey = botCard.key;
+  const botPinned = botCard.pinned;
+  const botHeld = botCard.held;
+  const setBotHeld = setBotCardHeld;
   const botHeldRef = useRef(false);
   botHeldRef.current = botHeld;
-  const botIntentRef = useRef<PeekIntent | null>(null);
-  if (!botIntentRef.current) {
-    botIntentRef.current = new PeekIntent({
-      show: setBotKey,
-      pin: (on) => {
-        setBotPinned(on);
-        if (on && favsOnRef.current) setBotHeld(true);
-      },
-      // The chat chunk (BotPeek `preloadBotChat`): the Bots page's thread and
-      // its markdown stack, fetched on the pointer's arrival.
-      warm: () => preloadBotChat(),
-    });
-  }
-  const botIntent = botIntentRef.current;
-  useEffect(() => () => botIntent.dispose(), [botIntent]);
-  useEffect(() => {
-    if (!botKey) setBotHeld(false);
-  }, [botKey]);
+  // A pin holds the card where favourites are on (the list card's rule).
+  setBotCardHoldsOnPin(favsOn);
+  const botIntent = botCardIntent();
+  // This rail's own rings, for the keyboard's way back; the store has them
+  // too, by id, for whichever rail drew them last.
   const botEls = useRef(new Map<string, HTMLElement>());
-  const botAnchorOf = useCallback((id: string) => botEls.current.get(id) ?? null, []);
-  const botPeekRef = useRef<BotPeekHandle | null>(null);
   // A bot unpinned or hidden under the pointer takes its card with it.
   const botIds = JSON.stringify(bots.map((b) => b.id));
+  // THE OUTGOING RAIL LETS GO (CodeRabbit on #2201): a page switch unmounts
+  // this rail's rings with no leave event, so the shared machine would still
+  // think the pointer or the focus rests on one — a preview stuck up, or a
+  // pending one opening after the hop. A pinned card is left alone (the
+  // leave only ever starts a preview's close).
+  useEffect(
+    () => () => {
+      if (botCardState().pinned) return;
+      botIntent.leaveRing("pointer");
+      botIntent.leaveRing("focus");
+    },
+    [botIntent],
+  );
+  // Only once this rail has the bots to read (a rail mounting before the
+  // config answered draws none, and must not prune a card the shell holds).
+  const botsKnown = favsOn && botsOffered;
   useEffect(() => {
+    if (!botsKnown) return;
     botIntent.prune(new Set(JSON.parse(botIds) as string[]));
-  }, [botIds, botIntent]);
-  const botShown = useMemo(() => (peekOn && botKey ? (bots.find((b) => b.id === botKey) ?? null) : null), [peekOn, botKey, bots]);
-  // THE BOT'S CARD IS WINDOW A'S (owner, 2026-11-08: "bots and tasks share
-  // window A, window B is only for fav tasks now"; until then it shared
-  // window B with the favourite's card): it trades places with the list's
-  // chat card, the + popover and the Tasks card — whichever opened last
-  // wins (`botSeq` below) — and never touches the favourite's card, its
-  // hover or its rings, which it keeps clear of instead (BotPeek `avoid`).
+  }, [botsKnown, botIds, botIntent]);
+  // ONE WINDOW B (owner, 2026-11-06: "treat fav bots and fav tasks as one
+  // window — no resize, no jitter, no overlap"): the bot's card and the
+  // favourite's (FavouritePeek) stand in the same place at the same size,
+  // and one is up at a time. A pinned bot's card says so to the shell
+  // (fav-peek-store `setBotCard`: the favourite's card shows no hover, the
+  // favourites' rings hover nothing); a favourite OPENING — a ring's press,
+  // a star, a chip hand-over, the pane's collapse — closes the bot's card;
+  // and the two HOVERS close each other (a favourite's hover up while a
+  // bot's is, or the other way round, would be two cards in one spot).
+  const botUp = peekOn && botKey !== null && botPinned ? botKey : null;
+  // The favourite as THIS RAIL counts it open (`openFavKey`, rail-peek-lib
+  // `railOpenFav`), not the raw window key: a key with no card standing
+  // (unstarred elsewhere, its verdict pending) must not touch the bot's.
+  useEffect(() => {
+    if (openFavKey && botKey) {
+      setBotHeld(false);
+      botIntent.dismiss();
+    }
+  }, [openFavKey, botKey, botIntent]);
+  useEffect(() => {
+    if (!favHoverKey) return;
+    if (botKey && !botPinned) botIntent.dismiss();
+  }, [favHoverKey, botKey, botPinned, botIntent]);
+  useEffect(() => {
+    if (botKey) dismissFavHover();
+  }, [botKey]);
   // The flag off with the card up: nothing to show. (The Bots page is no
   // longer a reason — owner, 2026-11-06: the card stands there too, and only
   // its Open changes the page.)
@@ -1527,11 +1517,6 @@ export function ClaudeRail({
       botIntent.dismiss();
     }
   }, [peekOn, botKey, botIntent]);
-  const botInsidePress = useRef(false);
-  const onBotPressInside = useCallback(() => {
-    botInsidePress.current = true;
-    botIntent.pressStart();
-  }, [botIntent]);
   // THE OUTSIDE PRESS (the list card's rule above, on this card): a pinned
   // card exempts the bots' own rings and the bridge; a hover card the whole
   // rail; a held card nothing closes but its × and Open.
@@ -1546,10 +1531,10 @@ export function ClaudeRail({
       if (botPinned) {
         if (el && railRef.current?.querySelector(".claude-rail-bots")?.contains(el)) return;
       } else if (railRef.current?.contains(t)) return;
-      botInsidePress.current = false;
+      botPress.inside = false;
       window.clearTimeout(tick);
       tick = window.setTimeout(() => {
-        if (!botInsidePress.current) botIntent.dismiss();
+        if (!botPress.inside) botIntent.dismiss();
       }, 0);
     };
     const onUp = () => botIntent.pressEnd();
@@ -1565,15 +1550,8 @@ export function ClaudeRail({
   }, [botKey, botIntent, botPinned]);
   // NO ROOM (the list card's `onNoRoom`): the ring is a door until a resize,
   // and a press that found no room opens the bot's page.
-  const [botNoRoom, setBotNoRoom] = useState(false);
-  const botPressedHref = useRef<string | null>(null);
-  const onBotNoRoom = useCallback(() => {
-    botIntent.dismiss();
-    setBotNoRoom(true);
-    const href = botPressedHref.current;
-    botPressedHref.current = null;
-    if (href) void navigateUrl(href);
-  }, [botIntent]);
+  const botNoRoom = botCard.noRoom;
+  const setBotNoRoom = setBotCardNoRoom;
   // …until the window resizes, OR THE ROW GROWS (CodeRabbit on #2143): the
   // sidebar folding widens the row with no window resize, and the card may
   // fit then. The observer fires once as it starts (the width as it is), so
@@ -1604,7 +1582,7 @@ export function ClaudeRail({
   const dismissBotToRing = useCallback(() => {
     const key = botIntent.current;
     botIntent.dismiss(true);
-    if (key) botEls.current.get(key)?.focus({ preventScroll: true });
+    if (key) (botEls.current.get(key) ?? botRing(key))?.focus({ preventScroll: true });
   }, [botIntent]);
   const botComposerWait = useRef<(() => void) | null>(null);
   const focusBotComposerSoon = useCallback(
@@ -1613,8 +1591,8 @@ export function ClaudeRail({
       const stop: () => void = composerWaitFor({
         still: () => botIntent.current === id,
         cardId: BOT_PEEK_ID,
-        focus: () => !!botPeekRef.current?.focusComposer(),
-        ring: () => botEls.current.get(id) ?? null,
+        focus: () => !!botCardHandle()?.focusComposer(),
+        ring: () => botEls.current.get(id) ?? botRing(id),
         keys: true,
         onStop: () => {
           if (botComposerWait.current === stop) botComposerWait.current = null;
@@ -1627,7 +1605,15 @@ export function ClaudeRail({
   useEffect(() => () => botComposerWait.current?.(), []);
   // A ring's press: the card, shown now and pinned, the keyboard on its way
   // to the composer (the list card's `pressRing`, the card route alone).
-  // Window A's other cards go as it shows (`botSeq`).
+  // ONE WINDOW B (header): a bot's card taking it — the open favourite
+  // closes, its hover goes, and a restore a door left is forgotten. The
+  // press and the keyboard's ArrowLeft alike (reviewer: the open-favourite
+  // effect above would dismiss a card that took nothing first).
+  const takeWindowB = () => {
+    setFavOpen(null);
+    dismissFavHover();
+    setFavRestore(null);
+  };
   const pressBotRing = (id: string, href: string) => {
     // A TOGGLE (owner, 2026-11-06: "a task item on the rail is also a toggle
     // to open and close the window"): the ring of the bot whose card a press
@@ -1638,10 +1624,11 @@ export function ClaudeRail({
       botIntent.dismiss();
       return;
     }
-    botPressedHref.current = href;
+    botPressed.href = href;
     requestAnimationFrame(() => {
-      botPressedHref.current = null;
+      botPressed.href = null;
     });
+    takeWindowB();
     botIntent.press(id);
     hideHint();
     focusBotComposerSoon(id);
@@ -1663,8 +1650,9 @@ export function ClaudeRail({
   const onBotRingKey = (id: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
     if (e.key === "ArrowLeft") {
       e.preventDefault();
+      takeWindowB();
       botIntent.showNow(id, true);
-      cardFocusSoon(BOT_PEEK_ID, () => !!botPeekRef.current?.focusChat());
+      cardFocusSoon(BOT_PEEK_ID, () => !!botCardHandle()?.focusChat());
     } else if (e.key === "Escape" && botIntent.current && !botHeldRef.current) {
       e.preventDefault();
       botIntent.dismiss();
@@ -1805,10 +1793,9 @@ export function ClaudeRail({
     const at = stillAt.current;
     if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
     stillAt.current = null;
-    // Window A's ring — the list's or a bot's — with another of window A's
-    // cards pinned (the + popover, the Tasks card, the list's or a bot's):
-    // no hover (`aHovers` below).
-    if ((to === intent || to === botIntent) && !aHovers()) return;
+    // Window A's ring, with another of window A's cards pinned (the +
+    // popover, the Tasks card): no hover (`aHovers` below).
+    if (to === intent && !aHovers()) return;
     to.enterRing(key, "pointer");
   };
   useEffect(() => {
@@ -1974,33 +1961,6 @@ export function ClaudeRail({
   useEffect(() => {
     if ((peekKey ?? popSeq) !== null) closeTasksCard();
   }, [peekKey, popSeq]);
-  // …AND THE BOT'S CARD (BotPeek) IS WINDOW A'S TOO (owner, 2026-11-08:
-  // "bots and tasks share window A"): its showing — a hover's preview, a
-  // press, ArrowLeft — puts down the list's card, the Tasks card and the +
-  // popover (unless that one is mid-Create, when the bot's card goes
-  // instead), and any of those showing puts the bot's card down. Whichever
-  // showed last wins, the rule the other three keep among themselves.
-  useEffect(() => {
-    if (botKey === null) return;
-    if (cardRef.current?.pop) {
-      const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-      if (!shut || shut.disabled) {
-        setBotHeld(false);
-        botIntent.dismiss();
-        return;
-      }
-      setCardCloseSignal((n) => n + 1);
-    }
-    setHeld(false);
-    intent.dismiss();
-    closeTasksCard();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [botKey]);
-  useEffect(() => {
-    if ((peekKey ?? popSeq ?? tasksSeq) === null) return;
-    setBotHeld(false);
-    botIntent.dismiss();
-  }, [peekKey, popSeq, tasksSeq, botIntent]);
   // ANOTHER WINDOW A CARD PINNED (the Tasks card by its door, the list card
   // by a ring) while a + or draft hover's read is still out: that preview
   // must not open over it when its delay runs out (plus-pop-lib
@@ -2009,22 +1969,8 @@ export function ClaudeRail({
   const tasksPinnedUp = navDoors && tasksCard.up && tasksCard.pinned;
   const listPinnedUp = pinned && peekKey !== null;
   useEffect(() => {
-    if (tasksPinnedUp || listPinnedUp || botPinnedUp) plusIntentRef.current?.cancelPreview();
-  }, [tasksPinnedUp, listPinnedUp, botPinnedUp]);
-  // …and the same between the bot's card and the list's / the Tasks card
-  // (CodeRabbit on #2194): a bot's card PINNED where it already stood (Enter
-  // on its previewed ring — `botKey` unchanged, so the trade above never
-  // ran) cancels a list or Tasks hover's read still out, and the list's or
-  // the Tasks card pinned cancels a bot hover's. None of those cards is up
-  // beside the pinned one, so `dismiss` only drops the open that was coming.
-  useEffect(() => {
-    if (!botPinnedUp) return;
-    intent.dismiss();
-    closeTasksCard();
-  }, [botPinnedUp, intent]);
-  useEffect(() => {
-    if (listPinnedUp || tasksPinnedUp) botIntent.dismiss();
-  }, [listPinnedUp, tasksPinnedUp, botIntent]);
+    if (tasksPinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
+  }, [tasksPinnedUp, listPinnedUp]);
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned + popover or Tasks card, as
   // it closes the pinned list card (its rule above; owner, 2026-11-08: the
   // gaps between window A's cards closed). Inside either, Escape is its own.
@@ -2059,12 +2005,7 @@ export function ClaudeRail({
     // …and the + popover, the same way (owner, 2026-11-08: the gaps between
     // window A's cards closed).
     shutPop();
-    // …and the bot's card, window A's since 2026-11-08.
-    if (botIntent.current) {
-      setBotHeld(false);
-      botIntent.dismiss();
-    }
-  }, [paneOpen, activeSessionId, shutPop, botIntent]);
+  }, [paneOpen, activeSessionId, shutPop]);
   // AFTER A CLICK, ONLY A CLICK CHANGES WINDOW A (owner, 2026-11-08;
   // claude-rail-lib `windowAHovers`): while any window A card is pinned —
   // the list's chat card, the + popover, the Tasks card — or a draft's modal
@@ -2077,7 +2018,6 @@ export function ClaudeRail({
       listPinned: pinned && peekKey !== null,
       popPinned: !!card?.pop && !!card.pinned,
       tasksPinned: tasksCard.up && tasksCard.pinned,
-      botPinned: botPinned && botKey !== null,
       modalCard: !!card && !card.pop,
     });
   // A hover on the + previews only where its press opens the popover card,
@@ -2297,24 +2237,11 @@ export function ClaudeRail({
   // (`openFavourite`), which lands a round trip later: hence the ref.
   const pressRing = (t: TaskPulseTask, href: string, keyboard: boolean) => {
     const how = ringPress({ paneOpen, favsOn, peekOn, noRoom });
-    // BESIDE THE OPEN PANE (header): the chat opens IN THE PANE, no card is
-    // pinned, and a card that is up — hovered or held — goes.
-    if (how === "pane") {
-      hideHint();
-      if (intent.current) {
-        setHeld(false);
-        intent.dismiss();
-      }
-      // …and the Tasks card, window A's too (owner, 2026-11-08).
-      closeTasksCard();
-      // …and the keyboard into that chat's composer (`paneChatComposer`) —
-      // the NEW chat's: the box on screen now belongs to the one being
-      // replaced, unless the ring is the pane's own chat already.
-      const before = t.session_id && t.session_id !== activeSessionId ? paneChatComposer(railRef.current) : null;
-      openChat(href);
-      if (t.session_id) focusPaneComposer(paneChatComposer, before);
-      return;
-    }
+    // BESIDE THE OPEN PANE the press is the same press (owner, 2026-11-08:
+    // "if the sidebar is expanded we don't show window A — we will instead
+    // show window A, and not change the expanded sidebar unless the user
+    // clicks Open from window A"): the card pins; the pane keeps its chat —
+    // the pane's own chat included, mounted again in the card.
     if (how === "card") {
       // A DRAFT'S RING, with the nav doors (owner, 2026-11-07: "drafts open
       // should open in the new thing we added"): the New task popover on
@@ -2402,48 +2329,11 @@ export function ClaudeRail({
   // pane's home, and the keyboard into its composer — retried until it
   // stands (the page may remount its chat, the leave guard may ask), and
   // given up the moment the reader presses or types anything themselves.
-  const plusPane = plusDoor({ paneOpen, favsOn, paneHome: !!onNewChat }) === "pane";
-  const paneFocusWait = useRef<(() => void) | null>(null);
-  useEffect(() => () => paneFocusWait.current?.(), []);
-  // THE KEYBOARD INTO THE PANE'S COMPOSER (the home's on the +, the chat's
-  // on a ring's press beside the open pane) — retried until it stands, and
-  // given up the moment the reader presses or types anything themselves.
-  // `not`: the composer on screen at the press — a ring's press that REPLACES
-  // the pane's chat waits for the new chat's box, never the old one's, which
-  // is about to unmount under the keyboard (Bugbot on #2161).
-  const focusPaneComposer = (find: (rail: HTMLElement | null) => HTMLTextAreaElement | null, not: HTMLElement | null = null) => {
-    paneFocusWait.current?.();
-    let live = true;
-    let raf = 0;
-    const stop = () => {
-      live = false;
-      cancelAnimationFrame(raf);
-      document.removeEventListener("pointerdown", stop, true);
-      document.removeEventListener("keydown", stop, true);
-      if (paneFocusWait.current === stop) paneFocusWait.current = null;
-    };
-    paneFocusWait.current = stop;
-    document.addEventListener("pointerdown", stop, true);
-    document.addEventListener("keydown", stop, true);
-    const until = performance.now() + PANE_FOCUS_WAIT_MS;
-    const attempt = () => {
-      if (!live) return;
-      const box = find(railRef.current);
-      if (box && box !== not) {
-        box.focus({ preventScroll: true });
-        if (box.ownerDocument.activeElement === box) return stop();
-      }
-      if (performance.now() < until) raf = requestAnimationFrame(attempt);
-      else stop();
-    };
-    raf = requestAnimationFrame(attempt);
-  };
-  const openPaneHome = () => {
-    hideHint();
-    onNewChat?.();
-    focusPaneComposer(paneHomeComposer);
-  };
-  const plusLabel = waiting ?? (plusPane ? "New chat" : newTask.on ? `New task on ${newTask.on}` : "New task");
+  // THE + IS THE NEW TASK CARD, EVERYWHERE (claude-rail-lib `plusDoor`;
+  // owner, 2026-11-08: "any time you click the + we show the task modal only
+  // and not focus the expanded sidebar"): beside the open pane as shut. The
+  // pane-home door and its composer focus (2026-11-05) are gone.
+  const plusLabel = waiting ?? (newTask.on ? `New task on ${newTask.on}` : "New task");
   // THE NAV DOORS' DOTS (`navDoors`): the left sidebar's Tasks and Bots row
   // dots (GlobalSidebar `tasksDot` / `botsDot`), read from the same pulses —
   // red waits on the reader, yellow runs, green is news not yet seen (the
@@ -2452,9 +2342,47 @@ export function ClaudeRail({
   // The Bots door only where the server offers Bots (`botsOffered`, above).
   const botsDoor = botsOffered && navDoors;
   const botsPulse = useBotsPulse(botsDoor);
+  // The Search door only where the app has a launcher panel to show (the
+  // Mac desktop app; `useLauncherAvailable`).
+  const launcherOffered = useLauncherAvailable(navDoors);
+  const searchDoor = navDoors && launcherOffered;
   const here = typeof location === "undefined" ? "" : location.pathname;
   const tasksHere = here === "/tasks";
   const botsHere = isBotsPath(here);
+  // THE BOT CARD COMES BACK WITH THE RAIL (owner, 2026-11-08: "bots open in
+  // window B close when I switch view, which is wrong — tasks open in window
+  // B don't; a bot's card should only close on a switch to a task or another
+  // bot, or its ×"): the favourite's card is the shell's and stands through
+  // a page's view switch; this rail is the page's and remounts with it. The
+  // window's mark (last-chat `botOpen`) names the pinned bot; once the pulse
+  // lists it, the card is pinned again — unless a favourite's card holds
+  // window B, or the reader landed on the Bots page (the ring is the door
+  // there): then the mark goes. Once per mount, after the pulse's first
+  // answer.
+  const botRestored = useRef(false);
+  useEffect(() => {
+    if (botRestored.current || !peekOn || botNoRoom) return;
+    // The shell's card is up already (a view switch, not a reload): nothing
+    // to restore.
+    if (botIntent.current !== null) {
+      botRestored.current = true;
+      return;
+    }
+    const id = botOpen();
+    if (!id) {
+      botRestored.current = true;
+      return;
+    }
+    if (!bots.some((b) => b.id === id)) return;
+    botRestored.current = true;
+    // A favourite's card holds window B: the mark goes. (The Bots page is
+    // no reason — its rings open the card too; CodeRabbit on #2201.)
+    if (openFavKey) {
+      setBotOpen(null);
+      return;
+    }
+    botIntent.press(id);
+  }, [peekOn, botNoRoom, bots, openFavKey, botIntent]);
   const tasksDot =
     tasksPulse.attention + tasksPulse.blocked > 0
       ? "is-attention"
@@ -2593,9 +2521,11 @@ export function ClaudeRail({
                 activeList,
                 activeFav,
                 favHoverKey,
-                paneOpen,
+                botHeld: botUp !== null,
+                // Window A held by the + popover or the Tasks card: the list's
+                // rings say their title (`aHovers` shows them no card).
+                windowAHeld: (!!card?.pop && !!card.pinned) || (tasksCard.up && tasksCard.pinned),
                 sectionSize: foot ? favs.length : baseSeats.length,
-                windowAHeld: (!!card?.pop && !!card.pinned) || (tasksCard.up && tasksCard.pinned) || (botPinned && botKey !== null),
               });
               // The rings' own captions step aside for the card: a hover
               // shows the card, and the card IS the caption. The exception
@@ -2783,128 +2713,6 @@ export function ClaudeRail({
               );
   };
 
-  // THE PINNED BOTS' RINGS (owner, 2026-11-05): each bot's face, its name
-  // the caption, its card (BotPeek, window A's) a hover's preview and a
-  // press's pin. The red dot is the Bots row's (GlobalSidebar): the bot waits
-  // on the reader; the green one, news past their mark. Drawn at the rail's
-  // TOP under the Bots door with the rail flag (`botsTop`), at its foot under
-  // the favourites without it.
-  const botsList =
-    bots.length > 0 ? (
-      <div className="claude-rail-bots" role="list" aria-label="Pinned bots">
-        {bots.map((b) => {
-          const name = b.name || b.id;
-          const href = botHref(b.id);
-          const subject = { id: b.id, name, face: (b.face ?? null) as FaceSubject["face"], status: b.status as FaceSubject["status"] };
-          const waiting = b.status === "waiting";
-          const unread = botHasUnread(b);
-          // THE RING'S CARD (BotPeek; claude-rail-lib `botRingRoute`):
-          // a hover previews, a press pins — or, on the Bots page, with
-          // the card off or no room for one, the ring is the page's
-          // door as it was. While the card can stand it is the ring's
-          // caption (an empty hint is the opt-out, as the chats').
-          const card = botRingRoute({ peekOn, noRoom: botNoRoom }) === "card";
-          const peeked = card && botKey === b.id;
-          // WINDOW A'S RULE (`aHovers`): with another window A card pinned
-          // the ring's hover is its caption (its own pinned card's ring
-          // excepted: the card is its caption); a press still takes the
-          // window. A favourite's card never enters into it.
-          const hovers = card && (aHovers() || (peeked && botPinned));
-          return (
-            <div key={b.id} role="listitem" className="claude-rail-seat">
-              <a
-                ref={(el) => {
-                  if (el) botEls.current.set(b.id, el);
-                  else botEls.current.delete(b.id);
-                }}
-                href={href}
-                data-bot-id={b.id}
-                className={
-                  "sidebar-rail-btn claude-rail-item claude-rail-bot" +
-                  (waiting ? " is-waiting" : "") +
-                  (peeked ? " peeked" : "") +
-                  (peeked && botPinned ? " is-pinned" : "")
-                }
-                aria-label={`${name} — ${botStatusWords(b.status)}`}
-                data-hint={hovers ? "" : name}
-                data-hint-title={name}
-                data-hint-side="left"
-                {...(card
-                  ? {
-                      "aria-haspopup": "dialog" as const,
-                      "aria-expanded": peeked,
-                      "aria-keyshortcuts": "ArrowLeft",
-                      ...(peeked ? { "aria-controls": BOT_PEEK_ID } : {}),
-                      onKeyDown: onBotRingKey(b.id),
-                      // A leave is always heard (the chats' rule): the
-                      // intent must not think the pointer still rests
-                      // on a ring it left.
-                      onPointerLeave: () => botIntent.leaveRing("pointer"),
-                      onBlur: () => botIntent.leaveRing("focus"),
-                    }
-                  : {})}
-                {...(hovers
-                  ? {
-                      onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(b.id, e, botIntent),
-                      onFocus: (e: ReactFocusEvent<HTMLAnchorElement>) => {
-                        if (takeQuietFocus(e.currentTarget)) botIntent.quietFocus(b.id);
-                        else if (aHovers()) botIntent.enterRing(b.id, "focus");
-                      },
-                    }
-                  : {})}
-                onClick={(e) => {
-                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-                  e.preventDefault();
-                  if (!card) {
-                    hideHint();
-                    void navigateUrl(href);
-                    return;
-                  }
-                  pressBotRing(b.id, href);
-                }}
-              >
-                <span className="claude-rail-bot-face" aria-hidden="true">
-                  <Face b={subject} />
-                </span>
-                {waiting ? (
-                  <span className="sidebar-rail-dot is-attention" aria-hidden="true" />
-                ) : unread ? (
-                  <span className="sidebar-rail-dot is-unread" aria-hidden="true" />
-                ) : null}
-              </a>
-            </div>
-          );
-        })}
-      </div>
-    ) : null;
-  // THE RAIL'S TOP WITH THE NAV DOORS (owner, 2026-11-08: "the bots icon and
-  // its pins — bring them up top; first icon instead of tasks will be bots,
-  // its pinned bots below it, ascending order, then a separator and the
-  // tasks stuff below it"): the Bots page's door, the pinned bots in the Bots page's order,
-  // the hairline, then Tasks and the +.
-  const botsTop =
-    navDoors && (botsDoor || bots.length > 0) ? (
-      <>
-        <div className="claude-rail-top-bots">
-          {botsDoor && (
-            <a
-              href="/bots"
-              className={"sidebar-rail-btn claude-rail-item" + (botsHere ? " active" : "")}
-              title={botsTip ? `Bots — ${botsTip}` : "Bots"}
-              aria-label="Bots"
-              {...(botsHere ? { "aria-current": "page" as const } : {})}
-              onClick={navPress("/bots")}
-            >
-              {BOTS_ICON}
-              {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}
-            </a>
-          )}
-          {botsList}
-        </div>
-        <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
-      </>
-    ) : null;
-
   return (
     <aside
       ref={railRef}
@@ -2941,12 +2749,50 @@ export function ClaudeRail({
           onPointerDown={onPullStart}
         />
       )}
-      {botsTop}
-      {/* THE NAV DOORS' TOP (`navDoors`): Tasks where the panel glyph stood,
-          the + right under it — on every rail, always; under the bots
-          (`botsTop`) since 2026-11-08. */}
+      {/* THE NAV DOORS' TOP (`navDoors`): Search, Bots, Tasks and the +, in
+          that order, where the panel glyph stood — on every rail, always; no
+          hairline between them (owner, 2026-11-08). */}
       {navDoors && (
         <div className="claude-rail-nav">
+          {/* THE SEARCH DOOR (owner, 2026-11-08): the app's launcher — the
+              ⌥Space search panel over the apps and bots — summoned from the
+              rail's top. Only where the app has one (`searchDoor`). */}
+          {searchDoor && (
+            <button
+              type="button"
+              className="sidebar-rail-btn claude-rail-item"
+              title="Search"
+              aria-label="Search"
+              onClick={() => {
+                hideHint();
+                // Where the shortcut opens it, for now (owner, 2026-11-08: "just
+                // open it where we default open it"); the beside-the-rail place
+                // (`showLauncher({left, top})`, launcher.beside_frame) is a
+                // follow-up. A miss (the panel went with the preference) is
+                // nothing to show: the door stands only while the config says
+                // it is there.
+                showLauncher().catch(() => {});
+              }}
+            >
+              <Search size={16} aria-hidden="true" />
+            </button>
+          )}
+          {/* THE BOTS DOOR (owner, 2026-11-08: "search, bots, tasks, +"): the
+              Bots page, the left sidebar's row moved here; its pinned bots
+              stay at the rail's foot (window B's). */}
+          {botsDoor && (
+            <a
+              href="/bots"
+              className={"sidebar-rail-btn claude-rail-item" + (botsHere ? " active" : "")}
+              title={botsTip ? `Bots — ${botsTip}` : "Bots"}
+              aria-label="Bots"
+              {...(botsHere ? { "aria-current": "page" as const } : {})}
+              onClick={navPress("/bots")}
+            >
+              {BOTS_ICON}
+              {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}
+            </a>
+          )}
           <a
             ref={tasksDoorRef}
             href="/tasks"
@@ -2980,15 +2826,16 @@ export function ClaudeRail({
             className="sidebar-rail-btn claude-rail-item"
             title={plusLabel}
             aria-label={plusLabel}
-            {...(plusPane ? {} : { "aria-haspopup": "dialog" as const, "aria-expanded": !!card?.pop })}
+            aria-haspopup="dialog"
+            aria-expanded={!!card?.pop}
             aria-busy={opening || waiting !== null || undefined}
             // Never held while the card's read is out: a press during a
             // hover's read is the pin (plus-pop-lib.ts), and a disabled
             // button would swallow it.
             disabled={waiting !== null}
-            onClick={plusPane ? openPaneHome : openNewTask}
+            onClick={openNewTask}
             onPointerEnter={(e) => {
-              if (!plusPane && e.pointerType !== "touch" && plusHovers()) plusIntent.enterPlus();
+              if (e.pointerType !== "touch" && plusHovers()) plusIntent.enterPlus();
             }}
             onPointerLeave={() => plusIntent.leavePlus()}
           >
@@ -3022,10 +2869,10 @@ export function ClaudeRail({
             className="sidebar-rail-btn claude-rail-item"
             title={plusLabel}
             aria-label={plusLabel}
-            {...(plusPane ? {} : { "aria-haspopup": "dialog" as const })}
+            aria-haspopup="dialog"
             aria-busy={opening || waiting !== null || undefined}
             disabled={opening || waiting !== null}
-            onClick={plusPane ? openPaneHome : openNewTask}
+            onClick={openNewTask}
           >
             <Plus size={16} aria-hidden="true" />
           </button>
@@ -3222,23 +3069,112 @@ export function ClaudeRail({
             </div>
           </>
         )}
-        {!navDoors && bots.length > 0 && (
+        {bots.length > 0 && (
           // THE PINNED BOTS, UNDER THE FAVOURITES (owner, 2026-11-05: "have
           // the right sidebar go all the way and have bots below it — pinned
           // bots show up there; for now I can click on it to navigate to the
-          // page") — the rail flag off. With it on they head the rail
-          // (`botsTop`, above).
+          // page"): each bot's face, its name the caption, the bot's page
+          // its door. The red dot is the Bots row's (GlobalSidebar): the bot
+          // waits on the reader; the green one, news past their mark.
           <>
             {(favs.length > 0 || !favouritesOnly) && (
               <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
             )}
-            {botsList}
+            <div className="claude-rail-bots" role="list" aria-label="Pinned bots">
+              {bots.map((b) => {
+                const name = b.name || b.id;
+                const href = botHref(b.id);
+                const subject = { id: b.id, name, face: (b.face ?? null) as FaceSubject["face"], status: b.status as FaceSubject["status"] };
+                const waiting = b.status === "waiting";
+                const unread = botHasUnread(b);
+                // THE RING'S CARD (BotPeek; claude-rail-lib `botRingRoute`):
+                // a hover previews, a press pins — or, on the Bots page, with
+                // the card off or no room for one, the ring is the page's
+                // door as it was. While the card can stand it is the ring's
+                // caption (an empty hint is the opt-out, as the chats').
+                const card = botRingRoute({ peekOn, noRoom: botNoRoom }) === "card";
+                // ONE WINDOW B (header): with a favourite's card open the
+                // ring's hover is its caption, as a favourite's ring beside
+                // an open favourite; a press still takes the window. While a
+                // bot's card is PINNED the other bots' rings say their name
+                // too — their hover shows no card (`botIntent` sits still for
+                // a held card; Bugbot on #2201).
+                const hovers = card && openFavKey === null && !(botPinned && botKey !== null && botKey !== b.id);
+                const peeked = card && botKey === b.id;
+                return (
+                  <div key={b.id} role="listitem" className="claude-rail-seat">
+                    <a
+                      ref={(el) => {
+                        if (el) {
+                          botEls.current.set(b.id, el);
+                          setBotRing(b.id, el);
+                        } else {
+                          const was = botEls.current.get(b.id);
+                          botEls.current.delete(b.id);
+                          if (was) clearBotRing(b.id, was);
+                        }
+                      }}
+                      href={href}
+                      data-bot-id={b.id}
+                      className={
+                        "sidebar-rail-btn claude-rail-item claude-rail-bot" +
+                        (waiting ? " is-waiting" : "") +
+                        (peeked ? " peeked" : "") +
+                        (peeked && botPinned ? " is-pinned" : "")
+                      }
+                      aria-label={`${name} — ${botStatusWords(b.status)}`}
+                      data-hint={hovers ? "" : name}
+                      data-hint-title={name}
+                      data-hint-side="left"
+                      {...(card
+                        ? {
+                            "aria-haspopup": "dialog" as const,
+                            "aria-expanded": peeked,
+                            "aria-keyshortcuts": "ArrowLeft",
+                            ...(peeked ? { "aria-controls": BOT_PEEK_ID } : {}),
+                            onKeyDown: onBotRingKey(b.id),
+                            // A leave is always heard (the chats' rule): the
+                            // intent must not think the pointer still rests
+                            // on a ring it left.
+                            onPointerLeave: () => botIntent.leaveRing("pointer"),
+                            onBlur: () => botIntent.leaveRing("focus"),
+                          }
+                        : {})}
+                      {...(hovers
+                        ? {
+                            onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(b.id, e, botIntent),
+                            onFocus: (e: ReactFocusEvent<HTMLAnchorElement>) =>
+                              takeQuietFocus(e.currentTarget) ? botIntent.quietFocus(b.id) : botIntent.enterRing(b.id, "focus"),
+                          }
+                        : {})}
+                      onClick={(e) => {
+                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                        e.preventDefault();
+                        if (!card) {
+                          hideHint();
+                          void navigateUrl(href);
+                          return;
+                        }
+                        pressBotRing(b.id, href);
+                      }}
+                    >
+                      <span className="claude-rail-bot-face" aria-hidden="true">
+                        <Face b={subject} />
+                      </span>
+                      {waiting ? (
+                        <span className="sidebar-rail-dot is-attention" aria-hidden="true" />
+                      ) : unread ? (
+                        <span className="sidebar-rail-dot is-unread" aria-hidden="true" />
+                      ) : null}
+                    </a>
+                  </div>
+                );
+              })}
+            </div>
           </>
         )}
       </div>
       {peekOn && keptSeats.length > 0 && (
-        // Beside the open pane a card can stand with no chat of its own: the
-        // one the pane holds (`paneSids`), said in its body instead.
         <RailPeek
           ref={peekRef}
           id={PEEK_ID}
@@ -3272,30 +3208,6 @@ export function ClaudeRail({
             intent.press(key);
             if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key);
           }}
-        />
-      )}
-      {peekOn && bots.length > 0 && (
-        // THE BOT CARD (BotPeek; header): mounted while the rail draws any
-        // pinned bot, so a close fades like the list card's; its chat mounts
-        // only once a bot is shown. Window A's since 2026-11-08.
-        <BotPeek
-          ref={botPeekRef}
-          id={BOT_PEEK_ID}
-          shown={botShown}
-          anchorOf={botAnchorOf}
-          railEl={railRef.current}
-          avoid={favBox}
-          onPointerEnter={() => botIntent.enterCard()}
-          onPointerLeave={() => botIntent.leaveCard()}
-          onCone={(inside) => (inside ? botIntent.enterCone() : botIntent.leaveCone())}
-          onPressInside={onBotPressInside}
-          onHold={(on) => botIntent.hold(on)}
-          onDismiss={dismissBotToRing}
-          onNoRoom={onBotNoRoom}
-          onOpen={(href) => void navigateUrl(href)}
-          held={botHeld}
-          onHeld={setBotHeld}
-          pinned={botPinned}
         />
       )}
       {card && (

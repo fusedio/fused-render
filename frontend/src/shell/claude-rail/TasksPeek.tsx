@@ -675,8 +675,10 @@ export function TasksPeek() {
                   {title}
                 </span>
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
+                {/* "Open tasks", not the other cards' "Open" (owner, 2026-11-08):
+                    this door is the page's, not a chat's. */}
                 <button type="button" className="btn claude-rail-peek-open" title="Open the Tasks page" onClick={() => openPage()}>
-                  Open
+                  Open tasks
                 </button>
               </div>
             </div>

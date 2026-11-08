@@ -251,3 +251,33 @@ export function subscribeFavOpen(fn: () => void): () => void {
 export function useFavOpen(): string | null {
   return useSyncExternalStore(subscribeFavOpen, favOpen, favOpen);
 }
+
+// THE OPEN BOT CARD IS PER WINDOW TOO (owner, 2026-11-08: "bots open in
+// window B close when I switch view, which is wrong — tasks open in window B
+// don't; they should only close on a switch to a task or another bot, or the
+// ×"): which pinned bot's card (ClaudeRail's BotPeek) is up in THIS window,
+// by bot id — sessionStorage `fused-render:bot-open`, the favourite's rule.
+// The rail is a page's (AppPage, FallbackRail) and remounts with the page,
+// where the favourite's card is the shell's; the mark is what lets the next
+// rail pick the card back up. A bot ring's press (pin) sets it, the ×, a
+// favourite opening or another bot's press clears or replaces it.
+const botOpenMark = markStore("fused-render:bot-open");
+
+/** The bot whose card is pinned in THIS window, by id. */
+export function botOpen(): string | null {
+  return botOpenMark.get();
+}
+
+/** Pin `id`'s bot card in this window, or let it go (`null`). */
+export function setBotOpen(id: string | null): void {
+  botOpenMark.set(id);
+}
+
+/** `onLastChatStorage`, for the open bot. */
+export function onBotOpenStorage(e: Pick<StorageEvent, "key" | "storageArea">): void {
+  botOpenMark.onStorage(e);
+}
+
+export function useBotOpen(): string | null {
+  return useSyncExternalStore(botOpenMark.subscribe, botOpenMark.get, () => null);
+}

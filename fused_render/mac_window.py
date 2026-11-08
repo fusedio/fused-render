@@ -842,26 +842,30 @@ class _Window:
 
     def _add_titlebar_buttons(self) -> None:
         """Back / Forward at the left end of the title bar (right after the
-        traffic lights) and "Edit" / "Open in Browser" at the right end —
-        Edit leftmost of that pair. Titlebar accessories keep the standard
+        traffic lights), then "Edit" / "Open in Browser" right after them in
+        the same row — Edit leftmost of that pair. Titlebar accessories keep the standard
         titled window (title stays centred, traffic lights untouched) — no
         toolbar row, no full-size-content-view mask. Same actions as the
         ⌘[ / ⌘] / ⌘⇧E / ⌘⇧L menu items; Home stays a menu item (⌘⇧H) with
         no titlebar button. Back/Forward follow the page's history
         (`sync_nav_buttons`); Edit means something only while the window
         runs an app (`sync_edit_button`)."""
+        # ONE ROW AT THE LEFT (owner, 2026-11-08: "move the folder and Safari
+        # icons from the top right to the top left, beside the back and forward
+        # chevrons, in the same row"): the window's right edge is the Claude
+        # rail's now, whose doors stand at its top.
         nav = self._titlebar_group((  # left to right
             ("chevron.left", "Back", "Back (⌘[)", b"goBack:"),
             ("chevron.right", "Forward", "Forward (⌘])", b"goForward:"),
         ), NSLayoutAttributeLeading, symbol_pt=10)
         self.back_button, self.forward_button = nav
-        tools = self._titlebar_group((  # left to right
+        tools = self._titlebar_group((  # left to right, after the chevrons
             # Folder, not a pencil: the native twin of MenuIcons.folder — the
             # glyph "Open in Explorer" wears in the sidebar/app-card menus,
             # since Edit opens that same explorer view.
             ("folder", "Edit", "Edit (⌘⇧E)", b"editApp:"),
             ("safari", "Open in Browser", "Open in Browser (⌘⇧L)", b"openInBrowser:"),
-        ), NSLayoutAttributeTrailing)
+        ), NSLayoutAttributeLeading)
         self.edit_button = tools[0]
         self.sync_nav_buttons()
         self.sync_edit_button()

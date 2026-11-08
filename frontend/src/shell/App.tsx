@@ -66,6 +66,7 @@ import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
 import { TasksPeek } from "@shell/claude-rail/TasksPeek";
+import { BotCardHost } from "@shell/claude-rail/BotCardHost";
 import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
@@ -1370,6 +1371,13 @@ export default function App({ config }: { config: Config }) {
           TasksPeek): mounted once here for the same reason — its view,
           filters and scroll survive a hop (owner, 2026-11-07). */}
       {!IS_EMBED && <TasksPeek />}
+      {/* The pinned bot's card (shell/claude-rail BotCardHost): window B's
+          other card, mounted once here for the favourite's reason — a page's
+          view switch remounts its rail, and a card that lived there
+          flickered out and back (owner, 2026-11-08). */}
+      {/* In an embed too: its rail draws pinned bots, whose rings would pin a
+          card nothing drew (CodeRabbit on #2201). */}
+      <BotCardHost />
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

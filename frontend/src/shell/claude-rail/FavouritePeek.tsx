@@ -49,10 +49,11 @@
 // it (a window shrunk to nothing) hides it until the window, the rail or the
 // row it stands in changes shape, or the next rail stands.
 //
-// WINDOW B IS THE FAVOURITES' ALONE (owner, 2026-11-08: "bots and tasks
-// share window A, window B is only for fav tasks now"): the bot's card
-// (BotPeek), which stood here at this card's size from 2026-11-06, is window
-// A's now; nothing a bot does opens, closes or silences this card.
+// ONE WINDOW B WITH THE BOTS (owner, 2026-11-06: "treat fav bots and fav
+// tasks as one window"): a pinned bot's card (BotPeek) stands exactly here,
+// at this card's size, and the two never stand together — while a bot's
+// card holds the window (fav-peek-store `useBotCard`) this one shows no
+// hover, and a bot's press closes this window's open favourite (ClaudeRail).
 //
 // A HOVER MODE (owner, 2026-11-05: two sections, two windows): with NO
 // favourite open, resting on a favourite's ring previews it HERE — bottom
@@ -99,6 +100,7 @@ import {
   railHere,
   setFavRestore,
   takeFavFocus,
+  useBotCard,
   useFavHoverKey,
   useFavOpenRow,
   useFavPeekState,
@@ -183,9 +185,10 @@ export function FavouritePeek() {
   // reaches the pulse (fav-peek-store `useFavOpenRow`).
   const open = useFavOpenRow(on, rows);
   // …or, with none open, the one a hover wants (header): a live favourite
-  // only.
+  // only — and not while a bot's card holds the window (header).
   const hoverKey = useFavHoverKey();
-  const hoverRow = useMemo(() => (on && !open ? favHoverRow(hoverKey, null, rows) : null), [on, open, hoverKey, rows]);
+  const botUp = useBotCard() !== null;
+  const hoverRow = useMemo(() => (on && !open && !botUp ? favHoverRow(hoverKey, null, rows) : null), [on, open, botUp, hoverKey, rows]);
   const hovering = !open && !!hoverRow;
   const shownRow = open ?? hoverRow;
   const seat = useMemo((): RailRow | null => {
@@ -384,8 +387,8 @@ export function FavouritePeek() {
   }, [hovering, hoverRow]);
   // Only an OPEN card makes the rail's own card give way (`avoid`); a hover
   // overlaps it and publishes nothing.
-  const onBox = useCallback((b: Parameters<typeof publishFavBox>[0]) => publishFavBoxFor(hovering, b), [hovering]);
-  useEffect(() => () => publishFavBox(null), []);
+  const onBox = useCallback((b: Parameters<typeof publishFavBox>[0]) => publishFavBoxFor(hovering, b, "fav"), [hovering]);
+  useEffect(() => () => publishFavBox(null, "fav"), []);
   if (!on || !seat || !place) return null;
   return (
     <RailPeek

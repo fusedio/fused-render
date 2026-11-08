@@ -651,3 +651,26 @@ def file_results(query: str, limit: int = FILE_RESULTS, exclude=()) -> dict:
         if len(rows) >= limit:
             break
     return {"files": rows, "reason": str(out.get("reason") or "")}
+
+
+# ---- the panel beside the Claude rail ---------------------------------------------
+
+BESIDE_GAP = 8.0  # the rail's own window A gap (shell/claude-rail rail-peek-lib PEEK_GAP)
+
+
+def beside_frame(anchor_x: float, anchor_top: float, width: float, height: float,
+                 visible: tuple[float, float, float, float]) -> tuple[float, float]:
+    """Where the launcher panel stands when the Claude rail's Search door
+    summons it (POST /api/launcher/show with an anchor): like the rail's
+    window A card — its right edge a gap left of the rail (``anchor_x``, the
+    rail's left edge on screen), its top level with the door (``anchor_top``,
+    the door's top edge on screen) — kept inside the screen's visible frame
+    (``(x, y, w, h)``, AppKit's y-up). Returns the panel's ``(x, y)`` origin
+    for ``width`` × ``height``; the panel grows downward from that top as
+    its rows come, so a height change never moves its top."""
+    vx, vy, vw, vh = visible
+    x = anchor_x - BESIDE_GAP - width
+    x = max(vx, min(x, vx + vw - width))
+    top = min(anchor_top, vy + vh)
+    y = max(vy, top - height)
+    return round(x), round(y)
