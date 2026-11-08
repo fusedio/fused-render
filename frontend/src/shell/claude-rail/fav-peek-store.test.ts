@@ -16,10 +16,7 @@ import {
   favHoverKey,
   resetFavHoverForTests,
   favPeekState,
-  publishFavBox,
   publishFavBoxFor,
-  botCardUp,
-  setBotCard,
   setFavRestore,
   confirmFavRestore,
   takeFavRestore,
@@ -442,43 +439,9 @@ describe("favourite card box (avoid)", () => {
     await settle();
     expect(favPeekState().favBox).toBeNull();
   });
-  it("window B has one box: a card that is going never clears the other kind's box", async () => {
-    const fav = { left: 10, top: 20, width: 300, height: 200 };
-    const bot = { left: 10, top: 40, width: 300, height: 180 };
-    publishFavBox(fav, "fav");
-    await settle();
-    expect(favPeekState().favBox).toEqual(fav);
-    // The bot's card closing (its effect's null) is not the favourite's.
-    publishFavBox(null, "bot");
-    await settle();
-    expect(favPeekState().favBox).toEqual(fav);
-    // The bot's card taking the window replaces it…
-    publishFavBox(bot, "bot");
-    await settle();
-    expect(favPeekState().favBox).toEqual(bot);
-    // …and the favourite's late null is ignored; the bot's own clears.
-    publishFavBox(null, "fav");
-    await settle();
-    expect(favPeekState().favBox).toEqual(bot);
-    publishFavBox(null, "bot");
-    await settle();
-    expect(favPeekState().favBox).toBeNull();
-    // An owner-less null (a reset, a hover) clears whatever stands.
-    publishFavBox(bot, "bot");
-    publishFavBox(null);
-    await settle();
-    expect(favPeekState().favBox).toBeNull();
-  });
 });
 
-describe("window B's two holders (bot card, fav restore)", () => {
-  it("the bot card flag is plain local state", () => {
-    expect(botCardUp()).toBeNull();
-    setBotCard("b1");
-    expect(botCardUp()).toBe("b1");
-    setBotCard(null);
-    expect(botCardUp()).toBeNull();
-  });
+describe("window B's fav restore", () => {
   it("the restore is armed by the door, taken once by the collapse", () => {
     expect(takeFavRestore()).toBeNull();
     setFavRestore("f", 1000);

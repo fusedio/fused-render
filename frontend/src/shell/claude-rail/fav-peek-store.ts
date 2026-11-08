@@ -192,59 +192,19 @@ export function railHere(rail: HTMLElement | null): RailHere | null {
   return (rail && heres.get(rail)?.()) ?? null;
 }
 
-/** WINDOW B IS ONE WINDOW (owner, 2026-11-06: "treat fav bots and fav tasks
- *  as one window — the UI inside may differ, but no resize, no jitter, no
- *  overlap"): the favourite's card (FavouritePeek) and the bot's card
- *  (BotPeek) stand in the same place at the same remembered size, and ONE
- *  of them is up at a time — a bot's press closes the open favourite, a
- *  favourite's press closes the bot's card (ClaudeRail), and a hover on
- *  either kind closes the other's hover. Both publish their box here as
- *  window B's (`favBox`, what window A keeps clear of), each as its own
- *  OWNER: a card that is going never clears the box the other one has
- *  just published (the two swap in one gesture, and their effects race). */
-export type FavBoxOwner = "fav" | "bot";
-let boxOwner: FavBoxOwner | null = null;
-
 /** What window B tells the rail's own card (`avoid`): its box when OPEN,
- *  nothing for a hover — a hover overlaps, never shrinks it. */
-export function publishFavBoxFor(hovering: boolean, box: Box | null, owner?: FavBoxOwner): void {
-  publishFavBox(hovering ? null : box, owner);
+ *  nothing for a hover — a hover overlaps, never shrinks it. Window B is the
+ *  favourite's card alone (owner, 2026-11-08: "window B is only for fav
+ *  tasks now"); the bot's card, window B's too from 2026-11-06, is window
+ *  A's (BotPeek) and publishes nothing here. */
+export function publishFavBoxFor(hovering: boolean, box: Box | null): void {
+  publishFavBox(hovering ? null : box);
 }
 
-/** Where window B's card stands (null while closed). An `owner`'s null is
- *  heard only while that owner's box is the one standing (header). */
-export function publishFavBox(box: Box | null, owner?: FavBoxOwner): void {
-  if (box === null && owner && boxOwner !== null && boxOwner !== owner) return;
-  boxOwner = box === null ? null : (owner ?? "fav");
+/** Where window B's card stands (null while closed). */
+export function publishFavBox(box: Box | null): void {
   if (sameBox(live.favBox, box)) return;
   mark({ ...live, favBox: box });
-}
-
-/** THE BOT WHOSE CARD HOLDS WINDOW B (ClaudeRail `botPinned`; header): the
- *  favourite's card shows no hover meanwhile (FavouritePeek), and the
- *  favourites' rings hover nothing (claude-rail-lib `ringMarks` `botHeld`). */
-let botCard: string | null = null;
-const botSubs = new Set<() => void>();
-
-export function setBotCard(id: string | null): void {
-  if (botCard === id) return;
-  botCard = id;
-  for (const fn of [...botSubs]) fn();
-}
-
-export function botCardUp(): string | null {
-  return botCard;
-}
-
-function subscribeBot(fn: () => void): () => void {
-  botSubs.add(fn);
-  return () => {
-    botSubs.delete(fn);
-  };
-}
-
-export function useBotCard(): string | null {
-  return useSyncExternalStore(subscribeBot, botCardUp, botCardUp);
 }
 
 /** THE FAVOURITE THE PANE'S COLLAPSE GIVES BACK (owner, 2026-11-06: "if I
@@ -487,8 +447,6 @@ export function resetFavPeekStoreForTests(): void {
   rails = [];
   pendingAt = 0;
   pageRails = 0;
-  boxOwner = null;
-  botCard = null;
   favRestore = null;
 }
 

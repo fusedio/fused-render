@@ -388,6 +388,19 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
     ];
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
   });
+  it("pinned bots in the Bots page's order (2026-11-08): waiting-unread first, then your last message, then newest made", () => {
+    const bots = [
+      { id: "old", pinned: true, created: 100 },
+      { id: "wrote", pinned: true, created: 50, last_user_ts: 900 },
+      { id: "wait", pinned: true, status: "waiting", seq: 5, seen_seq: 3, created: 10 },
+      { id: "waitRead", pinned: true, status: "waiting", seq: 5, news_seq: 5, seen_seq: 5, created: 20 },
+      { id: "wroteEarlier", pinned: true, created: 60, last_user_ts: 500 },
+      { id: "unpinned", pinned: false, last_user_ts: 9999 },
+    ];
+    expect(pinnedBots(bots, { pageOrder: true }).map((b) => b.id)).toEqual(["wait", "wrote", "wroteEarlier", "old", "waitRead"]);
+    // Without it, the pulse's order stands.
+    expect(pinnedBots(bots).map((b) => b.id)).toEqual(["old", "wrote", "wait", "waitRead", "wroteEarlier"]);
+  });
   it("a pinned bot's ring opens its card, on every page, the Bots page too, with the card off, or with no room (2026-11-05)", () => {
     expect(botRingRoute({ peekOn: true, noRoom: false })).toBe("card");
     // The Bots page is no exception any more (2026-11-06): the card there too.
