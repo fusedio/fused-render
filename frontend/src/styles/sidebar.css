@@ -522,7 +522,7 @@ a.sidebar-rail-btn {
   letter-spacing: normal;
 }
 
-/* The AI Models row's "Beta" tag: same chip element, recoloured to the accent
+/* A "Beta" tag (the Schedule calendar view's): same chip element, recoloured to the accent
    so it reads as a label about the feature rather than a count of anything. */
 .sidebar-beta-chip {
   font-size: 9px;
