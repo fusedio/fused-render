@@ -342,12 +342,9 @@ def bots_pulse():
             # `pinned`, `name` and `face` (2026-11-05): the Claude rail draws
             # the pinned bots under its favourites, face and all, and must
             # not fetch `/api/bots` for three fields.
-            # `last_user_ts` and `created` (2026-11-08): the rail orders its pinned bots as the Bots page lists them —
-            # waiting on you first, then by your own last message, then by age (apps/bots lib/order `botOrder`).
             row = {"id": b.id, "status": m.get("status") or "idle", "seq": max(b.seq, n), "news_seq": b.news_seq(n),
                    "hidden": bool(m.get("hidden")), "pinned": bool(m.get("pinned")),
-                   "name": str(m.get("name") or b.id), "face": m.get("face") if isinstance(m.get("face"), dict) else None,
-                   "last_user_ts": b.last_user_ts() or 0, "created": m.get("created") or 0}
+                   "name": str(m.get("name") or b.id), "face": m.get("face") if isinstance(m.get("face"), dict) else None}
             if isinstance(m.get("seen_seq"), int):
                 row["seen_seq"] = m["seen_seq"]
             out.append(row)

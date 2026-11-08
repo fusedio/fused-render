@@ -31,12 +31,6 @@ export interface BotPulseRow {
   pinned?: boolean;
   name?: string;
   face?: unknown;
-  /** WHEN YOU LAST WROTE TO IT (bot.py `last_user_ts`, routine prompts not
-   *  counted) and when it was made — the Bots page's list order, which the
-   *  rail's pinned bots follow (claude-rail-lib `pinnedBots`). Absent on an
-   *  older server: 0. */
-  last_user_ts?: number;
-  created?: number;
 }
 
 export interface BotsPulse {

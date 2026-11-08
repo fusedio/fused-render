@@ -605,28 +605,10 @@ export const LIST_ROWS_MAX = 10;
 
 /** THE PINNED BOTS (owner, 2026-11-05: "have the right sidebar go all the
  *  way and have bots below it — pinned bots show up there"): every pinned,
- *  un-hidden bot, in the pulse's order. An older server's pulse carries no
- *  `pinned`: none.
- *  `pageOrder` (the rail flag's TOP section; owner, 2026-11-08: "order of
- *  bots should be same as order of bots when pinned in the Bots page"): the
- *  Bots page's own list order among its pinned (apps/bots lib/order
- *  `botOrder`) — waiting on you and not yet read first, then the bot you
- *  last wrote to, then the newest made. Ties keep the pulse's order. */
-export function pinnedBots<
-  B extends { pinned?: boolean; hidden?: boolean; status?: string; seq?: number; news_seq?: number | null; seen_seq?: number | null; last_user_ts?: number; created?: number },
->(bots: readonly B[], o: { pageOrder?: boolean } = {}): B[] {
-  const out = bots.filter((b) => b.pinned === true && !b.hidden);
-  if (!o.pageOrder) return out;
-  // The page's waiting-first rule (apps/bots lib/unread `waitingUnread`):
-  // waiting, and never opened or carrying news past the read mark.
-  const waiting = (b: B) => {
-    if (b.status !== "waiting") return false;
-    if (typeof b.seen_seq !== "number") return true;
-    const newest = typeof b.news_seq === "number" ? b.news_seq : (b.seq ?? 0);
-    return newest > b.seen_seq;
-  };
-  const recency = (b: B) => b.last_user_ts || b.created || 0;
-  return out.sort((a, b) => Number(waiting(b)) - Number(waiting(a)) || recency(b) - recency(a));
+ *  un-hidden bot, in the pulse's order (the Bots page's own: pinned first).
+ *  An older server's pulse carries no `pinned`: none. */
+export function pinnedBots<B extends { pinned?: boolean; hidden?: boolean }>(bots: readonly B[]): B[] {
+  return bots.filter((b) => b.pinned === true && !b.hidden);
 }
 
 /** WHERE A PINNED BOT'S RING GOES (ClaudeRail `ringOf` for bots; owner,
@@ -737,16 +719,15 @@ export interface RingMarkInput {
   /** A favourite's ring whose chat the pane or the Tasks peek already shows
    *  (rail-peek-lib `favRingRoute` is not "card"): caption only. */
   chatElsewhere?: boolean;
+  /** WINDOW B IS HELD BY A BOT'S CARD (ClaudeRail `botPinned`; owner,
+   *  2026-11-06: "treat fav bots and fav tasks as one window"): a
+   *  favourite's ring hovers nothing meanwhile — its caption, as beside an
+   *  open favourite's card; a press still takes the window. */
+  botHeld?: boolean;
   /** How many rings the section holds (owner, 2026-11-06: "if it is only
    *  one item, that would be the last selected item, so no need to show
    *  that"): favourites on, a section of ONE wears no `.is-last`. */
   sectionSize?: number;
-  /** ANOTHER WINDOW A CARD IS PINNED — the + popover, the Tasks card, a
-   *  bot's card (ClaudeRail `aHovers`): a list ring's hover opens no card,
-   *  so it shows its title (owner, 2026-10-31: "show me the tooltip title so
-   *  I know what other chat it is at least"), as beside the list's own
-   *  pinned card. */
-  windowAHeld?: boolean;
 }
 
 export function ringMarks(o: RingMarkInput): {
@@ -775,10 +756,10 @@ export function ringMarks(o: RingMarkInput): {
     (!one || (o.foot ? o.activeFav === o.key && o.openFavKey !== o.key : o.activeList === o.key))
   )
     classes.push("is-last");
-  // While ANY favourite's card is open, every favourite-section ring (and
-  // the just-starred one still in the list) shows its caption only. (A
-  // bot's card is window A's since 2026-11-08 and never silences them.)
-  const silenced = o.openFavKey !== null && o.favsOn && fav;
+  // While ANY favourite's card is open — or a bot's card holds window B
+  // (`botHeld`) — every favourite-section ring (and the just-starred one
+  // still in the list) shows its caption only.
+  const silenced = (o.openFavKey !== null || !!o.botHeld) && o.favsOn && fav;
   // A favourite's ring always hovers (window B), whatever the pane shows:
   // the chat may stand in the pane and in the card at once (owner,
   // 2026-11-05). `chatElsewhere` is kept on the input for callers that
@@ -787,8 +768,7 @@ export function ringMarks(o: RingMarkInput): {
   // The caption alone: the ring's hover shows no card — another LIST ring
   // while the list's card is pinned (a favourite's ring is window B's and is
   // never held back by it), the open favourite's ring, a silenced one.
-  const pinnedElsewhere =
-    !o.foot && o.peekOn && ((o.pinned && o.peekKey !== null && o.peekKey !== o.key) || !!o.windowAHeld);
+  const pinnedElsewhere = !o.foot && o.peekOn && o.pinned && o.peekKey !== null && o.peekKey !== o.key;
   const titleOnly = pinnedElsewhere || favRing || (o.peekOn && !hovers);
   return { classes, hovers, favRing, titleOnly };
 }
@@ -927,15 +907,14 @@ export function paneHomeHref(href: string): string | null {
  *  clicked on a task, hovering on other items should not make [the window]
  *  be in hover mode … drafts and + and tasks icon change the window of hover,
  *  this shouldn't happen. after a click only a click can change the window").
- *  Window A is one seat with five doors — the list's rings (its chat card),
- *  the + and the draft rings (the New task popover), the Tasks door (the
- *  Tasks card) and the pinned bots' rings (the bot's card, window A's since
- *  2026-11-08: "bots and tasks share window A") — each with its own intent
- *  machine, and each machine already ignores a hover while ITS OWN card is
- *  pinned. This is the rule across them: while ANY window A card is pinned
- *  (or a draft's modal card is up), no window A door previews on a hover — a
- *  press is what swaps the window. Window B (a favourite's card) is the
- *  other section's and never enters into it. */
+ *  Window A is one seat with four doors — the list's rings (its chat card),
+ *  the + and the draft rings (the New task popover) and the Tasks door (the
+ *  Tasks card) — each with its own intent machine, and each machine already
+ *  ignores a hover while ITS OWN card is pinned. This is the rule across
+ *  them: while ANY window A card is pinned (or a draft's modal card is up),
+ *  no window A door previews on a hover — a press is what swaps the window.
+ *  Window B (a favourite's card, a bot's) is the other section's and never
+ *  enters into it. */
 export function windowAHovers(o: {
   /** The list's chat card is up and pinned. */
   listPinned: boolean;
@@ -943,10 +922,8 @@ export function windowAHovers(o: {
   popPinned: boolean;
   /** The Tasks card is up and pinned. */
   tasksPinned: boolean;
-  /** A pinned bot's card is up. Optional: absent = none. */
-  botPinned?: boolean;
   /** A draft's modal card (not the popover) is up. */
   modalCard: boolean;
 }): boolean {
-  return !o.listPinned && !o.popPinned && !o.tasksPinned && !o.botPinned && !o.modalCard;
+  return !o.listPinned && !o.popPinned && !o.tasksPinned && !o.modalCard;
 }

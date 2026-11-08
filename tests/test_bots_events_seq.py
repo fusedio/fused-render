@@ -55,8 +55,6 @@ def test_pulse_is_the_small_row_for_the_sidebar(client, tmp_path, monkeypatch):
     assert "seen_seq" not in me and "events" not in me and "usage" not in out
     # The Claude rail's pinned-bots row (2026-11-05): the pin, the name and the face ride the pulse.
     assert me["pinned"] is False and me["name"] == "A" and me["face"] == full.get("face")
-    # …and the Bots page's list order (2026-11-08): your last message, else when it was made.
-    assert me["last_user_ts"] == full["last_user_ts"] and me["created"] == full.get("created") and me["created"] > 0
     st, _, _ = client.post(f"/api/bots/{a.id}/flag", {"pinned": True})
     assert st == 200
     st, _, body = client.get("/api/bots/pulse")

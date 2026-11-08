@@ -114,10 +114,11 @@ describe("tooltip-only rules per window", () => {
     expect(ringMarks({ ...base, key: "g", foot: true, openFavKey: "f" }).hovers).toBe(false);
     expect(ringMarks({ ...base, key: "a", foot: false, openFavKey: "f" }).hovers).toBe(true);
   });
-  it("another window A card pinned (+ popover, Tasks card, a bot's card): list rings are tooltip-only, favourites still hover (B)", () => {
-    expect(ringMarks({ ...base, key: "a", foot: false, windowAHeld: true }).titleOnly).toBe(true);
-    expect(ringMarks({ ...base, key: "f", foot: true, windowAHeld: true }).titleOnly).toBe(false);
-    expect(ringMarks({ ...base, key: "a", foot: false, windowAHeld: false }).titleOnly).toBe(false);
+  it("a bot's card holds B: favourite rings are tooltip-only, list rings still hover (A)", () => {
+    expect(ringMarks({ ...base, key: "g", foot: true, botHeld: true }).hovers).toBe(false);
+    expect(ringMarks({ ...base, key: "g", foot: true, botHeld: true }).titleOnly).toBe(true);
+    expect(ringMarks({ ...base, key: "a", foot: false, botHeld: true }).hovers).toBe(true);
+    expect(ringMarks({ ...base, key: "g", foot: true, botHeld: false }).hovers).toBe(true);
   });
   it("A pinned: a favourite's ring still hovers (B); another list ring is tooltip-only", () => {
     const a = { peekKey: "a", pinned: true };
@@ -154,9 +155,6 @@ describe("after a click, only a click changes window A (owner, 2026-11-08)", () 
   });
   it("a pinned Tasks card silences the list's rings, the + and the draft rings", () => {
     expect(windowAHovers({ ...open, tasksPinned: true })).toBe(false);
-  });
-  it("a pinned bot's card (window A since 2026-11-08) silences the list's rings, the +, the drafts and the Tasks door", () => {
-    expect(windowAHovers({ ...open, botPinned: true })).toBe(false);
   });
   it("a draft's modal card (the popover's flag off) silences them too", () => {
     expect(windowAHovers({ ...open, modalCard: true })).toBe(false);
