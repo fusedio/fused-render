@@ -312,12 +312,13 @@ def _enforce(support, *, claim, holder=lambda d: None, pidfile=lambda: (None, No
              alive=lambda p: True, probe=lambda port: False, rivals=lambda: [],
              sweep=lambda rv: si.Sweep(killed=[r.pid for r in rv]), record=None,
              boot_wait_s=10.0, min_wait_s=2.0, since=lambda d: None, wall=lambda: 1000.0,
-             is_ours=lambda pid: False):
+             is_ours=lambda pid: False, ppid_of=lambda pid: None):
     clock = Clock()
     out = si.enforce(support, pidfile, claim=claim, holder=holder, holder_since=since,
                      is_ours=is_ours, rivals_of=rivals, sweep_with=sweep, probe=probe,
                      alive=alive, boot_wait_s=boot_wait_s, min_wait_s=min_wait_s,
-                     poll_s=0.5, clock=clock, wall=wall, sleep=clock.sleep, record=record)
+                     poll_s=0.5, clock=clock, wall=wall, sleep=clock.sleep, record=record,
+                     ppid_of=ppid_of)
     return out, clock
 
 
@@ -482,6 +483,99 @@ def test_an_unreadable_record_defers_only_to_a_pidfile_pid_that_is_ours(support)
                           pidfile=lambda: (42, 1777), probe=lambda port: True,
                           is_ours=lambda pid: False, boot_wait_s=3.0)
     assert out.live is None and clock.t >= 3.0
+
+
+def test_abandoned_forks_holding_the_lock_for_nobody_are_stopped_and_the_lock_taken(support, caplog):
+    """The 2026-11-08 field case: the record names a dead parent, its
+    never-exec'd forks (ppid 1, hours old) hold the lock, nothing serves.
+    The newcomer stops them at once — no budget wait, no alert — and is
+    primary; a young rival is left to the lock-winner sweep, never the
+    abandoned one."""
+    world = {"lock_held": True}
+    forks = [si.Rival(11, 7200.0), si.Rival(12, 7200.0)]
+    swept, recorded = [], []
+
+    def sweep(rv):
+        swept.append([r.pid for r in rv])
+        if {11, 12} <= {r.pid for r in rv}:
+            world["lock_held"] = False  # the forks were the lock's only holders
+        return si.Sweep(killed=[r.pid for r in rv])
+
+    with caplog.at_level(logging.WARNING, logger="fused_render.single_instance"):
+        out, clock = _enforce(support, claim=lambda d: not world["lock_held"],
+                              holder=lambda d: None, pidfile=lambda: (5, 1777),
+                              alive=lambda p: p != 5,  # the pidfile names the dead parent
+                              rivals=lambda: (forks if world["lock_held"] else [])
+                              + [si.Rival(13, 5.0)],
+                              sweep=sweep, boot_wait_s=75.0, ppid_of=lambda pid: 1,
+                              record=lambda kind, **f: recorded.append((kind, f)))
+    assert out.role == "primary"
+    assert clock.t == 0.0  # the first poll, not the 75 s budget
+    assert swept[0] == [11, 12]  # 13 is young: not abandoned
+    assert swept[1:] == [[13]]  # then, holding the lock, the winner's usual sweep
+    assert out.sweep.killed == [11, 12, 13]
+    assert recorded[0] == ("stale-app-copies", {"killed": [11, 12], "failed": [],
+                                                "abandoned": True})
+    assert "abandoned" in caplog.records[0].getMessage()
+
+
+def test_only_old_orphans_are_abandoned_and_unknowns_never_are():
+    found = [si.Rival(1, 7200.0), si.Rival(2, 59.0), si.Rival(3, 7200.0),
+             si.Rival(4, 0.0), si.Rival(5, 7200.0), si.Rival(6, 7200.0)]
+    ppid = {1: 1, 2: 1, 3: 400, 4: 1, 5: None, 6: 1}
+    got = si.abandoned(found, ppid_of=lambda pid: ppid[pid], exclude=(6,))
+    # 2 too young (booting / parallel launch), 3 has a live parent, 4 has an
+    # unknown age, 5 an unknown parent, 6 is the pidfile's pid.
+    assert [r.pid for r in got] == [1]
+
+
+def test_no_live_holder_but_only_young_or_parented_rivals_waits_out_the_budget(support):
+    """A parallel launch (young) or a copy with a live parent is never
+    stopped by the abandoned rule: the existing wait-and-report path runs."""
+    def run(rival, ppid):
+        swept = []
+        out, clock = _enforce(support, claim=lambda d: False, holder=lambda d: None,
+                              rivals=lambda: [rival], boot_wait_s=4.0,
+                              sweep=lambda rv: swept.append(rv) or si.Sweep(),
+                              ppid_of=lambda pid: ppid)
+        assert out.role == "duplicate" and out.live is None and out.holder is None
+        assert swept == [] and clock.t >= 4.0
+
+    run(si.Rival(11, 5.0), 1)        # a parallel launch: orphan-looking but young
+    run(si.Rival(11, 7200.0), 900)   # old, but its parent lives
+
+
+def test_a_live_holder_that_never_serves_is_never_swept_as_abandoned(support):
+    """A named, live holder keeps the alert path: no abandoned sweep even
+    when it is an old orphan (a Dock-launched app is a child of launchd)."""
+    asked = []
+    out, clock = _enforce(support, claim=lambda d: False, holder=lambda d: 42,
+                          rivals=lambda: asked.append(True) or [si.Rival(42, 7200.0)],
+                          boot_wait_s=5.0, ppid_of=lambda pid: 1)
+    assert out.role == "duplicate" and out.live is None and out.holder == 42
+    assert asked == [] and clock.t >= 5.0
+
+
+def test_nothing_is_swept_as_abandoned_while_the_pidfile_app_answers(support):
+    """The pidfile pid answers `/api/config` but is not provably ours (so it
+    is not deferred to): somebody serves, so nothing is abandoned."""
+    swept = []
+    out, _ = _enforce(support, claim=lambda d: False, holder=lambda d: None,
+                      pidfile=lambda: (5, 1777), probe=lambda port: True,
+                      rivals=lambda: [si.Rival(11, 7200.0)], boot_wait_s=3.0,
+                      sweep=lambda rv: swept.append(rv) or si.Sweep(), ppid_of=lambda pid: 1)
+    assert out.live is None and swept == []
+
+
+def test_parent_pid_reads_ps_and_unknown_is_none(monkeypatch):
+    if sys.platform != "win32":
+        assert si.parent_pid(os.getpid()) == os.getppid()
+
+    def boom(*a, **k):
+        raise OSError("no ps")
+
+    monkeypatch.setattr(si.subprocess, "run", boom)
+    assert si.parent_pid(os.getpid()) is None
 
 
 @posix_only

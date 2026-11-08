@@ -288,6 +288,15 @@ def transcript_turn_open(path: str, now: float, *,
         return False
     if now - mtime > STALE_TAIL_SEC:
         return False   # nobody has written in a minute and a half; not mid-turn
+    lines = _tail_lines(path)
+    if lines is None:
+        return False
+    return _last_turn_row(lines, interrupt_closes=interrupt_closes)[0]
+
+
+def _tail_lines(path: str) -> list[str] | None:
+    """The non-blank lines of the last TAIL_BYTES of `path`, the partial first
+    line of a mid-file seek dropped; None when the file cannot be read."""
     try:
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
@@ -295,17 +304,29 @@ def transcript_turn_open(path: str, now: float, *,
             f.seek(max(0, size - TAIL_BYTES))
             chunk = f.read().decode("utf-8", "replace")
     except OSError:
-        return False
+        return None
     lines = [ln for ln in chunk.split("\n") if ln.strip()]
     if size > TAIL_BYTES and lines:
         lines = lines[1:]  # partial first line from the mid-file seek
+    return lines
+
+
+def _last_turn_row(lines: list[str], *,
+                   interrupt_closes: bool = True) -> tuple[bool, dict | None]:
+    """(is the turn open, the row that decided it) — the walk
+    `transcript_turn_open` documents, shared with `session_last_turn` so the
+    two cannot disagree about which row is the last word. The row is None when
+    nothing decided it (no message in the tail: closed) or when a half-written
+    last line did (open)."""
     for line in reversed(lines):
         try:
             obj = json.loads(line)
         except ValueError:
             # A half-written last line IS a write in flight — the one case where
             # unparsable is itself the answer.
-            return True
+            return True, None
+        if not isinstance(obj, dict):
+            continue
         kind = obj.get("type")
         if kind == "user":
             # The CLI's own notes to itself — the "Caveat: the messages below
@@ -315,7 +336,7 @@ def transcript_turn_open(path: str, now: float, *,
             if obj.get("isMeta") or obj.get("isSidechain"):
                 continue
             if not interrupt_closes:
-                return True   # the strict reading: any user row is a turn
+                return True, obj   # the strict reading: any user row is a turn
             parts = _user_parts(obj)
             # THE STOP BUTTON'S OWN ROW IS A TURN THAT ENDED, NOT ONE IN FLIGHT
             # (Akshil, 2026-09-21: "I make a new task, then stop it, then it
@@ -338,16 +359,86 @@ def transcript_turn_open(path: str, now: float, *,
             verdict = _turn_open_by_user_row(parts)
             if verdict is None:
                 continue
-            return verdict
+            return verdict, obj
         if kind != "assistant":
             continue   # attachments, mode records, housekeeping: not the reply
         message = obj.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if isinstance(content, list):
             return any(isinstance(b, dict) and b.get("type") == "tool_use"
-                       for b in content)
-        return False   # a plain-text assistant reply is a turn that ended
-    return False
+                       for b in content), obj
+        return False, obj   # a plain-text assistant reply is a turn that ended
+    return False, None
+
+
+def _is_api_error_row(row: dict) -> bool:
+    """Claude Code's own record of an API FAILURE (no network, a 429, a spent
+    usage limit): a `type: assistant` row marked `isApiErrorMessage: true`.
+    `is True`, not truthiness — ordinary replies carry `false` (agent.py
+    `_is_api_error_row`, the same test; agent.py is not importable here)."""
+    return row.get("isApiErrorMessage") is True
+
+
+def _assistant_text(row: dict) -> str:
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(str(b.get("text") or "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text").strip()
+
+
+def session_last_turn(session_id: str,
+                      projects_dir: str | None = None) -> dict | None:
+    """How the LAST turn in this session's transcript stands, by its last
+    message — `{"state", "at", "error"}`, or None when the transcript cannot
+    say (missing, unreadable, no message in the tail, a row with no timestamp).
+
+    `state` is `open` (a turn in flight: a prompt or tool_result awaiting its
+    reply, a `tool_use`, a half-written line), `ok` (a reply that finished),
+    `cancelled` (the CLI's interrupt marker is the last word) or `failed` (the
+    last word is Claude Code's API-error row; `error` carries its text). `at`
+    is the deciding row's timestamp (unix seconds) — the file's mtime for a
+    half-written line — so a caller can refuse evidence older than the turn it
+    is asking about.
+
+    NO staleness ceiling, unlike `transcript_turn_open`: that one asks "is a
+    reply being written right now", where a turn left open by a dead process
+    must stop reading live. This one is asked by the scheduler AFTER it lost
+    track of a run (`schedule._close_unwatched`) — "did the turn end, and
+    how" — and the answer in the file does not go stale. An `open` answer
+    says only what the file says; whether anything is still writing it is the
+    caller's question to ask (`session_running`, the live registry).
+    """
+    path = transcript_path(session_id, projects_dir)
+    if not path:
+        return None
+    try:
+        lines = _tail_lines(path)
+        if lines is None:
+            return None
+        is_open, row = _last_turn_row(lines)
+        if row is None:
+            if not is_open:
+                return None
+            return {"state": "open", "at": os.path.getmtime(path), "error": ""}
+        ts = parse_ts(row.get("timestamp"))
+        if ts is None:
+            return None
+        at = ts.timestamp()
+        if is_open:
+            return {"state": "open", "at": at, "error": ""}
+        if row.get("type") == "user":
+            # `_turn_open_by_user_row` closes a user row only for the marker.
+            return {"state": "cancelled", "at": at, "error": ""}
+        if _is_api_error_row(row):
+            text = _assistant_text(row) or "API error"
+            return {"state": "failed", "at": at, "error": text[:500]}
+        return {"state": "ok", "at": at, "error": ""}
+    except Exception:  # noqa: BLE001 — an unreadable transcript is no evidence
+        return None
 
 
 def transcript_path(session_id: str, projects_dir: str | None = None) -> str:

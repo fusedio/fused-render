@@ -405,6 +405,34 @@ def test_run_now_leaves_exactly_one_turn(folders, spawned, home, monkeypatch):
     assert manager.owner(_key(folders["alpha"])) is None
 
 
+def test_run_now_losing_the_entry_to_the_tick_gives_its_count_back(
+        folders, spawned, home, monkeypatch):
+    """2026-11-08 field case: the tick claims a fresh task's folder (and its
+    entry) a beat before run-now. Run-now's folder claim lands on that same
+    owner and bumps `turns` to 2, then it loses the ENTRY claim and sends
+    nothing. Its count must come back off, or one `turn_ended` leaves the
+    folder owned until the CLI exits — for ever while it holds a background
+    job."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    manager = schedule._qm()
+    folder = _key(folders["alpha"])
+    key = schedule._task_key(entry)
+    # The tick got there first: it holds the folder for this very entry...
+    assert manager.claim_took(folder, key)[1] is True
+    # ...and the entry claim run-now tries next is already gone.
+    monkeypatch.setattr(schedule, "_claim", lambda entry_id, now: None)
+
+    answer = schedule.run_now(entry["id"])
+
+    assert answer["ok"] is False
+    assert "already claimed" in answer["reason"]
+    owner = manager.owner(folder)
+    assert owner is not None and owner["turns"] == 1
+    manager.turn_ended(key)
+    assert manager.owner(folder) is None
+
+
 # ================================================== priority is never inherited
 
 
