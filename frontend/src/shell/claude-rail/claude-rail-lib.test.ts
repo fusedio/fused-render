@@ -388,6 +388,19 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
     ];
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
   });
+  it("the rail's foot order (owner, 2026-11-08): the Bots page's order reversed — waiting-unread, then your last message, then newest — the page's first bot lowest", () => {
+    const bots = [
+      { id: "old", pinned: true, status: "idle", created: 100 },
+      { id: "spoke", pinned: true, status: "idle", created: 50, last_user_ts: 900 },
+      { id: "wait", pinned: true, status: "waiting", seq: 3, seen_seq: 1, created: 10 },
+      { id: "waitRead", pinned: true, status: "waiting", seq: 3, seen_seq: 3, created: 500 },
+      { id: "un", pinned: false, status: "waiting" },
+    ];
+    // Page order: wait (waiting, unread), then by recency: waitRead 500, spoke 900 → spoke first.
+    expect(pinnedBots(bots, { footOrder: true }).map((b) => b.id)).toEqual(["old", "waitRead", "spoke", "wait"]);
+    // No flag: the pulse's order.
+    expect(pinnedBots(bots).map((b) => b.id)).toEqual(["old", "spoke", "wait", "waitRead"]);
+  });
   it("a pinned bot's ring opens its card, on every page, the Bots page too, with the card off, or with no room (2026-11-05)", () => {
     expect(botRingRoute({ peekOn: true, noRoom: false })).toBe("card");
     // The Bots page is no exception any more (2026-11-06): the card there too.
@@ -833,8 +846,8 @@ describe("fallbackRailUp", () => {
 
 // ---- THE + AND A RING'S PRESS BY THE PANE (owner, 2026-11-05) --------------
 describe("plusDoor", () => {
-  it("pane open, favourites on, a page that can show its home: the pane", () => {
-    expect(plusDoor({ paneOpen: true, favsOn: true, paneHome: true })).toBe("pane");
+  it("pane open, favourites on, a page with a home: the New task card all the same (owner, 2026-11-08: the + never focuses the expanded sidebar)", () => {
+    expect(plusDoor({ paneOpen: true, favsOn: true, paneHome: true })).toBe("modal");
   });
   it("pane shut: the New task card, as today", () => {
     expect(plusDoor({ paneOpen: false, favsOn: true, paneHome: true })).toBe("modal");

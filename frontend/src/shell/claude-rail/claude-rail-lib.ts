@@ -605,10 +605,30 @@ export const LIST_ROWS_MAX = 10;
 
 /** THE PINNED BOTS (owner, 2026-11-05: "have the right sidebar go all the
  *  way and have bots below it — pinned bots show up there"): every pinned,
- *  un-hidden bot, in the pulse's order (the Bots page's own: pinned first).
- *  An older server's pulse carries no `pinned`: none. */
-export function pinnedBots<B extends { pinned?: boolean; hidden?: boolean }>(bots: readonly B[]): B[] {
-  return bots.filter((b) => b.pinned === true && !b.hidden);
+ *  un-hidden bot. In the pulse's order (the Bots page's own: pinned first)
+ *  — or, with `footOrder` (the rail flag; owner, 2026-11-08: "the order at
+ *  the bottom for bots: the reverse of the pinned-from-top order we have in
+ *  Bots"), the Bots page's order (apps/bots lib/order `botOrder`: waiting
+ *  on you and not yet read first, then the bot you last wrote to, then the
+ *  newest made) REVERSED, so the page's first bot stands lowest, at the
+ *  rail's foot, and the stack reads bottom-up as the page reads top-down.
+ *  An older server's pulse carries no `pinned`: none; one without
+ *  `last_user_ts`/`created` sorts by waiting alone. */
+export function pinnedBots<
+  B extends { pinned?: boolean; hidden?: boolean; status?: string; seq?: number; news_seq?: number | null; seen_seq?: number | null; last_user_ts?: number; created?: number },
+>(bots: readonly B[], o: { footOrder?: boolean } = {}): B[] {
+  const out = bots.filter((b) => b.pinned === true && !b.hidden);
+  if (!o.footOrder) return out;
+  // The page's waiting-first rule (apps/bots lib/unread `waitingUnread`):
+  // waiting, and never opened or carrying news past the read mark.
+  const waiting = (b: B) => {
+    if (b.status !== "waiting") return false;
+    if (typeof b.seen_seq !== "number") return true;
+    const newest = typeof b.news_seq === "number" ? b.news_seq : (b.seq ?? 0);
+    return newest > b.seen_seq;
+  };
+  const recency = (b: B) => b.last_user_ts || b.created || 0;
+  return out.sort((a, b) => Number(waiting(b)) - Number(waiting(a)) || recency(b) - recency(a)).reverse();
 }
 
 /** WHERE A PINNED BOT'S RING GOES (ClaudeRail `ringOf` for bots; owner,
@@ -853,8 +873,11 @@ export function fallbackRailUp(o: { favsOn: boolean; pageRails: number; navDoors
  *  (favourites on), the pane's own home — its Recent chats and new-chat
  *  composer, the keyboard in it — where the page can show it (`paneHome`);
  *  else the New task card, as ever. */
-export function plusDoor(o: { paneOpen: boolean; favsOn: boolean; paneHome: boolean }): "pane" | "modal" {
-  return o.paneOpen && o.favsOn && o.paneHome ? "pane" : "modal";
+export function plusDoor(_o: { paneOpen: boolean; favsOn: boolean; paneHome: boolean }): "pane" | "modal" {
+  // Owner, 2026-11-08: "any time you click the + we show the task modal only,
+  // and don't focus the expanded sidebar" — the pane-home door of 2026-11-05
+  // (beside the open pane the + opened the pane's Recent chats) is retired.
+  return "modal";
 }
 
 /** WHAT A LIST RING'S PLAIN PRESS DOES (ClaudeRail `pressRing`; owner,

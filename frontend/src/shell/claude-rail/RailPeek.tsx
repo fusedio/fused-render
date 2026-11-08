@@ -1677,15 +1677,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           </div>
         )}
         <div className="claude-rail-peek-body">
-          {/* THE CHAT IS IN THE PANE (ClaudeRail `keptSeats`, `paneSids`; owner,
-              2026-11-08: a task's ring opens its card beside the open pane
-              too): the pane's own chat gets no second mount — one chat, one
-              composer — so its card says where it is; Open ↗ is the way. */}
-          {view && !kept.some((s) => s.pulse.key === view.pulse.key) && (
-            <div className="claude-rail-peek-chat is-shown">
-              <p className="claude-rail-peek-note">This chat is open in the panel.</p>
-            </div>
-          )}
           {kept.map((seat) => {
             const { pulse: t, row } = seat;
             const facts = seatFacts(seat, where);
