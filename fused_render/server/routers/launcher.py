@@ -92,7 +92,7 @@ def api_launcher_show(body: dict = Body(default={}),
     hook = launcher.native_hooks.get("show")
     if hook is None:
         return _error("no launcher panel in this process", status=404)
-    hook(_anchor(body if isinstance(body, dict) else {}))
+    hook(_anchor(body))
     return {"ok": True}
 
 

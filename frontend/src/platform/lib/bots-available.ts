@@ -86,15 +86,21 @@ function forget(): void {
   listeners.clear();
 }
 
-/** Tests: pin the Bots answer (`null` forgets the config, so the next mount
- *  reads again). Keeps whatever the launcher answer was. */
-export function setBotsAvailableForTests(v: boolean | null): void {
-  known = v === null ? null : ({ ...(known ?? {}), bots_available: v } as Config);
+/** Tests: pin one flag's answer, leaving the other's as it was; `null`
+ *  forgets that flag alone (the config is forgotten — and read again on the
+ *  next mount — once neither is pinned). */
+function pinForTests(key: "bots_available" | "launcher_available", v: boolean | null): void {
+  const next: Partial<Config> = { ...(known ?? {}) };
+  if (v === null) delete next[key];
+  else next[key] = v;
+  known = Object.keys(next).length > 0 ? (next as Config) : null;
   forget();
 }
 
-/** Tests: pin the launcher answer, as `setBotsAvailableForTests` does. */
+export function setBotsAvailableForTests(v: boolean | null): void {
+  pinForTests("bots_available", v);
+}
+
 export function setLauncherAvailableForTests(v: boolean | null): void {
-  known = v === null ? null : ({ ...(known ?? {}), launcher_available: v } as Config);
-  forget();
+  pinForTests("launcher_available", v);
 }

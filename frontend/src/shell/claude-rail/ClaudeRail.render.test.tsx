@@ -348,7 +348,7 @@ describe("ClaudeRail's card beside the pane", () => {
     const peek = r.root.findAllByType(RailPeek);
     expect(peek).toHaveLength(1);
     expect(peek[0]!.props.pinned).toBe(true);
-    expect(peek[0]!.props.shown?.pulse.key ?? peek[0]!.props.shown?.key).toBe(chat("a").key);
+    expect(peek[0]!.props.shown.pulse.key).toBe(chat("a").key);
   });
 
 });

@@ -234,7 +234,12 @@ class LauncherController:
         shortcut and the menu pass nothing and get the mid-screen place."""
         if not self._loaded:
             self._load()
-        self._anchor, self._anchor_screen = self._anchor_on_screen(anchor)
+        placed = self._anchor_on_screen(anchor)
+        # Already up and key (the shortcut, the menu, a second press while
+        # it stands): the key window is this panel, whose content view says
+        # nothing about the rail — keep the place we have.
+        if placed is not None:
+            self._anchor, self._anchor_screen = placed
         self._place()
         self._panel.setAlphaValue_(1.0)
         self._panel.makeKeyAndOrderFront_(None)
@@ -391,18 +396,21 @@ class LauncherController:
                 return s
         return NSScreen.mainScreen() or (NSScreen.screens()[0] if NSScreen.screens() else None)
 
-    @staticmethod
-    def _anchor_on_screen(anchor: dict | None):
+    def _anchor_on_screen(self, anchor: dict | None):
         """The door's anchor (CSS px in the key window's web view) as a screen
         point ``(x, top)`` plus that window's screen; ``(None, None)`` with no
-        anchor, no key window, or a view that cannot say. The web view fills
-        the window's content view (mac_window.py), so its CSS px are the
-        content view's points; a flipped view (WKWebView) counts from the
-        top, any other from the bottom."""
+        anchor, no key window, or a view that cannot say — and None (keep the
+        current place) when the key window is this panel itself. The web view
+        fills the window's content view (mac_window.py, no full-size content
+        view, no zoom), so its CSS px are the content view's points; a
+        flipped view (WKWebView) counts from the top, any other from the
+        bottom."""
         if not anchor:
             return None, None
         try:
             win = NSApp.keyWindow()
+            if win is not None and win == self._panel:
+                return None
             view = win.contentView() if win is not None else None
             if view is None:
                 return None, None

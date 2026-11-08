@@ -877,19 +877,18 @@ describe("paneHomeHref", () => {
   });
 });
 
-describe("ringMarks with the Claude pane open", () => {
+describe("ringMarks beside the open pane (owner, 2026-11-08: the same ring as shut)", () => {
   const o = { favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null, activeList: null, activeFav: null, sessionHere: false, isLast: false };
-  it("a list ring shows the title only (no window-A hover); a favourite ring still hovers", () => {
-    const list = ringMarks({ ...o, key: "a", foot: false, paneOpen: true });
-    expect(list.hovers).toBe(false);
-    expect(list.titleOnly).toBe(true);
-    expect(ringMarks({ ...o, key: "a", foot: true, paneOpen: true }).hovers).toBe(true);
+  it("a list ring hovers (window A) and a favourite ring hovers (window B), whatever the pane shows", () => {
+    const list = ringMarks({ ...o, key: "a", foot: false });
+    expect(list.hovers).toBe(true);
+    expect(list.titleOnly).toBe(false);
+    expect(ringMarks({ ...o, key: "a", foot: true }).hovers).toBe(true);
     // A favourite whose chat the pane shows still hovers (2026-11-05: the
     // chat may stand in the pane and in window B at once).
-    const held = ringMarks({ ...o, key: "a", foot: true, paneOpen: true, chatElsewhere: true });
+    const held = ringMarks({ ...o, key: "a", foot: true, chatElsewhere: true });
     expect(held.hovers).toBe(true);
     expect(held.titleOnly).toBe(false);
-    expect(ringMarks({ ...o, key: "a", foot: false, paneOpen: false }).hovers).toBe(true);
   });
 });
 

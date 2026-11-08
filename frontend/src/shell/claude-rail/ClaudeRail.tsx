@@ -61,9 +61,10 @@
 //   - THE + IS THE PANE'S HOME (`onNewChat`, claude-rail-lib `plusDoor`): the
 //     pane's Recent chats page, the keyboard in its new-chat composer
 //     (`paneHomeComposer`) — not the New task card, which is the shut pane's.
-//   - A LIST RING'S PRESS OPENS THAT CHAT IN THE PANE (claude-rail-lib
-//     `ringPress`): no card is pinned, and a card that is up goes; a hover
-//     still shows the card. A favourite's ring is unchanged (its card).
+//   - A LIST RING'S PRESS PINS ITS CARD, AS SHUT (claude-rail-lib
+//     `ringPress`; owner, 2026-11-08): the pane keeps its chat until the
+//     card's Open door; a hover previews the card. (Until 2026-11-08 the
+//     press opened the chat in the pane.) A favourite's ring is unchanged.
 //   - THE PANE OPENING UNDER A PINNED LIST CARD closes it; the pane stands
 //     on its home (2026-11-05 evening). The pane SHUTTING brings back no
 //     list card (2026-11-06) — only the favourite whose Open expanded it
@@ -133,7 +134,7 @@
 // the card's Open does, and a modified press still follows the link. THE PRESS LANDS IN THE
 // COMPOSER: a plain press puts the keyboard in the card's composer
 // (`focusComposerSoon`), ready to type. With no room for a card, the press
-// opens the pane as before (the first such press included).
+// is the chat's door (`openChat`; the first such press included).
 //
 // FAVOURITES (owner, 2026-11-03): the card's STAR (RailPeek) makes a chat a
 // favourite — server-side, global, so every rail lists the same ones (api
@@ -1380,8 +1381,8 @@ export function ClaudeRail({
   // the rings keep their one-line caption until a resize gives the card room
   // again — a hover that shows nothing at all is the one outcome to avoid.
   // A PRESS that found no room is answered the way the
-  // press answers with no room from then on: it opens the chat in the pane
-  // (`pressedHref`, set on the press, read during the commit it causes —
+  // press answers with no room from then on: it follows the chat's door
+  // (`openChat`; `pressedHref`, set on the press, read during the commit it causes —
   // RailPeek places in a layout effect — and dropped on the next frame, so
   // a later resize that squeezes the card out only closes it).
   const [noRoom, setNoRoom] = useState(false);
@@ -2370,13 +2371,11 @@ export function ClaudeRail({
   const plusPane = plusDoor({ paneOpen, favsOn, paneHome: !!onNewChat }) === "pane";
   const paneFocusWait = useRef<(() => void) | null>(null);
   useEffect(() => () => paneFocusWait.current?.(), []);
-  // THE KEYBOARD INTO THE PANE'S COMPOSER (the home's on the +, the chat's
-  // on a ring's press beside the open pane) — retried until it stands, and
-  // given up the moment the reader presses or types anything themselves.
-  // `not`: the composer on screen at the press — a ring's press that REPLACES
-  // the pane's chat waits for the new chat's box, never the old one's, which
-  // is about to unmount under the keyboard (Bugbot on #2161).
-  const focusPaneComposer = (find: (rail: HTMLElement | null) => HTMLTextAreaElement | null, not: HTMLElement | null = null) => {
+  // THE KEYBOARD INTO THE PANE'S HOME COMPOSER (the +) — retried until it
+  // stands, and given up the moment the reader presses or types anything
+  // themselves. (A ring's press no longer opens the pane's chat, 2026-11-08,
+  // so the "not the old chat's box" case of Bugbot #2161 is gone with it.)
+  const focusPaneComposer = (find: (rail: HTMLElement | null) => HTMLTextAreaElement | null) => {
     paneFocusWait.current?.();
     let live = true;
     let raf = 0;
@@ -2394,7 +2393,7 @@ export function ClaudeRail({
     const attempt = () => {
       if (!live) return;
       const box = find(railRef.current);
-      if (box && box !== not) {
+      if (box) {
         box.focus({ preventScroll: true });
         if (box.ownerDocument.activeElement === box) return stop();
       }
@@ -2562,7 +2561,6 @@ export function ClaudeRail({
                 activeList,
                 activeFav,
                 favHoverKey,
-                paneOpen,
                 botHeld: botUp !== null,
                 sectionSize: foot ? favs.length : baseSeats.length,
               });
