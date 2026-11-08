@@ -190,4 +190,9 @@ describe("popoverDrag (Modal `popover.resize`; the rail's + card resizes as wind
     expect(high.top).toBe(POPOVER_INSET);
     expect(high.top + high.height).toBe(start.top + start.height);
   });
+  test("a window narrowed under the drag pulls the right edge back inside it", () => {
+    const at = popoverDrag("l", start, 0, 0, { width: 1200, height: 900 }, limits);
+    expect(at.left + at.width).toBe(1200 - POPOVER_INSET);
+    expect(at.width).toBe(start.width);
+  });
 });

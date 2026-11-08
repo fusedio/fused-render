@@ -139,6 +139,14 @@ export class PlusPopIntent {
     this.begin(door, true);
   }
 
+  /** ANOTHER WINDOW A CARD WAS PINNED (ClaudeRail; CodeRabbit on #2189): a
+   *  hover's read still pending on a door must not open over it when its
+   *  delay runs out — the pointer may rest on the + while an Enter pins the
+   *  Tasks card. A press waiting on its read (`wantPin`) is a press: kept. */
+  cancelPreview(): void {
+    if (this.pending !== null && !this.wantPin) this.cancelPending();
+  }
+
   /** The reader acted inside the card (a press, the focus on a field). */
   pinInside(): void {
     if (this.shown !== null && !this.pinnedNow) this.pinNow();

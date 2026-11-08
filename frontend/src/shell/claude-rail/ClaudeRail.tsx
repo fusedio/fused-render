@@ -1980,6 +1980,16 @@ export function ClaudeRail({
     if (!tasksUpRef.current) return;
     if ((peekKey ?? popSeq) !== null) closeTasksCard();
   }, [peekKey, popSeq]);
+  // ANOTHER WINDOW A CARD PINNED (the Tasks card by its door, the list card
+  // by a ring) while a + or draft hover's read is still out: that preview
+  // must not open over it when its delay runs out (plus-pop-lib
+  // `cancelPreview`; CodeRabbit on #2189). `plusIntent` is declared below;
+  // the effect runs after the render that declared it.
+  const tasksPinnedUp = navDoors && tasksCard.up && tasksCard.pinned;
+  const listPinnedUp = pinned && peekKey !== null;
+  useEffect(() => {
+    if (tasksPinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
+  }, [tasksPinnedUp, listPinnedUp]);
   // BESIDE THE OPEN PANE IT GOES THE WAY WINDOW A GOES (owner, 2026-11-08:
   // "if the sidebar is open, a press opens in the sidebar and closes window
   // A; in the expanded sidebar, when the sidebar's chat changes, close window
@@ -2021,11 +2031,15 @@ export function ClaudeRail({
   // TasksPeek's key) — and read back on the next render (the layout tick),
   // which re-places the card level with its door.
   const [, setLayoutTick] = useState(0);
-  const savePopSize = useCallback((size: { width: number; height: number }) => {
+  const savePopSize = useCallback((size: { width: number; height: number }, changed: { width: boolean; height: boolean }) => {
+    // Only a dimension the drag moved (TasksPeek `endDrag`): the other keeps
+    // what was remembered — a width the window clamped is not saved over
+    // it by a height-only drag (CodeRabbit on #2189).
+    const prev = railCardSize(getUiLayout().canvasRailPeek ?? null);
+    const width = changed.width ? size.width : prev.width;
+    const height = changed.height ? size.height : prev.height;
     patchUiLayout((d) =>
-      d.canvasRailPeek?.width === size.width && d.canvasRailPeek?.height === size.height
-        ? d
-        : { ...d, canvasRailPeek: { width: size.width, height: size.height } },
+      d.canvasRailPeek?.width === width && d.canvasRailPeek?.height === height ? d : { ...d, canvasRailPeek: { width, height } },
     );
     // A patch tells no subscriber (ui-layout `subscribeUiLayout`: hydrates
     // only) — this render re-reads it itself (Bugbot on #2189).

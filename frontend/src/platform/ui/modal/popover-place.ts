@@ -78,7 +78,9 @@ export function popoverDrag(
   limits: PopoverLimits,
 ): PopoverBox & { height: number } {
   const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
-  const right = start.left + start.width;
+  // The right edge as the drag began — or the viewport's inset, if the
+  // window narrowed under the drag (CodeRabbit on #2189).
+  const right = Math.min(start.left + start.width, viewport.width - POPOVER_INSET);
   const maxWidth = Math.min(limits.maxWidth, right - POPOVER_INSET);
   const width = edge === "t" || edge === "b" ? start.width : clamp(start.width - dx, limits.minWidth, maxWidth);
   const minTop = POPOVER_INSET;

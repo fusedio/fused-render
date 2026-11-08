@@ -210,7 +210,13 @@ export interface ModalProps {
      *  reports the size dragged to (`onResize`); the caller remembers it and
      *  hands it back as `size`, which re-places the card level with its
      *  anchor again. Absent: no grips. */
-    resize?: PopoverLimits & { onResize: (size: { width: number; height: number }) => void };
+    resize?: PopoverLimits & {
+      /** The size let go at, and WHICH of its two dimensions the drag moved
+       *  (an edge drag moves one): the caller keeps its remembered value for
+       *  the other, so a width the window clamped is not saved over it by a
+       *  height-only drag (CodeRabbit on #2189). */
+      onResize: (size: { width: number; height: number }, changed: { width: boolean; height: boolean }) => void;
+    };
   };
 }
 
@@ -595,7 +601,9 @@ export function Modal({
 
   const onGripDown = (edge: PopoverEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
     const dialog = dialogRef.current;
-    if (e.button !== 0 || !dialog || !resize) return;
+    // Not on a card already leaving (CodeRabbit on #2189): a drag through
+    // the exit fade would save a size nobody meant.
+    if (e.button !== 0 || !dialog || !resize || closing) return;
     e.preventDefault();
     e.stopPropagation();
     const r = dialog.getBoundingClientRect();
@@ -637,7 +645,7 @@ export function Modal({
     if (!last || (last.width === start.box.width && last.height === start.box.height)) return;
     const size = { width: last.width, height: last.height };
     setDragged(size);
-    resize?.onResize(size);
+    resize?.onResize(size, { width: last.width !== start.box.width, height: last.height !== start.box.height });
   };
   const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;

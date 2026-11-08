@@ -47,6 +47,19 @@ function plus() {
 }
 
 describe("PlusPopIntent", () => {
+  it("cancelPreview drops a hover's pending read, never a press's", () => {
+    const { clock, log, intent } = plus();
+    intent.enterPlus();
+    intent.cancelPreview();
+    intent.seeded(PLUS_DOOR);
+    clock.tick(PEEK_OPEN_MS + 1);
+    expect(log).toEqual(["seed", "cancel"]);
+    expect(intent.state).toBe("closed");
+    intent.press();
+    intent.cancelPreview();
+    intent.seeded(PLUS_DOOR);
+    expect(log[log.length - 1]).toBe("open pinned");
+  });
   it("a hover reads at once and shows the preview after the delay, once the read is in", () => {
     const { clock, log, intent } = plus();
     intent.enterPlus();
