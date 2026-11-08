@@ -430,3 +430,42 @@ def test_the_cross_is_polled_during_prefill_not_only_between_chunks(monkeypatch)
         "the watchdog must forward a cancel pressed during prefill"
     release.set()
     t.join(2.0)
+
+
+def test_the_reasoning_channel_lands_in_thinking_never_in_text(monkeypatch):
+    """docs/LOCAL_MODEL_GATEWAY.md §3: the worker split deliberation from
+    answer (`channel: "reasoning"`); `/api/ai` returns it as `thinking`
+    beside a `text` that is the answer alone, and its NDJSON passes the
+    channel through so a page streaming into a DOM node can skip it."""
+    import json
+    _spy(monkeypatch)
+    events = [
+        {"type": "chunk", "text": "let me think", "channel": "reasoning"},
+        {"type": "chunk", "text": "hi"},
+        {"type": "chunk", "text": " there"},
+        {"type": "done", "ok": True, "tokens": 3, "seconds": 0.1},
+    ]
+    _local(monkeypatch, events)
+    resp = _server_ai._local_relay("org/chat", "q", "", False, {"prompt": "q"})
+    result = json.loads(resp.body)["result"]
+    assert result["text"] == "hi there"
+    assert result["thinking"] == "let me think"
+
+    _local(monkeypatch, events)
+    resp = _server_ai._local_relay("org/chat", "q", "", True, {"prompt": "q", "stream": True})
+    import asyncio
+
+    async def _drain():
+        return [c if isinstance(c, bytes) else c.encode() async for c in resp.body_iterator]
+
+    raw = b"".join(asyncio.run(_drain()))
+    frames = [json.loads(line) for line in raw.decode().splitlines() if line]
+    assert frames[0] == {"type": "chunk", "text": "let me think", "channel": "reasoning"}
+    assert frames[1] == {"type": "chunk", "text": "hi"}
+    assert frames[-1]["result"]["text"] == "hi there"
+    assert frames[-1]["result"]["thinking"] == "let me think"
+
+    _local(monkeypatch, [{"type": "chunk", "text": "plain"},
+                         {"type": "done", "ok": True, "tokens": 1, "seconds": 0.1}])
+    resp = _server_ai._local_relay("org/chat", "q", "", False, {"prompt": "q"})
+    assert json.loads(resp.body)["result"]["thinking"] is None

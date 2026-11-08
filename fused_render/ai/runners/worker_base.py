@@ -363,6 +363,117 @@ class BadRequest(ValueError):
     answered 400 by the handler rather than as a failed generation."""
 
 
+def open_think(prompt: str) -> bool:
+    """Does the rendered prompt END inside an open think block — i.e. will
+    the model's first tokens be reasoning with no opening tag of their own?
+    Reasoning templates (Qwen3 with `enable_thinking`) append `<think>\n` to
+    the generation prompt, so the reply starts mid-deliberation and only the
+    CLOSING `</think>` ever reaches the stream. A worker reports this once,
+    before its first chunk, as `{"type": "meta", "thinking_open": true}`, so
+    a reader that separates deliberation from answer (the gateway's
+    `reasoning_content`) can start in the right state; a closed, empty
+    `<think>\n\n</think>` (thinking OFF) is not open."""
+    tail = (prompt or "")[-64:].rstrip()
+    for tag in ("<think>", "<thinking>"):
+        if tail.endswith(tag):
+            return True
+    return False
+
+
+_THINK_TAGS = (("<thinking>", "</thinking>"), ("<think>", "</think>"))
+
+
+class ThinkSplitter:
+    """Separate a reasoning model's deliberation from its answer as the text
+    streams: `("reasoning", str)` inside a think block, `("text", str)`
+    outside. Both spellings (`<think>`, `<thinking>`; longer tag first, or
+    `<thinking>` parses as `<think>` plus stray text). Streaming-safe: a
+    chunk that might be the start of a tag is held until it is one or is
+    not. `open=True` starts INSIDE a block, for a template that left
+    `<think>` open on the prompt (`open_think`), so a reply whose only tag
+    is the closing one is still split right. A block never closed is
+    reasoning to the end: mid-stream, everything is thinking. The newlines a
+    close tag is followed by are dropped, across chunks."""
+
+    def __init__(self, open: bool = False):
+        self.reasoning = bool(open)
+        self._buffer = ""
+        self._strip = False
+
+    def _tags(self):
+        return [close if self.reasoning else opn for opn, close in _THINK_TAGS]
+
+    def feed(self, text: str) -> list:
+        if not text:
+            return []
+        self._buffer += text
+        out: list = []
+        while self._buffer:
+            tags = self._tags()
+            hit = min(((i, t) for t in tags for i in [self._buffer.find(t)] if i >= 0),
+                      default=None)
+            if hit is not None:
+                i, tag = hit
+                self._emit(out, self._buffer[:i])
+                self._buffer = self._buffer[i + len(tag):]
+                self.reasoning = not self.reasoning
+                self._strip = not self.reasoning
+                continue
+            keep = 0
+            for t in tags:
+                for n in range(min(len(t) - 1, len(self._buffer)), 0, -1):
+                    if self._buffer.endswith(t[:n]) and self._buffer[-n] == "<":
+                        keep = max(keep, n)
+                        break
+            cut = len(self._buffer) - keep
+            self._emit(out, self._buffer[:cut])
+            self._buffer = self._buffer[cut:]
+            break
+        return out
+
+    def finish(self) -> list:
+        out: list = []
+        self._emit(out, self._buffer)
+        self._buffer = ""
+        return out
+
+    def _emit(self, out: list, text: str) -> None:
+        if text and self._strip and not self.reasoning:
+            text = text.lstrip("\n")
+            self._strip = not text
+        if text:
+            out.append(("reasoning" if self.reasoning else "text", text))
+
+
+class TextWriter:
+    """The worker's `write`, with the think split applied ONCE, here, in the
+    one process that knows the rendered prompt (docs/LOCAL_MODEL_GATEWAY.md
+    §3). A `chunk` row goes out as `{"type":"chunk","text"}` for the answer
+    and `{"type":"chunk","text","channel":"reasoning"}` for deliberation —
+    tags never reach the wire, and no reader downstream (the gateway, the
+    Playground, `fused.ai`) scans text for them. Every other row (`done`,
+    errors) flushes what the splitter still holds first, then passes
+    through unchanged."""
+
+    def __init__(self, write, prompt: str = "", *, open=None):
+        self._write = write
+        self._split = ThinkSplitter(open=open_think(prompt) if open is None else bool(open))
+
+    def __call__(self, event: dict) -> None:
+        if isinstance(event, dict) and event.get("type") == "chunk":
+            self._emit(self._split.feed(str(event.get("text") or "")))
+            return
+        self._emit(self._split.finish())
+        self._write(event)
+
+    def _emit(self, pieces) -> None:
+        for kind, text in pieces:
+            row = {"type": "chunk", "text": text}
+            if kind == "reasoning":
+                row["channel"] = "reasoning"
+            self._write(row)
+
+
 def generation_options(body) -> dict:
     """The gateway-facing knobs of a `/generate` body, validated
     (docs/LOCAL_MODEL_GATEWAY.md §3): `tools` (a list of OpenAI function

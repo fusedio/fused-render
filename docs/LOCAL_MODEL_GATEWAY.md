@@ -71,8 +71,28 @@ envelope. LAN (`lan.py`) does not allow-list `/v1`.
 
 `POST /generate` gains optional `tools` (list, OpenAI function schema),
 `stop` (list of strings) and the load gains `n_ctx` (int). The NDJSON `done`
-row gains `finish_reason: "stop" | "length" | "cancel"`. Nothing else: no
-OpenAI shapes, no SSE, no tool-call parsing inside an engine.
+row gains `finish_reason: "stop" | "length" | "cancel"`. A `chunk` row gains
+an optional `channel: "reasoning"` for a thinking model's deliberation; a
+row without it is the answer. Nothing else: no OpenAI shapes, no SSE, no
+tool-call parsing inside an engine.
+
+**The think split happens in the worker, once.** The worker is the only
+process that knows the rendered prompt — and a reasoning template (Qwen3
+with `enable_thinking`) leaves `<think>\n` OPEN on the generation prompt, so
+the reply starts mid-deliberation and only the closing tag ever reaches the
+stream; no reader downstream can tell that from the text alone. So every
+runner routes its rows through `worker_base.TextWriter`, which seeds the
+split from `open_think(prompt)`, strips the tags, and labels deliberation
+rows `channel: "reasoning"`. Consumers read the channel and never scan for
+tags: the gateway serves it as `reasoning_content` (DeepSeek's/vLLM's
+spelling, which the AI SDK's openai-compatible provider renders as a
+thinking block and OpenCode shows as `agent_thought_chunk`), `/api/ai`
+passes the channel through its NDJSON and returns `thinking` beside `text`
+in the result (`text` is the answer alone), `fused.ai`'s stream yields
+answer chunks only, and the Playground renders `thinking` directly
+(`splitThink` remains for a reply that carries tags in its text: a
+hand-written `<thinking>` prompt on the Claude tier). Deliberation never
+reaches the tool-call parser.
 
 - `runners/llama_text.py`: `_N_CTX` becomes the load option (env
   `FUSED_AI_N_CTX` from the supervisor, default 8192); the Jinja render gets

@@ -395,3 +395,4 @@ class StreamParser:
         self._active = None
         self._buffer = rest
         return True
+

@@ -536,3 +536,33 @@ def test_supervisor_passes_n_ctx_to_the_worker_env(monkeypatch):
     assert "FUSED_AI_N_CTX" not in env
     assert supervisor.GATEWAY_REQUESTER_ID == "gateway"
     assert supervisor.Worker(model="m", capability="c", runner_code="r").n_ctx is None
+
+
+def test_reasoning_streams_as_reasoning_content_and_never_as_the_answer(client, fake):
+    """A thinking model's deliberation (split by the worker onto the
+    `reasoning` channel, docs/LOCAL_MODEL_GATEWAY.md §3) reaches the client as
+    `reasoning_content`, not `content` — OpenCode showed the deliberation as
+    the reply otherwise — and a tool call mentioned while thinking is not a
+    call; the one after `</think>` is."""
+    fake.script = [
+        {"type": "chunk", "text": "I could call <tool_call>{\"name\":\"nope\"}</tool_call> ",
+         "channel": "reasoning"},
+        {"type": "chunk", "text": "but first", "channel": "reasoning"},
+        {"type": "chunk", "text": "Sure. <tool_call>"},
+        {"type": "chunk", "text": '{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'},
+        {"type": "done", "ok": True, "tokens": 20, "input_tokens": 50, "finish_reason": "stop"},
+    ]
+    body = {"model": QWEN, "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]}
+    r = client.post("/v1/chat/completions", json=body, headers=auth())
+    assert r.status_code == 200, r.text
+    msg = r.json()["choices"][0]["message"]
+    assert msg["reasoning_content"].startswith("I could call <tool_call>")
+    assert msg["content"] == "Sure. "
+    assert [c["function"]["name"] for c in msg["tool_calls"]] == ["get_weather"]
+    r = client.post("/v1/chat/completions", json=dict(body, stream=True), headers=auth())
+    deltas = [json.loads(l[6:])["choices"][0]["delta"] for l in r.text.splitlines()
+              if l.startswith("data: ") and l != "data: [DONE]"]
+    assert "".join(d.get("reasoning_content", "") for d in deltas).endswith("but first")
+    assert "".join(d.get("content", "") for d in deltas) == "Sure. "
+    assert sum(len(d.get("tool_calls", [])) for d in deltas) == 1

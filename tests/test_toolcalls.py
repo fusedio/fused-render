@@ -239,3 +239,4 @@ def test_empty_feed_is_a_no_op():
     parser = StreamParser("qwen")
     assert parser.feed("") == []
     assert parser.finish() == []
+

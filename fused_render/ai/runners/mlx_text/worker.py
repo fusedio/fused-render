@@ -571,6 +571,13 @@ def _unreadable_image(path):
     return None
 
 
+def _text_writer(write, prompt):
+    """`worker_base.TextWriter` where the base has it; the plain `write` for
+    a base that predates it (a test's stub module)."""
+    writer = getattr(worker_base, "TextWriter", None)
+    return writer(write, prompt) if writer is not None else write
+
+
 def _generation_options(body):
     """`worker_base.generation_options` where the base has it; the same
     reading inline for a base that predates it (a test's stub module)."""
@@ -743,6 +750,10 @@ def generate(body, write):
         text = _messages_to_prompt(processor, messages, body.get("prompt") or "",
                                    enable_thinking=enable_thinking,
                                    tools=options["tools"])
+    # The think split happens HERE, once, where the rendered prompt is known
+    # (`worker_base.TextWriter`, docs/LOCAL_MODEL_GATEWAY.md §3): every row
+    # below goes through it, the stop-string hold-back's included.
+    write = _text_writer(write, text)
     max_tokens = options["max_tokens"] or 1024
     if _N_CTX:
         max_tokens = min(max_tokens, _N_CTX)

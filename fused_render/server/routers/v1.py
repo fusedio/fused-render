@@ -298,6 +298,7 @@ class _Reply:
         self.model = model
         self.parser = toolcalls.StreamParser(family)
         self.text_parts: list[str] = []
+        self.reasoning_parts: list[str] = []
         self.tool_calls: list[dict] = []
         self.done: dict | None = None
         self.error: str | None = None
@@ -317,7 +318,15 @@ class _Reply:
         `("call", row)`. Records `done`/`error` as they arrive."""
         kind = event.get("type")
         if kind == "chunk":
-            return self._events(self.parser.feed(str(event.get("text") or "")))
+            text = str(event.get("text") or "")
+            if event.get("channel") == "reasoning":
+                # Split by the worker (docs/LOCAL_MODEL_GATEWAY.md §3), never
+                # here: deliberation is served as `reasoning_content` and
+                # never reaches the tool parser — a model thinking aloud
+                # about a call has not made it. The answer does.
+                self.reasoning_parts.append(text)
+                return [("reasoning", text)] if text else []
+            return self._events(self.parser.feed(text))
         if kind == "done":
             self.done = event
             if event.get("ok") is False:
@@ -361,6 +370,10 @@ class _Reply:
 
     def completion(self) -> dict:
         message: dict = {"role": "assistant", "content": "".join(self.text_parts)}
+        if self.reasoning_parts:
+            # DeepSeek's/vLLM's spelling, which the AI SDK's openai-compatible
+            # provider (OpenCode's) reads as a reasoning part.
+            message["reasoning_content"] = "".join(self.reasoning_parts)
         if self.tool_calls:
             message["tool_calls"] = self.tool_calls
             if not message["content"]:
@@ -514,6 +527,8 @@ async def _stream(model, worker_request, traits, reply):
     async for kind, value in _generate(model, worker_request, reply):
         if kind == "text":
             yield _sse(reply.chunk({"content": value}))
+        elif kind == "reasoning":
+            yield _sse(reply.chunk({"reasoning_content": value}))
         else:
             yield _sse(reply.chunk({"tool_calls": [value]}))
     if reply.error:

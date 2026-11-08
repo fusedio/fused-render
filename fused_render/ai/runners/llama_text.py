@@ -1152,6 +1152,14 @@ def _generation_options(body):
             "max_tokens": int(max_tokens) if max_tokens else None}
 
 
+def _text_writer(write, prompt):
+    """`worker_base.TextWriter` where the base has it; the plain `write` for
+    a base that predates it (a test's stub module) — tags then pass through
+    as text, which is what every reader did before."""
+    writer = getattr(worker_base, "TextWriter", None)
+    return writer(write, prompt) if writer is not None else write
+
+
 def _finish_reason(count, max_tokens):
     reader = getattr(worker_base, "finish_reason", None)
     if reader is not None:
@@ -1217,6 +1225,11 @@ def generate(body, write):
     # What the model READ, reported as `input_tokens` (SPEC AI-3) — counted
     # before the first token, so a cancelled generation still reports it.
     prompt_tokens = _prompt_tokens(llm, prompt)
+    # The think split happens HERE, once, where the rendered prompt is known
+    # (a template that left `<think>` open means the first tokens are
+    # reasoning with no tag of their own): `worker_base.TextWriter`, docs/
+    # LOCAL_MODEL_GATEWAY.md §3. Every row below goes through it.
+    write = _text_writer(write, prompt)
     max_tokens = options["max_tokens"] or 1024
     temperature = float(body.get("temperature", 0.7))
     top_p = float(body.get("top_p", 0.95))

@@ -160,6 +160,12 @@ function replyStats(usage: ChatUsage | null | undefined, seconds?: number | null
 
 interface Reply {
   text: string;
+  /** The deliberation the worker streamed on the reasoning channel; null
+   *  until one arrives. When set, `text` is the answer alone and no tag
+   *  parsing happens here (`splitThink` stays for a reply that carries
+   *  tags in its text — a hand-written `<thinking>` prompt on the Claude
+   *  tier, or a worker that predates the split). */
+  thinking: string | null;
   pending: boolean;
   usage?: ChatUsage | null;
   /** The local tier's wall-clock, from `providerMetadata.local.seconds` (D632). */
@@ -330,7 +336,7 @@ export function TextStage({
     if (asked) setPrompt(asked);
     setError(null);
     setStreaming(true);
-    setReply({ text: "", pending: true });
+    setReply({ text: "", thinking: null, pending: true });
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -341,7 +347,11 @@ export function TextStage({
         history: [],
         settings: settings(),
         signal: controller.signal,
-        onChunk: (text) => setReply((r) => (r ? { ...r, text: r.text + text } : r)),
+        onChunk: (text, channel) => setReply((r) => {
+          if (!r) return r;
+          if (channel === "reasoning") return { ...r, thinking: (r.thinking ?? "") + text };
+          return { ...r, text: r.text + text };
+        }),
         // The attached picture, if this model can actually be sent one right
         // now — `attachedImage` already applies `usableAttachment`, so an
         // attachment kept from a model that could ask about it, switched to
@@ -365,7 +375,7 @@ export function TextStage({
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
       // Keep what streamed before the stop — those tokens were real.
-      setReply((r) => (r && r.text ? { ...r, pending: false } : null));
+      setReply((r) => (r && (r.text || r.thinking) ? { ...r, pending: false } : null));
     } finally {
       setStatus(null);
       setStreaming(false);
@@ -392,7 +402,11 @@ export function TextStage({
     void cancelGeneration();
   };
 
-  const shown = reply ? splitThink(reply.text) : null;
+  const shown = !reply
+    ? null
+    : reply.thinking !== null
+      ? { think: reply.thinking || null, answer: reply.text, thinking: reply.pending && !reply.text }
+      : splitThink(reply.text);
   const stats = replyStats(reply?.usage, reply?.seconds);
 
   // Hoisted because the composer has two shapes below and this button is the
