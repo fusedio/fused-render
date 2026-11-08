@@ -210,6 +210,13 @@ export interface ModalProps {
      *  reports the size dragged to (`onResize`); the caller remembers it and
      *  hands it back as `size`, which re-places the card level with its
      *  anchor again. Absent: no grips. */
+    /** WHERE IT STANDS, THE CALLER'S WAY (owner, 2026-11-08: the +'s card is
+     *  window A's and must keep clear of window B's card, as the rail's own
+     *  cards do — rail-peek-lib `placeClear`): asked for the box on every
+     *  measure, with the size wanted; null falls back to `popoverPlacement`
+     *  above. `placeKey` re-measures when it changes (window B's box). */
+    place?: (want: { width: number; height: number }) => PopoverBox | null;
+    placeKey?: unknown;
     resize?: PopoverLimits & {
       /** The size let go at, and WHICH of its two dimensions the drag moved
        *  (an edge drag moves one): the caller keeps its remembered value for
@@ -521,19 +528,17 @@ export function Modal({
   // at the old left (Bugbot on #2189).
   const wantWidth = dragged?.width ?? sizeW ?? (typeof width === "number" ? width : 580);
   const wantHeight = dragged?.height ?? sizeH;
+  const placeKey = popover?.placeKey;
   const [place, setPlace] = useState<PopoverBox | null>(() => {
     const anchor = popover?.anchor.current;
     const view = ownerDoc.defaultView;
     if (!anchor || !view || typeof anchor.getBoundingClientRect !== "function") return null;
+    const want = { width: wantWidth, height: wantHeight ?? 0 };
+    const own = sized ? popover?.place?.(want) : null;
+    if (own) return own;
     const a = popover?.anchorBox?.() ?? anchor.getBoundingClientRect();
     const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
-    return popoverPlacement(
-      a,
-      b,
-      { width: wantWidth, height: wantHeight ?? 0 },
-      { width: view.innerWidth, height: view.innerHeight },
-      sized,
-    );
+    return popoverPlacement(a, b, want, { width: view.innerWidth, height: view.innerHeight }, sized);
   });
   useLayoutEffect(() => {
     if (!popoverOn) return;
@@ -542,17 +547,13 @@ export function Modal({
       const anchor = popover?.anchor.current;
       const dialog = dialogRef.current;
       if (!anchor || !dialog || !view) return;
+      // A sized card asks for its size, not for what it now measures (its
+      // own last placement).
+      const want = { width: wantWidth, height: wantHeight ?? dialog.offsetHeight };
+      const own = sized ? popover?.place?.(want) : null;
       const a = popover?.anchorBox?.() ?? anchor.getBoundingClientRect();
       const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
-      const next = popoverPlacement(
-        a,
-        b,
-        // A sized card asks for its size, not for what it now measures (its
-        // own last placement).
-        { width: wantWidth, height: wantHeight ?? dialog.offsetHeight },
-        { width: view.innerWidth, height: view.innerHeight },
-        sized,
-      );
+      const next = own ?? popoverPlacement(a, b, want, { width: view.innerWidth, height: view.innerHeight }, sized);
       setPlace((was) =>
         was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height
           ? was
@@ -569,7 +570,7 @@ export function Modal({
       view?.removeEventListener("resize", measure);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popoverOn, wantWidth, wantHeight]);
+  }, [popoverOn, wantWidth, wantHeight, placeKey]);
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
     if (e.key !== "Tab") return;

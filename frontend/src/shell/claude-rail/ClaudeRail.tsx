@@ -324,6 +324,7 @@ import {
   railOpenFav,
   rowOf,
   statusWords,
+  placeClear,
 } from "./rail-peek-lib";
 import { usePaneSessions } from "@platform/lib/peek-session";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
@@ -1919,35 +1920,33 @@ export function ClaudeRail({
   // the others down; one of them opening closes the popover the chassis'
   // way (its draft autosave keeps the words) — unless the card is mid-Create
   // (its × held, `busy`), when the other one goes instead.
+  // …WINDOW A ONLY (owner, 2026-11-08: "why is my hovering in window A's
+  // section affecting something in window B, and why does hovering close
+  // my clicked window"): the popover IS window A, so it trades places with
+  // the list's card and the Tasks card alone. Window B — a favourite's hover
+  // or open card, a bot's card — is the other section's: the popover neither
+  // closes it nor is closed by it (the Tasks card's rule, below); it keeps
+  // CLEAR of it instead (`popPlace`, rail-peek-lib `placeClear`). Until
+  // 2026-11-08 a + hover put window B's clicked card down, and a favourite's
+  // hover put the pinned popover down.
   const popSeq = card?.pop ? card.seq : null;
-  const openFavKeyRef = useRef(openFavKey);
-  openFavKeyRef.current = openFavKey;
   useEffect(() => {
     if (popSeq === null) return;
     setHeld(false);
     intent.dismiss();
-    dismissFavHover();
-    if (openFavKeyRef.current) setFavOpen(null);
-    setBotHeld(false);
-    botIntent.dismiss();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [popSeq]);
-  const otherCard = peekKey ?? favHoverKey ?? openFavKey ?? botKey ?? null;
   useEffect(() => {
-    if (otherCard === null || popSeq === null) return;
+    if (peekKey === null || popSeq === null) return;
     const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
     if (shut?.disabled) {
       setHeld(false);
       intent.dismiss();
-      dismissFavHover();
-      if (openFavKeyRef.current) setFavOpen(null);
-      setBotHeld(false);
-      botIntent.dismiss();
       return;
     }
     setCardCloseSignal((n) => n + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [peekKey, favHoverKey, openFavKey, botKey]);
+  }, [peekKey]);
   // …AND THE TASKS CARD (TasksPeek; owner, 2026-11-07) IS WINDOW A'S: it
   // stands where the list's card and the + popover stand, and takes their
   // turns with them — its opening (a hover's preview or a press) puts down
@@ -2058,6 +2057,24 @@ export function ClaudeRail({
     const scroller = first.closest(".claude-rail-chats");
     return clampAnchor(first.getBoundingClientRect(), scroller ? scroller.getBoundingClientRect() : null);
   }, []);
+  // WHERE THE POPOVER STANDS (Modal `popover.place`): as the Tasks card does
+  // — level with its door (the +, or the list's first ring for a draft's),
+  // beside the rail, inside the workspace row, and clear of window B's card
+  // (`favBox`): above it when there is room, beside it otherwise.
+  const popPlace = useCallback(
+    (want: { width: number; height: number }) => {
+      const rail = railRef.current;
+      const row = rail && rowOf(rail);
+      const door = cardRef.current?.door;
+      const anchor = door && door !== PLUS_DOOR ? draftCardBox() : plusRef.current?.getBoundingClientRect();
+      if (!rail || !row || !anchor) return null;
+      return placeClear(anchor, rail.getBoundingClientRect(), row.getBoundingClientRect(), favBox, {
+        width: want.width,
+        maxHeight: want.height,
+      });
+    },
+    [favBox, draftCardBox],
+  );
   // A DRAFT'S RING IS A POPOVER DOOR (owner, 2026-11-07: a draft "behaves
   // exactly like the +"): its hover previews the New task popover on its
   // record — window A's draft summary is gone — and its press pins it
@@ -3257,6 +3274,8 @@ export function ClaudeRail({
                       }
                     : {}),
                   ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
+                  place: popPlace,
+                  placeKey: favBox,
                   beside: railRef,
                   closeSignal: cardCloseSignal,
                   pinned: !!card.pinned,
