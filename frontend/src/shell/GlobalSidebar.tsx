@@ -521,7 +521,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const canvasesInNav = canvasesEnabled;
   // The Community (apps/marketplace): a row after AI Models, never under
   // Fused Bot. Always on since 2026-10-29 (it was behind the
-  // `marketplace_enabled` switch while in preview — the Beta tag stays).
+  // `marketplace_enabled` switch while in preview; Beta tag dropped 2026-11-08).
   // PREFIX match: /marketplace/app/<slug> and /marketplace/installed are the
   // same store.
   const marketplaceInNav = !bot;
@@ -529,7 +529,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // THE COMMUNITY ROW SAYS WHAT THE INSTALLED PAGE'S "UPDATES" SECTION SAYS
   // (owner, 2026-11-03: "notification dot in the community similar to bots
   // and tasks"): a dot while an installed app has a reviewed release waiting,
-  // and a count chip beside the Beta tag when expanded. Read from
+  // and a count chip when expanded. Read from
   // platform/lib/marketplacePulse — the store's own catalog reads feed it, so
   // an Update that lands clears it on the same read. Accent, the hue the
   // Settings row's "update available" dot already wears: one state, one
@@ -1080,11 +1080,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               icon={AI_MODELS_ICON}
               active={aiModelsActive}
               extra={residentDot}
-              trailing={
-                // Beta while the surface (playground foremost) is still settling —
-                // the chip skin is the shared one, the modifier only recolours it.
-                <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
-              }
             />
           )}
           {marketplaceInNav && (
@@ -1097,18 +1092,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               extra={marketplaceDot}
               title={marketplaceTip || undefined}
               trailing={
-                <>
-                  {/* The updates count, in the chip the Tasks and Bots rows
-                      wear for theirs, before the Beta tag. */}
-                  {marketplacePulse.updates > 0 && (
-                    <span className="sidebar-count-chip" title={marketplaceTip}>
-                      {marketplacePulse.updates}
-                    </span>
-                  )}
-                  {/* Beta while the store is still settling — the same chip as
-                      the AI Models row above. */}
-                  <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
-                </>
+                // The updates count, in the chip the Tasks and Bots rows wear
+                // for theirs.
+                marketplacePulse.updates > 0 ? (
+                  <span className="sidebar-count-chip" title={marketplaceTip}>
+                    {marketplacePulse.updates}
+                  </span>
+                ) : undefined
               }
             />
           )}
