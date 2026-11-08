@@ -2020,14 +2020,18 @@ export function ClaudeRail({
   // remembered as the list card's own (`canvasRailPeek`, RailPeek and
   // TasksPeek's key) — and read back on the next render (the layout tick),
   // which re-places the card level with its door.
+  const [, setLayoutTick] = useState(0);
   const savePopSize = useCallback((size: { width: number; height: number }) => {
     patchUiLayout((d) =>
       d.canvasRailPeek?.width === size.width && d.canvasRailPeek?.height === size.height
         ? d
         : { ...d, canvasRailPeek: { width: size.width, height: size.height } },
     );
+    // A patch tells no subscriber (ui-layout `subscribeUiLayout`: hydrates
+    // only) — this render re-reads it itself (Bugbot on #2189).
+    setLayoutTick((n) => n + 1);
   }, []);
-  const [, setLayoutTick] = useState(0);
+  // …and a hydrate landing after the first render (another window's drag).
   useEffect(() => subscribeUiLayout(() => setLayoutTick((n) => n + 1)), []);
   // WHERE A DRAFT'S POPOVER STANDS (owner, 2026-11-07: it "jumps" from ring
   // to ring; "it must stand like window A does"): its top level with the

@@ -481,15 +481,40 @@ export function Modal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [popoverOn]);
 
+  const sizeW = popover?.size?.width;
+  const sizeH = popover?.size?.height;
+  // THE DRAG (header of `popover.resize`): the box while a grip is held,
+  // then — until the caller hands back a new `size` — the size it was let go
+  // at, so the card does not snap back for a frame between the release and
+  // the caller's re-render.
+  const resize = popover?.resize;
+  const [dragBox, setDragBox] = useState<(PopoverBox & { height: number }) | null>(null);
+  const [dragged, setDragged] = useState<{ width: number; height: number } | null>(null);
+  const [gripHeld, setGripHeld] = useState<PopoverEdge | null>(null);
+  const dragStart = useRef<{
+    x: number;
+    y: number;
+    box: PopoverBox & { height: number };
+    pointerId: number;
+    edge: PopoverEdge;
+    el: HTMLElement;
+  } | null>(null);
+  const dragLast = useRef<(PopoverBox & { height: number }) | null>(null);
+  useEffect(() => {
+    setDragged(null);
+  }, [sizeW, sizeH]);
   // POPOVER: where it stands (popover-place.ts), re-measured as the card's
   // height or the window changes. The first guess is taken at mount, off the
   // anchor alone (the card's height is not known yet): never hidden while it
   // is measured, because the card's field takes the caret in this very
   // commit and a `visibility: hidden` box cannot hold focus.
-  const sizeW = popover?.size?.width;
-  const sizeH = popover?.size?.height;
   const sized = sizeW !== undefined && sizeH !== undefined;
-  const wantWidth = sizeW ?? (typeof width === "number" ? width : 580);
+  // …or, between a drag's release and the caller handing the size back, the
+  // size the drag let go at (`dragged`): the card re-places itself on it —
+  // its right edge against `beside` again — rather than paint a new width
+  // at the old left (Bugbot on #2189).
+  const wantWidth = dragged?.width ?? sizeW ?? (typeof width === "number" ? width : 580);
+  const wantHeight = dragged?.height ?? sizeH;
   const [place, setPlace] = useState<PopoverBox | null>(() => {
     const anchor = popover?.anchor.current;
     const view = ownerDoc.defaultView;
@@ -499,7 +524,7 @@ export function Modal({
     return popoverPlacement(
       a,
       b,
-      { width: wantWidth, height: sizeH ?? 0 },
+      { width: wantWidth, height: wantHeight ?? 0 },
       { width: view.innerWidth, height: view.innerHeight },
       sized,
     );
@@ -518,7 +543,7 @@ export function Modal({
         b,
         // A sized card asks for its size, not for what it now measures (its
         // own last placement).
-        { width: wantWidth, height: sizeH ?? dialog.offsetHeight },
+        { width: wantWidth, height: wantHeight ?? dialog.offsetHeight },
         { width: view.innerWidth, height: view.innerHeight },
         sized,
       );
@@ -538,7 +563,7 @@ export function Modal({
       view?.removeEventListener("resize", measure);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popoverOn, wantWidth, sizeH]);
+  }, [popoverOn, wantWidth, wantHeight]);
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
     if (e.key !== "Tab") return;
@@ -568,26 +593,6 @@ export function Modal({
     }
   };
 
-  // THE DRAG (header of `popover.resize`): the box while a grip is held,
-  // then — until the caller hands back a new `size` — the size it was let go
-  // at, so the card does not snap back for a frame between the release and
-  // the caller's re-render.
-  const resize = popover?.resize;
-  const [dragBox, setDragBox] = useState<(PopoverBox & { height: number }) | null>(null);
-  const [dragged, setDragged] = useState<{ width: number; height: number } | null>(null);
-  const [gripHeld, setGripHeld] = useState<PopoverEdge | null>(null);
-  const dragStart = useRef<{
-    x: number;
-    y: number;
-    box: PopoverBox & { height: number };
-    pointerId: number;
-    edge: PopoverEdge;
-    el: HTMLElement;
-  } | null>(null);
-  const dragLast = useRef<(PopoverBox & { height: number }) | null>(null);
-  useEffect(() => {
-    setDragged(null);
-  }, [sizeW, sizeH]);
   const onGripDown = (edge: PopoverEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
     const dialog = dialogRef.current;
     if (e.button !== 0 || !dialog || !resize) return;
@@ -647,15 +652,9 @@ export function Modal({
         position: "fixed",
         left: dragBox?.left ?? place?.left ?? 0,
         top: dragBox?.top ?? place?.top ?? 0,
-        width: dragBox?.width ?? dragged?.width ?? place?.width ?? wantWidth,
+        width: dragBox?.width ?? place?.width ?? wantWidth,
         maxHeight: "calc(100vh - 16px)",
-        ...(dragBox
-          ? { height: dragBox.height }
-          : dragged
-            ? { height: dragged.height }
-            : sized && place?.height !== undefined
-              ? { height: place.height }
-              : {}),
+        ...(dragBox ? { height: dragBox.height } : sized && place?.height !== undefined ? { height: place.height } : {}),
       }
     : width !== undefined
       ? { width }
@@ -823,8 +822,8 @@ export function Modal({
           style={{
             left: dragBox?.left ?? place?.left ?? 0,
             top: dragBox?.top ?? place?.top ?? 0,
-            width: dragBox?.width ?? dragged?.width ?? place?.width ?? wantWidth,
-            height: dragBox?.height ?? dragged?.height ?? place?.height ?? 0,
+            width: dragBox?.width ?? place?.width ?? wantWidth,
+            height: dragBox?.height ?? place?.height ?? 0,
           }}
         >
           {POPOVER_GRIPS.map((edge) => (
