@@ -144,8 +144,9 @@
   position: relative;
 }
 /* THE NAV DOORS' TOP (ClaudeRail `.claude-rail-nav`, behind the rail flag;
-   owner, 2026-11-07): Tasks where the panel glyph stood and the + under it,
-   spaced like the items column's seats; the column's own divider follows. */
+   owner, 2026-11-07, order 2026-11-08): Search, Bots, Tasks and the + where
+   the panel glyph stood, spaced like the items column's seats; the column's
+   own divider follows. */
 .claude-rail-nav {
   display: flex;
   flex-direction: column;
@@ -1481,8 +1482,8 @@ a.claude-rail-peek-scope:focus-visible {
 }
 
 /* NO HAIRLINES AROUND THE NAV DOORS (owner, 2026-11-07: "don't add
-   separators"): Tasks and + run straight into the items column, and the Bots
-   door sits under the pinned bots with no rule of its own. */
+   separators"; 2026-11-08: "no separator in between"): Search, Bots, Tasks
+   and + run straight into the items column; the pinned bots keep the foot. */
 .claude-rail.has-nav .sidebar-rail-items {
   border-top: 0;
   /* …but a seat's gap under the + (owner, 2026-11-07: the first ring's wash

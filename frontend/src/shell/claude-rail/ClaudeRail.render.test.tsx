@@ -20,7 +20,7 @@ const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import(
 const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-store");
 const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
-const { setBotsAvailableForTests } = await import("@platform/lib/bots-available");
+const { setBotsAvailableForTests, setLauncherAvailableForTests } = await import("@platform/lib/bots-available");
 const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 const { railGitNow, resetRailGitStoreForTests } = await import("./rail-git-store");
@@ -202,9 +202,19 @@ const byLabel = (r: ReactTestRenderer, label: string): ReactTestInstance[] =>
   r.root.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === label);
 const glyph = (r: ReactTestRenderer) => byLabel(r, "Show the Claude panel").length;
 const seam = (r: ReactTestRenderer) => byLabel(r, "Drag to show the Claude panel").length;
-// THE NAV DOORS (rail flag on, as every mount here; owner, 2026-11-07): Tasks
-// and the + where the panel glyph stood, Bots at the foot — always standing.
+// THE NAV DOORS (rail flag on, as every mount here; owner, 2026-11-07, order
+// 2026-11-08): Search (where the app has the launcher panel), Bots, Tasks and
+// the + where the panel glyph stood — always standing; the pinned bots at the
+// foot.
 const doors = (r: ReactTestRenderer) => byLabel(r, "Tasks").length + byLabel(r, "Bots").length;
+/** The nav column's doors, top to bottom, by label. */
+const navOrder = (r: ReactTestRenderer): string[] => {
+  const nav = r.root.findAll((n) => n.props?.className === "claude-rail-nav");
+  if (nav.length !== 1) return [];
+  return nav[0]!
+    .findAll((n) => typeof n.type === "string" && typeof n.props["aria-label"] === "string" && n.props.className?.includes("sidebar-rail-btn"))
+    .map((n) => String(n.props["aria-label"]));
+};
 
 describe("ClaudeRail beside the pane", () => {
   for (const favourites of [false, true]) {
@@ -230,6 +240,41 @@ describe("ClaudeRail beside the pane", () => {
       resetBotsPulseForTests();
     });
   }
+
+  test("the nav's order (owner, 2026-11-08): Search, Bots, Tasks, + at the rail's top; the Bots door is not at the foot", async () => {
+    setLauncherAvailableForTests(true);
+    setBotsAvailableForTests(true);
+    const r = await mountRail({ paneOpen: false, favourites: true });
+    expect(navOrder(r)).toEqual(["Search", "Bots", "Tasks", "New task"]);
+    // One Bots door in all: the nav's.
+    expect(byLabel(r, "Bots").length).toBe(1);
+    expect(r.root.findAll((n) => n.props?.className === "sidebar-rail-items")[0]!.findAll((n) => n.props?.["aria-label"] === "Bots").length).toBe(0);
+    setLauncherAvailableForTests(null);
+  });
+
+  test("no launcher panel in this process (a plain server): no Search door, the rest stand", async () => {
+    setLauncherAvailableForTests(false);
+    setBotsAvailableForTests(true);
+    const r = await mountRail({ paneOpen: false, favourites: false });
+    expect(navOrder(r)).toEqual(["Bots", "Tasks", "New task"]);
+    setLauncherAvailableForTests(null);
+  });
+
+  test("the Search door shows the launcher panel (POST /api/launcher/show)", async () => {
+    setLauncherAvailableForTests(true);
+    setBotsAvailableForTests(true);
+    const calls: string[] = [];
+    (globalThis as { fetch: unknown }).fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+      return new Promise<Response>(() => {});
+    };
+    const r = await mountRail({ paneOpen: false, favourites: false });
+    await act(async () => {
+      byLabel(r, "Search")[0]!.props.onClick();
+    });
+    expect(calls).toContain("POST /api/launcher/show");
+    setLauncherAvailableForTests(null);
+  });
 
   test("pane open, favourites off: no glyph, no seam, the nav doors keep it standing, registered", async () => {
     const r = await mountRail({ paneOpen: true, favourites: false, chats: [chat("a")] });

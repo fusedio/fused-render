@@ -60,6 +60,22 @@ def api_launcher_suspend(body: dict = Body(default={}),
     return {"ok": True, "suspended": on if hook is not None else False}
 
 
+@router.post("/api/launcher/show")
+def api_launcher_show(x_fused: str | None = Header(default=None)):
+    """Show the launcher panel — the Claude rail's Search door (ClaudeRail),
+    the same as the ⌥Space shortcut or the Dock's "Search Apps…". The hook
+    hops to the main thread itself. 404 where this process has no panel
+    (`/api/config` ``launcher_available`` is false there, so no door asks)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    hook = launcher.native_hooks.get("show")
+    if hook is None:
+        return _error("no launcher panel in this process", status=404)
+    hook()
+    return {"ok": True}
+
+
 @router.get("/api/launcher")
 def api_launcher(q: str = Query(default="")):
     """``apps`` as before; ``files`` (and the index's coverage ``reason``

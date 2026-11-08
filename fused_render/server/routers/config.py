@@ -2,7 +2,7 @@ import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from fused_render import __version__, _flavor, _platform, pty_session
+from fused_render import __version__, _flavor, _platform, launcher, pty_session
 from fused_render import calls as shell_calls
 from fused_render.installed import installed_version
 from fused_render.server import dirpicker
@@ -91,6 +91,12 @@ def api_config(
         # Windows (server/app.py: no election, `/api/bots/*` answers 503), so the
         # shell hides the sidebar entry, the page and the pulse poll off this.
         "bots_available": not _platform.IS_WINDOWS,
+        # Whether THIS process has the launcher panel (the ⌥Space search over
+        # the apps; fused_render/launcher_panel.py) to show on request: the
+        # packaged macOS app installs the hook, a `fused-render serve` has no
+        # panel. The Claude rail's Search door stands off this
+        # (POST /api/launcher/show). Read per request, like `engine`.
+        "launcher_available": "show" in launcher.native_hooks,
         # Whether the status-bar terminal can start here: always off Windows,
         # and on Windows only with pywinpty (the `[cli]` extra) installed. The
         # shell hides the terminal button and `fused.terminal` refuses off this.

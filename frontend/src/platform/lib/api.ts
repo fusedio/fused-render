@@ -38,6 +38,8 @@ export interface Config {
   // Windows, where the bot process manager is POSIX-only and every /api/bots
   // call answers 503. Absent from an older server: treated as available.
   bots_available?: boolean;
+  // Whether this process can show the launcher panel (POST /api/launcher/show).
+  launcher_available?: boolean;
   // Whether the status-bar terminal can start here (server/routers/config.py):
   // always true off Windows, and on Windows only with pywinpty installed (the
   // `[cli]` extra). Absent from an older server: treated as available.
@@ -2072,6 +2074,12 @@ export function putLauncherHotkey(spec: string): Promise<Prefs> {
  *  opening the panel; `off` binds them back. A no-op where no panel exists. */
 export function postLauncherSuspend(on: boolean): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/launcher/suspend", { on });
+}
+
+/** Show the launcher panel — the Claude rail's Search door, the ⌥Space
+ *  shortcut's twin. 404 where this process has no panel (`launcherAvailable`). */
+export function showLauncher(): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/launcher/show", {});
 }
 
 /** The row-shortcut modifier(s), `+`-joined (`"alt"`, `"alt+cmd"`). */
@@ -7094,6 +7102,12 @@ export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
  *  that predates the flag keeps its Bots page. */
 export function botsAvailable(config: Pick<Config, "bots_available"> | null | undefined): boolean {
   return config?.bots_available !== false;
+}
+
+/** Can this process show the launcher panel (the ⌥Space search over the
+ *  apps)? Only an explicit `true`: a plain server has no panel. */
+export function launcherAvailable(config: Pick<Config, "launcher_available"> | null | undefined): boolean {
+  return config?.launcher_available === true;
 }
 
 /** Can this machine run the status-bar terminal? Only an explicit `false`

@@ -236,10 +236,10 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { GitBranch, GitCommitHorizontal, Plus, RefreshCw } from "lucide-react";
+import { GitBranch, GitCommitHorizontal, Plus, RefreshCw, Search } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
-import { getSchedule, markWholeTaskRead, type Task, type TaskPulseTask } from "@platform/lib/api";
-import { useBotsAvailable } from "@platform/lib/bots-available";
+import { getSchedule, markWholeTaskRead, showLauncher, type Task, type TaskPulseTask } from "@platform/lib/api";
+import { useBotsAvailable, useLauncherAvailable } from "@platform/lib/bots-available";
 import {
   onDraftChange,
   readListing,
@@ -2437,6 +2437,10 @@ export function ClaudeRail({
   // The Bots door only where the server offers Bots (`botsOffered`, above).
   const botsDoor = botsOffered && navDoors;
   const botsPulse = useBotsPulse(botsDoor);
+  // The Search door only where the app has a launcher panel to show (the
+  // Mac desktop app; `useLauncherAvailable`).
+  const launcherOffered = useLauncherAvailable(navDoors);
+  const searchDoor = navDoors && launcherOffered;
   const here = typeof location === "undefined" ? "" : location.pathname;
   const tasksHere = here === "/tasks";
   const botsHere = isBotsPath(here);
@@ -2804,10 +2808,46 @@ export function ClaudeRail({
           onPointerDown={onPullStart}
         />
       )}
-      {/* THE NAV DOORS' TOP (`navDoors`): Tasks where the panel glyph stood,
-          the + right under it — on every rail, always. */}
+      {/* THE NAV DOORS' TOP (`navDoors`): Search, Bots, Tasks and the +, in
+          that order, where the panel glyph stood — on every rail, always; no
+          hairline between them (owner, 2026-11-08). */}
       {navDoors && (
         <div className="claude-rail-nav">
+          {/* THE SEARCH DOOR (owner, 2026-11-08): the app's launcher — the
+              ⌥Space search panel over the apps and bots — summoned from the
+              rail's top. Only where the app has one (`searchDoor`). */}
+          {searchDoor && (
+            <button
+              type="button"
+              className="sidebar-rail-btn claude-rail-item"
+              title="Search"
+              aria-label="Search"
+              onClick={() => {
+                hideHint();
+                // A miss (the panel went with the preference) is nothing to
+                // show: the door stands only while the config says it is there.
+                showLauncher().catch(() => {});
+              }}
+            >
+              <Search size={16} aria-hidden="true" />
+            </button>
+          )}
+          {/* THE BOTS DOOR (owner, 2026-11-08: "search, bots, tasks, +"): the
+              Bots page, the left sidebar's row moved here; its pinned bots
+              stay at the rail's foot (window B's). */}
+          {botsDoor && (
+            <a
+              href="/bots"
+              className={"sidebar-rail-btn claude-rail-item" + (botsHere ? " active" : "")}
+              title={botsTip ? `Bots — ${botsTip}` : "Bots"}
+              aria-label="Bots"
+              {...(botsHere ? { "aria-current": "page" as const } : {})}
+              onClick={navPress("/bots")}
+            >
+              {BOTS_ICON}
+              {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}
+            </a>
+          )}
           <a
             ref={tasksDoorRef}
             href="/tasks"
@@ -3176,23 +3216,6 @@ export function ClaudeRail({
                 );
               })}
             </div>
-          </>
-        )}
-        {botsDoor && (
-          // THE NAV DOORS' FOOT (`navDoors`): the Bots page, under the
-          // pinned bots — the left sidebar's Bots row, moved here.
-          <>
-            <a
-              href="/bots"
-              className={"sidebar-rail-btn claude-rail-item" + (botsHere ? " active" : "")}
-              title={botsTip ? `Bots — ${botsTip}` : "Bots"}
-              aria-label="Bots"
-              {...(botsHere ? { "aria-current": "page" as const } : {})}
-              onClick={navPress("/bots")}
-            >
-              {BOTS_ICON}
-              {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}
-            </a>
           </>
         )}
       </div>

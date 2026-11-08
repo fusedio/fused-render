@@ -312,3 +312,21 @@ def test_api_launcher_bot_has_no_files(home, tmp_path, bot, monkeypatch):
     body = _client(tmp_path).get("/api/launcher?q=alp").json()
     assert body["files"] == [] and body["files_reason"] == ""
     assert [x["id"] for x in body["apps"] if x.get("kind") == "bot"] == ["a"]
+
+
+def test_launcher_show_route(home, tmp_path):
+    """POST /api/launcher/show: the Claude rail's Search door. 404 with no
+    panel in this process; with one, the hook is called (it hops to the
+    main thread itself); the X-Fused guard holds."""
+    client = _client(tmp_path)
+    assert client.post("/api/launcher/show", headers=FUSED).status_code == 404
+    assert client.get("/api/config").json()["launcher_available"] is False
+
+    shown = []
+    launcher.native_hooks["show"] = lambda: shown.append(1)
+    assert client.get("/api/config").json()["launcher_available"] is True
+    assert client.post("/api/launcher/show").status_code in (400, 403)
+    assert shown == []
+    r = client.post("/api/launcher/show", headers=FUSED)
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert shown == [1]

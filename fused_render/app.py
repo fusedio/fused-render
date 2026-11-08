@@ -2559,6 +2559,9 @@ def main() -> None:
             launcher_mod.native_hooks.update({
                 "rebind": _rebind,
                 "suspend": _suspend,
+                # POST /api/launcher/show (the Claude rail's Search door):
+                # main thread, like the Dock's "Search Apps…" key.
+                "show": lambda: AppHelper.callAfter(launcher_ctl.show),
                 "hotkey_bound": launcher_ctl.hotkey_bound,
                 "pinned_bound": launcher_ctl.pinned_bound,
                 "open_keys": _open_keys,
