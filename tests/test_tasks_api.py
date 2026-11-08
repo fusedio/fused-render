@@ -427,6 +427,25 @@ def test_a_gone_entry_target_in_a_gone_folder_keeps_its_own_path(
     assert task["target"] == tasks_mod.canonical_fs_path(str(gone))
 
 
+def test_a_gone_folder_target_keeps_its_own_path(
+        client, projects_dir, state_dir, tmp_path):
+    """A gone FOLDER (no extension — a deleted canvas clone) does not walk up
+    into its parent: the row keeps naming it (Bugbot #2195)."""
+    _already_using(state_dir)
+    gone = tmp_path / "deleted_clone"
+    _seed_schedule([_entry("e1", "tidy the canvas", T9,
+                           target=str(gone),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(gone), [
+        _user("tidy the canvas", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == tasks_mod.canonical_fs_path(str(gone))
+
+
 def test_started_is_the_clock_that_does_not_move_while_last_active_does(
         client, projects_dir, state_dir):
     """`started` names when the conversation BEGAN, `last_active` when it last

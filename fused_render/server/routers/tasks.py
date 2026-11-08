@@ -3583,10 +3583,13 @@ def _place(task: dict) -> None:
     # page-made task whose file a turn renamed or split still opens — and
     # follows up — on the folder, which is where `agent._start` runs it. Only
     # while that folder is there: a deleted folder keeps naming the door that
-    # was its own (`_task_canvas`, the missing-folder chip).
+    # was its own (`_task_canvas`, the missing-folder chip), and so does a gone
+    # path with no extension — that was a folder, not a file in one.
     if target and not os.path.exists(target):
-        parent = os.path.dirname(target.rstrip("/\\"))
-        if parent and os.path.isdir(parent):
+        gone = target.rstrip("/\\")
+        parent = os.path.dirname(gone)
+        if (os.path.splitext(os.path.basename(gone))[1]
+                and parent and os.path.isdir(parent)):
             target = parent
     task["target"] = target or (
         pane if pane and os.path.isfile(pane) else task["project"])

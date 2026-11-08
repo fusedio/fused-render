@@ -43,3 +43,10 @@ def test_an_existing_file_and_folder_are_accepted_as_before(agent, tmp_path):
     f.write_text("x = 1\n")
     for target in (str(f), str(tmp_path)):
         assert "unknown agent backend" in _start(agent, target).get("error", "")
+
+
+def test_a_gone_folder_is_refused_not_walked_up(agent, tmp_path):
+    """A gone folder (no extension: a deleted canvas clone or app folder) is a
+    gone chat — it must not start the turn in its parent (Bugbot #2195)."""
+    gone = tmp_path / "deleted_clone"
+    assert _start(agent, str(gone)) == {"error": f"target not found: {gone}"}
