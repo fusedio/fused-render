@@ -70,7 +70,7 @@ def _anchor(body: dict) -> dict | None:
         return None
     try:
         left, top = float(a.get("left")), float(a.get("top"))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not (math.isfinite(left) and math.isfinite(top)):
         return None

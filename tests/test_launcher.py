@@ -339,6 +339,8 @@ def test_launcher_show_route(home, tmp_path):
     assert shown[-1] is None
     client.post("/api/launcher/show", json={"anchor": [1, 2]}, headers=FUSED)
     assert shown[-1] is None
+    client.post("/api/launcher/show", json={"anchor": {"left": 10**400, "top": 12}}, headers=FUSED)
+    assert shown[-1] is None
 
 
 def test_beside_frame_stands_like_window_a():

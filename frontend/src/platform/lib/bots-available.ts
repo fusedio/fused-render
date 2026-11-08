@@ -21,7 +21,7 @@ const listeners = new Set<(c: Config) => void>();
 let retry: ReturnType<typeof setTimeout> | null = null;
 
 function settle(c: Config): void {
-  known = c;
+  known = { ...c, ...pins };
   for (const l of [...listeners]) l(c);
 }
 
@@ -86,14 +86,14 @@ function forget(): void {
   listeners.clear();
 }
 
-/** Tests: pin one flag's answer, leaving the other's as it was; `null`
- *  forgets that flag alone (the config is forgotten — and read again on the
- *  next mount — once neither is pinned). */
+/** Tests: pin one flag's answer over whatever the read says (`pins`), leaving
+ *  the other's alone; `null` lets that flag go — and once neither is pinned
+ *  the read's config is forgotten too, so the next mount reads again. */
+let pins: Partial<Config> = {};
 function pinForTests(key: "bots_available" | "launcher_available", v: boolean | null): void {
-  const next: Partial<Config> = { ...(known ?? {}) };
-  if (v === null) delete next[key];
-  else next[key] = v;
-  known = Object.keys(next).length > 0 ? (next as Config) : null;
+  if (v === null) delete pins[key];
+  else pins[key] = v;
+  known = Object.keys(pins).length > 0 ? ({ ...(known ?? {}), ...pins } as Config) : null;
   forget();
 }
 

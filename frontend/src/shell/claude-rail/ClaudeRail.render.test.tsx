@@ -21,6 +21,7 @@ const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests }
 const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-store");
 const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
 const { setBotsAvailableForTests, setLauncherAvailableForTests } = await import("@platform/lib/bots-available");
+const { announcePaneSession } = await import("@platform/lib/peek-session");
 const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 const { railGitNow, resetRailGitStoreForTests } = await import("./rail-git-store");
@@ -332,6 +333,32 @@ describe("ClaudeRail's card beside the pane", () => {
   afterEach(() => {
     removePortalContainer();
     if (!hadGetById) delete doc.getElementById;
+  });
+
+  test("the ring of the chat the pane itself holds: its card pins too, a note for a body (CodeRabbit on #2201)", async () => {
+    const opened: string[] = [];
+    const b = chat("b");
+    const release = announcePaneSession(b.session_id!);
+    try {
+      const r = await mountRail({
+        paneOpen: true,
+        favourites: true,
+        chats: [chat("a"), b],
+        onOpenChat: (h) => opened.push(h),
+        activeSessionId: b.session_id,
+      });
+      await press(r, "b");
+      expect(opened).toHaveLength(0);
+      const peek = r.root.findAllByType(RailPeek);
+      expect(peek).toHaveLength(1);
+      expect(peek[0]!.props.pinned).toBe(true);
+      expect(peek[0]!.props.shown.pulse.key).toBe(b.key);
+      // Not a second mount of the pane's chat: a note instead.
+      expect(peek[0]!.props.kept.some((s: { pulse: { key: string } }) => s.pulse.key === b.key)).toBe(false);
+      expect(peek[0]!.findAll((n) => n.props?.className === "claude-rail-peek-note").length).toBe(1);
+    } finally {
+      release();
+    }
   });
 
   test("beside the open pane a ring press pins the card and leaves the pane's chat alone (owner, 2026-11-08)", async () => {

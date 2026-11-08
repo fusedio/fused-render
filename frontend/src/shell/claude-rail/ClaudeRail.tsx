@@ -1121,7 +1121,7 @@ export function ClaudeRail({
   // fires a leave, and a chat that left the rail (archived, the node changed)
   // takes its card with it; the kept set drops the same keys so a stale chat
   // never holds one of the three warm slots.
-  const peekSeat = peekOn ? seats.find((s) => s.pulse.key === peekKey) ?? null : null; // (a chat the pane holds is not in `keptSeats`: no card for it)
+  const peekSeat = peekOn ? seats.find((s) => s.pulse.key === peekKey) ?? null : null; // (a chat the pane holds is not in `keptSeats`: its card is a note)
   useEffect(() => {
     if (!peekOn && peekKey) intent.dismiss();
   }, [peekOn, peekKey, intent]);
@@ -3207,9 +3207,10 @@ export function ClaudeRail({
           </>
         )}
       </div>
-      {peekOn && keptSeats.length > 0 && (
+      {peekOn && (keptSeats.length > 0 || peekSeat !== null) && (
         // Beside the open pane a card can stand with no chat of its own: the
-        // one the pane holds (`paneSids`), said in its body instead.
+        // one the pane holds (`paneSids`, not in `keptSeats`), said in its
+        // body instead (RailPeek's note).
         <RailPeek
           ref={peekRef}
           id={PEEK_ID}
