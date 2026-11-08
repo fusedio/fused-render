@@ -97,6 +97,7 @@ import {
   SHOW_PAGE_DOOR,
   taskHref,
   pageDoorLabel,
+  taskChatTarget,
 } from "./tasks-lib";
 import { useChatRecapEnabled } from "@apps/claude/feature-flag";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
@@ -538,8 +539,9 @@ export function TaskPeek({
 
   const folder = task ? taskFolder(task) : "";
   const gone = !!task && !!missing?.has(folder);
-  const templates = useChatTemplates(task && !gone ? [task.target || task.project] : []);
-  const template = task ? templates[task.target || task.project] : undefined;
+  const chatFile = task ? taskChatTarget(task) : "";
+  const templates = useChatTemplates(task && !gone ? [chatFile] : []);
+  const template = task ? templates[chatFile] : undefined;
   const chatHere = !!(task && task.session_id && template && !gone);
   const resolving = !chatHere && !gone && !!task?.session_id && template === undefined;
   // The favourite's card (FavouritePeek) keeps no chat of its own on the
@@ -1378,7 +1380,7 @@ export function TaskPeek({
                 onBreakout={breakoutOpener()}
                 onBreakoutControl={setBreakoutCtl}
                 key={task.key}
-                file={task.target || task.project}
+                file={chatFile}
                 sessionId={task.session_id}
                 // WHAT THIS TASK IS SET TO (Akshil, 2026-09-18: "I saw the
                 // sidebar peek — the values there were different", then "what I

@@ -82,6 +82,7 @@ import {
   tildePath,
   cardTitleLine,
   pageDoorLabel,
+  taskChatTarget,
 } from "./tasks-lib";
 import { MISSING_FOLDER_TOAST, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import {
@@ -368,7 +369,7 @@ export function TaskCards({
   const dirs = useMemo(() => {
     const seen = new Set<string>();
     for (const t of cards) {
-      const dir = t.target || t.project;
+      const dir = taskChatTarget(t);
       if (dir) seen.add(dir);
     }
     return [...seen].sort();
@@ -435,7 +436,7 @@ export function TaskCards({
           home={home}
           // Absent while the folder resolves, null when it has no chat
           // template — the card draws a different body for each.
-          template={templates[task.target || task.project]}
+          template={templates[taskChatTarget(task)]}
           folderMissing={missing?.has(taskFolder(task)) ?? false}
           onPeek={openTask}
           peekOn={peekOn}
@@ -892,7 +893,7 @@ function TaskCard({
           // `session_id` in a MEMORY param store per card (00 §1e).
           <ChatMount
             onBreakout={breakoutOpener()}
-            file={task.target || task.project}
+            file={taskChatTarget(task)}
             sessionId={task.session_id}
             backend={task.backend}
             chatOnly
@@ -1141,8 +1142,12 @@ function TaskPeek({
         // textarea — where the reader actually wants the caret.
         <ChatMount
           onBreakout={breakoutOpener()}
-          file={task.target || task.project}
+          file={taskChatTarget(task)}
           sessionId={task.session_id}
+          // The task's own model/effort, seeded like TaskPeek's — the same
+          // conversation must not show different pills in two hosts.
+          model={task.model}
+          effort={task.effort}
           backend={task.backend}
           chatOnly
           peek

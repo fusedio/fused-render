@@ -1803,6 +1803,39 @@ export function pageDoorLabel(task: Pick<Task, "canvas" | "session_id">): string
   return opensCanvas(task) ? "Open in Canvas" : "Open in Explorer";
 }
 
+/**
+ * THE CHAT'S `_file` FOR A TASK — the target the full page's chat runs on
+ * (Akshil, 2026-11-08). The peek and the cards modal used to pass
+ * `task.target || task.project` straight through, while the door (`taskHref`)
+ * lands on the canvas page for a canvas task, whose chat runs on the CLONE
+ * folder (`CanvasWorkspace`'s `file={dir}`), and on the entry page for an app
+ * folder. A canvas task whose node file a turn had renamed or split away then
+ * worked from Open and failed every follow-up in the peek with
+ * `target not found`.
+ *
+ * Canvas: the clone is the target itself, or the target's folder when the
+ * target is a node (`canvas.file` is a top-level file name, never deeper —
+ * routers/tasks.py `_task_canvas`). Otherwise the door's own `where`, which
+ * `taskHrefView` reads from here so the two cannot drift.
+ */
+export function taskChatTarget(
+  task: Pick<Task, "target" | "project"> & {
+    session_id?: string;
+    entry?: string;
+    canvas?: Task["canvas"];
+  },
+): string {
+  // `opensCanvas`'s rule: a queued canvas row (no session yet) keeps the
+  // explorer door, so it keeps the explorer's target too.
+  if (task.canvas && task.session_id && task.target) {
+    const t = task.target.replace(/[/\\]+$/, "");
+    if (!task.canvas.file) return t;
+    const cut = Math.max(t.lastIndexOf("/"), t.lastIndexOf("\\"));
+    return cut > 0 ? t.slice(0, cut) : t;
+  }
+  return task.entry || task.target || task.project;
+}
+
 export function taskHref(
   task: Pick<Task, "session_id" | "target" | "project"> & {
     key?: string;
@@ -1839,7 +1872,7 @@ function taskHrefView(
    * Same /view codec either way: the chat pane on an entry page is the shape
    * every task made from inside an app already has.
    */
-  const where = task.entry || task.target || task.project;
+  const where = taskChatTarget({ ...task, canvas: null });
   /**
    * THE CANVAS, NOT ITS CLONE (owner, 2026-10-20). A task on a canvas clone
    * (`~/Fused/canvas/<env>/<name>`) or on one of its nodes used to land on

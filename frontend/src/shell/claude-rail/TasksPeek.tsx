@@ -73,7 +73,7 @@ import { ChatMount } from "@apps/claude";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { readListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
-import { cardTitleLine, taskColumn, taskHref } from "@shell/tasks-lib";
+import { cardTitleLine, taskChatTarget, taskColumn, taskHref } from "@shell/tasks-lib";
 import { TaskPeekWho } from "@shell/TaskPeekWho";
 import {
   CardPeekContext,
@@ -644,7 +644,7 @@ export function TasksPeek() {
                       <AgentProvider backend={task.backend ?? ""}>
                         <Kebab
                           key={task.key}
-                          file={task.target || task.project}
+                          file={taskChatTarget(task)}
                           sessionId={task.session_id}
                           running={taskColumn(task) === "in_progress" || taskColumn(task) === "queued"}
                           asking={taskColumn(task) === "needs_attention"}
@@ -698,7 +698,7 @@ export function TasksPeek() {
                 {task?.session_id ? (
                   <ChatMount
                     onBreakout={breakoutOpener()}
-                    file={task.target || task.project}
+                    file={taskChatTarget(task)}
                     sessionId={task.session_id}
                     // The task's own settings, a seed (TaskPeek passes the same).
                     {...(task.model ? { model: task.model } : {})}

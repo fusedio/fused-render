@@ -5127,7 +5127,21 @@ def _start(file: str, message: str, session_id: str, model: str,
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
     if not os.path.exists(file):
-        return {"error": f"target not found: {file}"}
+        # A FILE THAT IS GONE IS NOT A GONE CHAT (Akshil, 2026-11-08): Claude
+        # Code runs in the folder (`_workdir` of a file is its parent), so as
+        # long as that folder is there the turn runs on it — a turn that
+        # renamed or split the very file the task was made on must not lock
+        # every later follow-up out with `target not found`. Only a missing
+        # folder refuses. `_poll` / `_live_run` already read a folder and a
+        # file directly in it as one chat (`_folder_and_member`). A gone path
+        # with no extension was a FOLDER (a canvas clone, an app folder that
+        # already chats on itself): that chat is gone, so it refuses rather
+        # than walking up into the parent.
+        parent = os.path.dirname(file)
+        if not (os.path.splitext(os.path.basename(file))[1]
+                and parent and os.path.isdir(parent)):
+            return {"error": f"target not found: {file}"}
+        file = parent
 
     # WHICH AGENT RUNS THIS TURN — settled before anything touches disk, so a
     # refusal leaves no run dir behind. A RESUME is owned by the session: the
