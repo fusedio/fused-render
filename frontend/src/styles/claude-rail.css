@@ -156,7 +156,7 @@
 /* …UNDER THE BOTS (ClaudeRail `botsTop`; owner, 2026-11-08: "first icon
    instead of tasks will be bots and its pinned bots below it, then a
    separator and the tasks stuff below it"): the Bots door, the pinned
-   bots' faces A to Z under it, the hairline, then the block above. The
+   bots' faces under it in the Bots page's order, the hairline, then the block above. The
    faces scroll (`.claude-rail-bots`) on a column too short for them; the
    token shrink lets the list below give way first. */
 .claude-rail-top-bots {

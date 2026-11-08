@@ -766,9 +766,10 @@ export function ClaudeRail({
   // something here would use the answer (favourites or the nav doors).
   const botsOffered = useBotsAvailable(favsOn || peekOn);
   const botRows = useBotsRows(favsOn && botsOffered);
-  // With the rail flag (the nav doors) they head the rail, A to Z (owner,
-  // 2026-11-08: "pinned bots below [the Bots door], ascending order").
-  const bots = useMemo(() => pinnedBots(botRows, { byName: peekOn }), [botRows, peekOn]);
+  // With the rail flag (the nav doors) they head the rail, in the Bots
+  // page's own order (owner, 2026-11-08: "order of bots should be same as
+  // order of bots when pinned in the Bots page").
+  const bots = useMemo(() => pinnedBots(botRows, { pageOrder: peekOn }), [botRows, peekOn]);
   const allSeats = useMemo(
     () => (favouritesOnly ? [] : listSeats(railRows(rows, full, seatPlace), favsOn)),
     [rows, full, seatPlace, favsOn, favouritesOnly],
@@ -2879,7 +2880,7 @@ export function ClaudeRail({
   // THE RAIL'S TOP WITH THE NAV DOORS (owner, 2026-11-08: "the bots icon and
   // its pins — bring them up top; first icon instead of tasks will be bots,
   // its pinned bots below it, ascending order, then a separator and the
-  // tasks stuff below it"): the Bots page's door, the pinned bots A to Z,
+  // tasks stuff below it"): the Bots page's door, the pinned bots in the Bots page's order,
   // the hairline, then Tasks and the +.
   const botsTop =
     navDoors && (botsDoor || bots.length > 0) ? (

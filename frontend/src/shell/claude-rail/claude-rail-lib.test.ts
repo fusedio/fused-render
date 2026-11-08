@@ -388,17 +388,18 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
     ];
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
   });
-  it("pinned bots by name: A to Z on the caption's name (the id when unnamed), case-blind (2026-11-08)", () => {
+  it("pinned bots in the Bots page's order (2026-11-08): waiting-unread first, then your last message, then newest made", () => {
     const bots = [
-      { id: "z1", name: "zeta", pinned: true },
-      { id: "b2", name: "Beta", pinned: true },
-      { id: "alpha", pinned: true },
-      { id: "c3", name: "bot 10", pinned: true },
-      { id: "c4", name: "bot 9", pinned: true },
+      { id: "old", pinned: true, created: 100 },
+      { id: "wrote", pinned: true, created: 50, last_user_ts: 900 },
+      { id: "wait", pinned: true, status: "waiting", seq: 5, seen_seq: 3, created: 10 },
+      { id: "waitRead", pinned: true, status: "waiting", seq: 5, news_seq: 5, seen_seq: 5, created: 20 },
+      { id: "wroteEarlier", pinned: true, created: 60, last_user_ts: 500 },
+      { id: "unpinned", pinned: false, last_user_ts: 9999 },
     ];
-    expect(pinnedBots(bots, { byName: true }).map((b) => b.id)).toEqual(["alpha", "b2", "c4", "c3", "z1"]);
+    expect(pinnedBots(bots, { pageOrder: true }).map((b) => b.id)).toEqual(["wait", "wrote", "wroteEarlier", "old", "waitRead"]);
     // Without it, the pulse's order stands.
-    expect(pinnedBots(bots).map((b) => b.id)).toEqual(["z1", "b2", "alpha", "c3", "c4"]);
+    expect(pinnedBots(bots).map((b) => b.id)).toEqual(["old", "wrote", "wait", "waitRead", "wroteEarlier"]);
   });
   it("a pinned bot's ring opens its card, on every page, the Bots page too, with the card off, or with no room (2026-11-05)", () => {
     expect(botRingRoute({ peekOn: true, noRoom: false })).toBe("card");

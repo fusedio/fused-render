@@ -605,18 +605,28 @@ export const LIST_ROWS_MAX = 10;
 
 /** THE PINNED BOTS (owner, 2026-11-05: "have the right sidebar go all the
  *  way and have bots below it — pinned bots show up there"): every pinned,
- *  un-hidden bot, in the pulse's order (the Bots page's own: pinned first).
- *  An older server's pulse carries no `pinned`: none.
- *  `byName` (the rail flag's TOP section; owner, 2026-11-08: "pinned bots
- *  below [the Bots door], ascending order"): A to Z by the name the ring's
- *  caption shows (the id when unnamed), case- and accent-blind. */
-export function pinnedBots<B extends { id: string; name?: string; pinned?: boolean; hidden?: boolean }>(
-  bots: readonly B[],
-  o: { byName?: boolean } = {},
-): B[] {
+ *  un-hidden bot, in the pulse's order. An older server's pulse carries no
+ *  `pinned`: none.
+ *  `pageOrder` (the rail flag's TOP section; owner, 2026-11-08: "order of
+ *  bots should be same as order of bots when pinned in the Bots page"): the
+ *  Bots page's own list order among its pinned (apps/bots lib/order
+ *  `botOrder`) — waiting on you and not yet read first, then the bot you
+ *  last wrote to, then the newest made. Ties keep the pulse's order. */
+export function pinnedBots<
+  B extends { pinned?: boolean; hidden?: boolean; status?: string; seq?: number; news_seq?: number | null; seen_seq?: number | null; last_user_ts?: number; created?: number },
+>(bots: readonly B[], o: { pageOrder?: boolean } = {}): B[] {
   const out = bots.filter((b) => b.pinned === true && !b.hidden);
-  if (o.byName) out.sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: "base", numeric: true }));
-  return out;
+  if (!o.pageOrder) return out;
+  // The page's waiting-first rule (apps/bots lib/unread `waitingUnread`):
+  // waiting, and never opened or carrying news past the read mark.
+  const waiting = (b: B) => {
+    if (b.status !== "waiting") return false;
+    if (typeof b.seen_seq !== "number") return true;
+    const newest = typeof b.news_seq === "number" ? b.news_seq : (b.seq ?? 0);
+    return newest > b.seen_seq;
+  };
+  const recency = (b: B) => b.last_user_ts || b.created || 0;
+  return out.sort((a, b) => Number(waiting(b)) - Number(waiting(a)) || recency(b) - recency(a));
 }
 
 /** WHERE A PINNED BOT'S RING GOES (ClaudeRail `ringOf` for bots; owner,

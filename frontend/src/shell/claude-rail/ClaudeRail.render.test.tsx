@@ -328,10 +328,10 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
   });
   /** A pinned bot, as the pulse carries one (botsPulse `BotPulseRow`). */
   const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
-  test("the rail's top (owner, 2026-11-08): the Bots door first, the pinned bots A to Z, a hairline, then Tasks and the +", async () => {
+  test("the rail's top (owner, 2026-11-08): the Bots door first, the pinned bots in the Bots page's order, a hairline, then Tasks and the +", async () => {
     publishBots([
-      { id: "z", status: "idle", seq: 1, pinned: true, name: "zeta" },
-      { id: "a", status: "idle", seq: 1, pinned: true, name: "Alpha" },
+      { id: "a", status: "idle", seq: 1, pinned: true, name: "Alpha", last_user_ts: 100 },
+      { id: "z", status: "idle", seq: 1, pinned: true, name: "zeta", last_user_ts: 200 },
     ]);
     const r = await mountRail({ paneOpen: false, favourites: true });
     const order = r.root
@@ -344,7 +344,7 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
             (n.type === "span" && n.props.className === "sidebar-rail-sep is-tight")),
       )
       .map((n) => n.props["data-bot-id"] ?? n.props["aria-label"] ?? "sep");
-    expect(order.slice(0, 5)).toEqual(["Bots", "a", "z", "sep", "Tasks"]);
+    expect(order.slice(0, 5)).toEqual(["Bots", "z", "a", "sep", "Tasks"]);
     // No longer at the foot: one pinned-bots list.
     expect(r.root.findAll((n) => n.props?.className === "claude-rail-bots")).toHaveLength(1);
   });
