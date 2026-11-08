@@ -206,7 +206,7 @@ def test_a_failed_generation_reports_error_with_full_identity(monkeypatch):
 def test_a_pressed_x_stops_the_generation_and_ends_the_row(monkeypatch):
     reports = _spy(monkeypatch)
     forwarded = {"n": 0}
-    monkeypatch.setattr(supervisor, "cancel_generation", lambda: forwarded.__setitem__(
+    monkeypatch.setattr(supervisor, "cancel_generation", lambda job=None: forwarded.__setitem__(
         "n", forwarded["n"] + 1) or True)
 
     def events(model, request, **kwargs):

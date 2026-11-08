@@ -590,6 +590,45 @@ def test_cancel_sets_the_flag_the_runners_read(base):
         server.shutdown()
 
 
+def test_cancelling_a_queued_request_leaves_the_running_one_alone(base):
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    running = threading.Event()
+    release = threading.Event()
+    seen = []
+
+    def generate(body):
+        running.set()
+        release.wait(timeout=5)
+        seen.append((body["job"], base.CANCEL.is_set()))
+        return {}
+
+    server = _serve(base, generate)
+    replies = {}
+
+    def call(job):
+        with _call(server, "/generate", {"job": job}) as response:
+            replies[job] = json.loads(response.read())
+
+    try:
+        first = threading.Thread(target=call, args=("a",))
+        first.start()
+        assert running.wait(timeout=5)
+        second = threading.Thread(target=call, args=("b",))
+        second.start()
+        deadline = time.time() + 5
+        while not json.loads(_call(server, "/cancel", {"job": "b"}).read())["ok"]:
+            assert time.time() < deadline
+        release.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+        assert seen == [("a", False)]
+        assert replies == {"a": {"ok": True, "result": {}},
+                           "b": {"ok": True, "cancelled": True}}
+    finally:
+        server.shutdown()
+
+
 def test_one_generation_at_a_time(base):
     """A laptop has one GPU, and neither backend's model object is thread-safe.
     A second request waits rather than interleaving."""

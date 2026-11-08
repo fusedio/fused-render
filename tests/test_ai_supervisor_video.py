@@ -10,6 +10,7 @@ new for that reason — a direct, HTTP-free look at the four video pieces:
 `unload`/`cancel_generation` accepting the new capability like every other one
 they already accept.
 """
+import io
 import threading
 
 import pytest
@@ -99,11 +100,7 @@ def test_cancel_generation_reaches_a_video_worker(monkeypatch):
 
     def fake_worker_request(w, path, body=None, timeout=None):
         calls["path"] = path
-
-        class _Resp:
-            def close(self):
-                pass
-        return _Resp()
+        return io.BytesIO(b'{"ok": true}')
 
     monkeypatch.setattr(supervisor, "_worker_request", fake_worker_request)
     assert supervisor.cancel_generation(capability=registry.VIDEO_GENERATION) is True

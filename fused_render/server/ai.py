@@ -1209,7 +1209,8 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # model that never uses it.
         **({"images": body.get("images")} if body.get("images") else {}),
     }
-    request = {k: v for k, v in request.items() if v is not None}
+    job = supervisor.text_job_id(uuid.uuid4().hex)
+    request = {k: v for k, v in request.items() if v is not None} | {"job": job}
 
     try:
         events = supervisor.generate_text(model, request, requester_id=requester_id,
@@ -1243,12 +1244,7 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     # Past here the model was already resident and answered enough to begin
     # generating — `first` came back with no exception — so THIS call earns
     # its own Activity row (image/video/transcription already get one; text
-    # was the one kind that reported nowhere). Minted here, not inside
-    # `generate_text`: this relay is where the done-frame/error-demotion
-    # logic already lives for both the streaming and non-streaming shapes,
-    # and it is the caller that mints ids for the other kinds too
-    # (`image_job_id`, `transcribe_job_id`).
-    job = supervisor.text_job_id(uuid.uuid4().hex)
+    # was the one kind that reported nowhere).
     row = supervisor.text_row_fields(_text_title(prompt, model), model, page)
 
     def tick(**over) -> None:
@@ -1300,7 +1296,7 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
             # to stop it, not queue the cancel behind the first token of an
             # answer nobody wants any more.
             if supervisor._cancel_requested(job):
-                supervisor.cancel_generation()
+                supervisor.cancel_generation(job=job)
 
     watchdog = threading.Thread(target=_watchdog, daemon=True, name="ai-text-watchdog")
     watchdog.start()
@@ -1361,7 +1357,7 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                              detail=f"Generated {count} token{'' if count == 1 else 's'}")
                 yield event
                 if etype == "chunk" and supervisor._cancel_requested(job):
-                    supervisor.cancel_generation()
+                    supervisor.cancel_generation(job=job)
         finally:
             # Every exit that is not a `done` frame — the client aborting a
             # stream mid-generation (`GeneratorExit`, thrown here once this

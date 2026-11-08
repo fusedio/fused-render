@@ -484,6 +484,7 @@ class _MeasurementRow:
 
     def __init__(self, model: str, capability: str) -> None:
         self._job = supervisor.BENCHMARK_JOB_PREFIX + uuid.uuid4().hex
+        self.request_job = self._job
         self._capability = capability
         self._title = _bench_job_title(model)
         self._cancellable = capability in _CANCELLABLE_CAPABILITIES
@@ -543,7 +544,7 @@ class _MeasurementRow:
         if not self._cancellable:
             return False
         if supervisor._cancel_requested(self._job):
-            return supervisor.cancel_generation(self._capability)
+            return supervisor.cancel_generation(self._capability, self.request_job)
         return False
 
     def _flush_detail(self) -> None:
@@ -605,6 +606,7 @@ def _measure_text(model: str, workload: Workload, *, timed: bool,
         "prompt": params["prompt"],
         "max_tokens": params["maxTokens"],
         "temperature": params["temperature"],
+        **({"job": row.job} if row is not None else {}),
     }
     max_tokens = params["maxTokens"]
     deadline = _now() + _LOAD_TIMEOUT_S
@@ -627,7 +629,7 @@ def _measure_text(model: str, workload: Workload, *, timed: bool,
                     if first_token_at is None:
                         first_token_at = _now()
                     count += 1
-                    if row is not None:
+                    if timed and row is not None:
                         # A cheap counter plus a string format, called once
                         # PER CHUNK — never a network call, see
                         # `_MeasurementRow`'s own docstring for why that is
@@ -722,7 +724,7 @@ def _measure_embed(model: str, workload: Workload, *, timed: bool,
     either has not answered yet or has.
     """
     texts = list(workload.params["texts"])
-    if row is not None:
+    if timed and row is not None:
         row.set_detail(f"Encoding {len(texts)} texts…")
     deadline = _now() + _LOAD_TIMEOUT_S
     while True:
@@ -774,23 +776,26 @@ def _measure_image(model: str, workload: Workload, *, timed: bool,
             "seed": params["seed"],
             "out": os.path.join(tmp, "benchmark.png"),
         }
-        job = row.job if row is not None else _unwatched_job()
+        watched = timed and row is not None
+        job = row.job if watched else _unwatched_job()
+        if row is not None:
+            row.request_job = job
         start = _now()
         try:
             supervisor.generate_image(model, request, job)
         except BaseException as e:
-            # `row is None` on the WARM-UP pass (see `run`), which is exactly
+            # Not `watched` on the WARM-UP pass (see `run`), which is exactly
             # when `job` is the disposable, titleless one — closing it anyway
             # costs one swallowed `JobError` and means the two long calls do
-            # not differ in a way somebody has to remember. When `row` is not
-            # None this is the row `run()` itself opened and will close once,
+            # not differ in a way somebody has to remember. When `watched`
+            # this is the row `run()` itself opened and will close once,
             # AFTER sampling memory/device — closing it here too would report
             # "done" a beat before that sampling actually happens.
-            if row is None:
+            if not watched:
                 _close_any_row(job, e)
             raise
         else:
-            if row is None:
+            if not watched:
                 _close_any_row(job)
         total = _now() - start
     if not timed:
@@ -844,7 +849,7 @@ def _measure_transcript(model: str, workload: Workload, *, timed: bool,
     """
     params = workload.params
     seconds = float(params["audioSeconds"])
-    if row is not None:
+    if timed and row is not None:
         row.set_detail(f"Transcribing {seconds:.0f}s of audio…")
     with tempfile.TemporaryDirectory(prefix="fused-bench-") as tmp:
         # Named so that a row INHERITED from the transcribe queue reads as ours:
@@ -873,6 +878,8 @@ def _measure_transcript(model: str, workload: Workload, *, timed: bool,
         # one measurement function that never hands the real `_MeasurementRow`
         # its job, on either the warm-up or the timed pass.
         job = _unwatched_job()
+        if row is not None:
+            row.request_job = job
         start = _now()
         try:
             supervisor.generate_transcript(model, request, job)
@@ -1295,8 +1302,8 @@ def run(model: str, capability: str) -> dict:
        life. Uniform across capabilities rather than tuned per capability, which
        does cost a second image render — accepted, because a warm-up rule that
        varies by capability is a rule nobody can hold in their head while
-       reading two numbers side by side. Runs with NO row (`row=None`): the
-       warm-up is thrown away, and a progress row for work whose own timing is
+       reading two numbers side by side. Its row carries only the ✕: the
+       warm-up is thrown away, and progress for work whose own timing is
        discarded is more noise than signal.
     5. The timed pass, with the row.
     6. Memory and device off `describe()`.
@@ -1362,10 +1369,10 @@ def run(model: str, capability: str) -> dict:
         row_failure: BaseException | None = None
         try:
             try:
-                # The discarded warm-up (no row — see the docstring), then the
-                # timed pass, which gets the row so its own progress and its ✕
-                # both reach somewhere real.
-                measure(model, workload, timed=False)
+                # The discarded warm-up (the row's ✕ only — see the docstring),
+                # then the timed pass, which gets the row so its own progress
+                # and its ✕ both reach somewhere real.
+                measure(model, workload, timed=False, row=row)
                 # SPEC AI-20: a background sampler brackets ONLY the timed
                 # pass — started right before it, stopped in the `finally`
                 # directly below (which runs whether the pass succeeds,
