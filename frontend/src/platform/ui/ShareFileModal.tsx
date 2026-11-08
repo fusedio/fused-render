@@ -207,6 +207,12 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
   const pollUpload = useCallback(
     (id: string, mode: ShareMode) => {
       stopPolling();
+      const fail = (message: string) => {
+        stopPolling();
+        setErr(message);
+        setBusy(null);
+        setUpload(null);
+      };
       pollRef.current = window.setInterval(() => {
         void uploadStatus(id)
           .then((s) => {
@@ -215,11 +221,8 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
             if (s.state === "done") {
               stopPolling();
               void finishPublish(mode, id);
-            } else if (s.state === "failed" || s.state === "cancelled") {
-              stopPolling();
-              setErr(s.error || `the upload was ${s.state}`);
-              setBusy(null);
-              setUpload(null);
+            } else if (s.state !== "running") {
+              fail(s.error || (s.state === "none" ? "lost track of the upload" : `the upload was ${s.state}`));
             }
           })
           .catch((e: unknown) => {
@@ -231,11 +234,7 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
             // underlying upload had long since finished, failed, or was
             // cancelled. Surface it and stop polling instead of spinning
             // silently.
-            if (goneRef.current) return;
-            stopPolling();
-            setErr((e as Error).message || "lost track of the upload");
-            setBusy(null);
-            setUpload(null);
+            if (!goneRef.current) fail((e as Error).message || "lost track of the upload");
           });
       }, UPLOAD_POLL_MS);
     },

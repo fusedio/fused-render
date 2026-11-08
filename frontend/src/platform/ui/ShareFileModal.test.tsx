@@ -43,8 +43,11 @@ import type { ShareFileHookState } from "@platform/ui/ShareFileModal";
 const { PRIMARY_ACTIONS, useShareFile } = await import("@platform/ui/ShareFileModal");
 
 const realFetch = globalThis.fetch;
+const win = window as unknown as { setInterval: (fn: () => void) => number; clearInterval: (id: number) => void };
+const { setInterval: realSetInterval, clearInterval: realClearInterval } = win;
 afterEach(() => {
   globalThis.fetch = realFetch;
+  Object.assign(win, { setInterval: realSetInterval, clearInterval: realClearInterval });
 });
 
 const FILE: ShareableFile = { path: "/data/demo.parquet", name: "demo.parquet" };
@@ -273,9 +276,15 @@ test("finding 9: an immediately-done upload publishes with the upload's OWN id, 
   await h.unmount();
 });
 
-test("finding 10: a poll that fails to reach /upload/status ends the uploading phase instead of spinning forever", async () => {
+test.each([
+  ["fails to reach /upload/status", 500, { error: "network blip" }],
+  ["hears the upload folder is gone", 200, { id: "demo_abc123", state: "none" }],
+])("finding 10: a poll that %s ends the uploading phase instead of spinning forever", async (_, status, body) => {
   let statusCalls = 0;
   const originalFetch = globalThis.fetch;
+  const armed = new Map<number, () => void>();
+  win.setInterval = (fn) => (armed.set(armed.size + 1, fn), armed.size);
+  win.clearInterval = (id) => void armed.delete(id);
   stubFetch({
     "/api/share/file/status": STATUS_BASE,
     "/api/share/file/publish": {
@@ -288,10 +297,7 @@ test("finding 10: a poll that fails to reach /upload/status ends the uploading p
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     if (url.startsWith("/api/share/file/upload/status")) {
       statusCalls += 1;
-      // A transient failure — network drop, server briefly unreachable —
-      // getJson() throws on a non-ok response the same way a fetch()
-      // rejection would.
-      return new Response(JSON.stringify({ error: "network blip" }), { status: 500 });
+      return new Response(JSON.stringify(body), { status });
     }
     return routedFetch(url, init);
   }) as unknown as typeof fetch;
@@ -304,14 +310,16 @@ test("finding 10: a poll that fails to reach /upload/status ends the uploading p
   });
   expect(h.state.phase).toBe("uploading");
 
-  // Let the poll interval (UPLOAD_POLL_MS = 1200ms, private to the module)
-  // fire at least once.
+  expect(armed.size).toBe(1);
   await act(async () => {
-    await new Promise((r) => setTimeout(r, 1400));
+    [...armed.values()][0]!();
+    await new Promise((r) => setTimeout(r, 0));
   });
 
   globalThis.fetch = originalFetch;
-  expect(statusCalls).toBeGreaterThan(0);
+  expect(statusCalls).toBe(1);
+  expect(armed.size).toBe(0);
+  expect(h.state.busy).toBeNull();
   expect(h.state.phase).not.toBe("uploading");
   expect(h.state.upload).toBeNull();
   expect(h.state.err).toBeTruthy();
