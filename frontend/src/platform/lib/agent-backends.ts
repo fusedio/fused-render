@@ -193,7 +193,6 @@ export const OPENCODE_FALLBACK: AgentBackendRow = {
   models: [
     { id: "anthropic/claude-sonnet-5-5", label: "Claude Sonnet 5.5", reasoning: false },
     { id: "openai/gpt-5.5", label: "GPT-5.5", reasoning: false },
-    { id: "fused/local", label: "Local model (Fused)", reasoning: false },
   ],
   default_model: "anthropic/claude-sonnet-5-5",
   efforts: [],

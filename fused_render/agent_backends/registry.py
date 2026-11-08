@@ -122,7 +122,12 @@ def catalog(with_health: bool = True) -> dict:
         if isinstance(health, dict) and "models" in health:
             # Served once, as the row's `models`; not again under `health`.
             health = {k: v for k, v in health.items() if k != "models"}
-        row = b.to_catalog(enabled=bid in ids, health=health, models=models)
+        default = None
+        if (b.default_from_discovered and with_health and models
+                and models is not b.models):
+            default = models[0].id
+        row = b.to_catalog(enabled=bid in ids, health=health, models=models,
+                           default_model=default)
         everything.append(row)
         if bid in ids:
             out.append(row)

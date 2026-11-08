@@ -1705,8 +1705,7 @@ class _Host:
                 self._emit_tx({"type": "ai-title", "aiTitle": self.pending_title})
                 self.pending_title = ""
             self._write_registry("idle")
-        self._apply_model(rpc.result)
-        return True
+        return self._apply_model(rpc.result)
 
     @staticmethod
     def _current_model(result) -> str:
@@ -1734,20 +1733,28 @@ class _Host:
             with self.lock:
                 self.model = cur
 
-    def _apply_model(self, result) -> None:
+    def _apply_model(self, result) -> bool:
         """D7 at spawn: the model rides the injected config (`"model":
         "<provider>/<id>"`), so the session normally already runs it — but a
         resumed session may come back from a terminal left on another, so
         when the reply's `currentValue` differs from the one the request
         named, ONE `session/set_model` puts it right. Waited for (bounded)
-        before the first prompt goes out; a refusal is logged and the
-        session carries on under the CLI's own choice."""
+        before the first prompt goes out. A refusal FAILS the handshake: a
+        session that silently ran under the CLI's own pick (its bundled
+        free model) is exactly what the user did not ask for, and the error
+        row names the model so the picker's choice can be corrected."""
         if not self.model or self._current_model(result) == self.model:
-            return
+            return True
         rpc = self.peer.request("session/set_model", {
             "sessionId": self.sid, "modelId": self.model})
-        if not rpc.done.wait(_CONFIG_WAIT_SECONDS) or rpc.error is not None:
-            sys.stderr.write("opencode_host: %s: %r\n" % (rpc.method, rpc.error))
+        if rpc.done.wait(_CONFIG_WAIT_SECONDS) and rpc.error is None:
+            return True
+        if rpc.error is None:
+            rpc.error = {"message": "no answer within %ds" % _CONFIG_WAIT_SECONDS}
+        rpc.error = dict(rpc.error)
+        rpc.error["message"] = "model %r refused: %s" % (
+            self.model, rpc.error.get("message") or rpc.error)
+        return self._handshake_failed("session/set_model", rpc)
 
     def _await_replay_quiet(self) -> None:
         """D3: the `session/load` reply need not be the end of the replay

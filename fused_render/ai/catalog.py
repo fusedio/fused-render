@@ -2007,9 +2007,9 @@ def local_agent_models() -> list[dict]:
     orders them: what `GET /v1/models` lists.
 
     "Installed" is `hub_cache.is_downloaded` over one `cached_models()` read
-    — the one place that question is answered — never the network. Only the
-    curated rows are consulted here; the resolved runner's own uncurated
-    cached repos are a Discover-page concern and not listed to an agent.
+    — the one place that question is answered — never the network. Curated
+    rows first, in curation order, then the uncurated cached text repos the
+    runner's format check admits.
     """
     from fused_render.ai import hub_cache
 
@@ -2018,12 +2018,31 @@ def local_agent_models() -> list[dict]:
         return []
     cached = hub_cache.cached_models()
     out = []
+    seen: set[str] = set()
     for entry in for_runner(runner.code):
         model_id = entry.get("id")
         if not model_id or not hub_cache.is_downloaded(model_id, cached):
             continue
         traits = agent_traits(model_id)
+        seen.add(model_id)
         out.append({"id": model_id, "label": entry.get("label") or model_id,
+                    "context": traits["context"], "max_output": traits["max_output"],
+                    "tools": traits["tools"]})
+    # ...and every UNCURATED text repo on this disk the resolved runner's own
+    # format check admits (`CachedModel.loaders`, the same evidence the AI
+    # Models page's Load button reads) — a model the user fetched from the
+    # Discover tab is as much "available in fused-render" as a curated one,
+    # and an agent picker that hid it would offer less than the page does.
+    # Traits fall back to `agent_traits`' prefix defaults.
+    for row in cached:
+        rid = getattr(row, "repo_id", None)
+        if (not rid or rid in seen
+                or getattr(row, "capability", None) != registry.TEXT_GENERATION
+                or runner.code not in (getattr(row, "loaders", ()) or ())):
+            continue
+        traits = agent_traits(rid)
+        seen.add(rid)
+        out.append({"id": rid, "label": rid.rsplit("/", 1)[-1],
                     "context": traits["context"], "max_output": traits["max_output"],
                     "tools": traits["tools"]})
     return out

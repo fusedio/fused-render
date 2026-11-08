@@ -35,7 +35,6 @@ from fused_render.agent_backends.base import Backend, Caps, Model
 MODELS = (
     Model("anthropic/claude-sonnet-5-5", "Claude Sonnet 5.5", reasoning=False),
     Model("openai/gpt-5.5", "GPT-5.5", reasoning=False),
-    Model("fused/local", "Local model (Fused)", reasoning=False),
 )
 DEFAULT_MODEL = "anthropic/claude-sonnet-5-5"
 
@@ -75,29 +74,58 @@ def _cached_rows():
     return getter() if callable(getter) else None
 
 
+def _local_rows():
+    """The text models INSTALLED on this machine, as the gateway serves them
+    (`catalog.local_agent_models` through the stdlib `opencode_config`
+    shim — the same list the injected `fused` provider names, D20), as
+    `fused/<catalog id>` rows. First in the picker: on a machine that has
+    one, coding on it is the point of this backend. Never raises."""
+    try:
+        from fused_render.agent_backends import opencode_config
+        rows = opencode_config.local_models()
+    except Exception:  # noqa: BLE001 - a catalog read is never a 500
+        return []
+    out = []
+    for row in rows or ():
+        mid = str(row.get("id") or "").strip() if isinstance(row, dict) else ""
+        if not mid:
+            continue
+        label = str(row.get("label") or mid)
+        if not row.get("tools", True):
+            label += " · no tools"
+        out.append(Model("fused/" + mid, label, reasoning=False, efforts=(),
+                         category="local", vendor="fused"))
+    return out
+
+
 def discovered_models(snapshot=None):
-    """The usable models as the cached health snapshot lists them (rows of
-    `{id, label}` off the probe's `configOptions[id=model].options`, filtered
-    per D11a), as `Model`s — or None when nothing is cached, so the static
-    `MODELS` stand. Every row says `reasoning=False`: OpenCode takes no
-    effort for any model."""
+    """The usable models: every LOCAL model installed here (`_local_rows`,
+    first), then the cloud rows the cached health snapshot lists (off the
+    probe's `configOptions[id=model].options`, filtered per D11a; the
+    probe's own `fused/…` echoes are dropped in favour of the live local
+    list), else the static cloud seeds. None only when there is nothing
+    local and nothing cached, so the static `MODELS` stand. Every row says
+    `reasoning=False`: OpenCode takes no effort for any model."""
+    local = _local_rows()
     rows = snapshot.get("models") if isinstance(snapshot, dict) else None
     if not isinstance(rows, list) or not rows:
         rows = _cached_rows()
-    if not rows:
-        return None
-    out = []
+    cloud = []
     seen = set()
-    for row in rows:
+    for row in rows or ():
         if not isinstance(row, dict):
             continue
         mid = str(row.get("id") or "").strip()
-        if not mid or mid in seen:
+        if not mid or mid in seen or mid.startswith("fused/"):
             continue
         seen.add(mid)
-        out.append(Model(mid, str(row.get("label") or mid), reasoning=False,
-                         efforts=()))
-    return tuple(out) if out else None
+        cloud.append(Model(mid, str(row.get("label") or mid), reasoning=False,
+                           efforts=()))
+    if not local and not cloud:
+        return None
+    if not cloud:
+        cloud = list(MODELS)
+    return tuple(local + cloud)
 
 
 OPENCODE = Backend(
@@ -138,4 +166,5 @@ OPENCODE = Backend(
     routes_prefix="/api/opencode",
     pref_key="opencode_enabled",
     discovered_models=discovered_models,
+    default_from_discovered=True,
 )

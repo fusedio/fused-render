@@ -797,7 +797,7 @@ def test_the_catalog_endpoint_serves_the_registry(client, monkeypatch):
     assert opencode["efforts"] == []
     assert all(m["reasoning"] is False and m["efforts"] == [] for m in opencode["models"])
     assert [m["id"] for m in opencode["models"]] == [
-        "anthropic/claude-sonnet-5-5", "openai/gpt-5.5", "fused/local"]
+        "anthropic/claude-sonnet-5-5", "openai/gpt-5.5"]
     assert all("/" in m["id"] for m in opencode["models"])
     assert opencode["caps"]["plan_mode"] is False
     assert opencode["caps"]["live_model_switch"] is True
@@ -836,21 +836,25 @@ def test_the_catalog_serves_opencodes_discovered_models(monkeypatch):
     nothing cached → the seed stands."""
     from fused_render import opencode_health
     from fused_render.agent_backends import opencode as backend_opencode
+    from fused_render.agent_backends import opencode_config
     monkeypatch.setattr(opencode_health, "cached_models", lambda: None)
+    monkeypatch.setattr(opencode_config, "local_models", lambda: [])
     assert backend_opencode.discovered_models(None) is None
     assert backend_opencode.OPENCODE.model_ids() == tuple(m.id for m in backend_opencode.MODELS)
+    # The probe's own `fused/…` echo is dropped: the LIVE installed list
+    # (`_local_rows`) is the only source of local rows.
     rows = [{"id": "fused/qwen3-8b", "label": "Qwen3 8B (local)"},
             {"id": "anthropic/claude-opus-5", "label": "Claude Opus 5"},
             {"id": "anthropic/claude-opus-5"}, {"id": "", "label": "x"}, "junk"]
     found = backend_opencode.discovered_models({"models": rows})
-    assert [m.id for m in found] == ["fused/qwen3-8b", "anthropic/claude-opus-5"]
-    assert [m.label for m in found] == ["Qwen3 8B (local)", "Claude Opus 5"]
+    assert [m.id for m in found] == ["anthropic/claude-opus-5"]
+    assert [m.label for m in found] == ["Claude Opus 5"]
     assert all(m.reasoning is False and m.effort_list(()) == [] for m in found)
     assert backend_opencode.discovered_models({"models": []}) is None
     assert backend_opencode.discovered_models({"models": ["junk"]}) is None
     monkeypatch.setattr(opencode_health, "cached_models", lambda: rows)
     assert backend_opencode.OPENCODE.model_ids(discovered=True) == (
-        "fused/qwen3-8b", "anthropic/claude-opus-5")
+        "anthropic/claude-opus-5",)
     # A discovered id is never foreign on an OpenCode task; a Codex id still is.
     assert registry.foreign_model_error("opencode", "anthropic/claude-opus-5") is None
     assert registry.foreign_model_error("opencode", "gpt-6-luna")["reason"] == "unsupported"
@@ -1789,3 +1793,45 @@ def test_discovered_models_skips_malformed_rows_and_keeps_auto_first():
     assert models[2].reasoning is False and models[2].efforts == ()
     assert copilot.discovered_models({"models": []}) is None
     assert copilot.discovered_models({"models": ["garbage"]}) is None
+
+
+def test_opencode_lists_the_installed_local_models_first_and_defaults_to_one(monkeypatch):
+    """The picker's OpenCode group is the machine's own installed text models
+    (`fused/<catalog id>`, what the injected provider names, D20) ahead of
+    the cloud rows, and the catalog's default is the first local one — a
+    placeholder id would send OpenCode to its own bundled model instead."""
+    from fused_render.agent_backends import opencode, opencode_config, registry
+    monkeypatch.setattr(opencode_config, "local_models", lambda: [
+        {"id": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", "label": "Qwen3-Coder 30B",
+         "context": 32768, "max_output": 4096, "tools": True},
+        {"id": "gemma-4-E4B-it-Q4_K_M.gguf", "label": "Gemma 4 E4B",
+         "context": 32768, "max_output": 4096, "tools": False},
+    ])
+    found = opencode.discovered_models({"models": [
+        {"id": "fused/stale-echo", "label": "stale"},
+        {"id": "anthropic/claude-sonnet-5-5", "label": "Claude Sonnet 5.5"},
+    ]})
+    assert [m.id for m in found] == [
+        "fused/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+        "fused/gemma-4-E4B-it-Q4_K_M.gguf",
+        "anthropic/claude-sonnet-5-5",
+    ]
+    assert found[0].category == "local" and found[1].label.endswith("· no tools")
+    # No snapshot at all: local rows, then the static cloud seeds.
+    monkeypatch.setattr(opencode, "_cached_rows", lambda: None)
+    found = opencode.discovered_models(None)
+    assert [m.id for m in found][:1] == ["fused/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"]
+    assert "anthropic/claude-sonnet-5-5" in [m.id for m in found]
+    # Nothing local and nothing cached: the static list stands, with its own default.
+    monkeypatch.setattr(opencode_config, "local_models", lambda: [])
+    assert opencode.discovered_models(None) is None
+    # Through the catalog: the default follows the first discovered row.
+    monkeypatch.setattr(opencode_config, "local_models", lambda: [
+        {"id": "Qwen3.5-4B-Q4_K_M.gguf", "label": "Qwen3.5 4B",
+         "context": 32768, "max_output": 4096, "tools": True}])
+    row = next(b for b in registry.catalog()["all"] if b["id"] == "opencode")
+    assert row["models"][0]["id"] == "fused/Qwen3.5-4B-Q4_K_M.gguf"
+    assert row["default_model"] == "fused/Qwen3.5-4B-Q4_K_M.gguf"
+    static = next(b for b in registry.catalog(with_health=False)["all"] if b["id"] == "opencode")
+    assert static["default_model"] == "anthropic/claude-sonnet-5-5"
+    assert "fused/local" not in [m["id"] for m in static["models"]]
