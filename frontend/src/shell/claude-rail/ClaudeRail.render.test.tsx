@@ -328,6 +328,27 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
   });
   /** A pinned bot, as the pulse carries one (botsPulse `BotPulseRow`). */
   const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
+  test("the rail's top (owner, 2026-11-08): the Bots door first, the pinned bots A to Z, a hairline, then Tasks and the +", async () => {
+    publishBots([
+      { id: "z", status: "idle", seq: 1, pinned: true, name: "zeta" },
+      { id: "a", status: "idle", seq: 1, pinned: true, name: "Alpha" },
+    ]);
+    const r = await mountRail({ paneOpen: false, favourites: true });
+    const order = r.root
+      .findAll(
+        (n) =>
+          typeof n.type === "string" &&
+          (n.props["aria-label"] === "Bots" ||
+            n.props["aria-label"] === "Tasks" ||
+            typeof n.props["data-bot-id"] === "string" ||
+            (n.type === "span" && n.props.className === "sidebar-rail-sep is-tight")),
+      )
+      .map((n) => n.props["data-bot-id"] ?? n.props["aria-label"] ?? "sep");
+    expect(order.slice(0, 5)).toEqual(["Bots", "a", "z", "sep", "Tasks"]);
+    // No longer at the foot: one pinned-bots list.
+    expect(r.root.findAll((n) => n.props?.className === "claude-rail-bots")).toHaveLength(1);
+  });
+
   const ring = (r: ReactTestRenderer) => r.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1");
   const press = async (r: ReactTestRenderer) => {
     await act(async () => {

@@ -153,6 +153,24 @@
   gap: 4px;
   flex: 0 0 auto;
 }
+/* …UNDER THE BOTS (ClaudeRail `botsTop`; owner, 2026-11-08: "first icon
+   instead of tasks will be bots and its pinned bots below it, then a
+   separator and the tasks stuff below it"): the Bots door, the pinned
+   bots' faces A to Z under it, the hairline, then the block above. The
+   faces scroll (`.claude-rail-bots`) on a column too short for them; the
+   token shrink lets the list below give way first. */
+.claude-rail-top-bots {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0.0001 auto;
+  min-height: 0;
+  width: 100%;
+}
+.claude-rail-top-bots > a {
+  flex: 0 0 auto;
+}
 /* The rail's inner edge (ClaudeRail `.claude-rail-seam`): pulled left, it opens
    the pane. 6px of hit area straddling the rail's border, and the app's seam
    hairline on hover — the explorer's reopen edge (.preview-side-reopen). */
@@ -356,7 +374,9 @@
   position: relative;
 }
 /* THE PINNED BOTS (ClaudeRail `.claude-rail-bots`; owner, 2026-11-05):
-   under the favourites, the rail's last section — a 24px face in the 28px
+   at the rail's top under the Bots door with the rail flag (2026-11-08,
+   `.claude-rail-top-bots` above); without it under the favourites, the
+   rail's last section — a 24px face in the 28px
    seat, the Bots row's dots at the seat's corner. Scrolls like the
    favourites when the column is short; its floor is two faces. */
 .claude-rail-bots {
@@ -450,8 +470,9 @@
    hint panel (9000) all portal to the body and must draw over it — at
    100000 the card's own menu opened under the card. */
 #claude-rail-fav-peek,
-/* The bot's card is window B too (BotPeek, 2026-11-06): the same place,
-   the same size, the same step above the rail's own card. */
+/* The bot's card (BotPeek) is window A's since 2026-11-08, one step above
+   the rail's own card as the Tasks card is: where a too-small window makes
+   it meet the favourite's, its × stays reachable. */
 #claude-rail-bot-peek {
   z-index: 46;
 }
@@ -1481,8 +1502,8 @@ a.claude-rail-peek-scope:focus-visible {
 }
 
 /* NO HAIRLINES AROUND THE NAV DOORS (owner, 2026-11-07: "don't add
-   separators"): Tasks and + run straight into the items column, and the Bots
-   door sits under the pinned bots with no rule of its own. */
+   separators"): Tasks and + run straight into the items column. (The one
+   hairline at the top parts the bots from Tasks — 2026-11-08, asked for.) */
 .claude-rail.has-nav .sidebar-rail-items {
   border-top: 0;
   /* …but a seat's gap under the + (owner, 2026-11-07: the first ring's wash

@@ -388,6 +388,18 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
     ];
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
   });
+  it("pinned bots by name: A to Z on the caption's name (the id when unnamed), case-blind (2026-11-08)", () => {
+    const bots = [
+      { id: "z1", name: "zeta", pinned: true },
+      { id: "b2", name: "Beta", pinned: true },
+      { id: "alpha", pinned: true },
+      { id: "c3", name: "bot 10", pinned: true },
+      { id: "c4", name: "bot 9", pinned: true },
+    ];
+    expect(pinnedBots(bots, { byName: true }).map((b) => b.id)).toEqual(["alpha", "b2", "c4", "c3", "z1"]);
+    // Without it, the pulse's order stands.
+    expect(pinnedBots(bots).map((b) => b.id)).toEqual(["z1", "b2", "alpha", "c3", "c4"]);
+  });
   it("a pinned bot's ring opens its card, on every page, the Bots page too, with the card off, or with no room (2026-11-05)", () => {
     expect(botRingRoute({ peekOn: true, noRoom: false })).toBe("card");
     // The Bots page is no exception any more (2026-11-06): the card there too.
