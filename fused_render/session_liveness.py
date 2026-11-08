@@ -45,6 +45,8 @@ import os
 import re
 from datetime import datetime, timezone
 
+_EPOCH = datetime.fromtimestamp(0, timezone.utc)
+
 from fused_render.agent_backends import roots
 from fused_render.tasks_store import (
     holds_conversation, is_interrupt_mark, leading_machinery_tag)
@@ -318,15 +320,39 @@ def _last_turn_row(lines: list[str], *,
     two cannot disagree about which row is the last word. The row is None when
     nothing decided it (no message in the tail: closed) or when a half-written
     last line did (open)."""
-    for line in reversed(lines):
+    return _last_turn_of(_parse_lines(lines), interrupt_closes=interrupt_closes)
+
+
+# An unparsable line, kept in place: walking back, it is a write in flight.
+_UNPARSABLE = {"_unparsable": True}
+
+
+def _parse_lines(lines: list[str]) -> list[dict]:
+    rows: list[dict] = []
+    for line in lines:
         try:
             obj = json.loads(line)
         except ValueError:
+            rows.append(_UNPARSABLE)
+            continue
+        if isinstance(obj, dict):
+            rows.append(obj)
+    return rows
+
+
+def _last_turn_of(rows: list[dict], *, interrupt_closes: bool = True,
+                  main_only: bool = False) -> tuple[bool, dict | None]:
+    """`_last_turn_row` over rows already parsed (`_parse_lines`).
+
+    `main_only` also steps over SIDECHAIN assistant rows — a background
+    subagent's own `tool_use` written after the main turn's reply is that
+    subagent working, not the main turn still open. `session_last_turn` asks
+    how the MAIN turn ended; the live rule keeps reading any write as one."""
+    for obj in reversed(rows):
+        if obj is _UNPARSABLE:
             # A half-written last line IS a write in flight — the one case where
             # unparsable is itself the answer.
             return True, None
-        if not isinstance(obj, dict):
-            continue
         kind = obj.get("type")
         if kind == "user":
             # The CLI's own notes to itself — the "Caveat: the messages below
@@ -362,6 +388,8 @@ def _last_turn_row(lines: list[str], *,
             return verdict, obj
         if kind != "assistant":
             continue   # attachments, mode records, housekeeping: not the reply
+        if main_only and obj.get("isSidechain"):
+            continue
         message = obj.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if isinstance(content, list):
@@ -390,53 +418,145 @@ def _assistant_text(row: dict) -> str:
                      if isinstance(b, dict) and b.get("type") == "text").strip()
 
 
-def session_last_turn(session_id: str,
-                      projects_dir: str | None = None) -> dict | None:
-    """How the LAST turn in this session's transcript stands, by its last
-    message — `{"state", "at", "error"}`, or None when the transcript cannot
-    say (missing, unreadable, no message in the tail, a row with no timestamp).
+# How far back `session_last_turn` may read to find the turn a send opened:
+# the tail doubles from TAIL_BYTES until it reaches a row older than the send,
+# and past this the turn is too long ago to tell apart from later ones.
+TURN_SCAN_MAX_BYTES = 4 * 1024 * 1024
+# A closing record's stop reason that is NOT a failure (`turn_duration`'s
+# `stop_reason`, which fused's own Copilot/Codex/Gemini hosts stamp).
+_CLEAN_STOPS = frozenset(("", "end_turn", "cancelled"))
+
+
+def _rows_since(path: str, since: float) -> list[dict] | None:
+    """Every parsed row of `path` from one older than `since` on — read
+    backwards in a doubling tail until the chunk reaches back past `since` (or
+    is the whole file). None when it cannot reach that far within
+    TURN_SCAN_MAX_BYTES, or the file cannot be read. An unparsable line is
+    kept in place as `_UNPARSABLE` (`_parse_lines`)."""
+    want = TAIL_BYTES
+    while True:
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - want))
+                chunk = f.read().decode("utf-8", "replace")
+        except OSError:
+            return None
+        lines = [ln for ln in chunk.split("\n") if ln.strip()]
+        whole = size <= want
+        if not whole and lines:
+            lines = lines[1:]  # partial first line from the mid-file seek
+        rows = _parse_lines(lines)
+        reached = whole
+        for obj in rows:
+            ts = parse_ts(obj.get("timestamp"))
+            if ts is not None:
+                reached = reached or ts.timestamp() < since
+                break
+        if reached:
+            return rows
+        if want >= TURN_SCAN_MAX_BYTES:
+            return None
+        want = min(want * 2, TURN_SCAN_MAX_BYTES)
+
+
+def _opens_a_turn(obj: dict) -> bool:
+    """A row that STARTS a turn: a main-thread user prompt (typed words, or the
+    harness's task-notification wake) — not a tool_result fed back, not the
+    interrupt marker, not a CLI envelope, not meta or sidechain."""
+    if obj.get("type") != "user" or obj.get("isMeta") or obj.get("isSidechain"):
+        return False
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+        return False
+    return _turn_open_by_user_row(_user_parts(obj)) is True
+
+
+def session_last_turn(session_id: str, projects_dir: str | None = None, *,
+                      since: float | None = None) -> dict | None:
+    """How a turn in this session's transcript stands — `{"state", "at",
+    "error", "closed"}`, or None when the transcript cannot say (missing,
+    unreadable, no message, a row with no timestamp).
+
+    WHICH turn: with `since` (a send's unix time), the FIRST turn opened at or
+    after it — from its prompt up to the next turn's prompt, so a later turn
+    (the user's next message, a background job's wake) can never answer for
+    it; None when no prompt at or after `since` is found, or the file cannot
+    be read back that far (`TURN_SCAN_MAX_BYTES`). Without `since`, the last
+    turn in the tail.
 
     `state` is `open` (a turn in flight: a prompt or tool_result awaiting its
     reply, a `tool_use`, a half-written line), `ok` (a reply that finished),
     `cancelled` (the CLI's interrupt marker is the last word) or `failed` (the
-    last word is Claude Code's API-error row; `error` carries its text). `at`
-    is the deciding row's timestamp (unix seconds) — the file's mtime for a
-    half-written line — so a caller can refuse evidence older than the turn it
-    is asking about.
+    last word is Claude Code's API-error row, or a closing record whose
+    `stop_reason` is not a clean one — a Copilot/Gemini refusal or max_tokens
+    after a streamed reply; `error` carries why). `at` is the deciding row's
+    timestamp (unix seconds) — the file's mtime for a half-written line.
+    Sidechain rows never decide (`main_only`).
 
-    NO staleness ceiling, unlike `transcript_turn_open`: that one asks "is a
-    reply being written right now", where a turn left open by a dead process
-    must stop reading live. This one is asked by the scheduler AFTER it lost
-    track of a run (`schedule._close_unwatched`) — "did the turn end, and
-    how" — and the answer in the file does not go stale. An `open` answer
-    says only what the file says; whether anything is still writing it is the
-    caller's question to ask (`session_running`, the live registry).
+    `closed` says the transcript ITSELF proves the turn over: a later turn
+    began, or a `turn_duration` record follows the deciding row. A plain
+    reply without it may be an intermediate block (a text row written before
+    its `tool_use`), so `ok` with `closed` False is the caller's to confirm.
+
+    NO staleness ceiling, unlike `transcript_turn_open`: this is asked AFTER
+    the scheduler lost track of a run (`schedule._close_unwatched`) — "did the
+    turn end, and how" — and the answer in the file does not go stale.
     """
     path = transcript_path(session_id, projects_dir)
     if not path:
         return None
     try:
-        lines = _tail_lines(path)
-        if lines is None:
-            return None
-        is_open, row = _last_turn_row(lines)
+        if since is None:
+            lines = _tail_lines(path)
+            if lines is None:
+                return None
+            turn, bounded = _parse_lines(lines), False
+        else:
+            rows = _rows_since(path, since)
+            if rows is None:
+                return None
+            start = next((n for n, obj in enumerate(rows) if _opens_a_turn(obj)
+                          and (parse_ts(obj.get("timestamp")) or _EPOCH).timestamp()
+                          >= since), None)
+            if start is None:
+                return None
+            end = next((n for n in range(start + 1, len(rows))
+                        if _opens_a_turn(rows[n])), None)
+            bounded = end is not None
+            turn = rows[start:end]
+        is_open, row = _last_turn_of(turn, main_only=True)
         if row is None:
             if not is_open:
                 return None
-            return {"state": "open", "at": os.path.getmtime(path), "error": ""}
+            return {"state": "open", "at": os.path.getmtime(path), "error": "",
+                    "closed": bounded}
         ts = parse_ts(row.get("timestamp"))
         if ts is None:
             return None
         at = ts.timestamp()
         if is_open:
-            return {"state": "open", "at": at, "error": ""}
+            return {"state": "open", "at": at, "error": "", "closed": bounded}
         if row.get("type") == "user":
             # `_turn_open_by_user_row` closes a user row only for the marker.
-            return {"state": "cancelled", "at": at, "error": ""}
+            return {"state": "cancelled", "at": at, "error": "", "closed": True}
         if _is_api_error_row(row):
             text = _assistant_text(row) or "API error"
-            return {"state": "failed", "at": at, "error": text[:500]}
-        return {"state": "ok", "at": at, "error": ""}
+            return {"state": "failed", "at": at, "error": text[:500],
+                    "closed": True}
+        after = turn[next(n for n, obj in enumerate(turn) if obj is row) + 1:]
+        ending = next((obj for obj in after if obj.get("type") == "system"
+                       and obj.get("subtype") == "turn_duration"), None)
+        stop = str((ending or {}).get("stop_reason") or "")
+        if stop not in _CLEAN_STOPS:
+            return {"state": "failed", "at": at,
+                    "error": f"the turn stopped early ({stop})"[:500],
+                    "closed": True}
+        return {"state": "ok", "at": at, "error": "",
+                "closed": bounded or ending is not None}
     except Exception:  # noqa: BLE001 — an unreadable transcript is no evidence
         return None
 

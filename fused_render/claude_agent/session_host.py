@@ -531,12 +531,16 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str,
         # once, here, after every way out of the loop. JOINED, unlike the
         # turn_ended posts: this process is about to return out of `main` and
         # a daemon thread dies with it, so the last word has to be waited for
-        # — briefly, and never longer than the post's own timeout.
+        # — bounded by the send's own worst case (`send_budget`); host.json is
+        # already gone, so nothing reads a lingering host as a live one.
         last = _post_event(run_dir, "exited", code=cli.poll(), at=exited_at,
                            pid=getattr(cli, "pid", None))
         if last is not None:
             try:
-                last.join(_EVENT_TIMEOUT + 1.0)
+                # Long enough for the server.json fallback too (`send_budget`):
+                # a relaunched server may still be booting on its new port.
+                last.join(_EVENT_ORIGIN.send_budget(_EVENT_TIMEOUT,
+                                                    _EVENT_RETRY_SECONDS))
             except Exception:
                 pass
 

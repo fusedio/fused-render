@@ -1901,27 +1901,45 @@ class QueueManager:
         keys.add(task_key)
         return True
 
-    def uncount(self, folder: str, task_key: str) -> None:
-        """Take back ONE send a `claim`/`claim_took` counted on this folder's
+    def uncount(self, folder: str, task_key: str, token: str) -> None:
+        """Take back the ONE send a `claim_for_send` counted on this folder's
         owner when the caller then sent nothing — run-now absorbed into an
         owner filed under its own key, then refused (a busy conversation, or
-        the tick claimed the entry first). NEVER releases: it only ever brings
-        `turns` down to 1, so the turn actually holding the folder is not
-        ended by a send that never happened. Without it that count stayed on
-        the owner for good and one `turn_ended` no longer freed the folder
+        the tick claimed the entry first). Without it that count stayed on the
+        owner for good and one `turn_ended` no longer freed the folder
         (2026-11-08: owned until the CLI exited — for ever while it held a
-        background job)."""
-        if not folder or not task_key:
+        background job).
+
+        `token` is the claim token that very claim minted, and it is the
+        proof this owner is still the one the count went onto: a replacement
+        owner (released and re-taken meanwhile) never carries it, and nothing
+        here touches one that does not. Spent here, so a second call is a
+        no-op.
+
+        Counts are anonymous, so which one comes off is arithmetic: above one,
+        a real send is still counted besides this one and `turns` just drops
+        by one; AT one, this unsent claim is the only count left — every real
+        send into the owner already posted its `turn_ended` (the turn ended
+        between the claim and the refusal) — and the folder is released, the
+        way that last `turn_ended` would have released it."""
+        text_token = _text(token)
+        if not folder or not task_key or not text_token:
             return
         with self._txn() as keys:
             rec = self._state["folders"].get(folder)
             owner = rec["owner"] if rec else None
             if owner is None or not self._owner_matches(owner, task_key):
                 return
+            claims = owner.get("claims")
+            if not isinstance(claims, list) or text_token not in claims:
+                return
+            claims.remove(text_token)
             turns = int(owner.get("turns") or 1)
             if turns > 1:
                 owner["turns"] = turns - 1
                 keys.add(owner["task"])
+                return
+            self._release(rec, folder, keys)
 
     def turn_ended(self, task_key: str, run_id: str = "") -> None:
         """The session host saw a `result` row: ONE SEND into the owner is

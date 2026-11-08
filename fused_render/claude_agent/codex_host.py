@@ -1249,9 +1249,14 @@ class _Host:
                 self.tail_closed = True
             result.update({"subtype": "success", "is_error": False,
                            "result": self.turn_text or "", "stop_reason": "end_turn"})
+        # `stop_reason` rides on the turn's closing record: the transcript is
+        # what recovery reads when nothing watched this turn
+        # (`session_liveness.session_last_turn`), and a refusal or max_tokens
+        # after a streamed reply leaves a plain assistant row as the last word.
         self._emit_tx({"type": "system", "subtype": "turn_duration",
                        "durationMs": duration_ms, "isMeta": False,
-                       "isSidechain": False})
+                       "isSidechain": False,
+                       "stop_reason": result.get("stop_reason") or ""})
         self._emit_out(result)
         self.result_written = True
         self.results += 1
@@ -1973,7 +1978,10 @@ class _Host:
                            session_id=self.sid or _meta_session_id(self.run_dir))
         if last is not None:
             try:
-                last.join(_EVENT_TIMEOUT + 1.0)
+                # Long enough for the server.json fallback too (`send_budget`):
+                # a relaunched server may still be booting on its new port.
+                last.join(_EVENT_ORIGIN.send_budget(_EVENT_TIMEOUT,
+                                                    _EVENT_RETRY_SECONDS))
             except Exception:  # noqa: BLE001
                 pass
 

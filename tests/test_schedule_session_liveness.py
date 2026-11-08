@@ -450,7 +450,8 @@ def test_an_open_turn_in_a_live_session_with_no_run_is_rechecked_each_sweep(
     reads = []
     real = session_liveness.session_last_turn
     monkeypatch.setattr(session_liveness, "session_last_turn",
-                        lambda sid, projects_dir=None: reads.append(sid) or real(sid))
+                        lambda sid, projects_dir=None, **kw:
+                        reads.append(sid) or real(sid, **kw))
 
     schedule.tick()
     schedule.tick()
@@ -458,7 +459,11 @@ def test_an_open_turn_in_a_live_session_with_no_run_is_rechecked_each_sweep(
     assert (stored["turn"], stored["error"]) == ("", "")
     assert reads == [LOST_SESSION, LOST_SESSION]   # once per sweep, no spin
 
+    # The reply lands and the CLI stops running the turn (registry idle, or
+    # its `turn_ended` in) — a fresh reply alone is confirmed by that.
     _write_transcript(projects_dir, LOST_SESSION, [_prompt(), _reply()])
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda sid, transcript_mtime=None: (False, 0.0))
     schedule.tick()
     assert schedule.list_entries()[0]["turn"] == "ok"
 
@@ -501,3 +506,124 @@ def test_session_last_turn_reads_the_last_word_without_a_staleness_ceiling(
     _write_transcript(projects_dir, "sess-tool", [_prompt(), tool])
     assert session_liveness.session_last_turn("sess-tool")["state"] == "open"
     assert session_liveness.session_last_turn("sess-missing") is None
+
+
+# ---- the SEND'S OWN turn, confirmed (CodeRabbit / Bugbot, PR #2192)
+
+
+def _tool_use(**extra):
+    return {"type": "assistant", "timestamp": _iso(_now()),
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash"}]}, **extra}
+
+
+def _registry_running(monkeypatch, running):
+    from fused_render import tasks_watch
+
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda sid, transcript_mtime=None: (running, 0.0))
+
+
+def test_a_later_turn_never_answers_for_the_sent_one(
+        target, spawned, projects_dir, unfollowable):
+    """The scheduled turn failed; the user then finished another turn in the
+    same session. The verdict is the scheduled turn's own."""
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply("API Error: 500", isApiErrorMessage=True),
+        _prompt("and now this"), _reply("all good")])
+
+    schedule.tick()
+
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "failed"
+    assert "500" in stored["error"]
+
+
+def test_a_sidechain_tool_use_after_the_reply_is_not_the_turn_still_open(
+        target, spawned, projects_dir, unfollowable, monkeypatch):
+    """A background subagent writing after the main reply, the CLI alive and
+    its `turn_ended` already in (registry: not running a turn)."""
+    _registry_running(monkeypatch, False)
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply(), _tool_use(isSidechain=True)])
+
+    schedule.tick()
+
+    assert schedule.list_entries()[0]["turn"] == "ok"
+
+
+def test_a_fresh_reply_in_a_session_still_running_a_turn_waits(
+        target, spawned, projects_dir, unfollowable, monkeypatch):
+    """A text row can be an intermediate block written just before its
+    tool_use: while the registry says a turn is running, it is not a verdict.
+    The turn's closing record settles it."""
+    _registry_running(monkeypatch, True)
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [_prompt(), _reply("let me")])
+
+    schedule.tick()
+    assert schedule.list_entries()[0]["turn"] == ""
+
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply("let me"),
+        {"type": "system", "subtype": "turn_duration", "durationMs": 5,
+         "timestamp": _iso(_now())}])
+    schedule.tick()
+    assert schedule.list_entries()[0]["turn"] == "ok"
+
+
+def test_a_later_turn_proves_the_sent_one_over_even_while_running(
+        target, spawned, projects_dir, unfollowable, monkeypatch):
+    _registry_running(monkeypatch, True)
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply(), _prompt("next"), _tool_use()])
+
+    schedule.tick()
+
+    assert schedule.list_entries()[0]["turn"] == "ok"
+
+
+@pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
+def test_a_non_clean_stop_reason_on_the_closing_record_reads_failed(
+        target, spawned, projects_dir, unfollowable, stop):
+    """Copilot/Gemini write a plain assistant row even when the reply stopped
+    on a refusal; the host stamps the stop on its `turn_duration` record."""
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply("I started to"),
+        {"type": "system", "subtype": "turn_duration", "durationMs": 5,
+         "stop_reason": stop, "timestamp": _iso(_now())}])
+
+    schedule.tick()
+
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "failed"
+    assert stop in stored["error"]
+
+
+def test_the_sent_turn_is_found_past_the_first_tail(projects_dir):
+    """A long turn pushes its prompt out of the 16 KB tail; the read grows
+    until it reaches back past the send."""
+    sent = _at(-10).timestamp()
+    big = [{**_tool_use(), "timestamp": _iso(_now()),
+            "message": {"content": [{"type": "tool_use", "id": f"t{n}",
+                                     "name": "Bash", "input": {"x": "y" * 2000}}]}}
+           for n in range(20)]
+    _write_transcript(projects_dir, "sess-long", [
+        _prompt(when=_at(-20)), {**_reply(), "timestamp": _iso(_at(-19))},
+        _prompt(), *big, _reply("finally")])
+
+    last = session_liveness.session_last_turn("sess-long", since=sent)
+
+    assert last["state"] == "ok"
+    assert last["closed"] is False
+
+
+def test_no_prompt_after_the_send_is_no_evidence(projects_dir):
+    _write_transcript(projects_dir, "sess-none", [
+        _prompt(when=_at(-20)), {**_reply(), "timestamp": _iso(_at(-1))}])
+    assert session_liveness.session_last_turn(
+        "sess-none", since=_at(-10).timestamp()) is None

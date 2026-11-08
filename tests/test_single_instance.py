@@ -312,13 +312,14 @@ def _enforce(support, *, claim, holder=lambda d: None, pidfile=lambda: (None, No
              alive=lambda p: True, probe=lambda port: False, rivals=lambda: [],
              sweep=lambda rv: si.Sweep(killed=[r.pid for r in rv]), record=None,
              boot_wait_s=10.0, min_wait_s=2.0, since=lambda d: None, wall=lambda: 1000.0,
-             is_ours=lambda pid: False, ppid_of=lambda pid: None):
+             is_ours=lambda pid: False, ppid_of=lambda pid: None,
+             age_of=lambda pid: None):
     clock = Clock()
     out = si.enforce(support, pidfile, claim=claim, holder=holder, holder_since=since,
                      is_ours=is_ours, rivals_of=rivals, sweep_with=sweep, probe=probe,
                      alive=alive, boot_wait_s=boot_wait_s, min_wait_s=min_wait_s,
                      poll_s=0.5, clock=clock, wall=wall, sleep=clock.sleep, record=record,
-                     ppid_of=ppid_of)
+                     ppid_of=ppid_of, age_of=age_of)
     return out, clock
 
 
@@ -565,6 +566,69 @@ def test_nothing_is_swept_as_abandoned_while_the_pidfile_app_answers(support):
                       rivals=lambda: [si.Rival(11, 7200.0)], boot_wait_s=3.0,
                       sweep=lambda rv: swept.append(rv) or si.Sweep(), ppid_of=lambda pid: 1)
     assert out.live is None and swept == []
+
+
+def test_a_recorded_holder_pid_reused_by_a_stranger_is_no_holder(support):
+    """CodeRabbit, PR #2192: the record names a pid that is alive — but its
+    process started AFTER the record was written, so it is not the holder
+    (the holder died, the pid was reused). The abandoned forks are stopped
+    and the lock taken instead of waiting out the budget and naming a
+    stranger in the alert."""
+    world = {"lock_held": True}
+
+    def sweep(rv):
+        world["lock_held"] = False
+        return si.Sweep(killed=[r.pid for r in rv])
+
+    out, clock = _enforce(support, claim=lambda d: not world["lock_held"],
+                          holder=lambda d: 42, since=lambda d: 900.0,
+                          wall=lambda: 1000.0, age_of=lambda pid: 10.0,  # began at 990
+                          rivals=lambda: [si.Rival(11, 7200.0)] if world["lock_held"] else [],
+                          sweep=sweep, boot_wait_s=75.0, ppid_of=lambda pid: 1)
+    assert out.role == "primary" and clock.t == 0.0
+    assert out.sweep.killed == [11]
+
+
+def test_a_recorded_holder_that_predates_its_record_is_still_the_holder(support):
+    swept = []
+    out, clock = _enforce(support, claim=lambda d: False, holder=lambda d: 42,
+                          since=lambda d: 900.0, wall=lambda: 1000.0,
+                          age_of=lambda pid: 200.0,  # began at 800, before the record
+                          rivals=lambda: [si.Rival(11, 7200.0)], boot_wait_s=5.0,
+                          sweep=lambda rv: swept.append(rv) or si.Sweep(),
+                          ppid_of=lambda pid: 1)
+    assert out.role == "duplicate" and out.holder == 42
+    assert swept == []
+
+
+def test_the_abandoned_sweep_spares_a_rival_that_just_took_the_lock(support):
+    """CodeRabbit, PR #2192: a rival old enough to look abandoned claims the
+    lock (and writes the record) between the listing and the signal — the
+    record now names it, so it is not stopped."""
+    names = {"now": None}
+
+    def rivals():
+        names["now"] = 11  # it claims the lock right after being listed
+        return [si.Rival(11, 7200.0), si.Rival(12, 7200.0)]
+
+    swept = []
+    _enforce(support, claim=lambda d: False,
+             holder=lambda d: names["now"] if names["now"] else None,
+             rivals=rivals, boot_wait_s=1.0, ppid_of=lambda pid: 1,
+             sweep=lambda rv: swept.append([r.pid for r in rv]) or si.Sweep())
+    assert swept and all(11 not in pids for pids in swept)
+    assert swept[0] == [12]
+
+
+def test_process_age_reads_ps_and_unknown_is_none(monkeypatch):
+    if sys.platform != "win32":
+        assert si.process_age_s(os.getpid()) is None or si.process_age_s(os.getpid()) >= 0
+
+    def boom(*a, **k):
+        raise OSError("no ps")
+
+    monkeypatch.setattr(si.subprocess, "run", boom)
+    assert si.process_age_s(os.getpid()) is None
 
 
 def test_parent_pid_reads_ps_and_unknown_is_none(monkeypatch):

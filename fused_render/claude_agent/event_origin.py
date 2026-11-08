@@ -23,8 +23,15 @@ A server.json origin is only taken when it DIFFERS from the one that just
 failed and its recorded `pid` is alive — a stale file from the crashed server
 itself names the same dead origin, or a dead pid. The answer is cached per
 process, so every later event goes straight to the live server; if that one
-dies too, the next failure re-resolves again. One extra attempt per failed
-event, never a loop.
+dies too, the next failure re-resolves again.
+
+`write_server_json` runs BEFORE uvicorn listens (the lifespan startup sits
+between the two), so an event that fires while the relaunched server boots
+finds a live pid and a port that still refuses. A host emits each edge once,
+so that event is retried against the new origin every `retry_seconds` for at
+most `FALLBACK_SECONDS` while the file still names it — bounded, never a
+loop. `send_budget` is that whole worst case, for a host about to exit that
+joins its last post.
 
 Stdlib only and never imports `fused_render`, like every file in this
 directory; each host loads it by file path, a fresh module per load.
@@ -36,6 +43,10 @@ import time
 import urllib.request
 
 SERVER_JSON_NAME = "server.json"
+# How long a post to a re-resolved origin keeps trying: the relaunched server
+# publishes server.json before it listens, and its lifespan startup (queue
+# manager, tasks watch, warmups) sits in between.
+FALLBACK_SECONDS = 15.0
 
 _lock = threading.Lock()
 # The origin a re-resolve switched this process to, or "" while the spawn-time
@@ -103,7 +114,6 @@ def reresolve(failed_origin: str) -> str:
         return ""
 
 
-
 def _post_once(url: str, data: bytes, timeout: float) -> bool:
     try:
         req = urllib.request.Request(
@@ -117,16 +127,44 @@ def _post_once(url: str, data: bytes, timeout: float) -> bool:
         return False
 
 
+def send_budget(timeout: float, retry_seconds: float) -> float:
+    """The longest `send` can take: two tries at the original origin, the
+    pause between them, then `FALLBACK_SECONDS` of tries at the re-resolved
+    one (the last of which may start just before the deadline) — what a
+    host joins its final `exited` post for before it lets itself exit."""
+    return 2 * timeout + retry_seconds + FALLBACK_SECONDS + timeout + 1.0
+
+
+def _post_to_live(failed_origin: str, path: str, data: bytes, timeout: float,
+                  retry_seconds: float) -> None:
+    """Post to the live origin `reresolve` names, retrying every
+    `retry_seconds` for at most `FALLBACK_SECONDS` — the relaunched server
+    publishes server.json before it listens. Each round re-reads the file, so
+    the tries stop the moment it no longer names a live, different server."""
+    deadline = time.monotonic() + FALLBACK_SECONDS
+    while True:
+        live = reresolve(failed_origin)
+        if not live or _post_once(live + path, data, timeout):
+            return
+        if time.monotonic() + retry_seconds > deadline:
+            return
+        try:
+            time.sleep(retry_seconds)
+        except Exception:
+            return
+
+
 def send(url: str, body: dict, path: str, timeout: float,
          retry_seconds: float) -> None:
     """Every host's `_send_event`: POST `body` to `url` (`<origin><path>`), on
-    a failure once more `retry_seconds` later, and if that fails too, once to
-    the live server this install's server.json names (`reresolve`).
+    a failure once more `retry_seconds` later, and if that fails too, to the
+    live server this install's server.json names (`reresolve`) — retried for
+    at most `FALLBACK_SECONDS` while that server finishes booting.
 
     Fire-and-forget: swallows everything. The retry is for the server bouncing
     or a full listen backlog under a spawn storm; the re-resolve is for a
-    server that is not coming back on that port at all. At most three
-    attempts, never a loop."""
+    server that is not coming back on that port at all. Bounded by
+    `send_budget`, never a loop."""
     try:
         data = json.dumps(body).encode("utf-8")
     except Exception:
@@ -142,6 +180,4 @@ def send(url: str, body: dict, path: str, timeout: float,
             return
     if not url.endswith(path):
         return
-    live = reresolve(url[:-len(path)])
-    if live:
-        _post_once(live + path, data, timeout)
+    _post_to_live(url[:-len(path)], path, data, timeout, retry_seconds)

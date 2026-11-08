@@ -433,6 +433,82 @@ def test_run_now_losing_the_entry_to_the_tick_gives_its_count_back(
     assert manager.owner(folder) is None
 
 
+def test_run_now_rollback_after_the_real_turn_ended_frees_the_folder(
+        folders, spawned, home, monkeypatch):
+    """CodeRabbit, PR #2192: the other ordering of the same race. The tick's
+    turn ENDS between run-now's absorbed claim and its rollback, so its one
+    `turn_ended` only brings `turns` from 2 to 1 — the count left is run-now's
+    unsent one, and taking it back must free the folder rather than leave it
+    owned by a turn that is over."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    manager = schedule._qm()
+    folder = _key(folders["alpha"])
+    key = schedule._task_key(entry)
+    assert manager.claim_took(folder, key)[1] is True
+
+    def lost_after_the_turn_ended(entry_id, now):
+        manager.turn_ended(key)
+        assert manager.owner(folder) is not None, "run-now's count still holds it"
+        return None
+
+    monkeypatch.setattr(schedule, "_claim", lost_after_the_turn_ended)
+
+    answer = schedule.run_now(entry["id"])
+
+    assert "already claimed" in answer["reason"]
+    assert manager.owner(folder) is None
+
+
+def test_run_now_rollback_never_touches_a_replacement_owner(
+        folders, spawned, home, monkeypatch):
+    """The claim token is the proof: once the owner run-now counted on is
+    released and the folder re-taken, the rollback finds no token of its own
+    there and leaves the new owner's count alone."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    manager = schedule._qm()
+    folder = _key(folders["alpha"])
+    key = schedule._task_key(entry)
+    assert manager.claim_took(folder, key)[1] is True
+
+    def lost_to_a_new_owner(entry_id, now):
+        manager.exited(key)
+        assert manager.claim_took(folder, key)[1] is True
+        return None
+
+    monkeypatch.setattr(schedule, "_claim", lost_to_a_new_owner)
+
+    schedule.run_now(entry["id"])
+
+    owner = manager.owner(folder)
+    assert owner is not None and owner["turns"] == 1
+
+
+def test_a_fail_open_claim_is_never_taken_back(folders, spawned, home,
+                                               monkeypatch):
+    """CodeRabbit, PR #2192: a claim that RAISED is a fail-open GO that
+    counted nothing, so the busy-session refusal after it must not subtract
+    a real send's count from the owner."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    manager = schedule._qm()
+    folder = _key(folders["alpha"])
+    key = schedule._task_key(entry)
+    assert manager.claim_took(folder, key)[1] is True
+    assert manager.claim_took(folder, key) == (True, False)  # a real 2nd send
+
+    def boom(*a, **kw):
+        raise RuntimeError("manager unavailable")
+
+    monkeypatch.setattr(manager, "claim_for_send", boom)
+    monkeypatch.setattr(schedule, "_claim", lambda entry_id, now: None)
+
+    schedule.run_now(entry["id"])
+
+    assert manager.owner(folder)["turns"] == 2
+
+
 # ================================================== priority is never inherited
 
 

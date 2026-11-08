@@ -256,12 +256,38 @@ def _write_atomic(path: str, data: dict) -> None:
 # Same posture as session_host.py's own posts, for the same reasons: stdlib
 # `urllib.request` (this file may not import `fused_render`), its own daemon
 # thread so the approval round trip is never slowed by a server hiccup, a 2 s
-# timeout, every exception swallowed, and silence when no origin is exported.
+# timeout, one retry and the same server.json fallback (`event_origin.py`),
+# every exception swallowed, and silence when no origin is exported.
 # The endpoint is a no-op while the flag is off, so a post that never lands
 # costs nothing.
 
 _EVENT_PATH = "/api/tasks/queue/event"
 _EVENT_TIMEOUT = 2.0
+_EVENT_RETRY_SECONDS = 1.0
+
+# `event_origin.py` beside this file, loaded by path on the first card post
+# (never at import: it pulls in `urllib.request`, see `_send_event`). This
+# server is a grandchild of a session host that outlives a quit app, so a card
+# raised after a relaunch on another port must find the live server the same
+# way the hosts' own events do — through this install's server.json.
+_EVENT_ORIGIN = None
+_EVENT_ORIGIN_LOCK = threading.Lock()
+
+
+def _event_origin():
+    global _EVENT_ORIGIN
+    with _EVENT_ORIGIN_LOCK:
+        if _EVENT_ORIGIN is None:
+            import importlib.util
+
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "event_origin.py")
+            spec = importlib.util.spec_from_file_location(
+                "fused_claude_event_origin", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _EVENT_ORIGIN = mod
+        return _EVENT_ORIGIN
 
 
 def _post_card(kind: str, req_id: str) -> None:
@@ -272,8 +298,12 @@ def _post_card(kind: str, req_id: str) -> None:
     else (`agent.RUNS/<run_id>`). Read off the global at call time, not at
     import, because that is what a test redirects."""
     try:
-        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
-        if not origin or not PERM_DIR:
+        if not os.environ.get("FUSED_RENDER_ORIGIN") or not PERM_DIR:
+            return
+        # The re-resolved live origin once a post had to switch, else the
+        # spawn-time one (`event_origin.current`).
+        origin = _event_origin().current()
+        if not origin:
             return
         body = {"kind": kind,
                 "run_id": os.path.basename(os.path.dirname(PERM_DIR)),
@@ -310,15 +340,12 @@ def _post_card_cleared(req_id: str) -> None:
 
 def _send_event(url: str, body: dict) -> None:
     # Lazy: the eager import cost ~10 MB resident in EVERY session's
-    # permission server, and most never send an event.
-    import urllib.request
+    # permission server, and most never send an event. `event_origin.send` is
+    # the hosts' own: a retry, then this install's live server (server.json)
+    # when the spawn-time origin is gone.
     try:
-        req = urllib.request.Request(
-            url, data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-Fused": "1"},
-            method="POST")
-        with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
-            resp.read()
+        _event_origin().send(url, body, _EVENT_PATH, _EVENT_TIMEOUT,
+                             _EVENT_RETRY_SECONDS)
     except Exception:
         pass
 

@@ -111,6 +111,11 @@ ABANDONED_MIN_AGE_S = 60.0
 #: How often a newcomer that lost the lock to nobody (no live holder named,
 #: nothing serving) looks again for abandoned copies holding it.
 ABANDONED_RECHECK_S = 5.0
+#: A recorded holder whose process started more than this AFTER the record's
+#: `since` is not the process that wrote it: the pid was reused. The holder
+#: writes the record after it starts, so its own start is never later; `ps`
+#: rounds elapsed time down to the second, hence the slack.
+HOLDER_START_SLACK_S = 2.0
 
 
 @dataclass(frozen=True)
@@ -460,6 +465,23 @@ def parent_pid(pid: int) -> int | None:
         return None
 
 
+def process_age_s(pid: int) -> float | None:
+    """How long `pid` has been running, in seconds, or None when unknown
+    (gone, no `ps`, Windows, unreadable)."""
+    if _platform.IS_WINDOWS:
+        return None
+    try:
+        out = subprocess.run(["/bin/ps", "-o", "etime=", "-p", str(pid)], capture_output=True,
+                             text=True, encoding="utf-8", errors="replace",
+                             timeout=PS_TIMEOUT_S, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not out.strip():
+        return None
+    age = parse_etime(out)
+    return age if age > 0 else None
+
+
 def _probe_ok(port: int) -> bool:
     """A fused-render server answers `/api/config` with JSON that carries a
     `version` — a bare 200 from `/` would accept any local HTTP server that
@@ -544,7 +566,8 @@ def enforce(support_dir: str, read_pidfile, *, support_base: str | None = None,
             poll_s: float = POLL_S, clock=time.monotonic, wall=time.time,
             sleep=time.sleep, record=None, ppid_of=parent_pid,
             abandoned_min_age_s: float = ABANDONED_MIN_AGE_S,
-            abandoned_recheck_s: float = ABANDONED_RECHECK_S) -> Outcome:
+            abandoned_recheck_s: float = ABANDONED_RECHECK_S,
+            age_of=process_age_s) -> Outcome:
     """The whole startup decision. `read_pidfile()` answers `(pid, port)` or
     `(None, None)` from the pidfile/portfile the serving app writes once it
     is ready. `support_base` is the unbranched support dir, under which
@@ -556,6 +579,8 @@ def enforce(support_dir: str, read_pidfile, *, support_base: str | None = None,
     `ppid_of(pid)` is `parent_pid`; it decides, with age, which copies of
     our binary count as abandoned when the lock is held but nobody the
     record names is alive (`abandoned`).
+    `age_of(pid)` is `process_age_s`: a recorded holder that started after
+    its record's `since` is a reused pid, not the holder (`named_holder`).
     `record(kind, **fields)` is `health.record_event` when the caller has
     one."""
     if is_ours is None:
@@ -590,7 +615,39 @@ def enforce(support_dir: str, read_pidfile, *, support_base: str | None = None,
             return boot_wait_s
         return min(boot_wait_s, max(min_wait_s, since + boot_wait_s - wall()))
 
-    who = holder(support_dir)
+    def named_holder() -> int | None:
+        # `holder` is "the record's pid, if alive" — deliberately not gated on
+        # the binary (a DMG or translocated copy is still the app). But a pid
+        # whose process STARTED after the record was written is not the one
+        # that wrote it: the holder died and the pid was reused, and a live
+        # stranger must not stand in for a holder (it would block the
+        # abandoned sweep below and be named in the alert).
+        pid = holder(support_dir)
+        if pid is None:
+            return None
+        since = holder_since(support_dir)
+        age = age_of(pid) if since is not None else None
+        if age is not None and wall() - age > since + HOLDER_START_SLACK_S:
+            logger.info("single instance: the lock record names pid %s, which started "
+                        "after the record was written (a reused pid); no holder", pid)
+            return None
+        return pid
+
+    def sweep_sparing_the_holder(found: list[Rival]) -> Sweep:
+        # A rival listed as abandoned can claim the lock (and write the
+        # record) before it is signalled — a waiting launch old enough to
+        # look abandoned. Whoever the record names right now is spared, here
+        # and again immediately before each signal of the real sweep.
+        named = holder(support_dir)
+        found = [r for r in found if r.pid != named]
+        if not found:
+            return Sweep()
+        if sweep_with is sweep:
+            return sweep(found, still_rival=lambda pid: (pid != holder(support_dir)
+                                                         and is_our_binary(pid)))
+        return sweep_with(found)
+
+    who = named_holder()
     deadline = clock() + budget_for_holder()
     next_abandoned_look = clock()
     while True:
@@ -608,7 +665,7 @@ def enforce(support_dir: str, read_pidfile, *, support_base: str | None = None,
             out.waited_s = clock() - started
             return out
         if who is None:
-            who = holder(support_dir)
+            who = named_holder()
             if who is not None:
                 # A NEW holder (the old one died, a successor took the lock):
                 # its own budget, from its own start — not the tail of the
@@ -624,7 +681,8 @@ def enforce(support_dir: str, read_pidfile, *, support_base: str | None = None,
             next_abandoned_look = clock() + abandoned_recheck_s
             answering = bool(pid and port and alive(pid) and probe(port))
             if not answering:
-                stopped = stop_abandoned(rivals_of, sweep_with, record, ppid_of=ppid_of,
+                stopped = stop_abandoned(rivals_of, sweep_sparing_the_holder, record,
+                                         ppid_of=ppid_of,
                                          exclude=(pid,) if pid else (),
                                          min_age_s=abandoned_min_age_s)
                 if stopped.killed and claim(support_dir):
