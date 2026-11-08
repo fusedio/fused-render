@@ -2010,6 +2010,20 @@ export function ClaudeRail({
   useEffect(() => {
     if (tasksPinnedUp || listPinnedUp || botPinnedUp) plusIntentRef.current?.cancelPreview();
   }, [tasksPinnedUp, listPinnedUp, botPinnedUp]);
+  // …and the same between the bot's card and the list's / the Tasks card
+  // (CodeRabbit on #2194): a bot's card PINNED where it already stood (Enter
+  // on its previewed ring — `botKey` unchanged, so the trade above never
+  // ran) cancels a list or Tasks hover's read still out, and the list's or
+  // the Tasks card pinned cancels a bot hover's. None of those cards is up
+  // beside the pinned one, so `dismiss` only drops the open that was coming.
+  useEffect(() => {
+    if (!botPinnedUp) return;
+    intent.dismiss();
+    closeTasksCard();
+  }, [botPinnedUp, intent]);
+  useEffect(() => {
+    if (listPinnedUp || tasksPinnedUp) botIntent.dismiss();
+  }, [listPinnedUp, tasksPinnedUp, botIntent]);
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned + popover or Tasks card, as
   // it closes the pinned list card (its rule above; owner, 2026-11-08: the
   // gaps between window A's cards closed). Inside either, Escape is its own.
