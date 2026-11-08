@@ -3961,15 +3961,16 @@ def generate_transcript(model: str, request: dict, job: str, *,
     return payload.get("result") or {}
 
 
-def cancel_generation(capability: str = registry.TEXT_GENERATION) -> bool:
+def cancel_generation(capability: str = registry.TEXT_GENERATION,
+                      job: str | None = None) -> bool:
     worker = ready_worker(capability)
     if worker is None:
         return False
     try:
-        _worker_request(worker, "/cancel", body={}, timeout=2.0).close()
+        with _worker_request(worker, "/cancel", body={"job": job}, timeout=2.0) as response:
+            return json.loads(response.read() or b"{}").get("ok") is True
     except (OSError, ValueError):
         return False
-    return True
 
 
 def refresh_memory() -> None:

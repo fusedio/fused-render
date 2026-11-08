@@ -101,14 +101,13 @@ STATE = {
 }
 _state_lock = threading.Lock()
 
-#: Set by `/cancel`. Long-running work checks it; what "stop" means is the
-#: runner's to decide (a token loop breaks, a denoiser raises).
-#:
-#: Cleared by whichever generation OWNS `GENERATE_LOCK`, never by the handler on
-#: its way in: a second request arriving while the first is generating would
-#: otherwise erase the ✕ just pressed for the first, which then runs to
-#: completion under a Stop that appeared to work.
+#: The cancel flag of the generation holding `GENERATE_LOCK`, rebound by
+#: `_generation`. Long-running work checks it; what "stop" means is the
+#: runner's to decide (a token loop breaks, a denoiser raises). `/cancel` with a
+#: `job` sets only that request's flag, queued or running; without one it sets
+#: this.
 CANCEL = threading.Event()
+_CANCELS: "dict[str, threading.Event]" = {}
 
 #: One generation at a time. A laptop has one GPU, and neither mlx's model
 #: object nor a diffusers pipeline is safe to call from two threads — so a
@@ -3185,7 +3184,7 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
 
     `CANCEL` is consulted too, but ONLY when `job` was passed. That flag is the
     `/cancel` route's, it belongs to the generation holding `GENERATE_LOCK`, and
-    it is cleared by `_single`/`_stream` on the way in — so it means this fetch
+    `_generation` replaces it on the way in — so it means this fetch
     exactly when this fetch is inside a request. A model download runs on
     `_bring_up`'s own thread with no such lock, where a flag left set by an
     earlier cancelled generation would abort a download nobody asked to stop.
@@ -4425,7 +4424,27 @@ def _bring_up(model_id, download, load):
 # ----------------------------------------------------------------- HTTP server
 
 
+@contextlib.contextmanager
+def _generation(job):
+    global CANCEL
+    flag = threading.Event()
+    if job:
+        _CANCELS[job] = flag
+    try:
+        with GENERATE_LOCK, heartbeat():
+            CANCEL = flag
+            yield
+    finally:
+        if _CANCELS.get(job) is flag:
+            del _CANCELS[job]
+
+
 def _handler(generate, streaming):
+    def _run(*args):
+        if CANCEL.is_set():
+            raise Cancelled()
+        return run_on_generate_thread(generate, *args)
+
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -4566,20 +4585,16 @@ def _handler(generate, streaming):
                 return
 
             if self.path.startswith("/cancel"):
-                CANCEL.set()
-                self._json({"ok": True})
+                flag = _CANCELS.get(body["job"]) if body.get("job") else CANCEL
+                if flag is not None:
+                    flag.set()
+                self._json({"ok": flag is not None})
                 return
 
             if self.path.startswith("/generate"):
                 if snapshot()["state"] != "ready":
                     self._json({"error": "the model is not loaded"}, status=409)
                     return
-                # NOT cleared here. `CANCEL` belongs to the generation that is
-                # RUNNING, and this handler may be a second request waiting for
-                # `GENERATE_LOCK`: clearing before the lock erases the ✕ the
-                # user just pressed for the first one, which then runs to
-                # completion under a Stop that appeared to work. Each generation
-                # clears the flag once it owns the lock — see `_generation`.
                 if streaming:
                     self._stream(body)
                 else:
@@ -4593,14 +4608,9 @@ def _handler(generate, streaming):
             stream. An image is not a sequence of tokens, and pretending it is
             would buy nothing — its progress is steps, and those go to the job
             row where the download manager can already draw them."""
-            with GENERATE_LOCK, heartbeat():
-                CANCEL.clear()
+            with _generation(body.get("job")):
                 try:
-                    # `run_on_generate_thread`, never a bare `generate(body)`:
-                    # this method runs on a `ThreadingTCPServer` connection
-                    # thread, which is exactly the thread MLX's compiled-graph
-                    # cache must never touch — see that function's docstring.
-                    result = run_on_generate_thread(generate, body)
+                    result = _run(body)
                     self._json({"ok": True, "result": result})
                 except Cancelled:
                     self._json({"ok": True, "cancelled": True})
@@ -4628,25 +4638,18 @@ def _handler(generate, streaming):
                 self.wfile.write(f"{len(line):X}\r\n".encode() + line + b"\r\n")
                 self.wfile.flush()
 
-            with GENERATE_LOCK, heartbeat():
-                CANCEL.clear()
+            with _generation(body.get("job")):
                 try:
-                    # `run_on_generate_thread`, never a bare `generate(body,
-                    # write)`: this method runs on a `ThreadingTCPServer`
-                    # connection thread — see that function's docstring for
-                    # why MLX's generation must never run there. `write`
-                    # itself still runs on the generate thread it is called
-                    # from (it is passed in, not called back across threads),
-                    # so every chunk is written to `self.wfile` from ONE
-                    # thread at a time, exactly as before.
-                    run_on_generate_thread(generate, body, write)
+                    _run(body, write)
+                except Cancelled:
+                    write({"type": "done", "ok": True, "cancelled": True})
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     write({"type": "done", "ok": False,
                            "error": describe_failure(e)})
                     traceback.print_exc(file=sys.stderr)
                 finally:
                     # Same reasoning as `_single`'s finally — and note WHERE
-                    # this sits: after `run_on_generate_thread` has RETURNED,
+                    # this sits: after `_run` has RETURNED,
                     # i.e. after the whole token stream or transcription has
                     # finished, not after its first chunk. The idle clock only
                     # starts once the worker is actually idle again.

@@ -930,9 +930,15 @@ def test_a_generation_the_worker_needs_a_job_id_for_gets_the_measurement_row(
     the real measurement row, so the worker's own step progress lands
     somewhere a person can see it."""
     seen = []
+    targets = []
+    opened = []
+    start = benchmark._MeasurementRow.start
+    monkeypatch.setattr(benchmark._MeasurementRow, "start",
+                        lambda row: (opened.append(row), start(row)))
 
     def generate_image(model, request, job):
         seen.append(job)
+        targets.append(getattr(opened[0], "request_job", None))
         bench.advance(1.0)
         return {"path": request["out"], "steps": request["steps"]}
 
@@ -944,6 +950,7 @@ def test_a_generation_the_worker_needs_a_job_id_for_gets_the_measurement_row(
     assert all(job.startswith("sys:") for job in seen)
     # The warm-up's own private id, then the measurement row's — never the same.
     assert seen[0] != seen[1]
+    assert targets == seen, "the row's ✕ misses a pass"
     rows = jobs.list_jobs()
     assert len(rows) == 1
     assert rows[0]["id"] == seen[1]
@@ -1007,7 +1014,7 @@ def test_a_speech_row_states_the_phase_not_a_percentage(bench, monkeypatch):
 def test_a_pressed_x_is_forwarded_to_cancel_generation(bench, monkeypatch):
     cancelled = []
     monkeypatch.setattr(benchmark.supervisor, "cancel_generation",
-                        lambda capability: cancelled.append(capability) or True)
+                        lambda capability, job=None: cancelled.append(capability) or True)
     row = benchmark._MeasurementRow("some/text-model", ai_registry.TEXT_GENERATION)
     row.start()
     try:
@@ -1021,7 +1028,7 @@ def test_a_pressed_x_is_forwarded_to_cancel_generation(bench, monkeypatch):
 def test_an_unpressed_row_never_calls_cancel_generation(bench, monkeypatch):
     cancelled = []
     monkeypatch.setattr(benchmark.supervisor, "cancel_generation",
-                        lambda capability: cancelled.append(capability) or True)
+                        lambda capability, job=None: cancelled.append(capability) or True)
     row = benchmark._MeasurementRow("some/text-model", ai_registry.TEXT_GENERATION)
     row.start()
     try:
@@ -1168,7 +1175,7 @@ def test_a_failed_cancel_forward_is_retried_not_abandoned(bench, monkeypatch):
     monkeypatch.setattr(benchmark, "_BENCH_ROW_POLL_S", 60.0)
     attempts = []
 
-    def cancel_generation(capability):
+    def cancel_generation(capability, job=None):
         attempts.append(capability)
         return len(attempts) >= 3  # fails twice, then finally reaches a worker
 
@@ -1197,7 +1204,7 @@ def test_close_flushes_detail_without_re_forwarding_a_stale_cancel(bench, monkey
     monkeypatch.setattr(benchmark, "_BENCH_ROW_POLL_S", 60.0)
     cancelled = []
     monkeypatch.setattr(benchmark.supervisor, "cancel_generation",
-                        lambda capability: cancelled.append(capability) or True)
+                        lambda capability, job=None: cancelled.append(capability) or True)
     row = benchmark._MeasurementRow("some/text-model", ai_registry.TEXT_GENERATION)
     row.start()
     row.set_detail("Decoding — 100/128 tokens")
