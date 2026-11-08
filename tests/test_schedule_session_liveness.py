@@ -297,3 +297,333 @@ def test_transcript_path_prefers_the_bucket_holding_a_conversation(projects_dir)
     moved.write_text(json.dumps({"type": "user", "uuid": "u1", "sessionId": sid,
                                  "message": {"role": "user", "content": "hi"}}) + "\n")
     assert session_liveness.transcript_path(sid) == str(moved)
+
+
+# ------------------------- a lost watch asks the transcript before "unknown"
+#
+# When the app quits mid-turn (or the watch hits its tick cap) the scheduler
+# used to stamp `turn: unknown` — "this app stopped being able to say". The
+# session's transcript usually CAN say, so `_close_unwatched` asks it first
+# (`schedule._transcript_verdict`). Only evidence newer than the send counts.
+
+LOST_SESSION = "sess-lost"
+_REAL_WATCH_TURN = schedule._watch_turn
+
+
+def _reply(text="done", **extra):
+    return {"type": "assistant", "timestamp": _iso(_now()),
+            "message": {"role": "assistant",
+                        "content": [{"type": "text", "text": text}]}, **extra}
+
+
+def _prompt(text="go", when=None):
+    return {"type": "user", "timestamp": _iso(when or _now()),
+            "message": {"role": "user",
+                        "content": [{"type": "text", "text": text}]}}
+
+
+def _sent_then_abandoned(target):
+    """A message resuming LOST_SESSION, sent, then its watching process gone."""
+    schedule.create(str(target), "go", _at(-5), session_id=LOST_SESSION)
+    schedule.tick()
+    (entry,) = schedule.list_entries()
+    assert (entry["state"], entry["turn"]) == (schedule.SENT, "")
+    schedule._watched.clear()
+    return entry
+
+
+@pytest.fixture()
+def unfollowable(monkeypatch):
+    monkeypatch.setattr(schedule, "_followable", lambda run_id: False)
+
+
+def test_a_turn_that_finished_while_unwatched_reads_ok(
+        target, spawned, projects_dir, unfollowable):
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [_prompt(), _reply()])
+
+    schedule.tick()
+
+    stored = schedule.list_entries()[0]
+    assert (stored["turn"], stored["error"]) == ("ok", "")
+    assert stored["turn_at"]
+    kinds = [e["kind"] for e in schedule.event_log()]
+    assert kinds[-1] == schedule.EVENT_DONE
+
+
+def test_an_interrupt_marker_reads_cancelled(target, spawned, projects_dir,
+                                             unfollowable):
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION,
+                      [_prompt(), _prompt("[Request interrupted by user]")])
+
+    schedule.tick()
+
+    assert schedule.list_entries()[0]["turn"] == "cancelled"
+    assert schedule.EVENT_FAILED not in [e["kind"] for e in schedule.event_log()]
+
+
+def test_an_api_error_row_reads_failed(target, spawned, projects_dir,
+                                       unfollowable):
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply("API Error: 529 Overloaded", isApiErrorMessage=True)])
+
+    schedule.tick()
+
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "failed"
+    assert "529" in stored["error"]
+
+
+def test_no_transcript_still_reads_unknown(target, spawned, projects_dir,
+                                           unfollowable):
+    _sent_then_abandoned(target)
+
+    schedule.tick()
+
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "unknown"
+    assert "interrupted" in stored["error"]
+
+
+def test_a_finished_turn_older_than_the_send_is_not_this_turn(
+        target, spawned, projects_dir, unfollowable):
+    """A resumed session already ends in a finished reply — the PREVIOUS turn's.
+    Read without the send-time guard, every lost resume would read `ok`."""
+    _sent_then_abandoned(target)
+    old = _reply()
+    old["timestamp"] = _iso(_at(-600))
+    _write_transcript(projects_dir, LOST_SESSION,
+                      [_prompt(when=_at(-601)), old])
+
+    schedule.tick()
+
+    assert schedule.list_entries()[0]["turn"] == "unknown"
+
+
+def _tick_capped_watch(monkeypatch, entry):
+    """Run the real watch to its end without a verdict — the ~1h tick cap."""
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
+    monkeypatch.setattr(claude_spawn, "record_session_when_ready",
+                        lambda agent, run_id, on_tick=None: None)
+    schedule._watching(entry["id"], True)
+    _REAL_WATCH_TURN(entry, entry["run_id"])
+
+
+def test_an_open_turn_in_a_live_session_is_readopted_not_unknown(
+        target, spawned, projects_dir, monkeypatch):
+    from fused_render import tasks_watch
+
+    entry = _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [_prompt()])
+    monkeypatch.setattr(schedule, "_followable", lambda run_id: True)
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda sid, transcript_mtime=None: (True, 0.0))
+
+    _tick_capped_watch(monkeypatch, entry)
+
+    stored = schedule.list_entries()[0]
+    assert (stored["turn"], stored["error"]) == ("", "")
+    assert not schedule._is_watched(entry["id"])
+
+    # …and the next sweep picks the watch back up rather than closing it.
+    adopted = []
+    monkeypatch.setattr(schedule, "_watch_turn",
+                        lambda e, run_id: adopted.append(run_id))
+    schedule.tick()
+    assert adopted == [entry["run_id"]]
+    assert schedule.list_entries()[0]["turn"] == ""
+
+
+def test_an_open_turn_in_a_live_session_with_no_run_is_rechecked_each_sweep(
+        target, spawned, projects_dir, unfollowable, monkeypatch):
+    """`_resolve_orphan`'s unfollowable branch reaches the same check: left
+    unstamped while the session is live, asked once per sweep, and resolved
+    by the first sweep after the transcript closes."""
+    from fused_render import tasks_watch
+
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [_prompt()])
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda sid, transcript_mtime=None: (True, 0.0))
+    reads = []
+    real = session_liveness.session_last_turn
+    monkeypatch.setattr(session_liveness, "session_last_turn",
+                        lambda sid, projects_dir=None, **kw:
+                        reads.append(sid) or real(sid, **kw))
+
+    schedule.tick()
+    schedule.tick()
+    stored = schedule.list_entries()[0]
+    assert (stored["turn"], stored["error"]) == ("", "")
+    assert reads == [LOST_SESSION, LOST_SESSION]   # once per sweep, no spin
+
+    # The reply lands and the CLI stops running the turn (registry idle, or
+    # its `turn_ended` in) — a fresh reply alone is confirmed by that.
+    _write_transcript(projects_dir, LOST_SESSION, [_prompt(), _reply()])
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda sid, transcript_mtime=None: (False, 0.0))
+    schedule.tick()
+    assert schedule.list_entries()[0]["turn"] == "ok"
+
+
+def test_an_open_turn_nothing_is_writing_reads_unknown(
+        target, spawned, projects_dir, monkeypatch):
+    """A process that died mid-turn leaves the prompt as the last word for
+    ever; open in the file is not running."""
+    from fused_render import tasks_watch
+
+    entry = _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [_prompt()])
+    monkeypatch.setattr(schedule, "_followable", lambda run_id: True)
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda sid, transcript_mtime=None: (False, 0.0))
+
+    _tick_capped_watch(monkeypatch, entry)
+
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "unknown"
+    assert "stopped reporting" in stored["error"]
+
+
+def test_session_last_turn_reads_the_last_word_without_a_staleness_ceiling(
+        projects_dir):
+    path = _write_transcript(projects_dir, "sess-old", [
+        _prompt(when=_at(-3600)),
+        {**_reply(), "timestamp": _iso(_at(-3599))}])
+    import os
+    os.utime(path, (_at(-3599).timestamp(), _at(-3599).timestamp()))
+
+    last = session_liveness.session_last_turn("sess-old")
+    assert last["state"] == "ok"
+    assert abs(last["at"] - _at(-3599).timestamp()) < 2
+    # the live rule still calls it closed — it is the window that differs
+    assert session_liveness.session_turn_open("sess-old", _now().timestamp()) is False
+
+    tool = {"type": "assistant", "timestamp": _iso(_now()),
+            "message": {"content": [{"type": "tool_use", "id": "t", "name": "Bash"}]}}
+    _write_transcript(projects_dir, "sess-tool", [_prompt(), tool])
+    assert session_liveness.session_last_turn("sess-tool")["state"] == "open"
+    assert session_liveness.session_last_turn("sess-missing") is None
+
+
+# ---- the SEND'S OWN turn, confirmed (CodeRabbit / Bugbot, PR #2192)
+
+
+def _tool_use(**extra):
+    return {"type": "assistant", "timestamp": _iso(_now()),
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash"}]}, **extra}
+
+
+def _registry_running(monkeypatch, running):
+    from fused_render import tasks_watch
+
+    monkeypatch.setattr(tasks_watch, "live_from_registry",
+                        lambda sid, transcript_mtime=None: (running, 0.0))
+
+
+def test_a_later_turn_never_answers_for_the_sent_one(
+        target, spawned, projects_dir, unfollowable):
+    """The scheduled turn failed; the user then finished another turn in the
+    same session. The verdict is the scheduled turn's own."""
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply("API Error: 500", isApiErrorMessage=True),
+        _prompt("and now this"), _reply("all good")])
+
+    schedule.tick()
+
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "failed"
+    assert "500" in stored["error"]
+
+
+def test_a_sidechain_tool_use_after_the_reply_is_not_the_turn_still_open(
+        target, spawned, projects_dir, unfollowable, monkeypatch):
+    """A background subagent writing after the main reply, the CLI alive and
+    its `turn_ended` already in (registry: not running a turn)."""
+    _registry_running(monkeypatch, False)
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply(), _tool_use(isSidechain=True)])
+
+    schedule.tick()
+
+    assert schedule.list_entries()[0]["turn"] == "ok"
+
+
+def test_a_fresh_reply_in_a_session_still_running_a_turn_waits(
+        target, spawned, projects_dir, unfollowable, monkeypatch):
+    """A text row can be an intermediate block written just before its
+    tool_use: while the registry says a turn is running, it is not a verdict.
+    The turn's closing record settles it."""
+    _registry_running(monkeypatch, True)
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [_prompt(), _reply("let me")])
+
+    schedule.tick()
+    assert schedule.list_entries()[0]["turn"] == ""
+
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply("let me"),
+        {"type": "system", "subtype": "turn_duration", "durationMs": 5,
+         "timestamp": _iso(_now())}])
+    schedule.tick()
+    assert schedule.list_entries()[0]["turn"] == "ok"
+
+
+def test_a_later_turn_proves_the_sent_one_over_even_while_running(
+        target, spawned, projects_dir, unfollowable, monkeypatch):
+    _registry_running(monkeypatch, True)
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply(), _prompt("next"), _tool_use()])
+
+    schedule.tick()
+
+    assert schedule.list_entries()[0]["turn"] == "ok"
+
+
+@pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
+def test_a_non_clean_stop_reason_on_the_closing_record_reads_failed(
+        target, spawned, projects_dir, unfollowable, stop):
+    """Copilot/Gemini write a plain assistant row even when the reply stopped
+    on a refusal; the host stamps the stop on its `turn_duration` record."""
+    _sent_then_abandoned(target)
+    _write_transcript(projects_dir, LOST_SESSION, [
+        _prompt(), _reply("I started to"),
+        {"type": "system", "subtype": "turn_duration", "durationMs": 5,
+         "stop_reason": stop, "timestamp": _iso(_now())}])
+
+    schedule.tick()
+
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "failed"
+    assert stop in stored["error"]
+
+
+def test_the_sent_turn_is_found_past_the_first_tail(projects_dir):
+    """A long turn pushes its prompt out of the 16 KB tail; the read grows
+    until it reaches back past the send."""
+    sent = _at(-10).timestamp()
+    big = [{**_tool_use(), "timestamp": _iso(_now()),
+            "message": {"content": [{"type": "tool_use", "id": f"t{n}",
+                                     "name": "Bash", "input": {"x": "y" * 2000}}]}}
+           for n in range(20)]
+    _write_transcript(projects_dir, "sess-long", [
+        _prompt(when=_at(-20)), {**_reply(), "timestamp": _iso(_at(-19))},
+        _prompt(), *big, _reply("finally")])
+
+    last = session_liveness.session_last_turn("sess-long", since=sent)
+
+    assert last["state"] == "ok"
+    assert last["closed"] is False
+
+
+def test_no_prompt_after_the_send_is_no_evidence(projects_dir):
+    _write_transcript(projects_dir, "sess-none", [
+        _prompt(when=_at(-20)), {**_reply(), "timestamp": _iso(_at(-1))}])
+    assert session_liveness.session_last_turn(
+        "sess-none", since=_at(-10).timestamp()) is None

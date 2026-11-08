@@ -70,7 +70,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -238,7 +237,7 @@ def _meta_session_id(run_dir: str) -> str:
 
 def _post_event(run_dir: str, kind: str, **extra):
     try:
-        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        origin = _EVENT_ORIGIN.current()
         if not origin:
             return None
         body = {"kind": kind,
@@ -256,7 +255,7 @@ def _post_event(run_dir: str, kind: str, **extra):
 def _post_card(run_dir: str, kind: str, req_id: str) -> None:
     """permission_server's `_post_card` body: `{kind, run_id, request_id}`."""
     try:
-        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        origin = _EVENT_ORIGIN.current()
         if not origin:
             return
         body = {"kind": kind,
@@ -268,24 +267,24 @@ def _post_card(run_dir: str, kind: str, req_id: str) -> None:
         pass
 
 
+def _load_event_origin():
+    """`event_origin.py` beside this file, loaded by path (this directory is
+    never a package on sys.path): where a failed post re-resolves the live
+    server from this install's server.json."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "event_origin.py")
+    spec = importlib.util.spec_from_file_location("fused_claude_event_origin", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_EVENT_ORIGIN = _load_event_origin()
+
+
 def _send_event(url: str, body: dict) -> None:
-    data = json.dumps(body).encode("utf-8")
-    for attempt in (0, 1):
-        try:
-            req = urllib.request.Request(
-                url, data=data,
-                headers={"Content-Type": "application/json", "X-Fused": "1"},
-                method="POST")
-            with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
-                resp.read()
-            return
-        except Exception:
-            if attempt:
-                return
-        try:
-            time.sleep(_EVENT_RETRY_SECONDS)
-        except Exception:
-            return
+    _EVENT_ORIGIN.send(url, body, _EVENT_PATH, _EVENT_TIMEOUT,
+                       _EVENT_RETRY_SECONDS)
 
 
 # ------------------------------------------------------------- the ACP wire
@@ -1003,9 +1002,14 @@ class _Host:
                            "is_error": not ok,
                            "result": (self.turn_text or "") if ok else "",
                            "stop_reason": stop})
+        # `stop_reason` rides on the turn's closing record: the transcript is
+        # what recovery reads when nothing watched this turn
+        # (`session_liveness.session_last_turn`), and a refusal or max_tokens
+        # after a streamed reply leaves a plain assistant row as the last word.
         self._emit_tx({"type": "system", "subtype": "turn_duration",
                        "durationMs": duration_ms, "isMeta": False,
-                       "isSidechain": False})
+                       "isSidechain": False,
+                       "stop_reason": result.get("stop_reason") or ""})
         self._emit_out(result)
         self.result_written = True
         self.results += 1
@@ -1711,7 +1715,10 @@ class _Host:
                            session_id=self.sid or _meta_session_id(self.run_dir))
         if last is not None:
             try:
-                last.join(_EVENT_TIMEOUT + 1.0)
+                # Long enough for the server.json fallback too (`send_budget`):
+                # a relaunched server may still be booting on its new port.
+                last.join(_EVENT_ORIGIN.send_budget(_EVENT_TIMEOUT,
+                                                    _EVENT_RETRY_SECONDS))
             except Exception:  # noqa: BLE001
                 pass
 

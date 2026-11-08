@@ -50,7 +50,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 
 # Both overridable by environment variable — not by editing this file at
 # import time — so a test can shrink them to run fast without needing to
@@ -203,7 +202,7 @@ def _post_event(run_dir: str, kind: str, **extra):
     (or None when there is nobody to tell), so a caller that is about to let
     this process die can wait a moment for the last one to land."""
     try:
-        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        origin = _EVENT_ORIGIN.current()
         if not origin:
             return None
         body = {
@@ -220,6 +219,21 @@ def _post_event(run_dir: str, kind: str, **extra):
         return None  # the queue is never worth failing a session over
 
 
+def _load_event_origin():
+    """`event_origin.py` beside this file, loaded by path (this directory is
+    never a package on sys.path): where a failed post re-resolves the live
+    server from this install's server.json."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "event_origin.py")
+    spec = importlib.util.spec_from_file_location("fused_claude_event_origin", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_EVENT_ORIGIN = _load_event_origin()
+
+
 def _send_event(url: str, body: dict) -> None:
     """POST it, and on a failure try once more a second later.
 
@@ -227,24 +241,13 @@ def _send_event(url: str, body: dict) -> None:
     the one failure that is usually over by the time you look — the server
     bouncing, or refusing a connection for an instant under a spawn storm —
     and it is one retry, not a loop, because a queue event has a shelf life and
-    `reconcile` is the real backstop."""
-    data = json.dumps(body).encode("utf-8")
-    for attempt in (0, 1):
-        try:
-            req = urllib.request.Request(
-                url, data=data,
-                headers={"Content-Type": "application/json", "X-Fused": "1"},
-                method="POST")
-            with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
-                resp.read()
-            return
-        except Exception:
-            if attempt:
-                return
-        try:
-            time.sleep(_EVENT_RETRY_SECONDS)
-        except Exception:
-            return
+    `reconcile` is the real backstop.
+
+    And when both fail, once more to the live server THIS install's
+    server.json names — a host outlives a quit app, and the relaunched
+    server may be on another port (`event_origin.py`)."""
+    _EVENT_ORIGIN.send(url, body, _EVENT_PATH, _EVENT_TIMEOUT,
+                       _EVENT_RETRY_SECONDS)
 
 
 def _enable_faulthandler() -> None:
@@ -528,12 +531,16 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str,
         # once, here, after every way out of the loop. JOINED, unlike the
         # turn_ended posts: this process is about to return out of `main` and
         # a daemon thread dies with it, so the last word has to be waited for
-        # — briefly, and never longer than the post's own timeout.
+        # — bounded by the send's own worst case (`send_budget`); host.json is
+        # already gone, so nothing reads a lingering host as a live one.
         last = _post_event(run_dir, "exited", code=cli.poll(), at=exited_at,
                            pid=getattr(cli, "pid", None))
         if last is not None:
             try:
-                last.join(_EVENT_TIMEOUT + 1.0)
+                # Long enough for the server.json fallback too (`send_budget`):
+                # a relaunched server may still be booting on its new port.
+                last.join(_EVENT_ORIGIN.send_budget(_EVENT_TIMEOUT,
+                                                    _EVENT_RETRY_SECONDS))
             except Exception:
                 pass
 

@@ -633,8 +633,9 @@ _WIRE_TRIED = False
 _RESUMED = False
 
 
-def _claim_folder(manager, folder: str, task_key: str) -> tuple[bool, bool]:
-    """Take `folder` for `task_key`: `(ok, took)`. **One call, because
+def _claim_folder(manager, folder: str,
+                  task_key: str) -> tuple[bool, bool, str]:
+    """Take `folder` for `task_key`: `(ok, took, token)`. **One call, because
     look-then-act is the bug** (H3, 2026-09-17).
 
     `ok` False means another task has it. `took` says whether THIS call is what
@@ -653,29 +654,40 @@ def _claim_folder(manager, folder: str, task_key: str) -> tuple[bool, bool]:
     Best-effort in the same direction as every other gate here: a manager that
     cannot answer gives a GO, never a silent drop of the user's message — and
     `took` False with it, because a gate that does not know what it did must not
-    undo it."""
+    undo it.
+
+    `token` is the claim token the manager minted for THIS count
+    (`claim_for_send`) — "" whenever nothing is known to have been counted: a
+    refusal, a fail-open GO, a manager without tokens. It is the only licence
+    to take an absorbed count back (`_uncount_folder`): a fail-open GO counted
+    nothing, and taking a count off on its say-so would subtract a real
+    send's."""
     if manager is None or not folder or not task_key:
-        return True, False
+        return True, False, ""
+    for_send = getattr(manager, "claim_for_send", None)
     took_fn = getattr(manager, "claim_took", None)
     claim = getattr(manager, "claim", None)
     try:
+        if for_send is not None:
+            ok, took, token = for_send(folder, task_key)
+            return bool(ok), bool(took), (str(token or "") if ok else "")
         if took_fn is not None:
             ok, took = took_fn(folder, task_key)
-            return bool(ok), bool(took)
+            return bool(ok), bool(took), ""
         if claim is not None:
             # A manager from before the tri-state: one bool, so "took" is the
             # best guess there is — which is the behaviour this had.
             ok = bool(claim(folder, task_key))
-            return ok, ok
+            return ok, ok, ""
         # While T1's `claim` lands: the old two-step, but back-to-back with
         # nothing in between — the gap is instructions, not a spawn.
         if not manager.is_free(folder, task_key):
-            return False, False
+            return False, False, ""
         manager.started(folder, task_key)
-        return True, True
+        return True, True, ""
     except Exception:  # noqa: BLE001 — an undecidable gate is an open one
         logger.debug("could not claim %s for %s", folder, task_key, exc_info=True)
-        return True, False
+        return True, False, ""
 
 
 def _release_folder(manager, task_key: str) -> None:
@@ -689,6 +701,23 @@ def _release_folder(manager, task_key: str) -> None:
     except Exception:  # noqa: BLE001 — reconcile is the backstop
         logger.debug("could not release the folder held for %s", task_key,
                      exc_info=True)
+
+
+def _uncount_folder(manager, entry: dict, task_key: str, token: str) -> None:
+    """Take back the one send run-now counted on an owner it did not take
+    (`QueueManager.uncount`), proved by the claim's own `token`. Releases
+    only when that unsent count is the last one left. A manager without the
+    method (a test double, an older build) keeps the old behaviour:
+    nothing."""
+    uncount = getattr(manager, "uncount", None)
+    if uncount is None or not task_key or not token:
+        return
+    try:
+        uncount(_pq().queue_key(str(entry.get("target") or "")), task_key,
+                token)
+    except Exception:  # noqa: BLE001 — reconcile is the backstop
+        logger.debug("could not take back the count run-now left on %s",
+                     task_key, exc_info=True)
 
 
 class BackendRefused(ValueError):
@@ -3185,6 +3214,37 @@ def _entry_keys(entry: dict) -> set[str]:
     return {k for k in keys if k}
 
 
+def _record_verdict(entry: dict, turn: str, reason: str = "") -> None:
+    """Stamp a turn's REAL outcome — `ok`, `failed` (with `reason`) or
+    `cancelled` — and run the follow-ups every verdict owes: ring the loop and
+    the Tasks watchers, settle the job row, toast.
+
+    One copy for the two places that learn an outcome: the live watch
+    (`_turn_tick`, off `_poll`) and a lost watch that read it from the session's
+    transcript instead (`_transcript_verdict`). A cancel emits no event — a
+    stop needs no toast to tell the person who pressed it."""
+    entry_id = entry["id"]
+    # `turn_at` is WHEN the verdict landed, stamped wherever `turn` is written.
+    # The Tasks page needs the moment, not just the word: a transcript still
+    # being written to meaningfully after this stamp is new work, and only the
+    # verdict's own closing echo may be set aside
+    # (`tasks._verdict_outvotes_live`).
+    if turn == "failed":
+        _update(entry_id, turn="failed", error=reason,
+                turn_at=_now().isoformat())
+    else:
+        _update(entry_id, turn=turn, turn_at=_now().isoformat())
+    _turn_ended(entry)
+    if turn == "cancelled":
+        _report(entry_id, state="cancelled")
+    elif turn == "failed":
+        _report(entry_id, state="error", message=reason)
+        _emit(EVENT_FAILED, entry, reason)
+    else:
+        _report(entry_id, state="done", detail="finished")
+        _emit(EVENT_DONE, entry)
+
+
 def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     """One observation of a live turn. False stops the watch.
 
@@ -3239,26 +3299,9 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             # went exactly as asked. No event either, for the same reason the ✕
             # below emits none: a stop needs no toast to tell the person who
             # pressed it.
-            _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
-            _turn_ended(entry)
-            _report(entry_id, state="cancelled")
+            _record_verdict(entry, "cancelled")
             return False
-        if reason:
-            _update(entry_id, turn="failed", error=reason,
-                    turn_at=_now().isoformat())
-            _turn_ended(entry)
-            _report(entry_id, state="error", message=reason)
-            _emit(EVENT_FAILED, entry, reason)
-        else:
-            # `turn_at` is WHEN the verdict landed, stamped wherever `turn` is
-            # written. The Tasks page needs the moment, not just the word: a
-            # transcript still being written to meaningfully after this stamp
-            # is new work, and only the verdict's own closing echo may be set
-            # aside (`tasks._verdict_outvotes_live`).
-            _update(entry_id, turn="ok", turn_at=_now().isoformat())
-            _turn_ended(entry)
-            _report(entry_id, state="done", detail="finished")
-            _emit(EVENT_DONE, entry)
+        _record_verdict(entry, "failed" if reason else "ok", reason)
         return False
 
     # UNANSWERED ONLY. `_poll` hands back every request the run has raised,
@@ -3294,9 +3337,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             except Exception:  # noqa: BLE001 — a cancel that fails is still a stop attempt
                 logger.debug("could not cancel scheduled run %s", run_id,
                              exc_info=True)
-        _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
-        _turn_ended(entry)
-        _report(entry_id, state="cancelled")
+        _record_verdict(entry, "cancelled")
         return False
     return True
 
@@ -3422,16 +3463,26 @@ def _close_unwatched(entry: dict, reason: str) -> None:
     the send: `_turn_tick` may have resolved it seconds ago, and re-closing would
     overwrite a real outcome with a shrug.
 
-    `turn` becomes `unknown`, which is the honest word. The work may well have
-    finished — the transcript knows, and the run id on the entry is how to go and
-    read it — but this app stopped being able to say, and a row that claims to be
-    running when nothing is watching it is the lie the job registry's `stalled`
-    state exists to avoid telling."""
+    The session's transcript is asked first (`_transcript_verdict`): a turn
+    that ended there gets its real verdict, one still being written by a live
+    session is left unstamped for the next sweep to re-adopt or re-check. Only when the transcript
+    cannot say does `turn` become `unknown` — this app stopped being able to
+    say, and a row that claims to be running when nothing is watching it is
+    the lie the job registry's `stalled` state exists to avoid telling."""
     entry_id = entry["id"]
     with _lock:
         stored = next((e for e in _read() if e.get("id") == entry_id), None)
         if stored is None or stored.get("state") != SENT or stored.get("turn"):
             return  # already resolved, or never got far enough to need this
+    # ASK THE SESSION BEFORE SHRUGGING. The transcript records how the turn
+    # ended whoever was (or was not) watching it, so a lost watch is not
+    # necessarily a lost verdict.
+    found = _transcript_verdict(stored)
+    if found == _STILL_RUNNING:
+        return  # left unresolved for the next sweep to re-adopt
+    if found is not None:
+        _record_verdict(stored, found[0], found[1])
+        return
     _update(entry_id, turn="unknown", error=reason,
             turn_at=_now().isoformat())
     _report(entry_id, state="error", message=reason)
@@ -3441,6 +3492,117 @@ def _close_unwatched(entry: dict, reason: str) -> None:
     # the stored copy, which knows the session the run reported; the copy this
     # thread has held since the send may predate it.
     _turn_ended(stored)
+
+
+_STILL_RUNNING = "running"
+
+
+def _transcript_verdict(stored: dict):
+    """What the session's own transcript says about a turn this app lost track
+    of: `(turn, reason)` for a turn that ENDED there, `_STILL_RUNNING` for one
+    a live session may still be writing, None when it cannot say.
+
+    | the send's own turn in the transcript           | answer              |
+    |-------------------------------------------------|---------------------|
+    | a finished reply the transcript proves closed   | ("ok", "")          |
+    | a finished reply, fresh, session still running  | _STILL_RUNNING      |
+    | a finished reply, stale or nothing running it   | ("ok", "")          |
+    | the CLI's interrupt marker                      | ("cancelled", "")   |
+    | an API-error row / a non-clean stop_reason      | ("failed", why)     |
+    | turn open, not cut off by a later turn, live    | _STILL_RUNNING      |
+    | turn open otherwise                             | None (→ unknown)    |
+    | no prompt at/after the send, unreadable, …      | None (→ unknown)    |
+
+    THE SEND'S OWN TURN, not the last one (`session_last_turn(since=fired)`):
+    the first turn opened at or after the claim stamped `fired`, up to the
+    next turn's prompt. A resumed session already holds every earlier turn,
+    and a later one — the user's next message, a background job's wake —
+    must not answer for this one. No `fired`, no evidence.
+
+    A FINISHED REPLY IS CONFIRMED before it is believed when the transcript
+    alone cannot prove the turn over (no later turn, no `turn_duration`): a
+    text row can be an intermediate block written just before its `tool_use`.
+    It stands unless it is fresh (inside STALE_TAIL_SEC) AND the live
+    registry says a process is running a turn on the session — which, once the
+    host's `turn_ended` has landed (`tasks_watch.is_turn_ended`), it does not,
+    background job or no.
+
+    _STILL_RUNNING never re-adopts or re-checks on the spot. The caller leaves
+    `turn` empty and lets go, and the entry stays an orphan for the next sweep:
+    a followable run is adopted again (`_resolve_orphan`), an unfollowable one
+    comes straight back here through `_close_unwatched` — so either way the
+    question is asked at most once per sweep, and the row resolves the first
+    sweep after the transcript closes or the session stops being live.
+
+    The session asked is the ANSWER (`claude_session_id`) when the watch
+    captured one, else the INPUT (`session_id`) a resume named — the fork case
+    lands under a new id, which the send-time guard then refuses."""
+    session = str(stored.get("claude_session_id")
+                  or stored.get("session_id") or "")
+    if not session:
+        return None
+    try:
+        sent_at = parse_due(str(stored.get("fired") or "")).timestamp()
+    except ValueError:
+        return None
+    try:
+        from fused_render import session_liveness
+
+        last = session_liveness.session_last_turn(session, since=sent_at)
+    except Exception:  # noqa: BLE001 — no evidence, not a failed close
+        logger.debug("could not read the transcript for %s", session,
+                     exc_info=True)
+        return None
+    if not last or float(last.get("at") or 0.0) <= sent_at:
+        return None
+    state = last.get("state")
+    if state == "ok" and not last.get("closed"):
+        fresh = (_now().timestamp() - float(last.get("at") or 0.0)
+                 < session_liveness.STALE_TAIL_SEC)
+        if fresh and _registry_running(session):
+            return _STILL_RUNNING
+    if state in ("ok", "cancelled", "failed"):
+        return state, str(last.get("error") or "")
+    if state != "open" or last.get("closed"):
+        return None
+    return _STILL_RUNNING if _session_still_live(session) else None
+
+
+def _registry_running(session_id: str) -> bool:
+    """Does the live registry say a process is running a TURN on this session
+    right now? False with no opinion. `live_from_registry` already sets a
+    `busy` row aside once the host's `turn_ended` landed, so a CLI kept alive
+    by a background job after its turn ended answers False."""
+    try:
+        from fused_render import tasks_watch
+
+        opinion = tasks_watch.live_from_registry(session_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not read the registry for %s", session_id,
+                     exc_info=True)
+        return False
+    return bool(opinion and opinion[0])
+
+
+def _session_still_live(session_id: str) -> bool:
+    """Is a process still writing this session? The live registry
+    (`~/.claude/sessions`, through `tasks_watch`) when it has an opinion,
+    else the transcript's own activity window.
+
+    Asked only of a turn still OPEN in the transcript. The registry's "not
+    running" once the host's `turn_ended` landed is right here too: the main
+    turn did end (sidechain rows never read as it — `session_last_turn`), so
+    a transcript that still reads open cannot say how, and None is honest."""
+    try:
+        from fused_render import tasks_watch
+
+        opinion = tasks_watch.live_from_registry(session_id)
+        if opinion is not None:
+            return bool(opinion[0])
+    except Exception:  # noqa: BLE001
+        logger.debug("could not read the registry for %s", session_id,
+                     exc_info=True)
+    return _session_live(session_id, _now())
 
 
 def _busy_sessions(entries: list[dict]) -> set[str]:
@@ -4614,10 +4776,22 @@ def _asked_now(entry: dict, now: datetime) -> dict:
 
 
 def _run_now_managed(manager, entry: dict, now: datetime) -> tuple[dict | None,
-                                                                    bool]:
-    """`(answer, took)`: run-now's answer when another task owns this entry's
-    folder, or None when the folder is this entry's to run in — and whether
-    this call is what TOOK the folder.
+                                                                    bool, str]:
+    """`(answer, took, token)`: run-now's answer when another task owns this
+    entry's folder, or None when the folder is this entry's to run in — whether
+    this call is what TOOK the folder, and the claim token of the send it
+    COUNTED on the owner ("" when nothing is known to be counted — see
+    `_claim_folder`): took it, or was absorbed into an owner already filed
+    under this entry's own key (`claim_for_send` bumps `turns` for that).
+
+    A `token` without `took` is the race this exists for (2026-11-08): the
+    tick claims the folder for a freshly created task a beat before run-now
+    does, run-now's claim lands on that same owner and bumps `turns` to 2, and
+    then loses the ENTRY claim to the tick and sends nothing. Nothing ever
+    gave that count back. In a live app the run's session refile hides it; if
+    the app restarts first, one `turn_ended` leaves `turns` at 1 and the
+    folder stays owned until the CLI exits — for ever while it holds a
+    background job.
 
     `took` is what every early return below reads before handing the tree back
     (`_release_folder`). A run-now on a message that follows a chat which
@@ -4645,9 +4819,9 @@ def _run_now_managed(manager, entry: dict, now: datetime) -> tuple[dict | None,
     # THE GATE OWNS WHAT IT LETS THROUGH (H3): this is a claim, not a look. A
     # None answer below means the folder is OURS from this instant — every path
     # after it either sends or gives it back (`_release_folder`).
-    ok, took = _claim_folder(manager, folder, key)
+    ok, took, token = _claim_folder(manager, folder, key)
     if not folder or ok:
-        return None, bool(took)
+        return None, bool(took), (token if folder else "")
     set_priority([entry_id], True)
     stored = _asked_now(dict(entry, priority=True), now)
     manager.enqueue(folder, key, entry_id)
@@ -4658,7 +4832,7 @@ def _run_now_managed(manager, entry: dict, now: datetime) -> tuple[dict | None,
             "queued": True, "position": int(place.get("position") or 1),
             "ahead_task_key": str(owner.get("task") or ""),
             "ahead_session": str(owner.get("session_id") or ""),
-            "ahead_run": str(owner.get("run_id") or "")}, False
+            "ahead_run": str(owner.get("run_id") or "")}, False, ""
 
 
 def run_now(entry_id: str, now: datetime | None = None) -> dict:
@@ -4739,8 +4913,8 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     # index and nothing else. With the flag off (or in a build with no manager)
     # there is no folder rule at all and run-now is the one that shipped.
     manager = _qm() if _pq().enabled() else None
-    queued, took = (_run_now_managed(manager, entry, now) if manager is not None
-                    else (None, False))
+    queued, took, token = (_run_now_managed(manager, entry, now)
+                           if manager is not None else (None, False, ""))
     if queued is not None:
         return queued
     # Past that line the folder is ours (H3) — but only the call that TOOK it
@@ -4750,6 +4924,12 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     # absorbed by that turn (or goes on the next pass) instead.
     task_key = _task_key(entry)
     held = bool(took)
+    # A send COUNTED on an owner this call did not take (absorbed into the
+    # owner filed under this entry's own key) is ours to take back when
+    # nothing is sent — with `uncount` and the claim's own token, which never
+    # ends a turn still holding the folder (`_release_folder` would, and that
+    # turn is not ours to end).
+    absorbed = bool(token) and not held
     # The echo rule joins run-now's refusal only under the flag: main's run-now
     # refused on a warm transcript alone, and flag off stays that.
     if session and (session in busy
@@ -4762,6 +4942,8 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
         # entry joins the line NOW while its `due` stays what was asked for.
         if held:
             _release_folder(manager, task_key)
+        elif absorbed:
+            _uncount_folder(manager, entry, task_key, token)
         return {"ok": False, "found": True, "entry": _asked_now(entry, now),
                 "reason": ("the conversation this message continues has a turn "
                            "running right now — it will go on its own as soon "
@@ -4773,6 +4955,8 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
         # `cancel_queued` gives to the same race, and for the same reason.
         if held:
             _release_folder(manager, task_key)
+        elif absorbed:
+            _uncount_folder(manager, entry, task_key, token)
         return {"ok": False, "found": True, "entry": None,
                 "reason": ("already claimed for sending — the scheduler got to "
                            "it first")}
