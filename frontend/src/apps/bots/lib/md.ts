@@ -11,12 +11,19 @@
 // `.nw` marks a short cell that stays on one line.
 // Replaced the hand-rolled port of OpenBot's md() (no tables, so a comparison came out as a wall of `|`).
 import DOMPurify from "dompurify";
-import { Marked, type Token, type Tokens } from "marked";
+import { Marked, type Token, type Tokenizer, type Tokens } from "marked";
 
 import { esc } from "./format";
 
 let render: ((t: string) => string) | null = null;
 let stage: Marked | null = null;
+
+const DOUBLE_TILDE_DEL = /^(~~)(?=[^\s~])([^\n]*?[^\s~])\1(?=[^~]|$)/;
+function doubleTildeOnly(this: Tokenizer, src: string): Tokens.Del | undefined {
+  const cap = DOUBLE_TILDE_DEL.exec(src);
+  if (!cap) return undefined;
+  return { type: "del", raw: cap[0], text: cap[2], tokens: this.lexer.inlineTokens(cap[2]) };
+}
 
 /** Configured once, lazily: its OWN Marked instance: `marked.use` on the shared singleton would overwrite (or be overwritten by) the Claude chat's config
  * whenever both modules load in one process (bun test). */
@@ -25,6 +32,9 @@ function setup(): (t: string) => string {
   stage = new Marked({
     gfm: true,
     breaks: true,
+    // Strikethrough needs `~~`: marked's GFM rule also strikes on a single `~`, and a bot writes `~105 MB` far more
+    // often than it strikes text (the Claude funnel has the same override and the longer note).
+    tokenizer: { del: doubleTildeOnly },
     renderer: {
       html: (html: string) => esc(html),
       // Positional (href, title, text) is marked@12's signature. Escaping here only keeps the href inside its

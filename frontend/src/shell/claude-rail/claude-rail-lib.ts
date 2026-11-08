@@ -881,8 +881,13 @@ export function ringPress(o: {
  *  FavouritePeek). */
 
 /** The params that name the pane chat's conversation on a page's URL: a
- *  session, a queued entry, the backend it runs on (shell/useAppPageClaudePane `chatDoorOnApp`). */
-const CHAT_PARAMS = ["session_id", "queued", "backend"] as const;
+ *  session, a queued entry, the backend it runs on (shell/useAppPageClaudePane `chatDoorOnApp`)
+ *  — and the run in flight. `run` is the id the controller writes while a turn
+ *  streams (`setRunParam`), and a "home" that kept it booted straight back into
+ *  the running conversation (`resumeRun` at boot): the + beside a running
+ *  task's pane re-mounted the same chat, caret re-typing from the first
+ *  letter, instead of going home (Akshil, 2026-11-08 recording). */
+export const CHAT_PARAMS = ["session_id", "queued", "backend", "run"] as const;
 
 /**
  * THE PANE'S HOME, READ OFF A PAGE'S URL (the rail's + beside the open pane,
