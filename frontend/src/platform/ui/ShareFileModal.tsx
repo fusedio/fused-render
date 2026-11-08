@@ -170,21 +170,21 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
     }
   }, [file.path]);
 
-  useEffect(() => {
-    goneRef.current = false;
-    void refresh();
-    return () => {
-      goneRef.current = true;
-      if (pollRef.current !== null) window.clearInterval(pollRef.current);
-    };
-  }, [refresh]);
-
   const stopPolling = () => {
     if (pollRef.current !== null) {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
     }
   };
+
+  useEffect(() => {
+    goneRef.current = false;
+    void refresh();
+    return () => {
+      goneRef.current = true;
+      stopPolling();
+    };
+  }, [refresh]);
 
   const finishPublish = useCallback(
     async (mode: ShareMode, uploadId?: string) => {
@@ -213,10 +213,10 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
         setBusy(null);
         setUpload(null);
       };
-      pollRef.current = window.setInterval(() => {
+      const timer = window.setInterval(() => {
         void uploadStatus(id)
           .then((s) => {
-            if (goneRef.current) return;
+            if (pollRef.current !== timer) return;
             setUpload(s);
             if (s.state === "done") {
               stopPolling();
@@ -234,9 +234,10 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
             // underlying upload had long since finished, failed, or was
             // cancelled. Surface it and stop polling instead of spinning
             // silently.
-            if (!goneRef.current) fail((e as Error).message || "lost track of the upload");
+            if (pollRef.current === timer) fail((e as Error).message || "lost track of the upload");
           });
       }, UPLOAD_POLL_MS);
+      pollRef.current = timer;
     },
     [finishPublish],
   );
