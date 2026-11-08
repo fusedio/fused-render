@@ -195,6 +195,16 @@ describe("popoverDrag (Modal `popover.resize`; the rail's + card resizes as wind
     expect(at.top + at.height).toBe(500);
     expect(popoverDrag("t", start, 0, -50, view, limits, 500).top).toBe(50);
   });
+  test("bounds (the workspace row) win over the viewport: the top and the right edge stay inside them", () => {
+    const row = { left: 232, top: 40, width: 1320, height: 860 };
+    const up = popoverDrag("t", start, 0, -900, view, limits, undefined, row);
+    expect(up.top).toBe(row.top + POPOVER_INSET);
+    const wide = popoverDrag("l", start, -900, 0, view, limits, undefined, { ...row, width: 1100 });
+    expect(wide.left).toBeGreaterThanOrEqual(row.left + POPOVER_INSET);
+    const narrowed = popoverDrag("b", start, 0, 0, view, limits, undefined, { ...row, width: 1000 });
+    expect(narrowed.left + narrowed.width).toBe(232 + 1000 - POPOVER_INSET);
+    expect(narrowed.width).toBe(start.width);
+  });
   test("a window narrowed under the drag pulls the right edge back inside it", () => {
     const at = popoverDrag("l", start, 0, 0, { width: 1200, height: 900 }, limits);
     expect(at.left + at.width).toBe(1200 - POPOVER_INSET);

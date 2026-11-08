@@ -217,11 +217,18 @@ export interface ModalProps {
      *  above. `placeKey` re-measures when it changes (window B's box). */
     place?: (want: { width: number; height: number }) => PopoverBox | null;
     placeKey?: unknown;
+    /** An element whose resize re-measures the placement — the workspace
+     *  row, which a sidebar collapsing reshapes while the dialog and the
+     *  window keep their sizes (CodeRabbit on #2189). */
+    watch?: () => Element | null;
     resize?: PopoverLimits & {
       /** A floor the bottom may not be dragged past (viewport y), asked at
        *  the drag's start with the card's box: window B's card's top, for a
        *  card standing above it (rail-peek-lib `bottomClear`). */
       maxBottom?: (box: { left: number; top: number; width: number; height: number }) => number | undefined;
+      /** The box the drag keeps the card inside (the rail's workspace row);
+       *  the viewport if absent or null. Asked at the drag's start. */
+      bounds?: () => { left: number; top: number; width: number; height: number } | null;
       /** The size let go at, and WHICH of its two dimensions the drag moved
        *  (an edge drag moves one): the caller keeps its remembered value for
        *  the other, so a width the window clamped is not saved over it by a
@@ -516,6 +523,7 @@ export function Modal({
     edge: PopoverEdge;
     el: HTMLElement;
     floor: number | undefined;
+    bounds: { left: number; top: number; width: number; height: number } | null;
   } | null>(null);
   const dragLast = useRef<(PopoverBox & { height: number }) | null>(null);
   useEffect(() => {
@@ -569,6 +577,8 @@ export function Modal({
     const RO = (view as (Window & { ResizeObserver?: typeof ResizeObserver }) | null)?.ResizeObserver;
     const ro = RO && dialogRef.current ? new RO(measure) : null;
     if (ro && dialogRef.current) ro.observe(dialogRef.current);
+    const watched = popover?.watch?.();
+    if (ro && watched) ro.observe(watched);
     view?.addEventListener("resize", measure);
     return () => {
       ro?.disconnect();
@@ -623,6 +633,7 @@ export function Modal({
       edge,
       el: e.currentTarget,
       floor: resize.maxBottom?.(box),
+      bounds: resize.bounds?.() ?? null,
     };
     dragLast.current = null;
     setDragBox(box);
@@ -640,6 +651,7 @@ export function Modal({
       { width: view.innerWidth, height: view.innerHeight },
       resize,
       start.floor,
+      start.bounds ?? undefined,
     );
     dragLast.current = next;
     setDragBox((was) =>

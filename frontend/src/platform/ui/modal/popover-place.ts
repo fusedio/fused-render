@@ -80,15 +80,22 @@ export function popoverDrag(
    *  own — window B's card's top, for the rail's popover standing above it
    *  (rail-peek-lib `bottomClear`). */
   maxBottom?: number,
+  /** The box the card must stay inside (the rail's workspace row, which the
+   *  sidebar and the header inset from the viewport); the viewport if
+   *  absent. CodeRabbit on #2189. */
+  bounds?: { left: number; top: number; width: number; height: number },
 ): PopoverBox & { height: number } {
   const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
-  // The right edge as the drag began — or the viewport's inset, if the
-  // window narrowed under the drag (CodeRabbit on #2189).
-  const right = Math.min(start.left + start.width, viewport.width - POPOVER_INSET);
-  const maxWidth = Math.min(limits.maxWidth, right - POPOVER_INSET);
-  const width = edge === "t" || edge === "b" ? start.width : clamp(start.width - dx, limits.minWidth, maxWidth);
-  const minTop = POPOVER_INSET;
-  const floor = Math.min(viewport.height - POPOVER_INSET, maxBottom ?? Infinity);
+  const b = bounds ?? { left: 0, top: 0, width: viewport.width, height: viewport.height };
+  // The right edge as the drag began — or the bounds' inset, if they
+  // narrowed under the drag (CodeRabbit on #2189).
+  const right = Math.min(start.left + start.width, b.left + b.width - POPOVER_INSET);
+  const maxWidth = Math.min(limits.maxWidth, right - (b.left + POPOVER_INSET));
+  // A vertical drag keeps the width — short of the bounds, should they have
+  // narrowed under it (the remembered width is the caller's to keep).
+  const width = edge === "t" || edge === "b" ? Math.min(start.width, maxWidth) : clamp(start.width - dx, limits.minWidth, maxWidth);
+  const minTop = b.top + POPOVER_INSET;
+  const floor = Math.min(b.top + b.height - POPOVER_INSET, maxBottom ?? Infinity);
   let top: number;
   let height: number;
   if (edge === "tl" || edge === "t") {

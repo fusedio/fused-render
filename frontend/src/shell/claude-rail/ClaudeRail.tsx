@@ -1951,8 +1951,10 @@ export function ClaudeRail({
   }, [popSeq]);
   useEffect(() => {
     if (peekKey === null || popSeq === null) return;
+    // No × at all while Create is pending (Modal draws none when busy): as
+    // blocked as a disabled one (CodeRabbit on #2189).
     const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-    if (shut?.disabled) {
+    if (!shut || shut.disabled) {
       setHeld(false);
       intent.dismiss();
       return;
@@ -1998,8 +2000,10 @@ export function ClaudeRail({
     intent.dismiss();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasksSeq]);
+  // …up OR still a hover's pending read (CodeRabbit on #2189: the pointer
+  // resting on the Tasks door while the + pins by keyboard): `dismiss` is a
+  // no-op on a card that is not up, and cancels the open that was coming.
   useEffect(() => {
-    if (!tasksUpRef.current) return;
     if ((peekKey ?? popSeq) !== null) closeTasksCard();
   }, [peekKey, popSeq]);
   // ANOTHER WINDOW A CARD PINNED (the Tasks card by its door, the list card
@@ -2072,15 +2076,18 @@ export function ClaudeRail({
   // which re-places the card level with its door.
   const [, setLayoutTick] = useState(0);
   const savePopSize = useCallback((size: { width: number; height: number }, changed: { width: boolean; height: boolean }) => {
-    // Only a dimension the drag moved (TasksPeek `endDrag`): the other keeps
-    // what was remembered — a width the window clamped is not saved over
-    // it by a height-only drag (CodeRabbit on #2189).
-    const prev = railCardSize(getUiLayout().canvasRailPeek ?? null);
-    const width = changed.width ? size.width : prev.width;
-    const height = changed.height ? size.height : prev.height;
-    patchUiLayout((d) =>
-      d.canvasRailPeek?.width === width && d.canvasRailPeek?.height === height ? d : { ...d, canvasRailPeek: { width, height } },
-    );
+    // Only a dimension the drag moved, past the grips' minimums (TasksPeek
+    // `endDrag`): the other keeps what was remembered — a width the window
+    // clamped is not saved over it by a height-only drag, nor a height a
+    // short window pressed under the floor. Read off the updater's own doc,
+    // so a replay onto the server's copy (ui-layout, before hydrate) keeps
+    // that copy's value, not this document's default (CodeRabbit on #2189).
+    patchUiLayout((d) => {
+      const prev = railCardSize(d.canvasRailPeek ?? null);
+      const width = changed.width && size.width >= PEEK_MIN_WIDTH ? size.width : prev.width;
+      const height = changed.height && size.height >= PEEK_MIN_HEIGHT ? size.height : prev.height;
+      return d.canvasRailPeek?.width === width && d.canvasRailPeek?.height === height ? d : { ...d, canvasRailPeek: { width, height } };
+    });
     // A patch tells no subscriber (ui-layout `subscribeUiLayout`: hydrates
     // only) — this render re-reads it itself (Bugbot on #2189).
     setLayoutTick((n) => n + 1);
@@ -3313,6 +3320,9 @@ export function ClaudeRail({
                           // Never over window B's card under it (RailPeek's
                           // floor, rail-peek-lib `bottomClear`).
                           maxBottom: (box) => bottomClear(box, favBox),
+                          // …and inside the workspace row (RailPeek's own
+                          // bounds), never over the sidebar or the header.
+                          bounds: () => rowOf(railRef.current)?.getBoundingClientRect() ?? null,
                           onResize: savePopSize,
                         },
                       }
@@ -3320,6 +3330,8 @@ export function ClaudeRail({
                   ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
                   place: popPlace,
                   placeKey: favBox,
+                  // The row reshaping (the sidebar collapsing) re-places it.
+                  watch: () => rowOf(railRef.current),
                   beside: railRef,
                   closeSignal: cardCloseSignal,
                   pinned: !!card.pinned,
