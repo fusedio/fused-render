@@ -606,14 +606,13 @@ export const LIST_ROWS_MAX = 10;
 /** THE PINNED BOTS (owner, 2026-11-05: "have the right sidebar go all the
  *  way and have bots below it — pinned bots show up there"): every pinned,
  *  un-hidden bot. In the pulse's order (the Bots page's own: pinned first)
- *  — or, with `footOrder` (the rail flag; owner, 2026-11-08: "the order at
- *  the bottom for bots: the reverse of the pinned-from-top order we have in
- *  Bots"), the Bots page's order (apps/bots lib/order `botOrder`: waiting
- *  on you and not yet read first, then the bot you last wrote to, then the
- *  newest made) REVERSED, so the page's first bot stands lowest, at the
- *  rail's foot, and the stack reads bottom-up as the page reads top-down.
- *  An older server's pulse carries no `pinned`: none; one without
- *  `last_user_ts`/`created` sorts by waiting alone. */
+ *  — or, with `footOrder` (the rail flag; owner, 2026-11-08), the Bots
+ *  page's order (apps/bots lib/order `botOrder`: waiting on you and not yet
+ *  read first, then the bot you last wrote to, then the newest made), top to
+ *  bottom as the page reads. (A reversed stack was tried the same day and
+ *  turned back: "reverse the order for now".) An older server's pulse
+ *  carries no `pinned`: none; one without `last_user_ts`/`created` sorts by
+ *  waiting alone. */
 export function pinnedBots<
   B extends { pinned?: boolean; hidden?: boolean; status?: string; seq?: number; news_seq?: number | null; seen_seq?: number | null; last_user_ts?: number; created?: number },
 >(bots: readonly B[], o: { footOrder?: boolean } = {}): B[] {
@@ -628,7 +627,7 @@ export function pinnedBots<
     return newest > b.seen_seq;
   };
   const recency = (b: B) => b.last_user_ts || b.created || 0;
-  return out.sort((a, b) => Number(waiting(b)) - Number(waiting(a)) || recency(b) - recency(a)).reverse();
+  return out.sort((a, b) => Number(waiting(b)) - Number(waiting(a)) || recency(b) - recency(a));
 }
 
 /** WHERE A PINNED BOT'S RING GOES (ClaudeRail `ringOf` for bots; owner,

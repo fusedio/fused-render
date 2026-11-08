@@ -388,7 +388,7 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
     ];
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["a"]);
   });
-  it("the rail's foot order (owner, 2026-11-08): the Bots page's order reversed — waiting-unread, then your last message, then newest — the page's first bot lowest", () => {
+  it("the rail's foot order (owner, 2026-11-08): the Bots page's order, top to bottom — waiting-unread, then your last message, then newest", () => {
     const bots = [
       { id: "old", pinned: true, status: "idle", created: 100 },
       { id: "spoke", pinned: true, status: "idle", created: 50, last_user_ts: 900 },
@@ -397,7 +397,7 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
       { id: "un", pinned: false, status: "waiting" },
     ];
     // Page order: wait (waiting, unread), then by recency: waitRead 500, spoke 900 → spoke first.
-    expect(pinnedBots(bots, { footOrder: true }).map((b) => b.id)).toEqual(["old", "waitRead", "spoke", "wait"]);
+    expect(pinnedBots(bots, { footOrder: true }).map((b) => b.id)).toEqual(["wait", "spoke", "waitRead", "old"]);
     // No flag: the pulse's order.
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["old", "spoke", "wait", "waitRead"]);
   });

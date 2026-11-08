@@ -25,6 +25,8 @@ const { announcePaneSession } = await import("@platform/lib/peek-session");
 const { botOpen, setBotOpen, setFavOpen } = await import("@platform/lib/last-chat");
 const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
+const { BotCardHost } = await import("./BotCardHost");
+const { resetBotCardForTests } = await import("./bot-card-store");
 const { railGitNow, resetRailGitStoreForTests } = await import("./rail-git-store");
 
 const DIR = "/home/me/apps/demo";
@@ -136,6 +138,7 @@ beforeEach(() => {
   // publishes is ever on screen. Bots are offered (a Mac's server).
   (globalThis as { fetch: unknown }).fetch = () => new Promise<Response>(() => {});
   setBotsAvailableForTests(true);
+  resetBotCardForTests();
 });
 
 const mounted: ReactTestRenderer[] = [];
@@ -168,6 +171,8 @@ async function mountRail(o: {
   peek?: boolean;
   /** The page's git (ClaudeRail `git`). */
   git?: { path: string; onOpenGit?: () => void };
+  /** Mount the shell's bot card (BotCardHost) beside the rail, as App does. */
+  botHost?: boolean;
 }) {
   // The card's flag and the favourites' pair, as Settings would publish them.
   publishCanvasRailPeek({ enabled: o.peek ?? true });
@@ -179,16 +184,19 @@ async function mountRail(o: {
   let r!: ReactTestRenderer;
   await act(async () => {
     r = create(
-      <ClaudeRail
-        paneOpen={o.paneOpen}
-        place={{ kind: "folder", dir: DIR }}
-        newTask={{ target: DIR, waiting: null, on: null }}
-        activeSessionId={o.activeSessionId ?? null}
-        onOpen={() => {}}
-        onOpenChat={o.onOpenChat ?? (() => {})}
-        onPullStart={() => {}}
-        {...(o.git ? { git: o.git } : {})}
-      />,
+      <>
+        <ClaudeRail
+          paneOpen={o.paneOpen}
+          place={{ kind: "folder", dir: DIR }}
+          newTask={{ target: DIR, waiting: null, on: null }}
+          activeSessionId={o.activeSessionId ?? null}
+          onOpen={() => {}}
+          onOpenChat={o.onOpenChat ?? (() => {})}
+          onPullStart={() => {}}
+          {...(o.git ? { git: o.git } : {})}
+        />
+        {o.botHost !== false && <BotCardHost />}
+      </>,
       { createNodeMock: () => fakeEl() },
     );
   });
@@ -417,31 +425,60 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
     });
   };
 
-  test("the pinned card survives the rail (owner, 2026-11-08): a press marks the window's open bot, a new rail pins it again, the × clears the mark", async () => {
+  test("the pinned card is the shell's (owner, 2026-11-08): the page's rail remounting leaves it up — no close, no reopen — and the × clears the window's mark", async () => {
     setBotOpen(null);
-    const r = await mountRail({ paneOpen: false, favourites: true });
+    // The shell's host, mounted once (App), apart from the page's rail.
+    let host!: ReactTestRenderer;
+    await act(async () => {
+      host = create(<BotCardHost />, { createNodeMock: () => fakeEl() });
+    });
+    mounted.push(host);
+    const r = await mountRail({ paneOpen: false, favourites: true, botHost: false });
     await act(async () => {
       publishBots([BOT]);
     });
     await press(r);
     expect(botOpen()).toBe("b1");
-    // The page's view switches: the rail unmounts and a fresh one mounts.
+    const peek = () => host.root.findByType(BotPeek);
+    expect(peek().props.shown?.id).toBe("b1");
+    // Held (favourites on): a press elsewhere on the page does not close it.
+    expect(peek().props.held).toBe(true);
+    // Every `shown` the host renders from here on, to catch a flicker.
+    const seen: (string | null)[] = [];
+    const watch = setInterval(() => seen.push(peek().props.shown?.id ?? null), 0);
+    // The page's view switches: its rail unmounts and a fresh one mounts.
     act(() => r.unmount());
     mounted.splice(mounted.indexOf(r), 1);
-    const r2 = await mountRail({ paneOpen: false, favourites: true });
+    seen.push(peek().props.shown?.id ?? null);
+    const r2 = await mountRail({ paneOpen: false, favourites: true, botHost: false });
     await act(async () => {
-      publishBots([BOT]);
-      await new Promise((res) => setTimeout(res, 0));
+      await new Promise((res) => setTimeout(res, 10));
     });
-    expect(r2.root.findByType(BotPeek).props.shown?.id).toBe("b1");
-    expect(r2.root.findByType(BotPeek).props.pinned).toBe(true);
-    const close = r2.root.find((n) => n.type === "button" && n.props.className === "claude-rail-peek-btn claude-rail-peek-close");
+    clearInterval(watch);
+    seen.push(peek().props.shown?.id ?? null);
+    expect(seen.every((k) => k === "b1")).toBe(true);
+    expect(peek().props.pinned).toBe(true);
+    // The new rail's ring reads it as its own.
+    expect(r2.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1").props.className).toContain("is-pinned");
+    const close = host.root.find((n) => n.type === "button" && n.props.className === "claude-rail-peek-btn claude-rail-peek-close");
     await act(async () => {
       close.props.onClick();
       await new Promise((res) => setTimeout(res, 0));
     });
-    expect(r2.root.findByType(BotPeek).props.shown).toBeNull();
+    expect(peek().props.shown).toBeNull();
     expect(botOpen()).toBeNull();
+  });
+
+  test("a reload pins the window's open bot again, once the pulse lists it", async () => {
+    setBotOpen("b1");
+    const r = await mountRail({ paneOpen: false, favourites: true });
+    await act(async () => {
+      publishBots([BOT]);
+      await new Promise((res) => setTimeout(res, 0));
+    });
+    expect(r.root.findByType(BotPeek).props.shown?.id).toBe("b1");
+    expect(r.root.findByType(BotPeek).props.pinned).toBe(true);
+    setBotOpen(null);
   });
 
   test("the window's open bot is forgotten where the rail cannot show it: a favourite's card holds window B", async () => {
