@@ -892,6 +892,16 @@ describe("ringMarks beside the open pane (owner, 2026-11-08: the same ring as sh
   });
 });
 
+describe("ringMarks with another window A card pinned (`windowAHeld`; Bugbot on #2201)", () => {
+  const o = { favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null, activeList: null, activeFav: null, sessionHere: false, isLast: false };
+  it("a list ring says its title (no card comes on a hover); a favourite's ring still hovers (window B)", () => {
+    const list = ringMarks({ ...o, key: "a", foot: false, windowAHeld: true });
+    expect(list.titleOnly).toBe(true);
+    expect(ringMarks({ ...o, key: "f", foot: true, windowAHeld: true }).titleOnly).toBe(false);
+    expect(ringMarks({ ...o, key: "a", foot: false, windowAHeld: false }).titleOnly).toBe(false);
+  });
+});
+
 describe("ringMarks: a section of one ring wears no last mark (2026-11-06)", () => {
   const base = {
     favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null,

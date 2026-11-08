@@ -721,6 +721,10 @@ export interface RingMarkInput {
    *  favourite's ring hovers nothing meanwhile — its caption, as beside an
    *  open favourite's card; a press still takes the window. */
   botHeld?: boolean;
+  /** Another of window A's cards is pinned — the + popover, the Tasks card
+   *  (ClaudeRail `aHovers`): a list ring's hover shows no card then, so its
+   *  caption is its title (Bugbot on #2201; the rule of #2194 kept). */
+  windowAHeld?: boolean;
   /** How many rings the section holds (owner, 2026-11-06: "if it is only
    *  one item, that would be the last selected item, so no need to show
    *  that"): favourites on, a section of ONE wears no `.is-last`. */
@@ -766,7 +770,8 @@ export function ringMarks(o: RingMarkInput): {
   // The caption alone: the ring's hover shows no card — another LIST ring
   // while the list's card is pinned (a favourite's ring is window B's and is
   // never held back by it), the open favourite's ring, a silenced one.
-  const pinnedElsewhere = !o.foot && o.peekOn && o.pinned && o.peekKey !== null && o.peekKey !== o.key;
+  const pinnedElsewhere =
+    !o.foot && o.peekOn && ((o.pinned && o.peekKey !== null && o.peekKey !== o.key) || !!o.windowAHeld);
   const titleOnly = pinnedElsewhere || favRing || (o.peekOn && !hovers);
   return { classes, hovers, favRing, titleOnly };
 }

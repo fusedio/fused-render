@@ -2562,6 +2562,9 @@ export function ClaudeRail({
                 activeFav,
                 favHoverKey,
                 botHeld: botUp !== null,
+                // Window A held by the + popover or the Tasks card: the list's
+                // rings say their title (`aHovers` shows them no card).
+                windowAHeld: (!!card?.pop && !!card.pinned) || (tasksCard.up && tasksCard.pinned),
                 sectionSize: foot ? favs.length : baseSeats.length,
               });
               // The rings' own captions step aside for the card: a hover
@@ -3131,8 +3134,11 @@ export function ClaudeRail({
                 const card = botRingRoute({ peekOn, noRoom: botNoRoom }) === "card";
                 // ONE WINDOW B (header): with a favourite's card open the
                 // ring's hover is its caption, as a favourite's ring beside
-                // an open favourite; a press still takes the window.
-                const hovers = card && openFavKey === null;
+                // an open favourite; a press still takes the window. While a
+                // bot's card is PINNED the other bots' rings say their name
+                // too — their hover shows no card (`botIntent` sits still for
+                // a held card; Bugbot on #2201).
+                const hovers = card && openFavKey === null && !(botPinned && botKey !== null && botKey !== b.id);
                 const peeked = card && botKey === b.id;
                 return (
                   <div key={b.id} role="listitem" className="claude-rail-seat">
