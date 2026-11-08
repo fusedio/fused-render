@@ -669,7 +669,7 @@ describe("start → poll → done", () => {
     expect(controller.getState().trouble?.message).toBe("send timed out after 60s");
     // The turn never launched: the bubble goes and the words come back.
     expect(users(controller)).toEqual([]);
-    expect(returned).toEqual([{ text: "again" }]);
+    expect(returned).toEqual([{ text: "again", refused: true }]);
   });
 
   test("a send that throws anything ELSE still falls through to `start`", async () => {
@@ -748,7 +748,7 @@ describe("start → poll → done", () => {
     expect(agent.of("poll").length).toBe(0);
     expect(controller.getState().trouble?.message).toBe("start timed out after 60s");
     expect(users(controller)).toEqual([]);
-    expect(returned).toEqual([{ text: "hi" }]);
+    expect(returned).toEqual([{ text: "hi", refused: true }]);
   });
 
   test("a start the server says NEVER RAN (504 `NotRun`) is handed back, unprobed", async () => {
@@ -762,7 +762,7 @@ describe("start → poll → done", () => {
     expect(agent.of("poll").length).toBe(0);
     expect(controller.getState().trouble?.message).toBe("cancelled while queued");
     expect(users(controller)).toEqual([]);
-    expect(returned).toEqual([{ text: "hi" }]);
+    expect(returned).toEqual([{ text: "hi", refused: true }]);
   });
 
   // ---- the draft this send spends (`draft_key`, PR #1118 round 5) ----------
@@ -906,14 +906,14 @@ describe("start → poll → done", () => {
     expect(users(controller).map((t) => t.text)).toEqual(["one"]);
   });
 
-  test("a send that REACHED a bubble and then failed is not `refused`", async () => {
-    // The distinction the flag draws: `start` answering `{error}` left the
-    // failure in the transcript, which is where the reader stays to read it —
-    // so the words must NOT also reappear in the box, or a failed send reads as
-    // two messages. Only a pre-flight refusal owes them back.
+  test("a `start` that failed hands its WORDS back too (`refused`)", async () => {
+    // `start` answering `{error}` drops the bubble and leaves an error row that
+    // names only the failure — so unless the words go back to the box they are
+    // in no bubble, no queue and no composer (Akshil, 2026-11-08: a long prompt
+    // lost to `target not found`). No double message: the bubble is gone.
     const { controller, returned } = makeController({ start: () => ({ error: "no session" }) });
     await controller.sendMessage("this one failed");
-    expect(returned).toEqual([{ text: "this one failed" }]);
+    expect(returned).toEqual([{ text: "this one failed", refused: true }]);
     expect(users(controller)).toEqual([]);
   });
 

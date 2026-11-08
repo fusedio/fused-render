@@ -149,6 +149,7 @@ import {
   taskHref,
   taskWhen,
   type CardTitle,
+  taskChatTarget,
 } from "@shell/tasks-lib";
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
 import { chipDoor, chipLabel, chipPath, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
@@ -1687,7 +1688,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 {t.session_id ? (
                   <ChatMount
                     onBreakout={breakoutOpener()}
-                    file={row?.target || t.target || t.project}
+                    file={taskChatTarget(row ?? t)}
                     sessionId={t.session_id}
                     // The task's own settings, a seed (TaskPeek passes the same).
                     {...(row?.model ? { model: row.model } : {})}

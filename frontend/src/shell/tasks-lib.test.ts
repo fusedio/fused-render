@@ -158,6 +158,7 @@ import {
   sortLane,
   taskColumn,
   taskHref,
+  taskChatTarget,
   taskRunIntent,
   taskUnread,
   taskUnreadLabel,
@@ -12006,5 +12007,35 @@ describe("the Detailed view (once called workspace)", () => {
     expect(parseViewTabs(JSON.stringify(["workspace"]))).toEqual(["detailed"]);
     const row = { workspace: { statuses: [], projects: ["/p"] } };
     expect(Object.keys(parseViewFilters(JSON.stringify(row)))).toEqual(["detailed"]);
+  });
+});
+
+describe("taskChatTarget — the peek's chat runs where Open's does", () => {
+  const base = { target: "", project: "/u/Fused/canvas/custom/T", session_id: "s1" };
+  const canvas = (file: string) => ({ env: "custom" as const, name: "T", file });
+
+  it("a canvas NODE task chats on the clone folder, not the node file", () => {
+    // The node file may be gone (a turn split it): the canvas page's chat runs
+    // on the clone (`CanvasWorkspace` file={dir}), so the peek must too.
+    expect(
+      taskChatTarget({ ...base, target: "/u/Fused/canvas/custom/T/hex.py", canvas: canvas("hex.py") }),
+    ).toBe("/u/Fused/canvas/custom/T");
+  });
+
+  it("a canvas CLONE task chats on the clone itself", () => {
+    expect(taskChatTarget({ ...base, target: "/u/Fused/canvas/custom/T/", canvas: canvas("") })).toBe(
+      "/u/Fused/canvas/custom/T",
+    );
+  });
+
+  it("a queued canvas row keeps the explorer's target (`opensCanvas`)", () => {
+    const t = "/u/Fused/canvas/custom/T/hex.py";
+    expect(taskChatTarget({ ...base, session_id: "", target: t, canvas: canvas("hex.py") })).toBe(t);
+  });
+
+  it("otherwise the door's own `where`: entry, then target, then project", () => {
+    expect(taskChatTarget({ ...base, target: "/a", entry: "/a/index.html" })).toBe("/a/index.html");
+    expect(taskChatTarget({ ...base, target: "/a/b.py" })).toBe("/a/b.py");
+    expect(taskChatTarget({ ...base, target: "" })).toBe(base.project);
   });
 });

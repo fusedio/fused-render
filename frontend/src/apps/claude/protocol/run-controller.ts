@@ -2632,12 +2632,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (opts.optimisticKey) dropOptimisticUser(opts.optimisticKey);
     deps.onSendReturned?.({
       text,
-      // REFUSED means the message was turned away before `addUser` ever ran:
-      // there is no bubble and no queue entry holding the words, so the caller
-      // has to put them back in the box or they are gone (Bugbot, PR #1074). A
-      // send that got as far as a bubble and then failed is NOT this: it left
-      // the failure in the transcript, which is where the reader stays to read
-      // it (`sendMessage`'s catch).
+      // REFUSED means no bubble and no queue entry holds the words, so the
+      // caller has to put them back in the box or they are gone (Bugbot, PR
+      // #1074): a send turned away before `addUser` ran, AND a `start` that
+      // failed before the run launched — `sendMessage`'s catch drops that
+      // bubble, and the error row it leaves names only the failure.
       ...(refused ? { refused: true as const } : {}),
       ...(opts.attachments ? { attachments: opts.attachments } : {}),
       // WHICH send came back. A counter could not tell "this send returned"
@@ -2923,8 +2922,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (!started) {
         dropTurn(bubble.key);
         // ... and the attachments go back to the tray with the words, because
-        // the agent never saw either (T:16693-16720).
-        returnSend(text, opts);
+        // the agent never saw either (T:16693-16720). REFUSED, so the WORDS go
+        // back too (Akshil, 2026-11-08): the bubble was just dropped and the
+        // error row names only the failure, so without the flag the typed
+        // message was in no bubble, no queue and no box — a long prompt lost
+        // to a `target not found`.
+        returnSend(text, opts, true);
       }
       reportTrouble(troubleFromError(err, curBackend()));
     } finally {

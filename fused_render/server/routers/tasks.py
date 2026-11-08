@@ -3578,6 +3578,16 @@ def _place(task: dict) -> None:
                 os.path.basename(os.path.dirname(task["path"])))
             task["project_guessed"] = bool(cwd)
     task["project"] = tasks_store.project_of(cwd or "")
+    # AN ENTRY'S TARGET THAT IS GONE falls back to its folder too (Akshil,
+    # 2026-11-08), the rule the pane file below already follows: a scheduled or
+    # page-made task whose file a turn renamed or split still opens — and
+    # follows up — on the folder, which is where `agent._start` runs it. Only
+    # while that folder is there: a deleted folder keeps naming the door that
+    # was its own (`_task_canvas`, the missing-folder chip).
+    if target and not os.path.exists(target):
+        parent = os.path.dirname(target.rstrip("/\\"))
+        if parent and os.path.isdir(parent):
+            target = parent
     task["target"] = target or (
         pane if pane and os.path.isfile(pane) else task["project"])
     if first_ts is None and entries:

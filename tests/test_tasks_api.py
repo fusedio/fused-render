@@ -371,6 +371,8 @@ def test_a_scheduled_entry_target_beats_the_pane_file(
     proj.mkdir()
     file = proj / "index.html"
     file.write_text("<html></html>")
+    # The entry's file EXISTS: a gone one falls back to its folder (below).
+    (proj / "report.py").write_text("print(1)\n")
     _seed_schedule([_entry("e1", "run the report", T9,
                            target=str(proj / "report.py"),
                            state=schedule.SENT,
@@ -382,6 +384,47 @@ def test_a_scheduled_entry_target_beats_the_pane_file(
 
     task = _tasks(client)[0]
     assert task["target"] == tasks_mod.canonical_fs_path(str(proj / "report.py"))
+
+
+def test_a_scheduled_entry_target_that_is_gone_falls_back_to_its_folder(
+        client, projects_dir, state_dir, tmp_path):
+    """A turn that renamed or split the task's file must not strand the task
+    on a path that is gone: while the folder is there the row names the
+    folder, which is where `agent._start` runs the follow-up (Akshil,
+    2026-11-08)."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    _seed_schedule([_entry("e1", "run the report", T9,
+                           target=str(proj / "split_away.py"),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user("run the report", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == tasks_mod.canonical_fs_path(str(proj))
+
+
+def test_a_gone_entry_target_in_a_gone_folder_keeps_its_own_path(
+        client, projects_dir, state_dir, tmp_path):
+    """No folder to fall back to: the row keeps naming the path, so the
+    missing-folder state still reads off it."""
+    _already_using(state_dir)
+    gone = tmp_path / "gone" / "report.py"
+    _seed_schedule([_entry("e1", "run the report", T9,
+                           target=str(gone),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(tmp_path / "gone"), [
+        _user("run the report", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == tasks_mod.canonical_fs_path(str(gone))
 
 
 def test_started_is_the_clock_that_does_not_move_while_last_active_does(
