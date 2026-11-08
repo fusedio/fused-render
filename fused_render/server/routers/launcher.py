@@ -11,6 +11,7 @@ asked). The settings are part of `/api/prefs` (shell/prefs.py: wire names
 `launcher_hotkey`, `launcher_row_modifier`, stored under the flavor's
 keys), not a route of their own.
 """
+import math
 import os
 
 from fastapi import APIRouter, Body, Header, Query
@@ -60,19 +61,38 @@ def api_launcher_suspend(body: dict = Body(default={}),
     return {"ok": True, "suspended": on if hook is not None else False}
 
 
+def _anchor(body: dict) -> dict | None:
+    """``{"anchor": {"left", "top"}}`` — CSS px in the asking window's web
+    view: the rail's left edge and the door's top. Anything else is no
+    anchor (the panel takes its usual place)."""
+    a = body.get("anchor")
+    if not isinstance(a, dict):
+        return None
+    try:
+        left, top = float(a.get("left")), float(a.get("top"))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(left) and math.isfinite(top)):
+        return None
+    return {"left": left, "top": top}
+
+
 @router.post("/api/launcher/show")
-def api_launcher_show(x_fused: str | None = Header(default=None)):
+def api_launcher_show(body: dict = Body(default={}),
+                      x_fused: str | None = Header(default=None)):
     """Show the launcher panel — the Claude rail's Search door (ClaudeRail),
-    the same as the ⌥Space shortcut or the Dock's "Search Apps…". The hook
-    hops to the main thread itself. 404 where this process has no panel
-    (`/api/config` ``launcher_available`` is false there, so no door asks)."""
+    the same as the ⌥Space shortcut or the Dock's "Search Apps…", except
+    that with an ``anchor`` the panel stands beside the rail like a window A
+    card (launcher.beside_frame) instead of mid-screen. The hook hops to the
+    main thread itself. 404 where this process has no panel (`/api/config`
+    ``launcher_available`` is false there, so no door asks)."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     hook = launcher.native_hooks.get("show")
     if hook is None:
         return _error("no launcher panel in this process", status=404)
-    hook()
+    hook(_anchor(body if isinstance(body, dict) else {}))
     return {"ok": True}
 
 

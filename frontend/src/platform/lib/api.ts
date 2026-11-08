@@ -2077,9 +2077,12 @@ export function postLauncherSuspend(on: boolean): Promise<{ ok: boolean }> {
 }
 
 /** Show the launcher panel — the Claude rail's Search door, the ⌥Space
- *  shortcut's twin. 404 where this process has no panel (`launcherAvailable`). */
-export function showLauncher(): Promise<{ ok: boolean }> {
-  return postJson<{ ok: boolean }>("/api/launcher/show", {});
+ *  shortcut's twin. With `anchor` (CSS px in this window: the rail's left
+ *  edge and the door's top) the panel stands beside the rail like a window A
+ *  card instead of mid-screen. 404 where this process has no panel
+ *  (`launcherAvailable`). */
+export function showLauncher(anchor?: { left: number; top: number }): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/launcher/show", anchor ? { anchor } : {});
 }
 
 /** The row-shortcut modifier(s), `+`-joined (`"alt"`, `"alt+cmd"`). */

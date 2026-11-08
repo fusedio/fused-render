@@ -2822,11 +2822,15 @@ export function ClaudeRail({
               className="sidebar-rail-btn claude-rail-item"
               title="Search"
               aria-label="Search"
-              onClick={() => {
+              onClick={(e) => {
                 hideHint();
+                // The panel stands where window A's card would: a gap left of
+                // the rail, level with this door (launcher.beside_frame).
+                const rail = railRef.current?.getBoundingClientRect();
+                const door = e?.currentTarget?.getBoundingClientRect?.();
                 // A miss (the panel went with the preference) is nothing to
                 // show: the door stands only while the config says it is there.
-                showLauncher().catch(() => {});
+                showLauncher(rail && door ? { left: rail.left, top: door.top } : undefined).catch(() => {});
               }}
             >
               <Search size={16} aria-hidden="true" />

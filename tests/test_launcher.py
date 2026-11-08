@@ -323,10 +323,36 @@ def test_launcher_show_route(home, tmp_path):
     assert client.get("/api/config").json()["launcher_available"] is False
 
     shown = []
-    launcher.native_hooks["show"] = lambda: shown.append(1)
+    launcher.native_hooks["show"] = lambda anchor=None: shown.append(anchor)
     assert client.get("/api/config").json()["launcher_available"] is True
     assert client.post("/api/launcher/show").status_code in (400, 403)
     assert shown == []
     r = client.post("/api/launcher/show", headers=FUSED)
     assert r.status_code == 200 and r.json() == {"ok": True}
-    assert shown == [1]
+    assert shown == [None]
+
+    # The rail's anchor reaches the hook; junk is no anchor.
+    r = client.post("/api/launcher/show", json={"anchor": {"left": 1180.5, "top": 12}}, headers=FUSED)
+    assert r.status_code == 200
+    assert shown[-1] == {"left": 1180.5, "top": 12.0}
+    client.post("/api/launcher/show", json={"anchor": {"left": "x", "top": 12}}, headers=FUSED)
+    assert shown[-1] is None
+    client.post("/api/launcher/show", json={"anchor": [1, 2]}, headers=FUSED)
+    assert shown[-1] is None
+
+
+def test_beside_frame_stands_like_window_a():
+    """The panel's right edge a gap left of the rail, its top level with the
+    door; clamped to the screen's visible frame (y-up)."""
+    vis = (0.0, 0.0, 1920.0, 1055.0)
+    # Rail's left edge at x=1870, door's top at y=1000 (screen, y-up).
+    x, y = launcher.beside_frame(1870, 1000, 680, 74, vis)
+    assert (x, y) == (1870 - 8 - 680, 1000 - 74)
+    # Taller: the top stays, it grows down.
+    assert launcher.beside_frame(1870, 1000, 680, 500, vis) == (1182, 500)
+    # A narrow window near the screen's left: never off the left edge.
+    assert launcher.beside_frame(300, 1000, 680, 74, vis)[0] == 0
+    # Taller than the room under the door: pushed up to fit.
+    assert launcher.beside_frame(1870, 60, 680, 700, vis) == (1182, 0)
+    # A door above the visible frame (a second screen's numbers): the top clamps.
+    assert launcher.beside_frame(1870, 2000, 680, 74, vis) == (1182, 1055 - 74)

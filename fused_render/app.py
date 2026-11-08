@@ -2561,7 +2561,7 @@ def main() -> None:
                 "suspend": _suspend,
                 # POST /api/launcher/show (the Claude rail's Search door):
                 # main thread, like the Dock's "Search Apps…" key.
-                "show": lambda: AppHelper.callAfter(launcher_ctl.show),
+                "show": lambda anchor=None: AppHelper.callAfter(launcher_ctl.show, anchor),
                 "hotkey_bound": launcher_ctl.hotkey_bound,
                 "pinned_bound": launcher_ctl.pinned_bound,
                 "open_keys": _open_keys,
