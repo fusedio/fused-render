@@ -24,13 +24,14 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 import { useDeferredClose } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "./esc-stack";
-import { popoverPlacement, type PopoverBox } from "./popover-place";
+import { popoverDrag, popoverPlacement, type PopoverBox, type PopoverEdge, type PopoverLimits } from "./popover-place";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 import {
   CLOSE_CONTROL_SELECTOR,
@@ -201,8 +202,43 @@ export interface ModalProps {
      *  scrolls inside, so the ✕ and the footer are never clipped. Absent:
      *  `width`, and the content's own height. */
     size?: { width: number; height: number };
+    /** RESIZABLE (owner, 2026-11-08: the +'s card "is supposed to be window
+     *  A, but resize is not working for that modal"): a sized card grows the
+     *  rail card's grips — its two left corners and its left, top and bottom
+     *  edges (`.modal-popover-grip`, the rail's own look) — and the drag
+     *  resizes it in place (popover-place.ts `popoverDrag`). The release
+     *  reports the size dragged to (`onResize`); the caller remembers it and
+     *  hands it back as `size`, which re-places the card level with its
+     *  anchor again. Absent: no grips. */
+    /** WHERE IT STANDS, THE CALLER'S WAY (owner, 2026-11-08: the +'s card is
+     *  window A's and must keep clear of window B's card, as the rail's own
+     *  cards do — rail-peek-lib `placeClear`): asked for the box on every
+     *  measure, with the size wanted; null falls back to `popoverPlacement`
+     *  above. `placeKey` re-measures when it changes (window B's box). */
+    place?: (want: { width: number; height: number }) => PopoverBox | null;
+    placeKey?: unknown;
+    /** An element whose resize re-measures the placement — the workspace
+     *  row, which a sidebar collapsing reshapes while the dialog and the
+     *  window keep their sizes (CodeRabbit on #2189). */
+    watch?: () => Element | null;
+    resize?: PopoverLimits & {
+      /** A floor the bottom may not be dragged past (viewport y), asked at
+       *  the drag's start with the card's box: window B's card's top, for a
+       *  card standing above it (rail-peek-lib `bottomClear`). */
+      maxBottom?: (box: { left: number; top: number; width: number; height: number }) => number | undefined;
+      /** The box the drag keeps the card inside (the rail's workspace row);
+       *  the viewport if absent or null. Asked at the drag's start. */
+      bounds?: () => { left: number; top: number; width: number; height: number } | null;
+      /** The size let go at, and WHICH of its two dimensions the drag moved
+       *  (an edge drag moves one): the caller keeps its remembered value for
+       *  the other, so a width the window clamped is not saved over it by a
+       *  height-only drag (CodeRabbit on #2189). */
+      onResize: (size: { width: number; height: number }, changed: { width: boolean; height: boolean }) => void;
+    };
   };
 }
+
+const POPOVER_GRIPS: readonly PopoverEdge[] = ["l", "t", "b", "tl", "bl"];
 
 /** Presses inside these never dismiss a popover-mode dialog (Modal `popover`). */
 const POPOVER_KEEP = '.modal-overlay, [role="dialog"], [data-radix-popper-content-wrapper], [data-modal-popover-keep]';
@@ -469,28 +505,53 @@ export function Modal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [popoverOn]);
 
+  const sizeW = popover?.size?.width;
+  const sizeH = popover?.size?.height;
+  // THE DRAG (header of `popover.resize`): the box while a grip is held,
+  // then — until the caller hands back a new `size` — the size it was let go
+  // at, so the card does not snap back for a frame between the release and
+  // the caller's re-render.
+  const resize = popover?.resize;
+  const [dragBox, setDragBox] = useState<(PopoverBox & { height: number }) | null>(null);
+  const [dragged, setDragged] = useState<{ width: number; height: number } | null>(null);
+  const [gripHeld, setGripHeld] = useState<PopoverEdge | null>(null);
+  const dragStart = useRef<{
+    x: number;
+    y: number;
+    box: PopoverBox & { height: number };
+    pointerId: number;
+    edge: PopoverEdge;
+    el: HTMLElement;
+    floor: number | undefined;
+    bounds: { left: number; top: number; width: number; height: number } | null;
+  } | null>(null);
+  const dragLast = useRef<(PopoverBox & { height: number }) | null>(null);
+  useEffect(() => {
+    setDragged(null);
+  }, [sizeW, sizeH]);
   // POPOVER: where it stands (popover-place.ts), re-measured as the card's
   // height or the window changes. The first guess is taken at mount, off the
   // anchor alone (the card's height is not known yet): never hidden while it
   // is measured, because the card's field takes the caret in this very
   // commit and a `visibility: hidden` box cannot hold focus.
-  const sizeW = popover?.size?.width;
-  const sizeH = popover?.size?.height;
   const sized = sizeW !== undefined && sizeH !== undefined;
-  const wantWidth = sizeW ?? (typeof width === "number" ? width : 580);
+  // …or, between a drag's release and the caller handing the size back, the
+  // size the drag let go at (`dragged`): the card re-places itself on it —
+  // its right edge against `beside` again — rather than paint a new width
+  // at the old left (Bugbot on #2189).
+  const wantWidth = dragged?.width ?? sizeW ?? (typeof width === "number" ? width : 580);
+  const wantHeight = dragged?.height ?? sizeH;
+  const placeKey = popover?.placeKey;
   const [place, setPlace] = useState<PopoverBox | null>(() => {
     const anchor = popover?.anchor.current;
     const view = ownerDoc.defaultView;
     if (!anchor || !view || typeof anchor.getBoundingClientRect !== "function") return null;
+    const want = { width: wantWidth, height: wantHeight ?? 0 };
+    const own = sized ? popover?.place?.(want) : null;
+    if (own) return own;
     const a = popover?.anchorBox?.() ?? anchor.getBoundingClientRect();
     const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
-    return popoverPlacement(
-      a,
-      b,
-      { width: wantWidth, height: sizeH ?? 0 },
-      { width: view.innerWidth, height: view.innerHeight },
-      sized,
-    );
+    return popoverPlacement(a, b, want, { width: view.innerWidth, height: view.innerHeight }, sized);
   });
   useLayoutEffect(() => {
     if (!popoverOn) return;
@@ -499,17 +560,13 @@ export function Modal({
       const anchor = popover?.anchor.current;
       const dialog = dialogRef.current;
       if (!anchor || !dialog || !view) return;
+      // A sized card asks for its size, not for what it now measures (its
+      // own last placement).
+      const want = { width: wantWidth, height: wantHeight ?? dialog.offsetHeight };
+      const own = sized ? popover?.place?.(want) : null;
       const a = popover?.anchorBox?.() ?? anchor.getBoundingClientRect();
       const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
-      const next = popoverPlacement(
-        a,
-        b,
-        // A sized card asks for its size, not for what it now measures (its
-        // own last placement).
-        { width: wantWidth, height: sizeH ?? dialog.offsetHeight },
-        { width: view.innerWidth, height: view.innerHeight },
-        sized,
-      );
+      const next = own ?? popoverPlacement(a, b, want, { width: view.innerWidth, height: view.innerHeight }, sized);
       setPlace((was) =>
         was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height
           ? was
@@ -520,13 +577,15 @@ export function Modal({
     const RO = (view as (Window & { ResizeObserver?: typeof ResizeObserver }) | null)?.ResizeObserver;
     const ro = RO && dialogRef.current ? new RO(measure) : null;
     if (ro && dialogRef.current) ro.observe(dialogRef.current);
+    const watched = popover?.watch?.();
+    if (ro && watched) ro.observe(watched);
     view?.addEventListener("resize", measure);
     return () => {
       ro?.disconnect();
       view?.removeEventListener("resize", measure);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popoverOn, wantWidth, sizeH]);
+  }, [popoverOn, wantWidth, wantHeight, placeKey]);
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
     if (e.key !== "Tab") return;
@@ -556,16 +615,81 @@ export function Modal({
     }
   };
 
+  const onGripDown = (edge: PopoverEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
+    const dialog = dialogRef.current;
+    // Not on a card already leaving (CodeRabbit on #2189): a drag through
+    // the exit fade would save a size nobody meant.
+    if (e.button !== 0 || !dialog || !resize || closing) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const r = dialog.getBoundingClientRect();
+    const box = { left: r.left, top: r.top, width: r.width, height: r.height };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      box,
+      pointerId: e.pointerId,
+      edge,
+      el: e.currentTarget,
+      floor: resize.maxBottom?.(box),
+      bounds: resize.bounds?.() ?? null,
+    };
+    dragLast.current = null;
+    setDragBox(box);
+    setGripHeld(edge);
+  };
+  const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    const view = ownerDoc.defaultView;
+    if (!start || start.pointerId !== e.pointerId || !view || !resize) return;
+    const next = popoverDrag(
+      start.edge,
+      start.box,
+      e.clientX - start.x,
+      e.clientY - start.y,
+      { width: view.innerWidth, height: view.innerHeight },
+      resize,
+      start.floor,
+      start.bounds ?? undefined,
+    );
+    dragLast.current = next;
+    setDragBox((was) =>
+      was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height
+        ? was
+        : next,
+    );
+  };
+  const endDrag = () => {
+    const start = dragStart.current;
+    if (!start) return;
+    dragStart.current = null;
+    const last = dragLast.current;
+    dragLast.current = null;
+    if (start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    setGripHeld(null);
+    setDragBox(null);
+    if (!last || (last.width === start.box.width && last.height === start.box.height)) return;
+    const size = { width: last.width, height: last.height };
+    setDragged(size);
+    resize?.onResize(size, { width: last.width !== start.box.width, height: last.height !== start.box.height });
+  };
+  const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    if (!start || start.pointerId !== e.pointerId) return;
+    endDrag();
+  };
+
   const dialogStyle: CSSProperties | undefined = popover
     ? {
         // Inline, so no stylesheet's `position`/`left` (schedule.css shifts a
         // centred card for its side panels) can move it off its anchor.
         position: "fixed",
-        left: place?.left ?? 0,
-        top: place?.top ?? 0,
-        width: place?.width ?? wantWidth,
+        left: dragBox?.left ?? place?.left ?? 0,
+        top: dragBox?.top ?? place?.top ?? 0,
+        width: dragBox?.width ?? place?.width ?? wantWidth,
         maxHeight: "calc(100vh - 16px)",
-        ...(sized && place?.height !== undefined ? { height: place.height } : {}),
+        ...(dragBox ? { height: dragBox.height } : sized && place?.height !== undefined ? { height: place.height } : {}),
       }
     : width !== undefined
       ? { width }
@@ -594,7 +718,14 @@ export function Modal({
       <div
         ref={dialogRef}
         className={
-          "modal-dialog deploy-dialog" + (popover && sized ? " is-sized" : "") + (dialogClassName ? " " + dialogClassName : "")
+          "modal-dialog deploy-dialog" +
+          (popover && sized ? " is-sized" : "") +
+          // Under a grip's drag (owner, 2026-11-08: "it moves from left and
+          // right both sides"): schedule.css glides the dialog's `left` for
+          // its side panels, and a glide under a drag let the right edge
+          // wobble while the width snapped — `.is-resizing` turns it off.
+          (gripHeld ? " is-resizing" : "") +
+          (dialogClassName ? " " + dialogClassName : "")
         }
         style={dialogStyle}
         role="dialog"
@@ -719,6 +850,37 @@ export function Modal({
           </div>
         )}
       </div>
+      {popover && resize && sized && (
+        // THE GRIPS (header of `popover.resize`): hit areas on the card's two
+        // left corners and its left, top and bottom edges, in a frame laid
+        // over the card's box — OUTSIDE the dialog, whose callers clip their
+        // overflow (`.new-task-dialog`), so a grip half off the card's edge
+        // is never cut. The frame takes no pointer; the grips do.
+        // `aria-hidden`: a pointer-only affordance, the card's size is a
+        // preference, not a control the keyboard needs.
+        <div
+          className="modal-popover-frame"
+          aria-hidden="true"
+          style={{
+            left: dragBox?.left ?? place?.left ?? 0,
+            top: dragBox?.top ?? place?.top ?? 0,
+            width: dragBox?.width ?? place?.width ?? wantWidth,
+            height: dragBox?.height ?? place?.height ?? 0,
+          }}
+        >
+          {POPOVER_GRIPS.map((edge) => (
+            <div
+              key={edge}
+              className={"modal-popover-grip is-" + edge + (gripHeld === edge ? " is-active" : "")}
+              onPointerDown={onGripDown(edge)}
+              onPointerMove={onGripMove}
+              onPointerUp={onGripUp}
+              onPointerCancel={onGripUp}
+              onLostPointerCapture={() => dragStart.current && endDrag()}
+            />
+          ))}
+        </div>
+      )}
     </div>,
     container,
   );

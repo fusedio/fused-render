@@ -4,7 +4,7 @@
 // of A back now — claude-rail-lib.)
 import { describe, expect, it } from "bun:test";
 import type { TaskPulseTask } from "@platform/lib/api";
-import { ringMarks, type RingMarkInput } from "./claude-rail-lib";
+import { ringMarks, windowAHovers, type RingMarkInput } from "./claude-rail-lib";
 import { PEEK_CLOSE_MS, PEEK_OPEN_MS, PeekIntent, favHoverRow, listCardWish, favCardWish, type Timers } from "./rail-peek-lib";
 import { dismissFavHover, favHoverKey, resetFavHoverForTests } from "./fav-peek-store";
 
@@ -141,3 +141,22 @@ describe("sizes per window", () => {
   });
 });
 
+
+describe("after a click, only a click changes window A (owner, 2026-11-08)", () => {
+  const open = { listPinned: false, popPinned: false, tasksPinned: false, modalCard: false };
+  it("with nothing pinned, every window A door previews on a hover", () => {
+    expect(windowAHovers(open)).toBe(true);
+  });
+  it("a pinned list card silences the +, the draft rings and the Tasks door", () => {
+    expect(windowAHovers({ ...open, listPinned: true })).toBe(false);
+  });
+  it("a pinned New task popover silences the list's rings and the Tasks door", () => {
+    expect(windowAHovers({ ...open, popPinned: true })).toBe(false);
+  });
+  it("a pinned Tasks card silences the list's rings, the + and the draft rings", () => {
+    expect(windowAHovers({ ...open, tasksPinned: true })).toBe(false);
+  });
+  it("a draft's modal card (the popover's flag off) silences them too", () => {
+    expect(windowAHovers({ ...open, modalCard: true })).toBe(false);
+  });
+});

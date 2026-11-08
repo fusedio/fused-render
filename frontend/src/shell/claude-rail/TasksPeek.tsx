@@ -90,6 +90,7 @@ import { useCanvasRailPeek } from "./rail-peek-flag";
 import {
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
+  bottomClear,
   dragResize,
   inSafeCone,
   placeClear,
@@ -294,7 +295,16 @@ export function TasksPeek() {
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     if (!start || start.pointerId !== e.pointerId || !row) return;
-    const next = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, row.getBoundingClientRect());
+    // Never over window B's card under it (RailPeek's own floor,
+    // rail-peek-lib `bottomClear`; owner, 2026-11-08).
+    const next = dragResize(
+      start.corner,
+      start.box,
+      e.clientX - start.x,
+      e.clientY - start.y,
+      row.getBoundingClientRect(),
+      bottomClear(start.box, favBox),
+    );
     dragLast.current = next;
     setBox((prev) => (prev && sameBox(prev, next) ? prev : next));
   };

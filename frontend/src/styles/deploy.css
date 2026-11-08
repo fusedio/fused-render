@@ -102,6 +102,32 @@
   overflow-y: auto;
 }
 
+/* THE GRIPS' FRAME (Modal `popover.resize`; owner, 2026-11-08): a box laid
+   over the sized card, outside the dialog so its clipping never cuts a grip
+   half off the edge. The frame takes no pointer; the grips (dressed in
+   claude-rail.css beside the rail card's own) do. */
+.modal-popover .modal-popover-frame {
+  position: fixed;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.modal-popover .modal-popover-grip {
+  pointer-events: auto;
+}
+
+/* …AND NOT A GLIDE UNDER THE POINTER (owner, 2026-11-08: resizing the width
+   "moves from left and right both sides"): schedule.css transitions the
+   dialog's `left` for its side panels (0.18s), and under a drag that let the
+   left edge lag while the width snapped — the right edge wobbled off the
+   rail. A corner drag moves the box every frame: no transition, no text
+   selection (the rail card's own `.is-resizing` rule). */
+.modal-popover .modal-dialog.is-resizing {
+  transition: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* It slides in from the rail's side, as the chat card does, rather than
    scaling up in the middle of the window. */
 .modal-overlay.modal-popover .modal-dialog {

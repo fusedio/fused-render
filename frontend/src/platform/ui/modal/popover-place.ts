@@ -48,3 +48,66 @@ export function popoverPlacement(
   const box: PopoverBox = { left: Math.round(left), top: Math.round(top), width: Math.round(width) };
   return sized ? { ...box, height: Math.round(height) } : box;
 }
+
+/** Which grip a resize drag of a sized popover holds (Modal `popover.resize`;
+ *  owner, 2026-11-08: the +'s card "is supposed to be window A, but resize is
+ *  not working for that modal"): the card's two LEFT corners, or its left, top
+ *  or bottom edge — the rail's card's own grips (claude-rail's RailPeek). The
+ *  right edge stands against the rail: no grip there. */
+export type PopoverEdge = "tl" | "bl" | "l" | "t" | "b";
+
+export interface PopoverLimits {
+  minWidth: number;
+  minHeight: number;
+  maxWidth: number;
+}
+
+/** The box a resize drag asks for: `edge` the grip held, `start` the box when
+ *  the pointer went down, `dx`/`dy` how far it has moved since. The right edge
+ *  stays put (a drag holding a left grip moves the left edge); a drag holding
+ *  the top keeps the bottom where it was, one holding the bottom the top, and
+ *  one holding no left (`t`, `b`) the width. Width and height are clamped to
+ *  the limits and to the viewport less its inset — the viewport wins over the
+ *  minimums, so a window with less room than they ask is never overrun. */
+export function popoverDrag(
+  edge: PopoverEdge,
+  start: PopoverBox & { height: number },
+  dx: number,
+  dy: number,
+  viewport: { width: number; height: number },
+  limits: PopoverLimits,
+  /** A floor (viewport y) the bottom may not pass short of the viewport's
+   *  own — window B's card's top, for the rail's popover standing above it
+   *  (rail-peek-lib `bottomClear`). */
+  maxBottom?: number,
+  /** The box the card must stay inside (the rail's workspace row, which the
+   *  sidebar and the header inset from the viewport); the viewport if
+   *  absent. CodeRabbit on #2189. */
+  bounds?: { left: number; top: number; width: number; height: number },
+): PopoverBox & { height: number } {
+  const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
+  const b = bounds ?? { left: 0, top: 0, width: viewport.width, height: viewport.height };
+  // The right edge as the drag began — or the bounds' inset, if they
+  // narrowed under the drag (CodeRabbit on #2189).
+  const right = Math.min(start.left + start.width, b.left + b.width - POPOVER_INSET);
+  const maxWidth = Math.min(limits.maxWidth, right - (b.left + POPOVER_INSET));
+  // A vertical drag keeps the width — short of the bounds, should they have
+  // narrowed under it (the remembered width is the caller's to keep).
+  const width = edge === "t" || edge === "b" ? Math.min(start.width, maxWidth) : clamp(start.width - dx, limits.minWidth, maxWidth);
+  const minTop = b.top + POPOVER_INSET;
+  const floor = Math.min(b.top + b.height - POPOVER_INSET, maxBottom ?? Infinity);
+  let top: number;
+  let height: number;
+  if (edge === "tl" || edge === "t") {
+    const bottom = start.top + start.height;
+    height = clamp(start.height - dy, limits.minHeight, bottom - minTop);
+    top = bottom - height;
+  } else if (edge === "bl" || edge === "b") {
+    height = clamp(start.height + dy, limits.minHeight, floor - start.top);
+    top = start.top;
+  } else {
+    height = start.height;
+    top = start.top;
+  }
+  return { left: Math.round(right - width), top: Math.round(top), width, height };
+}

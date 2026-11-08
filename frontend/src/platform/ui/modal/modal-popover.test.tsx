@@ -8,7 +8,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createRef } from "react";
 
 import { Modal } from "./Modal";
-import { POPOVER_GAP, POPOVER_INSET, popoverPlacement } from "./popover-place";
+import { POPOVER_GAP, POPOVER_INSET, popoverDrag, popoverPlacement } from "./popover-place";
 
 afterEach(() => {
   removePortalContainer();
@@ -156,5 +156,58 @@ describe("popoverPlacement", () => {
   test("an unsized card says no height", () => {
     const at = popoverPlacement({ left: 1360, top: 60 }, { left: 1352, top: 0 }, { width: 580, height: 400 }, view);
     expect(at.height).toBeUndefined();
+  });
+});
+
+describe("popoverDrag (Modal `popover.resize`; the rail's + card resizes as window A does)", () => {
+  const view = { width: 1400, height: 900 };
+  const limits = { minWidth: 360, minHeight: 240, maxWidth: 722 };
+  const start = { left: 900, top: 100, width: 420, height: 640 };
+  test("the left edge moves the left edge alone: the right edge stays against the rail", () => {
+    const at = popoverDrag("l", start, -100, 50, view, limits);
+    expect(at).toEqual({ left: 800, top: 100, width: 520, height: 640 });
+  });
+  test("the top grows up and keeps the bottom; the bottom grows down and keeps the top", () => {
+    const up = popoverDrag("t", start, 30, -60, view, limits);
+    expect(up).toEqual({ left: 900, top: 40, width: 420, height: 700 });
+    const down = popoverDrag("b", start, 30, 60, view, limits);
+    expect(down).toEqual({ left: 900, top: 100, width: 420, height: 700 });
+  });
+  test("a corner does both", () => {
+    expect(popoverDrag("tl", start, -50, -50, view, limits)).toEqual({ left: 850, top: 50, width: 470, height: 690 });
+    expect(popoverDrag("bl", start, 50, 50, view, limits)).toEqual({ left: 950, top: 100, width: 370, height: 690 });
+  });
+  test("the minimums, the width cap and the viewport's inset all hold", () => {
+    const small = popoverDrag("tl", start, 500, 900, view, limits);
+    expect(small.width).toBe(limits.minWidth);
+    expect(small.height).toBe(limits.minHeight);
+    expect(small.left + small.width).toBe(start.left + start.width);
+    const wide = popoverDrag("l", start, -900, 0, view, limits);
+    expect(wide.width).toBe(limits.maxWidth);
+    const tall = popoverDrag("b", start, 0, 900, view, limits);
+    expect(tall.top + tall.height).toBe(view.height - POPOVER_INSET);
+    const high = popoverDrag("t", start, 0, -900, view, limits);
+    expect(high.top).toBe(POPOVER_INSET);
+    expect(high.top + high.height).toBe(start.top + start.height);
+  });
+  test("a floor (window B's card under it) stops a bottom drag short of the viewport", () => {
+    const at = popoverDrag("b", start, 0, 900, view, limits, 500);
+    expect(at.top + at.height).toBe(500);
+    expect(popoverDrag("t", start, 0, -50, view, limits, 500).top).toBe(50);
+  });
+  test("bounds (the workspace row) win over the viewport: the top and the right edge stay inside them", () => {
+    const row = { left: 232, top: 40, width: 1320, height: 860 };
+    const up = popoverDrag("t", start, 0, -900, view, limits, undefined, row);
+    expect(up.top).toBe(row.top + POPOVER_INSET);
+    const wide = popoverDrag("l", start, -900, 0, view, limits, undefined, { ...row, width: 1100 });
+    expect(wide.left).toBeGreaterThanOrEqual(row.left + POPOVER_INSET);
+    const narrowed = popoverDrag("b", start, 0, 0, view, limits, undefined, { ...row, width: 1000 });
+    expect(narrowed.left + narrowed.width).toBe(232 + 1000 - POPOVER_INSET);
+    expect(narrowed.width).toBe(start.width);
+  });
+  test("a window narrowed under the drag pulls the right edge back inside it", () => {
+    const at = popoverDrag("l", start, 0, 0, { width: 1200, height: 900 }, limits);
+    expect(at.left + at.width).toBe(1200 - POPOVER_INSET);
+    expect(at.width).toBe(start.width);
   });
 });

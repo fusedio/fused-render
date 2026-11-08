@@ -547,7 +547,12 @@
    we show accent border colour — let's not do that"): the cursor and the
    ink's trace are the whole feedback. Children of the fixed box, not of the card
    (the card clips its overflow), above the head and the chat. */
-.claude-rail-peek-grip {
+/* …AND THE SAME GRIPS ON A SIZED POPOVER CARD (Modal `popover.resize`;
+   owner, 2026-11-08: the +'s New task card "is supposed to be window A, but
+   resize is not working"): `.modal-popover-grip` wears every rule below, so
+   the two cards resize with one look. Their frame is deploy.css's
+   `.modal-popover-frame`. */
+:is(.claude-rail-peek-grip, .modal-popover-grip) {
   position: absolute;
   left: -4px;
   width: 12px;
@@ -555,15 +560,15 @@
   z-index: 3;
   touch-action: none;
 }
-.claude-rail-peek-grip.is-tl {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl {
   top: -4px;
   cursor: nwse-resize;
 }
-.claude-rail-peek-grip.is-bl {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl {
   bottom: -4px;
   cursor: nesw-resize;
 }
-.claude-rail-peek-grip::after {
+:is(.claude-rail-peek-grip, .modal-popover-grip)::after {
   content: "";
   position: absolute;
   left: 4px;
@@ -576,18 +581,18 @@
     opacity var(--dur-fast) var(--ease-out),
     color var(--dur-fast) var(--ease-out);
 }
-.claude-rail-peek-grip.is-tl::after {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl::after {
   top: 4px;
   border-top: 2px solid currentColor;
   border-top-left-radius: 4px;
 }
-.claude-rail-peek-grip.is-bl::after {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl::after {
   bottom: 4px;
   border-bottom: 2px solid currentColor;
   border-bottom-left-radius: 4px;
 }
-.claude-rail-peek-grip:hover::after,
-.claude-rail-peek-grip.is-active::after {
+:is(.claude-rail-peek-grip, .modal-popover-grip):hover::after,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-active::after {
   opacity: 1;
 }
 /* THE EDGE GRIPS (owner, 2026-11-04: "resize … from edges as well: left,
@@ -595,12 +600,12 @@
    the corners (whose 12px grips sit over the strips' ends and win). The
    same quiet trace as the corners — a 2px line along the edge, the ink's
    tone on hover and while the drag is on (no accent). */
-.claude-rail-peek-grip.is-l,
-.claude-rail-peek-grip.is-t,
-.claude-rail-peek-grip.is-b {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
   z-index: 2;
 }
-.claude-rail-peek-grip.is-l {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l {
   left: -3px;
   top: 8px;
   bottom: 8px;
@@ -608,35 +613,35 @@
   height: auto;
   cursor: ew-resize;
 }
-.claude-rail-peek-grip.is-t,
-.claude-rail-peek-grip.is-b {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
   left: 8px;
   right: 8px;
   width: auto;
   height: 6px;
   cursor: ns-resize;
 }
-.claude-rail-peek-grip.is-t {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t {
   top: -3px;
 }
-.claude-rail-peek-grip.is-b {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
   bottom: -3px;
 }
-.claude-rail-peek-grip.is-l::after,
-.claude-rail-peek-grip.is-t::after,
-.claude-rail-peek-grip.is-b::after {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l::after,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t::after,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b::after {
   border: 0;
   background: currentColor;
   border-radius: 1px;
 }
-.claude-rail-peek-grip.is-l::after {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l::after {
   left: 2px;
   top: 0;
   width: 2px;
   height: 100%;
 }
-.claude-rail-peek-grip.is-t::after,
-.claude-rail-peek-grip.is-b::after {
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t::after,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b::after {
   left: 0;
   top: 2px;
   width: 100%;

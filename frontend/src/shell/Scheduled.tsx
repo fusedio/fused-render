@@ -1737,10 +1737,17 @@ export default function Scheduled({ scope, inCard = false }: { scope?: TasksScop
               // taking it away.
               merged={toolbar.level >= TOOLBAR_MERGE_LEVEL}
             />
-            <button type="button" className="btn btn-primary schedule-new"
-                    onClick={() => openForm("blank", null)}>
-              +<span className="schedule-fit-lbl"> New task</span>
-            </button>
+            {/* NOT IN THE RAIL'S TASKS CARD (owner, 2026-11-08: "remove the +
+                button inside the window A tasks page"): the rail's own + is
+                that door, one row away, and opens the New task card as
+                window A's popover; a second + inside the card opened the
+                modal over it. */}
+            {!inCard && (
+              <button type="button" className="btn btn-primary schedule-new"
+                      onClick={() => openForm("blank", null)}>
+                +<span className="schedule-fit-lbl"> New task</span>
+              </button>
+            )}
             </>)}
           </div>
 
