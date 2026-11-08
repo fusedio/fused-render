@@ -855,18 +855,20 @@ export function plusDoor(o: { paneOpen: boolean; favsOn: boolean; paneHome: bool
 }
 
 /** WHAT A LIST RING'S PLAIN PRESS DOES (ClaudeRail `pressRing`; owner,
- *  2026-11-05): beside the OPEN pane (favourites on) it opens that chat IN
- *  THE PANE — no card is pinned, and a card that is up goes (`"pane"`);
- *  shut, the card pins (`"card"`) where the hover card is on and has room,
- *  else the chat's door (`"door"`). A favourite's ring is not asked: its
- *  press opens the favourite's card whatever the pane does. */
+ *  2026-11-08: "the behaviour of all the tasks is the same: click a task, the
+ *  window opens — we remove the link between a task click and the expanded
+ *  sidebar; the only link is Open"): the card pins (`"card"`) where the hover
+ *  card is on and has room — beside the OPEN pane as much as shut; the pane
+ *  changes only by the card's Open door — else the chat's door (`"door"`).
+ *  The pane press of 2026-11-05 (`"pane"`: the chat opening in the pane, no
+ *  card) is retired. A favourite's ring is not asked: its press opens the
+ *  favourite's card whatever the pane does. */
 export function ringPress(o: {
   paneOpen: boolean;
   favsOn: boolean;
   peekOn: boolean;
   noRoom: boolean;
-}): "pane" | "card" | "door" {
-  if (o.paneOpen && o.favsOn) return "pane";
+}): "card" | "door" {
   if (o.peekOn && !o.noRoom) return "card";
   return "door";
 }

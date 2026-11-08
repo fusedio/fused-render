@@ -846,9 +846,9 @@ describe("plusDoor", () => {
 });
 
 describe("ringPress (a list ring's plain press)", () => {
-  it("pane open, favourites on: the chat opens in the pane — no card", () => {
-    expect(ringPress({ paneOpen: true, favsOn: true, peekOn: true, noRoom: false })).toBe("pane");
-    expect(ringPress({ paneOpen: true, favsOn: true, peekOn: true, noRoom: true })).toBe("pane");
+  it("pane open, favourites on (owner, 2026-11-08): the card pins all the same — the pane is the Open door's alone", () => {
+    expect(ringPress({ paneOpen: true, favsOn: true, peekOn: true, noRoom: false })).toBe("card");
+    expect(ringPress({ paneOpen: true, favsOn: true, peekOn: true, noRoom: true })).toBe("door");
   });
   it("pane shut: the card pins, as today", () => {
     expect(ringPress({ paneOpen: false, favsOn: true, peekOn: true, noRoom: false })).toBe("card");

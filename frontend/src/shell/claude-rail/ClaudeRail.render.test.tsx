@@ -334,7 +334,7 @@ describe("ClaudeRail's card beside the pane", () => {
     if (!hadGetById) delete doc.getElementById;
   });
 
-  test("beside the open pane a ring press opens the chat in the pane: no card is pinned", async () => {
+  test("beside the open pane a ring press pins the card and leaves the pane's chat alone (owner, 2026-11-08)", async () => {
     const opened: string[] = [];
     const r = await mountRail({
       paneOpen: true,
@@ -344,8 +344,11 @@ describe("ClaudeRail's card beside the pane", () => {
       activeSessionId: chat("b").session_id,
     });
     await press(r, "a");
-    expect(opened).toHaveLength(1);
-    expect(r.root.findAllByType(RailPeek)).toHaveLength(0);
+    expect(opened).toHaveLength(0);
+    const peek = r.root.findAllByType(RailPeek);
+    expect(peek).toHaveLength(1);
+    expect(peek[0]!.props.pinned).toBe(true);
+    expect(peek[0]!.props.shown?.pulse.key ?? peek[0]!.props.shown?.key).toBe(chat("a").key);
   });
 
 });

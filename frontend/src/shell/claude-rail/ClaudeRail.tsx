@@ -493,14 +493,6 @@ function paneHomeComposer(rail: HTMLElement | null): HTMLTextAreaElement | null 
   return paneComposer(rail, ".c-home textarea");
 }
 
-/** THE PANE'S CHAT COMPOSER, whichever chat it shows (owner, 2026-11-06:
- *  "when we click on the task list item can we focus on the composer"): a
- *  list ring's press beside the open pane opens the chat there, and the
- *  keyboard follows into its composer — found the way the home's is. */
-function paneChatComposer(rail: HTMLElement | null): HTMLTextAreaElement | null {
-  return paneComposer(rail, ".c-composer textarea");
-}
-
 function paneComposer(rail: HTMLElement | null, selector: string): HTMLTextAreaElement | null {
   const scope: ParentNode = (rail?.isConnected && rowOf(rail)) || document;
   const pick = (root: ParentNode) =>
@@ -2282,24 +2274,12 @@ export function ClaudeRail({
   // (`openFavourite`), which lands a round trip later: hence the ref.
   const pressRing = (t: TaskPulseTask, href: string, keyboard: boolean) => {
     const how = ringPress({ paneOpen, favsOn, peekOn, noRoom });
-    // BESIDE THE OPEN PANE (header): the chat opens IN THE PANE, no card is
-    // pinned, and a card that is up — hovered or held — goes.
-    if (how === "pane") {
-      hideHint();
-      if (intent.current) {
-        setHeld(false);
-        intent.dismiss();
-      }
-      // …and the Tasks card, window A's too (owner, 2026-11-08).
-      closeTasksCard();
-      // …and the keyboard into that chat's composer (`paneChatComposer`) —
-      // the NEW chat's: the box on screen now belongs to the one being
-      // replaced, unless the ring is the pane's own chat already.
-      const before = t.session_id && t.session_id !== activeSessionId ? paneChatComposer(railRef.current) : null;
-      openChat(href);
-      if (t.session_id) focusPaneComposer(paneChatComposer, before);
-      return;
-    }
+    // BESIDE THE OPEN PANE the press is the same press (owner, 2026-11-08:
+    // "if the sidebar is expanded we don't show window A — we will instead
+    // show window A, and not change the expanded sidebar unless the user
+    // clicks Open from window A"): the card pins; the pane keeps its chat.
+    // A chat the pane already holds still gets its card, saying where the
+    // chat is (`paneSids`, one chat one composer).
     if (how === "card") {
       // A DRAFT'S RING, with the nav doors (owner, 2026-11-07: "drafts open
       // should open in the new thing we added"): the New task popover on
