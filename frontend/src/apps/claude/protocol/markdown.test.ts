@@ -86,6 +86,22 @@ test("headings, nested lists and a blockquote come out as real elements (#15)", 
   expect(html).toContain("<hr>");
 });
 
+test("a lone `~` is text: `~105 MB … (~4 M rows)` is not struck through (2026-11-08)", () => {
+  // marked's GFM `del` takes `~x~` as well as `~~x~~`, and two approximate
+  // sizes in one line made a strikethrough with the tildes eaten.
+  const html = md("a ~105 MB raw file (~4 M rows), ~2x the Arrow size\n");
+  expect(html).not.toContain("<del>");
+  expect(html).toContain("~105 MB raw file (~4 M rows), ~2x");
+});
+
+test("`~~` still strikes through, and never across a line break", () => {
+  expect(md("keep ~~drop this~~ keep\n")).toContain("<del>drop this</del>");
+  // An unclosed `~~` must not pair with one lines below (2026-11-08, second test).
+  const html = md("~~gone\ngone~\ngone~~\n~gone~\n~~gone~~\n");
+  expect(html).not.toContain("<del>gone<br>");
+  expect(html).toContain("~~gone<br>gone~<br>gone~~<br>~gone~<br><del>gone</del>");
+});
+
 test("an unclosed fence mid-stream is closed rather than swallowing the tail", () => {
   // Through `renderMd`, since the fence repair is its own step. With no DOM the
   // sanitizer stage falls back to a `<pre>` of escaped text, and the point here

@@ -135,7 +135,7 @@ import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { chatDoorOnApp, useAppPageClaudePane } from "./useAppPageClaudePane";
 import { ClaudeRail, paneHomeHref } from "./claude-rail/ClaudeRail";
-import { placeRoot } from "./claude-rail/claude-rail-lib";
+import { CHAT_PARAMS, placeRoot } from "./claude-rail/claude-rail-lib";
 import { usePanePresence } from "@platform/lib/pane-presence";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ChatMount } from "@apps/claude";
@@ -792,7 +792,10 @@ export default function AppPage({
     return confirmLeave().then((ok) => {
       if (!ok) return false;
       const next = new URL(location.href);
-      for (const k of ["session_id", "queued", "backend"]) {
+      // Every conversation param goes unless the door names it — `run`
+      // included: the pane's home kept the streaming turn's `run` and booted
+      // back into it (claude-rail-lib `CHAT_PARAMS`).
+      for (const k of CHAT_PARAMS) {
         const v = door.params[k];
         if (v) next.searchParams.set(k, v);
         else next.searchParams.delete(k);

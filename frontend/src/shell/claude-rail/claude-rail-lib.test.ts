@@ -869,6 +869,12 @@ describe("paneHomeHref", () => {
   it("no conversation named: home already (null)", () => {
     expect(paneHomeHref("/apps/x?_tab=overview")).toBeNull();
   });
+  it("a streaming turn's `run` is a conversation too, and goes with it (2026-11-08)", () => {
+    // The + beside a running task's pane dropped `session_id` but kept `run`, and
+    // the remounted "home" resumed that very run.
+    expect(paneHomeHref("/apps/x?session_id=s1&run=r1&_tab=overview")).toBe("/apps/x?_tab=overview");
+    expect(paneHomeHref("/apps/x?run=r1")).toBe("/apps/x");
+  });
 });
 
 describe("ringMarks with the Claude pane open", () => {
