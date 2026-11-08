@@ -190,6 +190,11 @@ describe("popoverDrag (Modal `popover.resize`; the rail's + card resizes as wind
     expect(high.top).toBe(POPOVER_INSET);
     expect(high.top + high.height).toBe(start.top + start.height);
   });
+  test("a floor (window B's card under it) stops a bottom drag short of the viewport", () => {
+    const at = popoverDrag("b", start, 0, 900, view, limits, 500);
+    expect(at.top + at.height).toBe(500);
+    expect(popoverDrag("t", start, 0, -50, view, limits, 500).top).toBe(50);
+  });
   test("a window narrowed under the drag pulls the right edge back inside it", () => {
     const at = popoverDrag("l", start, 0, 0, { width: 1200, height: 900 }, limits);
     expect(at.left + at.width).toBe(1200 - POPOVER_INSET);

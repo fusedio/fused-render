@@ -325,6 +325,7 @@ import {
   rowOf,
   statusWords,
   placeClear,
+  bottomClear,
 } from "./rail-peek-lib";
 import { usePaneSessions } from "@platform/lib/peek-session";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
@@ -1727,11 +1728,21 @@ export function ClaudeRail({
   // …AND THE BOT CARD'S (below): one word to the page for either pinned card
   // (`anyPinned`), and the blur onto the frame closes whichever is pinned
   // and not held.
+  // …AND THE + POPOVER'S AND THE TASKS CARD'S (owner, 2026-11-08: the gaps
+  // between window A's cards closed — a press into the frame closes any
+  // pinned card, and the page stops handing the frame the focus on a mere
+  // pointer enter while any is up). The popover goes the chassis' way
+  // (`shutPop`, declared with its close signal below; a card mid-Create
+  // keeps its place).
+  const tasksCard = useTasksCard();
   const pinnedUp = pinned && peekKey !== null;
   const botPinnedUp = botPinned && botKey !== null;
-  const anyPinned = pinnedUp || botPinnedUp;
-  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp });
-  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp };
+  const popPinnedUp = !!card?.pop && !!card.pinned;
+  const tasksHeldUp = navDoors && tasksCard.up && tasksCard.pinned;
+  const anyPinned = pinnedUp || botPinnedUp || popPinnedUp || tasksHeldUp;
+  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp });
+  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp };
+  const shutPopRef = useRef<() => boolean>(() => false);
   const pinnedRef = useRef(onCardPinned);
   pinnedRef.current = onCardPinned;
   useEffect(() => {
@@ -1745,6 +1756,8 @@ export function ClaudeRail({
         if (!(a instanceof HTMLIFrameElement)) return;
         if (pinnedNow.current.task && !heldRef.current && !document.getElementById(PEEK_ID)?.contains(a)) intent.dismiss();
         if (pinnedNow.current.bot && !botHeldRef.current && !document.getElementById(BOT_PEEK_ID)?.contains(a)) botIntent.dismiss();
+        if (pinnedNow.current.tasks && !document.getElementById(TASKS_PEEK_ID)?.contains(a)) closeTasksCard();
+        if (pinnedNow.current.pop && !document.querySelector(".modal-popover")?.contains(a)) shutPopRef.current();
       }, 0);
     };
     window.addEventListener("blur", onBlur);
@@ -1947,6 +1960,16 @@ export function ClaudeRail({
     setCardCloseSignal((n) => n + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [peekKey]);
+  // CLOSE THE POPOVER THE CHASSIS' WAY (its fade, its draft autosave) — unless
+  // it is mid-Create (its × held). True when it went.
+  const shutPop = useCallback((): boolean => {
+    if (!cardRef.current?.pop) return false;
+    const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
+    if (!shut || shut.disabled) return false;
+    setCardCloseSignal((n) => n + 1);
+    return true;
+  }, []);
+  shutPopRef.current = shutPop;
   // …AND THE TASKS CARD (TasksPeek; owner, 2026-11-07) IS WINDOW A'S: it
   // stands where the list's card and the + popover stand, and takes their
   // turns with them — its opening (a hover's preview or a press) puts down
@@ -1957,7 +1980,7 @@ export function ClaudeRail({
   // window A, it shouldn't affect anything else"): the favourite's card, its
   // hover and the bot's card are the other section's, untouched both ways;
   // the Tasks card keeps clear of them instead (TasksPeek `avoid`).
-  const tasksCard = useTasksCard();
+  // (`tasksCard` is read above, with the pinned cards' frame rule.)
   const tasksSeq = navDoors && tasksCard.up ? tasksCard.seq : null;
   const tasksUpRef = useRef(false);
   tasksUpRef.current = tasksSeq !== null;
@@ -1989,6 +2012,21 @@ export function ClaudeRail({
   useEffect(() => {
     if (tasksPinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
   }, [tasksPinnedUp, listPinnedUp]);
+  // ESCAPE WITH THE FOCUS NOWHERE closes a pinned + popover or Tasks card, as
+  // it closes the pinned list card (its rule above; owner, 2026-11-08: the
+  // gaps between window A's cards closed). Inside either, Escape is its own.
+  useEffect(() => {
+    if (!popPinnedUp && !tasksPinnedUp) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.target !== document.body && e.target !== document.documentElement) return;
+      e.preventDefault();
+      if (tasksPinnedUp) closeTasksCard();
+      if (popPinnedUp) shutPop();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [popPinnedUp, tasksPinnedUp, shutPop]);
   // BESIDE THE OPEN PANE IT GOES THE WAY WINDOW A GOES (owner, 2026-11-08:
   // "if the sidebar is open, a press opens in the sidebar and closes window
   // A; in the expanded sidebar, when the sidebar's chat changes, close window
@@ -2003,9 +2041,12 @@ export function ClaudeRail({
     tasksPaneWasOpen.current = paneOpen;
     const chatWas = paneChatWas.current;
     paneChatWas.current = activeSessionId;
-    if (!tasksUpRef.current || !paneOpen) return;
-    if (!wasOpen || chatWas !== activeSessionId) closeTasksCard();
-  }, [paneOpen, activeSessionId]);
+    if (!paneOpen || (wasOpen && chatWas === activeSessionId)) return;
+    if (tasksUpRef.current) closeTasksCard();
+    // …and the + popover, the same way (owner, 2026-11-08: the gaps between
+    // window A's cards closed).
+    shutPop();
+  }, [paneOpen, activeSessionId, shutPop]);
   // AFTER A CLICK, ONLY A CLICK CHANGES WINDOW A (owner, 2026-11-08;
   // claude-rail-lib `windowAHovers`): while any window A card is pinned —
   // the list's chat card, the + popover, the Tasks card — or a draft's modal
@@ -3269,6 +3310,9 @@ export function ClaudeRail({
                           minWidth: PEEK_MIN_WIDTH,
                           minHeight: PEEK_MIN_HEIGHT,
                           maxWidth: PEEK_MAX_WIDTH,
+                          // Never over window B's card under it (RailPeek's
+                          // floor, rail-peek-lib `bottomClear`).
+                          maxBottom: (box) => bottomClear(box, favBox),
                           onResize: savePopSize,
                         },
                       }

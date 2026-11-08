@@ -76,6 +76,10 @@ export function popoverDrag(
   dy: number,
   viewport: { width: number; height: number },
   limits: PopoverLimits,
+  /** A floor (viewport y) the bottom may not pass short of the viewport's
+   *  own — window B's card's top, for the rail's popover standing above it
+   *  (rail-peek-lib `bottomClear`). */
+  maxBottom?: number,
 ): PopoverBox & { height: number } {
   const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
   // The right edge as the drag began — or the viewport's inset, if the
@@ -84,7 +88,7 @@ export function popoverDrag(
   const maxWidth = Math.min(limits.maxWidth, right - POPOVER_INSET);
   const width = edge === "t" || edge === "b" ? start.width : clamp(start.width - dx, limits.minWidth, maxWidth);
   const minTop = POPOVER_INSET;
-  const floor = viewport.height - POPOVER_INSET;
+  const floor = Math.min(viewport.height - POPOVER_INSET, maxBottom ?? Infinity);
   let top: number;
   let height: number;
   if (edge === "tl" || edge === "t") {

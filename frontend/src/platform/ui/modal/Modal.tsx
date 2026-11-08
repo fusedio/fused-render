@@ -218,6 +218,10 @@ export interface ModalProps {
     place?: (want: { width: number; height: number }) => PopoverBox | null;
     placeKey?: unknown;
     resize?: PopoverLimits & {
+      /** A floor the bottom may not be dragged past (viewport y), asked at
+       *  the drag's start with the card's box: window B's card's top, for a
+       *  card standing above it (rail-peek-lib `bottomClear`). */
+      maxBottom?: (box: { left: number; top: number; width: number; height: number }) => number | undefined;
       /** The size let go at, and WHICH of its two dimensions the drag moved
        *  (an edge drag moves one): the caller keeps its remembered value for
        *  the other, so a width the window clamped is not saved over it by a
@@ -511,6 +515,7 @@ export function Modal({
     pointerId: number;
     edge: PopoverEdge;
     el: HTMLElement;
+    floor: number | undefined;
   } | null>(null);
   const dragLast = useRef<(PopoverBox & { height: number }) | null>(null);
   useEffect(() => {
@@ -610,7 +615,15 @@ export function Modal({
     const r = dialog.getBoundingClientRect();
     const box = { left: r.left, top: r.top, width: r.width, height: r.height };
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, edge, el: e.currentTarget };
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      box,
+      pointerId: e.pointerId,
+      edge,
+      el: e.currentTarget,
+      floor: resize.maxBottom?.(box),
+    };
     dragLast.current = null;
     setDragBox(box);
     setGripHeld(edge);
@@ -626,6 +639,7 @@ export function Modal({
       e.clientY - start.y,
       { width: view.innerWidth, height: view.innerHeight },
       resize,
+      start.floor,
     );
     dragLast.current = next;
     setDragBox((was) =>
@@ -692,7 +706,14 @@ export function Modal({
       <div
         ref={dialogRef}
         className={
-          "modal-dialog deploy-dialog" + (popover && sized ? " is-sized" : "") + (dialogClassName ? " " + dialogClassName : "")
+          "modal-dialog deploy-dialog" +
+          (popover && sized ? " is-sized" : "") +
+          // Under a grip's drag (owner, 2026-11-08: "it moves from left and
+          // right both sides"): schedule.css glides the dialog's `left` for
+          // its side panels, and a glide under a drag let the right edge
+          // wobble while the width snapped — `.is-resizing` turns it off.
+          (gripHeld ? " is-resizing" : "") +
+          (dialogClassName ? " " + dialogClassName : "")
         }
         style={dialogStyle}
         role="dialog"

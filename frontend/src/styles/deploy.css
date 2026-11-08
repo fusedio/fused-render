@@ -116,6 +116,18 @@
   pointer-events: auto;
 }
 
+/* …AND NOT A GLIDE UNDER THE POINTER (owner, 2026-11-08: resizing the width
+   "moves from left and right both sides"): schedule.css transitions the
+   dialog's `left` for its side panels (0.18s), and under a drag that let the
+   left edge lag while the width snapped — the right edge wobbled off the
+   rail. A corner drag moves the box every frame: no transition, no text
+   selection (the rail card's own `.is-resizing` rule). */
+.modal-popover .modal-dialog.is-resizing {
+  transition: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* It slides in from the rail's side, as the chat card does, rather than
    scaling up in the middle of the window. */
 .modal-overlay.modal-popover .modal-dialog {
