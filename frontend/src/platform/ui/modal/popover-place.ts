@@ -48,3 +48,53 @@ export function popoverPlacement(
   const box: PopoverBox = { left: Math.round(left), top: Math.round(top), width: Math.round(width) };
   return sized ? { ...box, height: Math.round(height) } : box;
 }
+
+/** Which grip a resize drag of a sized popover holds (Modal `popover.resize`;
+ *  owner, 2026-11-08: the +'s card "is supposed to be window A, but resize is
+ *  not working for that modal"): the card's two LEFT corners, or its left, top
+ *  or bottom edge — the rail's card's own grips (claude-rail's RailPeek). The
+ *  right edge stands against the rail: no grip there. */
+export type PopoverEdge = "tl" | "bl" | "l" | "t" | "b";
+
+export interface PopoverLimits {
+  minWidth: number;
+  minHeight: number;
+  maxWidth: number;
+}
+
+/** The box a resize drag asks for: `edge` the grip held, `start` the box when
+ *  the pointer went down, `dx`/`dy` how far it has moved since. The right edge
+ *  stays put (a drag holding a left grip moves the left edge); a drag holding
+ *  the top keeps the bottom where it was, one holding the bottom the top, and
+ *  one holding no left (`t`, `b`) the width. Width and height are clamped to
+ *  the limits and to the viewport less its inset — the viewport wins over the
+ *  minimums, so a window with less room than they ask is never overrun. */
+export function popoverDrag(
+  edge: PopoverEdge,
+  start: PopoverBox & { height: number },
+  dx: number,
+  dy: number,
+  viewport: { width: number; height: number },
+  limits: PopoverLimits,
+): PopoverBox & { height: number } {
+  const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
+  const right = start.left + start.width;
+  const maxWidth = Math.min(limits.maxWidth, right - POPOVER_INSET);
+  const width = edge === "t" || edge === "b" ? start.width : clamp(start.width - dx, limits.minWidth, maxWidth);
+  const minTop = POPOVER_INSET;
+  const floor = viewport.height - POPOVER_INSET;
+  let top: number;
+  let height: number;
+  if (edge === "tl" || edge === "t") {
+    const bottom = start.top + start.height;
+    height = clamp(start.height - dy, limits.minHeight, bottom - minTop);
+    top = bottom - height;
+  } else if (edge === "bl" || edge === "b") {
+    height = clamp(start.height + dy, limits.minHeight, floor - start.top);
+    top = start.top;
+  } else {
+    height = start.height;
+    top = start.top;
+  }
+  return { left: Math.round(right - width), top: Math.round(top), width, height };
+}

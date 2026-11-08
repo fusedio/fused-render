@@ -897,3 +897,28 @@ export function paneHomeHref(href: string): string | null {
   for (const k of CHAT_PARAMS) url.searchParams.delete(k);
   return url.pathname + url.search + url.hash;
 }
+
+/** AFTER A CLICK, ONLY A CLICK CHANGES WINDOW A (owner, 2026-11-08: "when
+ *  clicked on a task, hovering on other items should not make [the window]
+ *  be in hover mode … drafts and + and tasks icon change the window of hover,
+ *  this shouldn't happen. after a click only a click can change the window").
+ *  Window A is one seat with four doors — the list's rings (its chat card),
+ *  the + and the draft rings (the New task popover) and the Tasks door (the
+ *  Tasks card) — each with its own intent machine, and each machine already
+ *  ignores a hover while ITS OWN card is pinned. This is the rule across
+ *  them: while ANY window A card is pinned (or a draft's modal card is up),
+ *  no window A door previews on a hover — a press is what swaps the window.
+ *  Window B (a favourite's card, a bot's) is the other section's and never
+ *  enters into it. */
+export function windowAHovers(o: {
+  /** The list's chat card is up and pinned. */
+  listPinned: boolean;
+  /** The New task popover is up and pinned. */
+  popPinned: boolean;
+  /** The Tasks card is up and pinned. */
+  tasksPinned: boolean;
+  /** A draft's modal card (not the popover) is up. */
+  modalCard: boolean;
+}): boolean {
+  return !o.listPinned && !o.popPinned && !o.tasksPinned && !o.modalCard;
+}

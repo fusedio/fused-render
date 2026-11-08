@@ -1212,6 +1212,31 @@ button.new-task-source:focus-visible {
   margin-left: 0;
 }
 
+/* -- AS WINDOW A'S CARD (Modal `popover.size`; owner, 2026-11-08: "the new
+   task modal is not properly designed for big and small sizes") -------------
+   The popover takes window A's size, whatever it is, and the form must FILL
+   it rather than sit at the top of a tall card over a field of nothing: the
+   form stretches to the body's height, the ask — the one piece of writing —
+   takes every spare line (its ten-line ceiling is lifted; the box is the
+   ceiling now), and the pills row stands under it, at the foot of the body,
+   the way the chat composer's row stands under its box. On a SHORT card the
+   same rules shrink the ask to a three-line floor (six on the modal) before
+   the body scrolls, so the pills and the footer stay in reach. */
+.modal-popover .modal-dialog.is-sized.new-task-dialog > .modal-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-popover .modal-dialog.is-sized.new-task-dialog .schedule-form {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.modal-popover .modal-dialog.is-sized.new-task-dialog .new-task-write .new-task-ask {
+  min-height: calc(15px * 1.5 * 3 + 12px);
+  max-height: none;
+}
+
 /* Footer */
 .new-task-dialog .modal-footer {
   background: var(--bg-alt);

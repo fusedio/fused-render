@@ -24,13 +24,14 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 import { useDeferredClose } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "./esc-stack";
-import { popoverPlacement, type PopoverBox } from "./popover-place";
+import { popoverDrag, popoverPlacement, type PopoverBox, type PopoverEdge, type PopoverLimits } from "./popover-place";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 import {
   CLOSE_CONTROL_SELECTOR,
@@ -201,8 +202,19 @@ export interface ModalProps {
      *  scrolls inside, so the ✕ and the footer are never clipped. Absent:
      *  `width`, and the content's own height. */
     size?: { width: number; height: number };
+    /** RESIZABLE (owner, 2026-11-08: the +'s card "is supposed to be window
+     *  A, but resize is not working for that modal"): a sized card grows the
+     *  rail card's grips — its two left corners and its left, top and bottom
+     *  edges (`.modal-popover-grip`, the rail's own look) — and the drag
+     *  resizes it in place (popover-place.ts `popoverDrag`). The release
+     *  reports the size dragged to (`onResize`); the caller remembers it and
+     *  hands it back as `size`, which re-places the card level with its
+     *  anchor again. Absent: no grips. */
+    resize?: PopoverLimits & { onResize: (size: { width: number; height: number }) => void };
   };
 }
+
+const POPOVER_GRIPS: readonly PopoverEdge[] = ["l", "t", "b", "tl", "bl"];
 
 /** Presses inside these never dismiss a popover-mode dialog (Modal `popover`). */
 const POPOVER_KEEP = '.modal-overlay, [role="dialog"], [data-radix-popper-content-wrapper], [data-modal-popover-keep]';
@@ -556,16 +568,94 @@ export function Modal({
     }
   };
 
+  // THE DRAG (header of `popover.resize`): the box while a grip is held,
+  // then — until the caller hands back a new `size` — the size it was let go
+  // at, so the card does not snap back for a frame between the release and
+  // the caller's re-render.
+  const resize = popover?.resize;
+  const [dragBox, setDragBox] = useState<(PopoverBox & { height: number }) | null>(null);
+  const [dragged, setDragged] = useState<{ width: number; height: number } | null>(null);
+  const [gripHeld, setGripHeld] = useState<PopoverEdge | null>(null);
+  const dragStart = useRef<{
+    x: number;
+    y: number;
+    box: PopoverBox & { height: number };
+    pointerId: number;
+    edge: PopoverEdge;
+    el: HTMLElement;
+  } | null>(null);
+  const dragLast = useRef<(PopoverBox & { height: number }) | null>(null);
+  useEffect(() => {
+    setDragged(null);
+  }, [sizeW, sizeH]);
+  const onGripDown = (edge: PopoverEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
+    const dialog = dialogRef.current;
+    if (e.button !== 0 || !dialog || !resize) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const r = dialog.getBoundingClientRect();
+    const box = { left: r.left, top: r.top, width: r.width, height: r.height };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, edge, el: e.currentTarget };
+    dragLast.current = null;
+    setDragBox(box);
+    setGripHeld(edge);
+  };
+  const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    const view = ownerDoc.defaultView;
+    if (!start || start.pointerId !== e.pointerId || !view || !resize) return;
+    const next = popoverDrag(
+      start.edge,
+      start.box,
+      e.clientX - start.x,
+      e.clientY - start.y,
+      { width: view.innerWidth, height: view.innerHeight },
+      resize,
+    );
+    dragLast.current = next;
+    setDragBox((was) =>
+      was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height
+        ? was
+        : next,
+    );
+  };
+  const endDrag = () => {
+    const start = dragStart.current;
+    if (!start) return;
+    dragStart.current = null;
+    const last = dragLast.current;
+    dragLast.current = null;
+    if (start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    setGripHeld(null);
+    setDragBox(null);
+    if (!last || (last.width === start.box.width && last.height === start.box.height)) return;
+    const size = { width: last.width, height: last.height };
+    setDragged(size);
+    resize?.onResize(size);
+  };
+  const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    if (!start || start.pointerId !== e.pointerId) return;
+    endDrag();
+  };
+
   const dialogStyle: CSSProperties | undefined = popover
     ? {
         // Inline, so no stylesheet's `position`/`left` (schedule.css shifts a
         // centred card for its side panels) can move it off its anchor.
         position: "fixed",
-        left: place?.left ?? 0,
-        top: place?.top ?? 0,
-        width: place?.width ?? wantWidth,
+        left: dragBox?.left ?? place?.left ?? 0,
+        top: dragBox?.top ?? place?.top ?? 0,
+        width: dragBox?.width ?? dragged?.width ?? place?.width ?? wantWidth,
         maxHeight: "calc(100vh - 16px)",
-        ...(sized && place?.height !== undefined ? { height: place.height } : {}),
+        ...(dragBox
+          ? { height: dragBox.height }
+          : dragged
+            ? { height: dragged.height }
+            : sized && place?.height !== undefined
+              ? { height: place.height }
+              : {}),
       }
     : width !== undefined
       ? { width }
@@ -719,6 +809,37 @@ export function Modal({
           </div>
         )}
       </div>
+      {popover && resize && sized && (
+        // THE GRIPS (header of `popover.resize`): hit areas on the card's two
+        // left corners and its left, top and bottom edges, in a frame laid
+        // over the card's box — OUTSIDE the dialog, whose callers clip their
+        // overflow (`.new-task-dialog`), so a grip half off the card's edge
+        // is never cut. The frame takes no pointer; the grips do.
+        // `aria-hidden`: a pointer-only affordance, the card's size is a
+        // preference, not a control the keyboard needs.
+        <div
+          className="modal-popover-frame"
+          aria-hidden="true"
+          style={{
+            left: dragBox?.left ?? place?.left ?? 0,
+            top: dragBox?.top ?? place?.top ?? 0,
+            width: dragBox?.width ?? dragged?.width ?? place?.width ?? wantWidth,
+            height: dragBox?.height ?? dragged?.height ?? place?.height ?? 0,
+          }}
+        >
+          {POPOVER_GRIPS.map((edge) => (
+            <div
+              key={edge}
+              className={"modal-popover-grip is-" + edge + (gripHeld === edge ? " is-active" : "")}
+              onPointerDown={onGripDown(edge)}
+              onPointerMove={onGripMove}
+              onPointerUp={onGripUp}
+              onPointerCancel={onGripUp}
+              onLostPointerCapture={() => dragStart.current && endDrag()}
+            />
+          ))}
+        </div>
+      )}
     </div>,
     container,
   );

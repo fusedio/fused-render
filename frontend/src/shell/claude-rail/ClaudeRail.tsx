@@ -305,10 +305,14 @@ import {
   type RailPlace,
   type RailRow,
   type ReadMark,
+  windowAHovers,
 } from "./claude-rail-lib";
 import { CanvasGlyph } from "@apps/canvases/glyph";
 import {
   FAV_SETTLE_MS,
+  PEEK_MAX_WIDTH,
+  PEEK_MIN_HEIGHT,
+  PEEK_MIN_WIDTH,
   PeekIntent,
   clampAnchor,
   railCardSize,
@@ -351,7 +355,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { Face } from "@apps/bots/components/Face";
 import type { FaceSubject } from "@apps/bots/lib/face";
 import { BotPeek, BOT_PEEK_ID, botHref, preloadBotChat, type BotPeekHandle } from "./BotPeek";
-import { getUiLayout } from "@platform/lib/ui-layout";
+import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import {
   TASKS_CARD_KEY,
   TASKS_PEEK_ID,
@@ -1820,6 +1824,9 @@ export function ClaudeRail({
     const at = stillAt.current;
     if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
     stillAt.current = null;
+    // Window A's ring, with another of window A's cards pinned (the +
+    // popover, the Tasks card): no hover (`aHovers` below).
+    if (to === intent && !aHovers()) return;
     to.enterRing(key, "pointer");
   };
   useEffect(() => {
@@ -1990,9 +1997,38 @@ export function ClaudeRail({
     if (!tasksUpRef.current || !paneOpen) return;
     if (!wasOpen || chatWas !== activeSessionId) closeTasksCard();
   }, [paneOpen, activeSessionId]);
+  // AFTER A CLICK, ONLY A CLICK CHANGES WINDOW A (owner, 2026-11-08;
+  // claude-rail-lib `windowAHovers`): while any window A card is pinned —
+  // the list's chat card, the + popover, the Tasks card — or a draft's modal
+  // card is up, none of window A's doors previews on a hover: not the list's
+  // rings, not the +, not a draft's ring, not the Tasks door. Each door's own
+  // machine already sits still for its own pinned card; this is the rule
+  // across them. Read at the hover, off this render's state.
+  const aHovers = () =>
+    windowAHovers({
+      listPinned: pinned && peekKey !== null,
+      popPinned: !!card?.pop && !!card.pinned,
+      tasksPinned: tasksCard.up && tasksCard.pinned,
+      modalCard: !!card && !card.pop,
+    });
   // A hover on the + previews only where its press opens the popover card,
-  // and never over a draft's (modal) card.
-  const plusHovers = () => navDoors && !waiting && !(card && !card.pop);
+  // and never over a draft's (modal) card or another pinned window A card.
+  const plusHovers = () => navDoors && !waiting && aHovers();
+  // WINDOW A'S SIZE, DRAGGED ON THE + POPOVER (owner, 2026-11-08: "that modal
+  // is supposed to be window A, but resize is not working for that modal"):
+  // the chassis' grips (Modal `popover.resize`) report the size let go at,
+  // remembered as the list card's own (`canvasRailPeek`, RailPeek and
+  // TasksPeek's key) — and read back on the next render (the layout tick),
+  // which re-places the card level with its door.
+  const savePopSize = useCallback((size: { width: number; height: number }) => {
+    patchUiLayout((d) =>
+      d.canvasRailPeek?.width === size.width && d.canvasRailPeek?.height === size.height
+        ? d
+        : { ...d, canvasRailPeek: { width: size.width, height: size.height } },
+    );
+  }, []);
+  const [, setLayoutTick] = useState(0);
+  useEffect(() => subscribeUiLayout(() => setLayoutTick((n) => n + 1)), []);
   // WHERE A DRAFT'S POPOVER STANDS (owner, 2026-11-07: it "jumps" from ring
   // to ring; "it must stand like window A does"): its top level with the
   // list's FIRST ring, clamped to the list's scrolled box (rail-peek-lib
@@ -2013,7 +2049,7 @@ export function ClaudeRail({
     const at = stillAt.current;
     if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
     stillAt.current = null;
-    if (e.pointerType === "touch" || (card && !card.pop)) return;
+    if (e.pointerType === "touch" || !aHovers()) return;
     if (!isChatDraftTask(row) && !row.draft_id) return;
     draftDoors.current.set(row.key, { row, href });
     plusIntent.enterPlus(row.key);
@@ -2572,10 +2608,13 @@ export function ClaudeRail({
                               // A focus HANDED here (a card shutting
                               // under the keyboard, fav-peek-store
                               // `focusRail`) opens no card.
-                              onFocus: (e: ReactFocusEvent<HTMLAnchorElement>) =>
-                                takeQuietFocus(e.currentTarget)
-                                  ? win.quietFocus(t.key)
-                                  : win.enterRing(t.key, "focus"),
+                              onFocus: (e: ReactFocusEvent<HTMLAnchorElement>) => {
+                                if (takeQuietFocus(e.currentTarget)) win.quietFocus(t.key);
+                                // A Tab onto window A's ring is its hover
+                                // (`aHovers`): nothing over another pinned
+                                // window A card.
+                                else if (win !== intent || aHovers()) win.enterRing(t.key, "focus");
+                              },
                             }),
                         onPointerLeave: () => win.leaveRing("pointer"),
                         onBlur: () => win.leaveRing("focus"),
@@ -2698,7 +2737,7 @@ export function ClaudeRail({
               : {})}
             onClick={pressTasksDoor}
             onPointerEnter={(e) => {
-              if (e.pointerType !== "touch" && tasksCard.ready) tasksCardIntent().enterRing(TASKS_CARD_KEY, "pointer");
+              if (e.pointerType !== "touch" && tasksCard.ready && aHovers()) tasksCardIntent().enterRing(TASKS_CARD_KEY, "pointer");
             }}
             onPointerLeave={() => tasksCardIntent().leaveRing("pointer")}
             onKeyDown={(e) => {
@@ -3186,6 +3225,19 @@ export function ClaudeRail({
                   // `canvasRailPeek`, else 420×640 — clamped inside the window
                   // by the chassis, the form scrolling inside it.
                   size: railCardSize(getUiLayout().canvasRailPeek ?? null),
+                  // …AND RESIZED LIKE IT (`savePopSize`): the grips on a
+                  // pinned card only — a hover's preview is not a thing to
+                  // drag.
+                  ...(card.pinned
+                    ? {
+                        resize: {
+                          minWidth: PEEK_MIN_WIDTH,
+                          minHeight: PEEK_MIN_HEIGHT,
+                          maxWidth: PEEK_MAX_WIDTH,
+                          onResize: savePopSize,
+                        },
+                      }
+                    : {}),
                   ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
                   beside: railRef,
                   closeSignal: cardCloseSignal,
