@@ -359,6 +359,7 @@ import { BOT_PEEK_ID, botHref } from "./BotPeek";
 import {
   botCardHandle,
   botCardIntent,
+  botCardState,
   botPress,
   botPressed,
   botRing,
@@ -1461,6 +1462,19 @@ export function ClaudeRail({
   const botEls = useRef(new Map<string, HTMLElement>());
   // A bot unpinned or hidden under the pointer takes its card with it.
   const botIds = JSON.stringify(bots.map((b) => b.id));
+  // THE OUTGOING RAIL LETS GO (CodeRabbit on #2201): a page switch unmounts
+  // this rail's rings with no leave event, so the shared machine would still
+  // think the pointer or the focus rests on one — a preview stuck up, or a
+  // pending one opening after the hop. A pinned card is left alone (the
+  // leave only ever starts a preview's close).
+  useEffect(
+    () => () => {
+      if (botCardState().pinned) return;
+      botIntent.leaveRing("pointer");
+      botIntent.leaveRing("focus");
+    },
+    [botIntent],
+  );
   // Only once this rail has the bots to read (a rail mounting before the
   // config answered draws none, and must not prune a card the shell holds).
   const botsKnown = favsOn && botsOffered;
@@ -2361,12 +2375,14 @@ export function ClaudeRail({
     }
     if (!bots.some((b) => b.id === id)) return;
     botRestored.current = true;
-    if (openFavKey || botsHere) {
+    // A favourite's card holds window B: the mark goes. (The Bots page is
+    // no reason — its rings open the card too; CodeRabbit on #2201.)
+    if (openFavKey) {
       setBotOpen(null);
       return;
     }
     botIntent.press(id);
-  }, [peekOn, botNoRoom, bots, openFavKey, botsHere, botIntent]);
+  }, [peekOn, botNoRoom, bots, openFavKey, botIntent]);
   const tasksDot =
     tasksPulse.attention + tasksPulse.blocked > 0
       ? "is-attention"

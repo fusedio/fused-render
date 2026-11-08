@@ -16,11 +16,15 @@ const READ_MS = 10_000;
 const RETRY_MS = 15_000;
 
 let known: Config | null = null;
+/** What the server said, apart from any test pin laid over it (`known` is the
+ *  two together). */
+let server: Config | null = null;
 let reading: Promise<Config | null> | null = null;
 const listeners = new Set<(c: Config) => void>();
 let retry: ReturnType<typeof setTimeout> | null = null;
 
 function settle(c: Config): void {
+  server = c;
   known = { ...c, ...pins };
   for (const l of [...listeners]) l(c);
 }
@@ -93,7 +97,9 @@ let pins: Partial<Config> = {};
 function pinForTests(key: "bots_available" | "launcher_available", v: boolean | null): void {
   if (v === null) delete pins[key];
   else pins[key] = v;
-  known = Object.keys(pins).length > 0 ? ({ ...(known ?? {}), ...pins } as Config) : null;
+  // The pins over the server's own answer, never over an earlier pin: a flag
+  // let go reads the server's value again (CodeRabbit on #2201).
+  known = Object.keys(pins).length > 0 ? ({ ...(server ?? {}), ...pins } as Config) : server;
   forget();
 }
 

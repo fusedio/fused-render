@@ -1375,7 +1375,9 @@ export default function App({ config }: { config: Config }) {
           other card, mounted once here for the favourite's reason — a page's
           view switch remounts its rail, and a card that lived there
           flickered out and back (owner, 2026-11-08). */}
-      {!IS_EMBED && <BotCardHost />}
+      {/* In an embed too: its rail draws pinned bots, whose rings would pin a
+          card nothing drew (CodeRabbit on #2201). */}
+      <BotCardHost />
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

@@ -469,6 +469,38 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
     expect(botOpen()).toBeNull();
   });
 
+  test("a reload on the Bots page pins the window's open bot again too (CodeRabbit on #2201)", async () => {
+    setBotOpen("b1");
+    loc.pathname = "/bots/b1";
+    const r = await mountRail({ paneOpen: false, favourites: true });
+    await act(async () => {
+      publishBots([BOT]);
+      await new Promise((res) => setTimeout(res, 0));
+    });
+    expect(r.root.findByType(BotPeek).props.shown?.id).toBe("b1");
+    expect(botOpen()).toBe("b1");
+    setBotOpen(null);
+  });
+
+  test("a rail leaving lets go of a bot hover it held, and never of a pinned card (CodeRabbit on #2201)", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: true, botHost: false });
+    await act(async () => {
+      publishBots([BOT]);
+    });
+    const { botCardIntent } = await import("./bot-card-store");
+    const intent = botCardIntent();
+    const spy: string[] = [];
+    const leave = intent.leaveRing.bind(intent);
+    intent.leaveRing = (via) => {
+      spy.push(via ?? "pointer");
+      leave(via);
+    };
+    act(() => r.unmount());
+    mounted.splice(mounted.indexOf(r), 1);
+    expect(spy).toEqual(["pointer", "focus"]);
+    intent.leaveRing = leave;
+  });
+
   test("a reload pins the window's open bot again, once the pulse lists it", async () => {
     setBotOpen("b1");
     const r = await mountRail({ paneOpen: false, favourites: true });

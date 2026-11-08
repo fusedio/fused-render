@@ -68,6 +68,9 @@ def _anchor(body: dict) -> dict | None:
     a = body.get("anchor")
     if not isinstance(a, dict):
         return None
+    # JSON true/false are ints to `float` (CodeRabbit on #2201): not a place.
+    if isinstance(a.get("left"), bool) or isinstance(a.get("top"), bool):
+        return None
     try:
         left, top = float(a.get("left")), float(a.get("top"))
     except (TypeError, ValueError, OverflowError):
