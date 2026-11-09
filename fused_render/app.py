@@ -2556,6 +2556,24 @@ def main() -> None:
             def _suspend(on: bool) -> None:
                 AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
 
+            def _is_shown() -> bool:
+                # NSPanel.isVisible() is AppKit: read it on the main
+                # thread and wait (bounded) for the answer.
+                import threading
+
+                done = threading.Event()
+                out = [False]
+
+                def _read() -> None:
+                    try:
+                        out[0] = bool(launcher_ctl.is_shown())
+                    finally:
+                        done.set()
+
+                AppHelper.callAfter(_read)
+                done.wait(0.5)
+                return out[0]
+
             launcher_mod.native_hooks.update({
                 "rebind": _rebind,
                 "suspend": _suspend,
@@ -2566,8 +2584,8 @@ def main() -> None:
                 "pinned_bound": launcher_ctl.pinned_bound,
                 "open_keys": _open_keys,
                 # GET /api/launcher/shown: the rail's Search door wears its
-                # open state while the panel stands (a plain property read).
-                "is_shown": launcher_ctl.is_shown,
+                # open state while the panel stands (read on the main thread).
+                "is_shown": _is_shown,
             })
             if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
                 # Dev only: SIGUSR2 toggles the launcher, so a script can

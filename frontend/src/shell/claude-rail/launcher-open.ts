@@ -28,6 +28,11 @@ export function useLauncherOpen(): { open: boolean; opened: () => void; failed: 
     const close = () => {
       if (!stopped) setOpen(false);
     };
+    // A press before the panel has shown is not "a click closing it": the
+    // show lands a beat after the POST, so only a seen panel yields to it.
+    const onPointerDown = () => {
+      if (seen) close();
+    };
     const onBlur = () => {
       blurred = true;
     };
@@ -49,14 +54,14 @@ export function useLauncherOpen(): { open: boolean; opened: () => void; failed: 
     };
     // The press that opened it is over (pointerdown came before the click),
     // so the next one is a press elsewhere.
-    document.addEventListener("pointerdown", close, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
     timer = window.setTimeout(poll, POLL_MS);
     return () => {
       stopped = true;
       if (timer !== null) window.clearTimeout(timer);
-      document.removeEventListener("pointerdown", close, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("focus", onFocus);
     };
