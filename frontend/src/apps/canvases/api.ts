@@ -210,6 +210,9 @@ export interface SyncStatus {
   dir: string;
   /** Set on a pull answer that failed (`ok: false`). */
   pull_error?: string | null;
+  /** The trash folder the pull copied the clone into before writing (a
+   *  hard pull always has one); null when nothing was snapshotted. */
+  trash?: string | null;
   /** The last push's error, if any. */
   error: string | null;
 }
