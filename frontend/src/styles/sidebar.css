@@ -838,22 +838,6 @@ button.sidebar-prefs-trigger {
 .sidebar-group + .sidebar-bookmarks {
   margin-top: 8px;
 }
-/* Favourites is bottom-aligned above Settings: this spacer's auto margin
-   takes the sidebar's free height (Settings' own auto margin yields to it
-   below), and its bottom border is the hairline over Favourites. The 8px
-   padding keeps the hairline off Canvases when there is no free height. */
-.sidebar-bottom-sep {
-  flex: 0 0 auto;
-  margin-top: auto;
-  padding-top: 8px;
-  border-bottom: 1px solid var(--border);
-}
-.sidebar-bottom-sep + .sidebar-bookmarks {
-  margin-top: 2px;
-}
-.sidebar-bookmarks + .sidebar-settings {
-  margin-top: 0;
-}
 .sidebar-current-apps > .sidebar-section-body,
 .sidebar-bookmarks > .sidebar-section-body {
   padding: 0 8px;
