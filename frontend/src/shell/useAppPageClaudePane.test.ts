@@ -2,7 +2,7 @@
 // the two pure halves, so the word and its absence-means-open rule are pinned
 // without a DOM.
 import { describe, expect, it } from "bun:test";
-import { chatDoorOnApp, claudePaneOpenFromSearch, withClaudePaneParam } from "./useAppPageClaudePane";
+import { chatDoorOnApp, claudePaneOpenFromSearch, opensOnThisPage, withClaudePaneParam } from "./useAppPageClaudePane";
 
 describe("the app page's Claude pane on the URL", () => {
   it("is open unless the URL says side=off — the canvas page's own word", () => {
@@ -59,5 +59,24 @@ describe("chatDoorOnApp: which ring doors open in this page's own pane", () => {
     expect(chatDoorOnApp("/explorer/view/Users/me/Fused/app/demo?_side=claude", DIR)).toBeNull();
     expect(chatDoorOnApp("/explorer/view/Users/me/%E0%A4%A?session_id=s", DIR)).toBeNull();
     expect(chatDoorOnApp("/canvases/unstable/x?session_id=s", DIR)).toBeNull();
+  });
+});
+
+describe("opensOnThisPage: the favourite card's Open wears ↗ only for a door out", () => {
+  it("the same page: a canvas's chat on that canvas, a file's chat on that file", () => {
+    expect(opensOnThisPage("/canvases/unstable/x?session_id=s", "/canvases/unstable/x")).toBe(true);
+    expect(opensOnThisPage("/explorer/view/Users/me/a.py?_side=claude&session_id=s", "/explorer/view/Users/me/a.py")).toBe(true);
+  });
+
+  it("an app page: one of its own chats opens in its pane", () => {
+    expect(opensOnThisPage("/explorer/view/Users/me/Fused/app/demo?_side=claude&session_id=s", "/apps/Users/me/Fused/app/demo"))
+      .toBe(true);
+  });
+
+  it("elsewhere: another canvas, another file, another app, a page with no pane", () => {
+    expect(opensOnThisPage("/canvases/unstable/x?session_id=s", "/canvases/unstable/y")).toBe(false);
+    expect(opensOnThisPage("/explorer/view/Users/me/a.py?session_id=s", "/explorer/view/Users/me/b.py")).toBe(false);
+    expect(opensOnThisPage("/explorer/view/Users/me/Fused/app/demo2?session_id=s", "/apps/Users/me/Fused/app/demo")).toBe(false);
+    expect(opensOnThisPage("/canvases/unstable/x?session_id=s", "/tasks")).toBe(false);
   });
 });

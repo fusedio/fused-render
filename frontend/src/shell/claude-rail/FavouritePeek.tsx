@@ -87,6 +87,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type Task, type TaskPulseTask } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { opensOnThisPage } from "@shell/useAppPageClaudePane";
 import { readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
 import { clearFavOpen, lastChatId, setFavOpen, setLastFav } from "@platform/lib/last-chat";
 import { RailPeek } from "./RailPeek";
@@ -390,6 +392,10 @@ export function FavouritePeek() {
   // Only an OPEN card makes the rail's own card give way (`avoid`); a hover
   // overlaps it and publishes nothing.
   const onBox = useCallback((b: Parameters<typeof publishFavBox>[0]) => publishFavBoxFor(hovering, b, "fav"), [hovering]);
+  // Open's ↗ only when the door leaves the page on screen (RailPeek
+  // `openIcon`): read against the URL now — a hop re-renders this card.
+  useUrlVersion();
+  const openIcon = (href: string) => !opensOnThisPage(href, location.pathname);
   useEffect(() => () => publishFavBox(null, "fav"), []);
   if (!on || !seat || !place) return null;
   return (
@@ -412,7 +418,7 @@ export function FavouritePeek() {
       onHold={hovering ? (on) => favHoverIntent().hold(on) : noop}
       onDismiss={close}
       dismissOnUnstar
-      openIcon
+      openIcon={openIcon}
       onNoRoom={() => setNoRoom(true)}
       onOpenChat={openChat}
       here={here}
