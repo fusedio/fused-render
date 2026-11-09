@@ -12,16 +12,18 @@ export interface QueuedStripProps {
   onSendNow: () => void;
   /** Put an outbox line back into the box, keyed by line id. */
   onPull: (id: string) => void;
+  /** A card tile: read-only. The lines are listed, with no send-now or edit. */
+  compact?: boolean;
 }
 
-export function QueuedStrip({ lines, running, onSendNow, onPull }: QueuedStripProps) {
+export function QueuedStrip({ lines, running, onSendNow, onPull, compact }: QueuedStripProps) {
   if (!lines.length) return null;
   return (
-    <ul className="c-queue-strip" aria-label="Queued messages">
+    <ul className={compact ? "c-queue-strip c-queue-compact" : "c-queue-strip"} aria-label="Queued messages">
       {lines.map((line) => (
         <li className="c-queue-row" key={line.id}>
           <span className="c-queue-text">{line.text}</span>
-          {line.pending === "held" ? (
+          {compact ? null : line.pending === "held" ? (
             <span className="c-queue-note">(queued until this turn is done)</span>
           ) : running ? (
             <button
@@ -33,7 +35,7 @@ export function QueuedStrip({ lines, running, onSendNow, onPull }: QueuedStripPr
               (Ctrl+X to send now)
             </button>
           ) : null}
-          {line.pending ? (
+          {!compact && line.pending ? (
             <button
               type="button"
               className="c-queue-act"

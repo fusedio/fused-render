@@ -552,6 +552,10 @@ a.c-waitcard .wc-ahead:hover,
   padding: 0 20px 6px;
   box-sizing: border-box;
 }
+.c-queue-compact {
+  max-width: none;
+  padding: 0 12px 4px;
+}
 .c-queue-row {
   display: flex;
   align-items: baseline;

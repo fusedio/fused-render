@@ -29,4 +29,11 @@ describe("QueuedStrip", () => {
     expect(out.match(/>edit</g)).toHaveLength(2);
     expect(out).toContain("(queued until this turn is done)");
   });
+  test("a compact tile lists the lines with no actions", () => {
+    const out = render({ compact: true, lines: [{ id: "a", text: "x", pending: "queued" }] });
+    expect(out).toContain("c-queue-compact");
+    expect(out).toContain("c-queue-row");
+    expect(out).not.toContain("Ctrl+X");
+    expect(out).not.toContain(">edit<");
+  });
 });

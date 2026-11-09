@@ -6214,14 +6214,13 @@ function ChatBody(props: ChatBodyProps) {
                 (between the box and the footnote, T:4203) when there is one,
                 and stands alone in the compact tile that has none. */}
             {/* The artifacts strip is Claude's (§7 `artifacts`). */}
-            {!compact ? (
-              <QueuedStrip
-                lines={queuedView.lines}
-                running={running}
-                onSendNow={onSendQueuedNow}
-                onPull={onPullPending}
-              />
-            ) : null}
+            <QueuedStrip
+              lines={queuedView.lines}
+              running={running}
+              onSendNow={onSendQueuedNow}
+              onPull={onPullPending}
+              compact={compact}
+            />
             {!compact ? (
               <ComposerGate
                 kind={waitKind}
