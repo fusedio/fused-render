@@ -2415,7 +2415,7 @@ export function ClaudeRail({
   // door's window stands (a hover's preview), `.is-pinned` beside it once a
   // press holds it — the list rings' own two steps (claude-rail.css). The
   // Search door's window is the launcher panel (`useLauncherOpen`); the Bots
-  // door's is the Bots page itself.
+  // door's is its card (BotsPeek), as the Tasks door's.
   const launcher = useLauncherOpen();
   const doorOpen = (up: boolean, pinnedUp: boolean) => (up ? " is-open" + (pinnedUp ? " is-pinned" : "") : "");
   const here = typeof location === "undefined" ? "" : location.pathname;
@@ -2889,7 +2889,7 @@ export function ClaudeRail({
             <a
               ref={botsDoorRef}
               href="/bots"
-              className={"sidebar-rail-btn claude-rail-item" + doorOpen(botsHere, true)}
+              className={"sidebar-rail-btn claude-rail-item" + doorOpen(botsUp, botsCard.pinned)}
               title={botsTip ? `Bots — ${botsTip}` : "Bots"}
               aria-label="Bots"
               {...(botsHere ? { "aria-current": "page" as const } : {})}
