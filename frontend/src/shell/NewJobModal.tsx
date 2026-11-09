@@ -21,6 +21,7 @@ import { CommandMenu, acceptText, menuKey, menuQuery } from "@apps/claude/ui/Com
 import { AttachButton } from "@apps/claude/ui/AttachButton";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { Lists } from "@apps/claude/ui/Lists";
+import { paneChatUrl, taskPane } from "@apps/claude/ui/list-rows";
 import { ChatMount } from "@apps/claude";
 import { homePlaceholderFor, type TargetNoun } from "@apps/claude/pane/paneUrl";
 import { runAppEntry } from "@apps/claude/protocol/agent";
@@ -6667,7 +6668,19 @@ export default function NewJobModal({
               if (row?.session_id) setLandingChat(row);
               else openFromLanding(row ? taskHref(row) : null);
             }}
-            onNavigate={(url) => openFromLanding(url)}
+            // EVERY CHAT ROW OPENS HERE (Akshil, 2026-11-09: only the head's
+            // Open leaves the card — the rule of every window A/B card and the
+            // Tasks page): a row about a file in this folder, which the chat
+            // landing would hop to, is found by the URL it would hop to and
+            // shown in the card. Anything else (a Page, an Upcoming entry's
+            // card) still leaves.
+            onNavigate={(url) => {
+              const row = landingRecent?.find((t) => !!t.session_id
+                && (taskHref(t) === url
+                  || paneChatUrl(taskPane(t, landingTarget || null), t.session_id) === url));
+              if (row) setLandingChat(row);
+              else openFromLanding(url);
+            }}
             {...(onOpenDraft ? { onFillDraft: onOpenDraft } : {})}
           />
         </div>
