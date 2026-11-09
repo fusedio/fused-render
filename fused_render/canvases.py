@@ -1571,9 +1571,13 @@ while you work and can change when they pull. Consequences:
   merges per node, but where you both changed the same node your version
   wins — mention it if you notice.
 - A file that unexpectedly disappeared or reverted was likely changed
-  remotely. Before recreating it, check the state on disk and say what you
-  found; overwritten/deleted versions are recoverable from
-  `../.sync/trash/<canvas>/<timestamp>/` (newest last).
+  remotely, or the user ran a Hard pull on the canvas page, which replaces
+  this whole folder with the server's copy while you keep working. Either
+  way: re-read the files you are about to edit rather than rewriting them
+  from memory, check the state on disk and say what you found. The
+  overwritten/deleted versions are in `../.sync/trash/<canvas>/<timestamp>/`
+  (newest last; a Hard pull always makes one) — restore from there only
+  what the user asks for.
 - Group related multi-file changes (e.g. a rename: the `.py` file AND its
   `canvas.toml` entry) into one change set and push it whole — a half-done
   rename that gets pushed or merged mid-way is exactly how invalid states
