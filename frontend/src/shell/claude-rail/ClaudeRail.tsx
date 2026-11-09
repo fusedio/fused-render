@@ -535,6 +535,9 @@ interface Card {
   /** Which popover door opened it (plus-pop-lib): `PLUS_DOOR`, or the draft
    *  ring's key. */
   door?: string;
+  /** THE TASK JUST CREATED from this card (NewJobModal `onCreatedChat`): the
+   *  remounted card opens on that entry's chat instead of closing. */
+  chatEntry?: string;
 }
 
 /** A draft's fresh record read for its New task card (`readDraftCard`):
@@ -3374,6 +3377,21 @@ export function ClaudeRail({
           // onto the rail; the listing is re-read now so its caption and
           // rank are not 600ms behind its ring.
           onCreated={() => refreshListing()}
+          // The landing card's chat lists (Recent chats, Pages, Snapshots):
+          // a row goes through the rail's one door, as a ring's press does.
+          onOpenChat={(href) => openChatRef.current(href)}
+          // A draft row in its lists: the draft's own popover door, the
+          // ring's press (`openDraftCard`) — the pressed draft fills this
+          // window, as it fills the chat landing's box.
+          onOpenDraft={(row) => {
+            const href = draftHref(row) ?? taskHref(row);
+            if (href) openDraftCard(row, href);
+          }}
+          // CREATE KEEPS THE CARD: a fresh mount (new `seq`, no draft) opening
+          // on the new task's chat, so Back is an empty landing.
+          initialChatEntry={card.chatEntry ?? null}
+          onCreatedChat={(entryId) =>
+            setCard((c) => (c ? { ...c, seq: Date.now(), draft: null, chatKey: "", time: null, chatEntry: entryId } : c))}
           // The +'s card with the rail flag on: the same card as a popover
           // beside the rail (`Card.pop`), top-level with the +, left of the
           // rail's edge; a hover's preview until a press pins it (`pinned`).

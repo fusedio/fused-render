@@ -496,7 +496,10 @@
 /* The bot's card is window B too (BotPeek, 2026-11-06): the same place,
    the same size, the same step above the rail's own card. */
 #claude-rail-bot-peek {
-  z-index: 46;
+  /* WINDOW B OVER EVERY WINDOW A (owner, 2026-11-09: "window b zindex higher
+     than window a"): the rail card (45), the Tasks and Bots cards (46) and
+     the +'s New task popover (`.modal-popover`, 46) all stand under it. */
+  z-index: 47;
 }
 .claude-rail-favs > .claude-rail-seat {
   flex: 0 0 auto;
@@ -1434,7 +1437,7 @@ a.claude-rail-peek-scope:focus-visible {
    2026-11-09); still under the + popover / modals (48). */
 .breakout-card {
   position: fixed;
-  z-index: 47;
+  z-index: 48; /* over window B (47) and every window A */
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
