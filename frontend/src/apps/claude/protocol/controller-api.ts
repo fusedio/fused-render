@@ -72,9 +72,10 @@ export interface UserTurn {
    * `ui/outbox.ts`). `"queued"` — typed while a send was in flight, waiting
    * its turn; `"held"` — Ctrl+Enter: waiting until the session is done;
    * `"notSent"` — handed back (a failed send, an interrupt) and
-   * waiting for the reader to decide. Drawn as a small grey tag on the bubble,
-   * the way Claude Code's terminal greys a queued line. Comes off when the real
-   * send adopts the row (`addUser` rebuilds the turn without it).
+   * waiting for the reader to decide. `"queued"` and `"held"` lines are drawn
+   * in the queued strip above the composer (`protocol/queued-lines`), not in the
+   * transcript; `"notSent"` stays a tagged bubble. Comes off when the real send
+   * adopts the row (`addUser` rebuilds the turn without it).
    */
   pending?: "queued" | "held" | "notSent";
 }

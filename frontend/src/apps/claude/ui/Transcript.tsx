@@ -113,13 +113,9 @@ export interface TranscriptProps {
    *  (`null`, not `""`) so a copied address carries no dangling `&msg=`. */
   onAnchorSpent?: () => void;
   onShowSent?: (turn: UserTurn) => void;
-  /** A queued / not-sent bubble was clicked: pull it back into the box
+  /** A not-sent bubble was clicked: pull it back into the box
    *  (`TurnProps.onPullPending`). */
   onPullPending?: (key: string) => void;
-  /** The keys of the queued bubbles that carry "(Ctrl+X to send now)". */
-  sendNowKeys?: readonly string[];
-  /** Click on that hint: the same as Ctrl+X on an empty box. */
-  onSendNow?: () => void;
   /** "Fork from here" on a user turn (`TurnProps.onFork`). */
   onFork?: (key: string) => void;
   /** Breakout pick mode: absent when not picking (`TurnProps.pick`). */
@@ -187,8 +183,6 @@ export const Transcript = memo(function Transcript({
   onAnchorSpent,
   onShowSent,
   onPullPending,
-  sendNowKeys,
-  onSendNow,
   onFork,
   pick,
   onBreakoutContext,
@@ -1022,8 +1016,6 @@ export const Transcript = memo(function Transcript({
                   {...(onShowSent ? { onShowSent } : {})}
                   {...(onPullPending ? { onPullPending } : {})}
                   onOpenReply={onOpenReply}
-                  {...(sendNowKeys && sendNowKeys.includes(turn.key) ? { sendNowHint: true } : {})}
-                  {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}
                   {...(pickFor.get(turn.key) ? { pick: pickFor.get(turn.key)! } : {})}
                   {...(onBreakoutContext ? { onBreakoutContext } : {})}

@@ -97,18 +97,13 @@ export interface TurnProps {
    *  is never foldable — the run is blocked on something inside it, and folding
    *  the block away is folding away the thing to do (design.md §B). */
   pendingCard?: boolean;
-  /** A click on a bubble this page has NOT handed to the run yet
-   *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
-   *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
+  /** A click on a "not sent" bubble (`UserTurn.pending`): the line goes back
+   *  into the box to edit. One callback for the log, keyed by the turn. */
   onPullPending?: (key: string) => void;
   /** A click on a user bubble opens the reply under it — or folds it again
    *  (always on since 2026-11-06): one callback for the log, keyed by the
    *  turn. */
   onOpenReply?: (key: string) => void;
-  /** The newest queued bubble's tag: "(Ctrl+X to send now)". Other queued bubbles show no tag. */
-  sendNowHint?: boolean;
-  /** Click on a follow-up's hint (a bubble with no `pending`): Ctrl+X's send-now. */
-  onSendNow?: () => void;
   /** "Fork from here" on a sent user turn: park it and everything after it and
    *  re-ask it in the composer. Passed only for a Claude chat that is idle;
    *  absent, no button is drawn. One callback for the log, keyed by the turn. */
@@ -151,8 +146,6 @@ export const Turn = memo(function Turn({
   pendingCard,
   onPullPending,
   onOpenReply,
-  sendNowHint,
-  onSendNow,
   onFork,
   pick,
   onBreakoutContext,
@@ -197,11 +190,9 @@ export const Turn = memo(function Turn({
     // for a live send. Absent on an old transcript, and then no time is drawn.
     const ts = turn.ts;
     const stamp = formatStamp(ts);
-    // THE OUTBOX TAG (ui/outbox.ts). A line this page is still holding wears
-    // "queued" — grey, the way Claude Code's terminal lists a line typed while it
-    // works — or "not sent" for one handed back. Both are a door: the click
-    // pulls the words back into the box, so a queued line is never a bubble the
-    // reader can only watch.
+    // A line handed back unsent wears "not sent": the click pulls the words
+    // back into the box. Queued lines are not drawn here; they live in the strip
+    // above the composer (ui/QueuedStrip).
     const pending = turn.pending;
     // A terminal ask (Ask Claude / Fix with AI) is drawn as a chip + selection
     // block, not its raw `[terminal id: ...]` line and code fences.
@@ -297,41 +288,15 @@ export const Turn = memo(function Turn({
             )}
           </div>
         </div>
-        {!pending && sendNowHint ? (
+        {pending === "notSent" ? (
           <button
             type="button"
-            className="turn-pending"
-            title="Waiting for the current turn. Click to interrupt it and send now."
-            onClick={onSendNow}
-            disabled={!onSendNow}
-          >
-            (Ctrl+X to send now)
-          </button>
-        ) : null}
-        {pending === "held" ? (
-          <button
-            type="button"
-            className="turn-pending"
-            title="Waiting for this turn to finish. Click to put it back in the box."
+            className="turn-pending is-not-sent"
+            title="This was not sent. Click to put it back in the box."
             onClick={onPullPending ? () => onPullPending(turn.key) : undefined}
             disabled={!onPullPending}
           >
-            (queued until this turn is done)
-          </button>
-        ) : null}
-        {pending === "notSent" || (pending === "queued" && sendNowHint) ? (
-          <button
-            type="button"
-            className={cn("turn-pending", pending === "notSent" && "is-not-sent")}
-            title={
-              pending === "notSent"
-                ? "This was not sent. Click to put it back in the box."
-                : "Waiting to send. Click to put it back in the box."
-            }
-            onClick={onPullPending ? () => onPullPending(turn.key) : undefined}
-            disabled={!onPullPending}
-          >
-            {pending === "notSent" ? "not sent · click to edit" : "(Ctrl+X to send now)"}
+            not sent · click to edit
           </button>
         ) : null}
         {/* SIBLINGS of the bubble, not wrappers around it: the re-attach probe

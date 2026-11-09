@@ -1461,11 +1461,9 @@ test("a line typed while the run is only STARTING is parked as a queued bubble, 
   // refuse.
   expect(boxValue(r)).toBe("");
   expect(started()).toHaveLength(1);
-  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual([
-    "first message",
-    "second message",
-  ]);
-  expect(byClass(r, "is-pending")).toHaveLength(1);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual(["first message"]);
+  expect(byClass(r, "c-queue-text").map((n) => String(n.props.children))).toEqual(["second message"]);
+  expect(byClass(r, "c-queue-row")).toHaveLength(1);
   expect(JSON.stringify(r.toJSON())).toContain("1 message waiting to send");
 
   await act(async () => open());
@@ -1562,7 +1560,7 @@ test("a parked line stopped before the inbox confirmed it comes back as ONE not-
   await typeInBox(r, "second message");
   await pressEnterInBox(r);
   await settle();
-  expect(byClass(r, "is-pending")).toHaveLength(1);
+  expect(byClass(r, "c-queue-row")).toHaveLength(1);
   // …the run goes live and stays live (`pollLive`), so the drain sends it as a
   // follow-up whose `send` is now HELD: taken by the host, not yet confirmed.
   await act(async () => open());
@@ -1653,6 +1651,7 @@ test("a stop hands lines back in the order they were typed, whichever road each 
   expect(rows.map((n) => String(n.findAllByProps({ className: "bubble" })[0]!.props.children)))
     .toEqual(["A", "B", "C"]);
   expect(byClass(r, "turn-pending")).toHaveLength(3);
+  expect(byClass(r, "c-queue-row")).toHaveLength(0);
   // ↑ pulls the newest — C — first.
   await act(async () => {
     r.root
@@ -1682,7 +1681,7 @@ test("two identical parked lines, one out and one waiting, each keep their own r
   await typeInBox(r, "again");
   await pressEnterInBox(r);
   await settle();
-  expect(byClass(r, "is-pending")).toHaveLength(2);
+  expect(byClass(r, "c-queue-row")).toHaveLength(2);
   // The run goes live: BOTH "again"s drain into it — a follow-up opens the
   // latch as soon as it is handed to the controller, so the second follows the
   // first out — and both `send`s are held: two sends out, two ids, neither
@@ -1717,11 +1716,11 @@ test("Back with a line still PARKED empties the outbox: no bubble, no hint carri
   await typeInBox(r, "parked");
   await pressEnterInBox(r);
   await settle();
-  expect(byClass(r, "is-pending")).toHaveLength(1);
+  expect(byClass(r, "c-queue-row")).toHaveLength(1);
   await act(async () => byClass(r, "c-back")[0]!.props.onClick({ preventDefault() {} }));
   await settle(60);
   expect(byClass(r, "bubble")).toHaveLength(0);
-  expect(byClass(r, "is-pending")).toHaveLength(0);
+  expect(byClass(r, "c-queue-row")).toHaveLength(0);
   expect(JSON.stringify(r.toJSON())).not.toContain("waiting to send");
   await act(async () => open());
   await settle(60);
@@ -2004,10 +2003,10 @@ test("flag OFF: a mid-turn line carries the Ctrl+X hint on its bubble, no compos
   await pressEnterInBox(rig.r);
   await settle(40);
   const queuedHint = () =>
-    byClass(rig.r, "turn-pending").filter((n) => JSON.stringify(n.children).includes("Ctrl+X to send now"));
+    byClass(rig.r, "c-queue-act").filter((n) => JSON.stringify(n.children).includes("Ctrl+X to send now"));
   expect(queuedHint()).toHaveLength(1);
   expect(JSON.stringify(rig.r.toJSON())).not.toContain("queued for this turn");
-  expect(byClass(rig.r, "is-pending")).toHaveLength(0);
+  expect(byClass(rig.r, "c-queue-row")).toHaveLength(1);
   // The CLI's receipt for the page's uuid arrives with the next poll.
   pollTaken = true;
   await settle(1500);
@@ -2059,12 +2058,14 @@ for (const flagOn of [false, true]) {
       });
     });
   const hints = (r: Chat) =>
-    byClass(r, "turn-pending").map((n) => String(n.props.children).replace(/,/g, ""));
+    [...byClass(r, "c-queue-act"), ...byClass(r, "c-queue-note"), ...byClass(r, "turn-pending")]
+      .map((n) => String(n.props.children).replace(/,/g, ""))
+      .filter((t) => t !== "edit");
 
   const sendNows = () => runs.filter((c) => c.action === "send_now");
   const clickHint = (r: Chat) =>
     act(async () => {
-      byClass(r, "turn-pending")[0]!.props.onClick();
+      byClass(r, "c-queue-act")[0]!.props.onClick();
     });
 
   test(`${tag}: a live follow-up carries the hint; empty-box Ctrl+X names it in a send_now interrupt, never a stop or a re-send`, async () => {
@@ -2073,10 +2074,11 @@ for (const flagOn of [false, true]) {
     await pressEnterInBox(r);
     await settle(60);
     expect(sends()).toHaveLength(1);
-    // The hint sits on the follow-up's own bubble: no "queued" word, no dimming,
-    // and no composer line.
+    // The follow-up is a strip row above the composer, not a transcript bubble;
+    // it wears the hint, no "queued" word and no composer line.
     expect(hints(r)).toEqual(["(Ctrl+X to send now)"]);
-    expect(byClass(r, "is-pending")).toHaveLength(0);
+    expect(byClass(r, "c-queue-row")).toHaveLength(1);
+    expect(byClass(r, "bubble").map((n) => String(n.props.children))).not.toContain("keep going");
     expect(JSON.stringify(r.toJSON())).not.toContain("queued for this turn");
     await ctrlX(r);
     await settle(100);
@@ -2183,7 +2185,7 @@ for (const flagOn of [false, true]) {
     await pressEnterInBox(r);
     await settle(150);
     expect(sends()).toHaveLength(0);
-    expect(byClass(r, "is-pending")).toHaveLength(1);
+    expect(byClass(r, "c-queue-row")).toHaveLength(1);
     stickyLive = false;
     await settle(1500);
     const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("after"));
@@ -2199,6 +2201,9 @@ for (const flagOn of [false, true]) {
     pollTaken = true;
     await settle(1500);
     expect(hints(r)).toEqual([]);
+    // Echoed: the strip row is gone and the line is a transcript bubble.
+    expect(byClass(r, "c-queue-row")).toHaveLength(0);
+    expect(byClass(r, "bubble").map((n) => String(n.props.children))).toContain("keep going");
   });
 
   test(`${tag}: a plain Stop with a live follow-up still yields "not sent"`, async () => {
@@ -2253,7 +2258,7 @@ for (const flagOn of [false, true]) {
     // Not a second turn, and not queued behind itself.
     expect(started()).toHaveLength(1);
     expect(admits).toHaveLength(openings);
-    expect(byClass(r, "is-pending")).toHaveLength(0);
+    expect(byClass(r, "c-queue-act").filter((n) => n.props.children === "edit")).toHaveLength(0);
   });
 
   test(`${tag}: a line with no acknowledgement yet is journalled, and dropped once the server has it`, async () => {
@@ -2436,6 +2441,24 @@ for (const flagOn of [false, true]) {
     expect(started()).toHaveLength(0);
     expect(sends()).toHaveLength(0);
     expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: after a reload the strip comes from the server inbox, one row per line, never in the transcript`, async () => {
+    historyBody = {
+      turns: [{ role: "user", text: "earlier", uuid: "u0" }],
+      live_run: "r1",
+      inbox: [
+        { id: "i1", text: "again", uuid: "0f8c1c52-aaaa-4bbb-8ccc-000000000001" },
+        { id: "i2", text: "again", uuid: "0f8c1c52-aaaa-4bbb-8ccc-000000000002" },
+      ],
+    };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    const { r } = await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(300);
+    expect(byClass(r, "c-queue-text").map((n) => String(n.props.children))).toEqual(["again", "again"]);
+    expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual(["earlier"]);
   });
 
   test(`${tag}: a reload into a live run re-sends the lost line as a follow-up`, async () => {
