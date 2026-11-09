@@ -22,6 +22,9 @@ export function useLauncherOpen(): { open: boolean; opened: () => void; failed: 
     if (!open) return;
     const since = Date.now();
     let seen = false;
+    /** No `shown` route (an older app) or no answer: `seen` can never turn
+     *  true, so a press is the close again. */
+    let blind = false;
     let blurred = false;
     let stopped = false;
     let timer: number | null = null;
@@ -31,7 +34,7 @@ export function useLauncherOpen(): { open: boolean; opened: () => void; failed: 
     // A press before the panel has shown is not "a click closing it": the
     // show lands a beat after the POST, so only a seen panel yields to it.
     const onPointerDown = () => {
-      if (seen) close();
+      if (seen || blind) close();
     };
     const onBlur = () => {
       blurred = true;
@@ -50,7 +53,9 @@ export function useLauncherOpen(): { open: boolean; opened: () => void; failed: 
         })
         // No route (an older app) or no answer: the press and focus rules
         // alone decide.
-        .catch(() => {});
+        .catch(() => {
+          blind = true;
+        });
     };
     // The press that opened it is over (pointerdown came before the click),
     // so the next one is a press elsewhere.
