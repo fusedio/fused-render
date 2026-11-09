@@ -719,7 +719,7 @@ export type PresetId = "legacy" | "builder" | "mission" | "files" | "focus";
 
 export const PRESETS: { id: PresetId; name: string; blurb: string }[] = [
   { id: "legacy", name: "Legacy", blurb: "Search, then your apps, sessions and recent files." },
-  { id: "builder", name: "Builder", blurb: "A big prompt box with your apps beside it." },
+  { id: "builder", name: "Builder", blurb: "A big prompt box with your bots beside it." },
   { id: "mission", name: "Mission control", blurb: "Tasks board first, bots and the index at a glance." },
   { id: "files", name: "Files", blurb: "Search and recent files lead; bookmarks beside them." },
   { id: "focus", name: "Focus", blurb: "Just search and the build box." },
@@ -759,8 +759,9 @@ function presetRows(id: PresetId, folderId?: string): PresetRow[] {
       return [
         { source: "search", x: 0, y: 0, size: "4x1" },
         { source: "build", x: 0, y: 1, size: "2x1" },
-        { source: "apps", x: 4, y: 1, size: "2x2", format: "icons" },
-        { source: "bots", x: 0, y: 5, size: "2x2", format: "list" },
+        // Bots top right, apps bottom left (owner, 2026-11-09).
+        { source: "bots", x: 4, y: 1, size: "2x2", format: "list" },
+        { source: "apps", x: 0, y: 5, size: "2x2", format: "icons" },
         { source: "tasks", x: 4, y: 5, size: "2x2", format: "list" },
       ];
     case "mission":

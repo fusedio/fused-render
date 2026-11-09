@@ -132,7 +132,8 @@ const IDLE_MS = 30_000;
 let pulse: BotsPulse = EMPTY_BOTS_PULSE;
 /** The rows the summary was made from — the Claude rail's pinned bots read
  *  them (`useBotsRows`); hidden bots are left in, as the page leaves them. */
-let rows: BotPulseRow[] = [];
+const ROWS_KEY = "fused-render:pinned-bots";
+let rows: BotPulseRow[] = memoRows();
 const rowListeners = new Set<(r: BotPulseRow[]) => void>();
 let timer: number | null = null;
 let inFlight = false;
@@ -144,8 +145,30 @@ let generation = 0;
 let feeders = 0;
 const listeners = new Set<(p: BotsPulse) => void>();
 
+/** THE PINNED BOTS, REMEMBERED ACROSS A RELOAD (owner, 2026-11-09:
+ *  "everything should show up instantly"): the rail's foot drew no faces
+ *  until the first poll answered. The pinned, shown rows of the last answer
+ *  are kept in localStorage and are the rows until the poll lands; the
+ *  summary (the dots) is never made from them — it waits for a real answer. */
+function memoRows(): BotPulseRow[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(ROWS_KEY) ?? "null") as unknown;
+    return Array.isArray(v) ? (v as BotPulseRow[]).filter((b) => b && typeof b.id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function memoWriteRows(next: BotPulseRow[]): void {
+  try {
+    localStorage.setItem(ROWS_KEY, JSON.stringify(next.filter((b) => b.pinned === true && !b.hidden)));
+  } catch {
+    /* no storage: nothing remembered */
+  }
+}
+
 function recompute(next_rows: BotPulseRow[]) {
   rows = next_rows;
+  memoWriteRows(next_rows);
   for (const l of rowListeners) l(rows);
   const next = botsPulse(rows);
   if (sameBotsPulse(pulse, next)) return;

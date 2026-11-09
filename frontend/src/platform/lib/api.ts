@@ -2085,6 +2085,12 @@ export function showLauncher(anchor?: { left: number; top: number }): Promise<{ 
   return postJson<{ ok: boolean }>("/api/launcher/show", anchor ? { anchor } : {});
 }
 
+/** Whether the launcher panel stands now (the rail's Search door's open
+ *  state). */
+export function getLauncherShown(): Promise<{ shown: boolean }> {
+  return getJson<{ shown: boolean }>("/api/launcher/shown");
+}
+
 /** The row-shortcut modifier(s), `+`-joined (`"alt"`, `"alt+cmd"`). */
 export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { launcher_row_modifier: modifier });

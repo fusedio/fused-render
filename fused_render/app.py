@@ -2565,6 +2565,9 @@ def main() -> None:
                 "hotkey_bound": launcher_ctl.hotkey_bound,
                 "pinned_bound": launcher_ctl.pinned_bound,
                 "open_keys": _open_keys,
+                # GET /api/launcher/shown: the rail's Search door wears its
+                # open state while the panel stands (a plain property read).
+                "is_shown": launcher_ctl.is_shown,
             })
             if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
                 # Dev only: SIGUSR2 toggles the launcher, so a script can

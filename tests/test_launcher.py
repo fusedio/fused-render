@@ -314,6 +314,21 @@ def test_api_launcher_bot_has_no_files(home, tmp_path, bot, monkeypatch):
     assert [x["id"] for x in body["apps"] if x.get("kind") == "bot"] == ["a"]
 
 
+def test_launcher_shown_route(home, tmp_path):
+    """GET /api/launcher/shown: the rail's Search door's open state. False
+    with no panel, the hook's answer with one, false if the hook raises."""
+    client = _client(tmp_path)
+    assert client.get("/api/launcher/shown").json() == {"shown": False}
+    launcher.native_hooks["is_shown"] = lambda: True
+    assert client.get("/api/launcher/shown").json() == {"shown": True}
+
+    def boom():
+        raise RuntimeError("panel gone")
+
+    launcher.native_hooks["is_shown"] = boom
+    assert client.get("/api/launcher/shown").json() == {"shown": False}
+
+
 def test_launcher_show_route(home, tmp_path):
     """POST /api/launcher/show: the Claude rail's Search door. 404 with no
     panel in this process; with one, the hook is called (it hops to the

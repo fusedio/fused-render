@@ -289,6 +289,7 @@ import {
   LIST_ROWS_MAX,
   nodeName,
   pinnedBots,
+  holdOrder,
   botRingRoute,
   botStatusWords,
   plusShown,
@@ -349,6 +350,7 @@ import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useRailGit } from "./rail-git";
 import { publishRailGit, registerRailGit } from "./rail-git-store";
 import { PLUS_DOOR, PlusPopIntent } from "./plus-pop-lib";
+import { useLauncherOpen } from "./launcher-open";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platform/lib/botsPulse";
@@ -581,6 +583,10 @@ function cardSeed(): Promise<{ modes: string[]; recents: string[] }> {
   });
 }
 
+/** The foot's pinned bots, in the order first drawn this page load
+ *  (claude-rail-lib `holdOrder`). */
+let heldBotOrder: string[] = [];
+
 export function ClaudeRail({
   place,
   newTask,
@@ -734,7 +740,16 @@ export function ClaudeRail({
   // something here would use the answer (favourites or the nav doors).
   const botsOffered = useBotsAvailable(favsOn || peekOn);
   const botRows = useBotsRows(favsOn && botsOffered);
-  const bots = useMemo(() => pinnedBots(botRows, { footOrder: peekOn }), [botRows, peekOn]);
+  // …IN AN ORDER SET ONCE PER PAGE LOAD (claude-rail-lib `holdOrder`; owner,
+  // 2026-11-09): a press on a bot no longer reshuffles the foot. Held at the
+  // module, not the mount, so a view switch (a new page rail) keeps it too.
+  const bots = useMemo(() => {
+    const sorted = pinnedBots(botRows, { footOrder: peekOn });
+    if (!peekOn) return sorted;
+    const out = holdOrder(heldBotOrder, sorted);
+    if (out.length > 0) heldBotOrder = out.map((b) => b.id);
+    return out;
+  }, [botRows, peekOn]);
   const allSeats = useMemo(
     () => (favouritesOnly ? [] : listSeats(railRows(rows, full, seatPlace), favsOn)),
     [rows, full, seatPlace, favsOn, favouritesOnly],
@@ -2346,6 +2361,15 @@ export function ClaudeRail({
   // Mac desktop app; `useLauncherAvailable`).
   const launcherOffered = useLauncherAvailable(navDoors);
   const searchDoor = navDoors && launcherOffered;
+  // THE DOORS WEAR THEIR WINDOW'S OPEN STATE (owner, 2026-11-09: "show
+  // highlight only when the window is open, so we know this one made it
+  // open — for +, Tasks, Bots and Search as well"): `.is-open` while the
+  // door's window stands (a hover's preview), `.is-pinned` beside it once a
+  // press holds it — the list rings' own two steps (claude-rail.css). The
+  // Search door's window is the launcher panel (`useLauncherOpen`); the Bots
+  // door's is the Bots page itself.
+  const launcher = useLauncherOpen();
+  const doorOpen = (up: boolean, pinnedUp: boolean) => (up ? " is-open" + (pinnedUp ? " is-pinned" : "") : "");
   const here = typeof location === "undefined" ? "" : location.pathname;
   const tasksHere = here === "/tasks";
   const botsHere = isBotsPath(here);
@@ -2570,7 +2594,17 @@ export function ClaudeRail({
                   data-task-key={t.key}
                   // A blocked, unstarred favourite wears `.is-blocked`
                   // (rail-peek-lib `favLike`): the section's ring, no star.
-                  className={["sidebar-rail-btn", "claude-rail-chat", ...wears.classes, ...(foot && !t.starred ? ["is-blocked"] : [])].join(" ")}
+                  className={[
+                    "sidebar-rail-btn",
+                    "claude-rail-chat",
+                    ...wears.classes,
+                    // A draft's ring whose New task popover stands: its window
+                    // is open (2026-11-09), the list rings' own marks.
+                    ...(popDoor && card?.pop && card.door === t.key
+                      ? ["peeked", ...(card.pinned ? ["is-pinned"] : [])].filter((c) => !wears.classes.includes(c))
+                      : []),
+                    ...(foot && !t.starred ? ["is-blocked"] : []),
+                  ].join(" ")}
                   aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the
                   // title's line, then the reply's — what the row clamps.
@@ -2760,18 +2794,19 @@ export function ClaudeRail({
           {searchDoor && (
             <button
               type="button"
-              className="sidebar-rail-btn claude-rail-item"
+              className={"sidebar-rail-btn claude-rail-item" + doorOpen(launcher.open, true)}
               title="Search"
               aria-label="Search"
               onClick={() => {
                 hideHint();
+                launcher.opened();
                 // Where the shortcut opens it, for now (owner, 2026-11-08: "just
                 // open it where we default open it"); the beside-the-rail place
                 // (`showLauncher({left, top})`, launcher.beside_frame) is a
                 // follow-up. A miss (the panel went with the preference) is
                 // nothing to show: the door stands only while the config says
                 // it is there.
-                showLauncher().catch(() => {});
+                showLauncher().catch(() => launcher.failed());
               }}
             >
               <Search size={16} aria-hidden="true" />
@@ -2783,7 +2818,7 @@ export function ClaudeRail({
           {botsDoor && (
             <a
               href="/bots"
-              className={"sidebar-rail-btn claude-rail-item" + (botsHere ? " active" : "")}
+              className={"sidebar-rail-btn claude-rail-item" + doorOpen(botsHere, true)}
               title={botsTip ? `Bots — ${botsTip}` : "Bots"}
               aria-label="Bots"
               {...(botsHere ? { "aria-current": "page" as const } : {})}
@@ -2796,7 +2831,7 @@ export function ClaudeRail({
           <a
             ref={tasksDoorRef}
             href="/tasks"
-            className={"sidebar-rail-btn claude-rail-item" + (tasksHere ? " active" : "")}
+            className={"sidebar-rail-btn claude-rail-item" + doorOpen(tasksUp, tasksCard.pinned)}
             title={tasksTip ? `Tasks — ${tasksTip}` : "Tasks"}
             aria-label="Tasks"
             {...(tasksHere ? { "aria-current": "page" as const } : {})}
@@ -2823,7 +2858,9 @@ export function ClaudeRail({
           <button
             ref={plusRef}
             type="button"
-            className="sidebar-rail-btn claude-rail-item"
+            className={
+              "sidebar-rail-btn claude-rail-item" + doorOpen(!!card?.pop && card.door === PLUS_DOOR, !!card?.pinned)
+            }
             title={plusLabel}
             aria-label={plusLabel}
             aria-haspopup="dialog"

@@ -27,13 +27,14 @@ type Half = "favs" | "peek";
 /** THE LAST ANSWER, REMEMBERED ACROSS A RELOAD (owner, 2026-11-05: "when I
  *  reload the sidebar pops up a little late"): the rail could not stand
  *  until this GET answered, so every reload drew the page without it and
- *  then popped it in. The pair's last answer is kept in sessionStorage and
+ *  then popped it in. The pair's last answer is kept in localStorage (since
+ *  2026-11-09: sessionStorage forgot it in every new window) and
  *  read as the starting point; the GET corrects it (a switch flipped in
  *  Settings lands within the second). Nothing but a boolean is kept. */
 const MEMO_KEY = "fused-render:favourites-on";
 function memoRead(): boolean | null {
   try {
-    const v = sessionStorage.getItem(MEMO_KEY);
+    const v = localStorage.getItem(MEMO_KEY);
     return v === "1" ? true : v === "0" ? false : null;
   } catch {
     return null;
@@ -41,7 +42,7 @@ function memoRead(): boolean | null {
 }
 function memoWrite(v: boolean): void {
   try {
-    sessionStorage.setItem(MEMO_KEY, v ? "1" : "0");
+    localStorage.setItem(MEMO_KEY, v ? "1" : "0");
   } catch {
     /* no storage: nothing remembered */
   }
@@ -145,7 +146,7 @@ export function useTaskFavourites(): boolean {
  *  flag module's in-flight GET would otherwise answer for this one. */
 export function resetTaskFavouritesFlagForTests() {
   try {
-    sessionStorage.removeItem(MEMO_KEY);
+    localStorage.removeItem(MEMO_KEY);
   } catch {
     /* no storage */
   }

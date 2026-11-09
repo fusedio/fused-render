@@ -13,7 +13,31 @@ import { useEffect, useState } from "react";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { dropSharedPrefsRead, getPrefsShared, onPrefsWrittenElsewhere, type Prefs } from "@platform/lib/api";
 
-let answer: boolean | null = null;
+/** THE LAST ANSWER, REMEMBERED ACROSS A RELOAD (owner, 2026-11-09: "when we
+ *  reload … the rail shows up a moment after, and the Tasks and Bots icons
+ *  jump from the left sidebar to the right"): until the prefs GET answered
+ *  this read as off, so the left sidebar drew its Tasks/Bots rows and the
+ *  rail had no nav doors for the first frames. The last answer is kept in
+ *  localStorage (every window, every launch) and is the starting point; the
+ *  GET corrects it. Nothing but a boolean is kept. */
+const MEMO_KEY = "fused-render:rail-peek-on";
+function memoRead(): boolean | null {
+  try {
+    const v = localStorage.getItem(MEMO_KEY);
+    return v === "1" ? true : v === "0" ? false : null;
+  } catch {
+    return null;
+  }
+}
+function memoWrite(v: boolean): void {
+  try {
+    localStorage.setItem(MEMO_KEY, v ? "1" : "0");
+  } catch {
+    /* no storage: nothing remembered */
+  }
+}
+
+let answer: boolean | null = memoRead();
 let reading: Promise<void> | null = null;
 let generation = 0;
 const listeners = new Set<(v: boolean) => void>();
@@ -24,6 +48,7 @@ function fromPrefs(p: Prefs["canvas_rail_peek"]): boolean {
 }
 
 function set(next: boolean) {
+  memoWrite(next);
   if (answer === next) return;
   answer = next;
   for (const listener of listeners) listener(next);
@@ -81,6 +106,11 @@ export function resetCanvasRailPeekFlagForTests() {
   reading = null;
   generation += 1;
   answer = null;
+  try {
+    localStorage.removeItem(MEMO_KEY);
+  } catch {
+    /* no storage */
+  }
   for (const listener of listeners) listener(false);
 }
 

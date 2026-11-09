@@ -154,6 +154,18 @@
   gap: 4px;
   flex: 0 0 auto;
 }
+/* A NAV DOOR WHOSE WINDOW STANDS (ClaudeRail `doorOpen`; owner, 2026-11-09:
+   "show highlight only when the window is open"): the hover wash while a
+   preview stands, a step firmer with the hairline once a press holds it —
+   the list rings' `.peeked` / `.is-pinned` pair, on the door itself. */
+.claude-rail-nav .sidebar-rail-btn.is-open {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.claude-rail-nav .sidebar-rail-btn.is-open.is-pinned {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
 /* The rail's inner edge (ClaudeRail `.claude-rail-seam`): pulled left, it opens
    the pane. 6px of hit area straddling the rail's border, and the app's seam
    hairline on hover — the explorer's reopen edge (.preview-side-reopen). */

@@ -15,6 +15,33 @@ import { botsAvailable, getConfig, launcherAvailable, type Config } from "./api"
 const READ_MS = 10_000;
 const RETRY_MS = 15_000;
 
+/** THE LAST ANSWER, REMEMBERED ACROSS A RELOAD (owner, 2026-11-09: "things
+ *  flash … everything should show up instantly"): until the read answered,
+ *  the rail drew no Bots or Search door and then popped them in. The two
+ *  flags' last answer is kept in localStorage and read as the starting
+ *  point; the read corrects it. Only the two booleans are kept. */
+const MEMO_KEY = "fused-render:config-doors";
+type Doors = Pick<Config, "bots_available" | "launcher_available">;
+function memoRead(): Doors | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(MEMO_KEY) ?? "null") as unknown;
+    return v && typeof v === "object" ? (v as Doors) : null;
+  } catch {
+    return null;
+  }
+}
+function memoWrite(c: Config): void {
+  try {
+    localStorage.setItem(
+      MEMO_KEY,
+      JSON.stringify({ bots_available: c.bots_available, launcher_available: c.launcher_available }),
+    );
+  } catch {
+    /* no storage: nothing remembered */
+  }
+}
+const remembered = memoRead();
+
 let known: Config | null = null;
 /** What the server said, apart from any test pin laid over it (`known` is the
  *  two together). */
@@ -24,6 +51,7 @@ const listeners = new Set<(c: Config) => void>();
 let retry: ReturnType<typeof setTimeout> | null = null;
 
 function settle(c: Config): void {
+  memoWrite(c);
   server = c;
   known = { ...c, ...pins };
   for (const l of [...listeners]) l(c);
@@ -56,7 +84,9 @@ function read(): void {
  *  (the flag that would draw the door is off) — the answer is NO until it
  *  turns on. */
 function useConfigFlag(pick: (c: Config) => boolean, enabled: boolean): boolean {
-  const [on, setOn] = useState<boolean>(known ? pick(known) : false);
+  const [on, setOn] = useState<boolean>(() =>
+    known ? pick(known) : remembered && Object.keys(pins).length === 0 ? pick(remembered as Config) : false,
+  );
   useEffect(() => {
     if (!enabled) return;
     if (known !== null) {
