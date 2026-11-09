@@ -68,6 +68,13 @@ def _run_dir(agent, name, *, file, resumed_from="", session=None, alive=True):
     return d
 
 
+def _live_run(agent, *args, **kwargs):
+    """`agent._live_run` without `out_size`, which has its own test."""
+    found = agent._live_run(*args, **kwargs)
+    found.pop("out_size", None)
+    return found
+
+
 def _found(run_id):
     """`_live_run`'s answer for a live run: its id, plus the run's `backend`
     (docs/COPILOT_BACKEND.md D2) — Claude for every meta written here."""
@@ -76,7 +83,7 @@ def _found(run_id):
 
 def test_a_live_run_for_this_session_is_found(agent, target):
     _run_dir(agent, "20260817-120000-aaa", file=target, resumed_from="sess-A")
-    assert agent._live_run(target, "sess-A") == _found("20260817-120000-aaa")
+    assert _live_run(agent, target, "sess-A") == _found("20260817-120000-aaa")
 
 
 def test_a_finished_run_is_not_offered(agent, target):
@@ -84,7 +91,7 @@ def test_a_finished_run_is_not_offered(agent, target):
     make the page attach, poll once, and redraw a turn that already ended."""
     _run_dir(agent, "20260817-120000-aaa", file=target, resumed_from="sess-A",
              alive=False)
-    assert agent._live_run(target, "sess-A") == {"run_id": ""}
+    assert _live_run(agent, target, "sess-A") == {"run_id": ""}
 
 
 def _out(run_dir, rows):
@@ -110,7 +117,7 @@ def test_a_stop_pressed_after_the_result_does_not_reopen_the_turn(agent, target)
         {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}},
     ])
     assert agent._turn_state(d) == (False, False)
-    assert agent._live_run(target, "sess-A") == {"run_id": ""}
+    assert _live_run(agent, target, "sess-A") == {"run_id": ""}
     # ...while a real wake-up after the result — hooks, then init — still is.
     _out(d, [
         {"type": "result", "subtype": "success", "result": "1"},
@@ -118,7 +125,7 @@ def test_a_stop_pressed_after_the_result_does_not_reopen_the_turn(agent, target)
         {"type": "system", "subtype": "hook_started"},
     ])
     assert agent._turn_state(d)[0] is True
-    assert agent._live_run(target, "sess-A") == _found("20260923-124427-aaa")
+    assert _live_run(agent, target, "sess-A") == _found("20260923-124427-aaa")
 
 
 def test_another_chat_s_run_is_not_adopted(agent, target, tmp_path):
@@ -126,12 +133,12 @@ def test_another_chat_s_run_is_not_adopted(agent, target, tmp_path):
     picking the wrong one would stream someone else's reply into this log."""
     other = str(tmp_path / "proj" / "other.html")
     _run_dir(agent, "20260817-120000-bbb", file=other, resumed_from="sess-A")
-    assert agent._live_run(target, "sess-A") == {"run_id": ""}
+    assert _live_run(agent, target, "sess-A") == {"run_id": ""}
 
 
 def test_another_session_of_the_same_file_is_not_adopted(agent, target):
     _run_dir(agent, "20260817-120000-ccc", file=target, resumed_from="sess-B")
-    assert agent._live_run(target, "sess-A") == {"run_id": ""}
+    assert _live_run(agent, target, "sess-A") == {"run_id": ""}
 
 
 def test_a_forked_session_id_still_matches(agent, target):
@@ -142,9 +149,9 @@ def test_a_forked_session_id_still_matches(agent, target):
     still does not."""
     _run_dir(agent, "20260817-120000-ddd", file=target, resumed_from="sess-old",
              session="sess-new")
-    assert agent._live_run(target, "sess-new") == _found("20260817-120000-ddd")
-    assert agent._live_run(target, "sess-old") == _found("20260817-120000-ddd")
-    assert agent._live_run(target, "sess-other") == {"run_id": ""}
+    assert _live_run(agent, target, "sess-new") == _found("20260817-120000-ddd")
+    assert _live_run(agent, target, "sess-old") == _found("20260817-120000-ddd")
+    assert _live_run(agent, target, "sess-other") == {"run_id": ""}
 
 
 def test_an_unpolled_new_chat_is_still_found_by_its_cli_minted_id(agent, target):
@@ -158,10 +165,10 @@ def test_an_unpolled_new_chat_is_still_found_by_its_cli_minted_id(agent, target)
     with open(os.path.join(d, "out.jsonl"), "w", encoding="utf-8") as f:
         f.write(json.dumps({"type": "system", "subtype": "init",
                             "session_id": "sess-minted"}) + "\n")
-    assert agent._live_run(target, "sess-minted") == _found("20260819-090000-abc")
+    assert _live_run(agent, target, "sess-minted") == _found("20260819-090000-abc")
     # The fallback widens what can MATCH, never what matches anything: an id
     # that is neither still finds no run.
-    assert agent._live_run(target, "sess-other") == {"run_id": ""}
+    assert _live_run(agent, target, "sess-other") == {"run_id": ""}
 
 
 def test_an_unpolled_run_with_no_output_yet_stays_invisible_by_id(agent, target):
@@ -169,14 +176,14 @@ def test_an_unpolled_run_with_no_output_yet_stays_invisible_by_id(agent, target)
     out.jsonl (or an unparsable head) yields no id, so a session-scoped lookup
     finds nothing — while the target-only form still can."""
     _run_dir(agent, "20260819-091500-def", file=target, resumed_from="")
-    assert agent._live_run(target, "sess-minted") == {"run_id": ""}
-    assert agent._live_run(target, "") == _found("20260819-091500-def")
+    assert _live_run(agent, target, "sess-minted") == {"run_id": ""}
+    assert _live_run(agent, target, "") == _found("20260819-091500-def")
 
 
 def test_the_newest_live_run_wins(agent, target):
     _run_dir(agent, "20260817-090000-old", file=target, resumed_from="sess-A")
     _run_dir(agent, "20260817-150000-new", file=target, resumed_from="sess-A")
-    assert agent._live_run(target, "sess-A") == _found("20260817-150000-new")
+    assert _live_run(agent, target, "sess-A") == _found("20260817-150000-new")
 
 
 def test_a_newer_dead_run_does_not_hide_an_older_live_one(agent, target):
@@ -185,7 +192,7 @@ def test_a_newer_dead_run_does_not_hide_an_older_live_one(agent, target):
     _run_dir(agent, "20260817-090000-old", file=target, resumed_from="sess-A")
     _run_dir(agent, "20260817-150000-new", file=target, resumed_from="sess-A",
              alive=False)
-    assert agent._live_run(target, "sess-A") == _found("20260817-090000-old")
+    assert _live_run(agent, target, "sess-A") == _found("20260817-090000-old")
 
 
 def test_the_scan_reaches_back_as_far_as_it_claims(agent, target):
@@ -199,11 +206,11 @@ def test_the_scan_reaches_back_as_far_as_it_claims(agent, target):
     for i in range(agent._LIVE_SCAN_LIMIT - 1):
         _run_dir(agent, "202602%02d-000000-dead" % (i + 1), file=target,
                  resumed_from="sess-A", alive=False)
-    assert agent._live_run(target, "sess-A") == _found(live)
+    assert _live_run(agent, target, "sess-A") == _found(live)
 
     _run_dir(agent, "20260301-000000-dead", file=target, resumed_from="sess-A",
              alive=False)
-    assert agent._live_run(target, "sess-A") == {"run_id": ""}, (
+    assert _live_run(agent, target, "sess-A") == {"run_id": ""}, (
         "one dir past the window and the live run is invisible — if this limit "
         "ever needs raising, this is the test that says so"
     )
@@ -229,10 +236,10 @@ def test_the_lock_lookup_sees_a_live_run_past_the_scan_window(agent, target):
     for i in range(agent._LIVE_SCAN_LIMIT + 5):
         _run_dir(agent, "202602%02d-000000-dead" % (i + 1), file=target,
                  resumed_from="sess-A", alive=False)
-    assert agent._live_run(target, "sess-A") == {"run_id": ""}, (
+    assert _live_run(agent, target, "sess-A") == {"run_id": ""}, (
         "premise check: the capped default still stops at the window"
     )
-    assert agent._live_run(target, "sess-A", limit=None) == _found(live)
+    assert _live_run(agent, target, "sess-A", limit=None) == _found(live)
 
 
 def test_the_lock_lookup_still_answers_no_when_every_run_is_dead(agent, target):
@@ -242,7 +249,7 @@ def test_the_lock_lookup_still_answers_no_when_every_run_is_dead(agent, target):
     for i in range(agent._LIVE_SCAN_LIMIT + 5):
         _run_dir(agent, "202602%02d-000000-dead" % (i + 1), file=target,
                  resumed_from="sess-A", alive=False)
-    assert agent._live_run(target, "sess-A", limit=None) == {"run_id": ""}
+    assert _live_run(agent, target, "sess-A", limit=None) == {"run_id": ""}
 
 
 def test_the_lock_lookup_is_scoped_to_the_folder(agent, target, tmp_path):
@@ -253,28 +260,29 @@ def test_the_lock_lookup_is_scoped_to_the_folder(agent, target, tmp_path):
     other = tmp_path / "elsewhere"
     other.mkdir()
     _run_dir(agent, "20260817-120000-aaa", file=str(other))
-    assert agent._live_run(str(clone), limit=None) == {"run_id": ""}
+    assert _live_run(agent, str(clone), limit=None) == {"run_id": ""}
     _run_dir(agent, "20260817-130000-bbb", file=str(clone))
-    assert agent._live_run(str(clone), limit=None) == _found("20260817-130000-bbb")
+    assert _live_run(agent, str(clone), limit=None) == _found("20260817-130000-bbb")
 
 
 def test_without_a_session_it_answers_for_the_target(agent, target):
     """A boot that has a `run`-less URL and no session id yet still deserves an
     answer — the target is enough to identify the chat there."""
     _run_dir(agent, "20260817-120000-eee", file=target, resumed_from="sess-A")
-    assert agent._live_run(target, "") == _found("20260817-120000-eee")
+    assert _live_run(agent, target, "") == _found("20260817-120000-eee")
 
 
 def test_no_runs_at_all_is_not_an_error(agent, target, monkeypatch):
-    assert agent._live_run(target, "sess-A") == {"run_id": ""}
+    assert _live_run(agent, target, "sess-A") == {"run_id": ""}
     monkeypatch.setattr(agent, "RUNS", os.path.join(agent.RUNS, "gone"))
-    assert agent._live_run(target, "sess-A") == {"run_id": ""}
+    assert _live_run(agent, target, "sess-A") == {"run_id": ""}
 
 
 def test_the_action_is_dispatched(agent, target):
     _run_dir(agent, "20260817-120000-fff", file=target, resumed_from="sess-A")
-    assert agent.main(action="live_run", file=target, session_id="sess-A") == _found(
-        "20260817-120000-fff")
+    found = agent.main(action="live_run", file=target, session_id="sess-A")
+    found.pop("out_size")
+    assert found == _found("20260817-120000-fff")
     assert "error" in agent.main(action="live_run", file="", session_id="sess-A")
 
 
@@ -387,14 +395,14 @@ def test_an_app_folders_run_is_adopted_by_a_caller_holding_its_ENTRY_FILE(
     the wall and in Peek both."""
     folder = str(tmp_path / "proj")
     _run_dir(agent, "20260908-120000-aaa", file=folder, resumed_from="sess-A")
-    assert agent._live_run(target, "sess-A") == _found("20260908-120000-aaa")
+    assert _live_run(agent, target, "sess-A") == _found("20260908-120000-aaa")
 
 
 def test_and_the_other_way_round_too(agent, target, tmp_path):
     """Either surface can be the one holding the folder — a chat opened on the
     file, asked about by something that knows only the project."""
     _run_dir(agent, "20260908-120000-bbb", file=target, resumed_from="sess-A")
-    assert agent._live_run(str(tmp_path / "proj"), "sess-A") == _found(
+    assert _live_run(agent, str(tmp_path / "proj"), "sess-A") == _found(
         "20260908-120000-bbb")
 
 
@@ -417,8 +425,8 @@ def test_the_widening_needs_a_session_id(agent, target, tmp_path):
     folder apart, so the exact target is all the caller has."""
     folder = str(tmp_path / "proj")
     _run_dir(agent, "20260908-120000-ccc", file=folder)
-    assert agent._live_run(target) == {"run_id": ""}
-    assert agent._live_run(folder) == _found("20260908-120000-ccc")
+    assert _live_run(agent, target) == {"run_id": ""}
+    assert _live_run(agent, folder) == _found("20260908-120000-ccc")
 
 
 # ---------------------------------------------------------------------------
@@ -482,3 +490,12 @@ def test_history_live_block_matches_what_poll_returns(agent, target, projects):
     polled = agent._poll("20260911-180000-aaa", target)
     assert hist["permissions"] == polled["permissions"]
     assert hist["mode"] == polled["mode"]
+
+
+def test_a_live_run_reports_how_long_its_output_is(agent, target):
+    run_dir = _run_dir(agent, "20260817-120000-aaa", file=target,
+                       resumed_from="sess-A")
+    with open(os.path.join(run_dir, "out.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "system", "subtype": "init"}) + "\n")
+    size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    assert agent._live_run(target, "sess-A")["out_size"] == size

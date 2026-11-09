@@ -509,7 +509,9 @@ def test_a_fresh_copilot_run_is_found_by_file_then_by_id(agent, target):
     _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_COPILOT},
                    {"type": "user", "message": {"role": "user", "content": "hi"}}])
     assert agent._live_host(file, SID_COPILOT) == {"run_id": name}
-    assert agent._live_run(file, SID_COPILOT) == {"run_id": name, "backend": "copilot"}
+    found = agent._live_run(file, SID_COPILOT)
+    found.pop("out_size")
+    assert found == {"run_id": name, "backend": "copilot"}
 
 
 def test_send_keeps_the_session_id_the_copilot_host_wrote(agent, target, home,

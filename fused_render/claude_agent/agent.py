@@ -6324,7 +6324,15 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
         if _alive(run_dir):
             turn_open, _tasks_pending = _turn_state(run_dir)
             if turn_open:
-                return {"run_id": name, "backend": _meta_backend(meta)}
+                # `out_size` tells the page whether this turn is one it has
+                # already streamed: a run's id is reused by every turn its
+                # host runs, and only the file's length says a new one began.
+                try:
+                    size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+                except OSError:
+                    size = 0
+                return {"run_id": name, "backend": _meta_backend(meta),
+                        "out_size": size}
     return {"run_id": ""}
 
 
@@ -10749,6 +10757,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     turn_started_at = _turn_opening_time(
         run_dir, _read_poll_cursor(run_dir, out_size), echo_pending)
     return {"text": "" if echo_pending else text, "done": done,
+            "out_size": out_size,
             "turn_started_at": turn_started_at,
             "session_id": new_session, "error": error, "backend": backend,
             "tokens": tokens_done + tokens_current, "phase": phase,

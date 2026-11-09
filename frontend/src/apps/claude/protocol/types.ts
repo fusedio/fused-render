@@ -607,6 +607,8 @@ export interface PollResponse {
   /** Epoch seconds the current turn began (server stamp); 0 or absent on an
    *  older agent.py. */
   turn_started_at?: number;
+  /** `out.jsonl`'s length at this poll. */
+  out_size?: number;
   /** The run's original first user message. */
   message: string;
   permissions: PermissionRow[];
@@ -800,6 +802,8 @@ export interface CancelResponse {
 /** agent.py:2759-2802 / 2902-2927 — "" when none. */
 export interface RunIdResponse {
   run_id: string;
+  /** `out.jsonl`'s length when a live run was found. */
+  out_size?: number;
 }
 
 /** agent.py:4396. */

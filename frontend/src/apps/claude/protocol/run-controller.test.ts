@@ -5665,3 +5665,66 @@ describe("the page-minted client id rides the wire and comes back", () => {
     controller.dispose();
   });
 });
+
+describe("one host, many turns: a turn the page has not streamed is attached again", () => {
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const finishedTurn = (n: number) =>
+    poll({ done: true, session_id: "s1", out_size: 100, segments: [text("first")], text: "first" });
+
+  test("a woken turn on a run this page already streamed streams", async () => {
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => (n === 0 ? finishedTurn(n) : poll({ done: true, session_id: "s1", out_size: 400, segments: [text("woken")], text: "woken" })),
+      live_run: () => ({ run_id: "r1", out_size: 400 }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await made.controller.sendMessage("go");
+    expect(made.agent.of("poll").length).toBe(1);
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(made.agent.of("poll").length).toBeGreaterThan(1);
+    expect(made.controller.getState().working).toBeNull();
+    made.controller.dispose();
+  });
+
+  test("the turn just streamed is not attached again", async () => {
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => finishedTurn(n),
+      live_run: () => ({ run_id: "r1", out_size: 100 }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await made.controller.sendMessage("go");
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(made.agent.of("poll").length).toBe(1);
+    made.controller.dispose();
+  });
+
+  test("a send-now's queued turn is looked for as soon as the abort ends the loop", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      send_now: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("urgent", { clientId: "id-urgent" });
+          await settle();
+          await controller.sendQueuedNow();
+          return finishedTurn(n);
+        }
+        return poll({ done: true, session_id: "s1", out_size: 500, segments: [text("urgent reply")], text: "urgent reply" });
+      },
+      live_run: () => ({ run_id: "r1", out_size: 500 }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    await settle();
+    expect(made.agent.of("send_now").length).toBe(1);
+    expect(made.agent.of("live_run").length).toBeGreaterThan(0);
+    expect(made.agent.of("poll").length).toBeGreaterThan(1);
+    controller.dispose();
+  });
+});

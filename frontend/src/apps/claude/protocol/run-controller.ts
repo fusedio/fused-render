@@ -465,6 +465,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
    */
   const shownRuns = new Set<string>();
   /**
+   * WHERE `out.jsonl` ENDED WHEN THIS PAGE LAST FINISHED STREAMING A RUN, by
+   * run id. A host runs many turns under one id (a background job's wake, a
+   * send-now's queued line), so "this id was shown" cannot mean "this id is
+   * never attached again": a live run whose file has grown past this mark is a
+   * turn the page has not streamed, and `adoptWatch` attaches to it. An id with
+   * no mark here (or at the same length) is the turn just streamed.
+   */
+  const streamedEnd = new Map<string, number>();
+  /** The run a Ctrl+X was sent to; its loop's end looks for the queued line's
+   *  turn at once instead of waiting for the standing watch. */
+  let sendNowRun = "";
+  /**
    * AND THE SHORT-LIVED HALF: ids a `resumeAttach` is in the middle of claiming.
    *
    * The early `shownRuns` write was doing two jobs and only one of them was
@@ -1878,6 +1890,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const tGen = state.transcriptGen;
     workingStartedAt = turnStartedAt(runId);
     turnStamp = 0;
+    /** `out.jsonl`'s length at this loop's last poll — see `streamedEnd`. */
+    let outSize = 0;
     setRunningUi(true);
     setStats(0, "thinking", null, null);
     noteChatActivity();
@@ -2079,6 +2093,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         );
         workingStartedAt = clock.startedAt;
         turnStamp = clock.stamp;
+        if (typeof poll.out_size === "number") outSize = poll.out_size;
 
         // usage arrives only at message end; estimate from streamed text meanwhile
         const tokens = Math.max(poll.tokens || 0, Math.round((poll.text || "").length / 4));
@@ -2509,6 +2524,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // chat as this page's own and suppresses the refresh they should trigger.
       if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
       forgetTurnStart(runId);
+      if (runId && outSize) streamedEnd.set(runId, outSize);
       // Nothing is "queued for this turn" once the turn is over: the CLI drains
       // its queue as part of the run, so whatever is still listed here has
       // either been answered above or died with the process. Guarded on
@@ -2526,6 +2542,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // Started HERE rather than in the `done` branch so `activeRun` is already
       // let go — the watch reads a set `activeRun` as "a new loop took over".
       if (watchCards && loopSeq === seat) void cardWatch(runId, gen, tGen);
+      // A SEND-NOW's ABORT ENDS THIS LOOP; the line it made way for is the next
+      // turn of the same host. Looked for now, from the loop's own end.
+      if (sendNowRun === runId && loopSeq === seat && state.sessionId) {
+        sendNowRun = "";
+        void adoptLiveRun(state.sessionId, { quiet: true });
+      }
     }
   }
 
@@ -3229,7 +3251,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (!target) return false;
     try {
       const res = await run("send_now", { run_id: runId, client_uuid: target });
-      return "sent" in res && res.sent;
+      const sent = "sent" in res && res.sent;
+      if (sent) sendNowRun = runId;
+      return sent;
     } catch {
       return false;
     }
@@ -3768,6 +3792,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // relying on the `transcriptGen` bump, because the id an entering reader
     // most needs re-adopted is the one this frame streamed a moment ago.
     shownRuns.clear();
+    streamedEnd.clear();
     claimingRuns.clear();
     // Published, not just emptied: the hint under the box belongs to the
     // conversation that is leaving.
@@ -3979,6 +4004,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // `claimingRuns` beside it for the OTHER half: an attach already in
       // flight for this id (the boot's `?run=`, the schedule poller) owns it
       // until it either attaches or lets go — see the declaration.
+      // A shown run is attached again only for a turn it has grown a new one
+      // for (`streamedEnd`): the host's wake or send-now line.
+      const newTurn =
+        shownRuns.has(id) &&
+        typeof live!.out_size === "number" &&
+        live!.out_size > (streamedEnd.get(id) ?? Infinity);
+      if (newTurn) shownRuns.delete(id);
       if (shownRuns.has(id) || claimingRuns.has(id)) {
         setAdopting(false);
         continue;
@@ -4811,6 +4843,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // list is meant to re-attach to it, which `adoptWatch` refused while the id
     // was still recorded here from `pollLoop`.
     shownRuns.clear();
+    streamedEnd.clear();
     // And the CLAIMS with them (Bugbot 3975433059): an attach whose transcript
     // has been replaced is abandoned, and a claim it never gets to release
     // would keep its run unadoptable for the rest of the page.
