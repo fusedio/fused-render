@@ -239,6 +239,9 @@ export interface ComposerCardProps {
    * and the model has two possible answers — see `ctxModel` below.
    */
   context?: ContextUsage | null;
+  /** The run the context popover asks for `/context`'s split (its live host).
+   *  Null/absent: the popover's one-row view only. */
+  runId?: string | null;
   /** A fresh turn. */
   onSend(text: string, opts: SendOptions): void;
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
@@ -583,6 +586,7 @@ export function ComposerCard({
   controls,
   status,
   context,
+  runId,
   onSend,
   onFollowUp,
   onSendNow,
@@ -2551,7 +2555,12 @@ export function ComposerCard({
               FIRST seat the ladder drops (`.is-slim`): the number is one hover
               away in the pills' own tooltip world, and a row that wraps to keep
               a ring is the wrong trade. */}
-          <ContextMeter usage={ctxUsage} model={ctxModel} />
+          <ContextMeter
+            usage={ctxUsage}
+            model={ctxModel}
+            runId={runId ?? null}
+            sessionId={sessionId || null}
+          />
           <span className="c-spacer" />
           {camera}
           {/* THE PAPERCLIP, first of the draft's own group (attach, schedule,

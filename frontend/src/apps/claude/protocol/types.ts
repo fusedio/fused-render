@@ -32,6 +32,7 @@ export type Action =
   | "set_mode"
   | "commands"
   | "task_output"
+  | "context_usage"
   | "task_stop"
   | "task_background"
   | "tasks"
@@ -270,6 +271,8 @@ export interface AgentRequests {
   set_mode: { run_id: string; permission_mode: string };
   commands: CommandsRequest;
   task_output: TaskOutputRequest;
+  /** The context popover's `/context` split, asked of the run's live host. */
+  context_usage: { run_id: string } | { session_id: string };
   task_stop: TaskOutputRequest;
   task_background: TaskBackgroundRequest;
   tasks: RunTasksRequest;
@@ -1156,6 +1159,7 @@ export interface AgentResponses {
   set_mode: SetModeResponse;
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
+  context_usage: ContextBreakdown | ErrorOnly;
   task_stop: TaskStopResponse | ErrorOnly;
   task_background: TaskBackgroundResponse | ErrorOnly;
   tasks: RunTasksResponse | ErrorOnly;
@@ -1278,6 +1282,42 @@ export interface TaskBackgroundRequest {
 export interface TaskBackgroundResponse {
   ok: true;
   backgrounded: boolean;
+  error?: undefined;
+}
+/** What a `/context` row is (CLI `kind`): `deferred` rows are tool schemas
+ *  loaded on demand, outside the window and the usage math. */
+export type ContextCategoryKind = "used" | "free" | "buffer" | "deferred";
+/** One `/context` row (agent.py `_context_breakdown`). `color` is the CLI's
+ *  theme key (`promptBorder`, `cyan_FOR_SUBAGENTS_ONLY`, ...). */
+export interface ContextCategory {
+  id: string;
+  name: string;
+  tokens: number;
+  color: string;
+  kind: ContextCategoryKind;
+}
+export interface ContextDetailItem {
+  name: string;
+  tokens: number;
+  /** MCP rows are per server: how many tools it holds. */
+  count?: number;
+}
+/** A row's drill-down: the top eight by tokens, the rest tallied. */
+export interface ContextDetail {
+  items: ContextDetailItem[];
+  more: number;
+  more_tokens: number;
+}
+/** `context_usage {run_id}`: `get_context_usage` (detail "summary"), trimmed. */
+export interface ContextBreakdown {
+  categories: ContextCategory[];
+  /** Keyed by the category id each list splits. */
+  details: Record<string, ContextDetail>;
+  total_tokens: number;
+  max_tokens: number;
+  model: string;
+  /** The host has gone; this is the last answer it gave, saved server-side. */
+  stale?: boolean;
   error?: undefined;
 }
 export interface TaskOutputResponse {

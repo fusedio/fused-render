@@ -76,6 +76,7 @@ TASK_STOP_POOL = ThreadPoolExecutor(max_workers=2,
 
 #: Actions with a lane of their own, beside the control lane.
 SIDE_POOLS: dict[str, ThreadPoolExecutor] = {"task_output": TASK_OUTPUT_POOL,
+                                              "context_usage": TASK_OUTPUT_POOL,
                                               "task_stop": TASK_STOP_POOL,
                                               "task_background": TASK_STOP_POOL}
 
@@ -105,6 +106,8 @@ BUDGETS_S: dict[str, float] = {
     "cancel": 15.0,
     # SPEC T-3: a 10 s control-response wait plus the request write.
     "task_output": 15.0,
+    # The context popover's breakdown: the same 10 s wait, on the same lane.
+    "context_usage": 15.0,
     "task_stop": 15.0,
     "task_background": 15.0,
     "commands": 30.0,

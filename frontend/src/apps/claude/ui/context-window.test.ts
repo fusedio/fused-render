@@ -6,7 +6,7 @@
 // The point of the file is that a refactor cannot quietly move this meter ten
 // points away from the meter the same reader has in their terminal.
 import { describe, expect, it } from "bun:test";
-import type { ContextUsage } from "../protocol/types";
+import type { ContextBreakdown, ContextUsage } from "../protocol/types";
 import {
   WINDOW_1M,
   WINDOW_DEFAULT,
@@ -14,8 +14,10 @@ import {
   contextHint,
   contextInput,
   contextLevel,
+  contextBreakdownReport,
   contextReport,
   contextThresholds,
+  contextTone,
   contextTotal,
   formatTokens,
   groupDigits,
@@ -379,5 +381,91 @@ describe("contextReport", () => {
     const over = contextReport("claude-haiku-4-5", input(900_000));
     expect(over.squares).toHaveLength(100);
     expect(over.squares.filter((s) => s.kind === "free")).toHaveLength(0);
+  });
+});
+
+/** The real `get_context_usage` probe (CLI 2.1.319), as agent.py trims it. */
+const PROBE: ContextBreakdown = {
+  categories: [
+    { id: "system_prompt", name: "System prompt", tokens: 2484, color: "promptBorder", kind: "used" },
+    { id: "system_tools", name: "System tools", tokens: 23263, color: "inactive", kind: "used" },
+    { id: "system_tools_deferred", name: "System tools (deferred)", tokens: 35890, color: "inactive", kind: "deferred" },
+    { id: "custom_agents", name: "Custom agents", tokens: 3750, color: "permission", kind: "used" },
+    { id: "memory_files", name: "Memory files", tokens: 1332, color: "claude", kind: "used" },
+    { id: "skills", name: "Skills", tokens: 9949, color: "warning", kind: "used" },
+    { id: "messages", name: "Messages", tokens: 428, color: "purple_FOR_SUBAGENTS_ONLY", kind: "used" },
+    { id: "compact_buffer", name: "Compact buffer", tokens: 3000, color: "inactive", kind: "buffer" },
+    { id: "free_space", name: "Free space", tokens: 955794, color: "promptBorder", kind: "free" },
+  ],
+  details: {
+    memory_files: { items: [{ name: "/u/.claude/CLAUDE.md", tokens: 1332 }], more: 0, more_tokens: 0 },
+  },
+  total_tokens: 41206,
+  max_tokens: 1_000_000,
+  model: "claude-opus-5",
+};
+
+describe("contextTone", () => {
+  it("maps CLI colour keys, subagent suffix and all, and anything new to other", () => {
+    expect(contextTone("promptBorder")).toBe("prompt");
+    expect(contextTone("cyan_FOR_SUBAGENTS_ONLY")).toBe("cyan");
+    expect(contextTone("purple_FOR_SUBAGENTS_ONLY")).toBe("purple");
+    expect(contextTone("success")).toBe("success");
+    expect(contextTone("chartreuse")).toBe("other");
+    expect(contextTone("")).toBe("other");
+  });
+});
+
+describe("contextBreakdownReport", () => {
+  const r = contextBreakdownReport("claude-opus-5", input(41_206), PROBE);
+
+  it("keeps the ring's headline and draws the grid on the CLI's window", () => {
+    const base = contextReport("claude-opus-5", input(41_206));
+    expect([r.total, r.compactAt, r.pct]).toEqual([base.total, base.compactAt, base.pct]);
+    expect([r.window, r.columns, r.squares.length]).toEqual([1_000_000, 20, 200]);
+  });
+
+  it("colours the squares per category in CLI order, free then buffer last", () => {
+    const tones = r.squares.filter((s) => s.kind === "used").map((s) => s.tone);
+    // min one square each; 23k of 1M is 4.65 squares -> 5; 9.9k -> 2.
+    expect(tones).toEqual([
+      "prompt", "inactive", "inactive", "inactive", "inactive", "inactive",
+      "permission", "claude", "warning", "warning", "purple",
+    ]);
+    expect(r.squares.filter((s) => s.kind === "free")).toHaveLength(188);
+    expect(r.squares[r.squares.length - 1]!.kind).toBe("buffer");
+    expect(r.squares.filter((s) => s.kind === "buffer")).toHaveLength(1);
+    // The frontier square of a category under 0.7 full is the lighter glyph.
+    expect(r.squares[0]!.glyph).toBe("⛀");
+    expect(r.squares[6]!.glyph).toBe("⛁");
+  });
+
+  it("lists used rows, then Compact buffer, then Free space; deferred apart", () => {
+    expect(r.legend.map((row) => row.label)).toEqual([
+      "System prompt", "System tools", "Custom agents", "Memory files", "Skills",
+      "Messages", "Compact buffer", "Free space",
+    ]);
+    expect(r.legend[0]).toMatchObject({ id: "system_prompt", kind: "used", tone: "prompt", pct: "0.2" });
+    expect(r.legend[7]).toMatchObject({ kind: "free", tokens: 955_794, pct: "95.6" });
+    expect(r.legend.some((row) => row.note)).toBe(false);
+    expect(r.legend.find((row) => row.id === "memory_files")!.detail!.items).toHaveLength(1);
+    expect(r.deferred).toEqual([
+      expect.objectContaining({ label: "System tools (deferred)", pct: "", note: "(loaded on-demand)" }),
+    ]);
+  });
+
+  it("re-derives Messages and Free space from the latest usage when stale", () => {
+    // Fixed rows in PROBE sum to 41,206 - 428 (Messages) = 40,778.
+    const stale = contextBreakdownReport("claude-opus-5", input(50_778), { ...PROBE, stale: true });
+    expect(stale.legend.find((row) => row.label === "Messages")!.tokens).toBe(10_000);
+    expect(stale.legend.find((row) => row.label === "Free space")!.tokens)
+      .toBe(1_000_000 - 50_778 - 3_000);
+    expect(stale.legend.find((row) => row.label === "Skills")!.tokens).toBe(9_949);
+  });
+
+  it("falls back to the one-row view when there is no window to draw", () => {
+    const empty = { ...PROBE, categories: [], max_tokens: 0 };
+    expect(contextBreakdownReport("claude-opus-5", input(41_206), empty).legend.map((x) => x.label))
+      .toEqual(["Messages", "Free space"]);
   });
 });
