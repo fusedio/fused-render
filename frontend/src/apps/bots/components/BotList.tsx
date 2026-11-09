@@ -33,18 +33,33 @@ export interface BotListProps {
 
 const EMPTY: BotEvent[] = [];
 
-function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: BotListProps["onContextMenu"] }) {
-  const evs = S.events[b.id] || EMPTY, n = unreadCount(b), sel = b.id === S.sel;
+export interface RowProps {
+  b: Bot;
+  S: BotsState;
+  /** Right-click, at the pointer (the page's BotMenu). Absent — the rail's Bots card (shell/claude-rail BotsPeek),
+   *  which mounts no menu — and the row has no context menu. */
+  onContextMenu?: BotListProps["onContextMenu"];
+  /** Drawn as the selected row. Default: the store's selection (the page); the card passes its own open chat. */
+  sel?: boolean;
+  /** A press on the row. Default: `openBot` — select, write the URL, tell the server (the page); the card passes
+   *  its own opener and the store's selection is left alone. */
+  onOpen?: (id: string) => void;
+}
+
+export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
+  const evs = S.events[b.id] || EMPTY, n = unreadCount(b), sel = selProp ?? b.id === S.sel;
   const msg = lastBotMsg(evs), ts = lastTs(evs), glyph = routineGlyph(b), note = b.status === "idle" ? routineNote(b) : null;
   // Super Bot with a hand-off in flight (docs §11): that outranks its last message, which is "I asked <Bot>…" anyway.
   const ho = b.kind === "super" ? activeHandoff(b) : null;
+  // The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. Only on the
+  // page (`onContextMenu` present): the card mounts no dialogs.
+  const settings = sel && !!onContextMenu;
   return (
-    <div className={`bot${sel ? " sel" : ""}`} data-id={b.id} title="Right-click for options"
-      onClick={() => openBot(b.id)}
-      onContextMenu={(e) => { e.preventDefault(); onContextMenu(b.id, e.clientX, e.clientY); }}>
-      {/* The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. */}
-      <span className={`av${sel ? " settings" : ""}`} title={sel ? "Settings" : undefined}
-        onClick={sel ? (e) => { e.stopPropagation(); openDialog({ kind: "settings", id: b.id }); } : undefined}>
+    <div className={`bot${sel ? " sel" : ""}`} data-id={b.id} title={onContextMenu ? "Right-click for options" : undefined}
+      onClick={() => (onOpen ?? openBot)(b.id)}
+      onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu(b.id, e.clientX, e.clientY); } : undefined}>
+      <span className={`av${settings ? " settings" : ""}`} title={settings ? "Settings" : undefined}
+        onClick={settings ? (e) => { e.stopPropagation(); openDialog({ kind: "settings", id: b.id }); } : undefined}>
         <Face b={b} svgId={sel ? "lface" : undefined} />
         {/* Amber "needs you in the browser" (a bot-initiated hand-over) replaces the status colour; red stays "needs an answer". */}
         {needsYou(b) ? <span className="dot needsyou" title="Needs you in the browser" />
@@ -67,6 +82,23 @@ function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: Bot
       </div>
     </div>
   );
+}
+
+/** THE LIST'S ROWS (the page's and the rail's Bots card's): pinned first, then bots waiting on you that you haven't
+ *  looked at yet, then by your own last message (newest first); hidden bots apart, under a toggle. Opening a waiting
+ *  bot marks its events seen, so it drops back into the normal order instead of sitting at the top until answered.
+ *  `q` filters both by name, task and title. */
+export function listRows(S: BotsState, q: string): { shown: Bot[]; hidden: Bot[]; query: string } {
+  const recency = (b: Bot) => lastUserTs(S.events[b.id] || EMPTY) || b.created || 0;
+  const waiting = (b: Bot) => waitingUnread(b, S.seen[b.id], unreadCount(b));
+  const order = botOrder(waiting, recency);
+  const query = q.trim().toLowerCase();
+  const match = (b: Bot) => !query || `${b.name} ${b.task || ""} ${b.title || ""}`.toLowerCase().includes(query);
+  return {
+    shown: S.bots.filter((b) => !b.hidden && match(b)).sort(order),
+    hidden: S.bots.filter((b) => b.hidden && match(b)).sort(order),
+    query,
+  };
 }
 
 export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, onOpenApps, onOpenPrefs, onContextMenu }: BotListProps) {
@@ -99,15 +131,7 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
     return () => ro.disconnect();
   }, []);
 
-  // Pinned first, then bots waiting on you that you haven't looked at yet, then by your own last message (newest first). Hidden bots collapse under a toggle.
-  // Opening a waiting bot marks its events seen, so it drops back into the normal order instead of sitting at the top until answered.
-  const recency = (b: Bot) => lastUserTs(S.events[b.id] || EMPTY) || b.created || 0;
-  const waiting = (b: Bot) => waitingUnread(b, S.seen[b.id], unreadCount(b));
-  const order = botOrder(waiting, recency);
-  const query = q.trim().toLowerCase();
-  const match = (b: Bot) => !query || `${b.name} ${b.task || ""} ${b.title || ""}`.toLowerCase().includes(query);
-  const shown = S.bots.filter((b) => !b.hidden && match(b)).sort(order);
-  const hidden = S.bots.filter((b) => b.hidden && match(b)).sort(order);
+  const { shown, hidden, query } = listRows(S, q);
 
   const u = S.usage, chip = S.buildsChip;
   return (

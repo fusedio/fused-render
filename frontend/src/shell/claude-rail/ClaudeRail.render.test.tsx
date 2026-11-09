@@ -28,6 +28,8 @@ const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 const { BotCardHost } = await import("./BotCardHost");
 const { resetBotCardForTests } = await import("./bot-card-store");
 const { railGitNow, resetRailGitStoreForTests } = await import("./rail-git-store");
+const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
+const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
 
 const DIR = "/home/me/apps/demo";
 
@@ -579,6 +581,57 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
 // with the nav doors the rail draws no Git section and publishes the page's
 // repository for the status bar's Git chip (rail-git-store.ts, GitDock);
 // flag off, the rail of before.
+describe("ClaudeRail's Bots door and its card (BotsPeek; owner, 2026-11-09)", () => {
+  beforeEach(() => {
+    resetBotsCardForTests();
+    resetTasksCardForTests();
+  });
+  afterEach(() => {
+    resetBotsCardForTests();
+    resetTasksCardForTests();
+  });
+  const door = (r: ReactTestRenderer, label: string) => byLabel(r, label)[0]!;
+  const press = (r: ReactTestRenderer, label: string) =>
+    act(() => {
+      door(r, label).props.onClick({ preventDefault() {}, button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, detail: 1 });
+    });
+
+  test("no card mounted (an embed): the Bots door is the plain link, no popup", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: true });
+    expect(door(r, "Bots").props["aria-haspopup"]).toBeUndefined();
+    expect(door(r, "Bots").props.href).toBe("/bots");
+  });
+
+  test("a card mounted: the door is a dialog's; a press pins the card, a second press closes it (the Tasks door's toggle)", async () => {
+    const off = registerBotsCard();
+    const r = await mountRail({ paneOpen: false, favourites: true });
+    expect(door(r, "Bots").props["aria-haspopup"]).toBe("dialog");
+    expect(door(r, "Bots").props["aria-expanded"]).toBe(false);
+    await press(r, "Bots");
+    expect(botsCardState()).toMatchObject({ up: true, pinned: true });
+    expect(door(r, "Bots").props["aria-expanded"]).toBe(true);
+    await press(r, "Bots");
+    expect(botsCardState().up).toBe(false);
+    off();
+  });
+
+  test("one window A card at a time: the Tasks door's press puts the Bots card down, and the Bots door's the Tasks card", async () => {
+    const offB = registerBotsCard();
+    const offT = registerTasksCard();
+    const r = await mountRail({ paneOpen: false, favourites: true });
+    await press(r, "Bots");
+    expect(botsCardState().up).toBe(true);
+    await press(r, "Tasks");
+    expect(tasksCardState().up).toBe(true);
+    expect(botsCardState().up).toBe(false);
+    await press(r, "Bots");
+    expect(botsCardState().up).toBe(true);
+    expect(tasksCardState().up).toBe(false);
+    offB();
+    offT();
+  });
+});
+
 describe("ClaudeRail's git with the rail flag", () => {
   const REPO = {
     root: DIR,

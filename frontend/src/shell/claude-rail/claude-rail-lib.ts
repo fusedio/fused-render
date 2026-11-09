@@ -997,8 +997,10 @@ export function windowAHovers(o: {
   popPinned: boolean;
   /** The Tasks card is up and pinned. */
   tasksPinned: boolean;
+  /** The Bots card is up and pinned (2026-11-09: the Bots door's own card). */
+  botsPinned: boolean;
   /** A draft's modal card (not the popover) is up. */
   modalCard: boolean;
 }): boolean {
-  return !o.listPinned && !o.popPinned && !o.tasksPinned && !o.modalCard;
+  return !o.listPinned && !o.popPinned && !o.tasksPinned && !o.botsPinned && !o.modalCard;
 }
