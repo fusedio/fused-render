@@ -6789,6 +6789,12 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         _run_own_session(run_dir, meta) or str(meta.get("resumed_from") or ""),
         model, effort, "",
         permission_mode if permission_mode in PERMISSION_MODES else "")
+    # A RE-SEND OF A LINE THE HOST ALREADY HOLDS is a no-op: the page keeps a
+    # line until its `send` is acknowledged, so a 504 or a reload in that gap
+    # can send the same `client_uuid` twice.
+    if client_uuid and any(r.get("uuid") == client_uuid
+                           for r in _inbox_waiting(run_dir)):
+        return {"sent": True}
     # Marks this message as sent-but-not-yet-echoed, so `_poll` (see its
     # `pending_echo` handling) will not believe a stale trailing `result` in
     # `out.jsonl` means the turn is done: at this exact instant the host may
@@ -6809,12 +6815,6 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # later one.
     with open(os.path.join(run_dir, "pending_echo"), "a", encoding="utf-8") as f:
         f.write(f"{pending_offset}\n")
-    # A RE-SEND OF A LINE THE HOST ALREADY HOLDS is a no-op: the page keeps a
-    # line until its `send` is acknowledged, so a 504 or a reload in that gap
-    # can send the same `client_uuid` twice.
-    if client_uuid and any(r.get("uuid") == client_uuid
-                           for r in _inbox_waiting(run_dir)):
-        return {"sent": True}
     _write_inbox_entry(
         run_dir, _compose_turn(message, terminal_hint), client_uuid,
         typed=typed or message)
@@ -10613,7 +10613,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         saw_echo_since_send = True
                         break
                 elif (echoes and isinstance(row, dict)
-                      and row.get("type") == "result"):
+                      and row.get("type") == "result"
+                      and not any(not r.get("drained")
+                                  for r in _inbox_waiting(run_dir))):
+                    # ...but only once the host has drained every line: one
+                    # still in the inbox has not reached the CLI, so no turn
+                    # has answered it and the gate stays.
                     saw_echo_since_send = True
                     break
             line_off = line_end
