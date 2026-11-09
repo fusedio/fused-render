@@ -39,7 +39,8 @@ import {
   type RefObject,
 } from "react";
 import { useUrlVersion } from "@platform/lib/hooks";
-import { replaceSearch } from "@platform/lib/router";
+import { replaceSearch, rewriteLegacyUrl } from "@platform/lib/router";
+import { appPathFromPath } from "./current-apps-lib";
 import { MIN_W, clampSideWidth, defaultSideWidth } from "@apps/explorer/lib/side-width";
 import { getSideWidth, setSideWidth, subscribeSideWidth } from "@apps/explorer/lib/side-store";
 import { startSideReopenPull } from "@apps/explorer/SideChrome";
@@ -262,4 +263,25 @@ export function chatDoorOnApp(href: string, dir: string): { params: Record<strin
   }
   if (!params.session_id && !params.queued) return null;
   return { params };
+}
+
+/**
+ * WHETHER A CHAT'S DOOR STAYS ON THIS PAGE (the favourite card's Open, Akshil
+ * 2026-11-09: its ↗ only when Open takes the reader somewhere else). The door
+ * lands here when its page is the one on screen — the same path, only the
+ * pane and its chat change (a canvas's chat on that canvas, a file's on that
+ * file) — or, on an app page, when it is one of that app's own chats
+ * (`chatDoorOnApp`), which open in the page's pane. `pathname` is the page's
+ * now (`location.pathname`).
+ */
+export function opensOnThisPage(href: string, pathname: string): boolean {
+  let want: string;
+  try {
+    want = new URL(rewriteLegacyUrl(href), "http://x").pathname;
+  } catch {
+    return false;
+  }
+  if (want === pathname) return true;
+  const app = appPathFromPath(pathname);
+  return app !== null && chatDoorOnApp(href, app) !== null;
 }

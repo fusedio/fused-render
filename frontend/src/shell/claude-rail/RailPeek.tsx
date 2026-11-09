@@ -409,8 +409,9 @@ export interface RailPeekProps {
   dismissOnUnstar?: boolean;
   /** The head's Open carries an ↗ after the word (the favourite's card,
    *  Akshil 2026-11-07: Open there changes the window — the card goes, the
-   *  pane takes the chat — so it reads as a door out). */
-  openIcon?: boolean;
+   *  pane takes the chat — so it reads as a door out) — asked per href: only
+   *  when Open leaves the page on screen (Akshil 2026-11-09; FavouritePeek). */
+  openIcon?: (href: string) => boolean;
   /** Where the card stands now, or null while it is closed — for a host
    *  that places another card around it. */
   onBox?: (box: Box | null) => void;
@@ -501,7 +502,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     oneSize = false,
     avoid = null,
     dismissOnUnstar = false,
-    openIcon = false,
+    openIcon,
     onBox,
     pinned,
   },
@@ -949,6 +950,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   };
 
   const head = view ? seatFacts(view, where) : null;
+  // The Open's ↗ (`openIcon`): only for a door that leaves the page on screen.
+  const openArrow = !!head?.href && !!openIcon?.(head.href);
 
   // THE ⋮ IS THE CHAT'S OWN (owner, 2026-10-30: "it is not the same kebab
   // menu — fix that"): `@apps/claude/ui/Kebab`, the menu the pane's chat
@@ -1542,7 +1545,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               {head.href && (
                 <button
                   type="button"
-                  className={openIcon ? "btn claude-rail-peek-open has-icon" : "btn claude-rail-peek-open"}
+                  className={openArrow ? "btn claude-rail-peek-open has-icon" : "btn claude-rail-peek-open"}
                   title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
                   onClick={() => {
                     onOpenChat(head.href!);
@@ -1554,7 +1557,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   }}
                 >
                   Open
-                  {openIcon ? <ArrowUpRight size={13} aria-hidden="true" /> : null}
+                  {openArrow ? <ArrowUpRight size={13} aria-hidden="true" /> : null}
                 </button>
               )}
               {head.t.session_id && shownKey && (
