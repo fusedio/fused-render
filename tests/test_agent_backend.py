@@ -510,7 +510,7 @@ def test_a_fresh_copilot_run_is_found_by_file_then_by_id(agent, target):
                    {"type": "user", "message": {"role": "user", "content": "hi"}}])
     assert agent._live_host(file, SID_COPILOT) == {"run_id": name}
     found = agent._live_run(file, SID_COPILOT)
-    found.pop("out_size")
+    found.pop("turn_at")
     assert found == {"run_id": name, "backend": "copilot"}
 
 

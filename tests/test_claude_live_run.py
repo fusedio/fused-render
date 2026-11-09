@@ -69,9 +69,9 @@ def _run_dir(agent, name, *, file, resumed_from="", session=None, alive=True):
 
 
 def _live_run(agent, *args, **kwargs):
-    """`agent._live_run` without `out_size`, which has its own test."""
+    """`agent._live_run` without `turn_at`, which has its own test."""
     found = agent._live_run(*args, **kwargs)
-    found.pop("out_size", None)
+    found.pop("turn_at", None)
     return found
 
 
@@ -281,7 +281,7 @@ def test_no_runs_at_all_is_not_an_error(agent, target, monkeypatch):
 def test_the_action_is_dispatched(agent, target):
     _run_dir(agent, "20260817-120000-fff", file=target, resumed_from="sess-A")
     found = agent.main(action="live_run", file=target, session_id="sess-A")
-    found.pop("out_size")
+    found.pop("turn_at")
     assert found == _found("20260817-120000-fff")
     assert "error" in agent.main(action="live_run", file="", session_id="sess-A")
 
@@ -492,10 +492,33 @@ def test_history_live_block_matches_what_poll_returns(agent, target, projects):
     assert hist["mode"] == polled["mode"]
 
 
-def test_a_live_run_reports_how_long_its_output_is(agent, target):
+def _rows_file(run_dir, rows):
+    path = os.path.join(run_dir, "out.jsonl")
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    return path
+
+
+def test_a_live_run_reports_where_its_open_turn_began(agent, target):
     run_dir = _run_dir(agent, "20260817-120000-aaa", file=target,
                        resumed_from="sess-A")
-    with open(os.path.join(run_dir, "out.jsonl"), "w", encoding="utf-8") as f:
+    path = _rows_file(run_dir, [{"type": "system", "subtype": "init"}])
+    assert agent._live_run(target, "sess-A")["turn_at"] == 0
+    first = [{"type": "system", "subtype": "init"}, {"type": "result"}]
+    _rows_file(run_dir, first)
+    ended = os.path.getsize(path)
+    with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps({"type": "system", "subtype": "init"}) + "\n")
-    size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
-    assert agent._live_run(target, "sess-A")["out_size"] == size
+    assert agent._live_run(target, "sess-A")["turn_at"] == ended
+
+
+def test_bookkeeping_rows_after_a_result_are_no_new_turn(agent, target):
+    run_dir = _run_dir(agent, "20260817-120000-aaa", file=target,
+                       resumed_from="sess-A")
+    _rows_file(run_dir, [
+        {"type": "system", "subtype": "init"}, {"type": "result"},
+        {"type": "rate_limit_event"},
+        {"type": "system", "subtype": "hook_started", "hook_id": "h"}])
+    found = agent._live_run(target, "sess-A")
+    assert found["run_id"] and found["turn_at"] is None

@@ -802,8 +802,10 @@ export interface CancelResponse {
 /** agent.py:2759-2802 / 2902-2927 — "" when none. */
 export interface RunIdResponse {
   run_id: string;
-  /** `out.jsonl`'s length when a live run was found. */
-  out_size?: number;
+  /** Byte offset in `out.jsonl` of the first row that opened the run's current
+   *  turn (an echo, an assistant or stream row, an init) after its last
+   *  `result`; null when the open state is only trailing bookkeeping rows. */
+  turn_at?: number | null;
 }
 
 /** agent.py:4396. */

@@ -125,6 +125,9 @@ export const pollDelay = (hidden: boolean): number => (hidden ? HIDDEN_POLL_MS :
 export const HOST_TASKS_MS = 1000;
 /** Failed `tasks` asks in a row before a host watch gives up. */
 export const HOST_TASKS_TRIES = 3;
+/** Laps of `watchInbox` (one per `HOST_TASKS_MS`) before it gives up on a line
+ *  the host never settles. */
+const INBOX_WATCH_LAPS = 600;
 
 /**
  * THE CARD WATCH'S CADENCE. The reply can end while a backgrounded subagent or
@@ -475,9 +478,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * WHERE `out.jsonl` ENDED WHEN THIS PAGE LAST FINISHED STREAMING A RUN, by
    * run id. A host runs many turns under one id (a background job's wake, a
    * send-now's queued line), so "this id was shown" cannot mean "this id is
-   * never attached again": a live run whose file has grown past this mark is a
-   * turn the page has not streamed, and `adoptWatch` attaches to it. An id with
-   * no mark here (or at the same length) is the turn just streamed.
+   * never attached again": a live run whose open turn began at or past this mark
+   * (`turn_at`) is a turn the page has not streamed, and `adoptWatch` attaches
+   * to it. An id with no mark here, or whose newest rows are only bookkeeping
+   * after the final result, is the turn just streamed.
    */
   const streamedEnd = new Map<string, number>();
   /** The run a Ctrl+X was sent to; its loop's end looks for the queued line's
@@ -733,7 +737,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * The watch belongs to the OWNER RUN, never to a poll loop: a loop starting,
    * ending or being retired does not touch it, and `ensureHostWatch` (called by
    * every `publishTasks` and by every loop's end) restarts it whenever live
-   * rows are owned and nothing is asking. It stops by itself: another
+   * rows are owned and nothing is asking. It stops by itself: a poll loop on
+ * the same run taking over (the loop's end restarts it), another
    * conversation or run taking the strip, nothing left running
    * (`tasks_pending` false), the host gone (`host_alive` false, or its run dir
    * swept — the rows end as `unknown`), `HOST_TASKS_TRIES` failed asks in a
@@ -746,7 +751,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (hostWatched === runId) return;
     hostWatched = runId;
     const seq = ++hostWatch;
-    const mine = () => seq === hostWatch && !disposed && state.tasksRunId === runId;
+    // A poll loop on this run carries the rows itself, and two askers on one
+    // run double the requests and flicker the strip: the watch stands down
+    // while one is active and the loop's end restarts it (`ensureHostWatch`).
+    const mine = () =>
+      seq === hostWatch && !disposed && state.tasksRunId === runId && activeRun !== runId;
     void (async () => {
       let failures = 0;
       try {
@@ -787,6 +796,35 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
       } finally {
         if (seq === hostWatch) hostWatched = "";
+      }
+    })();
+  };
+  /**
+   * THE INBOX AFTER THE LOOP IS GONE. A run that reported its inbox leaves the
+   * last poll's rows on screen, and no poll runs to say the host drained them
+   * after that, or died with them: a line would sit in the queued strip, and
+   * out of the transcript, for good. So while rows (or optimistic entries) are
+   * held, ask history, whose `live_run`/`inbox` fields are the same authority
+   * (`landInbox`; a run that is no longer live lands the empty list). One watch
+   * at a time; it ends when nothing is held, after `INBOX_WATCH_LAPS`, the reader leaves the conversation
+   * (`logGen`), or dispose. A lap is skipped while a loop or send is in flight
+   * (it reads the inbox itself) and while the tab is hidden.
+   */
+  let inboxWatch = 0;
+  const watchInbox = (sessionId: string) => {
+    if (!sessionId || (!state.inbox.length && !queued.length)) return;
+    const seq = ++inboxWatch;
+    const gen = logGen;
+    void (async () => {
+      for (let lap = 0; lap < INBOX_WATCH_LAPS; lap++) {
+        await sleep(HOST_TASKS_MS);
+        if (seq !== inboxWatch || disposed || logGen !== gen) return;
+        // A loop or send in flight reads the inbox itself: skip the lap.
+        if (activeRun || sending) continue;
+        if (typeof document !== "undefined" && document.hidden) continue;
+        await refreshHistory(sessionId);
+        if (seq !== inboxWatch || disposed || logGen !== gen) return;
+        if (!state.inbox.length && !queued.length) return;
       }
     })();
   };
@@ -2581,9 +2619,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
       forgetTurnStart(runId);
       if (runId && outSize) streamedEnd.set(runId, outSize);
-      if (loopSeq === seat && !sawInbox) {
-        clearQueued();
-        clearInbox();
+      if (loopSeq === seat) {
+        if (!sawInbox) {
+          clearQueued();
+          clearInbox();
+        } else watchInbox(state.sessionId ?? "");
       }
       // Nothing is "queued for this turn" once the turn is over: the CLI drains
       // its queue as part of the run, so whatever is still listed here has
@@ -4065,12 +4105,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // `claimingRuns` beside it for the OTHER half: an attach already in
       // flight for this id (the boot's `?run=`, the schedule poller) owns it
       // until it either attaches or lets go — see the declaration.
-      // A shown run is attached again only for a turn it has grown a new one
-      // for (`streamedEnd`): the host's wake or send-now line.
+      // A shown run is attached again only when a row that OPENS a turn
+      // (`turn_at`) sits at or past where this page stopped streaming
+      // (`streamedEnd`): the host's wake or send-now line. Trailing rows after
+      // the final `result` (rate limits, hooks) are growth, not a turn.
       const newTurn =
         shownRuns.has(id) &&
-        typeof live!.out_size === "number" &&
-        live!.out_size > (streamedEnd.get(id) ?? Infinity);
+        typeof live!.turn_at === "number" &&
+        live!.turn_at >= (streamedEnd.get(id) ?? Infinity);
       if (newTurn) shownRuns.delete(id);
       if (shownRuns.has(id) || claimingRuns.has(id)) {
         setAdopting(false);

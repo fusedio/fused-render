@@ -5679,7 +5679,7 @@ describe("one host, many turns: a turn the page has not streamed is attached aga
     const made = makeController({
       start: () => ({ run_id: "r1" }),
       poll: (_f, n) => (n === 0 ? finishedTurn(n) : poll({ done: true, session_id: "s1", out_size: 400, segments: [text("woken")], text: "woken" })),
-      live_run: () => ({ run_id: "r1", out_size: 400 }),
+      live_run: () => ({ run_id: "r1", turn_at: 100 }),
       history: () => ({ turns: [], transcript: null }),
     });
     await made.controller.sendMessage("go");
@@ -5690,11 +5690,11 @@ describe("one host, many turns: a turn the page has not streamed is attached aga
     made.controller.dispose();
   });
 
-  test("the turn just streamed is not attached again", async () => {
+  test("the turn just streamed is not attached again, trailing rows or not (turn_at null)", async () => {
     const made = makeController({
       start: () => ({ run_id: "r1" }),
       poll: (_f, n) => finishedTurn(n),
-      live_run: () => ({ run_id: "r1", out_size: 100 }),
+      live_run: () => ({ run_id: "r1", turn_at: null }),
       history: () => ({ turns: [], transcript: null }),
     });
     await made.controller.sendMessage("go");
@@ -5718,7 +5718,7 @@ describe("one host, many turns: a turn the page has not streamed is attached aga
         }
         return poll({ done: true, session_id: "s1", out_size: 500, segments: [text("urgent reply")], text: "urgent reply" });
       },
-      live_run: () => ({ run_id: "r1", out_size: 500 }),
+      live_run: () => ({ run_id: "r1", turn_at: 100 }),
       history: () => ({ turns: [], transcript: null }),
     });
     controller = made.controller;
@@ -5777,6 +5777,38 @@ describe("queued lines follow the server's inbox", () => {
     await controller.sendMessage("go");
     expect(controller.getState().queued).toEqual(["later"]);
     expect(controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+  });
+
+  test("after the loop ends the inbox is re-read until the host settles it", async () => {
+    let controller!: ChatController;
+    let host: "holds" | "gone" = "holds";
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) await controller.sendFollowUp("later", { clientId: "u1" });
+        return poll({
+          done: n > 0,
+          session_id: "s1",
+          inbox: [{ id: "i0", text: "later", uuid: "u1" }],
+        });
+      },
+      history: () =>
+        host === "holds"
+          ? { turns: [], transcript: null, live_run: "r1", inbox: [{ id: "i0", text: "later", uuid: "u1" }] }
+          : { turns: [], transcript: null, live_run: "" },
+      live_run: () => ({ run_id: "" }),
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    await settle();
+    expect(controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+    // The host died holding the line: the next read says nothing is live.
+    host = "gone";
+    for (let i = 0; i < 200; i++) await Promise.resolve();
+    expect(controller.getState().inbox).toEqual([]);
+    expect(controller.getState().queued).toEqual([]);
+    controller.dispose();
   });
 
   test("a history refresh republishes the live run's inbox", async () => {

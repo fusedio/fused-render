@@ -6112,6 +6112,19 @@ def _turn_state_row(row: dict, state: dict) -> None:
     state["idle"] = t == "result"
 
 
+def _opens_a_turn(row: dict) -> bool:
+    """Whether `row` is evidence that a turn is under way, not just a row
+    written after one ended: the CLI's echo of a user line, an assistant or
+    stream row, or a `system/init`. Trailing `rate_limit_event` and hook rows
+    after a `result` are none of these. `_turn_state_fold` records the offset of
+    the first such row after the last `result` as `turn_at`."""
+    if row.get("parent_tool_use_id"):
+        return False
+    t = row.get("type")
+    return (t in ("assistant", "stream_event") or _starts_new_turn(row)
+            or (t == "system" and row.get("subtype") == "init"))
+
+
 def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple:
     """`_turn_state`, resumable: `cursor` (`{"offset", "idle", "tasks", "sub_jobs"}`, a dict
     the caller owns and this mutates) remembers how far into `out.jsonl` the
@@ -6130,16 +6143,19 @@ def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple
     cursor.setdefault("idle", False)
     cursor.setdefault("tasks", {})
     cursor.setdefault("sub_jobs", set())
+    cursor.setdefault("turn_at", None)
     try:
         with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
             if os.fstat(fh.fileno()).st_size < cursor["offset"]:
-                cursor.update(offset=0, idle=False, tasks={}, sub_jobs=set())
+                cursor.update(offset=0, idle=False, tasks={}, sub_jobs=set(),
+                              turn_at=None)
             fh.seek(cursor["offset"])
             trailing = b""
             for raw in fh:
                 if not raw.endswith(b"\n"):
                     trailing = raw
                     break
+                start = cursor["offset"]
                 cursor["offset"] += len(raw)
                 try:
                     row = json.loads(raw.decode("utf-8", errors="replace"))
@@ -6147,6 +6163,10 @@ def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple
                     continue
                 if isinstance(row, dict):
                     _turn_state_row(row, cursor)
+                    if row.get("type") == "result" and not row.get("parent_tool_use_id"):
+                        cursor["turn_at"] = None
+                    elif cursor["turn_at"] is None and _opens_a_turn(row):
+                        cursor["turn_at"] = start
     except FileNotFoundError:
         trailing = b""
     idle, tasks = cursor["idle"], cursor["tasks"]
@@ -6415,17 +6435,16 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
         # say a turn is actually open (_turn_state) before this counts as
         # "still streaming".
         if _alive(run_dir):
-            turn_open, _tasks_pending = _turn_state(run_dir)
+            fold: dict = {}
+            turn_open, _tasks_pending = _turn_state_fold(run_dir, fold, partial=True)
             if turn_open:
-                # `out_size` tells the page whether this turn is one it has
+                # `turn_at` tells the page whether this turn is one it has
                 # already streamed: a run's id is reused by every turn its
-                # host runs, and only the file's length says a new one began.
-                try:
-                    size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
-                except OSError:
-                    size = 0
+                # host runs, and only a row that OPENS a turn after the last
+                # `result` says a new one began (its byte offset, or null when
+                # the open state is only trailing bookkeeping rows).
                 return {"run_id": name, "backend": _meta_backend(meta),
-                        "out_size": size}
+                        "turn_at": fold.get("turn_at")}
     return {"run_id": ""}
 
 
