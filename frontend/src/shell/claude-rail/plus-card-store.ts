@@ -37,8 +37,15 @@ function subscribe(fn: () => void) {
   return () => listeners.delete(fn);
 }
 
+let orphaned = false;
 function setOrphan(on: boolean) {
   if (typeof document !== "undefined") document.documentElement.classList.toggle("plus-card-orphan", on);
+  orphaned = on;
+}
+
+/** Is the card kept but hidden (between one rail and the next)? */
+export function usePlusCardHidden(): boolean {
+  return useSyncExternalStore(subscribe, () => orphaned, () => false);
 }
 
 function reconcileOrphan() {

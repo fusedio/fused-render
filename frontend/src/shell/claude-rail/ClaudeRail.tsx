@@ -540,6 +540,9 @@ interface Card {
   /** THE TASK JUST CREATED from this card (NewJobModal `onCreatedChat`): the
    *  remounted card opens on that entry's chat instead of closing. */
   chatEntry?: string;
+  /** …and the settings it was created with, for that chat until its row is
+   *  listed (CodeRabbit on #2220). */
+  chatSeed?: { model?: string; effort?: string; backend?: string };
 }
 
 /** A draft's fresh record read for its New task card (`readDraftCard`):
@@ -602,6 +605,15 @@ function cardSeed(): Promise<{ modes: string[]; recents: string[] }> {
 /** The foot's pinned bots, in the order first drawn this page load
  *  (claude-rail-lib `holdOrder`). */
 let heldBotOrder: string[] = [];
+
+/** IS THE +'s CARD MID-CREATE? (Modal's `data-busy`; CodeRabbit on #2220.)
+ *  Read off the card, not its ✕ — the card hides its ✕ while it shows a chat,
+ *  and an idle card must still give way to the Tasks or Bots card. True with
+ *  no card standing, as the missing ✕ used to read. */
+function popBusy(rail: HTMLElement | null): boolean {
+  const card = rail?.ownerDocument.querySelector(".modal-popover .modal-dialog");
+  return !card || card.hasAttribute("data-busy");
+}
 
 export function ClaudeRail({
   place,
@@ -1969,8 +1981,8 @@ export function ClaudeRail({
     if (peekKey === null || popSeq === null) return;
     // No × at all while Create is pending (Modal draws none when busy): as
     // blocked as a disabled one (CodeRabbit on #2189).
-    const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-    if (!shut || shut.disabled) {
+    const busyPop = popBusy(railRef.current);
+    if (busyPop) {
       setHeld(false);
       intent.dismiss();
       return;
@@ -1982,8 +1994,8 @@ export function ClaudeRail({
   // it is mid-Create (its × held). True when it went.
   const shutPop = useCallback((): boolean => {
     if (!cardRef.current?.pop) return false;
-    const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-    if (!shut || shut.disabled) return false;
+    const busyPop = popBusy(railRef.current);
+    if (busyPop) return false;
     setCardCloseSignal((n) => n + 1);
     return true;
   }, []);
@@ -2011,8 +2023,8 @@ export function ClaudeRail({
     if (tasksSeq === null) return;
     closeBotsCard();
     if (cardRef.current?.pop) {
-      const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-      if (!shut || shut.disabled) {
+      const busyPop = popBusy(railRef.current);
+      if (busyPop) {
         closeTasksCard();
         return;
       }
@@ -2026,8 +2038,8 @@ export function ClaudeRail({
     if (botsSeq === null) return;
     closeTasksCard();
     if (cardRef.current?.pop) {
-      const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-      if (!shut || shut.disabled) {
+      const busyPop = popBusy(railRef.current);
+      if (busyPop) {
         closeBotsCard();
         return;
       }
@@ -2274,7 +2286,7 @@ export function ClaudeRail({
     // popover mid-Create, keeps its place.
     if (navDoors) {
       if (card && !card.pop) return;
-      if (card && railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close")?.disabled) return;
+      if (card && popBusy(railRef.current)) return;
       draftDoors.current.set(row.key, { row, href });
       plusIntent.press(row.key);
       return;
@@ -2901,8 +2913,9 @@ export function ClaudeRail({
         // CREATE KEEPS THE CARD: a fresh mount (new `seq`, no draft) opening
         // on the new task's chat, so Back is an empty landing.
         initialChatEntry={card.chatEntry ?? null}
-        onCreatedChat={(entryId) =>
-          setCard((c) => (c ? { ...c, seq: Date.now(), draft: null, chatKey: "", time: null, chatEntry: entryId } : c))}
+        initialChatSeed={card.chatSeed ?? null}
+        onCreatedChat={(entryId, seed) =>
+          setCard((c) => (c ? { ...c, seq: Date.now(), draft: null, chatKey: "", time: null, chatEntry: entryId, chatSeed: seed } : c))}
         // The +'s card with the rail flag on: the same card as a popover
         // beside the rail (`Card.pop`), top-level with the +, left of the
         // rail's edge; a hover's preview until a press pins it (`pinned`).
@@ -2954,9 +2967,19 @@ export function ClaudeRail({
   useLayoutEffect(() => {
     if (hosted) publishPlusRender(railToken.current, renderCard as (c: unknown) => ReactNode);
   });
+  const hostedRef = useRef(hosted);
+  hostedRef.current = hosted;
   useEffect(() => {
     const id = railToken.current;
-    return () => withdrawPlusRender(id);
+    return () => {
+      withdrawPlusRender(id);
+      // NO HOST (an embedded view): the card was this rail's to draw, and
+      // goes with it — the next rail would remount it from its first seed and
+      // a second draft would follow (CodeRabbit on #2220). Its own unmount
+      // flushes the words to its draft, as any close does.
+      if (!hostedRef.current) setCard(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (

@@ -26,6 +26,7 @@ import { ChatMount } from "@apps/claude";
 import { homePlaceholderFor, type TargetNoun } from "@apps/claude/pane/paneUrl";
 import { runAppEntry } from "@apps/claude/protocol/agent";
 import { TaskPeekWho } from "./TaskPeekWho";
+import { usePlusCardHidden } from "./claude-rail/plus-card-store";
 import { useAutoReadOpenTasks, useDocumentVisible } from "./task-open-read";
 import { useTasksPulseRows } from "./tasksPulse";
 import { Kebab } from "@apps/claude/ui/Kebab";
@@ -2855,6 +2856,7 @@ export default function NewJobModal({
   onOpenChat,
   onOpenDraft,
   initialChatEntry = null,
+  initialChatSeed = null,
   onCreatedChat,
   onClose,
   onCreated,
@@ -3010,8 +3012,11 @@ export default function NewJobModal({
   /** CREATE KEEPS THE CARD (Akshil, 2026-11-09: "it should instead open the
    *  chat"): the rail remounts the card fresh with the new entry's chat open
    *  (`initialChatEntry`), so Back is an empty landing. */
-  onCreatedChat?: (entryId: string) => void;
+  onCreatedChat?: (entryId: string, seed: { model?: string; effort?: string; backend?: string }) => void;
   initialChatEntry?: string | null;
+  /** The settings the entry was created with — the open chat's until its
+   *  row is listed. */
+  initialChatSeed?: { model?: string; effort?: string; backend?: string } | null;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -4890,7 +4895,11 @@ export default function NewJobModal({
       onCreated();
       // THE RAIL'S CARD STAYS AND SHOWS THE NEW CHAT (see `onCreatedChat`).
       if (landing && onCreatedChat && !editing && created?.entry?.id) {
-        onCreatedChat(created.entry.id);
+        onCreatedChat(created.entry.id, {
+          ...(created.entry.model ? { model: created.entry.model } : {}),
+          ...(created.entry.effort ? { effort: created.entry.effort } : {}),
+          ...(created.entry.backend ? { backend: created.entry.backend } : {}),
+        });
         return;
       }
       onClose();
@@ -5180,23 +5189,37 @@ export default function NewJobModal({
   const [pendingEntry, setPendingEntry] = useState<string | null>(initialChatEntry);
   const [pendingSession, setPendingSession] = useState("");
   const [pendingDue, setPendingDue] = useState("");
+  const [pendingError, setPendingError] = useState("");
   useEffect(() => {
     if (!pendingEntry || pendingSession) return;
     let alive = true;
     let tries = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // FOR AS LONG AS THE CARD SHOWS IT (CodeRabbit on #2220): quick while a
+    // run is about to start, slower after a minute — a task scheduled for
+    // later, or one queued behind others, still opens when it starts.
+    const wait = () => (tries < 60 ? 1000 : tries < 120 ? 5000 : 15000);
     const look = () => {
       void getSchedule().then((res) => {
         if (!alive) return;
+        tries++;
         const e = res.entries.find((x) => x.id === pendingEntry);
         if (e?.claude_session_id) {
           setPendingSession(e.claude_session_id);
           return;
         }
+        // …AND A RUN THAT FAILED TO START SAYS SO, instead of "Starting…"
+        // for ever. Back is the way out.
+        if (e && (e.state === "error" || e.state === "cancelled" || e.state === "missed")) {
+          setPendingError(e.error || (e.state === "cancelled" ? "The task was cancelled before it started." : "The task didn't start."));
+          return;
+        }
         if (e?.due) setPendingDue(e.due);
-        if (++tries < 120) timer = setTimeout(look, 1000);
+        timer = setTimeout(look, wait());
       }, () => {
-        if (alive && ++tries < 120) timer = setTimeout(look, 2000);
+        if (!alive) return;
+        tries++;
+        timer = setTimeout(look, Math.max(2000, wait()));
       });
     };
     look();
@@ -5220,6 +5243,8 @@ export default function NewJobModal({
           || t.key === `pending:${pendingEntry}`) ?? null)
       : null;
   const chatSession = liveChat?.session_id || (landingChat ? "" : pendingSession);
+  // The created entry's settings, until its row says (CodeRabbit on #2220).
+  const chatSeed = landingChat ? null : initialChatSeed;
   const chatFile = liveChat ? taskChatTarget(liveChat) : landingTarget;
   const chatTitle = liveChat ? (cardTitleLine(liveChat).text || liveChat.title || "Chat") : "";
   const chatHref = liveChat ? taskHref(liveChat) : null;
@@ -5227,9 +5252,12 @@ export default function NewJobModal({
   // chat, while the card shows it and the window is in view.
   const chatPulse = useTasksPulseRows(landing);
   const docVisible = useDocumentVisible();
+  // …and only while the card is SHOWN: not while a page hop has it hidden
+  // (plus-card-store), when a reply would be marked read unseen.
+  const cardHidden = usePlusCardHidden();
   const readKeys = useMemo(
-    () => (liveChat && docVisible ? [liveChat.key] : []),
-    [liveChat, docVisible],
+    () => (liveChat && docVisible && !cardHidden ? [liveChat.key] : []),
+    [liveChat, docVisible, cardHidden],
   );
   useAutoReadOpenTasks(chatPulse, readKeys);
   const openFromLanding = (href: string | null): void | Promise<boolean> => {
@@ -6015,10 +6043,12 @@ export default function NewJobModal({
     >
       {chatOpen && !chatSession && (
         <div className="nt-landing-chat nt-landing-wait">
-          <p>
-            {pendingDue && new Date(pendingDue).getTime() > Date.now() + 60_000
-              ? `Scheduled — it runs ${new Date(pendingDue).toLocaleString()}.`
-              : "Starting the task…"}
+          <p className={pendingError ? "nt-landing-wait-error" : undefined} role={pendingError ? "alert" : undefined}>
+            {pendingError
+              ? pendingError
+              : pendingDue && new Date(pendingDue).getTime() > Date.now() + 60_000
+                ? `Scheduled — it runs ${new Date(pendingDue).toLocaleString()}.`
+                : "Starting the task…"}
           </p>
         </div>
       )}
@@ -6029,9 +6059,9 @@ export default function NewJobModal({
             onBreakoutControl={setChatBreakout}
             file={chatFile}
             sessionId={chatSession}
-            {...(liveChat?.model ? { model: liveChat.model } : {})}
-            {...(liveChat?.effort ? { effort: liveChat.effort } : {})}
-            {...(liveChat?.backend ? { backend: liveChat.backend } : {})}
+            {...((liveChat?.model || chatSeed?.model) ? { model: liveChat?.model || chatSeed?.model } : {})}
+            {...((liveChat?.effort || chatSeed?.effort) ? { effort: liveChat?.effort || chatSeed?.effort } : {})}
+            {...((liveChat?.backend || chatSeed?.backend) ? { backend: liveChat?.backend || chatSeed?.backend } : {})}
             chatOnly
             peek
             noAnnTools
@@ -6658,6 +6688,9 @@ export default function NewJobModal({
       </div>
       {landing && (
         <div className="chat-root c-tokens nt-landing-lists">
+          {/* The picked agent's caps (snapshots and their restore), not the
+              default's (CodeRabbit on #2220). */}
+          <AgentProvider backend={agent}>
           <Lists
             file={landingTarget || null}
             recent={landingRecent}
@@ -6683,6 +6716,7 @@ export default function NewJobModal({
             }}
             {...(onOpenDraft ? { onFillDraft: onOpenDraft } : {})}
           />
+          </AgentProvider>
         </div>
       )}
       </div>

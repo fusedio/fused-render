@@ -1785,3 +1785,9 @@ button.new-task-source:focus-visible {
 .plus-card-orphan .modal-popover {
   visibility: hidden;
 }
+
+.nt-landing-wait .nt-landing-wait-error {
+  color: var(--error);
+  max-width: 36ch;
+  text-align: center;
+}

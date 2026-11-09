@@ -332,7 +332,9 @@ export function Modal({
         if (pinnedRef.current === false && !onCard) return;
         const lost = !active || active === ownerDoc.body || !active.isConnected || onCard;
         if (!lost) return;
-        const back = (popover.anchor.current ?? restoreRef.current) as HTMLElement | null;
+        // The CURRENT anchor (CodeRabbit on #2220): a card carried across a
+        // page hop stands beside the new page's door, not the first one's.
+        const back = (popoverRef.current?.anchor.current ?? popover.anchor.current ?? restoreRef.current) as HTMLElement | null;
         back?.focus?.({ preventScroll: true });
         return;
       }
@@ -488,6 +490,8 @@ export function Modal({
   // the card is gone before whatever the reader aimed at reacts, and a row
   // that stops propagation cannot leave it undismissable.
   const popoverOn = !!popover;
+  const popoverRef = useRef(popover);
+  popoverRef.current = popover;
   const attemptCloseRef = useRef(attemptClose);
   attemptCloseRef.current = attemptClose;
   useEffect(() => {
@@ -758,6 +762,10 @@ export function Modal({
         }
         style={dialogStyle}
         role="dialog"
+        // BUSY, SAID ON THE CARD ITSELF (CodeRabbit on #2220): a caller that
+        // must not close a card mid-save reads this, not the ✕ — which a card
+        // may hide for its own reasons (`hideClose`).
+        {...(busy ? { "data-busy": "" } : {})}
         {...(popover ? {} : { "aria-modal": "true" as const })}
         {...(ariaLabel
           ? // An explicit name WINS over `aria-labelledby`, so the two are
