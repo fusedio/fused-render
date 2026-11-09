@@ -1571,15 +1571,24 @@ while you work and can change when they pull. Consequences:
   merges per node, but where you both changed the same node your version
   wins — mention it if you notice.
 - A file that unexpectedly disappeared or reverted was likely changed
-  remotely. Before recreating it, check the state on disk and say what you
-  found; overwritten/deleted versions are recoverable from
-  `../.sync/trash/<canvas>/<timestamp>/` (newest last).
+  remotely, or the user ran a Hard pull on the canvas page, which replaces
+  this whole folder with the server's copy while you keep working. Either
+  way: re-read the files you are about to edit rather than rewriting them
+  from memory, check the state on disk and say what you found. The
+  overwritten/deleted versions are in `../.sync/trash/<canvas>/<timestamp>/`
+  (newest last; a Hard pull always makes one) — restore from there only
+  what the user asks for.
 - Group related multi-file changes (e.g. a rename: the `.py` file AND its
   `canvas.toml` entry) into one change set and push it whole — a half-done
   rename that gets pushed or merged mid-way is exactly how invalid states
   happen.
 
 """
+
+
+def _no_backup_error(root: str) -> str:
+    return (f"could not create the backup folder under {root}; nothing was changed. "
+            "Free disk space or fix its permissions, then pull again")
 
 
 def _seed_clone_claude_files(target: str, name: str) -> None:
@@ -2516,6 +2525,9 @@ class _SyncManager:
         # the old canvas straight back. The deadline keeps a frame that never
         # acks (closed, reloading) from fencing the clone for good.
         self._hard_fence: dict | None = None
+        # The trash folder the last pull() snapshotted the clone into (None
+        # when it took no snapshot); pull()'s answer carries it.
+        self._last_trash: str | None = None
         # The body channel's own fence after a hard pull: the disk_rev the
         # pull left, held until the frame ACKS a delta at or past it (or
         # re-hydrates from the server). No deadline: a snapshot fenced too
@@ -2845,54 +2857,96 @@ class _SyncManager:
                                   f"added {', '.join(result['added']) or 'none'}")
         return result["dropped"]
 
-    def _new_trash_dir(self) -> str | None:
+    def trash_root(self) -> str:
+        """Where this canvas's trash snapshots go: `.sync/trash/<name>/`, one
+        timestamped folder per pull/merge that overwrote or deleted files.
+        Shown on sync/state so the page can say in advance where a Hard
+        pull's backup lands."""
+        return os.path.join(self.root, ".sync", "trash", self.name)
+
+    def _new_trash_dir(self, *, prune: bool = True) -> str | None:
         """A fresh timestamped folder under .sync/trash/<name>/ for the files
         the current pull/merge is about to overwrite or delete; prunes the
-        oldest snapshots beyond _TRASH_MAX. None if it can't be created."""
-        root = os.path.join(self.root, ".sync", "trash", self.name)
+        oldest snapshots beyond _TRASH_MAX (`prune=False` defers that to
+        `_prune_trash`, for a caller that must not burn a recovery point
+        before its own snapshot is known complete). None if it can't be
+        created."""
+        root = self.trash_root()
         path = os.path.join(root, time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}")
         try:
             os.makedirs(path, exist_ok=True)
+        except OSError:
+            return None
+        if prune:
+            self._prune_trash(keep=path)
+        return path
+
+    def _prune_trash(self, *, keep: str) -> None:
+        """Drop the oldest trash snapshots beyond _TRASH_MAX, never `keep`."""
+        root = self.trash_root()
+        try:
             snapshots = sorted(
                 d for d in os.listdir(root)
                 if os.path.isdir(os.path.join(root, d))
             )
-            for stale in snapshots[:-_TRASH_MAX]:
-                _rmtree_quiet(os.path.join(root, stale))
         except OSError:
-            return None
-        return path
-
-    def _backup_to(self, trash: str | None, rel: str, data: bytes) -> None:
-        if trash is None:
             return
+        for stale in snapshots[:-_TRASH_MAX]:
+            if os.path.join(root, stale) != keep:
+                _rmtree_quiet(os.path.join(root, stale))
+
+    def _backup_to(self, trash: str | None, rel: str, data: bytes) -> bool:
+        """Copy one file into the trash snapshot. False when it could not be
+        written (full disk, permissions): a best-effort safety net for the
+        merge legs, but `_snapshot_clone` counts it so a hard pull can refuse."""
+        if trash is None:
+            return False
         dest = os.path.join(trash, rel)
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as fh:
                 fh.write(data)
         except OSError:
-            pass  # best-effort safety net, never blocks the sync
+            return False  # never blocks the sync
+        return True
 
-    def _snapshot_clone(self) -> None:
+    def _snapshot_clone(self) -> str | None:
         """Copy the whole clone into a trash snapshot — run before the CLI's
         wholesale `pull --force`, whose overwrites/deletes we can't
-        intercept per file."""
-        trash = self._new_trash_dir()
+        intercept per file. Returns the snapshot folder, or None when it
+        could not be created OR any file could not be read or copied into
+        it — a folder on a full disk, or one missing a file a live session
+        held mid-replace, is not a backup (a hard pull then refuses to run,
+        see _pull; the merge legs never call this). A failed snapshot is
+        removed, and older snapshots are pruned only after a complete one,
+        so retrying on a full disk never burns a real recovery point."""
+        trash = self._new_trash_dir(prune=False)
         if trash is None:
-            return
+            return None
+        failed: list[str] = []
         for root, dirs, files in os.walk(self.dir):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in files:
                 if f.startswith("."):
                     continue
                 path = os.path.join(root, f)
+                rel = os.path.relpath(path, self.dir)
                 try:
                     with open(path, "rb") as fh:
                         data = fh.read()
                 except OSError:
+                    failed.append(rel)
                     continue
-                self._backup_to(trash, os.path.relpath(path, self.dir), data)
+                if not self._backup_to(trash, rel, data):
+                    failed.append(rel)
+        if failed:
+            self.log_event("server_to_disk", "backup incomplete", ok=False,
+                           detail=f"{len(failed)} file(s) could not be copied into {trash}: "
+                                  + ", ".join(failed[:5]))
+            _rmtree_quiet(trash)
+            return None
+        self._prune_trash(keep=trash)
+        return trash
 
     def _validate_clone(self) -> bool | None:
         """`fused canvas validate` on the clone: True = valid, False =
@@ -3434,7 +3488,7 @@ class _SyncManager:
                        detail=f"{', '.join(gone)}: already deleted here")
         return True
 
-    def _force_pull(self, probe: dict, cli) -> str | None:
+    def _force_pull(self, probe: dict, cli, hard: bool = False) -> str | None:
         """pull()'s shim-backed wholesale branch (clean clone, or a hard
         pull), after it has committed to writing: CLI force pull,
         post-pull divergence recheck, re-baseline.
@@ -3447,8 +3501,12 @@ class _SyncManager:
         Under _op_lock for its whole length: the CLI writes the clone itself.
         """
         # The CLI's --force overwrites/deletes without us seeing each file —
-        # snapshot the clone first so nothing is ever unrecoverable.
-        self._snapshot_clone()
+        # snapshot the clone first so nothing is ever unrecoverable. A hard
+        # pull is the one leg allowed over a live Claude session, so its
+        # backup is not best-effort: no snapshot folder, no pull.
+        self._last_trash = self._snapshot_clone()
+        if hard and self._last_trash is None:
+            return _no_backup_error(self.trash_root())
         try:
             applied = subprocess.run(
                 [*cli.command, "workbench", "canvas", "pull", self.name,
@@ -3479,7 +3537,8 @@ class _SyncManager:
         # the CLI then OVERWROTE mid-run is gone before any check can see it,
         # and the trash snapshot predates it. Under _op_lock the only writer
         # that can land there is a Claude session, which is why pull()
-        # refuses a wholesale pull while one is live.)
+        # defers a PLAIN wholesale pull while one is live; a hard pull runs
+        # anyway, with the whole clone in the trash first.)
         #
         # Re-seed the Claude helper files ONLY AFTER this recheck, not before:
         # they are .fusedignore'd on push, so the remote bundle never contains
@@ -4128,7 +4187,9 @@ class _SyncManager:
         started = time.time()
         self._pull_started_at = started
         self._pull_in_flight = True
-        self.log_event("server_to_disk", "hard pull start" if hard else "pull start")
+        live = self.agent_run_id(fresh=True) if hard else ""
+        self.log_event("server_to_disk", "hard pull start" if hard else "pull start",
+                       detail=f"over live Claude run {live}" if live else "")
         try:
             result = self._pull(cli, wait, hard=hard)
         finally:
@@ -4155,8 +4216,10 @@ class _SyncManager:
                 # up over content it is no longer about.
                 self.last_error = None
                 self.push_state = "pending" if self._dirty_since is not None else "idle"
+            trash = result.get("trash")
             self.log_event("server_to_disk", "hard pull end" if hard else "pull end", ms=ms,
-                           detail=f"pull_seq {self.pull_seq}")
+                           detail=f"pull_seq {self.pull_seq}"
+                                  + (f"; backup {trash}" if trash else ""))
         elif result.get("code") in ("busy", "agent_live"):
             # Deferred, not failed: nothing was written, and the leg stays
             # "stale" rather than turning into a red pull error.
@@ -4173,11 +4236,16 @@ class _SyncManager:
     def _pull(self, cli, wait: float, hard: bool = False) -> dict:
         busy = {"ok": False, "code": "busy",
                 "error": "a sync operation is in flight for this canvas; try again in a moment"}
+        self._last_trash = None
         # A wholesale CLI pull rewrites the folder outside anything a Claude
         # session's lock-free writes can coordinate with: a file it writes
         # while `--force` runs can be overwritten before any check sees it.
         # So a wholesale pull waits for the session (the per-file merge,
         # which reads each file under _op_lock right before deciding, does not).
+        # A HARD pull is the exception: it is the recovery door out of a
+        # broken clone, which a stuck session may be the cause of, so it runs
+        # over a live session — behind the page's type-to-confirm step, and
+        # only once the whole clone is in the trash (see `_last_trash`).
         agent_live = {"ok": False, "code": "agent_live",
                       "error": "a Claude session is editing this folder; pull when it finishes"}
         dirty = self._dirty_since is not None or self._take_fingerprint() != self._fingerprint
@@ -4223,23 +4291,25 @@ class _SyncManager:
                 # Clean (or a hard pull): the server's copy wholesale, trash
                 # snapshot first. `_force_pull` rotates the baseline (clearing `server_stale`)
                 # only on the path where the pull landed.
-                if self.agent_run_id(fresh=True):
+                if not hard and self.agent_run_id(fresh=True):
                     return agent_live
                 if not self._op_lock.acquire(timeout=wait):
                     return busy
                 try:
-                    error = self._force_pull(probe, cli)
+                    error = self._force_pull(probe, cli, hard=hard)
                 finally:
                     self._op_lock.release()
         else:
             base = ["workbench", "canvas", "pull", self.name, "-o", self.dir]
-            if self.agent_run_id(fresh=True):
+            if not hard and self.agent_run_id(fresh=True):
                 return agent_live
             if not self._op_lock.acquire(timeout=wait):
                 return busy
             try:
                 if dirty or hard:
-                    self._snapshot_clone()
+                    self._last_trash = self._snapshot_clone()
+                    if hard and self._last_trash is None:
+                        return {"ok": False, "error": _no_backup_error(self.trash_root())}
                 error = self._apply_legacy_pull(cli, base)
                 # No manifest here, so no rotation to clear it: clear by hand, and
                 # ONLY once the pull landed — this flag is the legacy leg's sole
@@ -4250,7 +4320,7 @@ class _SyncManager:
                 self._op_lock.release()
         if error is not None:
             return {"ok": False, "error": error}
-        return {"ok": True}
+        return {"ok": True, "trash": self._last_trash}
 
     def _embed_enter(self, gen: int, seq: int) -> dict | None:
         """Bookkeeping shared by apply_snapshot / apply_rename, under _op_lock.
@@ -4814,6 +4884,11 @@ class _SyncManager:
             "error_detail": list(self.error_detail),
             # The Fix-with-Claude button's one input.
             "fix_active": self.active_fix_run_id is not None,
+            # Where a pull's backup of the clone lands (the Hard pull's
+            # confirm step names it) and whether a Claude run is live in the
+            # clone (cached: this is polled). The page warns on hard pull.
+            "trash_root": self.trash_root(),
+            "agent_live": bool(self.agent_run_id()),
         }
 
 
@@ -5969,6 +6044,8 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
         return bad
     # `hard`: the sync drawer's Hard pull — discard the clone's local files
     # and take the server's copy wholesale (trash snapshot first, no merge).
+    # Unlike a plain pull it is NOT deferred for a live Claude session: it is
+    # the recovery door, and the page makes the user type "pull" first.
     hard = body.get("hard") is True
     manager = _sync_manager(env, name, create=False)
     if manager is None:
@@ -5991,6 +6068,9 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
         return _busy(result.get("error") or "a sync operation is in flight for this canvas")
     status = manager.status()
     status["ok"] = bool(result.get("ok"))
+    # The snapshot folder the pull copied the clone into before writing
+    # (None when nothing was snapshotted): the page shows it after a Hard pull.
+    status["trash"] = result.get("trash")
     if not result.get("ok"):
         # Its own field: `error` is the PUSH's last_error, and the page keeps
         # this answer as its sync state, so a pull failure written there

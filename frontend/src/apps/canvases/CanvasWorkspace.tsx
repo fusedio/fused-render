@@ -1092,6 +1092,10 @@ export default function CanvasWorkspace({
     return () => window.removeEventListener("message", onShotAsk);
   }, [requestCanvasShot]);
   const [pullError, setPullError] = useState<string | null>(null);
+  // The trash folder the last Hard pull backed the clone into (the drawer
+  // shows it until the next pull or another canvas).
+  const [pullBackup, setPullBackup] = useState<string | null>(null);
+  useEffect(() => setPullBackup(null), [env, name]);
 
   // The node pane frames the node's FILE, and a node the user just added in
   // the embed is selected the instant it exists there — a second or two
@@ -1183,6 +1187,7 @@ export default function CanvasWorkspace({
       // new state follows on the events socket (or the next poll).
       const s = await pullCanvas(env, name, hard);
       if (!s.ok) setPullError(s.pull_error ?? s.error ?? "pull failed");
+      if (hard && s.ok) setPullBackup(s.trash ?? null);
       void getSyncState(env, name).then(applyState, () => undefined);
     } catch (e) {
       setPullError((e as Error).message);
@@ -3201,9 +3206,16 @@ export default function CanvasWorkspace({
           hardPull={{
             busy: pullBusy,
             error: pullError,
+            trashRoot: sync?.trash_root ?? null,
+            agentLive: sync?.agent_live === true,
+            lastBackup: pullBackup,
             // Also held while a snapshot relay is queued: applied after the
             // pull it would write the discarded canvas back (the server
             // fences such snapshots too; this keeps the common case clean).
+            // NOT held for a live Claude session: the server lets a hard
+            // pull through over one (the drawer warns and asks to type
+            // "pull"), because a stuck session is one of the states this
+            // door recovers from.
             disabled:
               !!owned ||
               !sync ||

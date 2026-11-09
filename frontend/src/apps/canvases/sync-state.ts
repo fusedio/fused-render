@@ -94,6 +94,11 @@ export interface SyncState {
   /** Optional extras (not in the base contract): read when present. */
   watching?: boolean;
   fix_active?: boolean;
+  /** Where a pull's backup of the clone lands: `.sync/trash/<canvas>/`, one
+   *  timestamped folder per pull. The Hard pull's confirm step names it. */
+  trash_root?: string;
+  /** A Claude run is live in the clone (a hard pull over it is allowed but warned). */
+  agent_live?: boolean;
 }
 
 /** One sync/log ring entry. */

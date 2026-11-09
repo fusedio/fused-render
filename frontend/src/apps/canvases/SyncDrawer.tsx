@@ -10,9 +10,24 @@ import { LEG_LABEL, LEG_ORDER, LEG_SHORT, formatClock, type SyncLogEvent } from 
 
 // The Hard pull's second step, inline (no window.confirm: the native shell's
 // web views do not promise one). Pressing "Hard pull" swaps the button for
-// this question and its two answers; anything else leaves the drawer as is.
+// this question, where the backup goes, a field to type "pull" into, and
+// the two answers; anything else leaves the drawer as is. The typed word is
+// the friction that lets the door stay open in the worst states — a live
+// Claude session, a push that failed, a frame holding a wrong canvas — the
+// server copies the whole folder into the trash before it writes anything.
 const HARD_PULL_QUESTION =
-  "Replace this canvas folder with the server's copy? Unpublished local edits are kept only in the canvas trash.";
+  "Replace this canvas folder with the server's copy? Unpublished local edits are kept only in the backup.";
+const HARD_PULL_WORD = "pull";
+
+/** The Hard pull door, plus what its confirm step needs to say. */
+export interface HardPullControl extends PullControl {
+  /** sync/state's `trash_root`: where the backup lands (null = unknown/older server). */
+  trashRoot: string | null;
+  /** A Claude run is live in the clone right now. */
+  agentLive: boolean;
+  /** The backup folder the last hard pull answered with. */
+  lastBackup: string | null;
+}
 
 function LegendItem({ color, text }: { color: string; text: string }) {
   return (
@@ -51,18 +66,23 @@ export function SyncDrawer({
   wsLogAtRef: React.MutableRefObject<number>;
   onEvents: (events: SyncLogEvent[]) => void;
   /** The "Hard pull" door: discard the clone and take the server's copy. */
-  hardPull: PullControl;
+  hardPull: HardPullControl;
   onClose: () => void;
 }) {
   const nextRef = useRef(0);
   const onEventsRef = useRef(onEvents);
   onEventsRef.current = onEvents;
   const [confirmHard, setConfirmHard] = useState(false);
+  const [typed, setTyped] = useState("");
   // The question drops once the pull is under way (or the canvas changes).
   useEffect(() => {
     if (hardPull.busy) setConfirmHard(false);
   }, [hardPull.busy]);
   useEffect(() => setConfirmHard(false), [name]);
+  useEffect(() => {
+    if (!confirmHard) setTyped("");
+  }, [confirmHard]);
+  const typedOk = typed.trim().toLowerCase() === HARD_PULL_WORD;
 
   useEffect(() => {
     // A new canvas or a new watcher is a new ring: read it from the start.
@@ -131,11 +151,39 @@ export function SyncDrawer({
         <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
           {confirmHard ? (
             <>
-              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{HARD_PULL_QUESTION}</span>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere", display: "flex", flexDirection: "column", gap: 2 }}>
+                <span>{HARD_PULL_QUESTION}</span>
+                <span style={{ color: "var(--fg-muted)", fontSize: 11 }}>
+                  Backup first:{" "}
+                  <code style={{ fontSize: 11 }}>
+                    {hardPull.trashRoot ? `${hardPull.trashRoot}/<timestamp>/` : "the canvas trash (.sync/trash)"}
+                  </code>
+                </span>
+                {hardPull.agentLive && (
+                  <span style={{ color: "rgb(200,120,30)", fontSize: 11 }}>
+                    A Claude session is editing this folder. The pull runs over it; anything it writes
+                    after the backup is taken is not in the backup.
+                  </span>
+                )}
+              </span>
+              <input
+                className="field-control"
+                autoFocus
+                value={typed}
+                onChange={(e) => setTyped(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && typedOk && !hardPull.disabled) hardPull.onPull();
+                  if (e.key === "Escape") setConfirmHard(false);
+                }}
+                placeholder={`Type ${HARD_PULL_WORD} to confirm`}
+                aria-label={`Type ${HARD_PULL_WORD} to confirm the hard pull`}
+                style={{ width: 150, height: 24, padding: "0 6px", fontSize: 12, flex: "none" }}
+              />
               <button
                 className="btn btn-primary"
                 style={{ padding: "0 8px", fontSize: 12, flex: "none" }}
-                disabled={hardPull.disabled}
+                disabled={hardPull.disabled || !typedOk}
+                title={typedOk ? undefined : `Type ${HARD_PULL_WORD} to enable`}
                 onClick={() => hardPull.onPull()}
               >
                 Discard and pull
@@ -165,12 +213,32 @@ export function SyncDrawer({
                   {hardPull.error}
                 </span>
               )}
+              {!hardPull.error && hardPull.lastBackup && (
+                <span
+                  style={{
+                    color: "var(--fg-muted)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    minWidth: 0,
+                    maxWidth: 420,
+                    fontSize: 11,
+                  }}
+                  title={hardPull.lastBackup}
+                >
+                  Backed up to <code style={{ fontSize: 11 }}>{hardPull.lastBackup}</code>
+                </span>
+              )}
               <button
                 className="btn"
                 style={{ padding: "0 8px", fontSize: 12, flex: "none" }}
                 disabled={hardPull.disabled}
                 onClick={() => setConfirmHard(true)}
-                title="Replace this canvas folder with a fresh copy from the server, no merge (the old files go to the canvas trash)"
+                title={
+                  "Replace this canvas folder with a fresh copy from the server, no merge. The whole folder is backed up first" +
+                  (hardPull.trashRoot ? ` under ${hardPull.trashRoot}` : " to the canvas trash") +
+                  (hardPull.agentLive ? ". A Claude session is live here; the pull runs over it" : "")
+                }
               >
                 {hardPull.busy ? "Pulling…" : "Hard pull"}
               </button>
