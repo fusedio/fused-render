@@ -5,12 +5,11 @@
 import type { Bookmark } from "@platform/lib/bookmarks";
 import type { CurrentApp } from "@shell/current-apps-lib";
 
-// Apps + canvases sum to the ten the apps group had alone (owner,
-// 2026-10-22: "reduce the number of apps being shown, and use the freed up
-// space to show canvases") — the rail's height does not grow.
-export const RAIL_APPS_MAX = 5;
-export const RAIL_CANVASES_MAX = 5;
-export const RAIL_PINS_MAX = 3;
+// Seven of each (owner, 2026-11-09: was 5 / 5 / 3); the rail's middle
+// scrolls on a short window (sidebar.css `.sidebar-rail-scroll`).
+export const RAIL_APPS_MAX = 7;
+export const RAIL_CANVASES_MAX = 7;
+export const RAIL_PINS_MAX = 7;
 
 /** The three groups in the order their sections show them, capped. `desk` is
  *  the whole desk in section order; it splits on `canvas` exactly as the

@@ -312,8 +312,10 @@
      keep in view, so it is never the thing that clips. */
   flex: 0 0 auto;
   width: 28px;
-  margin-top: 12px;
-  padding-top: 12px;
+  /* 8px each side of the hairline, as every rail divider (sidebar.css
+     `.sidebar-rail-sep`): 4 + the column's 4px gap above, 8 below. */
+  margin-top: 4px;
+  padding-top: 8px;
   border-top: 1px solid var(--rail-sep);
 }
 /* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): the rail's last
@@ -368,10 +370,17 @@
   flex-shrink: 0;
 }
 .claude-rail .sidebar-rail-sep.is-tight {
-  /* The same 12px as the left rail's dividers (sidebar.css
+  /* The same 4px as the left rail's dividers (sidebar.css
      `.sidebar-rail-sep`): left and right stand identically (owner,
-     2026-11-05). */
-  margin: 12px 0;
+     2026-11-05; 8px each side with the column's gap, 2026-11-09). */
+  margin: 4px 0;
+}
+/* …over the pinned bots, 6px more below (owner, 2026-11-09: "space between
+   fav bots and fav tasks is not the same as the left sidebar"): a bot's face
+   fills its 28px seat where a 16px glyph or ring leaves 6px, so at the plain
+   4px the hairline sat visibly tighter to the faces than to the rings. */
+.claude-rail .sidebar-rail-sep.is-tight.is-over-faces {
+  margin-bottom: 10px;
 }
 /* THE FOOT'S PADDING IS THE GLOBAL SIDEBAR'S (owner, 2026-11-06: "keep it
    aligned to the Settings icon, same bottom padding"): the rail reaches the

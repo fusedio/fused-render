@@ -3201,7 +3201,7 @@ export function ClaudeRail({
           // waits on the reader; the green one, news past their mark.
           <>
             {(favs.length > 0 || !favouritesOnly) && (
-              <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
+              <span className="sidebar-rail-sep is-tight is-over-faces" aria-hidden="true" />
             )}
             <div className="claude-rail-bots" role="list" aria-label="Pinned bots">
               {bots.map((b) => {

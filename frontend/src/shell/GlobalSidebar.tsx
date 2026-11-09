@@ -16,6 +16,7 @@ import { BOTS_ICON, TASKS_ICON as SCHEDULED_ICON } from "@shell/nav-icons";
 import { useCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
+import { setSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import { botsAvailable, type Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
@@ -836,6 +837,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   });
   const onAppPath = appPathFromPath(pathname);
   const here = pathname + location.search;
+  // A rail door opens ITS section for the next expand (owner, 2026-11-09:
+  // "my last clicked item in the collapsed sidebar should be remembered and
+  // open that section"): the accordion's own write (sidebar-accordion), so
+  // expanding shows the section the reader last went into from the rail.
+  const railGo = (section: "projects" | "canvases" | "favourites", href: string) => {
+    setSidebarSectionOpen(section, true);
+    navigateUrl(href);
+  };
   // The Projects section's "+ New app" row, on the rail: same composer, same
   // place (the head of the apps group). Under Fused Bot the section is gone
   // and so is this door.
@@ -855,7 +864,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           active: false,
           dividerBefore: true,
           scrolls: true,
-          onClick: () => setRailComposing(true),
+          onClick: () => {
+            setSidebarSectionOpen("projects", true);
+            setRailComposing(true);
+          },
         },
       ];
   const railApps: SidebarRailItem[] = extras.apps.map((app) => ({
@@ -865,6 +877,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     href: appPageUrl(app.path),
     active: onAppPath === app.path,
     scrolls: true,
+    onClick: () => railGo("projects", appPageUrl(app.path)),
   }));
   // A canvas door lights on its editor, the section's own rule; the href is
   // the row's (canvasRowHref), with the row's fallback for a clone of an
@@ -888,6 +901,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           active: pathname === "/canvases",
           dividerBefore: true,
           scrolls: true,
+          onClick: () => railGo("canvases", "/canvases"),
         },
       ]
     : [];
@@ -900,6 +914,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       </span>
     ),
     href: canvasRowHref(app) ?? appPageUrl(app.path),
+    onClick: () => railGo("canvases", canvasRowHref(app) ?? appPageUrl(app.path)),
     active:
       !!app.canvas &&
       !!onCanvas &&
@@ -922,7 +937,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // Arm it, as the section's own click does (Update-bookmark tracking).
     onClick: () => {
       armBookmark(b.id, b.url);
-      navigateUrl(b.url);
+      railGo("favourites", b.url);
     },
   }));
 
