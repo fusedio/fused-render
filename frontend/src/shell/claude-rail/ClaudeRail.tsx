@@ -1925,8 +1925,11 @@ export function ClaudeRail({
   // A CARD THAT CAME ACROSS A PAGE HOP (plus-card-store): a pinned one is
   // this rail's now — beside this rail's + (or list), and this rail's intent
   // knows it is up, so a press on the + closes it the way it would have on
-  // the page it was opened on. A hover's preview does not travel.
-  useEffect(() => {
+  // the page it was opened on. A hover's preview does not travel. A LAYOUT
+  // effect, declared before the publish below: the anchor must be set before
+  // the host re-renders the card with this rail's `placeKey`, or Modal
+  // measures off a null anchor and keeps the last page's box (Bugbot #2220).
+  useLayoutEffect(() => {
     const c = cardRef.current;
     if (!c?.pop) return;
     if (!c.pinned) {
