@@ -168,3 +168,26 @@ def test_bookkeeping_only_original_kept_when_nothing_relocated(agent, tmp_path):
     orig = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
     _write(orig, _bookkeeping())
     assert agent._session_transcript_path(work, "sid") == orig
+
+
+def test_slash_command_row_is_its_own_user_turn(agent, tmp_path):
+    target, work, munged = _setup(agent, tmp_path)
+    slash = ("<command-message>development:building-with-subagent</command-message>"
+             "\n<command-name>/development:building-with-subagent</command-name>"
+             "\n<command-args>build the thing</command-args>")
+    rows = _rows("first")
+    rows.append({"type": "user", "uuid": "s1", "message": {"role": "user", "content": slash}})
+    rows.append({"type": "assistant", "uuid": "a9", "message": {
+        "role": "assistant", "content": [{"type": "text", "text": "on it"}]}})
+    _write(os.path.join(agent.PROJECTS, munged, "sid.jsonl"), rows)
+    turns = agent._history(target, "sid")["turns"]
+    assert [(t["role"], t["text"]) for t in turns] == [
+        ("user", "first"), ("assistant", "re first"),
+        ("user", "/development:building-with-subagent build the thing"),
+        ("assistant", "on it")]
+
+
+def test_bare_slash_command_has_no_trailing_space(agent):
+    assert agent._slash_turn_text(
+        "<command-message>x</command-message>\n<command-name>/x</command-name>") == "/x"
+    assert agent._slash_turn_text("<task-notification>d</task-notification>") is None

@@ -3348,6 +3348,31 @@ _LEADING_MACHINERY_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
 # prepended to words the user really did type and must not take the turn with it.
 _LEADING_DROP_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_DROP))
 
+_SLASH_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
+_SLASH_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+
+
+def _slash_turn_text(text: str) -> str | None:
+    """What the reader typed, for the user row the CLI persists for a slash
+    command: a string `<command-message>..</command-message><command-name>/x
+    </command-name><command-args>..</command-args>` (the args tag is absent
+    for a bare command). `/x args`, or None when `text` is not that envelope
+    (the command name must open the record, past an optional
+    `<command-message>`)."""
+    if not isinstance(text, str):
+        return None
+    head = re.match(r"\s*(?:<command-message>.*?</command-message>\s*)?<command-name>",
+                    text, re.DOTALL)
+    if not head:
+        return None
+    name = _SLASH_NAME.search(text)
+    if not name or not name.group(1).strip():
+        return None
+    args = _SLASH_ARGS.search(text)
+    return " ".join(
+        p for p in (name.group(1).strip(), (args.group(1).strip() if args else "")) if p)
+
+
 # A synthetic `user` record the HARNESS writes when a background shell the turn
 # started finishes (or is stopped): it wakes the run, and everything the agent
 # says afterwards is the answer to it. Nobody typed it, so it may never render as
@@ -12158,8 +12183,11 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                 if ts is not None:
                     ctrn["ts"] = ts
                 turns.append(ctrn)
-            elif text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
+            elif (slash_text := _slash_turn_text(text)) is not None or (
+                    text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip())):
                 close_stretch()  # before the user turn, or the segments land on it
+                if slash_text is not None:
+                    text = slash_text
                 turn = {"role": "user", "text": text,
                         "uuid": str(row.get("uuid") or "")}
                 # WHEN they said it, epoch seconds, user turns only. The chat
