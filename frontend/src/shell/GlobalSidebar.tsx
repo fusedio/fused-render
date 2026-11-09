@@ -933,6 +933,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     href: b.url,
     active: b.url === here,
     dividerBefore: i === 0,
+    // Bottom-aligned just above Settings, as the expanded Favourites is.
+    pinBottom: i === 0,
     scrolls: true,
     // Arm it, as the section's own click does (Update-bookmark tracking).
     onClick: () => {
@@ -1012,7 +1014,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             label: setupMeter.title,
             icon: <SetupProgressRing percent={setupMeter.percent} />,
             href: ONBOARDING_PATH,
-            pinBottom: true,
+            // The favourites already pushed the bottom cluster down; under
+            // them the expanded footer's hairline stands in for the push.
+            pinBottom: !railPins.length,
+            dividerBefore: railPins.length > 0,
           },
         ]
       : []),
@@ -1021,7 +1026,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       label: "Preferences",
       icon: PREFERENCES_ICON,
       href: "/preferences",
-      pinBottom: !setupMeter,
+      pinBottom: !setupMeter && !railPins.length,
+      dividerBefore: !setupMeter && railPins.length > 0,
       active: prefsActive,
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/etc.
@@ -1127,6 +1133,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             behind the feature flag alone (owner, 2026-10-22) — signed out it
             is the "+ Canvas" door into the catalog, which does the sign-in. */}
         {canvasesInNav && <CurrentAppsSection section="canvases" />}
+        {/* Favourites sits at the bottom, just above Settings (owner,
+            2026-11-09), under its own hairline: the spacer takes the free
+            height so Projects/Canvases stay top-aligned and Favourites
+            bottom-aligned. A sibling, not a border on the section — the
+            section's max-height is its measured content height (border-box
+            would clip a border's pixel). */}
+        {!bot && <div className="sidebar-bottom-sep" aria-hidden="true" />}
         {!bot && <BookmarksSection />}
         <div className="sidebar-section sidebar-settings">
           <UpdateCard />
