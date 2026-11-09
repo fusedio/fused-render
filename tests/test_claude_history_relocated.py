@@ -68,14 +68,29 @@ def test_helper_prefers_original_then_newest_relocated(agent, tmp_path):
     os.utime(old, (time.time() - 100, time.time() - 100))
     assert agent._session_transcript_path(work, "sid") == new
     _write(orig, _rows("one"))
-    assert agent._session_transcript_path(work, "sid") == orig  # original wins
+    os.utime(orig, (time.time() + 100, time.time() + 100))
+    assert agent._session_transcript_path(work, "sid") == orig  # newer original wins
 
 
-def test_other_folders_are_not_mistaken_for_worktrees(agent, tmp_path):
+def test_same_session_under_any_slug_is_found(agent, tmp_path):
+    # A session id is a uuid: the file under a slug that is no worktree of the
+    # workdir is still this session (the agent cd'd somewhere unrelated).
     _t, work, munged = _setup(agent, tmp_path)
-    _write(os.path.join(agent.PROJECTS, munged + "-sibling", "sid.jsonl"), _rows("x"))
-    assert agent._session_transcript_path(work, "sid") == os.path.join(
-        agent.PROJECTS, munged, "sid.jsonl")
+    other = os.path.join(agent.PROJECTS, "-elsewhere-repo", "sid.jsonl")
+    _write(other, _rows("x"))
+    assert agent._session_transcript_path(work, "sid") == other
+
+
+def test_stale_original_loses_to_newer_copy_with_all_turns(agent, tmp_path):
+    # The first turn was written under the folder's slug; the agent then
+    # moved into a worktree and the rest of the conversation landed there.
+    target, work, munged = _setup(agent, tmp_path)
+    orig = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
+    moved = os.path.join(agent.PROJECTS, "-other-wt", "sid.jsonl")
+    _write(orig, _rows("first"))
+    os.utime(orig, (time.time() - 100, time.time() - 100))
+    _write(moved, _rows("first", "second", "third"))
+    assert _users(agent._history(target, "sid")) == ["first", "second", "third"]
 
 
 def test_history_reads_the_relocated_transcript(agent, tmp_path):
@@ -88,9 +103,11 @@ def test_history_reads_the_relocated_transcript(agent, tmp_path):
 
 def test_history_original_location_still_wins(agent, tmp_path):
     target, work, munged = _setup(agent, tmp_path)
-    _write(os.path.join(agent.PROJECTS, munged, "sid.jsonl"), _rows("here"))
-    _write(os.path.join(agent.PROJECTS, munged + "--claude-worktrees-wt", "sid.jsonl"),
-           _rows("there", "more"))
+    here = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
+    there = os.path.join(agent.PROJECTS, munged + "--claude-worktrees-wt", "sid.jsonl")
+    _write(here, _rows("here"))
+    _write(there, _rows("there", "more"))
+    os.utime(there, (time.time() - 100, time.time() - 100))
     assert _users(agent._history(target, "sid")) == ["here"]
 
 
