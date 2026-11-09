@@ -1732,17 +1732,31 @@ select.c-pill {
   opacity: 0;
   transition: opacity 0.08s ease-out;
 }
-/* THE FOLDED CARD'S PAPERCLIP (AttachButton `c-attach-idle`; owner,
-   2026-11-09): Send's neighbour while folded — 32px, at the label's old seat
-   (14px padding + Send + 8px), and the label moves one seat left. Only ever
-   visible while folded; it leaves on the label's 80ms as the card opens and
-   the shelf's own clip arrives. */
-.c-attach-idle {
+/* THE FOLDED CARD'S END (`.c-composer-idle-end`; owner, 2026-11-09: "the
+   clip left of model and effort"): the paperclip, then the label, in the
+   label's own seat against Send — one flex row, so the clip follows the
+   label's width whatever the model's name. The row takes no press itself;
+   its two seats do. */
+.c-composer-idle-end {
   position: absolute;
   right: 54px;
   bottom: 6px;
-  width: 32px;
   height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  pointer-events: none;
+}
+.c-composer-idle-end > .c-composer-meta.c-composer-meta {
+  position: static;
+}
+/* THE FOLDED CARD'S PAPERCLIP (AttachButton `c-attach-idle`): only ever
+   visible while folded; it leaves on the label's 80ms as the card opens and
+   the shelf's own clip arrives. */
+.c-attach-idle {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1752,6 +1766,7 @@ select.c-pill {
   background: transparent;
   color: var(--c-dim);
   cursor: pointer;
+  pointer-events: auto;
   transition: opacity 0.14s ease-out 0.1s;
 }
 .c-attach-idle svg {
@@ -1774,20 +1789,14 @@ select.c-pill {
     opacity 0.08s ease-out,
     visibility 0s 0.08s;
 }
-.c-composer:has(> .c-attach-idle) .c-composer-meta {
-  right: 90px;
+/* The folded box gives up the clip's seat too (30px) on top of the label's
+   room, so typed text never runs under either. */
+.c-composer.is-idle:has(.c-attach-idle) textarea {
+  padding-right: 70px;
 }
-/* The folded box gives up the clip's seat too: 36px beside Send's 40px, and
-   the label's ~110px on top while it shows. */
-.c-composer.is-idle:has(> .c-attach-idle) textarea {
-  padding-right: 76px;
+.c-composer.is-idle:has(.c-attach-idle):has(.c-composer-meta:not(.is-hidden)) textarea {
+  padding-right: 180px;
 }
-.c-composer.is-idle:has(> .c-attach-idle):has(.c-composer-meta:not(.is-hidden)) textarea {
-  padding-right: 186px;
-}
-/* THE RAIL CARDS' LABEL IS A BUTTON (`smallCard`, ui/Composer.tsx): the one
-   press that opens the shelf there. Same words, same seat; a hover wash says
-   it can be pressed. Hidden, it neither shows nor catches a press. */
 .c-composer-meta.is-opener {
   margin: 0;
   padding: 0 8px;
