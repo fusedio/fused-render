@@ -24,6 +24,11 @@ const { ATTACH_API } = await import("./ui/attachApi");
 const { createMemoryParamsStore } = await import("./params/store");
 const { PANE_SHOT_TAG } = await import("./protocol/wire");
 const { inFlightSizeForTests } = await import("./ClaudeChat");
+// ONE CONTROLLER PER SESSION is module state (`protocol/chat-store`): a
+// session id one test left in its 30 s grace must not hand the next test its
+// controller.
+const { _registry: chatRegistry } = await import("./protocol/chat-store");
+afterEach(() => chatRegistry().disposeAll());
 type Attachment = import("./shots/types").Attachment;
 type AttachApi = import("./ui/attachApi").AttachApi;
 type Viewable = import("./ui/attachApi").Viewable;

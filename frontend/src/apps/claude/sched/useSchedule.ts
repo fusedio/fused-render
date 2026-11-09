@@ -67,6 +67,14 @@ export interface UseScheduleOptions {
    *  run off as predating it (T:17437). */
   setRunParam(runId: string): void;
   /**
+   * IS THIS MOUNT THE FRONT SEAT of its shared chat (`protocol/chat-store`)?
+   * Several mounts on one session share ONE controller, and each runs its own
+   * schedule poller — so only the front one may act on a fired run (note,
+   * `run` param, re-attach); the others would append the same turn again.
+   * Read at CALL time. Absent: always front (a mount alone on its chat).
+   */
+  isFront?: () => boolean;
+  /**
    * THE PROJECT QUEUE'S SWITCH (prefs `queue.enabled`), injectable so a suite
    * can drive both sides of it without touching a process-global. Omitted, it
    * is the same subscribed pref every chat embed already pays one `/api/prefs`
@@ -298,8 +306,8 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   /** Read at CALL time: the poller and the row cache both outlive any one
    *  render, and neither may rebuild for a new callback identity. */
   const api = opts.api || PLATFORM_API;
-  const hooks = useRef({ setRunParam: opts.setRunParam, controller, api });
-  hooks.current = { setRunParam: opts.setRunParam, controller, api };
+  const hooks = useRef({ setRunParam: opts.setRunParam, controller, api, isFront: opts.isFront });
+  hooks.current = { setRunParam: opts.setRunParam, controller, api, isFront: opts.isFront };
   /** Read at watcher-BUILD time rather than call time, and through a ref so the
    *  memo below keeps its one honest dependency. A fixed seam: handed in once
    *  by a suite, never swapped mid-life. */
@@ -579,10 +587,18 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         onSessions: (map) => {
           if (live.current.queueOn) absorbSessions(map);
         },
-        addNote: (text) => hooks.current.controller.addNote(text),
-        setRunParam: (runId) => hooks.current.setRunParam(runId),
+        // FRONT SEAT ONLY: a back mount on the same shared controller marks
+        // the run attached (the watcher does) and leaves the acting to the front.
+        addNote: (text) => {
+          if (hooks.current.isFront?.() ?? true) hooks.current.controller.addNote(text);
+        },
+        setRunParam: (runId) => {
+          if (hooks.current.isFront?.() ?? true) hooks.current.setRunParam(runId);
+        },
         resumeRun: (runId) =>
-          hooks.current.controller.resumeRun(runId, { neverShown: true }),
+          (hooks.current.isFront?.() ?? true)
+            ? hooks.current.controller.resumeRun(runId, { neverShown: true })
+            : Promise.resolve(),
         shownRun: (runId) => hooks.current.controller.hasShownRun(runId),
         ...(timers.current
           ? {

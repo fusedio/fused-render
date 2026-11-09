@@ -14,6 +14,11 @@ const { createMemoryParamsStore } = await import("./params/store");
 // every mount below able to reach the chat itself inside one async `act`.
 const { ClaudeChat } = await import("./ClaudeChat");
 const { resetFlagsForTests } = await import("./feature-flag");
+// ONE CONTROLLER PER SESSION is module state (`protocol/chat-store`): a
+// session id one test left in its 30 s grace must not hand the next test its
+// controller.
+const { _registry: chatRegistry } = await import("./protocol/chat-store");
+afterEach(() => chatRegistry().disposeAll());
 
 // NO SERVER FROM THIS FILE. A mounted chat starts reads (prefs, history,
 // tasks), and one that settled later would land as a state update outside

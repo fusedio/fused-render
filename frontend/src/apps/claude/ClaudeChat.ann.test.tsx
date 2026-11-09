@@ -40,6 +40,11 @@ const { createMemoryParamsStore } = await import("./params/store");
 const { ANN_TAG, PANE_SHOT_TAG } = await import("./protocol/wire");
 const { publishProjectQueueEnabled } = await import("./feature-flag");
 const { isMac } = await import("@platform/lib/platform");
+// ONE CONTROLLER PER SESSION is module state (`protocol/chat-store`): a
+// session id one test left in its 30 s grace must not hand the next test its
+// controller.
+const { _registry: chatRegistry } = await import("./protocol/chat-store");
+afterEach(() => chatRegistry().disposeAll());
 type Attachment = import("./shots/types").Attachment;
 type AttachApi = import("./ui/attachApi").AttachApi;
 
