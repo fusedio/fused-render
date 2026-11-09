@@ -76,6 +76,9 @@ export interface ChatDraftForm {
   permission?: string;
   target?: string;
   new_task_each_run?: boolean | null;
+  /** The task's own name, typed into the card's head; absent = named from the
+   *  words' first line. */
+  name?: string;
 }
 
 /** One chat draft as `GET /api/drafts` returns it. */
@@ -118,6 +121,9 @@ export interface TaskDraftForm {
   /** The one writing box, verbatim — beats title + description on reopen
    *  (the split drifts on a single newline). Optional: older drafts lack it. */
   text?: string;
+  /** The task's own name, typed into the card's head — kept apart from
+   *  `title`, which is the words' first line. Absent/"" = named from it. */
+  name?: string;
   target: string;
   when: string | null;
   repeat: string | null;

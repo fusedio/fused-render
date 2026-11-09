@@ -499,6 +499,16 @@ const ICON_TRASH = (
   </svg>
 );
 
+// lucide "pencil", beside the head's name field: shown on hover/focus to say
+// the name can be typed into.
+const ICON_PENCIL = (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
+    <path d="m15 5 4 4" />
+  </svg>
+);
+
 // A quiet checkbox: a real <input> (focusable, space-toggled, announced as a
 // checkbox) wrapped in the <label> that names it, with the box itself drawn in
 // CSS so it resolves in both themes. Used twice — Repeat, and the flag behind
@@ -1757,6 +1767,19 @@ export function initialTextOf(
 // message is the trimmed text itself (never a recomposed title + body, so a
 // first line over the clamp is not lost); the name is the first line clamped on
 // a word boundary; the description is everything after the first line.
+/**
+ * THE NAME SOMEBODY TYPED, as opposed to the one the text implies (Akshil,
+ * 2026-11-09: "since we allow naming of tasks, i should be able to name the
+ * tasks"). A stored title that is just the text's first line — whole, or
+ * clamped by `shortTitle` — is the derived name and opens the head's field
+ * empty (its placeholder says it); anything else is a name of its own.
+ */
+export function customNameOf(title: string | null | undefined, text: string): string {
+  const t = (title ?? "").trim();
+  if (!t) return "";
+  return t === firstLine(text).trim() || t === shortTitle(text) ? "" : t;
+}
+
 export function taskFieldsOf(text: string): {
   message: string; title: string; description: string;
 } {
@@ -2607,6 +2630,8 @@ export interface DraftSeed {
 
 export interface SeededDraftForm {
   title: string | null;
+  /** The task's own name (the head's field), when one was typed. */
+  name: string | null;
   /** The whole box, verbatim — beats title + description on reopen. */
   text: string | null;
   description: string | null;
@@ -2687,6 +2712,7 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
     : null;
   return {
     title: str("title"),
+    name: str("name"),
     description: str("description"),
     text: str("text"),
     target: str("target"),
@@ -3178,6 +3204,11 @@ export default function NewJobModal({
   const initialText = initialTextOf(saved, editing, derivedTitle, initialAsk);
   const [text, setText] = useState(initialText);
   const fields = taskFieldsOf(text);
+  // THE HEAD'S NAME FIELD: empty means "named from the text" (`fields.title`,
+  // shown as its placeholder, or "Untitled task" on an empty card).
+  const initialName = saved.name ?? customNameOf(editing?.title, initialText);
+  const [name, setName] = useState(initialName);
+  const taskTitle = name.trim() || fields.title;
   const initialTargetValue = saved.target ?? editing?.target ?? initialTarget ?? "";
   const [target, setTarget] = useState(initialTargetValue);
   // ONE date-time drives everything: a one-off runs at it, and every derived
@@ -3873,6 +3904,7 @@ export default function NewJobModal({
     // setInitial exists for — this is the same one, one prefill earlier).
     target: initialTargetValue,
     text: initialText,
+    name: initialName,
     when,
     repeat,
     repeatOn,
@@ -3898,6 +3930,7 @@ export default function NewJobModal({
   const dirty =
     target !== initial.target ||
     text !== initial.text ||
+    name !== initial.name ||
     when !== initial.when ||
     repeat !== initial.repeat ||
     repeatOn !== initial.repeatOn ||
@@ -4156,6 +4189,7 @@ export default function NewJobModal({
     ? {
       title: draftSplit.title,
       description: draftSplit.description,
+      name: name.trim(),
       text,
       target,
       when: timePicked ? when : null,
@@ -4237,6 +4271,7 @@ export default function NewJobModal({
           permission: value.permission,
           target: value.target,
           new_task_each_run: value.new_task_each_run,
+          name: value.name ?? "",
         },
         { defer: true },
       );
@@ -4739,7 +4774,7 @@ export default function NewJobModal({
         buildSchedulePayload({
           target,
           message: fields.description,
-          title: fields.title,
+          title: taskTitle,
           text,
           when,
           rule,
@@ -5055,7 +5090,34 @@ export default function NewJobModal({
       // answers "which agent" before the first field does. The crumb is the
       // agent dropdown (`titleLead`), a button beside the h2 rather than inside
       // it; the h2 alone names the dialog.
-      title={editing ? "Edit task" : "New task"}
+      // THE TASK'S NAME, editable in place (Akshil, 2026-11-09): grey while
+      // nobody has named it — the text's first line, or "Untitled task" — and
+      // a pencil plus the text cursor on hover say it can be typed into.
+      title={(
+        <span className="nt-name-wrap">
+          <input
+            className="nt-name"
+            type="text"
+            value={name}
+            placeholder={fields.title || "Untitled task"}
+            size={Math.max(8, Math.min(TITLE_MAX, (name || fields.title || "Untitled task").length + 1))}
+            maxLength={TITLE_MAX}
+            aria-label="Task name"
+            spellCheck={false}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter names it and goes on to the message; it never creates.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                askRef.current?.focus();
+              }
+            }}
+          />
+          <span className="nt-name-pen" aria-hidden="true">{ICON_PENCIL}</span>
+        </span>
+      )}
+      ariaLabel={editing ? "Edit task" : "New task"}
       titleLead={(
         <>
           {/* THE AGENT FIRST (D18): the Permissions, Model and Effort are that

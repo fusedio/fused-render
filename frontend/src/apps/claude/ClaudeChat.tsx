@@ -105,6 +105,7 @@ import {
   type TargetNoun,
 } from "./pane";
 import { setSideMaximized, useSideMaximized } from "@platform/lib/side-maximized-store";
+import { TASK_ICON_EXIT_FULL_SCREEN } from "@platform/ui/TaskActionIcons";
 import {
   AnnStrip,
   ArtStrip,
@@ -5760,6 +5761,21 @@ function ChatBody(props: ChatBodyProps) {
   const kebabEl = (
     <>
       {canvasShotSeat}
+      {/* EXIT FULL SCREEN, ON THE BAR (Akshil, 2026-11-09: "in full screen on
+          top left have a exit fullscreen button outside kebab menu"): the
+          menu's item stays, this is the one-press way back beside it. Only
+          while this side pane is full screen. */}
+      {inSidePane && sideMaximized ? (
+        <button
+          type="button"
+          className="c-kebabbtn c-exitfs"
+          aria-label="Exit full screen"
+          title="Exit full screen"
+          onClick={() => setSideMaximized(false)}
+        >
+          {TASK_ICON_EXIT_FULL_SCREEN}
+        </button>
+      ) : null}
       <Kebab
         {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
         file={file}

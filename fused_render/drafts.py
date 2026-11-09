@@ -189,7 +189,7 @@ CHAT_TTL_SEC = 14 * 24 * 60 * 60
 #: page), and a field the client omits keeps whatever the stored draft had.
 TASK_FIELDS = ("title", "description", "target", "when", "repeat", "custom_rule",
                "model", "effort", "backend", "permission", "attachments",
-               "new_task_each_run", "session_id")
+               "new_task_each_run", "session_id", "name")
 
 #: The SETTINGS half of a draft, spelled once and read from either record.
 #:
@@ -205,15 +205,18 @@ TASK_FIELDS = ("title", "description", "target", "when", "repeat", "custom_rule"
 #: `title`/`description` on a task record, joined and split by the one rule both
 #: doors use (`split_draft`). `title` is the exception and is a form field too,
 #: because the modal has a title box of its own that a person may edit away from
-#: the first line of what they typed.
+#: the first line of what they typed. `name` is the task's own name typed into
+#: the card's head (2026-11-09) — kept apart from `title` because a task
+#: record's `title` is the first line of its words, and a name stored there
+#: would replace that line on the next read.
 CHAT_FORM_FIELDS = ("title", "when", "repeat", "custom_rule", "model", "effort",
-                    "backend", "permission", "target", "new_task_each_run")
+                    "backend", "permission", "target", "new_task_each_run", "name")
 
 #: The form fields that are plain text, normalised through `_text`. The rest are
 #: pass-through json (`when`, `repeat`, `custom_rule`) or a tri-state flag
 #: (`new_task_each_run`) — the same split `_TASK_TEXT` draws, for the same
 #: fields.
-_FORM_TEXT = ("title", "model", "effort", "backend", "permission", "target")
+_FORM_TEXT = ("title", "model", "effort", "backend", "permission", "target", "name")
 
 #: The fields that are plain text, normalised through `_text` on the way in. The
 #: rest are pass-through (`when`, `repeat`, `custom_rule`), a tri-state flag
@@ -228,7 +231,7 @@ _FORM_TEXT = ("title", "model", "effort", "backend", "permission", "target")
 #: session it was going to — which is exactly the bargain `an empty task put
 #: keeps the chat draft` rests on (Akshil, 2026-09-11).
 _TASK_TEXT = ("title", "description", "target", "model", "effort", "backend",
-              "permission")
+              "permission", "name")
 
 #: WHAT MAKES A DRAFT A DRAFT: words. Plus `attachments`, which `_empty_task`
 #: asks about separately because it is rows rather than text.

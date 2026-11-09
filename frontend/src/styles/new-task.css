@@ -1307,3 +1307,71 @@ button.new-task-source:focus-visible {
 .new-task-dialog .nt-row-actions .btn-danger-text {
   padding: 0 8px;
 }
+
+/* THE TASK'S NAME in the head (NewJobModal `title`): an input that reads as
+   the heading. Grey while unnamed (placeholder: the text's first line or
+   "Untitled task"); on hover the quiet wash the pills use, the text cursor and
+   a pencil say it can be typed into. */
+.nt-name-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  border-radius: 6px;
+  padding: 0 6px;
+  margin-left: -6px;
+}
+
+.nt-name-wrap:hover,
+.nt-name-wrap:focus-within {
+  background: var(--ctl-quiet-bg);
+}
+
+.new-task-dialog .nt-name {
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  cursor: text;
+  text-overflow: ellipsis;
+}
+
+.new-task-dialog .nt-name::placeholder {
+  color: var(--fg-muted);
+  opacity: 1;
+}
+
+.nt-name-pen {
+  display: inline-flex;
+  flex: none;
+  color: var(--fg-muted);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.nt-name-wrap:hover .nt-name-pen,
+.nt-name-wrap:focus-within .nt-name-pen {
+  opacity: 1;
+}
+
+/* ✕ wears the head pills' hover (Folder, When): the same quiet wash, box and
+   radius, so the three controls on the right read as one group. */
+.new-task-dialog .modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+}
+
+.new-task-dialog .modal-close:hover:not(.is-armed) {
+  background: var(--ctl-quiet-bg);
+  color: var(--fg);
+}

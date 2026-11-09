@@ -45,6 +45,7 @@ let saveBlockedReason: typeof import("./NewJobModal").saveBlockedReason;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
 let ASK_PLACEHOLDER: typeof import("./NewJobModal").ASK_PLACEHOLDER;
 let taskFieldsOf: typeof import("./NewJobModal").taskFieldsOf;
+let customNameOf: typeof import("./NewJobModal").customNameOf;
 let initialTextOf: typeof import("./NewJobModal").initialTextOf;
 let composeTaskMessage: typeof import("./NewJobModal").composeTaskMessage;
 let withoutTitleHeading: typeof import("./NewJobModal").withoutTitleHeading;
@@ -88,6 +89,7 @@ beforeAll(async () => {
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
   ASK_PLACEHOLDER = mod.ASK_PLACEHOLDER;
   taskFieldsOf = mod.taskFieldsOf;
+  customNameOf = mod.customNameOf;
   initialTextOf = mod.initialTextOf;
   composeTaskMessage = mod.composeTaskMessage;
   withoutTitleHeading = mod.withoutTitleHeading;
@@ -2677,8 +2679,10 @@ describe("the source-task chip", () => {
   test("an Edit never wears one", () => {
     // That heading already IS the task, and the card is not continuing anything.
     expect(page()).toContain("if (editing) return null;");
-    // …the h2 is just the card's name; the agent crumb is `titleLead` beside it.
-    expect(card()).toContain('title={editing ? "Edit task" : "New task"}');
+    // …the h2 is the task's editable name; the dialog is still named for what
+    // the card is, and the agent crumb is `titleLead` beside it.
+    expect(card()).toContain('ariaLabel={editing ? "Edit task" : "New task"}');
+    expect(card()).toContain('placeholder={fields.title || "Untitled task"}');
     expect(card()).toContain("{...(editing || !sourceTask ? {} : {");
   });
 
@@ -2959,6 +2963,14 @@ describe("property pills", () => {
     expect(s).toContain('if (!recentsOpen) togglePill("where");');
     expect(s).not.toContain("suppressOpen");
     expect(s).not.toContain("ASK_HINT_KEY");
+  });
+
+  test("a stored title is a custom name only when it is not the text's first line", () => {
+    expect(customNameOf(null, "fix the bug\n\nbody")).toBe("");
+    expect(customNameOf("fix the bug", "fix the bug\n\nbody")).toBe("");
+    expect(customNameOf("Bug triage", "fix the bug\n\nbody")).toBe("Bug triage");
+    const long = "word ".repeat(30).trim();
+    expect(customNameOf(shortTitle(long), long)).toBe("");
   });
 
   test("editing keeps a long first line whole, once", () => {
