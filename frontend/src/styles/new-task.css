@@ -730,11 +730,15 @@
 }
 
 /* The path the agent will be handed — the one fact a picture cannot show about
-   itself. Truncated from the LEFT: the filename is the half that identifies it. */
+   itself. Truncated from the LEFT: the filename is the half that identifies it.
+   `direction: rtl` puts the ellipsis on the left; the path itself sits in a
+   <bdi>, so its own slashes keep their LTR order (bare rtl moved the leading
+   "/" to the end — see .cc-pfiles-path). */
 .nt-shotview-path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  direction: rtl;
   text-align: left;
   min-width: 0;
   font-size: 11px;

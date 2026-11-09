@@ -5137,6 +5137,7 @@ export default function NewJobModal({
   // (AppPane: stat, then the app-entry ask for a folder).
   const [landingNoun, setLandingNoun] = useState<TargetNoun>("");
   useEffect(() => {
+    setLandingNoun("");
     if (!landing || !landingTarget) return;
     let alive = true;
     void (async () => {
@@ -6236,7 +6237,7 @@ export default function NewJobModal({
                 />
                 <figcaption className="nt-shotview-bar">
                   <span className="nt-shotview-path">
-                    {viewer.path || "uploading…"}
+                    <bdi>{viewer.path || "uploading…"}</bdi>
                   </span>
                   <span className="nt-shotview-spacer" />
                   <button
@@ -6286,7 +6287,7 @@ export default function NewJobModal({
                     <span aria-hidden="true">📄</span> {viewer.name}
                   </span>
                   <span className="nt-shotview-path">
-                    {viewer.path || "uploading…"}
+                    <bdi>{viewer.path || "uploading…"}</bdi>
                   </span>
                   <span className="nt-shotview-spacer" />
                   <button
