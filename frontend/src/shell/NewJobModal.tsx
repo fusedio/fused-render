@@ -5355,6 +5355,7 @@ export default function NewJobModal({
       // The rail cards' ✕: top-left (TasksPeek), and gone while a chat is open —
       // Back is the way out there, as in the Tasks card.
       closeAtStart={landing}
+      plainBody={landing}
       hideClose={chatOpen}
       // THE CLOSE-TWICE GUARD IS OFF WHENEVER THERE IS A DRAFT TO CLOSE INTO
       // (design.md, Decisions: "Modal close keeps the draft silently; Discard in
@@ -5938,7 +5939,6 @@ export default function NewJobModal({
       // Later props win, so this is the whole swap.
       {...(chatOpen ? {
         ariaLabel: `${chatTitle || "New task"} — chat`,
-        plainBody: true,
         titleLead: (
           <button
             type="button"
@@ -6041,10 +6041,18 @@ export default function NewJobModal({
           />
         </div>
       )}
+      {/* THE RAIL'S LANDING PAGE: the form in a boxless `.deploy-body` scope
+          (its fields' and pills' skins), and the chat's lists OUTSIDE it — the
+          body is plain there, so `.deploy-body button` (fields.css) cannot
+          repaint the rows' own icon buttons (a draft's trash drew as an empty
+          square). Kept mounted under an open chat, not shown. */}
+      <div
+        className={landing ? "nt-landing-page" : "nt-plain"}
+        style={chatOpen ? { display: "none" } : undefined}
+      >
+      <div className={landing ? "deploy-body nt-landing-scope" : "nt-plain"}>
       <div
         className="schedule-form"
-        // Kept mounted under the open chat (its words, pills, scroll), not shown.
-        style={chatOpen ? { display: "none" } : undefined}
       >
         {/* ONE WRITING SURFACE: a single borderless box that reads as a
             document you type into. See `.new-task-write` in new-task.css for the
@@ -6530,23 +6538,6 @@ export default function NewJobModal({
           </div>
         </div>
         </div>
-        {landing && (
-          <div className="chat-root c-tokens nt-landing-lists">
-            <Lists
-              file={landingTarget || null}
-              recent={landingRecent}
-              artifacts={landingArtifacts}
-              snaps={landingSnaps}
-              onOpen={(sessionId) => {
-                const row = landingRecent?.find((t) => t.session_id === sessionId);
-                if (row?.session_id) setLandingChat(row);
-                else openFromLanding(row ? taskHref(row) : null);
-              }}
-              onNavigate={(url) => openFromLanding(url)}
-              {...(onOpenDraft ? { onFillDraft: onOpenDraft } : {})}
-            />
-          </div>
-        )}
         {/* EVERY LINE THE ROWS USED TO PRINT UNDER THEMSELVES, in one place: the
             path's refusal, who runs the task, what leaving the session costs,
             the past-time note, the thread a repeat writes into, and the error.
@@ -6658,6 +6649,25 @@ export default function NewJobModal({
             closing={recurOut}
           />
         )}
+      </div>
+      </div>
+      {landing && (
+        <div className="chat-root c-tokens nt-landing-lists">
+          <Lists
+            file={landingTarget || null}
+            recent={landingRecent}
+            artifacts={landingArtifacts}
+            snaps={landingSnaps}
+            onOpen={(sessionId) => {
+              const row = landingRecent?.find((t) => t.session_id === sessionId);
+              if (row?.session_id) setLandingChat(row);
+              else openFromLanding(row ? taskHref(row) : null);
+            }}
+            onNavigate={(url) => openFromLanding(url)}
+            {...(onOpenDraft ? { onFillDraft: onOpenDraft } : {})}
+          />
+        </div>
+      )}
       </div>
     </Modal>
   );

@@ -1617,7 +1617,7 @@ button.new-task-source:focus-visible {
 /* Window A's card: the landing sits where the chat's does, ~14% down the
    card (a flex spacer: percentages of a column's height), at its own height —
    the box does not stretch to fill the card. */
-.modal-popover .modal-dialog.is-sized.new-task-dialog .schedule-form::before {
+.modal-popover .modal-dialog.is-sized.new-task-dialog > .modal-body:has(> .nt-landing-page):not(:has(> .nt-landing-chat))::before {
   content: "";
   /* Never shrinks: a long Recent chats list (a busy folder) used to squeeze
      it to nothing while a quiet folder kept it — two different tops. */
@@ -1647,8 +1647,8 @@ button.new-task-source:focus-visible {
   min-height: 0;
   overflow: visible;
   background: transparent;
-  /* `.c-lists` brings the landing's own 28px; the form's gap is taken back. */
-  margin-top: -14px;
+  /* `.c-lists` brings the landing's own 28px. */
+  margin-top: 0;
 }
 
 /* THE RAIL CARD'S OPEN CHAT (NewJobModal `landingChat`): the Tasks card's
@@ -1663,10 +1663,33 @@ button.new-task-source:focus-visible {
   overflow: hidden;
 }
 
-.modal-dialog.new-task-dialog > .modal-body.modal-body-plain {
+/* The rail's landing: a plain body (see NewJobModal) with the card's own
+   gutters; the form keeps `.deploy-body` through a boxless scope. */
+.modal-dialog.new-task-dialog > .modal-body.modal-body-plain:has(> .nt-landing-page) {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding: 8px 16px 18px;
+  overflow-y: auto;
+}
+
+.nt-landing-scope {
+  display: contents;
+}
+
+.nt-landing-page {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  min-width: 0;
+}
+
+.modal-popover .modal-dialog.is-sized.new-task-dialog .nt-landing-page .schedule-form {
+  flex: none;
+}
+
+/* …and while a chat is open the chat owns the whole body. */
+.modal-dialog.new-task-dialog > .modal-body.modal-body-plain:has(> .nt-landing-chat) {
   padding: 0;
   overflow: hidden;
 }
@@ -1749,4 +1772,10 @@ button.new-task-source:focus-visible {
   justify-content: center;
   color: var(--fg-muted);
   font-size: 13px;
+}
+
+/* Between one page's rail going and the next one's arriving, the +'s card is
+   kept but not shown (plus-card-store `plus-card-orphan`). */
+.plus-card-orphan .modal-popover {
+  visibility: hidden;
 }
