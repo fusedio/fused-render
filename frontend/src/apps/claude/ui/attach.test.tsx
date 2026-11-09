@@ -531,6 +531,45 @@ test("the camera seat and the chip row both bump the row's fit revision", () => 
   expect(send.props.title).toBe("Send");
 });
 
+test("the paperclip: shown only with a picks handler, hands the picks over, off while the box is blocked", () => {
+  let renderer: ReactTestRenderer | undefined;
+  const got: File[][] = [];
+  const card = (over: Record<string, unknown>) => (
+    <ComposerCard
+      variant="chat"
+      file="/p/app.py"
+      sessionId=""
+      controls={controls}
+      status="idle"
+      back="/explorer/view/p"
+      onSend={() => {}}
+      onStop={() => {}}
+      {...over}
+    />
+  );
+  const clip = () => renderer!.root.findAll((n) => n.type === "button" && n.props.className === "c-pill c-attachbtn");
+  act(() => {
+    renderer = create(card({}));
+  });
+  expect(clip().length).toBe(0);
+  act(() => {
+    renderer!.update(card({ onAttachFiles: (f: File[]) => got.push(f) }));
+  });
+  expect(clip().length).toBe(1);
+  expect(clip()[0]!.props.disabled).toBe(false);
+  const input = renderer!.root.findByProps({ type: "file" });
+  const file = new File(["x"], "a.txt");
+  act(() => {
+    input.props.onChange({ target: { files: [file], value: "C:/fakepath/a.txt" } });
+  });
+  expect(got).toEqual([[file]]);
+  act(() => {
+    renderer!.update(card({ onAttachFiles: () => {}, blocked: true, blockedReason: "Waiting on a scheduled message" }));
+  });
+  expect(clip()[0]!.props.disabled).toBe(true);
+  expect(clip()[0]!.props.title).toBe("Waiting on a scheduled message");
+});
+
 test("the tray's own record is what a send and an unmount read — not the last render", async () => {
   // WHAT `live.current` IS FOR, and why a render is too late to write it.
   //

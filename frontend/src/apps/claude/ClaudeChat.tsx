@@ -4599,6 +4599,13 @@ function ChatBody(props: ChatBodyProps) {
     // why no test can fail on the missing dep alone. One mask at a time.)
     [attach.addFiles],
   );
+  // THE PAPERCLIP'S PICKS (ui/AttachButton): the paste's and the drop's road.
+  const onAttachFiles = useCallback(
+    (files: File[]) => {
+      void attach.addFiles(files);
+    },
+    [attach.addFiles],
+  );
 
   /**
    * DRAG AND DROP (T:11745-11790). Four listeners, and the class is driven by a
@@ -5301,6 +5308,7 @@ function ChatBody(props: ChatBodyProps) {
       onSendQueuedNow,
       hasQueued,
       onPaste,
+      onAttachFiles,
       // The chip row is ABOVE the control row and changes the composer's height,
       // never the row's width — but T re-measures on exactly this kind of change
       // (its MutationObserver watches the rows' subtree), and the footnote's
@@ -5395,6 +5403,7 @@ function ChatBody(props: ChatBodyProps) {
       // depending on the whole `attach` object — a coincidence, not a dep.
       attach.capturing,
       onPaste,
+      onAttachFiles,
       pane.paneNoun,
       ann.chips,
       ann.hasSendable,

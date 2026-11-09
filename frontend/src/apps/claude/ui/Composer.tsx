@@ -60,6 +60,7 @@ import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
 import { agentLabel, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { copyToTaskShots, SchedButton } from "./SchedButton";
+import { AttachButton } from "./AttachButton";
 import { outboxHint } from "./outbox";
 
 /** The send button's tooltip, while a run is live. */
@@ -468,6 +469,12 @@ export interface ComposerCardProps {
    */
   onPaste?: React.ClipboardEventHandler<HTMLTextAreaElement>;
   /**
+   * THE PAPERCLIP (AttachButton; owner, 2026-11-09): files picked from the
+   * system picker, handed to the same road as a paste or a drop. Absent: no
+   * button (a host with no attachment tray).
+   */
+  onAttachFiles?(files: File[]): void;
+  /**
    * THE CAMERA'S OLD SEAT, immediately left of Schedule (T:4166-4171). The
    * screenshot button lived here as a pill and moved into the `#anncta` strip on
    * 2026-08-27 because it acts on the PREVIEW rather than on this draft — so
@@ -611,6 +618,7 @@ export function ComposerCard({
   onRestoreAttachments,
   onDiscardAttachments,
   onPaste,
+  onAttachFiles,
   camera,
   fitRevision,
   back,
@@ -2525,6 +2533,20 @@ export function ComposerCard({
           <ContextMeter usage={ctxUsage} model={ctxModel} />
           <span className="c-spacer" />
           {camera}
+          {/* THE PAPERCLIP, first of the draft's own group (attach, schedule,
+              send) — what goes in the message, then how it leaves. Off when
+              the box itself is (the schedule block, a comment round). */}
+          {onAttachFiles ? (
+            <AttachButton
+              onFiles={onAttachFiles}
+              disabled={(variant === "chat" && !!blocked) || !!navLocked}
+              {...(navLocked && navLockedReason
+                ? { disabledReason: navLockedReason }
+                : variant === "chat" && blocked && blockedReason
+                  ? { disabledReason: blockedReason }
+                  : {})}
+            />
+          ) : null}
           {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two
               are the ways this draft leaves the box — now, or as a task
               (T:4174-4183). The landing card's copy is never blocked. */}

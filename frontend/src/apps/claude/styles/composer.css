@@ -549,7 +549,8 @@
 .c-composer-row.is-slim .c-anncta {
   display: none;
 }
-.c-composer-row.is-bare > .c-schedbtn {
+.c-composer-row.is-bare > .c-schedbtn,
+.c-composer-row.is-bare > .c-attachbtn {
   display: none;
 }
 /* The spacer becomes the LINE BREAK — `width: 100%` and not `flex-basis`,
@@ -677,6 +678,21 @@ select.c-pill {
    textarea does not". Without this rule it inherited `.c-pill:disabled` and read
    as a generic dimmed pill. */
 .c-schedbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* THE PAPERCLIP (AttachButton): the calendar's own box and refusal, so the
+   draft's two icon seats read as one pair beside Send. */
+.c-attachbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.65em;
+}
+.c-attachbtn svg {
+  display: block;
+}
+.c-attachbtn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
