@@ -2362,7 +2362,7 @@ export function ComposerCard({
           );
           // THE RAIL CARDS' DOOR INTO THE SHELF (`smallCard`): the label is a
           // button there, and the one press that opens the card.
-          return smallCard ? (
+          const meta = smallCard ? (
             <button
               type="button"
               className={metaClass + " is-opener"}
@@ -2378,6 +2378,27 @@ export function ComposerCard({
           ) : (
             <div className={metaClass} aria-hidden={!collapsed} data-testid="composer-meta">
               {words}
+            </div>
+          );
+          // THE PAPERCLIP WHILE FOLDED (owner, 2026-11-09: "the clip icon also
+          // shows up in the collapsed composer … left of model and effort"):
+          // the shelf's clip is gone with the shelf, so the folded card has
+          // its own, leading the label in Send's seat (`.c-composer-idle-end`).
+          // It fades as the card opens and the shelf's clip takes over, as the
+          // label does for the pills.
+          return (
+            <div className="c-composer-idle-end">
+              {onAttachFiles ? (
+                <AttachButton
+                  onFiles={onAttachFiles}
+                  className="c-attach-idle"
+                  hidden={!collapsed}
+                  skipTab
+                  disabled={!!navLocked}
+                  {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
+                />
+              ) : null}
+              {meta}
             </div>
           );
         })() : null}

@@ -14,20 +14,38 @@ export function AttachButton({
   onFiles,
   disabled,
   disabledReason,
+  className = "c-pill c-attachbtn",
+  hidden,
+  skipTab,
 }: {
   onFiles: (files: File[]) => void;
   disabled?: boolean;
   disabledReason?: string;
+  /** The folded card's own seat (`c-attach-idle`, beside Send) instead of
+   *  the shelf's pill. */
+  className?: string;
+  /** Faded out and out of reach (the folded seat while the card is open). */
+  hidden?: boolean;
+  /** Pointer-only seat: Tab would focus it, which opens the folded card and
+   *  hides it under the focus. The shelf's clip is the keyboard's road. */
+  skipTab?: boolean;
 }) {
   const input = useRef<HTMLInputElement>(null);
   return (
     <>
       <button
         type="button"
-        className="c-pill c-attachbtn"
+        className={hidden ? `${className} is-hidden` : className}
         aria-label="Attach files"
         title={disabled && disabledReason ? disabledReason : ATTACH_LABEL}
         disabled={disabled}
+        {...(hidden || skipTab ? { tabIndex: -1 } : {})}
+        {...(hidden ? { "aria-hidden": true } : {})}
+        // A PRESS TAKES NO FOCUS: in the folded card, focus moving onto this
+        // button opens the card (Composer `onFormFocus`), which hides this
+        // seat between the press and its release — and the click was lost.
+        // The picker is the press's whole answer; the card stays as it was.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={() => input.current?.click()}
       >
         <Paperclip size={14} strokeWidth={2} aria-hidden="true" />
