@@ -2878,25 +2878,32 @@ class _SyncManager:
             return None
         return path
 
-    def _backup_to(self, trash: str | None, rel: str, data: bytes) -> None:
+    def _backup_to(self, trash: str | None, rel: str, data: bytes) -> bool:
+        """Copy one file into the trash snapshot. False when it could not be
+        written (full disk, permissions): a best-effort safety net for the
+        merge legs, but `_snapshot_clone` counts it so a hard pull can refuse."""
         if trash is None:
-            return
+            return False
         dest = os.path.join(trash, rel)
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as fh:
                 fh.write(data)
         except OSError:
-            pass  # best-effort safety net, never blocks the sync
+            return False  # never blocks the sync
+        return True
 
     def _snapshot_clone(self) -> str | None:
         """Copy the whole clone into a trash snapshot — run before the CLI's
         wholesale `pull --force`, whose overwrites/deletes we can't
         intercept per file. Returns the snapshot folder, or None when it
-        could not be created (a hard pull then refuses to run, see _pull)."""
+        could not be created OR any file could not be copied into it — a
+        folder on a full disk is not a backup (a hard pull then refuses to
+        run, see _pull; the merge legs never call this)."""
         trash = self._new_trash_dir()
         if trash is None:
             return None
+        failed = 0
         for root, dirs, files in os.walk(self.dir):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in files:
@@ -2908,7 +2915,12 @@ class _SyncManager:
                         data = fh.read()
                 except OSError:
                     continue
-                self._backup_to(trash, os.path.relpath(path, self.dir), data)
+                if not self._backup_to(trash, os.path.relpath(path, self.dir), data):
+                    failed += 1
+        if failed:
+            self.log_event("server_to_disk", "backup incomplete", ok=False,
+                           detail=f"{failed} file(s) could not be copied into {trash}")
+            return None
         return trash
 
     def _validate_clone(self) -> bool | None:
