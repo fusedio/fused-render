@@ -72,7 +72,8 @@
 .modal-popover {
   position: fixed;
   inset: 0;
-  z-index: 48;
+  /* Window A's (the +'s card): under window B (claude-rail.css, 47). */
+  z-index: 46;
   pointer-events: none;
 }
 

@@ -236,6 +236,7 @@ import {
   type FocusEvent as ReactFocusEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
 import { GitBranch, GitCommitHorizontal, Plus, RefreshCw, Search } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
@@ -351,6 +352,7 @@ import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useRailGit } from "./rail-git";
 import { publishRailGit, registerRailGit } from "./rail-git-store";
 import { PLUS_DOOR, PlusPopIntent } from "./plus-pop-lib";
+import { publishPlusRender, usePlusCard, usePlusHosted, withdrawPlusRender } from "./plus-card-store";
 import { useLauncherOpen } from "./launcher-open";
 import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
@@ -535,6 +537,12 @@ interface Card {
   /** Which popover door opened it (plus-pop-lib): `PLUS_DOOR`, or the draft
    *  ring's key. */
   door?: string;
+  /** THE TASK JUST CREATED from this card (NewJobModal `onCreatedChat`): the
+   *  remounted card opens on that entry's chat instead of closing. */
+  chatEntry?: string;
+  /** …and the settings it was created with, for that chat until its row is
+   *  listed (CodeRabbit on #2220). */
+  chatSeed?: { model?: string; effort?: string; backend?: string };
 }
 
 /** A draft's fresh record read for its New task card (`readDraftCard`):
@@ -597,6 +605,15 @@ function cardSeed(): Promise<{ modes: string[]; recents: string[] }> {
 /** The foot's pinned bots, in the order first drawn this page load
  *  (claude-rail-lib `holdOrder`). */
 let heldBotOrder: string[] = [];
+
+/** IS THE +'s CARD MID-CREATE? (Modal's `data-busy`; CodeRabbit on #2220.)
+ *  Read off the card, not its ✕ — the card hides its ✕ while it shows a chat,
+ *  and an idle card must still give way to the Tasks or Bots card. True with
+ *  no card standing, as the missing ✕ used to read. */
+function popBusy(rail: HTMLElement | null): boolean {
+  const card = rail?.ownerDocument.querySelector(".modal-popover .modal-dialog");
+  return !card || card.hasAttribute("data-busy");
+}
 
 export function ClaudeRail({
   place,
@@ -778,7 +795,9 @@ export function ClaudeRail({
   const paneHome = !activeSessionId;
   // The +'s New task card (`openNewTask`, below) — declared up here because
   // an open one keeps the rail standing (`shown`).
-  const [card, setCard] = useState<Card | null>(null);
+  // THE CARD'S STATE IS THE SHELL'S (plus-card-store): a pinned card
+  // outlives this rail's page, as the Tasks card does.
+  const [card, setCard] = usePlusCard<Card>();
   const cardRef = useRef(card);
   cardRef.current = card;
   // WHETHER THE RAIL STANDS (header, claude-rail-lib `railShown`): with the
@@ -1915,6 +1934,24 @@ export function ClaudeRail({
   }
   const plusIntent = plusIntentRef.current;
   useEffect(() => () => plusIntent.dispose(), [plusIntent]);
+  // A CARD THAT CAME ACROSS A PAGE HOP (plus-card-store): a pinned one is
+  // this rail's now — beside this rail's + (or list), and this rail's intent
+  // knows it is up, so a press on the + closes it the way it would have on
+  // the page it was opened on. A hover's preview does not travel. A LAYOUT
+  // effect, declared before the publish below: the anchor must be set before
+  // the host re-renders the card with this rail's `placeKey`, or Modal
+  // measures off a null anchor and keeps the last page's box (Bugbot #2220).
+  useLayoutEffect(() => {
+    const c = cardRef.current;
+    if (!c?.pop) return;
+    if (!c.pinned) {
+      setCard(null);
+      return;
+    }
+    popAnchor.current = !c.door || c.door === PLUS_DOOR ? plusRef.current : (listRef.current ?? plusRef.current);
+    plusIntent.adopt(c.door || PLUS_DOOR, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // ONE CARD BESIDE THE RAIL (owner, 2026-11-07: "either new task thing
   // should be open or window A — new task thing is like window A but diff
   // UI"): the New task popover and the rail's other cards — window A (the
@@ -1944,8 +1981,8 @@ export function ClaudeRail({
     if (peekKey === null || popSeq === null) return;
     // No × at all while Create is pending (Modal draws none when busy): as
     // blocked as a disabled one (CodeRabbit on #2189).
-    const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-    if (!shut || shut.disabled) {
+    const busyPop = popBusy(railRef.current);
+    if (busyPop) {
       setHeld(false);
       intent.dismiss();
       return;
@@ -1957,8 +1994,8 @@ export function ClaudeRail({
   // it is mid-Create (its × held). True when it went.
   const shutPop = useCallback((): boolean => {
     if (!cardRef.current?.pop) return false;
-    const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-    if (!shut || shut.disabled) return false;
+    const busyPop = popBusy(railRef.current);
+    if (busyPop) return false;
     setCardCloseSignal((n) => n + 1);
     return true;
   }, []);
@@ -1986,8 +2023,8 @@ export function ClaudeRail({
     if (tasksSeq === null) return;
     closeBotsCard();
     if (cardRef.current?.pop) {
-      const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-      if (!shut || shut.disabled) {
+      const busyPop = popBusy(railRef.current);
+      if (busyPop) {
         closeTasksCard();
         return;
       }
@@ -2001,8 +2038,8 @@ export function ClaudeRail({
     if (botsSeq === null) return;
     closeTasksCard();
     if (cardRef.current?.pop) {
-      const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
-      if (!shut || shut.disabled) {
+      const busyPop = popBusy(railRef.current);
+      if (busyPop) {
         closeBotsCard();
         return;
       }
@@ -2249,7 +2286,7 @@ export function ClaudeRail({
     // popover mid-Create, keeps its place.
     if (navDoors) {
       if (card && !card.pop) return;
-      if (card && railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close")?.disabled) return;
+      if (card && popBusy(railRef.current)) return;
       draftDoors.current.set(row.key, { row, href });
       plusIntent.press(row.key);
       return;
@@ -2818,6 +2855,133 @@ export function ClaudeRail({
               );
   };
 
+  // THE CARD, DRAWN BY THE SHELL'S HOST when one stands (plus-card-store):
+  // this rail publishes how — its anchor, placement and doors — on every
+  // render, and draws it itself only with no host (a rail rendered alone).
+  const hosted = usePlusHosted();
+  const popPlaceKey = useMemo(() => ({ favBox }), [favBox]);
+  const renderCard = (card: Card) => (
+        <NewJobModal
+        // Keyed on the press: the card reads its props in `useState`
+        // initialisers, so every opening must be a fresh mount
+        // (Scheduled.tsx `openSeq`).
+        key={card.seq}
+        initialTime={card.time ?? null}
+        // The draft's own record, when a draft row opened it (`Card.draft`).
+        initialDraft={card.draft ?? null}
+        chatKey={card.chatKey ?? ""}
+        // SCOPED TO THE PLACE — the clone or the selected node's file in
+        // it, the app folder, the explorer's folder or file — the app
+        // page's Tasks tab's way (Scheduled.tsx `lockTarget`): a task
+        // made from a page is a task about that page, so the path is
+        // stated, not asked (the + is held until the page can say it).
+        initialTarget={card.target}
+        lockTarget={card.target !== null}
+        // …and on a canvas SAID as the canvas and the node, not as that
+        // path (Akshil, 2026-10-30): the card's read-only WHERE pill. The
+        // canvas and node as they were at the press, the same snapshot as
+        // the target.
+        {...(card.where ? { lockedWhere: card.where } : {})}
+        // From the List, not the calendar: a task typed here is one to run
+        // now, and the when-row folds into More options.
+        planning={!!card.time}
+        permissionModes={card.modes}
+        recentTargets={card.recents}
+        // Closed without creating: the card may have left a DRAFT behind,
+        // which the pulse never carries — re-read so its ring shows now.
+        onClose={() => {
+          setCard(null);
+          if (card.pop) plusIntent.closed();
+          // A preview nobody touched left nothing behind: the reader's
+          // first act inside it pins it (plus-pop-lib.ts).
+          if (!card.pop || card.pinned) refreshListing();
+        }}
+        // "Something changed, re-read": the pulse will move the new row
+        // onto the rail; the listing is re-read now so its caption and
+        // rank are not 600ms behind its ring.
+        onCreated={() => refreshListing()}
+        // The landing card's chat lists (Recent chats, Pages, Snapshots):
+        // a row goes through the rail's one door, as a ring's press does.
+        onOpenChat={(href) => openChatRef.current(href)}
+        // A draft row in its lists: the draft's own popover door, the
+        // ring's press (`openDraftCard`) — the pressed draft fills this
+        // window, as it fills the chat landing's box.
+        onOpenDraft={(row) => {
+          const href = draftHref(row) ?? taskHref(row);
+          if (href) openDraftCard(row, href);
+        }}
+        // CREATE KEEPS THE CARD: a fresh mount (new `seq`, no draft) opening
+        // on the new task's chat, so Back is an empty landing.
+        initialChatEntry={card.chatEntry ?? null}
+        initialChatSeed={card.chatSeed ?? null}
+        onCreatedChat={(entryId, seed) =>
+          setCard((c) => (c ? { ...c, seq: Date.now(), draft: null, chatKey: "", time: null, chatEntry: entryId, chatSeed: seed } : c))}
+        // The +'s card with the rail flag on: the same card as a popover
+        // beside the rail (`Card.pop`), top-level with the +, left of the
+        // rail's edge; a hover's preview until a press pins it (`pinned`).
+        {...(card.pop
+          ? {
+              popover: {
+                anchor: popAnchor,
+                // WINDOW A'S SIZE (owner, 2026-11-07): the remembered
+                // `canvasRailPeek`, else 420×640 — clamped inside the window
+                // by the chassis, the form scrolling inside it.
+                size: railCardSize(getUiLayout().canvasRailPeek ?? null),
+                // …AND RESIZED LIKE IT (`savePopSize`): the grips on a
+                // pinned card only — a hover's preview is not a thing to
+                // drag.
+                ...(card.pinned
+                  ? {
+                      resize: {
+                        minWidth: PEEK_MIN_WIDTH,
+                        minHeight: PEEK_MIN_HEIGHT,
+                        maxWidth: PEEK_MAX_WIDTH,
+                        // Never over window B's card under it (RailPeek's
+                        // floor, rail-peek-lib `bottomClear`).
+                        maxBottom: (box) => bottomClear(box, favBox),
+                        // …and inside the workspace row (RailPeek's own
+                        // bounds), never over the sidebar or the header.
+                        bounds: () => rowOf(railRef.current)?.getBoundingClientRect() ?? null,
+                        onResize: savePopSize,
+                      },
+                    }
+                  : {}),
+                ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
+                place: popPlace,
+                // Per rail (a hop re-places the card beside the new rail).
+                placeKey: popPlaceKey,
+                // The row reshaping (the sidebar collapsing) re-places it.
+                watch: () => rowOf(railRef.current),
+                beside: railRef,
+                closeSignal: cardCloseSignal,
+                pinned: !!card.pinned,
+                onPin: () => plusIntent.pinInside(),
+                onPointerEnter: () => plusIntent.enterCard(),
+                onPointerLeave: () => plusIntent.leaveCard(),
+              },
+            }
+          : {})}
+      />
+  );
+  const railToken = useRef({});
+  useLayoutEffect(() => {
+    if (hosted) publishPlusRender(railToken.current, renderCard as (c: unknown) => ReactNode);
+  });
+  const hostedRef = useRef(hosted);
+  hostedRef.current = hosted;
+  useEffect(() => {
+    const id = railToken.current;
+    return () => {
+      withdrawPlusRender(id);
+      // NO HOST (an embedded view): the card was this rail's to draw, and
+      // goes with it — the next rail would remount it from its first seed and
+      // a second draft would follow (CodeRabbit on #2220). Its own unmount
+      // flushes the words to its draft, as any close does.
+      if (!hostedRef.current) setCard(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <aside
       ref={railRef}
@@ -3334,92 +3498,7 @@ export function ClaudeRail({
           }}
         />
       )}
-      {card && (
-        <NewJobModal
-          // Keyed on the press: the card reads its props in `useState`
-          // initialisers, so every opening must be a fresh mount
-          // (Scheduled.tsx `openSeq`).
-          key={card.seq}
-          initialTime={card.time ?? null}
-          // The draft's own record, when a draft row opened it (`Card.draft`).
-          initialDraft={card.draft ?? null}
-          chatKey={card.chatKey ?? ""}
-          // SCOPED TO THE PLACE — the clone or the selected node's file in
-          // it, the app folder, the explorer's folder or file — the app
-          // page's Tasks tab's way (Scheduled.tsx `lockTarget`): a task
-          // made from a page is a task about that page, so the path is
-          // stated, not asked (the + is held until the page can say it).
-          initialTarget={card.target}
-          lockTarget={card.target !== null}
-          // …and on a canvas SAID as the canvas and the node, not as that
-          // path (Akshil, 2026-10-30): the card's read-only WHERE pill. The
-          // canvas and node as they were at the press, the same snapshot as
-          // the target.
-          {...(card.where ? { lockedWhere: card.where } : {})}
-          // From the List, not the calendar: a task typed here is one to run
-          // now, and the when-row folds into More options.
-          planning={!!card.time}
-          permissionModes={card.modes}
-          recentTargets={card.recents}
-          // Closed without creating: the card may have left a DRAFT behind,
-          // which the pulse never carries — re-read so its ring shows now.
-          onClose={() => {
-            setCard(null);
-            if (card.pop) plusIntent.closed();
-            // A preview nobody touched left nothing behind: the reader's
-            // first act inside it pins it (plus-pop-lib.ts).
-            if (!card.pop || card.pinned) refreshListing();
-          }}
-          // "Something changed, re-read": the pulse will move the new row
-          // onto the rail; the listing is re-read now so its caption and
-          // rank are not 600ms behind its ring.
-          onCreated={() => refreshListing()}
-          // The +'s card with the rail flag on: the same card as a popover
-          // beside the rail (`Card.pop`), top-level with the +, left of the
-          // rail's edge; a hover's preview until a press pins it (`pinned`).
-          {...(card.pop
-            ? {
-                popover: {
-                  anchor: popAnchor,
-                  // WINDOW A'S SIZE (owner, 2026-11-07): the remembered
-                  // `canvasRailPeek`, else 420×640 — clamped inside the window
-                  // by the chassis, the form scrolling inside it.
-                  size: railCardSize(getUiLayout().canvasRailPeek ?? null),
-                  // …AND RESIZED LIKE IT (`savePopSize`): the grips on a
-                  // pinned card only — a hover's preview is not a thing to
-                  // drag.
-                  ...(card.pinned
-                    ? {
-                        resize: {
-                          minWidth: PEEK_MIN_WIDTH,
-                          minHeight: PEEK_MIN_HEIGHT,
-                          maxWidth: PEEK_MAX_WIDTH,
-                          // Never over window B's card under it (RailPeek's
-                          // floor, rail-peek-lib `bottomClear`).
-                          maxBottom: (box) => bottomClear(box, favBox),
-                          // …and inside the workspace row (RailPeek's own
-                          // bounds), never over the sidebar or the header.
-                          bounds: () => rowOf(railRef.current)?.getBoundingClientRect() ?? null,
-                          onResize: savePopSize,
-                        },
-                      }
-                    : {}),
-                  ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
-                  place: popPlace,
-                  placeKey: favBox,
-                  // The row reshaping (the sidebar collapsing) re-places it.
-                  watch: () => rowOf(railRef.current),
-                  beside: railRef,
-                  closeSignal: cardCloseSignal,
-                  pinned: !!card.pinned,
-                  onPin: () => plusIntent.pinInside(),
-                  onPointerEnter: () => plusIntent.enterCard(),
-                  onPointerLeave: () => plusIntent.leaveCard(),
-                },
-              }
-            : {})}
-        />
-      )}
+      {!hosted && card && renderCard(card)}
     </aside>
   );
 }

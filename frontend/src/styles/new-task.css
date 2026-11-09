@@ -730,7 +730,10 @@
 }
 
 /* The path the agent will be handed — the one fact a picture cannot show about
-   itself. Truncated from the LEFT: the filename is the half that identifies it. */
+   itself. Truncated from the LEFT: the filename is the half that identifies it.
+   `direction: rtl` puts the ellipsis on the left; the path itself sits in a
+   <bdi>, so its own slashes keep their LTR order (bare rtl moved the leading
+   "/" to the end — see .cc-pfiles-path). */
 .nt-shotview-path {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1419,6 +1422,15 @@ button.new-task-source:focus-visible {
   min-width: 0;
 }
 
+/* …BUT THE GROUP ITSELF NEVER SHRINKS (Akshil, 2026-11-09: "why is the
+   folder thing clipped"). Chrome sizes this nested shrinkable row ~8px short
+   per pill even on a wide card, so "Fused" lost its last letter with room to
+   spare. Held at its own width, the name takes all the squeeze instead — and
+   at the 360px rail card the ✕ still fits. */
+.new-task-dialog .nt-pills--head {
+  flex-shrink: 0;
+}
+
 .new-task-dialog .nt-pills--head .pp {
   flex: 0 1 auto;
   min-width: 0;
@@ -1426,4 +1438,356 @@ button.new-task-source:focus-visible {
 
 .new-task-dialog .modal-close {
   flex: none;
+}
+
+/* -- THE RAIL'S CARD IS THE CHAT'S LANDING PAGE (Akshil, 2026-11-09: "add
+   the whole page as is", rail popover only) ----------------------------------
+   The agent's mark and the place's name over its path, then the chat's
+   landing composer: one rounded card holding the box, the attachments and the
+   pill row, with the paperclip and the round accent send at the row's end.
+   Values are home.css's (`.c-home-title`, `.c-home-sub`) and composer.css's
+   (`.c-composer`, `.c-send`), restated from the shell's tokens because the chat
+   bundle's `--c-*` palette is not in scope here. Off the rail the wrapper is
+   `.nt-plain` — boxless — and the Tasks page's card is unchanged. */
+.nt-plain {
+  display: contents;
+}
+
+.nt-landing-head {
+  text-align: center;
+  min-width: 0;
+}
+
+.nt-landing-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  min-width: 0;
+}
+
+.nt-landing-title > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nt-landing-mark {
+  flex: none;
+  color: #d97757;
+}
+
+:root[data-theme="light"] .nt-landing-mark {
+  color: #b8542f;
+}
+
+.nt-landing-sub {
+  margin-top: 4px;
+  margin-bottom: 14px; /* + the form's 14px gap = the landing's 28px */
+  color: var(--fg-faint);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.nt-composer {
+  --nt-send-bg: #d97757;
+  --nt-send-fg: #1a1a1a;
+  --nt-card-border-strong: #4a4d57;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--row-bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 12px 14px 10px;
+  box-shadow: 0 4px 16px var(--shadow-sm);
+  transition: border-color 0.15s;
+}
+
+:root[data-theme="light"] .nt-composer {
+  --nt-send-bg: #b8542f;
+  --nt-send-fg: #ffffff;
+  --nt-card-border-strong: #c9cbd2;
+}
+
+.nt-composer:focus-within {
+  border-color: var(--nt-card-border-strong);
+}
+
+/* The box: the chat's 14px face, and a compact floor — the card is a
+   composer, not a page (the window-A card still lifts the floor below). */
+.nt-composer .new-task-write .new-task-ask {
+  font-size: 14px;
+  min-height: calc(14px * 1.5 * 2 + 12px);
+  max-height: calc(14px * 1.5 * 10 + 12px);
+}
+
+.nt-composer .new-task-ask-hint {
+  font-size: 14px;
+}
+
+.nt-composer .new-task-ask-hint > small {
+  font-size: 12px;
+}
+
+.nt-composer .nt-pills {
+  align-items: center;
+  margin: 0 -6px 0 -8px;
+}
+
+/* The paperclip: the composer's bare icon seat, beside Send. */
+.new-task-dialog .nt-composer .nt-attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
+}
+
+.new-task-dialog .nt-composer .nt-attach:hover:not(:disabled) {
+  background: var(--ctl-quiet-bg);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+.new-task-dialog .nt-composer .nt-attach:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Send: the chat's round accent arrow (`.c-send`). */
+.new-task-dialog .nt-composer .nt-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--nt-send-bg);
+  color: var(--nt-send-fg);
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    filter 0.12s,
+    transform 0.12s,
+    opacity 0.12s;
+}
+
+.new-task-dialog .nt-composer .nt-send:hover:not(:disabled) {
+  background: var(--nt-send-bg);
+  border-color: transparent;
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.new-task-dialog .nt-composer .nt-send:active {
+  transform: none;
+}
+
+.new-task-dialog .nt-composer .nt-send:focus-visible {
+  outline: 2px solid var(--nt-card-border-strong);
+  outline-offset: 2px;
+}
+
+.new-task-dialog .nt-composer .nt-send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Window A's card: the landing sits where the chat's does, ~14% down the
+   card (a flex spacer: percentages of a column's height), at its own height —
+   the box does not stretch to fill the card. */
+.modal-popover .modal-dialog.is-sized.new-task-dialog > .modal-body:has(> .nt-landing-page):not(:has(> .nt-landing-chat))::before {
+  content: "";
+  /* Never shrinks: a long Recent chats list (a busy folder) used to squeeze
+     it to nothing while a quiet folder kept it — two different tops. */
+  flex: 0 0 12%;
+}
+
+.modal-popover .modal-dialog.is-sized.new-task-dialog .new-task-write,
+.modal-popover .modal-dialog.is-sized.new-task-dialog .new-task-ask-wrap {
+  flex: 0 0 auto;
+}
+
+.modal-popover .modal-dialog.is-sized.new-task-dialog .nt-composer .new-task-write .new-task-ask {
+  flex: 0 0 auto;
+  min-height: calc(14px * 1.5 * 2 + 12px);
+  max-height: calc(14px * 1.5 * 10 + 12px);
+}
+
+/* THE LANDING'S LISTS (Recent chats, Pages, Snapshots) — the chat's own
+   `Lists`, inside a `.chat-root.c-tokens` so home.css's `.chat-root …` rules
+   and the `--c-*` palette reach them exactly as on the chat's landing. The
+   root's own box (a full-height flex row with its own scroller) is the chat
+   pane's, not a list's: here it is a plain block in the card's column. */
+.new-task-dialog .nt-landing-lists.chat-root {
+  display: block;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  background: transparent;
+  /* `.c-lists` brings the landing's own 28px. */
+  margin-top: 0;
+}
+
+/* THE RAIL CARD'S OPEN CHAT (NewJobModal `landingChat`): the Tasks card's
+   way — the chat fills the body, Back leads the head, Open ↗ sits against the
+   ✕ (TasksPeek's `task-side-peek-*` look, restated for this head). */
+.modal-popover .modal-dialog.new-task-dialog .nt-landing-chat {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+/* The rail's landing: a plain body (see NewJobModal) with the card's own
+   gutters; the form keeps `.deploy-body` through a boxless scope. */
+.modal-dialog.new-task-dialog > .modal-body.modal-body-plain:has(> .nt-landing-page) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 8px 16px 18px;
+  overflow-y: auto;
+}
+
+.nt-landing-scope {
+  display: contents;
+}
+
+.nt-landing-page {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  min-width: 0;
+}
+
+.modal-popover .modal-dialog.is-sized.new-task-dialog .nt-landing-page .schedule-form {
+  flex: none;
+}
+
+/* …and while a chat is open the chat owns the whole body. */
+.modal-dialog.new-task-dialog > .modal-body.modal-body-plain:has(> .nt-landing-chat) {
+  padding: 0;
+  overflow: hidden;
+}
+
+.new-task-dialog .nt-chat-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin-left: -6px;
+  /* The Tasks card's gap between Back and the ring (task-side-peek-head). */
+  margin-right: 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.new-task-dialog .nt-chat-back:hover {
+  background: var(--ctl-quiet-bg);
+  color: var(--fg);
+}
+
+.new-task-dialog .nt-chat-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.new-task-dialog .nt-chat-title .task-side-peek-who {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.new-task-dialog .modal-head-title h2:has(.nt-chat-title) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.new-task-dialog .nt-chat-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.new-task-dialog .nt-chat-open:hover {
+  background: var(--ctl-quiet-bg);
+  color: var(--fg);
+}
+
+/* THE ✕ IN THE LEFT CORNER on the rail's card (Modal `closeAtStart`), the
+   Tasks card's seat: the corner, then the agent and the name. */
+.new-task-dialog .modal-head.has-close-start {
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.new-task-dialog .modal-head.has-close-start > .modal-close {
+  margin-left: -6px;
+  order: -1;
+}
+
+.new-task-dialog .modal-head.has-close-start > .modal-head-actions {
+  margin-left: auto;
+}
+
+/* While the task just created waits for its run (NewJobModal `pendingEntry`). */
+.nt-landing-wait {
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+/* Between one page's rail going and the next one's arriving, the +'s card is
+   kept but not shown (plus-card-store `plus-card-orphan`). */
+.plus-card-orphan .modal-popover {
+  visibility: hidden;
+}
+
+.nt-landing-wait .nt-landing-wait-error {
+  color: var(--error);
+  max-width: 36ch;
+  text-align: center;
 }

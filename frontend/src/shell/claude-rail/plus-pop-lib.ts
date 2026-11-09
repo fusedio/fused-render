@@ -177,6 +177,15 @@ export class PlusPopIntent {
   }
 
   /** The rail unmounts. */
+  /** A card already up when this intent was made — one that came across a
+   *  page hop (plus-card-store): this intent takes it as shown. */
+  adopt(door: string, pinned: boolean): void {
+    this.cancelPending();
+    this.cancelClose();
+    this.shown = door;
+    this.pinnedNow = pinned;
+  }
+
   dispose(): void {
     this.clearOpen();
     this.cancelClose();

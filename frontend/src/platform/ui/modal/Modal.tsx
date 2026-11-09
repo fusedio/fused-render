@@ -136,6 +136,11 @@ export interface ModalProps {
   // component lifted verbatim from a page (the /apps composer in the sidebar's
   // New app modal, D489); every FORM modal keeps the default.
   plainBody?: boolean;
+  /** The ✕ in the head's LEFT corner, before the title — the rail cards'
+   *  seat (TasksPeek, the bot card). Default: the right end. */
+  closeAtStart?: boolean;
+  /** No ✕ at all (a card whose Back is the way out while it shows a chat). */
+  hideClose?: boolean;
   // WHERE TO PORTAL, when it is not `document.body` (D890, the plan popup).
   // Read ONCE, at mount (see the lazy `useState` below) — a portal target does
   // not change out from under an already-open dialog. Returning `null` (not
@@ -259,6 +264,8 @@ export function Modal({
   dialogClassName,
   closeTitle,
   plainBody = false,
+  closeAtStart = false,
+  hideClose = false,
   headActions,
   getContainer,
   popover,
@@ -325,7 +332,9 @@ export function Modal({
         if (pinnedRef.current === false && !onCard) return;
         const lost = !active || active === ownerDoc.body || !active.isConnected || onCard;
         if (!lost) return;
-        const back = (popover.anchor.current ?? restoreRef.current) as HTMLElement | null;
+        // The CURRENT anchor (CodeRabbit on #2220): a card carried across a
+        // page hop stands beside the new page's door, not the first one's.
+        const back = (popoverRef.current?.anchor.current ?? popover.anchor.current ?? restoreRef.current) as HTMLElement | null;
         back?.focus?.({ preventScroll: true });
         return;
       }
@@ -481,6 +490,8 @@ export function Modal({
   // the card is gone before whatever the reader aimed at reacts, and a row
   // that stops propagation cannot leave it undismissable.
   const popoverOn = !!popover;
+  const popoverRef = useRef(popover);
+  popoverRef.current = popover;
   const attemptCloseRef = useRef(attemptClose);
   attemptCloseRef.current = attemptClose;
   useEffect(() => {
@@ -698,6 +709,28 @@ export function Modal({
   // Portal to <body>: modals mount from arbitrary spots (e.g. AI Models'
   // NewJobModal inside a page's toolbar), and ancestor-scoped `button` rules
   // were leaking into the dialog chrome (a boxed ✕ from just one caller's styles).
+  // THE ✕, drawn at either end of the head (`closeAtStart`); none while busy
+  // (see the note in the head) or when the card says so (`hideClose`).
+  const closeButton = hideClose ? null : (
+    <>
+    {!busy && (
+            <button
+              type="button"
+              className={"modal-close deploy-close" + (confirmClose ? " is-armed" : "")}
+              // The label carries the state for a screen reader, which has no
+              // corner to look at. The footer hint is `role="status"` and is
+              // announced too; this is what the button itself answers to when the
+              // user tabs back to it.
+              aria-label={confirmClose ? "Close and discard changes" : "Close"}
+              title={confirmClose ? "Press again to discard" : (closeTitle ?? "Close")}
+              onClick={attemptClose}
+            >
+              ✕
+            </button>
+    )}
+    </>
+  );
+
   return createPortal(
     <div
       className={(popover ? "modal-overlay modal-popover" : "modal-overlay deploy-overlay") + (closing ? " closing" : "")}
@@ -729,6 +762,10 @@ export function Modal({
         }
         style={dialogStyle}
         role="dialog"
+        // BUSY, SAID ON THE CARD ITSELF (CodeRabbit on #2220): a caller that
+        // must not close a card mid-save reads this, not the ✕ — which a card
+        // may hide for its own reasons (`hideClose`).
+        {...(busy ? { "data-busy": "" } : {})}
         {...(popover ? {} : { "aria-modal": "true" as const })}
         {...(ariaLabel
           ? // An explicit name WINS over `aria-labelledby`, so the two are
@@ -755,7 +792,8 @@ export function Modal({
             }
           : {})}
       >
-        <div className="modal-head deploy-head">
+        <div className={"modal-head deploy-head" + (closeAtStart ? " has-close-start" : "")}>
+          {closeAtStart && closeButton}
           {titleAside || titleLead ? (
             // The heading and its caption as ONE flex child of the head, so the
             // head is still `[ title | ✕ ]` and `justify-content: space-between`
@@ -800,21 +838,7 @@ export function Modal({
               it would strand). So the corner is empty for those seconds rather
               than occupied by something inert. */}
           {headActions && <div className="modal-head-actions">{headActions}</div>}
-          {!busy && (
-            <button
-              type="button"
-              className={"modal-close deploy-close" + (confirmClose ? " is-armed" : "")}
-              // The label carries the state for a screen reader, which has no
-              // corner to look at. The footer hint is `role="status"` and is
-              // announced too; this is what the button itself answers to when the
-              // user tabs back to it.
-              aria-label={confirmClose ? "Close and discard changes" : "Close"}
-              title={confirmClose ? "Press again to discard" : (closeTitle ?? "Close")}
-              onClick={attemptClose}
-            >
-              ✕
-            </button>
-          )}
+          {!closeAtStart && closeButton}
         </div>
         <div className={"modal-body " + (plainBody ? "modal-body-plain" : "deploy-body")}>{children}</div>
         {(footer || confirmClose) && (

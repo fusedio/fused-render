@@ -18,6 +18,26 @@ import {
 import { shortTaskId } from "@platform/lib/task-id";
 import { Dropdown, popStyle } from "./Dropdown";
 import { CommandMenu, acceptText, menuKey, menuQuery } from "@apps/claude/ui/CommandMenu";
+import { AttachButton } from "@apps/claude/ui/AttachButton";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { Lists } from "@apps/claude/ui/Lists";
+import { paneChatUrl, taskPane } from "@apps/claude/ui/list-rows";
+import { ChatMount } from "@apps/claude";
+import { homePlaceholderFor, type TargetNoun } from "@apps/claude/pane/paneUrl";
+import { runAppEntry } from "@apps/claude/protocol/agent";
+import { TaskPeekWho } from "./TaskPeekWho";
+import { usePlusCardHidden } from "./claude-rail/plus-card-store";
+import { useAutoReadOpenTasks, useDocumentVisible } from "./task-open-read";
+import { useTasksPulseRows } from "./tasksPulse";
+import { Kebab } from "@apps/claude/ui/Kebab";
+import { AgentProvider } from "@apps/claude/ui/agent-context";
+import type { BreakoutControl } from "@apps/claude/ClaudeChat";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
+import { ArrowLeft, ArrowUpRight } from "lucide-react";
+import { breakoutOpener } from "@platform/lib/breakouts";
+import { useRecentTasks } from "@apps/claude/ui/useRecentTasks";
+import { useLandingReads } from "@apps/claude/ui/useLandingReads";
+import "@apps/claude/styles/chat.css";
 import { useSlashCommands } from "@apps/claude/ui/useSlashCommands";
 import { filterCommands, type MenuCommand } from "@apps/claude/protocol/commands";
 import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
@@ -45,12 +65,13 @@ import {
   listDir,
   rawUrl,
   readChatSettings,
+  getSchedule,
   scheduleMessage,
   statPath,
   uploadTaskShot,
 } from "@platform/lib/api";
 import type { Config, RecurrenceRule, ScheduledMessage, StatResult,
-  TaskAttachment } from "@platform/lib/api";
+  Task, TaskAttachment } from "@platform/lib/api";
 // THE APP'S OWN TYPEAHEAD KEYS, not a second reading of the same four presses.
 // `completionKeyAction` is the pure key→meaning map the Explorer's address bar
 // runs on (apps/explorer/listing/completion-keys.ts), and `moveHighlight` is its
@@ -125,7 +146,7 @@ import { CanvasGlyph } from "@apps/canvases/glyph";
 // learnt one of the two controls has learnt both — a field that found
 // `~/Desktop` for "desktop" while the filter beside it did not would be two
 // searches wearing one word.
-import { projectMatches, tildePath } from "./tasks-lib";
+import { cardTitleLine, projectMatches, taskChatTarget, taskColumn, taskHref, tildePath } from "./tasks-lib";
 // THE PATH HALF OF A ROW: as much of it as fits, cut out of the MIDDLE, and the
 // whole of it on hover. See PathTip.tsx for why neither `text-overflow` (it
 // only ever cuts the tail, and the tail is the half that names the folder) nor
@@ -2832,6 +2853,11 @@ export default function NewJobModal({
   projects = NO_PROJECTS,
   planning = false,
   popover,
+  onOpenChat,
+  onOpenDraft,
+  initialChatEntry = null,
+  initialChatSeed = null,
+  onCreatedChat,
   onClose,
   onCreated,
 }: {
@@ -2977,6 +3003,20 @@ export default function NewJobModal({
    * opener — the Tasks page, a draft's row), the modal it always was.
    */
   popover?: ModalProps["popover"];
+  /** The rail's landing card: a row of its chat lists pressed — the card goes
+   *  and the rail's door opens that chat (ClaudeRail `openChat`). */
+  onOpenChat?: (href: string) => void | Promise<boolean>;
+  /** …a DRAFT row pressed: the rail puts that draft in this window (the
+   *  chat landing's way — the pressed draft fills the box). */
+  onOpenDraft?: (task: Task) => void;
+  /** CREATE KEEPS THE CARD (Akshil, 2026-11-09: "it should instead open the
+   *  chat"): the rail remounts the card fresh with the new entry's chat open
+   *  (`initialChatEntry`), so Back is an empty landing. */
+  onCreatedChat?: (entryId: string, seed: { model?: string; effort?: string; backend?: string }) => void;
+  initialChatEntry?: string | null;
+  /** The settings the entry was created with — the open chat's until its
+   *  row is listed. */
+  initialChatSeed?: { model?: string; effort?: string; backend?: string } | null;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -4770,7 +4810,7 @@ export default function NewJobModal({
       // this card, so a keystroke 300 ms before Save would otherwise fire after
       // the create and write the draft the server has just deleted straight back.
       if (syncKey) draftSyncer(syncKey).forget();
-      await scheduleMessage(
+      const created = await scheduleMessage(
         buildSchedulePayload({
           target,
           message: fields.description,
@@ -4853,6 +4893,15 @@ export default function NewJobModal({
         }
       }
       onCreated();
+      // THE RAIL'S CARD STAYS AND SHOWS THE NEW CHAT (see `onCreatedChat`).
+      if (landing && onCreatedChat && !editing && created?.entry?.id) {
+        onCreatedChat(created.entry.id, {
+          ...(created.entry.model ? { model: created.entry.model } : {}),
+          ...(created.entry.effort ? { effort: created.entry.effort } : {}),
+          ...(created.entry.backend ? { backend: created.entry.backend } : {}),
+        });
+        return;
+      }
       onClose();
     } catch (e) {
       // The server's 400s are written for a human (bad path, bad cron, past
@@ -5084,6 +5133,140 @@ export default function NewJobModal({
     }
   };
 
+  // THE RAIL'S LANDING (see the body): the place the task is about, said the
+  // way the chat's landing says its file — the name, then the path under it.
+  // A canvas is named as the canvas (and node), like its WHERE pill.
+  const landing = !!popover;
+  const landingTarget = target.trim();
+  const landingName = lockedWhere
+    ? (lockedWhere.node ? `${lockedWhere.canvas} › ${lockedWhere.node}` : lockedWhere.canvas)
+    : (landingTarget ? leafOf(landingTarget) : "New task");
+  const landingPath = landingTarget;
+  // THE SIDEBAR CHAT'S PLACEHOLDER (Akshil, 2026-11-09): "Ask Claude about this
+  // project / folder / file…", the noun found the way the chat pane finds it
+  // (AppPane: stat, then the app-entry ask for a folder).
+  const [landingNoun, setLandingNoun] = useState<TargetNoun>("");
+  useEffect(() => {
+    setLandingNoun("");
+    if (!landing || !landingTarget) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const st = await statPath(landingTarget);
+        let noun: TargetNoun = st.is_dir ? "folder" : "file";
+        if (st.is_dir) {
+          const app = await runAppEntry(landingTarget).catch(() => null);
+          if (app?.entry) noun = "project";
+        }
+        if (alive) setLandingNoun(noun);
+      } catch {
+        /* no noun: "Ask Claude…" */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [landing, landingTarget]);
+  // …AND THE LANDING'S LISTS, the chat's own (Recent chats, Pages,
+  // Snapshots): the same reads the chat's landing makes for this target, the
+  // same component drawing them. A row is a door: the card goes, the rail
+  // opens the chat.
+  const landingRecent = useRecentTasks(landing, landing ? landingTarget || null : null);
+  const { artifacts: landingArtifacts, snaps: landingSnaps } = useLandingReads(
+    landing ? landingTarget || null : null,
+    landingRecent,
+    undefined,
+  );
+  // A RECENT CHAT OPENS IN THIS CARD (Akshil, 2026-11-09: "open it in the
+  // popover window A itself and then go back button etc, like we have for
+  // tasks window A"): the Tasks card's way (TasksPeek) — the chat in the
+  // body, Back in the head; the landing stays mounted under it, hidden, its
+  // words, pills and scroll kept, and Back is the way home.
+  const [landingChat, setLandingChat] = useState<Task | null>(null);
+  // THE TASK JUST CREATED HERE (`initialChatEntry`): followed from its schedule
+  // entry to the session its run opens (`claude_session_id`), then shown like
+  // any recent chat. Until the run starts the body says so.
+  const [pendingEntry, setPendingEntry] = useState<string | null>(initialChatEntry);
+  const [pendingSession, setPendingSession] = useState("");
+  const [pendingDue, setPendingDue] = useState("");
+  const [pendingError, setPendingError] = useState("");
+  useEffect(() => {
+    if (!pendingEntry || pendingSession) return;
+    let alive = true;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // FOR AS LONG AS THE CARD SHOWS IT (CodeRabbit on #2220): quick while a
+    // run is about to start, slower after a minute — a task scheduled for
+    // later, or one queued behind others, still opens when it starts.
+    const wait = () => (tries < 60 ? 1000 : tries < 120 ? 5000 : 15000);
+    const look = () => {
+      void getSchedule().then((res) => {
+        if (!alive) return;
+        tries++;
+        const e = res.entries.find((x) => x.id === pendingEntry);
+        if (e?.claude_session_id) {
+          setPendingSession(e.claude_session_id);
+          return;
+        }
+        // …AND A RUN THAT FAILED TO START SAYS SO, instead of "Starting…"
+        // for ever. Back is the way out.
+        if (e && (e.state === "error" || e.state === "cancelled" || e.state === "missed")) {
+          setPendingError(e.error || (e.state === "cancelled" ? "The task was cancelled before it started." : "The task didn't start."));
+          return;
+        }
+        if (e?.due) setPendingDue(e.due);
+        timer = setTimeout(look, wait());
+      }, () => {
+        if (!alive) return;
+        tries++;
+        timer = setTimeout(look, Math.max(2000, wait()));
+      });
+    };
+    look();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [pendingEntry, pendingSession]);
+  const chatOpen = !!landingChat || !!pendingEntry;
+  const leaveChat = () => {
+    setLandingChat(null);
+    setPendingEntry(null);
+  };
+  // The open chat's Breakout, as it reports it — so the ⋮ carries the same
+  // items the Tasks card's does (TasksPeek; Akshil: ⋮ menus are identical).
+  const [chatBreakout, setChatBreakout] = useState<BreakoutControl | null>(null);
+  const liveChat = landingChat
+    ? (landingRecent?.find((t) => t.key === landingChat.key) ?? landingChat)
+    : pendingEntry
+      ? (landingRecent?.find((t) => (pendingSession && t.session_id === pendingSession)
+          || t.key === `pending:${pendingEntry}`) ?? null)
+      : null;
+  const chatSession = liveChat?.session_id || (landingChat ? "" : pendingSession);
+  // The created entry's settings, until its row says (CodeRabbit on #2220).
+  const chatSeed = landingChat ? null : initialChatSeed;
+  const chatFile = liveChat ? taskChatTarget(liveChat) : landingTarget;
+  const chatTitle = liveChat ? (cardTitleLine(liveChat).text || liveChat.title || "Chat") : "";
+  const chatHref = liveChat ? taskHref(liveChat) : null;
+  // MARKED READ LIKE THE TASKS CARD DOES (TasksPeek, task-open-read): the open
+  // chat, while the card shows it and the window is in view.
+  const chatPulse = useTasksPulseRows(landing);
+  const docVisible = useDocumentVisible();
+  // …and only while the card is SHOWN: not while a page hop has it hidden
+  // (plus-card-store), when a reply would be marked read unseen.
+  const cardHidden = usePlusCardHidden();
+  const readKeys = useMemo(
+    () => (liveChat && docVisible && !cardHidden ? [liveChat.key] : []),
+    [liveChat, docVisible, cardHidden],
+  );
+  useAutoReadOpenTasks(chatPulse, readKeys);
+  const openFromLanding = (href: string | null): void | Promise<boolean> => {
+    if (!href) return;
+    onClose();
+    if (onOpenChat) return onOpenChat(href);
+    window.location.assign(href);
+  };
+
   return (
     <Modal
       // A breadcrumb — WHO runs it, then what this card is — so the heading
@@ -5199,6 +5382,11 @@ export default function NewJobModal({
       busy={busy}
       width={580}
       {...(popover ? { popover } : {})}
+      // The rail cards' ✕: top-left (TasksPeek), and gone while a chat is open —
+      // Back is the way out there, as in the Tasks card.
+      closeAtStart={landing}
+      plainBody={landing}
+      hideClose={chatOpen}
       // THE CLOSE-TWICE GUARD IS OFF WHENEVER THERE IS A DRAFT TO CLOSE INTO
       // (design.md, Decisions: "Modal close keeps the draft silently; Discard in
       // footer. No prompt."). The guard exists to stop a ✕ discarding typed
@@ -5776,7 +5964,125 @@ export default function NewJobModal({
           </div>
         </>
       )}
+      // THE OPEN CHAT'S HEAD (see `landingChat`): Back where the agent stood,
+      // the chat's title, and Open — the chat's own page — against the ✕.
+      // Later props win, so this is the whole swap.
+      {...(chatOpen ? {
+        ariaLabel: `${chatTitle || "New task"} — chat`,
+        titleLead: (
+          <button
+            type="button"
+            className="nt-chat-back"
+            aria-label="Back"
+            data-hint="Back"
+            onClick={leaveChat}
+          >
+            <ArrowLeft size={16} strokeWidth={1.6} aria-hidden="true" />
+          </button>
+        ),
+        // The Tasks card's own identity line (TaskPeekWho): status ring,
+        // star, number, title — renamable in place.
+        title: liveChat
+          ? <span className="nt-chat-title"><TaskPeekWho task={liveChat} star /></span>
+          : <span className="nt-chat-title">{name || fields.title || "New task"}</span>,
+        headActions: (
+          <>
+          {chatHref && (
+          <a
+            className="nt-chat-open"
+            href={chatHref}
+            aria-label="Open this chat"
+            data-hint="Open this chat"
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+              e.preventDefault();
+              openFromLanding(chatHref);
+            }}
+          >
+            <ArrowUpRight size={13} strokeWidth={1.6} aria-hidden="true" />
+            Open
+          </a>
+          )}
+          {/* THE CHAT'S ⋮, the Tasks card's own (TasksPeek): same items,
+              Full screen and Breakout included. */}
+          {liveChat?.session_id && (
+            <span className="claude-rail-peek-kebab nt-chat-kebab">
+              <AgentProvider backend={liveChat.backend ?? ""}>
+                <Kebab
+                  key={liveChat.key}
+                  file={taskChatTarget(liveChat)}
+                  sessionId={liveChat.session_id}
+                  running={taskColumn(liveChat) === "in_progress" || taskColumn(liveChat) === "queued"}
+                  asking={taskColumn(liveChat) === "needs_attention"}
+                  queued={taskColumn(liveChat) === "queued"}
+                  onErased={leaveChat}
+                  onArchived={leaveChat}
+                  {...(chatHref && opensInSidePane(chatHref) ? {
+                    fullScreen: {
+                      on: false,
+                      onToggle: () => {
+                        // Made once the hop went: the request is keyed to
+                        // the page the side-pane chat mounts on.
+                        const sid = liveChat.session_id;
+                        void Promise.resolve(openFromLanding(chatHref)).then((went) => {
+                          if (went !== false && sid) requestSideMaximized(sid);
+                        });
+                      },
+                    },
+                  } : {})}
+                  {...(chatBreakout?.available ? {
+                    breakout: { picking: chatBreakout.picking, onToggle: chatBreakout.toggle },
+                  } : {})}
+                />
+              </AgentProvider>
+            </span>
+          )}
+          </>
+        ),
+      } : {})}
     >
+      {chatOpen && !chatSession && (
+        <div className="nt-landing-chat nt-landing-wait">
+          <p className={pendingError ? "nt-landing-wait-error" : undefined} role={pendingError ? "alert" : undefined}>
+            {pendingError
+              ? pendingError
+              : pendingDue && new Date(pendingDue).getTime() > Date.now() + 60_000
+                ? `Scheduled — it runs ${new Date(pendingDue).toLocaleString()}.`
+                : "Starting the task…"}
+          </p>
+        </div>
+      )}
+      {chatOpen && chatSession && (
+        <div key={chatSession} className="nt-landing-chat">
+          <ChatMount
+            onBreakout={breakoutOpener()}
+            onBreakoutControl={setChatBreakout}
+            file={chatFile}
+            sessionId={chatSession}
+            {...((liveChat?.model || chatSeed?.model) ? { model: liveChat?.model || chatSeed?.model } : {})}
+            {...((liveChat?.effort || chatSeed?.effort) ? { effort: liveChat?.effort || chatSeed?.effort } : {})}
+            {...((liveChat?.backend || chatSeed?.backend) ? { backend: liveChat?.backend || chatSeed?.backend } : {})}
+            chatOnly
+            peek
+            noAnnTools
+            paramsSource="memory"
+            onEscape={leaveChat}
+            onNavigate={(href) => openFromLanding(href)}
+            smallCard
+            smallCardShown
+          />
+        </div>
+      )}
+      {/* THE RAIL'S LANDING PAGE: the form in a boxless `.deploy-body` scope
+          (its fields' and pills' skins), and the chat's lists OUTSIDE it — the
+          body is plain there, so `.deploy-body button` (fields.css) cannot
+          repaint the rows' own icon buttons (a draft's trash drew as an empty
+          square). Kept mounted under an open chat, not shown. */}
+      <div
+        className={landing ? "nt-landing-page" : "nt-plain"}
+        style={chatOpen ? { display: "none" } : undefined}
+      >
+      <div className={landing ? "deploy-body nt-landing-scope" : "nt-plain"}>
       <div
         className="schedule-form"
       >
@@ -5785,10 +6091,26 @@ export default function NewJobModal({
             treatment, including what focus looks like with no box to recolour.
             The box below is prefilled from a chat draft or the session's own
             name (sessionTitleOf), which land as its first line. */}
+        {/* THE RAIL'S CARD IS THE CHAT'S LANDING PAGE (Akshil, 2026-11-09:
+            "add the whole page as is", rail popover only — the Tasks page
+            keeps its card): the agent's mark and the place's name over its
+            path, then the composer — the box, the attachments and the run's
+            pill row in one rounded card, the paperclip and the round send at
+            the row's end. The head (agent, name, Folder, When, ✕) is
+            untouched. Off the rail `.nt-plain` is boxless and the body is the
+            card it always was. The wrapper is the drop target: it reads as
+            "the message", which is what a file is attached TO. */}
+        {landing && (
+          <div className="nt-landing-head">
+            <div className="nt-landing-title">
+              <AgentMark backend={agent} className="nt-landing-mark" />
+              <span>{landingName}</span>
+            </div>
+            {landingPath ? <div className="nt-landing-sub">{landingPath}</div> : null}
+          </div>
+        )}
         <div
-          className="new-task-write"
-          // The write block is the drop target — the part of the card that
-          // reads as "the message", which is what an image is attached TO.
+          className={landing ? "nt-composer" : "nt-plain"}
           onDragOver={(e) => {
             if ([...e.dataTransfer.items].some((i) => i.kind === "file")) {
               e.preventDefault();
@@ -5801,6 +6123,7 @@ export default function NewJobModal({
             }
           }}
         >
+        <div className="new-task-write">
           {/* ONE BOX (Paperclip's "Describe a task…"): the whole task text.
               There is no title field — the task's name is the first line,
               clamped (taskFieldsOf), the way the server names a session from
@@ -5866,8 +6189,9 @@ export default function NewJobModal({
                 the field's `aria-label` already says what it is. */}
             {!text && images.length === 0 && (
               <div className="new-task-ask-hint" aria-hidden="true">
-                <span>{titlePlaceholderFor(agentLabel(agent))}</span>
-                <small>{ASK_PLACEHOLDER}</small>
+                <span>{landing ? homePlaceholderFor(landingNoun, agentLabel(agent)) : titlePlaceholderFor(agentLabel(agent))}</span>
+                {/* The chat's box says one line; so does the rail's. */}
+                {!landing && <small>{ASK_PLACEHOLDER}</small>}
               </div>
             )}
           </div>
@@ -5944,7 +6268,7 @@ export default function NewJobModal({
                 />
                 <figcaption className="nt-shotview-bar">
                   <span className="nt-shotview-path">
-                    {viewer.path || "uploading…"}
+                    <bdi>{viewer.path || "uploading…"}</bdi>
                   </span>
                   <span className="nt-shotview-spacer" />
                   <button
@@ -5994,7 +6318,7 @@ export default function NewJobModal({
                     <span aria-hidden="true">📄</span> {viewer.name}
                   </span>
                   <span className="nt-shotview-path">
-                    {viewer.path || "uploading…"}
+                    <bdi>{viewer.path || "uploading…"}</bdi>
                   </span>
                   <span className="nt-shotview-spacer" />
                   <button
@@ -6141,7 +6465,9 @@ export default function NewJobModal({
             </div>
           </PropPill>
           {/* THE CARD'S VERBS, at the right end of the pill row (Akshil,
-              2026-11-09): Discard/Delete then Back to chat then Create. */}
+              2026-11-09): Discard/Delete then Back to chat then Create — on
+              the rail's landing card, the paperclip and the chat's round
+              send in Create's seat. */}
           <div className="nt-row-actions">
           <div className="nt-foot-left">
           {/* NO KEY GLYPHS (owner, 2026-11-07): no "⇧↵ new line" hint here
@@ -6183,7 +6509,10 @@ export default function NewJobModal({
               depending on what you opened. The LABEL still differs, because the
               verbs do: one withdraws a running task, one drops an unfinished
               form. No arming step here — there is nothing scheduled to undo. */}
-          {(draftId || (recordKey && !editing)) && (
+          {/* NOT ON THE RAIL'S CARD (Akshil, 2026-11-09: "doesn't look good"):
+              the chat's composer has no Discard; a draft goes from its row's
+              trash in the list under the box. */}
+          {!landing && (draftId || (recordKey && !editing)) && (
             <button
               type="button"
               className="btn btn-danger-text new-task-delete"
@@ -6220,11 +6549,29 @@ export default function NewJobModal({
               announced, while the button stays focusable and pressable — which
               is the whole point. Only `busy` truly disables it: a second press
               mid-save would schedule the message twice. */}
+          {landing ? (
+            <>
+              <AttachButton onFiles={attachFiles} className="nt-attach" disabled={busy} />
+              <button type="button" className="nt-send schedule-save"
+                      disabled={busy} aria-disabled={!ready} onClick={trySubmit}
+                      aria-label={busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
+                      title={actionLabel}>
+                {/* The chat's send, as is: a round accent arrow (Akshil,
+                    2026-11-09). The verb is its name and its tooltip. */}
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor"
+                        strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </>
+          ) : (
           <button type="button" className="btn btn-primary schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
           </button>
+          )}
           </div>
+        </div>
         </div>
         {/* EVERY LINE THE ROWS USED TO PRINT UNDER THEMSELVES, in one place: the
             path's refusal, who runs the task, what leaving the session costs,
@@ -6337,6 +6684,41 @@ export default function NewJobModal({
             closing={recurOut}
           />
         )}
+      </div>
+      </div>
+      {landing && (
+        <div className="chat-root c-tokens nt-landing-lists">
+          {/* The picked agent's caps (snapshots and their restore), not the
+              default's (CodeRabbit on #2220). */}
+          <AgentProvider backend={agent}>
+          <Lists
+            file={landingTarget || null}
+            recent={landingRecent}
+            artifacts={landingArtifacts}
+            snaps={landingSnaps}
+            onOpen={(sessionId) => {
+              const row = landingRecent?.find((t) => t.session_id === sessionId);
+              if (row?.session_id) setLandingChat(row);
+              else openFromLanding(row ? taskHref(row) : null);
+            }}
+            // EVERY CHAT ROW OPENS HERE (Akshil, 2026-11-09: only the head's
+            // Open leaves the card — the rule of every window A/B card and the
+            // Tasks page): a row about a file in this folder, which the chat
+            // landing would hop to, is found by the URL it would hop to and
+            // shown in the card. Anything else (a Page, an Upcoming entry's
+            // card) still leaves.
+            onNavigate={(url) => {
+              const row = landingRecent?.find((t) => !!t.session_id
+                && (taskHref(t) === url
+                  || paneChatUrl(taskPane(t, landingTarget || null), t.session_id) === url));
+              if (row) setLandingChat(row);
+              else openFromLanding(url);
+            }}
+            {...(onOpenDraft ? { onFillDraft: onOpenDraft } : {})}
+          />
+          </AgentProvider>
+        </div>
+      )}
       </div>
     </Modal>
   );

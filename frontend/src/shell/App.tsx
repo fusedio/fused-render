@@ -66,6 +66,7 @@ import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
 import { TasksPeek } from "@shell/claude-rail/TasksPeek";
+import { PlusCardHost } from "@shell/claude-rail/PlusCardHost";
 import { BotsPeek } from "@shell/claude-rail/BotsPeek";
 import { BotCardHost } from "@shell/claude-rail/BotCardHost";
 import { FallbackRail } from "@shell/claude-rail/FallbackRail";
@@ -1372,6 +1373,10 @@ export default function App({ config }: { config: Config }) {
           TasksPeek): mounted once here for the same reason — its view,
           filters and scroll survive a hop (owner, 2026-11-07). */}
       {!IS_EMBED && <TasksPeek />}
+      {/* The +'s New task card (shell/claude-rail PlusCardHost): window A's
+          too, drawn here so a hop keeps it — words, open chat and all
+          (owner, 2026-11-09). */}
+      {!IS_EMBED && <PlusCardHost />}
       {/* The Bots card off the rail's Bots door (shell/claude-rail BotsPeek):
           window A's too, mounted once here for the same reason — its list's
           search and scroll survive a hop (owner, 2026-11-09). */}
