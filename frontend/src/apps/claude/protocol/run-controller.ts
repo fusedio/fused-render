@@ -65,6 +65,7 @@ import type {
 import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit, isPlanLimitText } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
+import { advanceTurnClock } from "./turn-clock";
 import { endActiveTasks, isActive, stillShown } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
@@ -1627,6 +1628,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- working line (T:14774-14926 — the VERBS are the UI's) -------------
 
   let workingStartedAt = 0;
+  /** The server stamp `workingStartedAt` last followed (see `advanceTurnClock`). */
+  let turnStamp = 0;
   /** WHEN THIS TURN STARTED, kept across a reload (owner E2E R1, F10): the
    *  working line's "(10s)" restarted from 0 on F5 because the start was a
    *  controller-local `now()`. THE SOURCE OF TRUTH IS THE SERVER: the poll's
@@ -1862,6 +1865,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // `sending` gate instead), so this counter is the only thing that moves.
     const tGen = state.transcriptGen;
     workingStartedAt = turnStartedAt(runId);
+    turnStamp = 0;
     setRunningUi(true);
     setStats(0, "thinking", null, null);
     noteChatActivity();
@@ -2053,14 +2057,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (loopSeq === seat) noteBackend(poll.backend);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
 
-        // The server's stamp of when this turn began wins on re-attach.
-        // 0 means the server does not know (keep our own clock); a stamp
-        // older than a day is a stale one, not this turn's start.
-        const serverStart = Number(poll.turn_started_at || 0) * 1000;
-        if (serverStart > 0 && now() - serverStart <= 24 * 3600 * 1000) {
-          const at = Math.min(serverStart, now());
-          if (!(workingStartedAt > 0) || at < workingStartedAt) workingStartedAt = at;
-        }
+        // The server's stamp of when this turn began wins on re-attach, and a
+        // new stamp on the same run is a new turn: the clock restarts at it.
+        // 0 means the server does not know (keep our own clock).
+        const clock = advanceTurnClock(
+          { startedAt: workingStartedAt, stamp: turnStamp },
+          Number(poll.turn_started_at || 0) * 1000,
+          now(),
+        );
+        workingStartedAt = clock.startedAt;
+        turnStamp = clock.stamp;
 
         // usage arrives only at message end; estimate from streamed text meanwhile
         const tokens = Math.max(poll.tokens || 0, Math.round((poll.text || "").length / 4));

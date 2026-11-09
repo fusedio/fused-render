@@ -10126,6 +10126,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     wt_cwd = _run_workdir(run_dir, file)
     thinking_tokens = 0    # CLI's running estimate for the message in flight
     hooks_open = {}        # hook_id -> hook_name, started and not yet responded
+    compacting = False     # the CLI's `status: compacting` is the latest word
     # Seeded from what the last poll persisted (see `_write_bg_tasks`), not
     # {} — `background_tasks_changed` is only sent on CHANGE, and once the
     # cursor advances past the row that announced a still-running task, this
@@ -10212,6 +10213,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             continue
         if t in ("stream_event", "assistant"):
             after_tool = False
+        if compacting and not (t == "system" and row.get("subtype") == "status"):
+            # Compaction ends with whatever the CLI says next (`compact_boundary`
+            # included); a stream event or tool row after it sets its own phase.
+            compacting = False
+            phase = "thinking"
         if t == "system":
             new_session = row.get("session_id", new_session)
             sub = row.get("subtype")
@@ -10228,6 +10234,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 if row.get("status") == "requesting":
                     phase = "requesting"
                     after_tool = False
+                # `{"status": "compacting"}` is the CLI summarising the
+                # conversation, a minute of nothing else on the stream. Any
+                # other status ends it (`null` follows the summary).
+                elif row.get("status") == "compacting":
+                    phase = "compacting"
+                    compacting = True
+                elif compacting:
+                    compacting = False
+                    phase = "thinking"
             elif sub == "thinking_tokens":
                 est = row.get("estimated_tokens")
                 if isinstance(est, (int, float)):

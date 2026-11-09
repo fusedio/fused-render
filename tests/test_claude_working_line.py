@@ -143,6 +143,18 @@ def test_a_request_out_with_nothing_back_is_requesting(agent, run_dir):
     assert data["phase"] == "requesting"
 
 
+def test_a_compacting_status_row_is_the_compacting_phase(agent, run_dir):
+    data = _poll(agent, run_dir, [_status("compacting")])
+    assert data["phase"] == "compacting"
+
+
+def test_compacting_clears_on_the_next_non_status_row(agent, run_dir):
+    assert _poll(agent, run_dir, [_status("compacting"),
+                                  _sys("compact_boundary")])["phase"] == "thinking"
+    assert _poll(agent, run_dir, [_status("compacting"), _text("a")])["phase"] == "composing"
+    assert _poll(agent, run_dir, [_status("compacting"), _status(None)])["phase"] == "thinking"
+
+
 def test_the_first_delta_ends_requesting(agent, run_dir):
     assert _poll(agent, run_dir, [_status(), _thinking()])["phase"] == "thinking"
     assert _poll(agent, run_dir, [_status(), _text("a")])["phase"] == "composing"

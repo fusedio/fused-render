@@ -59,7 +59,8 @@ export interface VerbStats {
  *  `activity`. `quietSecs` is how long the poll has reported nothing new. */
 export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: number, agent = "Claude"): string {
   const act = stats.activity;
-  if (act?.hook) return "Running project setup";
+  if (isSetupHook(act?.hook)) return "Running project setup";
+  if (stats.phase === "compacting") return "Compacting conversation";
   if (stats.phase === "tooling") {
     const t = act?.tool;
     if (!t) return "Finishing a step";
@@ -101,28 +102,33 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
         return "Using " + String(t.name).split("__").pop()?.replace(/_/g, " ");
     }
   }
-  // A long silence in the model's own turn is the one ambiguity worth naming —
-  // and if a background command is still running, that is almost always what
-  // the wait is. "Waiting for a reply" read as waiting for the USER's reply
-  // (Akshil, 2026-09-02): the words must say who owes whom.
-  if (quietSecs >= QUIET_SECS) {
-    return act?.tasks?.length
-      ? "Waiting for a background command to finish"
-      : `${agent} is taking longer than usual`;
-  }
+  // Every phase below is the model itself at work; the task registry names a
+  // wait only when the model is idle (no phase, or parked on an approval), so a
+  // monitor that outlives the turn never mislabels a model that is thinking.
+  const modelPhase = !!stats.phase && stats.phase !== "awaiting";
+  const waitingOnTasks = !!act?.tasks?.length || !!taskVerb(stats.tasks);
+  // A long silence is the one ambiguity worth naming: the words must say who
+  // owes whom ("Waiting for a reply" read as waiting for the USER's reply,
+  // Akshil, 2026-09-02).
+  if (quietSecs >= QUIET_SECS && (modelPhase || !waitingOnTasks)) return `${agent} is taking longer than usual`;
+  if (quietSecs >= QUIET_SECS) return "Waiting for a background command to finish";
   if (stats.phase === "requesting") return `Sending to ${agent}`;
   if (stats.phase === "composing") return `${agent} is replying`;
-  // BACKGROUND WORK THE REGISTRY CAN NAME (SPEC T-5): agents, then monitors,
-  // then shells — a truer verb than a mood, but only in the mood's place: while
-  // the model is streaming, what it is doing right now is the news.
+  if (modelPhase) return thinkVerb;
   return taskVerb(stats.tasks) || thinkVerb;
+}
+
+/** Whether `hook` (an open hook's name, `SessionStart:startup`) is the project
+ *  setup the line names; any other hook leaves the verb to the phase. */
+function isSetupHook(hook: string | undefined): boolean {
+  return !!hook && hook.startsWith("SessionStart");
 }
 
 /** T:14848-14855 — the ONE thing that goes in the brackets beside the time.
  *  Nothing while the model itself is working: there is no useful noun for that. */
 export function activityDetail(stats: VerbStats): string {
   const act = stats.activity;
-  if (act?.hook) return "";
+  if (isSetupHook(act?.hook)) return "";
   if (stats.phase === "tooling" && act?.tool?.detail) return act.tool.detail;
   return "";
 }
