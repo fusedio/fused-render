@@ -316,7 +316,7 @@ function QueryTable({ outcome }: { outcome: IndexQueryOutcome & { ok: true } }) 
 
 // ── Diagnostics (SPEC §50) ────────────────────────────────────────────────
 // One button that zips logs, crash reports, memory samples and the open-apps
-// list to the Desktop. The plan line (what the zip WOULD hold) is read up
+// list to ~/Downloads. The plan line (what the zip WOULD hold) is read up
 // front so the reader knows the size before pressing. WINDOW PRESETS, not a
 // date picker: a reporter knows "a few minutes ago" or "all day", never a
 // clock time. The bulky collectors honour the window; the small join keys are
@@ -443,6 +443,21 @@ export function DiagnosticsControl() {
           <span className="settings-row-desc">
             Saved {formatBytes(result.bytes)} to <code className="break-all">{result.path}</code>
           </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              // The in-app explorer's listing of the folder, the zip selected
+              // — stays inside the app rather than handing off to Finder.
+              const cut = Math.max(result.path.lastIndexOf("/"), result.path.lastIndexOf("\\"));
+              navigate(cut > 0 ? result.path.slice(0, cut) : result.path, {
+                isDir: true,
+                sel: cut > 0 ? result.path.slice(cut + 1) : null,
+              });
+            }}
+          >
+            Show in explorer
+          </Button>
           <Button
             variant="outline"
             size="sm"

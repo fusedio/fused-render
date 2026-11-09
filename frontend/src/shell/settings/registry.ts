@@ -687,7 +687,7 @@ const ENTRIES = [
     group: "advanced",
     section: "Diagnostics",
     label: "Save diagnostics",
-    description: "Logs, crash reports, memory samples and the list of open apps, zipped to your Desktop. No chat transcripts, credentials or mount passwords.",
+    description: "Logs, crash reports, memory samples and the list of open apps, zipped to your Downloads folder. No chat transcripts, credentials or mount passwords.",
     keywords: "bug report logs crash zip support debug system log",
   },
 ] as const satisfies readonly SettingEntry[];

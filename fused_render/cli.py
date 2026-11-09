@@ -127,7 +127,7 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="window: 30m / 2h / 1d (default: the last day, or "
                                "since the current server booted if longer)")
     diagnose.add_argument("--out", default=None, metavar="DIR",
-                          help="directory to write the zip into (default: ~/Desktop)")
+                          help="directory to write the zip into (default: ~/Downloads)")
     diagnose.add_argument("--no-system-log", action="store_true",
                           help="skip the macOS unified log (`log show`, the slow step: "
                                "15-45 s; it is where jetsam memory kills show up)")
