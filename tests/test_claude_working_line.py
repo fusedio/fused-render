@@ -155,6 +155,12 @@ def test_compacting_clears_on_the_next_non_status_row(agent, run_dir):
     assert _poll(agent, run_dir, [_status("compacting"), _status(None)])["phase"] == "thinking"
 
 
+def test_other_system_rows_do_not_end_compacting(agent, run_dir):
+    rows = [_status("compacting"), _thinking_tokens(40),
+            _sys("hook_started", hook_id="h", hook_name="Stop")]
+    assert _poll(agent, run_dir, rows)["phase"] == "compacting"
+
+
 def test_the_first_delta_ends_requesting(agent, run_dir):
     assert _poll(agent, run_dir, [_status(), _thinking()])["phase"] == "thinking"
     assert _poll(agent, run_dir, [_status(), _text("a")])["phase"] == "composing"

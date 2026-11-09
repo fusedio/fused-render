@@ -10317,9 +10317,13 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             continue
         if t in ("stream_event", "assistant"):
             after_tool = False
-        if compacting and not (t == "system" and row.get("subtype") == "status"):
-            # Compaction ends with whatever the CLI says next (`compact_boundary`
-            # included); a stream event or tool row after it sets its own phase.
+        if compacting and (t in ("stream_event", "assistant", "user") or (
+                t == "system" and row.get("subtype") == "compact_boundary")):
+            # Compaction ends at `compact_boundary` or at conversation traffic
+            # (a stream event, an assistant or user row), which sets its own
+            # phase; a `status` row ends it in its branch below. Other system
+            # rows (`hook_started`, `thinking_tokens`, ...) arrive mid-summary
+            # and leave it running.
             compacting = False
             phase = "thinking"
         if t == "system":
