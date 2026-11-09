@@ -263,8 +263,11 @@ export function TasksPeek() {
                               onToggle: () => {
                                 const href = taskHref(task);
                                 if (!href) return;
-                                setSideMaximized(true);
-                                api.openPage(href);
+                                // Only once the hop went: a refused leave
+                                // stays on this surface, unmaximized.
+                                void api.openPage(href).then((went) => {
+                                  if (went !== false) setSideMaximized(true);
+                                });
                               },
                             },
                           } : {})}

@@ -351,7 +351,7 @@ export interface RailPeekProps {
    *  the ring is not left saying `aria-expanded` for a card that never drew. */
   onNoRoom: () => void;
   /** "Open in panel →", and any hop the chat itself makes. */
-  onOpenChat: (href: string) => void;
+  onOpenChat: (href: string) => void | Promise<boolean>;
   /** The canvas the PAGE stands on, where the page can select a node in
    *  place (claude-rail-lib `RailHere`; the canvas page only): the where-chip
    *  of a chat on that canvas selects its node there instead of navigating.
@@ -1572,8 +1572,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                         fullScreen: {
                           on: false,
                           onToggle: () => {
-                            setSideMaximized(true);
-                            onOpenChat(head.href!);
+                            // Only once the hop went: a refused leave stays
+                            // on this surface, unmaximized.
+                            void Promise.resolve(onOpenChat(head.href!)).then((went) => {
+                              if (went !== false) setSideMaximized(true);
+                            });
                             onHeld(false);
                             onDismiss("door");
                           },

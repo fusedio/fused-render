@@ -2281,14 +2281,14 @@ export function ClaudeRail({
     }
     return map;
   }, [seats]);
-  const openChat = (href: string) => {
+  const openChat = (href: string): void | Promise<boolean> => {
     const seat = seatByHref.get(href);
     // A favourite's door (its hover card's Open) moves the favourites' mark.
     // Window A's doors are the LIST's (2026-11-05: a favourite's ring opens
     // window B, never this card): the list's mark, whatever the chat's star.
     if (seat) setLastChat(lastChatId(seat.pulse));
     if (seat?.row && isDraftTask(seat.row)) openDraftCard(seat.row, href);
-    else onOpenChat(href);
+    else return onOpenChat(href);
   };
   const openChatRef = useRef(openChat);
   openChatRef.current = openChat;
