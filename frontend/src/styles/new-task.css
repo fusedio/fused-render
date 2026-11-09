@@ -1376,16 +1376,18 @@ button.new-task-source:focus-visible {
   color: var(--fg);
 }
 
-/* NARROW CARDS (a slim rail popover): only the NAME gives way — it ellipsizes,
-   however long. The agent crumb, Folder, When and the ✕ never shrink (Akshil,
-   2026-11-09: a squeezed "Fu…" / clock-only When read as broken). The folder's
-   own length is capped by `.pp-v` max-width above, not by the title. */
+/* NARROW CARDS (a slim rail popover): the NAME gives way first — it
+   ellipsizes, however long, and Folder and When keep their full words (Akshil,
+   2026-11-09: a squeezed "Fu…" / clock-only When read as broken). The title's
+   shrink weight (1000) makes it take all the squeeze until it reaches its
+   floor; only then, on a card too narrow for the pills at all, do Folder and
+   When ellipsize — so the ✕ is never pushed off the card. */
 .new-task-dialog .modal-head {
   min-width: 0;
 }
 
 .new-task-dialog .modal-head-title {
-  flex: 1 1 auto;
+  flex: 1 1000 auto;
   min-width: 0;
 }
 
@@ -1407,11 +1409,19 @@ button.new-task-source:focus-visible {
   min-width: 48px;
 }
 
-.new-task-dialog .modal-head-actions,
+.new-task-dialog .modal-head-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 .new-task-dialog .nt-pills--head,
-.new-task-dialog .nt-pills--head .nt-pills-right,
+.new-task-dialog .nt-pills--head .nt-pills-right {
+  min-width: 0;
+}
+
 .new-task-dialog .nt-pills--head .pp {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .new-task-dialog .modal-close {
