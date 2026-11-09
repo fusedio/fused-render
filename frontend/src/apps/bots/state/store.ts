@@ -14,7 +14,7 @@ import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib
 import { landingBot } from "../lib/landing";
 import { botHasUnread } from "@platform/lib/botsPulse";
 import { getPrefsShared, putBotsPref } from "@platform/lib/api";
-import { sentByYou } from "../lib/derive";
+import { lastUserTs, sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
 import { botsMounted } from "../lib/root";
@@ -323,7 +323,12 @@ export function markSeen(id: string | null | undefined, seq: number): void {
 function publishPulse(): void {
   // …with the pin, the name and the face: the Claude rail's pinned bots read
   // these rows while this page is the feeder (CodeRabbit, #2136).
-  publishBots(S.bots.map((b) => ({ id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden, pinned: b.pinned, name: b.name, face: b.face })));
+  // …and the page's own recency (BotList `recency`: your last message, else when it was made), so the rail's pinned
+  // bots sort as this list does while the page feeds them (owner, 2026-11-09: the foot's order disagreed with the page).
+  publishBots(S.bots.map((b) => ({
+    id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden, pinned: b.pinned,
+    name: b.name, face: b.face, last_user_ts: lastUserTs(eventsOf(b.id)) || b.last_user_ts || 0, created: b.created,
+  })));
 }
 export const unreadCount = (b: Bot): number => unreadOf(S.seen[b.id], eventsOf(b.id), b);
 /** The "new" rule sits at the seen mark as of opening this bot and stays put until you switch bots; set only when something is past it, else cleared. */
