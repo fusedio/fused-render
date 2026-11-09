@@ -2,7 +2,7 @@
 misbehaved, built from files on disk alone.
 
 `build_bundle()` writes `fused-render-diagnostics-<YYYYmmdd-HHMMSS>.zip` to
-the Desktop (or `<home>/downloads` when there is no Desktop) and returns its
+~/Downloads (or `<home>/downloads` when there is no Downloads folder) and returns its
 path. It must work with NO server running — the menubar item, the
 `fused-render diagnostics` CLI and a wedged server all call it the same way —
 so nothing here talks HTTP; every source is a file or a short subprocess.
@@ -111,9 +111,9 @@ def _base_home() -> str:
 
 
 def _default_out_dir() -> str:
-    desktop = os.path.expanduser("~/Desktop")
-    if os.path.isdir(desktop):
-        return desktop
+    downloads = os.path.expanduser("~/Downloads")
+    if os.path.isdir(downloads):
+        return downloads
     return os.path.join(_home(), "downloads")
 
 

@@ -9,6 +9,7 @@ import {
   putCallsParamsMode,
   putCallsRetentionDays,
   putClaudeMaxConcurrentSessions,
+  revealPath,
   runIndexQuery,
   type CallsParamsMode,
   type DiagnosticsPlan,
@@ -316,7 +317,7 @@ function QueryTable({ outcome }: { outcome: IndexQueryOutcome & { ok: true } }) 
 
 // ── Diagnostics (SPEC §50) ────────────────────────────────────────────────
 // One button that zips logs, crash reports, memory samples and the open-apps
-// list to the Desktop. The plan line (what the zip WOULD hold) is read up
+// list to ~/Downloads. The plan line (what the zip WOULD hold) is read up
 // front so the reader knows the size before pressing. WINDOW PRESETS, not a
 // date picker: a reporter knows "a few minutes ago" or "all day", never a
 // clock time. The bulky collectors honour the window; the small join keys are
@@ -443,6 +444,13 @@ export function DiagnosticsControl() {
           <span className="settings-row-desc">
             Saved {formatBytes(result.bytes)} to <code className="break-all">{result.path}</code>
           </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => revealPath(result.path).catch((e: Error) => setError(e.message))}
+          >
+            {isMac ? "Show in Finder" : "Show in folder"}
+          </Button>
           <Button
             variant="outline"
             size="sm"

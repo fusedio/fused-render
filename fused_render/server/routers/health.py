@@ -138,7 +138,7 @@ def api_diagnostics(
     body: dict | None = Body(default=None),
     x_fused: str | None = Header(default=None),
 ):
-    """Write the diagnostics zip (default `~/Desktop`) and return its path.
+    """Write the diagnostics zip (default `~/Downloads`) and return its path.
 
     Sync `def`: copying logs and zipping is disk work and belongs on the
     threadpool, not the event loop. Body is optional — `{since_s}` narrows
@@ -146,7 +146,7 @@ def api_diagnostics(
     day and since this server booted).
 
     `X-Fused` guarded like every other writing POST: unlike the outage
-    beacon, this one drops a zip on the user's Desktop, and a blind
+    beacon, this one drops a zip in the user's Downloads, and a blind
     cross-origin POST must not be able to do that.
     """
     import os

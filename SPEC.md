@@ -12252,7 +12252,7 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
   server, and in the false-positive case the moment has passed by the time
   anyone clicks.
 - **DG-19 Output, window, caps.**
-  `~/Desktop/fused-render-diagnostics-<timestamp>.zip` unless `--out` says
+  `~/Downloads/fused-render-diagnostics-<timestamp>.zip` unless `--out` says
   otherwise. Window = max(24 h, since boot), widened by `--since`.
   Unbounded logs are tailed to 512 KB; the whole bundle is capped at 64 MB.
   Paths inside files are kept as they are: they are evidence.
