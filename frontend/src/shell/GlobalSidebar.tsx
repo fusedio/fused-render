@@ -933,6 +933,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     href: b.url,
     active: b.url === here,
     dividerBefore: i === 0,
+    // Collapsed rail only: bottom-aligned just above Settings (owner,
+    // 2026-11-09); the expanded Favourites stays under Canvases.
+    pinBottom: i === 0,
     scrolls: true,
     // Arm it, as the section's own click does (Update-bookmark tracking).
     onClick: () => {
@@ -1012,7 +1015,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             label: setupMeter.title,
             icon: <SetupProgressRing percent={setupMeter.percent} />,
             href: ONBOARDING_PATH,
-            pinBottom: true,
+            // The favourites already pushed the bottom cluster down; under
+            // them the expanded footer's hairline stands in for the push.
+            pinBottom: !railPins.length,
+            dividerBefore: railPins.length > 0,
           },
         ]
       : []),
@@ -1021,7 +1027,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       label: "Preferences",
       icon: PREFERENCES_ICON,
       href: "/preferences",
-      pinBottom: !setupMeter,
+      pinBottom: !setupMeter && !railPins.length,
+      dividerBefore: !setupMeter && railPins.length > 0,
       active: prefsActive,
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/etc.

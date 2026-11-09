@@ -45,8 +45,10 @@ export interface SidebarRailItem {
   /** Hairline above this item — a group boundary, mirroring the expanded
       sidebar's headings. */
   dividerBefore?: boolean;
-  /** Set on the FIRST item of a bottom-pinned cluster (the shell's settings
-      list) — pushes it and everything after to the rail's bottom edge. */
+  /** Set on the FIRST item of a bottom-pinned cluster (the shell's
+      favourite doors, or its settings list) — pushes it and everything after
+      to the rail's bottom edge. On a `scrolls` item it also starts a scroll
+      box of its own, with the push (and divider) outside that box. */
   pinBottom?: boolean;
   /** Part of the rail's SCROLLING middle (the shell's project + pinned
       bookmark doors): consecutive `scrolls` items share one overflow box, so
@@ -72,7 +74,7 @@ export function railRuns(
   for (const item of rail) {
     const scrolls = !!item.scrolls;
     const last = runs[runs.length - 1];
-    if (last && last.scrolls === scrolls) last.items.push(item);
+    if (last && last.scrolls === scrolls && !item.pinBottom) last.items.push(item);
     else runs.push({ scrolls, items: [item] });
   }
   return runs;
@@ -87,11 +89,21 @@ interface RailTip {
   hide: () => void;
 }
 
-function renderRailItem(item: SidebarRailItem, tip: RailTip) {
+/** The push and hairline an item asks for above itself. */
+function renderRailLead(item: SidebarRailItem) {
   return (
-    <React.Fragment key={item.key}>
+    <>
       {item.pinBottom && <span className="sidebar-rail-flex" aria-hidden="true" />}
       {item.dividerBefore && <span className="sidebar-rail-sep" aria-hidden="true" />}
+    </>
+  );
+}
+
+/** `bare`: the lead was already drawn outside this item's scroll box. */
+function renderRailItem(item: SidebarRailItem, tip: RailTip, bare = false) {
+  return (
+    <React.Fragment key={item.key}>
+      {!bare && renderRailLead(item)}
       <a
         href={item.href}
         className={
@@ -424,9 +436,17 @@ export function SidebarFrame({
           <div className="sidebar-rail-items">
             {railRuns(rail).map((run) =>
               run.scrolls ? (
-                <div className="sidebar-rail-scroll" key={run.items[0].key} onScroll={tip.hide}>
-                  {run.items.map((item) => renderRailItem(item, tip))}
-                </div>
+                // A bottom-pinned scroll run (the favourite doors) draws its
+                // push and hairline outside the box: a spacer inside a
+                // shrink-only scroll box would grow nothing.
+                <React.Fragment key={run.items[0].key}>
+                  {run.items[0].pinBottom && renderRailLead(run.items[0])}
+                  <div className="sidebar-rail-scroll" onScroll={tip.hide}>
+                    {run.items.map((item, i) =>
+                      renderRailItem(item, tip, i === 0 && !!item.pinBottom)
+                    )}
+                  </div>
+                </React.Fragment>
               ) : (
                 run.items.map((item) => renderRailItem(item, tip))
               )
