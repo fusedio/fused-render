@@ -57,19 +57,61 @@ def _users(hist):
     return [t["text"] for t in hist["turns"] if t["role"] == "user"]
 
 
-def test_helper_prefers_original_then_newest_relocated(agent, tmp_path):
+def _timed(users, start, tag="r"):
+    """Conversation rows with distinct uuids and timestamps `start`+i minutes."""
+    out = []
+    for i, u in enumerate(users):
+        for kind, role in (("u", "user"), ("a", "assistant")):
+            minute = start + len(out)
+            row = {"type": role, "uuid": f"{tag}{kind}{minute}",
+                   "timestamp": f"2026-11-05T16:{minute:02d}:00.000Z",
+                   "message": {"role": role, "content": u if role == "user" else [
+                       {"type": "text", "text": f"re {u}"}]}}
+            out.append(row)
+    return out
+
+
+def test_helper_returns_the_only_copy_and_the_original_when_none(agent, tmp_path):
     _t, work, munged = _setup(agent, tmp_path)
     orig = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
     assert agent._session_transcript_path(work, "sid") == orig  # missing: unchanged
     old = os.path.join(agent.PROJECTS, munged + "--claude-worktrees-a", "sid.jsonl")
-    new = os.path.join(agent.PROJECTS, munged + "--claude-worktrees-b", "sid.jsonl")
     _write(old, _rows("one"))
-    _write(new, _rows("one"))
-    os.utime(old, (time.time() - 100, time.time() - 100))
-    assert agent._session_transcript_path(work, "sid") == new
-    _write(orig, _rows("one"))
-    os.utime(orig, (time.time() + 100, time.time() + 100))
-    assert agent._session_transcript_path(work, "sid") == orig  # newer original wins
+    assert agent._session_transcript_path(work, "sid") == old
+
+
+def test_exit_bookkeeping_newer_than_the_worktree_copy_does_not_win(agent, tmp_path):
+    # The CLI appends cost-state/last-prompt to the ORIGINAL path after the
+    # move, so it is the newest by mtime and holds the pre-move turns. The
+    # worktree copy has the later turns: history shows both, in order.
+    target, work, munged = _setup(agent, tmp_path)
+    orig = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
+    moved = os.path.join(agent.PROJECTS, munged + "--claude-worktrees-wt", "sid.jsonl")
+    _write(orig, _timed(["first", "second"], 0, "o") + _bookkeeping())
+    _write(moved, _timed(["third", "fourth"], 10, "m"))
+    os.utime(moved, (time.time() - 100, time.time() - 100))
+    assert _users(agent._history(target, "sid")) == ["first", "second", "third", "fourth"]
+
+
+def test_copies_sharing_rows_merge_without_duplicates(agent, tmp_path):
+    target, work, munged = _setup(agent, tmp_path)
+    shared = _timed(["first", "second"], 0, "s")
+    orig = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
+    moved = os.path.join(agent.PROJECTS, "-other-wt", "sid.jsonl")
+    _write(orig, shared)
+    _write(moved, shared + _timed(["third"], 10, "m"))
+    assert _users(agent._history(target, "sid")) == ["first", "second", "third"]
+
+
+def test_merge_follows_the_sources_when_they_grow(agent, tmp_path):
+    target, work, munged = _setup(agent, tmp_path)
+    orig = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
+    moved = os.path.join(agent.PROJECTS, "-other-wt", "sid.jsonl")
+    _write(orig, _timed(["first"], 0, "o"))
+    _write(moved, _timed(["second"], 10, "m"))
+    assert _users(agent._history(target, "sid")) == ["first", "second"]
+    _write(moved, _timed(["second", "third"], 10, "m"))
+    assert _users(agent._history(target, "sid")) == ["first", "second", "third"]
 
 
 def test_same_session_under_any_slug_is_found(agent, tmp_path):
@@ -99,16 +141,6 @@ def test_history_reads_the_relocated_transcript(agent, tmp_path):
            _rows("first", "second", "third"))
     hist = agent._history(target, "sid")
     assert _users(hist) == ["first", "second", "third"]
-
-
-def test_history_original_location_still_wins(agent, tmp_path):
-    target, work, munged = _setup(agent, tmp_path)
-    here = os.path.join(agent.PROJECTS, munged, "sid.jsonl")
-    there = os.path.join(agent.PROJECTS, munged + "--claude-worktrees-wt", "sid.jsonl")
-    _write(here, _rows("here"))
-    _write(there, _rows("there", "more"))
-    os.utime(there, (time.time() - 100, time.time() - 100))
-    assert _users(agent._history(target, "sid")) == ["here"]
 
 
 def test_missing_id_keeps_the_empty_shape(agent, tmp_path):

@@ -1526,12 +1526,26 @@ def _munge(path: str) -> str:
     return _agent_roots.munge(path)
 
 
-def _holds_conversation(path: str) -> bool:
-    """Does this Claude transcript carry at least one conversation row (a row
-    with a `uuid`)? The CLI's exit bookkeeping rows (`cost-state`,
-    `last-prompt`, `ai-title`, `mode`, `atis-latch`, `bridge-session`) carry
-    none. Stops at the first hit, which in a real transcript is a few lines
-    in; a bookkeeping-only file is a handful of short lines."""
+# Per-file facts a transcript copy is judged by, keyed by (path, mtime_ns, size)
+# so a copy is read once per change, not once per refresh.
+_COPY_FACTS: dict = {}
+
+
+def _copy_facts(path: str) -> tuple:
+    """`(holds_conversation, latest_conversation_ts)` for one transcript copy.
+    A conversation row is a `user`/`assistant` row with a `uuid`; the CLI's exit
+    bookkeeping rows (`cost-state`, `last-prompt`, `ai-title`, `mode`,
+    `atis-latch`, `bridge-session`) are neither. The timestamp is the newest
+    such row's (`_row_ts`), 0.0 when none parses."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return (False, 0.0)
+    key = (path, st.st_mtime_ns, st.st_size)
+    hit = _COPY_FACTS.get(key)
+    if hit is not None:
+        return hit
+    holds, latest = False, 0.0
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as fh:
             for line in fh:
@@ -1541,11 +1555,78 @@ def _holds_conversation(path: str) -> bool:
                     obj = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(obj, dict) and obj.get("uuid"):
-                    return True
+                if (not isinstance(obj, dict) or not obj.get("uuid")
+                        or obj.get("type") not in ("user", "assistant")):
+                    continue
+                holds = True
+                ts = _row_ts(obj)
+                if ts is not None and ts > latest:
+                    latest = ts
     except OSError:
         pass
-    return False
+    if len(_COPY_FACTS) > 256:
+        _COPY_FACTS.clear()
+    _COPY_FACTS[key] = (holds, latest)
+    return (holds, latest)
+
+
+def _holds_conversation(path: str) -> bool:
+    """Does this Claude transcript carry at least one conversation row?"""
+    return _copy_facts(path)[0]
+
+
+_MERGED_SIG: dict = {}
+
+
+def _merged_transcript(session_id: str, copies: list) -> str:
+    """One file holding every conversation row of `copies` (paths, oldest
+    conversation first): the rows of each in turn, a `uuid` already written
+    skipped, and the rows without a `uuid` (bookkeeping) only from the last copy.
+    A session whose cwd moved has its pre-move turns in the original path and the
+    rest in the worktree's, and neither alone is the conversation. Written under
+    the runs root's sibling `transcripts/` dir, rebuilt only when a source's
+    (mtime, size) moved, with the newest source's mtime so the page's
+    change-watermark follows the sources. Falls back to the last copy when the
+    merge cannot be written."""
+    last = copies[-1]
+    try:
+        stats = [os.stat(p) for p in copies]
+    except OSError:
+        return last
+    sig = tuple((p, s.st_mtime_ns, s.st_size) for p, s in zip(copies, stats))
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(RUNS)), "transcripts")
+    out = os.path.join(out_dir, session_id + ".jsonl")
+    if _MERGED_SIG.get(out) == sig and os.path.isfile(out):
+        return out
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        seen = set()
+        tmp = out + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as dst:
+            for path in copies:
+                with open(path, "r", encoding="utf-8", errors="ignore") as src:
+                    for line in src:
+                        if not line.strip():
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except ValueError:
+                            continue
+                        uid = obj.get("uuid") if isinstance(obj, dict) else None
+                        if uid:
+                            if uid in seen:
+                                continue
+                            seen.add(uid)
+                        elif path != last:
+                            continue
+                        dst.write(line if line.endswith("\n") else line + "\n")
+        newest = max(s.st_mtime for s in stats)
+        os.utime(tmp, (newest, newest))
+        os.replace(tmp, out)
+    except OSError:
+        return last
+    _MERGED_SIG[out] = sig
+    return out
 
 
 def _session_transcript_path(workdir: str, session_id: str) -> str:
@@ -1554,36 +1635,48 @@ def _session_transcript_path(workdir: str, session_id: str) -> str:
     first), unless the CLI MOVED it. The CLI persists a session under the slug
     of the cwd it is in, so once the agent `cd`s into a worktree (or Claude
     Code's EnterWorktree tool relocates the session) the rest of the
-    conversation lands in that worktree's project dir while the original path
-    keeps only the rows written before the move, or exit bookkeeping rows
-    (`cost-state`, `last-prompt`, ...) with no conversation in them
-    (`_holds_conversation`).
+    conversation lands in that worktree's project dir, while the original path
+    keeps the rows written before the move plus exit bookkeeping rows
+    (`cost-state`, `last-prompt`, ...) the CLI keeps appending to it.
     A session id is a uuid, so a `<sid>.jsonl` under ANY project slug of
-    Claude's root is the same session: the newest copy that holds a
-    conversation wins, and the original path only when it is at least as new
-    (or when no other copy exists). Else the original Claude path (missing, or
-    bookkeeping only), so a caller's not-found handling is unchanged. Claude's
-    root only: no other host relocates. `session_id` is `_bad_id`-checked by
-    callers."""
+    Claude's root is the same session. Finding them is a stat per project dir;
+    reading them is cached per (path, mtime, size). One copy: that file, no
+    read at all. Several: those holding conversation rows are ordered by their
+    newest conversation row's timestamp (never mtime, which exit bookkeeping
+    bumps), and more than one of them is merged (`_merged_transcript`). None
+    holding a conversation: the original path when it exists, so a caller's
+    not-found handling is unchanged. Claude's root only: no other host
+    relocates. `session_id` is `_bad_id`-checked by callers."""
     munged = _munge(workdir)
     mine = os.path.join(PROJECTS, munged, session_id + ".jsonl")
-    best, best_mtime = "", -1.0
+    found = []
     try:
         with os.scandir(PROJECTS) as it:
             for ent in it:
                 cand = os.path.join(ent.path, session_id + ".jsonl")
-                try:
-                    mtime = os.stat(cand).st_mtime
-                except OSError:
-                    continue
-                if not os.path.isfile(cand) or not _holds_conversation(cand):
-                    continue
-                if mtime > best_mtime or (mtime == best_mtime and cand == mine):
-                    best, best_mtime = cand, mtime
+                if os.path.isfile(cand):
+                    found.append(cand)
     except OSError:
         pass
-    if best:
-        return best
+    if len(found) == 1:
+        return found[0]
+    if found:
+        facts = {p: _copy_facts(p) for p in found}
+        convo = [p for p in found if facts[p][0]]
+        if len(convo) == 1:
+            return convo[0]
+        if convo:
+            def age(p):
+                try:
+                    mt = os.stat(p).st_mtime
+                except OSError:
+                    mt = 0.0
+                return (facts[p][1], mt, p == mine)
+            convo.sort(key=age)
+            return _merged_transcript(session_id, convo)
+        if mine in found:
+            return mine
+        return found[0]
     for _backend, root in _transcript_roots():
         if root == PROJECTS:
             continue
