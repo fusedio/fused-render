@@ -340,9 +340,12 @@ a.sidebar-rail-btn {
      tall (20 + 28), so the rail's "+" and app icons land on the same y the
      expanded "+ New app" and app rows hold (measured: 218/250/282 against
      218/248/278). HALVED to 12 (owner, 2026-11-05): the section seams on
-     the collapsed rail read too loose. The Claude rail's dividers
-     (claude-rail.css `.is-tight`, `.claude-rail-all-seat`) wear the same 12. */
-  margin: 12px 0;
+     the collapsed rail read too loose. 4 (owner, 2026-11-09: "the separator
+     between expand sidebar and home is perfect spacing — use it everywhere"):
+     4 + the column's 4px gap = the top divider's 8px each side. The Claude
+     rail's dividers (claude-rail.css `.is-tight`, `.claude-rail-all-seat`)
+     wear the same. */
+  margin: 4px 0;
   background: var(--rail-sep);
 }
 
