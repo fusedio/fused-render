@@ -31,15 +31,26 @@ export interface BotPickListProps {
   selected: string | null;
   /** A row's press. */
   onPick: (id: string) => void;
+  /** The rows as drawn, top to bottom (the shown, then the hidden while open), whenever that changes — the card's
+   *  prev/next walk (BotsPeek). A reorder with the same count (a waiting bot opened drops back) reports too
+   *  (Bugbot on #2206). */
+  onOrder?: (ids: string[]) => void;
 }
 
-export default function BotPickList({ selected, onPick }: BotPickListProps) {
+export default function BotPickList({ selected, onPick, onOrder }: BotPickListProps) {
   useEffect(() => feedBotQuietly(), []);
   const S = useBots();
   const [q, setQ] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const { shown, hidden, query } = listRows(S, q);
-  const polled = S.bots.length > 0;
+  // A poll has landed (store `polled`): an empty answer is "No bots yet", not "Loading…" (Bugbot on #2206).
+  const polled = S.polled;
+  const orderKey = [...shown, ...(S.showHidden ? hidden : [])].map((b) => b.id).join("\n");
+  const onOrderRef = useRef(onOrder);
+  onOrderRef.current = onOrder;
+  useEffect(() => {
+    onOrderRef.current?.(orderKey ? orderKey.split("\n") : []);
+  }, [orderKey]);
   const onSearchKey = (e: KeyboardEvent<HTMLInputElement>) => {
     // Escape clears a query first; empty, it is the card's (DoorCard: a
     // preview closes, a pinned card stays).

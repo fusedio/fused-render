@@ -1567,10 +1567,15 @@ a.claude-rail-peek-scope:focus-visible {
 .claude-rail-bots-list .bots-page.bots-pick .botlist {
   padding: 2px 6px 8px;
 }
-/* The thumb the page draws over the list's right edge: shown while the
-   pointer is over the card (the page shows it over the column). */
-.claude-rail-bots-list .bots-page.bots-pick .bots:hover .railbar {
-  opacity: 1;
+/* The page hides the list's native scrollbar and draws its own thumb
+   (BotList `.railbar`); this list draws no thumb, so the native one comes
+   back, thin, in the card (Bugbot on #2206). */
+.claude-rail-bots-list .bots-page.bots-pick .botlist {
+  scrollbar-width: thin;
+}
+.claude-rail-bots-list .bots-page.bots-pick .botlist::-webkit-scrollbar {
+  display: block;
+  width: 8px;
 }
 /* A row's last line and time read at the card's small type; the row keeps
    the page's 44px face so the two lists tell one story. */

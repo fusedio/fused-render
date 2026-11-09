@@ -69,12 +69,6 @@ class ListBoundary extends Component<{ children: ReactNode }, { failed: boolean 
   }
 }
 
-/** The list's rows in their PAINTED order (BotList `Row` carries `data-id`),
- *  for the chat head's prev/next. */
-function rowOrder(list: HTMLElement | null): string[] {
-  return Array.from(list?.querySelectorAll<HTMLElement>(".bot[data-id]") ?? []).map((el) => el.dataset.id ?? "").filter(Boolean);
-}
-
 export function BotsPeek() {
   const on = useCanvasRailPeek();
   const offered = useBotsAvailable(on);
@@ -99,22 +93,19 @@ export function BotsPeek() {
     listRef.current?.toggleAttribute("inert", !!chat);
   }, [chat, mounted]);
 
-  // PREV / NEXT through the list behind (the Tasks card's walk).
+  // PREV / NEXT through the list behind (the Tasks card's walk): the list's
+  // rows as drawn (BotPickList `onOrder`), re-read on every reorder — a
+  // waiting bot opened drops back in the order with the count unchanged
+  // (Bugbot on #2206).
+  const [order, setOrder] = useState<string[]>([]);
   const stepChat = (delta: number) => {
     if (!chat) return;
-    const order = rowOrder(listRef.current);
     const at = order.indexOf(chat);
     const next = at < 0 ? null : (order[at + delta] ?? null);
     if (next) setChat(next);
   };
-  const [ends, setEnds] = useState({ prev: false, next: false });
-  const botCount = useBotsSelector((s) => s.bots.length);
-  useEffect(() => {
-    if (!chat) return;
-    const order = rowOrder(listRef.current);
-    const at = order.indexOf(chat);
-    setEnds({ prev: at > 0, next: at >= 0 && at < order.length - 1 });
-  }, [chat, botCount]);
+  const at = chat ? order.indexOf(chat) : -1;
+  const ends = { prev: at > 0, next: at >= 0 && at < order.length - 1 };
 
   const name = bot ? bot.name || bot.id : "";
   const words = bot ? botStatusWords(bot.status) : "";
@@ -179,7 +170,7 @@ export function BotsPeek() {
               <div ref={listRef} className={"claude-rail-peek-chat claude-rail-bots-list" + (chat ? "" : " is-shown")}>
                 <ListBoundary>
                   <Suspense fallback={<p className="claude-rail-peek-note">Loading…</p>}>
-                    <BotPickList selected={chat} onPick={pick} />
+                    <BotPickList selected={chat} onPick={pick} onOrder={setOrder} />
                   </Suspense>
                 </ListBoundary>
               </div>
