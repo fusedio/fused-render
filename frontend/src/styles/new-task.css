@@ -1258,3 +1258,52 @@ button.new-task-source:focus-visible {
   border-radius: 8px;
   gap: 8px;
 }
+
+/* FOLDER AND WHEN IN THE HEAD (Akshil, 2026-11-09): the pill group sits in
+   Modal `headActions`, against the ✕. The row's own wrap/slack rules are off
+   here — one line, no wrap, and the value cell narrower so a long folder name
+   cannot shove the title out of the head. */
+/* Boxless: only there so the body-scoped popover rules (`.deploy-body …`,
+   `.schedule-form …`) still reach the head's Folder and When panels. */
+.new-task-dialog .nt-head-scope {
+  display: contents;
+}
+
+.new-task-dialog .nt-pills--head {
+  flex-wrap: nowrap;
+}
+
+.new-task-dialog .nt-pills--head .nt-pills-right {
+  flex-wrap: nowrap;
+  margin-left: 0;
+}
+
+.new-task-dialog .nt-pills--head .pp-v {
+  max-width: 140px;
+}
+
+/* THE CARD'S VERBS at the right end of the pill row: Discard/Delete, Back to
+   chat, Create — the pills' height so the row reads as one line. Takes the
+   row's slack, and on a row too narrow drops to its own line, flush right. */
+.nt-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.nt-row-actions .nt-foot-left {
+  gap: 6px;
+  margin-right: 0;
+}
+
+.new-task-dialog .nt-row-actions .btn {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  align-self: center;
+}
+
+.new-task-dialog .nt-row-actions .btn-danger-text {
+  padding: 0 8px;
+}

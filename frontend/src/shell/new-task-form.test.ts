@@ -2904,11 +2904,20 @@ describe("property pills", () => {
     expect(s).toContain("PERMISSION_ORDER.indexOf(m)");
   });
 
-  test("the pill row starts with Model, Effort, Access, then Where, When", () => {
+  test("Where and When sit in the head; the pill row is Model, Effort, Access, then the verbs", () => {
     const s = src();
-    const order = ["Model", "Effort", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
+    // Head (Modal `headActions`) is rendered as a prop, so it precedes the body.
+    const order = ["Folder", "When", "Model", "Effort", "Permissions"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(order.every((i) => i > -1)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
+    const head = s.indexOf("headActions={(");
+    expect(head).toBeGreaterThan(-1);
+    expect(head).toBeLessThan(order[0]);
+    // No footer row: Discard and Create close the pill row, after Access.
+    expect(s).not.toContain("      footer={");
+    const verbs = s.indexOf('<div className="nt-row-actions">');
+    expect(verbs).toBeGreaterThan(order[4]);
+    expect(s.indexOf("schedule-save", verbs)).toBeGreaterThan(s.indexOf("Discard\n", verbs));
   });
 
   test("the stale-time note ignores the seed when nothing is picked", () => {
@@ -2926,14 +2935,14 @@ describe("property pills", () => {
     // whole pill is behind the guard, not just its rows.
     const think = s.indexOf('ariaLabel="Effort"');
     expect(s.lastIndexOf("{runEfforts.length ? (", think)).toBeGreaterThan(s.indexOf('ariaLabel="Model"'));
-    const group = s.indexOf('<div className="nt-pills-right">');
-    expect(group).toBeGreaterThan(s.indexOf('ariaLabel="Permissions"'));
+    const group = s.indexOf('<div className="nt-pills nt-pills--head"><div className="nt-pills-right">');
+    expect(group).toBeGreaterThan(s.indexOf("headActions={("));
     expect(group).toBeLessThan(s.indexOf('ariaLabel="Folder"'));
   });
 
   test("the ACCESS menu says what a mode means on the row's hover, not under the menu", () => {
     const s = src();
-    const menu = s.slice(s.indexOf('aria-label="Permissions"'), s.indexOf('<div className="nt-pills-right">'));
+    const menu = s.slice(s.indexOf('aria-label="Permissions"'), s.indexOf('<div className="nt-row-actions">'));
     expect(menu).toContain("data-hint={PERMISSION_HINTS[m]}");
     expect(menu).not.toContain("nt-menu-note");
     expect(s).toContain('import { PERMISSION_HINTS, permissionLabel } from "@platform/lib/permission-modes";');
@@ -2966,9 +2975,9 @@ describe("property pills", () => {
     expect(initialTextOf({ title: "a", text: "a\nb" }, undefined, "a", "b")).toBe("a\nb");
   });
 
-  test("five pills, in source order: Model, Effort, Access, Where, When", () => {
+  test("three pills in the row, in source order: Model, Effort, Access", () => {
     const s = src();
-    const at = ["Model", "Effort", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
+    const at = ["Model", "Effort", "Permissions"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     // …and they sit in the row that replaced the folder row.
