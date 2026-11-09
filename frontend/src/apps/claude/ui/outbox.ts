@@ -160,18 +160,22 @@ function pendingStore(): PendingStore | null {
   }
 }
 
-/** Writes a session's pending lines; an empty list removes the key. */
+/** Writes a session's pending lines; an empty list removes the key. False when
+ *  the store refused to keep lines (full, blocked): they then live only in this
+ *  page and a reload loses them. */
 export function savePending(
   sessionId: string,
   lines: readonly PendingLine[],
   store: PendingStore | null = pendingStore(),
-): void {
-  if (!sessionId || !store) return;
+): boolean {
+  if (!sessionId) return true;
+  if (!store) return !lines.length;
   try {
     if (lines.length) store.setItem(pendingKey(sessionId), JSON.stringify(lines));
     else store.removeItem(pendingKey(sessionId));
+    return true;
   } catch {
-    /* storage full or refused: the lines still live in this page */
+    return !lines.length;
   }
 }
 

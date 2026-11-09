@@ -65,6 +65,8 @@ import type {
 import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit, isPlanLimitText } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
+import { advanceTurnClock } from "./turn-clock";
+import { inboxKey } from "./inbox";
 import { endActiveTasks, isActive, stillShown } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
@@ -109,14 +111,23 @@ import type { Receipt } from "../shots/types";
  *  8+ character word ("continue"), which here would swallow a typed line. */
 const CLIENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** T:16377 — the poll cadence. No backoff, ever. */
+/** T:16377 — the poll cadence while the page is looked at. */
 export const POLL_MS = 400;
+/** The cadence while the document is hidden: nobody is watching the stream, but
+ *  the loop keeps the turn's end, cards and queue landing, so it slows down
+ *  rather than stops. */
+export const HIDDEN_POLL_MS = 2000;
+/** The wait between two polls of a live turn. */
+export const pollDelay = (hidden: boolean): number => (hidden ? HIDDEN_POLL_MS : POLL_MS);
 /** How often a finished turn's tasks panel asks the session host that is still
  *  running its background work (`watchHostTasks`, agent.py `_run_tasks`): 1 s,
  *  so an ended job leaves the strip about a second later, like the CLI. */
 export const HOST_TASKS_MS = 1000;
 /** Failed `tasks` asks in a row before a host watch gives up. */
 export const HOST_TASKS_TRIES = 3;
+/** Laps of `watchInbox` (one per `HOST_TASKS_MS`) before it gives up on a line
+ *  the host never settles. */
+const INBOX_WATCH_LAPS = 600;
 
 /**
  * THE CARD WATCH'S CADENCE. The reply can end while a backgrounded subagent or
@@ -464,6 +475,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
    */
   const shownRuns = new Set<string>();
   /**
+   * WHERE `out.jsonl` ENDED WHEN THIS PAGE LAST FINISHED STREAMING A RUN, by
+   * run id. A host runs many turns under one id (a background job's wake, a
+   * send-now's queued line), so "this id was shown" cannot mean "this id is
+   * never attached again": a live run whose open turn began at or past this mark
+   * (`turn_at`) is a turn the page has not streamed, and `adoptWatch` attaches
+   * to it. An id with no mark here, or whose newest rows are only bookkeeping
+   * after the final result, is the turn just streamed.
+   */
+  const streamedEnd = new Map<string, number>();
+  /** The run a Ctrl+X was sent to; its loop's end looks for the queued line's
+   *  turn at once instead of waiting for the standing watch. */
+  let sendNowRun = "";
+  /**
    * AND THE SHORT-LIVED HALF: ids a `resumeAttach` is in the middle of claiming.
    *
    * The early `shownRuns` write was doing two jobs and only one of them was
@@ -616,9 +640,51 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
     if (moved) publishQueued();
   };
-  /** Nothing is held once the run is over: the CLI has answered its inbox or
-   *  died with it, the same rule `clearQueued` states for the optimistic half. */
+  /** The conversation on screen is being replaced: the held lines were its. */
   const clearInbox = () => publishInbox([]);
+  /**
+   * THE SERVER'S INBOX IS THE TRUTH FOR EVERY LINE THE INBOX CONFIRMED. An
+   * optimistic entry whose `send` landed stays listed exactly as long as the
+   * run reports it (undrained, or drained and not yet echoed); once the run no
+   * longer names it the CLI has the line, or the host is gone, and the entry
+   * goes. Keyed by the line's own id, never by its words, so two identical
+   * lines are two entries. An entry still in flight (`!landed`) is not the
+   * server's to judge yet.
+   */
+  const reconcileQueued = (rows: readonly InboxMessage[]) => {
+    const held = new Set(rows.map((r) => r && r.uuid).filter((u): u is string => !!u));
+    // A line sent without an id can only be matched by its words, one row per
+    // entry.
+    const words = new Map<string, number>();
+    for (const r of rows) {
+      if (r && !r.uuid) words.set(inboxKey(r.text), (words.get(inboxKey(r.text)) ?? 0) + 1);
+    }
+    let moved = false;
+    for (let i = 0; i < queued.length; i++) {
+      const q = queued[i];
+      if (!q.landed) continue;
+      const id = q.opts.clientId;
+      let gone: boolean;
+      if (id) gone = !held.has(id);
+      else {
+        const k = inboxKey(q.wire);
+        const n = words.get(k) ?? 0;
+        gone = n === 0;
+        if (n > 0) words.set(k, n - 1);
+      }
+      if (gone) {
+        queued.splice(i--, 1);
+        moved = true;
+      }
+    }
+    if (moved) publishQueued();
+  };
+  /** An authoritative inbox answer (a poll's, or a history read beside a live
+   *  run): published, and the optimistic list brought into line with it. */
+  const landInbox = (rows: InboxMessage[]) => {
+    publishInbox(rows);
+    reconcileQueued(rows);
+  };
 
   /**
    * THE RUN'S BACKGROUND TASKS (SPEC T-5, `ChatState.tasks`). Sticky for the
@@ -632,9 +698,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
   const publishTasks = (rows: TaskRecord[] | null | undefined, runId: string | null) => {
     const list = Array.isArray(rows) ? rows.filter((t) => !!t && typeof t.id === "string") : [];
     const sig = (runId ?? "") + "\u0002" + JSON.stringify(list);
-    if (sig === tasksSig) return;
-    tasksSig = sig;
-    emit({ tasks: list, tasksRunId: runId });
+    if (sig !== tasksSig) {
+      tasksSig = sig;
+      emit({ tasks: list, tasksRunId: runId });
+    }
+    ensureHostWatch();
   };
   /**
    * THE RUN THAT OWNS THE LIST HAS ENDED (SPEC T-5 review #4): anything it
@@ -657,35 +725,37 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (ended) publishTasks(ended, runId);
   };
   /**
-   * WATCH A HOST THAT OUTLIVED ITS TURN (Akshil, 2026-10-18). Nothing else
-   * polls it: the poll loop stopped at `done`, and the standing watch only
-   * refreshes history when the TRANSCRIPT grows — which a job that exits, or
-   * is stopped from the Tasks list, without waking the model never does. So
-   * while the panel holds live rows owned by `runId` and no turn is running,
+   * WATCH THE HOST THAT OWNS THE STRIP (Akshil, 2026-10-18). The strip's rows
+   * come from one authority: the host registry of `state.tasksRunId`. Nothing
+   * else polls a host that outlived its turn — the poll loop stopped at `done`,
+   * and the standing watch only refreshes history when the TRANSCRIPT grows,
+   * which a job that exits, or is stopped from the Tasks list, without waking
+   * the model never does. So while the strip holds live rows owned by `runId`,
    * ask the agent's `tasks` (the registry caught up from `out.jsonl`) every
-   * `HOST_TASKS_MS`, and publish what it says.
+   * `HOST_TASKS_MS` and publish what it says.
    *
-   * It stops by itself: a turn starting (a new poll loop owns the list), another
-   * conversation or run taking the panel, nothing left running
-   * (`tasks_pending` false), the host gone (`host_alive` false — the
-   * downgrade above, the one case it still applies), `HOST_TASKS_TRIES`
-   * failed asks in a row, or dispose. One watch at a time: a call for the run
-   * and seat already watched is a no-op (a history refresh every few seconds
-   * must not keep restarting the wait); any other call retires the older one.
-   *
-   * `loop` is the poll-loop seat the watch belongs to — the seat whose turn
-   * just ended (its own `seat`, so a stale loop unwinding late cannot adopt a
-   * newer one), or the current one for a history landing. A turn starting is a
-   * NEW seat, and ends the watch: that turn's poll owns the list.
+   * The watch belongs to the OWNER RUN, never to a poll loop: a loop starting,
+   * ending or being retired does not touch it, and `ensureHostWatch` (called by
+   * every `publishTasks` and by every loop's end) restarts it whenever live
+   * rows are owned and nothing is asking. It stops by itself: a poll loop on
+ * the same run taking over (the loop's end restarts it), another
+   * conversation or run taking the strip, nothing left running
+   * (`tasks_pending` false), the host gone (`host_alive` false, or its run dir
+   * swept — the rows end as `unknown`), `HOST_TASKS_TRIES` failed asks in a
+   * row, or dispose. One watch at a time: a call for the run already watched
+   * is a no-op, and any other call retires the older one.
    */
   let hostWatch = 0;
   let hostWatched = "";
-  const watchHostTasks = (runId: string, loop: number = loopSeq) => {
-    const key = runId + "\u0000" + loop;
-    if (hostWatched === key) return;
-    hostWatched = key;
+  const watchHostTasks = (runId: string) => {
+    if (hostWatched === runId) return;
+    hostWatched = runId;
     const seq = ++hostWatch;
-    const mine = () => seq === hostWatch && !disposed && loopSeq === loop && state.tasksRunId === runId;
+    // A poll loop on this run carries the rows itself, and two askers on one
+    // run double the requests and flicker the strip: the watch stands down
+    // while one is active and the loop's end restarts it (`ensureHostWatch`).
+    const mine = () =>
+      seq === hostWatch && !disposed && state.tasksRunId === runId && activeRun !== runId;
     void (async () => {
       let failures = 0;
       try {
@@ -702,6 +772,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
             res = null;
           }
           if (!mine()) return;
+          if (res && isUnknownRun(res.error)) {
+            // The host's run dir is gone: nothing answers for these rows.
+            endRunTasks(runId);
+            return;
+          }
           if (!res || res.error || !("tasks" in res) || !Array.isArray(res.tasks)) {
             // A dropped socket or a busy server is not the job ending: try a
             // few laps before giving up on the host.
@@ -724,6 +799,44 @@ export function createChatController(deps: ControllerDeps): ChatController {
       }
     })();
   };
+  /**
+   * THE INBOX AFTER THE LOOP IS GONE. A run that reported its inbox leaves the
+   * last poll's rows on screen, and no poll runs to say the host drained them
+   * after that, or died with them: a line would sit in the queued strip, and
+   * out of the transcript, for good. So while rows (or optimistic entries) are
+   * held, ask history, whose `live_run`/`inbox` fields are the same authority
+   * (`landInbox`; a run that is no longer live lands the empty list). One watch
+   * at a time; it ends when nothing is held, after `INBOX_WATCH_LAPS`, the reader leaves the conversation
+   * (`logGen`), or dispose. A lap is skipped while a loop or send is in flight
+   * (it reads the inbox itself) and while the tab is hidden.
+   */
+  let inboxWatch = 0;
+  const watchInbox = (sessionId: string) => {
+    if (!sessionId || (!state.inbox.length && !queued.length)) return;
+    const seq = ++inboxWatch;
+    const gen = logGen;
+    void (async () => {
+      for (let lap = 0; lap < INBOX_WATCH_LAPS; lap++) {
+        await sleep(HOST_TASKS_MS);
+        if (seq !== inboxWatch || disposed || logGen !== gen) return;
+        // A loop or send in flight reads the inbox itself: skip the lap.
+        if (activeRun || sending) continue;
+        if (typeof document !== "undefined" && document.hidden) continue;
+        await refreshHistory(sessionId);
+        if (seq !== inboxWatch || disposed || logGen !== gen) return;
+        if (!state.inbox.length && !queued.length) return;
+      }
+    })();
+  };
+  /** Start the owner's watch when the strip holds live rows and none is
+   *  running. Idempotent, and cheap enough to call on every publish. A run this
+   *  page is polling right now needs none: its own poll carries the rows (the
+   *  loop's end calls this again once `activeRun` is let go). */
+  function ensureHostWatch(): void {
+    const owner = state.tasksRunId;
+    if (!owner || disposed || activeRun === owner || !stillShown(state.tasks)) return;
+    watchHostTasks(owner);
+  }
   /**
    * HISTORY'S TASKS, on a restore and on every refresh — one rule for both
    * (`openSession` has already cleared the last conversation's list).
@@ -748,7 +861,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // lands history.)
       if (activeRun) return;
       publishTasks(rows, res.tasks_run);
-      watchHostTasks(res.tasks_run);
       // …and that work can still ASK something nobody would see (`cardWatch`;
       // Bugbot 4312038980): this road has no poll loop to start it.
       void cardWatch(res.tasks_run, logGen, state.transcriptGen);
@@ -759,7 +871,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // can name another run dir, or race the host's own liveness, and nulling
     // the owner here would kill the watch — the job's real end, the dead-host
     // downgrade and its leaving would never come. The watch ends by itself.
-    if (!res.live_run && state.tasksRunId && hostWatched.startsWith(state.tasksRunId + "\u0000")) return;
+    if (!res.live_run && state.tasksRunId && hostWatched === state.tasksRunId) return;
     const owner = res.live_run || res.tasks_run || null;
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
@@ -1627,6 +1739,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- working line (T:14774-14926 — the VERBS are the UI's) -------------
 
   let workingStartedAt = 0;
+  /** The server stamp `workingStartedAt` last followed (see `advanceTurnClock`). */
+  let turnStamp = 0;
   /** WHEN THIS TURN STARTED, kept across a reload (owner E2E R1, F10): the
    *  working line's "(10s)" restarted from 0 on F5 because the start was a
    *  controller-local `now()`. THE SOURCE OF TRUTH IS THE SERVER: the poll's
@@ -1862,6 +1976,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // `sending` gate instead), so this counter is the only thing that moves.
     const tGen = state.transcriptGen;
     workingStartedAt = turnStartedAt(runId);
+    turnStamp = 0;
+    /** `out.jsonl`'s length at this loop's last poll — see `streamedEnd`. */
+    let outSize = 0;
+    /** The server's own inbox report reached this loop — see `reconcileQueued`.
+     *  An agent that sends none cannot say a line is gone, so its loop's end
+     *  does. */
+    let sawInbox = false;
     setRunningUi(true);
     setStats(0, "thinking", null, null);
     noteChatActivity();
@@ -2053,14 +2174,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (loopSeq === seat) noteBackend(poll.backend);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
 
-        // The server's stamp of when this turn began wins on re-attach.
-        // 0 means the server does not know (keep our own clock); a stamp
-        // older than a day is a stale one, not this turn's start.
-        const serverStart = Number(poll.turn_started_at || 0) * 1000;
-        if (serverStart > 0 && now() - serverStart <= 24 * 3600 * 1000) {
-          const at = Math.min(serverStart, now());
-          if (!(workingStartedAt > 0) || at < workingStartedAt) workingStartedAt = at;
-        }
+        // The server's stamp of when this turn began wins on re-attach, and a
+        // new stamp on the same run is a new turn: the clock restarts at it.
+        // 0 means the server does not know (keep our own clock).
+        const clock = advanceTurnClock(
+          { startedAt: workingStartedAt, stamp: turnStamp },
+          Number(poll.turn_started_at || 0) * 1000,
+          now(),
+        );
+        workingStartedAt = clock.startedAt;
+        turnStamp = clock.stamp;
+        if (typeof poll.out_size === "number") outSize = poll.out_size;
 
         // usage arrives only at message end; estimate from streamed text meanwhile
         const tokens = Math.max(poll.tokens || 0, Math.round((poll.text || "").length / 4));
@@ -2082,7 +2206,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
-        publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
+        if (Array.isArray(poll.inbox)) {
+          sawInbox = true;
+          landInbox(poll.inbox);
+        } else publishInbox([]);
         noteTaken(poll.inbox_taken);
         // THE RUN'S BACKGROUND TASKS (SPEC T-5) — sticky per run, see `publishTasks`.
         // …BUT NOT OVER A JOB ANOTHER HOST STILL HOLDS (Akshil, 2026-10-19):
@@ -2096,7 +2223,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           const rows = Array.isArray(poll.tasks) ? poll.tasks : [];
           const owner = state.tasksRunId;
           if (!rows.length && owner && owner !== runId && stillShown(state.tasks)) {
-            if (loopSeq === seat) watchHostTasks(owner, seat);
+            ensureHostWatch();
           } else if (rows.length || owner !== runId) publishTasks(rows, runId);
         }
         // THE SLASH-COMMAND LIST MAY HAVE MOVED (SPEC C-2) — the host re-reads it.
@@ -2347,7 +2474,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // superseded loop's late `done` must not retire the newer loop's
           // host watch and leave none.
           if (poll.tasks_pending) {
-            if (loopSeq === seat) watchHostTasks(runId, seat);
+            watchHostTasks(runId);
             // …and that task can still ASK something, with no loop left to
             // see it (`cardWatch`). Same guard.
             if (loopSeq === seat) watchCards = true;
@@ -2437,7 +2564,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
           break;
         }
-        await sleep(POLL_MS);
+        await sleep(pollDelay(typeof document !== "undefined" && document.hidden));
       }
     } catch (err) {
       // Drop the partial bubble so a failed run never leaves a half-streamed
@@ -2491,21 +2618,32 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // chat as this page's own and suppresses the refresh they should trigger.
       if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
       forgetTurnStart(runId);
+      if (runId && outSize) streamedEnd.set(runId, outSize);
+      if (loopSeq === seat) {
+        if (!sawInbox) {
+          clearQueued();
+          clearInbox();
+        } else watchInbox(state.sessionId ?? "");
+      }
       // Nothing is "queued for this turn" once the turn is over: the CLI drains
       // its queue as part of the run, so whatever is still listed here has
       // either been answered above or died with the process. Guarded on
       // ownership for the same reason the chrome is — an abandoned loop's late
       // finally must not wipe the hint the newer loop's follow-up just put up.
-      if (loopSeq === seat) {
-        clearQueued();
-        clearInbox();
-      }
       // Turn boundary either way — the tasks surfaces should hear about it even
       // when a newer loop owns the chrome (the ACTIVITY is real regardless).
       noteChatActivity();
+      // The strip's owner is watched again now that this loop no longer is.
+      ensureHostWatch();
       // Started HERE rather than in the `done` branch so `activeRun` is already
       // let go — the watch reads a set `activeRun` as "a new loop took over".
       if (watchCards && loopSeq === seat) void cardWatch(runId, gen, tGen);
+      // A SEND-NOW's ABORT ENDS THIS LOOP; the line it made way for is the next
+      // turn of the same host. Looked for now, from the loop's own end.
+      if (sendNowRun === runId && loopSeq === seat && state.sessionId) {
+        sendNowRun = "";
+        void adoptLiveRun(state.sessionId, { quiet: true });
+      }
     }
   }
 
@@ -3206,12 +3344,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // run's own inbox report is all there is to name.
     const mine = queued.find((q) => q.landed && q.opts.clientId)?.opts.clientId;
     const target = mine || state.inbox.find((m) => m.uuid)?.uuid;
-    if (!target) return false;
+    const refused = () => {
+      addNote("Couldn't send that now. It stays queued and runs when the current turn ends.", "◆");
+      return false;
+    };
+    if (!target) return refused();
     try {
       const res = await run("send_now", { run_id: runId, client_uuid: target });
-      return "sent" in res && res.sent;
+      const sent = "sent" in res && res.sent;
+      if (!sent) return refused();
+      sendNowRun = runId;
+      return true;
     } catch {
-      return false;
+      return refused();
     }
   }
 
@@ -3692,7 +3837,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // beside `live_run`, which is the field that says whether anything is running
     // at all — and `live_run: ""` publishes the empty list, because nothing is
     // held when nothing is running.
-    if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);
+    if (live) landInbox(Array.isArray(res.inbox) ? res.inbox : []);
     noteTaken(res.inbox_taken);
     // THE SESSION'S LAST RUN'S TASKS (SPEC T-1/T-5): a reload shows the panel
     // it left. An empty answer about the run already drawn keeps the list —
@@ -3748,6 +3893,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // relying on the `transcriptGen` bump, because the id an entering reader
     // most needs re-adopted is the one this frame streamed a moment ago.
     shownRuns.clear();
+    streamedEnd.clear();
     claimingRuns.clear();
     // Published, not just emptied: the hint under the box belongs to the
     // conversation that is leaving.
@@ -3959,6 +4105,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // `claimingRuns` beside it for the OTHER half: an attach already in
       // flight for this id (the boot's `?run=`, the schedule poller) owns it
       // until it either attaches or lets go — see the declaration.
+      // A shown run is attached again only when a row that OPENS a turn
+      // (`turn_at`) sits at or past where this page stopped streaming
+      // (`streamedEnd`): the host's wake or send-now line. Trailing rows after
+      // the final `result` (rate limits, hooks) are growth, not a turn.
+      const newTurn =
+        shownRuns.has(id) &&
+        typeof live!.turn_at === "number" &&
+        live!.turn_at >= (streamedEnd.get(id) ?? Infinity);
+      if (newTurn) shownRuns.delete(id);
       if (shownRuns.has(id) || claimingRuns.has(id)) {
         setAdopting(false);
         continue;
@@ -4739,6 +4894,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // its own.
         context: res.context ?? null,
       });
+      // THE LIVE RUN'S INBOX, on every refresh as on a restore: the `turns`
+      // replace above is what used to take the queued lines off the screen.
+      if (typeof res.live_run === "string") landInbox(Array.isArray(res.inbox) ? res.inbox : []);
+      noteTaken(res.inbox_taken);
       landHistoryTasks(res);
     } catch (err) {
       // The transcript stays exactly as it rendered. The watermark is NOT
@@ -4791,6 +4950,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // list is meant to re-attach to it, which `adoptWatch` refused while the id
     // was still recorded here from `pollLoop`.
     shownRuns.clear();
+    streamedEnd.clear();
     // And the CLAIMS with them (Bugbot 3975433059): an attach whose transcript
     // has been replaced is abandoned, and a claim it never gets to release
     // would keep its run unadoptable for the rest of the page.

@@ -1568,12 +1568,26 @@ def _munge(path: str) -> str:
     return _agent_roots.munge(path)
 
 
-def _holds_conversation(path: str) -> bool:
-    """Does this Claude transcript carry at least one conversation row (a row
-    with a `uuid`)? The CLI's exit bookkeeping rows (`cost-state`,
-    `last-prompt`, `ai-title`, `mode`, `atis-latch`, `bridge-session`) carry
-    none. Stops at the first hit, which in a real transcript is a few lines
-    in; a bookkeeping-only file is a handful of short lines."""
+# Per-file facts a transcript copy is judged by, keyed by (path, mtime_ns, size)
+# so a copy is read once per change, not once per refresh.
+_COPY_FACTS: dict = {}
+
+
+def _copy_facts(path: str) -> tuple:
+    """`(holds_conversation, latest_conversation_ts)` for one transcript copy.
+    A conversation row is a `user`/`assistant` row with a `uuid`; the CLI's exit
+    bookkeeping rows (`cost-state`, `last-prompt`, `ai-title`, `mode`,
+    `atis-latch`, `bridge-session`) are neither. The timestamp is the newest
+    such row's (`_row_ts`), 0.0 when none parses."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return (False, 0.0)
+    key = (path, st.st_mtime_ns, st.st_size)
+    hit = _COPY_FACTS.get(key)
+    if hit is not None:
+        return hit
+    holds, latest = False, 0.0
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as fh:
             for line in fh:
@@ -1583,69 +1597,135 @@ def _holds_conversation(path: str) -> bool:
                     obj = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(obj, dict) and obj.get("uuid"):
-                    return True
+                if (not isinstance(obj, dict) or not obj.get("uuid")
+                        or obj.get("type") not in ("user", "assistant")):
+                    continue
+                holds = True
+                ts = _row_ts(obj)
+                if ts is not None and ts > latest:
+                    latest = ts
     except OSError:
         pass
-    return False
+    if len(_COPY_FACTS) > 256:
+        _COPY_FACTS.clear()
+    _COPY_FACTS[key] = (holds, latest)
+    return (holds, latest)
+
+
+def _holds_conversation(path: str) -> bool:
+    """Does this Claude transcript carry at least one conversation row?"""
+    return _copy_facts(path)[0]
+
+
+_MERGED_SIG: dict = {}
+
+
+def _merged_transcript(session_id: str, copies: list) -> str:
+    """One file holding every conversation row of `copies` (paths, oldest
+    conversation first): the rows of each in turn, a `uuid` already written
+    skipped, and the rows without a `uuid` (bookkeeping) only from the last copy.
+    A session whose cwd moved has its pre-move turns in the original path and the
+    rest in the worktree's, and neither alone is the conversation. Written under
+    the runs root's sibling `transcripts/` dir, rebuilt only when a source's
+    (mtime, size) moved, with the newest source's mtime so the page's
+    change-watermark follows the sources. Falls back to the last copy when the
+    merge cannot be written."""
+    last = copies[-1]
+    try:
+        stats = [os.stat(p) for p in copies]
+    except OSError:
+        return last
+    sig = tuple((p, s.st_mtime_ns, s.st_size) for p, s in zip(copies, stats))
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(RUNS)), "transcripts")
+    out = os.path.join(out_dir, session_id + ".jsonl")
+    if _MERGED_SIG.get(out) == sig and os.path.isfile(out):
+        return out
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        seen = set()
+        tmp = out + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as dst:
+            for path in copies:
+                with open(path, "r", encoding="utf-8", errors="ignore") as src:
+                    for line in src:
+                        if not line.strip():
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except ValueError:
+                            continue
+                        uid = obj.get("uuid") if isinstance(obj, dict) else None
+                        if uid:
+                            if uid in seen:
+                                continue
+                            seen.add(uid)
+                        elif path != last:
+                            continue
+                        dst.write(line if line.endswith("\n") else line + "\n")
+        newest = max(s.st_mtime for s in stats)
+        os.utime(tmp, (newest, newest))
+        os.replace(tmp, out)
+    except OSError:
+        return last
+    _MERGED_SIG[out] = sig
+    return out
 
 
 def _session_transcript_path(workdir: str, session_id: str) -> str:
     """Where this session's transcript is: `<root>/<munge(workdir)>/<sid>.jsonl`
     under whichever backend's root holds it (`_transcript_roots`, Claude's
-    first), unless the CLI MOVED it. Claude Code's EnterWorktree tool relocates
-    the file into the worktree's own project dir (`<root>/.claude/worktrees/<name>`
-    munges to `<munge(root)>--claude-worktrees-<name>`), so a read from the
-    original folder alone finds no conversation. The CLI can still write its
-    exit bookkeeping rows to the ORIGINAL path afterwards, re-creating a file
-    there with no conversation in it (`_holds_conversation`).
-    The original wins when it holds a conversation; else the newest `<sid>.jsonl` under a
-    worktrees sibling of the workdir OR OF ANY ANCESTOR (the worktree lives
-    under the repo root, and the chat may be in a subfolder or on a file) —
-    Claude's root only, no other host ever
-    relocates (EnterWorktree is Claude Code's tool); else the original
-    Claude path (missing, or bookkeeping only), so a caller's not-found
-    handling is unchanged. `session_id` is `_bad_id`-checked by callers."""
+    first), unless the CLI MOVED it. The CLI persists a session under the slug
+    of the cwd it is in, so once the agent `cd`s into a worktree (or Claude
+    Code's EnterWorktree tool relocates the session) the rest of the
+    conversation lands in that worktree's project dir, while the original path
+    keeps the rows written before the move plus exit bookkeeping rows
+    (`cost-state`, `last-prompt`, ...) the CLI keeps appending to it.
+    A session id is a uuid, so a `<sid>.jsonl` under ANY project slug of
+    Claude's root is the same session. Finding them is a stat per project dir;
+    reading them is cached per (path, mtime, size). One copy: that file, no
+    read at all. Several: those holding conversation rows are ordered by their
+    newest conversation row's timestamp (never mtime, which exit bookkeeping
+    bumps), and more than one of them is merged (`_merged_transcript`). None
+    holding a conversation: the original path when it exists, so a caller's
+    not-found handling is unchanged. Claude's root only: no other host
+    relocates. `session_id` is `_bad_id`-checked by callers."""
     munged = _munge(workdir)
     mine = os.path.join(PROJECTS, munged, session_id + ".jsonl")
-    for _backend, root in _transcript_roots():
-        cand = os.path.join(root, munged, session_id + ".jsonl")
-        if not os.path.isfile(cand):
-            continue
-        if root != PROJECTS or _holds_conversation(cand):
-            return cand
-        # A Claude file with no conversation row is the CLI's exit
-        # bookkeeping (`cost-state`, `last-prompt`, `ai-title`, `mode`, ...),
-        # written under the session's ORIGINAL cwd after EnterWorktree moved
-        # the conversation away. It stays the answer only when no worktree
-        # copy turns up below.
-        mine = cand
-        break
-    prefixes = []
-    a = os.path.abspath(workdir)
-    while True:
-        prefixes.append(_munge(a) + "--claude-worktrees-")
-        parent = os.path.dirname(a)
-        if parent == a:
-            break
-        a = parent
-    prefix = tuple(prefixes)
-    best, best_mtime = "", -1.0
+    found = []
     try:
         with os.scandir(PROJECTS) as it:
             for ent in it:
-                if not ent.name.startswith(prefix):
-                    continue
                 cand = os.path.join(ent.path, session_id + ".jsonl")
-                try:
-                    mtime = os.stat(cand).st_mtime
-                except OSError:
-                    continue
-                if mtime > best_mtime and os.path.isfile(cand):
-                    best, best_mtime = cand, mtime
+                if os.path.isfile(cand):
+                    found.append(cand)
     except OSError:
         pass
-    return best or mine
+    if len(found) == 1:
+        return found[0]
+    if found:
+        facts = {p: _copy_facts(p) for p in found}
+        convo = [p for p in found if facts[p][0]]
+        if len(convo) == 1:
+            return convo[0]
+        if convo:
+            def age(p):
+                try:
+                    mt = os.stat(p).st_mtime
+                except OSError:
+                    mt = 0.0
+                return (facts[p][1], mt, p == mine)
+            convo.sort(key=age)
+            return _merged_transcript(session_id, convo)
+        if mine in found:
+            return mine
+        return found[0]
+    for _backend, root in _transcript_roots():
+        if root == PROJECTS:
+            continue
+        cand = os.path.join(root, munged, session_id + ".jsonl")
+        if os.path.isfile(cand):
+            return cand
+    return mine
 
 
 def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dict:
@@ -3406,6 +3486,31 @@ _LEADING_MACHINERY_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
 # the user's behalf and are never a turn, where a STRIP tag is a block this page
 # prepended to words the user really did type and must not take the turn with it.
 _LEADING_DROP_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_DROP))
+
+_SLASH_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
+_SLASH_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+
+
+def _slash_turn_text(text: str) -> str | None:
+    """What the reader typed, for the user row the CLI persists for a slash
+    command: a string `<command-message>..</command-message><command-name>/x
+    </command-name><command-args>..</command-args>` (the args tag is absent
+    for a bare command). `/x args`, or None when `text` is not that envelope
+    (the command name must open the record, past an optional
+    `<command-message>`)."""
+    if not isinstance(text, str):
+        return None
+    head = re.match(r"\s*(?:<command-message>.*?</command-message>\s*)?<command-name>",
+                    text, re.DOTALL)
+    if not head:
+        return None
+    name = _SLASH_NAME.search(text)
+    if not name or not name.group(1).strip():
+        return None
+    args = _SLASH_ARGS.search(text)
+    return " ".join(
+        p for p in (name.group(1).strip(), (args.group(1).strip() if args else "")) if p)
+
 
 # A synthetic `user` record the HARNESS writes when a background shell the turn
 # started finishes (or is stopped): it wakes the run, and everything the agent
@@ -6245,6 +6350,19 @@ def _turn_state_row(row: dict, state: dict) -> None:
     state["idle"] = t == "result"
 
 
+def _opens_a_turn(row: dict) -> bool:
+    """Whether `row` is evidence that a turn is under way, not just a row
+    written after one ended: the CLI's echo of a user line, an assistant or
+    stream row, or a `system/init`. Trailing `rate_limit_event` and hook rows
+    after a `result` are none of these. `_turn_state_fold` records the offset of
+    the first such row after the last `result` as `turn_at`."""
+    if row.get("parent_tool_use_id"):
+        return False
+    t = row.get("type")
+    return (t in ("assistant", "stream_event") or _starts_new_turn(row)
+            or (t == "system" and row.get("subtype") == "init"))
+
+
 def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple:
     """`_turn_state`, resumable: `cursor` (`{"offset", "idle", "tasks", "sub_jobs"}`, a dict
     the caller owns and this mutates) remembers how far into `out.jsonl` the
@@ -6263,16 +6381,19 @@ def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple
     cursor.setdefault("idle", False)
     cursor.setdefault("tasks", {})
     cursor.setdefault("sub_jobs", set())
+    cursor.setdefault("turn_at", None)
     try:
         with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
             if os.fstat(fh.fileno()).st_size < cursor["offset"]:
-                cursor.update(offset=0, idle=False, tasks={}, sub_jobs=set())
+                cursor.update(offset=0, idle=False, tasks={}, sub_jobs=set(),
+                              turn_at=None)
             fh.seek(cursor["offset"])
             trailing = b""
             for raw in fh:
                 if not raw.endswith(b"\n"):
                     trailing = raw
                     break
+                start = cursor["offset"]
                 cursor["offset"] += len(raw)
                 try:
                     row = json.loads(raw.decode("utf-8", errors="replace"))
@@ -6280,6 +6401,10 @@ def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple
                     continue
                 if isinstance(row, dict):
                     _turn_state_row(row, cursor)
+                    if row.get("type") == "result" and not row.get("parent_tool_use_id"):
+                        cursor["turn_at"] = None
+                    elif cursor["turn_at"] is None and _opens_a_turn(row):
+                        cursor["turn_at"] = start
     except FileNotFoundError:
         trailing = b""
     idle, tasks = cursor["idle"], cursor["tasks"]
@@ -6548,9 +6673,16 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
         # say a turn is actually open (_turn_state) before this counts as
         # "still streaming".
         if _alive(run_dir):
-            turn_open, _tasks_pending = _turn_state(run_dir)
+            fold: dict = {}
+            turn_open, _tasks_pending = _turn_state_fold(run_dir, fold, partial=True)
             if turn_open:
-                return {"run_id": name, "backend": _meta_backend(meta)}
+                # `turn_at` tells the page whether this turn is one it has
+                # already streamed: a run's id is reused by every turn its
+                # host runs, and only a row that OPENS a turn after the last
+                # `result` says a new one began (its byte offset, or null when
+                # the open state is only trailing bookkeeping rows).
+                return {"run_id": name, "backend": _meta_backend(meta),
+                        "turn_at": fold.get("turn_at")}
     return {"run_id": ""}
 
 
@@ -6923,6 +7055,12 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         _run_own_session(run_dir, meta) or str(meta.get("resumed_from") or ""),
         model, effort, "",
         permission_mode if permission_mode in PERMISSION_MODES else "")
+    # A RE-SEND OF A LINE THE HOST ALREADY HOLDS is a no-op: the page keeps a
+    # line until its `send` is acknowledged, so a 504 or a reload in that gap
+    # can send the same `client_uuid` twice.
+    if client_uuid and any(r.get("uuid") == client_uuid
+                           for r in _inbox_waiting(run_dir)):
+        return {"sent": True}
     # Marks this message as sent-but-not-yet-echoed, so `_poll` (see its
     # `pending_echo` handling) will not believe a stale trailing `result` in
     # `out.jsonl` means the turn is done: at this exact instant the host may
@@ -6938,14 +7076,11 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
     except OSError:
         pending_offset = 0
-    with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
-        f.write(str(pending_offset))
-    # A RE-SEND OF A LINE THE HOST ALREADY HOLDS is a no-op: the page keeps a
-    # line until its `send` is acknowledged, so a 504 or a reload in that gap
-    # can send the same `client_uuid` twice.
-    if client_uuid and any(r.get("uuid") == client_uuid
-                           for r in _inbox_waiting(run_dir)):
-        return {"sent": True}
+    # ONE OFFSET LINE PER OUTSTANDING SEND: the gate lifts only when every
+    # line has been echoed, so the echo of an earlier line never lifts it for a
+    # later one.
+    with open(os.path.join(run_dir, "pending_echo"), "a", encoding="utf-8") as f:
+        f.write(f"{pending_offset}\n")
     _write_inbox_entry(
         run_dir, _compose_turn(message, terminal_hint), client_uuid,
         typed=typed or message)
@@ -10370,6 +10505,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     wt_cwd = _run_workdir(run_dir, file)
     thinking_tokens = 0    # CLI's running estimate for the message in flight
     hooks_open = {}        # hook_id -> hook_name, started and not yet responded
+    compacting = False     # the CLI's `status: compacting` is the latest word
     # Seeded from what the last poll persisted (see `_write_bg_tasks`), not
     # {} — `background_tasks_changed` is only sent on CHANGE, and once the
     # cursor advances past the row that announced a still-running task, this
@@ -10456,6 +10592,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             continue
         if t in ("stream_event", "assistant"):
             after_tool = False
+        if compacting and (t in ("stream_event", "assistant", "user") or (
+                t == "system" and row.get("subtype") == "compact_boundary")):
+            # Compaction ends at `compact_boundary` or at conversation traffic
+            # (a stream event, an assistant or user row), which sets its own
+            # phase; a `status` row ends it in its branch below. Other system
+            # rows (`hook_started`, `thinking_tokens`, ...) arrive mid-summary
+            # and leave it running.
+            compacting = False
+            phase = "thinking"
         if t == "system":
             new_session = row.get("session_id", new_session)
             sub = row.get("subtype")
@@ -10472,6 +10617,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 if row.get("status") == "requesting":
                     phase = "requesting"
                     after_tool = False
+                # `{"status": "compacting"}` is the CLI summarising the
+                # conversation, a minute of nothing else on the stream. Any
+                # other status ends it (`null` follows the summary).
+                elif row.get("status") == "compacting":
+                    phase = "compacting"
+                    compacting = True
+                elif compacting:
+                    compacting = False
+                    phase = "thinking"
             elif sub == "thinking_tokens":
                 est = row.get("estimated_tokens")
                 if isinstance(est, (int, float)):
@@ -10704,9 +10858,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     if os.path.exists(pending_echo_path):
         try:
             with open(pending_echo_path, encoding="utf-8") as fh:
-                pending_offset = int(fh.read().strip())
+                offsets = [int(t) for t in fh.read().split()]
         except (OSError, ValueError):
-            pending_offset = 0
+            offsets = []
+        pending_offset = min(offsets) if offsets else 0
+        sends_outstanding = max(1, len(offsets))
         saw_echo_since_send = False
         # Where the echo's line ENDS in `out.jsonl` — the same absolute
         # offsets `ends` records for the window's rows, so the two compare.
@@ -10718,6 +10874,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         except OSError:
             tail = b""
         line_off = pending_offset
+        echoes = 0
         for raw_line in tail.split(b"\n"):
             line_end = line_off + len(raw_line) + 1
             if raw_line:
@@ -10726,8 +10883,22 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 except ValueError:
                     row = None
                 if row is not None and _starts_new_turn(row, slash=False):
-                    saw_echo_since_send = True
+                    echoes += 1
                     echo_end = line_end
+                    # Every outstanding line echoed. A turn that has produced
+                    # its `result` after the first echo has answered the rest
+                    # too (the CLI can merge queued lines into one turn).
+                    if echoes >= sends_outstanding:
+                        saw_echo_since_send = True
+                        break
+                elif (echoes and isinstance(row, dict)
+                      and row.get("type") == "result"
+                      and not any(not r.get("drained")
+                                  for r in _inbox_waiting(run_dir))):
+                    # ...but only once the host has drained every line: one
+                    # still in the inbox has not reached the CLI, so no turn
+                    # has answered it and the gate stays.
+                    saw_echo_since_send = True
                     break
             line_off = line_end
         # THE ECHO CAN LAND BETWEEN THE TWO READS: `rows` above came off the
@@ -10978,6 +11149,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     turn_started_at = _turn_opening_time(
         run_dir, _read_poll_cursor(run_dir, out_size), echo_pending)
     return {"text": "" if echo_pending else text, "done": done,
+            "out_size": out_size,
             "turn_started_at": turn_started_at,
             "session_id": new_session, "error": error, "backend": backend,
             "tokens": tokens_done + tokens_current, "phase": phase,
@@ -12427,8 +12599,11 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                 if ts is not None:
                     ctrn["ts"] = ts
                 turns.append(ctrn)
-            elif text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
+            elif (slash_text := _slash_turn_text(text)) is not None or (
+                    text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip())):
                 close_stretch()  # before the user turn, or the segments land on it
+                if slash_text is not None:
+                    text = slash_text
                 turn = {"role": "user", "text": text,
                         "uuid": str(row.get("uuid") or "")}
                 # WHEN they said it, epoch seconds, user turns only. The chat

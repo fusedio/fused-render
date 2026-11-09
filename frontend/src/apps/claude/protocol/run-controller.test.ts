@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 // The run loop against a FAKE agent.py. Every test here is one of the rules the
 // template earned the hard way: whole-turn replay, D687 slicing after a
 // follow-up, ownership by the newest loop, card placement, the two poll
@@ -9,6 +8,8 @@ import { describe, expect, test } from "bun:test";
 
 const {
   PERM_CARD_MAX,
+  POLL_MS,
+  pollDelay,
   POLL_NETWORK_RETRIES,
   POLL_TIMEOUT_RETRIES,
   SEND_TIMEOUT_PROBES,
@@ -5483,10 +5484,43 @@ describe("the run's tasks", () => {
     controller.newChat();
   });
 
-  test("Bugbot 4307278686: only the OWNING loop's done starts (or retires) a host watch", () => {
-    const src = readFileSync(new URL("./run-controller.ts", import.meta.url), "utf8");
-    expect(src).toContain("if (loopSeq === seat) watchHostTasks(runId, seat);");
-    expect(src).not.toMatch(/if \(poll\.tasks_pending\) watchHostTasks\(runId, seat\);/);
+  test("a watch cannot be stranded: a loop that retires it without ever polling tasks still sees the host's death end the rows", async () => {
+    // The old host r1 holds a running row; a send opens r2, whose first poll
+    // is an unknown-run refusal (no tasks block at all), so the loop-seat
+    // change retired r1's watch and nothing started another.
+    let r1Alive = true;
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: () => unknownRunPoll(),
+      tasks: () =>
+        r1Alive
+          ? { tasks: [T("h", "running")], tasks_pending: true, host_alive: true }
+          : { tasks: [{ ...T("h"), status: "killed" as const }], tasks_pending: false, host_alive: false },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    await settle();
+    expect(controller.getState().tasksRunId).toBe("r1");
+    expect(controller.getState().tasks[0]!.status).toBe("running");
+    r1Alive = false;
+    await settle();
+    expect(agent.of("tasks").every((c) => c.fields.run_id === "r1")).toBe(true);
+    expect(controller.getState().tasks.every((t) => t.status !== "running")).toBe(true);
+  });
+
+  test("a host whose run dir is gone ends the rows instead of leaving them live", async () => {
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      tasks: () => ({ error: "unknown run_id" }),
+    });
+    await controller.openSession("s9");
+    await settle();
+    expect(controller.getState().tasks.every((t) => t.status !== "running")).toBe(true);
   });
 
   test("a host that dies under the watch downgrades the live rows, the one case that still does", async () => {
@@ -5631,5 +5665,193 @@ describe("the page-minted client id rides the wire and comes back", () => {
     await controller.sendMessage("go", { clientId: "id-x" });
     expect(returned.map((r) => r.clientId)).toEqual(["id-x"]);
     controller.dispose();
+  });
+});
+
+describe("one host, many turns: a turn the page has not streamed is attached again", () => {
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const finishedTurn = (n: number) =>
+    poll({ done: true, session_id: "s1", out_size: 100, segments: [text("first")], text: "first" });
+
+  test("a woken turn on a run this page already streamed streams", async () => {
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => (n === 0 ? finishedTurn(n) : poll({ done: true, session_id: "s1", out_size: 400, segments: [text("woken")], text: "woken" })),
+      live_run: () => ({ run_id: "r1", turn_at: 100 }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await made.controller.sendMessage("go");
+    expect(made.agent.of("poll").length).toBe(1);
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(made.agent.of("poll").length).toBeGreaterThan(1);
+    expect(made.controller.getState().working).toBeNull();
+    made.controller.dispose();
+  });
+
+  test("the turn just streamed is not attached again, trailing rows or not (turn_at null)", async () => {
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => finishedTurn(n),
+      live_run: () => ({ run_id: "r1", turn_at: null }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await made.controller.sendMessage("go");
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(made.agent.of("poll").length).toBe(1);
+    made.controller.dispose();
+  });
+
+  test("a send-now's queued turn is looked for as soon as the abort ends the loop", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      send_now: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("urgent", { clientId: "id-urgent" });
+          await settle();
+          await controller.sendQueuedNow();
+          return finishedTurn(n);
+        }
+        return poll({ done: true, session_id: "s1", out_size: 500, segments: [text("urgent reply")], text: "urgent reply" });
+      },
+      live_run: () => ({ run_id: "r1", turn_at: 100 }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    await settle();
+    expect(made.agent.of("send_now").length).toBe(1);
+    expect(made.agent.of("live_run").length).toBeGreaterThan(0);
+    expect(made.agent.of("poll").length).toBeGreaterThan(1);
+    controller.dispose();
+  });
+});
+
+describe("queued lines follow the server's inbox", () => {
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const held = (...uuids: string[]) =>
+    uuids.map((uuid, i) => ({ id: `i${i}`, text: "again", uuid }));
+
+  test("two identical lines stay two entries, each keyed by its own id", async () => {
+    let controller!: ChatController;
+    const seen: string[][] = [];
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("again", { clientId: "u1" });
+          await controller.sendFollowUp("again", { clientId: "u2" });
+          return poll({ inbox: held("u1", "u2") });
+        }
+        seen.push(controller.getState().queued);
+        if (n === 1) return poll({ inbox: held("u2") });
+        seen.push(controller.getState().queued);
+        return poll({ done: true, inbox: [] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    // After the first poll both are held; once the server drops u1 only u2 is.
+    expect(seen[0]).toEqual(["again", "again"]);
+    expect(seen[1]).toEqual(["again"]);
+  });
+
+  test("a loop's end does not wipe lines the server still holds", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) await controller.sendFollowUp("later", { clientId: "u1" });
+        return poll({ done: n > 0, inbox: [{ id: "i0", text: "later", uuid: "u1" }] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(controller.getState().queued).toEqual(["later"]);
+    expect(controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+  });
+
+  test("after the loop ends the inbox is re-read until the host settles it", async () => {
+    let controller!: ChatController;
+    let host: "holds" | "gone" = "holds";
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) await controller.sendFollowUp("later", { clientId: "u1" });
+        return poll({
+          done: n > 0,
+          session_id: "s1",
+          inbox: [{ id: "i0", text: "later", uuid: "u1" }],
+        });
+      },
+      history: () =>
+        host === "holds"
+          ? { turns: [], transcript: null, live_run: "r1", inbox: [{ id: "i0", text: "later", uuid: "u1" }] }
+          : { turns: [], transcript: null, live_run: "" },
+      live_run: () => ({ run_id: "" }),
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    await settle();
+    expect(controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+    // The host died holding the line: the next read says nothing is live.
+    host = "gone";
+    for (let i = 0; i < 200; i++) await Promise.resolve();
+    expect(controller.getState().inbox).toEqual([]);
+    expect(controller.getState().queued).toEqual([]);
+    controller.dispose();
+  });
+
+  test("a history refresh republishes the live run's inbox", async () => {
+    const made = makeController({
+      history: () => ({
+        turns: [],
+        transcript: null,
+        live_run: "r1",
+        inbox: [{ id: "i0", text: "later", uuid: "u1" }],
+      }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await made.controller.refreshHistory("s1");
+    await settle();
+    expect(made.controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+  });
+
+  test("a refused send-now says so", async () => {
+    let controller!: ChatController;
+    let said = false;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      send_now: () => ({ error: "no live session" }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("urgent", { clientId: "u1" });
+          expect(await controller.sendQueuedNow()).toBe(false);
+          said = controller.getState().turns.some((t) => JSON.stringify(t).includes("Couldn't send that now"));
+        }
+        return poll({ done: n > 0, inbox: [{ id: "i0", text: "urgent", uuid: "u1" }] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(said).toBe(true);
+  });
+});
+
+describe("pollDelay", () => {
+  test("a hidden document polls slower, never stops", () => {
+    expect(pollDelay(false)).toBe(POLL_MS);
+    expect(pollDelay(true)).toBeGreaterThan(POLL_MS);
+    expect(Number.isFinite(pollDelay(true))).toBe(true);
   });
 });

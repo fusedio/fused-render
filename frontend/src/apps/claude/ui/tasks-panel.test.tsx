@@ -580,8 +580,8 @@ describe("working line verbs", () => {
   const agent = rec({ id: "a", kind: "agent" });
   const shell = rec({ id: "s", kind: "shell" });
   test("tasks name the verb in the model's own turn", () => {
-    expect(activityVerb({ phase: "thinking", activity: null, tasks: [shell, agent] }, "Mulling", 0)).toBe("Running a subagent");
-    expect(activityVerb({ phase: "thinking", activity: null, tasks: [shell] }, "Mulling", 0)).toBe("Running a background command");
+    expect(activityVerb({ phase: "", activity: null, tasks: [shell, agent] }, "Mulling", 0)).toBe("Running a subagent");
+    expect(activityVerb({ phase: "", activity: null, tasks: [shell] }, "Mulling", 0)).toBe("Running a background command");
     expect(activityVerb({ phase: "thinking", activity: null, tasks: [] }, "Mulling", 0)).toBe("Mulling");
   });
   test("an Agent tool call counts the running subagents", () => {
@@ -598,7 +598,7 @@ describe("working line verbs", () => {
     const none = { ...base, tool: { id: "x", name: "Agent", detail: "", subagent_type: "Explore" } };
     expect(activityVerb({ phase: "tooling", activity: none, tasks: [] }, "x", 0)).toBe("Running Explore subagent");
     const live = rec({ id: "a", kind: "agent", subagent_type: "Plan", model: "opus" });
-    expect(activityVerb({ phase: "thinking", activity: null, tasks: [live] }, "x", 0)).toBe("Running Plan subagent (Opus)");
+    expect(activityVerb({ phase: "", activity: null, tasks: [live] }, "x", 0)).toBe("Running Plan subagent (Opus)");
   });
   test("an Agent call still streaming its brief says so, then names the type", () => {
     const base = { tools_open: 1, thinking_tokens: 0, hook: "", tasks: [], agent_rows: 0 };
@@ -618,9 +618,10 @@ describe("working line verbs", () => {
       "Running 2 subagents: 1 Explore, 1 other",
     );
   });
-  test("the quiet-wait line keeps its wording", () => {
+  test("the quiet-wait line names the background wait only when the model is idle", () => {
     const activity = { tool: null, tools_open: 0, tool_input_bytes: 0, thinking_tokens: 0, hook: "", tasks: [{ id: "s", description: "" }], agent_rows: 0 };
-    expect(activityVerb({ phase: "thinking", activity, tasks: [shell] }, "x", 60)).toBe("Waiting for a background command to finish");
+    expect(activityVerb({ phase: "", activity, tasks: [shell] }, "x", 60)).toBe("Waiting for a background command to finish");
+    expect(activityVerb({ phase: "thinking", activity, tasks: [shell] }, "x", 60)).toBe("Claude is taking longer than usual");
   });
 });
 
@@ -695,7 +696,23 @@ describe("review #6: the model's own streaming outranks the task verb", () => {
   test("composing and requesting win; the task verb replaces only the mood", () => {
     expect(activityVerb({ phase: "composing", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Claude is replying");
     expect(activityVerb({ phase: "requesting", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Sending to Claude");
-    expect(activityVerb({ phase: "thinking", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Running a subagent");
+    expect(activityVerb({ phase: "thinking", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Mulling");
+    expect(activityVerb({ phase: "compacting", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Compacting conversation");
+    expect(activityVerb({ phase: "retrying", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Mulling");
+    expect(activityVerb({ phase: "awaiting", activity: null, tasks: [agent] }, "Mulling", 0)).toBe("Running a subagent");
+  });
+  test("a monitor never outranks the model thinking", () => {
+    const mon = rec({ id: "m", kind: "monitor" });
+    expect(activityVerb({ phase: "thinking", activity: null, tasks: [mon] }, "Mulling", 90)).toBe("Claude is taking longer than usual");
+    expect(activityVerb({ phase: "thinking", activity: null, tasks: [mon] }, "Mulling", 5)).toBe("Mulling");
+  });
+  test("compaction is not a slow reply, however long it takes", () => {
+    expect(activityVerb({ phase: "compacting", activity: null, tasks: [] }, "x", 90)).toBe("Compacting conversation");
+  });
+  test("only a SessionStart hook says project setup", () => {
+    const act = (hook: string) => ({ tool: null, tools_open: 0, tool_input_bytes: 0, thinking_tokens: 0, hook, tasks: [], agent_rows: 0 });
+    expect(activityVerb({ phase: "thinking", activity: act("SessionStart:startup"), tasks: [] }, "Mulling", 0)).toBe("Running project setup");
+    expect(activityVerb({ phase: "thinking", activity: act("Stop:x"), tasks: [] }, "Mulling", 0)).toBe("Mulling");
   });
 });
 

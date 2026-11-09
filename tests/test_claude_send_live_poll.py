@@ -386,3 +386,47 @@ def test_a_subagent_jobs_notification_is_bookkeeping_even_when_its_start_is_befo
 
     _write(run_dir, rows + [note])
     assert agent._poll("run")["done"] is True
+
+
+def test_the_echo_of_one_line_does_not_lift_the_gate_for_a_later_one(agent, run_dir):
+    """Two follow-ups sent before either is echoed leave two offsets in the
+    marker; the first echo alone keeps the gate up, the second lifts it."""
+    _write(run_dir, [_user_row("turn one"), _text_row("Turn one answer."),
+                     _result_row("Turn one answer.")])
+    _setup(agent, run_dir)
+    assert agent._send("run", "line A", "") == {"sent": True}
+    assert agent._send("run", "line B", "") == {"sent": True}
+    assert len((run_dir / "pending_echo").read_text().split()) == 2
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_user_row("line A")) + "\n")
+    agent._poll("run")
+    assert (run_dir / "pending_echo").exists(), "line B is still unechoed"
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_user_row("line B")) + "\n")
+    agent._poll("run")
+    assert not (run_dir / "pending_echo").exists()
+
+
+def test_a_resend_of_the_same_client_uuid_adds_no_outstanding_send(agent, run_dir):
+    _write(run_dir, [_user_row("turn one"), _result_row("Turn one answer.")])
+    _setup(agent, run_dir)
+    uid = "11111111-2222-4333-8444-555555555555"
+    assert agent._send("run", "line A", "", client_uuid=uid) == {"sent": True}
+    assert agent._send("run", "line A", "", client_uuid=uid) == {"sent": True}
+    assert len((run_dir / "pending_echo").read_text().split()) == 1
+
+
+def test_a_result_after_the_first_echo_keeps_the_gate_while_a_line_is_undrained(
+        agent, run_dir):
+    """A and B sent mid-turn; the CLI echoes A and ends that turn before the
+    host drained B. The turn is not done: B is still in the inbox."""
+    _write(run_dir, [_user_row("turn one"), _result_row("Turn one answer.")])
+    _setup(agent, run_dir)
+    assert agent._send("run", "line A", "") == {"sent": True}
+    assert agent._send("run", "line B", "") == {"sent": True}
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        for r in (_user_row("line A"), _text_row("A."), _result_row("A.")):
+            fh.write(json.dumps(r) + "\n")
+    polled = agent._poll("run")
+    assert polled["done"] is False
+    assert (run_dir / "pending_echo").exists()

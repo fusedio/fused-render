@@ -179,6 +179,7 @@ import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
+import { QueuedStrip } from "./ui/QueuedStrip";
 import { agentModelLabel, statusLabel, summarizeTasks, taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
@@ -207,7 +208,7 @@ import {
 } from "./sched/waiting";
 import type { WaitingSeed } from "./sched/waiting";
 import { leaderSession, useQueuedLeader } from "./sched/queue-leader";
-import { inboxBubbles } from "./protocol/inbox";
+import { queuedLines } from "./protocol/queued-lines";
 import { createLiveWatch } from "./live/watch";
 import {
   type OutboxEntry,
@@ -1234,6 +1235,7 @@ function ChatBody(props: ChatBodyProps) {
     (e: { sid: string }) => e.sid || journalRunKey(),
     [journalRunKey],
   );
+  const journalWarned = useRef(false);
   const journalFlush = useCallback(
     (owner: string) => {
       if (!owner) return;
@@ -1241,7 +1243,14 @@ function ChatBody(props: ChatBodyProps) {
       for (const [id, e] of journal.current) {
         if (journalOwner(e) === owner) lines.push({ id, text: e.text, ...(e.hold ? { hold: true as const } : {}) });
       }
-      savePending(owner, lines);
+      if (savePending(owner, lines)) journalWarned.current = false;
+      else if (!journalWarned.current) {
+        journalWarned.current = true;
+        controllerRef.current?.addNote(
+          "Couldn't keep your queued message in this browser. If you reload before it is sent, it is lost.",
+          "◆",
+        );
+      }
     },
     [journalOwner],
   );
@@ -4479,19 +4488,6 @@ function ChatBody(props: ChatBodyProps) {
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
-  // THE SEND-NOW HINT lives on the NEWEST waiting bubble (one, not one per
-  // bubble): a parked outbox line (`pending === "queued"`) or a follow-up the
-  // live run holds (the controller's `queuedKeys`). Ctrl+X on an empty box
-  // sends them now.
-  let newestQueuedKey: string | null = null;
-  for (let i = state.turns.length - 1; i >= 0; i--) {
-    const t = state.turns[i];
-    if (t.role === "user" && (t.pending === "queued" || state.queuedKeys.includes(t.key))) {
-      newestQueuedKey = t.key;
-      break;
-    }
-  }
-  const hasQueued = state.queuedKeys.length > 0 || newestQueuedKey !== null;
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
   const shownHint = shownWorktreeHint(state.worktreeHint, state.tasks, chatWorkdir(file, pane.noun) ?? undefined);
   // A breakout starts in the worktree the header chip names: only an absolute
@@ -4796,30 +4792,26 @@ function ChatBody(props: ChatBodyProps) {
    * already accepted.
    */
   /**
-   * FOLLOW-UPS THE LIVE RUN IS STILL HOLDING — the bubbles a reload used to lose.
-   *
-   * A line typed into a running chat is absorbed by the live host: it sits in the
-   * CLI's own queue until the current turn ends. For that window the only copy on
-   * screen was this page's optimistic bubble, which is client memory — so a
-   * reload, or the standing watch's four-a-minute `refreshHistory`, replaced the
-   * transcript with a JSONL that does not have the message either (nothing has
-   * consumed it) and the reader's own words simply vanished (Akshil,
-   * 2026-09-12). The RUN knows, and now says so (`PollResponse.inbox`).
-   *
-   * DEDUPED HERE rather than in the controller, because "does this still need a
-   * bubble" is a question about what is on screen: the optimistic list and the
-   * turns both answer it, and both move without the inbox moving. One entry
-   * leaves for one of three reasons, all of them somebody else drawing the same
-   * message — see `protocol/inbox`.
+   * THE QUEUED LINES, drawn in the strip above the composer and never in the
+   * transcript: lines typed while a turn runs, until the CLI echoes them. The
+   * run's own inbox (`state.inbox`, reported by every poll and history read) is
+   * the source for a line this page did not mint, so a reload or another tab
+   * shows the same queue; `protocol/queued-lines` merges it with this page's
+   * outbox and in-flight lines, one row per line id. The bubbles it lifts out
+   * of `state.turns` return to the transcript the moment nothing names them as
+   * queued.
    */
-  const inboxRows = useMemo(
+  const queuedView = useMemo(
+    () => queuedLines({ turns: state.turns, queuedKeys: state.queuedKeys, inbox: state.inbox }),
+    [state.turns, state.queuedKeys, state.inbox],
+  );
+  const hasQueued = queuedView.lines.some((l) => l.pending !== "held");
+  const transcriptState = useMemo(
     () =>
-      inboxBubbles(
-        state.inbox,
-        state.queued,
-        state.turns.filter((t) => t.role === "user").map((t) => t.text),
-      ),
-    [state.inbox, state.queued, state.turns],
+      queuedView.hiddenKeys.size
+        ? { ...state, turns: state.turns.filter((t) => !queuedView.hiddenKeys.has(t.key)) }
+        : state,
+    [state, queuedView],
   );
   /**
    * THE COMPOSER'S ↑ HISTORY: this session's own prompts, oldest first, as
@@ -6104,7 +6096,7 @@ function ChatBody(props: ChatBodyProps) {
               onOpenCardVisible={setOpenCardVisible}
               jumpRef={jumpToCard}
               cwd={chatWorkdir(file, pane.noun)}
-              state={state}
+              state={transcriptState}
               comebackPending={sched.blocked}
               actions={actions}
               liveMode={state.permissionMode}
@@ -6114,8 +6106,6 @@ function ChatBody(props: ChatBodyProps) {
               onAnchorSpent={onAnchorSpent}
               {...(debugSent ? { onShowSent: setSent } : {})}
               onPullPending={onPullPending}
-              sendNowKey={running ? newestQueuedKey : null}
-              onSendNow={onSendQueuedNow}
               {...(chatBackend === "claude" && !running && !props.breakout ? { onFork } : {})}
               {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}
               {...(breakoutGate ? { onBreakoutContext: onContextTurn } : {})}
@@ -6137,28 +6127,6 @@ function ChatBody(props: ChatBodyProps) {
               }
               trailing={
                 <>
-                {/* FOLLOW-UPS THE LIVE RUN IS HOLDING, in the transcript's own user
-                    bubble and in its own column. Ordinary bubbles, with no line
-                    under them and no chrome of any kind: the message is not queued,
-                    it is not behind anything, and the host will drain it in seconds
-                    — a caption saying so would be this feature narrating the app's
-                    normal behaviour back at the reader (design.md, UI).
-
-                    THEY ARE DRAWN FROM THE RUN (`state.inbox`), which is what makes
-                    a reload paint the same picture: the optimistic bubble above them
-                    is this document's memory and does not survive one, and the
-                    transcript cannot help because nothing has consumed the message
-                    yet. Deduped against both (`inboxRows`), so no message is ever
-                    two bubbles. DRAWN WHATEVER THE QUEUE FLAG SAYS: the server
-                    reports the inbox either way, and with the flag off these rows
-                    also feed the composer's "queued" line (`card.queued`). */}
-                {inboxRows.map((row) => (
-                  <div className="c-inbox" key={row.id}>
-                    <div className="turn user c-inbox-turn">
-                      <div className="bubble">{row.text}</div>
-                    </div>
-                  </div>
-                ))}
                 {/* THE MESSAGES THIS CHAT HAS NOT SENT YET, at their place in the
                     conversation. They are the LAST rows of the transcript by
                     construction — the scheduler sends in `due` order, which for a
@@ -6290,6 +6258,13 @@ function ChatBody(props: ChatBodyProps) {
                 (between the box and the footnote, T:4203) when there is one,
                 and stands alone in the compact tile that has none. */}
             {/* The artifacts strip is Claude's (§7 `artifacts`). */}
+            <QueuedStrip
+              lines={queuedView.lines}
+              running={running}
+              onSendNow={onSendQueuedNow}
+              onPull={onPullPending}
+              compact={compact}
+            />
             {!compact ? (
               <ComposerGate
                 kind={waitKind}

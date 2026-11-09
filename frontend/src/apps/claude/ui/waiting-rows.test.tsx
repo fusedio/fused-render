@@ -37,7 +37,6 @@ const PERM = readFileSync(join(HERE, "PermCard.tsx"), "utf8");
 const ASK_CARD = readFileSync(join(HERE, "QuestionCard.tsx"), "utf8");
 const PLAN_CARD = readFileSync(join(HERE, "PlanCard.tsx"), "utf8");
 const SCHED_CSS = readFileSync(join(HERE, "../styles/sched.css"), "utf8");
-const TRANSCRIPT = readFileSync(join(HERE, "Transcript.tsx"), "utf8");
 
 /** Everything the render put on screen, as one string. */
 function textOf(node: ReactTestRenderer): string {
@@ -946,59 +945,37 @@ describe("a follow-up the live run is still holding", () => {
     // JSONL row. So a reload, or the standing watch's four-a-minute
     // `refreshHistory`, wiped the reader's own words (Akshil, 2026-09-12).
     expect(CONTROLLER).toContain("const publishInbox = (rows: InboxMessage[]) => {");
-    expect(CONTROLLER).toContain("publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);");
+    expect(CONTROLLER).toContain("if (Array.isArray(poll.inbox)) {");
+    expect(CONTROLLER).toContain("landInbox(poll.inbox);");
     // …AND FROM `history`, WHICH IS THE READ A RELOADING CHAT MAKES FIRST. The
     // poll's copy only keeps these up while a page stays open; a page that comes
     // BACK has no run to poll yet, and that window is exactly when the reader is
     // looking for the follow-up they typed. Asked beside `live_run`, which is the
     // field that says whether anything is running at all.
     expect(CONTROLLER).toContain(
-      "if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);",
+      "if (live) landInbox(Array.isArray(res.inbox) ? res.inbox : []);",
     );
     const land = CONTROLLER.slice(CONTROLLER.indexOf("function landHistory("));
-    expect(land.indexOf("publishInbox(")).toBeLessThan(land.indexOf("turns: historyToTurns(res),"));
-    // …and nothing is held once the run is over, the same rule `clearQueued`
-    // states for the optimistic half.
+    expect(land.indexOf("landInbox(")).toBeLessThan(land.indexOf("turns: historyToTurns(res),"));
+    // …and a refresh republishes it too, so a `turns` replace never drops it.
+    const refresh = CONTROLLER.slice(CONTROLLER.indexOf("async function refreshHistory("));
+    expect(refresh.slice(0, refresh.indexOf("setExternalWorking"))).toContain("landInbox(");
+    // …and the conversation being replaced takes its held lines with it.
     expect(CONTROLLER).toContain("const clearInbox = () => publishInbox([]);");
     expect(CONTROLLER).toContain("clearInbox();");
-    // DEDUPED AT RENDER, because "does this still need a bubble" is a question
-    // about what is on screen — and both answers move without the inbox moving.
-    expect(CHAT).toContain("const inboxRows = useMemo(");
-    expect(CHAT).toContain("inboxBubbles(");
-    expect(CHAT).toContain("state.inbox,");
-    expect(CHAT).toContain("state.queued,");
+    // THE STRIP IS DERIVED AT RENDER from the turns, the controller's queued
+    // keys and the run's inbox.
+    expect(CHAT).toContain("const queuedView = useMemo(");
+    expect(CHAT).toContain("queuedLines({ turns: state.turns, queuedKeys: state.queuedKeys, inbox: state.inbox })");
   });
 
-  it("is an ORDINARY bubble with no chrome of any kind", () => {
-    // It is not queued, it is not behind anything, and the host drains it in
-    // seconds: a line saying so would be this feature narrating the app's normal
-    // behaviour back at the reader (design.md, UI). So no `.c-waiting-line`, no
-    // dashed edge, no delete — the transcript's own user turn, full strength.
-    // Drawn WHATEVER THE FLAG SAYS: a mid-turn reload must redraw the
-    // follow-ups the CLI still holds, and flag off the composer's "queued"
-    // line counts them too (next test).
-    const at = CHAT.search(/\{inboxRows\.map\(\(row\) => \(/);
-    expect(CHAT).not.toMatch(/queueOn &&\s+inboxRows\.map/);
-    expect(at).toBeGreaterThan(-1);
-    // INSIDE THE LOG (Akshil, 2026-10-04): the rows ride Transcript's
-    // `trailing` slot, after the last turn and the recap, so they scroll with
-    // the conversation. Outside the scroller they sat under it, never moved,
-    // and read as a ghost of a message the reply above had already answered.
-    const trailing = CHAT.indexOf("trailing={");
-    expect(trailing).toBeGreaterThan(-1);
-    expect(trailing).toBeLessThan(at);
-    expect(CHAT.indexOf("waiting.map((row) => (")).toBeGreaterThan(trailing);
-    expect(TRANSCRIPT).toContain("{recap ?? null}\n            {trailing ?? null}");
-    const block = CHAT.slice(at, CHAT.indexOf("))}", at));
-    expect(block).toContain('<div className="c-inbox" key={row.id}>');
-    expect(block).toContain('<div className="bubble">{row.text}</div>');
-    expect(block).not.toContain("c-waiting-line");
-    expect(block).not.toContain("delete");
-    const css = SCHED_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
-    const inbox = css.slice(css.indexOf(".c-inbox {"), css.indexOf("}", css.indexOf(".c-inbox {")));
-    // The log's own column, so the bubble lands where the turns above it land.
-    expect(inbox).toContain("max-width: 720px");
-    expect(inbox).toContain("padding: 0 20px 6px");
-    expect(inbox).not.toContain("dashed");
+  it("is drawn in the strip above the composer, never in the transcript's trailing slot", () => {
+    expect(CHAT).not.toContain("inboxRows");
+    expect(CHAT).not.toContain("c-inbox");
+    const strip = CHAT.indexOf("<QueuedStrip");
+    expect(strip).toBeGreaterThan(-1);
+    expect(strip).toBeGreaterThan(CHAT.indexOf("trailing={"));
+    expect(strip).toBeLessThan(CHAT.indexOf("<ComposerGate"));
+    expect(CHAT).toContain("state={transcriptState}");
   });
 });

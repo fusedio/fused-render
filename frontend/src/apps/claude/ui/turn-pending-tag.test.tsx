@@ -1,5 +1,5 @@
-// The tag on a queued / not-sent user bubble. A queued bubble says nothing in
-// words except the ONE hint on the newest, like the CLI.
+// A queued line is not a transcript bubble (it lives in ui/QueuedStrip); only a
+// not-sent line wears a tag on its bubble.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { describe, expect, test } from "bun:test";
@@ -10,36 +10,18 @@ const { Turn } = await import("./Turn");
 
 import type { UserTurn } from "../protocol/controller-api";
 
-const html = (turn: UserTurn, sendNowHint?: boolean) =>
-  renderToStaticMarkup(
-    createElement(Turn, { turn, onPullPending: () => {}, ...(sendNowHint ? { sendNowHint } : {}) }),
-  );
-const queued: UserTurn = { role: "user", key: "k1", text: "hello", pending: "queued" };
+const html = (turn: UserTurn) => renderToStaticMarkup(createElement(Turn, { turn, onPullPending: () => {} }));
+const base: UserTurn = { role: "user", key: "k1", text: "hello" };
 
 describe("Turn pending tag", () => {
-  test("the newest queued bubble reads (Ctrl+X to send now), never the word queued", () => {
-    const out = html(queued, true);
-    expect(out).toContain("turn-pending");
-    expect(out).toContain("(Ctrl+X to send now)");
-    expect(out).not.toContain(">queued<");
-  });
-  test("other queued bubbles show no text tag but stay dimmed", () => {
-    const out = html(queued);
-    expect(out).not.toContain("turn-pending");
+  test("a not-sent bubble says so and is a door back into the box", () => {
+    const out = html({ ...base, pending: "notSent" });
+    expect(out).toContain("not sent");
     expect(out).toContain("is-pending");
   });
-  test("a live follow-up (no pending) gets the tag only when it is the hinted one, no dimming, click sends now", () => {
-    const plain: UserTurn = { role: "user", key: "k2", text: "go on" };
-    expect(html(plain)).not.toContain("turn-pending");
-    let sent = 0;
-    const el = createElement(Turn, { turn: plain, sendNowHint: true, onSendNow: () => (sent += 1) });
-    const out = renderToStaticMarkup(el);
-    expect(out).toContain("(Ctrl+X to send now)");
-    expect(out).toContain("turn-pending");
+  test("a plain bubble carries no tag", () => {
+    const out = html(base);
+    expect(out).not.toContain("turn-pending");
     expect(out).not.toContain("is-pending");
-    expect(out).not.toContain(">queued<");
-  });
-  test("not sent is unchanged", () => {
-    expect(html({ ...queued, pending: "notSent" })).toContain("not sent");
   });
 });
