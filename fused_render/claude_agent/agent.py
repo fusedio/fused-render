@@ -90,6 +90,7 @@ import io
 import hashlib
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
@@ -9767,6 +9768,275 @@ def _task_output(run_id: str, task_id: str) -> dict:
     return {"output": output, "status": status, "truncated": truncated}
 
 
+# ------------------------------------------------------------- context usage
+
+#: `/context`'s row kinds (CLI 2.1.319 `kind`); anything else is read as absent.
+_CONTEXT_KINDS = ("used", "free", "buffer", "deferred")
+#: The rows of a drill-down list the popover is handed, at most.
+_CONTEXT_DETAIL_CAP = 8
+
+
+def _ctx_tokens(value) -> int:
+    ok = isinstance(value, int) and not isinstance(value, bool) and value > 0
+    return value if ok else 0
+
+
+def _ctx_kind(row: dict) -> str:
+    """A category's `kind`, or the one an older CLI without it implies."""
+    kind = row.get("kind")
+    if kind in _CONTEXT_KINDS:
+        return kind
+    if row.get("isDeferred"):
+        return "deferred"
+    if row.get("id") == "free_space":
+        return "free"
+    if row.get("id") in ("compact_buffer", "autocompact_buffer"):
+        return "buffer"
+    return "used"
+
+
+def _ctx_detail(rows: list) -> dict | None:
+    """`(name, tokens[, count])` rows as the top few by tokens plus a tally of
+    the rest, or None when there is nothing to list."""
+    rows = sorted((r for r in rows if r[1] > 0), key=lambda r: -r[1])
+    if not rows:
+        return None
+    head, rest = rows[:_CONTEXT_DETAIL_CAP], rows[_CONTEXT_DETAIL_CAP:]
+    items = []
+    for row in head:
+        item = {"name": row[0], "tokens": row[1]}
+        if len(row) > 2:
+            item["count"] = row[2]
+        items.append(item)
+    return {"items": items, "more": len(rest),
+            "more_tokens": sum(r[1] for r in rest)}
+
+
+def _ctx_details(resp: dict) -> dict:
+    """The drill-down lists of a `get_context_usage` answer, keyed by the
+    category id each one splits. MCP tools are summed per server."""
+    def dicts(value):
+        return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+    def name(value):
+        return value if isinstance(value, str) and value else "(unnamed)"
+
+    def pairs(rows, key):
+        return [(name(r.get(key)), _ctx_tokens(r.get("tokens"))) for r in dicts(rows)]
+
+    servers: dict[str, dict] = {"mcp_tools": {}, "mcp_tools_deferred": {}}
+    for tool in dicts(resp.get("mcpTools")):
+        lane = servers["mcp_tools_deferred" if tool.get("isLoaded") is False
+                       else "mcp_tools"]
+        server = name(tool.get("serverName"))
+        tokens, count = lane.get(server, (0, 0))
+        lane[server] = (tokens + _ctx_tokens(tool.get("tokens")), count + 1)
+    out = {key: _ctx_detail([(s, t, n) for s, (t, n) in lane.items()])
+           for key, lane in servers.items()}
+    skills = resp.get("skills") if isinstance(resp.get("skills"), dict) else {}
+    out["mcp_instructions"] = _ctx_detail(pairs(resp.get("mcpInstructions"), "serverName"))
+    out["memory_files"] = _ctx_detail(pairs(resp.get("memoryFiles"), "path"))
+    out["custom_agents"] = _ctx_detail(pairs(resp.get("agents"), "agentType"))
+    out["skills"] = _ctx_detail(pairs(skills.get("skillFrontmatter"), "name"))
+    return {k: v for k, v in out.items() if v}
+
+
+def _context_breakdown(run_id: str) -> dict:
+    """`/context`'s per-category split, asked of the live CLI through its
+    session host (`get_context_usage`, `detail: "summary"`: no extra API
+    calls; 10 s).
+
+    `{"categories": [{id, name, tokens, color, kind}], "details": {category id:
+    {items: [{name, tokens, count?}], more, more_tokens}}, "total_tokens",
+    "max_tokens", "model"}`; `{"error"}` with no live host, a non-Claude run,
+    or no answer."""
+    if _bad_id(run_id):
+        return {"error": "unknown run_id"}
+    run_dir = os.path.join(RUNS, run_id)
+    if not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    if _non_claude(_run_backend(run_dir)):
+        return {"error": "unsupported"}
+    if not _host_alive(run_dir):
+        cached = _ctx_cached(run_dir)
+        if cached:
+            return cached
+        resp = _ctx_probe(run_dir)
+        if resp is None:
+            return {"error": "no live session"}
+        return _ctx_shape(run_dir, resp)
+    try:
+        start_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        start_offset = 0
+    try:
+        request_id = _write_control_request(run_dir, "get_context_usage",
+                                            detail="summary")
+    except OSError as exc:
+        return {"error": f"could not reach the session: {exc}"}
+    refused = []
+    resp = _await_control_response(run_dir, request_id, timeout=10.0,
+                                   start_offset=start_offset, errors=refused)
+    if resp is None:
+        return _ctx_cached(run_dir) or {
+            "error": refused[0] if refused else "the session did not answer"}
+    return _ctx_shape(run_dir, resp)
+
+
+def _context_breakdown_session(session_id: str, model: str = "") -> dict:
+    """The same split for a chat with no run here at all (opened from
+    history): a fork of the session, started in the cwd its transcript
+    records. Nothing is saved — there is no run dir to keep it in."""
+    if _bad_id(session_id):
+        return {"error": "unknown session"}
+    cwd = _ctx_session_cwd(session_id)
+    if not cwd:
+        return {"error": "unknown session"}
+    tmp = tempfile.mkdtemp(prefix="ctx-")
+    try:
+        with open(os.path.join(tmp, "launch.json"), "w", encoding="utf-8") as fh:
+            json.dump({"cwd": cwd, "session_id": session_id, "model": model,
+                       "effort": "", "pane": False, "file": "",
+                       "extra_read_dirs": [], "backend": "claude",
+                       "strict_mcp": False}, fh)
+        with open(os.path.join(tmp, "meta.json"), "w", encoding="utf-8") as fh:
+            json.dump({"session_id": session_id}, fh)
+        with open(os.path.join(tmp, "session"), "w", encoding="utf-8") as fh:
+            fh.write(session_id)
+        resp = _ctx_probe(tmp)
+        if resp is None:
+            return {"error": "the session did not answer"}
+        return _ctx_shape(tmp, resp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _ctx_session_cwd(session_id: str) -> str:
+    """The cwd a session's transcript was written in (its rows carry it), or
+    "" when there is no transcript or the folder is gone."""
+    path = _session_transcript_path("", session_id)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for _, line in zip(range(400), fh):
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                cwd = row.get("cwd") if isinstance(row, dict) else None
+                if isinstance(cwd, str) and os.path.isdir(cwd):
+                    return cwd
+    except OSError:
+        pass
+    return ""
+
+
+def _ctx_shape(run_dir: str, resp: dict) -> dict:
+    """Trim a `get_context_usage` answer to the popover's payload and save it
+    as the run's last known breakdown."""
+    rows = resp.get("categories")
+    categories = [{"id": str(row.get("id") or ""),
+                   "name": row["name"],
+                   "tokens": _ctx_tokens(row.get("tokens")),
+                   "color": str(row.get("color") or ""),
+                   "kind": _ctx_kind(row)}
+                  for row in (rows if isinstance(rows, list) else [])
+                  if isinstance(row, dict) and isinstance(row.get("name"), str)]
+    if not categories:
+        return {"error": "the session sent no breakdown"}
+    model = resp.get("model")
+    out = {"categories": categories, "details": _ctx_details(resp),
+           "total_tokens": _ctx_tokens(resp.get("totalTokens")),
+           "max_tokens": _ctx_tokens(resp.get("maxTokens")),
+           "model": model if isinstance(model, str) else ""}
+    try:
+        _write_json_atomic(os.path.join(run_dir, _CTX_CACHE), out)
+    except OSError:
+        pass
+    return out
+
+
+#: The last breakdown a live host gave, kept in the run dir: the host exits
+#: once the session idles, and the popover still wants the split after that.
+_CTX_CACHE = "context_breakdown.json"
+
+
+#: A cold fork has to start the CLI and its MCP servers before it can answer.
+_CTX_PROBE_TIMEOUT = 12.0
+
+
+def _ctx_probe(run_dir: str):
+    """`get_context_usage` asked of a throwaway fork of the run's session, for
+    a run whose host has gone and left no saved answer (an older chat). No
+    user turn is sent, so no API call: the CLI answers from its own estimate
+    of the resumed transcript. The raw answer, or None."""
+    from fused_render.claude_agent import headsup
+    try:
+        built = headsup.build_fork_argv(sys.modules[__name__], run_dir)
+    except Exception:
+        return None
+    if built is None:
+        return None
+    argv, cwd, fork_dir, session = built
+    proc = None
+    try:
+        spawn, kw_cwd = headsup._spawn_argv(argv, cwd)
+        proc = subprocess.Popen(
+            spawn, env=_spawn_env(session), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace", close_fds=False,
+            **({"cwd": kw_cwd} if kw_cwd else {}))
+        for rid, req in (("ctx-init", {"subtype": "initialize"}),
+                         ("ctx-usage", {"subtype": "get_context_usage",
+                                        "detail": "summary"})):
+            proc.stdin.write(json.dumps({"type": "control_request",
+                                         "request_id": rid, "request": req}) + "\n")
+        proc.stdin.flush()
+        found = queue.Queue()
+
+        def read():
+            for line in proc.stdout:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                inner = row.get("response") if isinstance(row, dict) else None
+                if (row.get("type") == "control_response" and isinstance(inner, dict)
+                        and inner.get("request_id") == "ctx-usage"):
+                    found.put(inner.get("response") if inner.get("subtype") == "success"
+                              else None)
+                    return
+            found.put(None)
+        threading.Thread(target=read, daemon=True).start()
+        try:
+            resp = found.get(timeout=_CTX_PROBE_TIMEOUT)
+        except queue.Empty:
+            resp = None
+        return resp if isinstance(resp, dict) else None
+    except (OSError, ValueError):
+        return None
+    finally:
+        if proc is not None:
+            headsup._kill_tree(proc)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        shutil.rmtree(fork_dir, ignore_errors=True)
+
+
+def _ctx_cached(run_dir: str):
+    """The last saved breakdown, marked `stale` (the client re-derives the
+    Messages row from the latest usage), or None."""
+    try:
+        with open(os.path.join(run_dir, _CTX_CACHE), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("categories"), list):
+        return None
+    return {**data, "stale": True}
+
+
 def _task_stop(run_id: str, task_id: str) -> dict:
     """Stop a running task: a `stop_task` control request to the live session
     host (10 s). `{"ok": True}`, or `{"error"}` (no live host, the CLI's
@@ -13823,6 +14093,11 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "task_output":
         # A shell/monitor task's output, asked of the live CLI (SPEC T-3).
         return _task_output(run_id, task_id)
+    if action == "context_usage":
+        # The context popover's `/context` split, asked of the live CLI.
+        if not run_id and session_id:
+            return _context_breakdown_session(session_id, model)
+        return _context_breakdown(run_id)
     if action == "task_stop":
         # Stop a running task: `stop_task` control request.
         return _task_stop(run_id, task_id)

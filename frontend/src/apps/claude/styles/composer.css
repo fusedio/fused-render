@@ -811,6 +811,21 @@ select.c-pill {
   --c-ctx-messages: rgb(130, 125, 189);
   --c-ctx-buffer: rgb(153, 153, 153);
   --c-ctx-free: rgb(136, 136, 136);
+  /* The live breakdown's categories, by the CLI colour key each row names
+     (`contextTone`): `promptBorder`, `inactive`, `permission`, ... */
+  --c-ctx-prompt: rgb(136, 136, 136);
+  --c-ctx-inactive: rgb(153, 153, 153);
+  --c-ctx-permission: rgb(177, 185, 249);
+  --c-ctx-claude: rgb(215, 119, 87);
+  --c-ctx-warning: rgb(255, 193, 7);
+  --c-ctx-success: rgb(78, 186, 101);
+  --c-ctx-cyan: rgb(34, 184, 207);
+  --c-ctx-green: rgb(52, 199, 89);
+  --c-ctx-red: rgb(248, 113, 113);
+  --c-ctx-blue: rgb(96, 165, 250);
+  --c-ctx-orange: rgb(251, 146, 60);
+  --c-ctx-pink: rgb(244, 114, 182);
+  --c-ctx-yellow: rgb(250, 204, 21);
 }
 :root[data-theme="light"] .c-tokens,
 :root[data-theme="light"] .c-overlay,
@@ -818,6 +833,19 @@ select.c-pill {
   --c-ctx-messages: rgb(85, 80, 150);
   --c-ctx-buffer: rgb(110, 110, 110);
   --c-ctx-free: rgb(150, 150, 150);
+  --c-ctx-prompt: rgb(120, 120, 120);
+  --c-ctx-inactive: rgb(102, 102, 102);
+  --c-ctx-permission: rgb(87, 105, 247);
+  --c-ctx-claude: rgb(196, 98, 66);
+  --c-ctx-warning: rgb(150, 108, 30);
+  --c-ctx-success: rgb(44, 122, 57);
+  --c-ctx-cyan: rgb(14, 116, 144);
+  --c-ctx-green: rgb(21, 128, 61);
+  --c-ctx-red: rgb(185, 28, 28);
+  --c-ctx-blue: rgb(29, 78, 216);
+  --c-ctx-orange: rgb(194, 65, 12);
+  --c-ctx-pink: rgb(190, 24, 93);
+  --c-ctx-yellow: rgb(161, 98, 7);
 }
 .c-ctxpop {
   padding: 10px 12px;
@@ -831,6 +859,10 @@ select.c-pill {
      popover does not have to spill over the preview beside it. */
   width: max-content;
   max-width: min(92vw, 300px);
+  /* Drill-downs can outgrow the window: scroll inside the card instead. */
+  max-height: min(80vh, var(--available-height, 80vh));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .c-ctxpop-body {
   display: flex;
@@ -881,6 +913,21 @@ select.c-pill {
   color: var(--c-ctx-free);
   opacity: 0.7;
 }
+.c-ctxpop-sq.is-tone-prompt, .c-ctxpop-key.is-tone-prompt { color: var(--c-ctx-prompt); }
+.c-ctxpop-sq.is-tone-inactive, .c-ctxpop-key.is-tone-inactive { color: var(--c-ctx-inactive); }
+.c-ctxpop-sq.is-tone-permission, .c-ctxpop-key.is-tone-permission { color: var(--c-ctx-permission); }
+.c-ctxpop-sq.is-tone-claude, .c-ctxpop-key.is-tone-claude { color: var(--c-ctx-claude); }
+.c-ctxpop-sq.is-tone-warning, .c-ctxpop-key.is-tone-warning { color: var(--c-ctx-warning); }
+.c-ctxpop-sq.is-tone-success, .c-ctxpop-key.is-tone-success { color: var(--c-ctx-success); }
+.c-ctxpop-sq.is-tone-cyan, .c-ctxpop-key.is-tone-cyan { color: var(--c-ctx-cyan); }
+.c-ctxpop-sq.is-tone-green, .c-ctxpop-key.is-tone-green { color: var(--c-ctx-green); }
+.c-ctxpop-sq.is-tone-purple, .c-ctxpop-key.is-tone-purple { color: var(--c-ctx-messages); }
+.c-ctxpop-sq.is-tone-red, .c-ctxpop-key.is-tone-red { color: var(--c-ctx-red); }
+.c-ctxpop-sq.is-tone-blue, .c-ctxpop-key.is-tone-blue { color: var(--c-ctx-blue); }
+.c-ctxpop-sq.is-tone-orange, .c-ctxpop-key.is-tone-orange { color: var(--c-ctx-orange); }
+.c-ctxpop-sq.is-tone-pink, .c-ctxpop-key.is-tone-pink { color: var(--c-ctx-pink); }
+.c-ctxpop-sq.is-tone-yellow, .c-ctxpop-key.is-tone-yellow { color: var(--c-ctx-yellow); }
+.c-ctxpop-sq.is-tone-other, .c-ctxpop-key.is-tone-other { color: var(--c-ctx-buffer); }
 .c-ctxpop-legend {
   display: flex;
   flex-direction: column;
@@ -904,6 +951,75 @@ select.c-pill {
 .c-ctxpop-note {
   color: var(--c-faint);
   font-size: 11px;
+}
+/* A row with a drill-down list is the button that opens it. */
+.c-ctxpop-toggle {
+  width: 100%;
+  margin: 0 -4px;
+  padding: 0 4px;
+  box-sizing: content-box;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.c-ctxpop-toggle:hover,
+.c-ctxpop-toggle:focus-visible {
+  background-color: var(--c-surface-2);
+}
+.c-ctxpop-toggle:focus-visible {
+  outline: 1px solid var(--c-border-strong);
+}
+.c-ctxpop-chev {
+  align-self: center;
+  flex: none;
+  color: var(--c-faint);
+  transition: transform 0.12s;
+}
+.c-ctxpop-chev.is-open {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-ctxpop-chev { transition: none; }
+}
+.c-ctxpop-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 2px;
+  padding: 0 0 0 16px;
+  list-style: none;
+}
+.c-ctxpop-subrow {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.c-ctxpop-subname {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-dim);
+}
+.c-ctxpop-subrow .c-ctxpop-num {
+  flex: none;
+}
+/* Deferred rows sit outside the window: below a line, dim, not in the grid. */
+.c-ctxpop-deferred {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--c-border);
+}
+.c-ctxpop-row.is-deferred {
+  opacity: 0.6;
 }
 
 /* The platform popup a keyboard user still gets should not arrive white. */

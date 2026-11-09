@@ -5178,6 +5178,8 @@ function ChatBody(props: ChatBodyProps) {
       // the landing composer (no conversation) and a brand-new chat both get
       // `null` and draw no meter.
       context: state.context,
+      // Whose live host the context popover asks for `/context`'s split.
+      runId: state.runId ?? state.lastRunId,
       onSend,
       onFollowUp,
       onStop,
@@ -5369,6 +5371,8 @@ function ChatBody(props: ChatBodyProps) {
       rc.stop,
       state.status,
       state.context,
+      state.runId,
+      state.lastRunId,
       controls,
       onSend,
       onFollowUp,

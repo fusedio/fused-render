@@ -25,7 +25,7 @@
 //
 // Nothing here touches React and nothing here fetches: it is handed the model
 // id and the latest reply's `usage`.
-import type { ContextUsage } from "../protocol/types";
+import type { ContextBreakdown, ContextDetail, ContextUsage } from "../protocol/types";
 
 /** The default context window (`mxe`). */
 export const WINDOW_DEFAULT = 200_000;
@@ -323,15 +323,20 @@ export function contextHint(
 
 // ---- `/context`, as much of it as this side of the wire can know ----------
 
-/** One square of the grid. */
+/** One square of the grid. `used` is a `/context` category's, coloured by its
+ *  `tone`; `messages` is the one-row fallback's. */
 export interface ContextSquare {
-  kind: "messages" | "free";
+  kind: "messages" | "used" | "buffer" | "free";
   glyph: string;
+  tone?: ContextTone;
 }
 
 /** One legend row under the grid. */
 export interface ContextLegendRow {
-  kind: "messages" | "free";
+  /** The CLI category id, or the fallback's `messages` / `free`. */
+  id: string;
+  kind: "messages" | "used" | "buffer" | "free" | "deferred";
+  tone?: ContextTone;
   label: string;
   glyph: string;
   tokens: number;
@@ -339,6 +344,8 @@ export interface ContextLegendRow {
   pct: string;
   /** An honesty note the CLI does not need and we do — see `contextReport`. */
   note?: string;
+  /** The row's drill-down list, when the CLI sent one. */
+  detail?: ContextDetail;
 }
 
 export interface ContextReport {
@@ -356,6 +363,8 @@ export interface ContextReport {
   rows: number;
   squares: ContextSquare[];
   legend: ContextLegendRow[];
+  /** `/context`'s deferred rows: listed dim under the legend, not in the grid. */
+  deferred: ContextLegendRow[];
   /** `Context is N% full`, or "" below 80%. */
   suggestion: string;
 }
@@ -363,6 +372,7 @@ export interface ContextReport {
 const GLYPH_FULL = "⛁"; // a filled square, fullness >= 0.7
 const GLYPH_PART = "⛀"; // ...and its lighter twin below that
 const GLYPH_FREE = "⛶";
+const GLYPH_BUFFER = "⛝";
 
 /** `round`, min 1 for a segment that has any tokens at all: a category worth
  *  200 tokens still gets a square, because a row in the legend with nothing in
@@ -421,6 +431,7 @@ export function contextReport(
   const legend: ContextLegendRow[] = [];
   if (used > 0) {
     legend.push({
+      id: "messages",
       kind: "messages",
       label: "Messages",
       glyph: GLYPH_FULL,
@@ -431,6 +442,7 @@ export function contextReport(
   }
   const free = Math.max(0, compactAt - used);
   legend.push({
+    id: "free",
     kind: "free",
     label: "Free space",
     glyph: GLYPH_FREE,
@@ -450,6 +462,162 @@ export function contextReport(
     rows,
     squares,
     legend,
+    deferred: [],
     suggestion: pct >= 80 ? `Context is ${pct}% full` : "",
+  };
+}
+
+// ---- `/context` itself, when the live CLI answers `context_usage` ----------
+
+/** The CLI theme colours `/context` paints its categories in, as the CSS
+ *  `is-tone-*` suffix (styles/composer.css). Anything new is `other`. */
+export type ContextTone =
+  | "prompt"
+  | "inactive"
+  | "permission"
+  | "claude"
+  | "warning"
+  | "success"
+  | "cyan"
+  | "green"
+  | "purple"
+  | "red"
+  | "blue"
+  | "orange"
+  | "pink"
+  | "yellow"
+  | "other";
+
+const TONES: Record<string, ContextTone> = {
+  promptBorder: "prompt",
+  inactive: "inactive",
+  permission: "permission",
+  claude: "claude",
+  warning: "warning",
+  success: "success",
+  cyan: "cyan",
+  green: "green",
+  purple: "purple",
+  red: "red",
+  blue: "blue",
+  orange: "orange",
+  pink: "pink",
+  yellow: "yellow",
+};
+
+/** A CLI colour key (`cyan_FOR_SUBAGENTS_ONLY`, `promptBorder`) as a tone. */
+export function contextTone(color: string): ContextTone {
+  return TONES[color.replace(/_FOR_SUBAGENTS_ONLY$/, "")] ?? "other";
+}
+
+/**
+ * A saved answer from a host that has since gone: everything but Messages is
+ * the session's fixed overhead and still holds, so Messages becomes whatever
+ * the latest reply's total leaves over, and Free space follows.
+ */
+function refreshStale(
+  breakdown: ContextBreakdown,
+  usage: ContextUsage | null | undefined,
+): ContextBreakdown["categories"] {
+  const total = contextTotal(usage);
+  if (total <= 0) return breakdown.categories;
+  const fixed = breakdown.categories
+    .filter((c) => c.kind === "used" && c.id !== "messages")
+    .reduce((sum, c) => sum + c.tokens, 0);
+  const messages = Math.max(0, total - fixed);
+  const used = fixed + messages;
+  const buffer = breakdown.categories
+    .filter((c) => c.kind === "buffer")
+    .reduce((sum, c) => sum + c.tokens, 0);
+  const free = Math.max(0, (breakdown.max_tokens || 0) - used - buffer);
+  return breakdown.categories.map((c) =>
+    c.id === "messages" ? { ...c, tokens: messages }
+    : c.kind === "free" && breakdown.max_tokens ? { ...c, tokens: free }
+    : c,
+  );
+}
+
+/**
+ * `/context` as the CLI splits it: the headline is still `contextReport`'s
+ * (the ring's number), but the grid and legend are the live CLI's categories
+ * in its own order — used rows, then free space, the compact buffer last —
+ * each a share of the window the CLI measured (`max_tokens`). Deferred rows
+ * sit outside the window, so they are listed but never drawn.
+ *
+ * A breakdown with no window to draw on falls back to `contextReport`.
+ */
+export function contextBreakdownReport(
+  model: string | null | undefined,
+  usage: ContextUsage | null | undefined,
+  breakdown: ContextBreakdown,
+): ContextReport {
+  const base = contextReport(model, usage);
+  const cats = (breakdown.stale ? refreshStale(breakdown, usage) : breakdown.categories)
+    .filter((c) => c.tokens > 0);
+  const inWindow = cats.filter((c) => c.kind !== "deferred");
+  const window = Math.max(
+    breakdown.max_tokens || 0,
+    inWindow.reduce((sum, c) => sum + c.tokens, 0),
+  );
+  if (window <= 0 || !inWindow.length) return base;
+
+  const columns = window >= WINDOW_1M ? 20 : 10;
+  const rows = 10;
+  const cells = columns * rows;
+  const used = cats.filter((c) => c.kind === "used");
+  const buffer = cats.filter((c) => c.kind === "buffer");
+  const free = cats.filter((c) => c.kind === "free");
+  const deferred = cats.filter((c) => c.kind === "deferred");
+
+  const squares: ContextSquare[] = [];
+  for (const c of used) {
+    const tone = contextTone(c.color);
+    const exact = (c.tokens / window) * cells;
+    const n = Math.min(cells - squares.length, squaresFor(c.tokens, window, cells));
+    for (let i = 0; i < n; i++) {
+      const fullness = Math.min(1, exact - i);
+      squares.push({ kind: "used", tone, glyph: fullness >= 0.7 ? GLYPH_FULL : GLYPH_PART });
+    }
+  }
+  const bufferTokens = buffer.reduce((sum, c) => sum + c.tokens, 0);
+  const bufferCells = Math.min(
+    cells - squares.length,
+    squaresFor(bufferTokens, window, cells),
+  );
+  const freeCells = cells - squares.length - bufferCells;
+  for (let i = 0; i < freeCells; i++) squares.push({ kind: "free", glyph: GLYPH_FREE });
+  for (let i = 0; i < bufferCells; i++) squares.push({ kind: "buffer", glyph: GLYPH_BUFFER });
+
+  const pctOf = (n: number): string => ((n / window) * 100).toFixed(1);
+  const row = (
+    c: ContextBreakdown["categories"][number],
+    kind: ContextLegendRow["kind"],
+    glyph: string,
+  ): ContextLegendRow => {
+    const detail = breakdown.details?.[c.id];
+    return {
+      id: c.id,
+      kind,
+      ...(kind === "used" ? { tone: contextTone(c.color) } : {}),
+      label: c.name,
+      glyph,
+      tokens: c.tokens,
+      pct: kind === "deferred" ? "" : pctOf(c.tokens),
+      ...(kind === "deferred" ? { note: "(loaded on-demand)" } : {}),
+      ...(detail && detail.items.length ? { detail } : {}),
+    };
+  };
+  return {
+    ...base,
+    window,
+    columns,
+    rows,
+    squares,
+    legend: [
+      ...used.map((c) => row(c, "used", GLYPH_FULL)),
+      ...buffer.map((c) => row(c, "buffer", GLYPH_BUFFER)),
+      ...free.map((c) => row(c, "free", GLYPH_FREE)),
+    ],
+    deferred: deferred.map((c) => row(c, "deferred", GLYPH_FULL)),
   };
 }

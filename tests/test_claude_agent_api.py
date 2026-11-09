@@ -112,6 +112,13 @@ def test_task_background_is_routable_not_a_400(client, stub):
                              "tool_use_id": "toolu_1"}]
 
 
+def test_context_usage_is_routable_not_a_400(client, stub):
+    stub["install"](lambda action="", run_id="": {"categories": []})
+    r = _post(client, {"action": "context_usage", "run_id": "r"})
+    assert r.status_code == 200
+    assert stub["main"] == [{"action": "context_usage", "run_id": "r"}]
+
+
 def test_send_now_is_routable_not_a_400(client, stub):
     stub["install"](lambda action="", run_id="", client_uuid="": {"sent": True})
     r = _post(client, {"action": "send_now", "run_id": "r", "client_uuid": "u1"})
