@@ -104,7 +104,12 @@ import {
   type PaneSrcFlags,
   type TargetNoun,
 } from "./pane";
-import { setSideMaximized, useSideMaximized } from "@platform/lib/side-maximized-store";
+import {
+  setSideMaximized,
+  subscribeSideMaximizedRequest,
+  takeSideMaximizedRequest,
+  useSideMaximized,
+} from "@platform/lib/side-maximized-store";
 import { TASK_ICON_EXIT_FULL_SCREEN } from "@platform/ui/TaskActionIcons";
 import {
   AnnStrip,
@@ -5758,6 +5763,26 @@ function ChatBody(props: ChatBodyProps) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [picking]);
+  // A FULL SCREEN ASKED FOR BY A RAIL CARD (side-maximized-store): taken here,
+  // once this chat is mounted in a side pane on that session — after the new
+  // page's pane has settled its tab, so its "not the chat tab" guard cannot
+  // undo it. A frame later for the same reason: the pane's own effects run
+  // after this child's.
+  const paneSessionId = state.sessionId ?? "";
+  useEffect(() => {
+    if (!inSidePane || !paneSessionId) return;
+    let raf = 0;
+    const take = () => {
+      if (!takeSideMaximizedRequest(paneSessionId)) return;
+      raf = requestAnimationFrame(() => setSideMaximized(true));
+    };
+    take();
+    const off = subscribeSideMaximizedRequest(take);
+    return () => {
+      off();
+      cancelAnimationFrame(raf);
+    };
+  }, [inSidePane, paneSessionId]);
   const kebabEl = (
     <>
       {canvasShotSeat}

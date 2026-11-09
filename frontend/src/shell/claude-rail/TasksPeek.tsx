@@ -52,7 +52,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { ChatMount } from "@apps/claude";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import type { BreakoutControl } from "@apps/claude/ClaudeChat";
-import { setSideMaximized } from "@platform/lib/side-maximized-store";
+import { cancelSideMaximizedRequest, opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { readListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
 import { cardTitleLine, taskChatTarget, taskColumn, taskHref } from "@shell/tasks-lib";
@@ -257,16 +257,19 @@ export function TasksPeek() {
                           onArchived={() => setChat(null)}
                           // FULL SCREEN: the Open door, then the Claude panel
                           // filling the window (side-maximized-store).
-                          {...(taskHref(task) ? {
+                          {...(taskHref(task) && opensInSidePane(taskHref(task)!) ? {
                             fullScreen: {
                               on: false,
                               onToggle: () => {
                                 const href = taskHref(task);
                                 if (!href) return;
-                                // Only once the hop went: a refused leave
-                                // stays on this surface, unmaximized.
+                                // A request the side-pane chat takes once
+                                // it is mounted there (side-maximized-store);
+                                // a refused leave drops it.
+                                const sid = task.session_id;
+                                requestSideMaximized(sid);
                                 void api.openPage(href).then((went) => {
-                                  if (went !== false) setSideMaximized(true);
+                                  if (went === false) cancelSideMaximizedRequest(sid);
                                 });
                               },
                             },
