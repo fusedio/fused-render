@@ -154,6 +154,39 @@
   gap: 4px;
   flex: 0 0 auto;
 }
+/* THE NAV DOORS HOVER LIKE THE RINGS (owner, 2026-11-09: "the hover area of
+   bots, search, + and tasks is different from the task rings — make it the
+   same"): the wash is painted on the same `::after` box the rings use (2px
+   past the seat, 9px to the rail's edges, 8px corners, under the glyph),
+   and that box is the door's hit area too — never the 28px seat itself. */
+.claude-rail-nav .sidebar-rail-btn {
+  isolation: isolate;
+}
+.claude-rail-nav .sidebar-rail-btn::after {
+  content: "";
+  position: absolute;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+.claude-rail-nav .sidebar-rail-btn:hover,
+.claude-rail-nav .sidebar-rail-btn.is-open {
+  background: none;
+  box-shadow: none;
+  color: var(--fg);
+}
+.claude-rail-nav .sidebar-rail-btn:hover::after,
+.claude-rail-nav .sidebar-rail-btn.is-open::after {
+  background: rgba(var(--tint), 0.08);
+}
+/* A NAV DOOR WHOSE WINDOW STANDS (ClaudeRail `doorOpen`; owner, 2026-11-09:
+   "show highlight only when the window is open"): the hover wash while a
+   preview stands, a step firmer with the hairline once a press holds it —
+   the list rings' `.peeked` / `.is-pinned` pair. */
+.claude-rail-nav .sidebar-rail-btn.is-open.is-pinned::after {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
 /* The rail's inner edge (ClaudeRail `.claude-rail-seam`): pulled left, it opens
    the pane. 6px of hit area straddling the rail's border, and the app's seam
    hairline on hover — the explorer's reopen edge (.preview-side-reopen). */

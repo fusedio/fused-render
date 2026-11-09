@@ -609,8 +609,9 @@ export const LIST_ROWS_MAX = 10;
  *  — or, with `footOrder` (the rail flag; owner, 2026-11-08), the Bots
  *  page's order (apps/bots lib/order `botOrder`: waiting on you and not yet
  *  read first, then the bot you last wrote to, then the newest made), top to
- *  bottom as the page reads. (A reversed stack was tried the same day and
- *  turned back: "reverse the order for now".) An older server's pulse
+ *  bottom as the page reads. The rail draws it bottom-up (ClaudeRail; owner,
+ *  2026-11-09: "1st pin bottom right, 2nd pin 2nd to the bottom"), after a
+ *  top-down stack on 2026-11-08. An older server's pulse
  *  carries no `pinned`: none; one without `last_user_ts`/`created` sorts by
  *  waiting alone. */
 export function pinnedBots<
@@ -628,6 +629,45 @@ export function pinnedBots<
   };
   const recency = (b: B) => b.last_user_ts || b.created || 0;
   return out.sort((a, b) => Number(waiting(b)) - Number(waiting(a)) || recency(b) - recency(a));
+}
+
+/** THE FOOT'S BOT ORDER HOLDS (owner, 2026-11-09: "when you click on bots
+ *  that is when it reorders again, which is confusing — it should be set on
+ *  mount only"): `pinnedBots`' order is taken once, and after that a bot
+ *  keeps its seat whatever its status or last message does — a press marks
+ *  it read and writes to it, which used to move it. `held` is the order so
+ *  far (ids); bots in it keep their places, a bot not in it (newly pinned)
+ *  joins at the end in `sorted`'s order, a bot gone from `sorted` leaves. */
+export function holdOrder<B extends { id: string }>(held: readonly string[], sorted: readonly B[]): B[] {
+  const byId = new Map(sorted.map((b) => [b.id, b]));
+  const out: B[] = [];
+  for (const id of held) {
+    const b = byId.get(id);
+    if (b) {
+      out.push(b);
+      byId.delete(id);
+    }
+  }
+  for (const b of sorted) if (byId.has(b.id)) out.push(b);
+  return out;
+}
+
+/** THE HELD ORDER ACROSS THE RAIL'S SWITCHES (CodeRabbit on #2205): `on` is
+ *  "the foot draws pinned bots in the held order" (the rail flag and the
+ *  Bots gate). Off, the held order is dropped, so the next on re-seeds it
+ *  from `pinnedBots`' sort instead of restoring seats from before. On,
+ *  `holdOrder` decides and its ids are the held order — a bot gone from the
+ *  list leaves it. An EMPTY list keeps the held order: it is no answer about
+ *  seats (a feeder publishing before its first read), and the faces come
+ *  back where they stood. */
+export function holdBotOrder<B extends { id: string }>(
+  held: readonly string[],
+  sorted: readonly B[],
+  on: boolean,
+): { held: string[]; out: B[] } {
+  if (!on) return { held: [], out: [...sorted] };
+  const out = holdOrder(held, sorted);
+  return { held: out.length > 0 ? out.map((b) => b.id) : [...held], out };
 }
 
 /** WHERE A PINNED BOT'S RING GOES (ClaudeRail `ringOf` for bots; owner,
@@ -764,13 +804,21 @@ export function ringMarks(o: RingMarkInput): {
   const one = o.favsOn;
   const fav = o.foot;
   const classes: string[] = [];
-  if (o.sessionHere && (!one || (!o.foot && o.activeList === o.key))) classes.push("active");
+  // ONLY AN OPEN WINDOW LIGHTS A RING (owner, 2026-11-09: "let's not show
+  // last selected state, only show active state when the window is open, so
+  // we know this ring made it open"): with the card on (`peekOn`) neither
+  // the URL's session (`.active`) nor the last press (`.is-last`) marks a
+  // ring — only `.peeked` / `.is-pinned` / `.is-open`, which last exactly as
+  // long as the ring's card stands. Off, the marks of before.
+  const marksPast = !o.peekOn;
+  if (marksPast && o.sessionHere && (!one || (!o.foot && o.activeList === o.key))) classes.push("active");
   if (peeked) classes.push("peeked");
   if (peeked && o.pinned && !o.foot && !favRing) classes.push("is-pinned");
   if (peeked && o.held && !o.favsOn) classes.push("is-held");
   if (o.foot) classes.push("is-fav");
   if (o.foot && o.openFavKey === o.key) classes.push("is-open");
   if (
+    marksPast &&
     o.isLast &&
     !(one && o.sectionSize === 1) &&
     (!one || (o.foot ? o.activeFav === o.key && o.openFavKey !== o.key : o.activeList === o.key))
@@ -834,7 +882,7 @@ export function railShown(o: {
 
 /** THE RAIL REMEMBERED ACROSS A RELOAD (ClaudeRail; owner, 2026-11-05:
  *  "when I reload the sidebar pops up a little late"): whether a rail stood
- *  in this window last, kept in sessionStorage. On mount a rail that stood
+ *  last, kept in localStorage (2026-11-09). On mount a rail that stood
  *  stands again at once — its column, before its rings — for `RAIL_WARM_MS`
  *  at most, by when the pulse and the bots have answered; if they say there
  *  is nothing to draw, it goes then. */
@@ -842,14 +890,14 @@ export const RAIL_WARM_MS = 3000;
 const RAIL_KEY = "fused-render:rail-up";
 export function railRemembered(): boolean {
   try {
-    return sessionStorage.getItem(RAIL_KEY) === "1";
+    return localStorage.getItem(RAIL_KEY) === "1";
   } catch {
     return false;
   }
 }
 export function rememberRail(up: boolean): void {
   try {
-    sessionStorage.setItem(RAIL_KEY, up ? "1" : "0");
+    localStorage.setItem(RAIL_KEY, up ? "1" : "0");
   } catch {
     /* no storage: nothing remembered */
   }

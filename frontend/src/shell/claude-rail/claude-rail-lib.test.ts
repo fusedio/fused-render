@@ -18,6 +18,8 @@ import {
   listHidden,
   plusShown,
   pinnedBots,
+  holdOrder,
+  holdBotOrder,
   botRingRoute,
   botStatusWords,
   keepMarks,
@@ -367,6 +369,33 @@ describe("favSeats: the blocked at the head", () => {
   });
 });
 
+describe("holdOrder (the foot's bot order holds, 2026-11-09)", () => {
+  const ids = (bs: { id: string }[]) => bs.map((b) => b.id);
+  it("first order is the sort's; later sorts keep seats, append the new, drop the gone", () => {
+    expect(ids(holdOrder([], [{ id: "a" }, { id: "b" }]))).toEqual(["a", "b"]);
+    // A press moved b to the head of the sort: the foot does not follow.
+    expect(ids(holdOrder(["a", "b"], [{ id: "b" }, { id: "a" }]))).toEqual(["a", "b"]);
+    // c newly pinned (sorted first), a unpinned.
+    expect(ids(holdOrder(["a", "b"], [{ id: "c" }, { id: "b" }]))).toEqual(["b", "c"]);
+  });
+  it("holdBotOrder: off drops the held order so the next on re-seeds; an empty list keeps it", () => {
+    // Foot off (flag or Bots gate): nothing held, the sort passes through.
+    expect(holdBotOrder(["a", "c"], [{ id: "c" }, { id: "a" }], false)).toEqual({
+      held: [],
+      out: [{ id: "c" }, { id: "a" }],
+    });
+    // Back on with the held order dropped: C and A seat in the sort's order, not A's old seat.
+    const seeded = holdBotOrder([], [{ id: "c" }, { id: "a" }], true);
+    expect(seeded.held).toEqual(["c", "a"]);
+    // A press re-sorts a ahead: the seats hold.
+    expect(ids(holdBotOrder(seeded.held, [{ id: "a" }, { id: "c" }], true).out)).toEqual(["c", "a"]);
+    // An unpinned bot leaves the held order.
+    expect(holdBotOrder(["c", "a"], [{ id: "a" }], true).held).toEqual(["a"]);
+    // An empty publish is no answer about seats.
+    expect(holdBotOrder(["c", "a"], [], true)).toEqual({ held: ["c", "a"], out: [] });
+  });
+});
+
 describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
   it("the list hides beside the open pane on its home, favourites on, and only then", () => {
     // Since 2026-11-06 the list stands beside the pane's home too.
@@ -516,7 +545,7 @@ describe("ringMarks (what each ring wears, per section)", () => {
   const marked = (rings: ReturnType<typeof rail>, foot: boolean) =>
     rings.filter((r) => r.foot === foot && r.classes.some((c) => c === "active" || c === "is-last" || c === "is-open"));
 
-  it("one active ring per section with favourites on", () => {
+  it("card on: only an open window marks a ring — no last press, no URL session (2026-11-09)", () => {
     const rings = rail({
       list: ["A", "B", "C"],
       favs: ["F", "G"],
@@ -525,20 +554,31 @@ describe("ringMarks (what each ring wears, per section)", () => {
       lastFav: "G",
       openFavKey: "F",
     });
-    // The list: its last press wins over the URL's session — one mark.
-    expect(marked(rings, false).map((r) => r.key)).toEqual(["B"]);
-    expect(count(rings, false, "is-last")).toBe(1);
-    expect(count(rings, false, "active")).toBe(0);
-    // The favourites: the open card's ring, `is-open`, and no `is-last` beside it.
+    // The list: neither its last press nor the URL's session marks a ring.
+    expect(marked(rings, false)).toEqual([]);
+    // The favourites: the open card's ring, `is-open`, alone.
     expect(marked(rings, true).map((r) => r.key)).toEqual(["F"]);
     expect(count(rings, true, "is-open")).toBe(1);
     expect(count(rings, true, "is-last")).toBe(0);
   });
 
-  it("no favourite open: the section's last press is its one mark", () => {
-    const rings = rail({ list: ["A"], favs: ["F", "G"], lastFav: "G", session: "A" });
-    expect(marked(rings, true).map((r) => r.key)).toEqual(["G"]);
-    expect(marked(rings, false).map((r) => r.key)).toEqual(["A"]);
+  it("card on, no window open: no ring is marked", () => {
+    const rings = rail({ list: ["A"], favs: ["F", "G"], lastFav: "G", lastList: "A", session: "A" });
+    expect(marked(rings, true)).toEqual([]);
+    expect(marked(rings, false)).toEqual([]);
+  });
+
+  it("card on: the pinned list card's ring is marked while it stands", () => {
+    const rings = rail({ list: ["A", "B"], favs: [], lastList: "B", peekKey: "A", pinned: true });
+    const a = rings.find((r) => r.key === "A")!;
+    expect(a.classes).toEqual(expect.arrayContaining(["peeked", "is-pinned"]));
+    expect(rings.find((r) => r.key === "B")!.classes).not.toContain("is-last");
+  });
+
+  it("card off: the last press is the section's one mark, as before", () => {
+    const off = (key: string, o: Partial<RingMarkInput>) =>
+      ringMarks({ ...base, peekOn: false, key, foot: false, sessionHere: false, activeList: "A", ...o } as RingMarkInput).classes;
+    expect(off("A", { isLast: true, sessionHere: true })).toEqual(["active", "is-last"]);
   });
 
   it("a favourite card open: no favourite ring opens a hover card; list rings do", () => {
@@ -622,7 +662,7 @@ describe("ringMarks (what each ring wears, per section)", () => {
   it("favourites off: every mark as before, the held accent included", () => {
     const off = (key: string, o: Partial<RingMarkInput>) =>
       ringMarks({ ...base, favsOn: false, key, foot: false, sessionHere: false, isLast: false, ...o }).classes;
-    expect(off("A", { sessionHere: true, isLast: true })).toEqual(["active", "is-last"]);
+    expect(off("A", { peekOn: false, sessionHere: true, isLast: true })).toEqual(["active", "is-last"]);
     expect(off("A", { peekKey: "A", pinned: true, held: true })).toEqual(["peeked", "is-pinned", "is-held"]);
   });
 });
@@ -916,8 +956,9 @@ describe("ringMarks with another window A card pinned (`windowAHeld`; Bugbot on 
 });
 
 describe("ringMarks: a section of one ring wears no last mark (2026-11-06)", () => {
+  // The card off: with it on no ring wears `.is-last` at all (2026-11-09).
   const base = {
-    favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null,
+    favsOn: true, peekOn: false, peekKey: null, pinned: false, held: false, openFavKey: null,
     sessionHere: false, isLast: true, activeList: "a", activeFav: "a",
   };
   it("favourites on: one ring, no mark; two rings, the mark", () => {

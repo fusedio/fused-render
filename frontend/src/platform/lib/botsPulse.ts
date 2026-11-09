@@ -132,7 +132,8 @@ const IDLE_MS = 30_000;
 let pulse: BotsPulse = EMPTY_BOTS_PULSE;
 /** The rows the summary was made from — the Claude rail's pinned bots read
  *  them (`useBotsRows`); hidden bots are left in, as the page leaves them. */
-let rows: BotPulseRow[] = [];
+const ROWS_KEY = "fused-render:pinned-bots";
+let rows: BotPulseRow[] = memoRows();
 const rowListeners = new Set<(r: BotPulseRow[]) => void>();
 let timer: number | null = null;
 let inFlight = false;
@@ -144,8 +145,44 @@ let generation = 0;
 let feeders = 0;
 const listeners = new Set<(p: BotsPulse) => void>();
 
+/** THE PINNED BOTS, REMEMBERED ACROSS A RELOAD (owner, 2026-11-09:
+ *  "everything should show up instantly"): the rail's foot drew no faces
+ *  until the first poll answered. The pinned, shown rows of the last answer
+ *  are kept in localStorage and are the rows until the poll lands; the
+ *  summary (the dots) is never made from them — it waits for a real answer. */
+function memoRows(): BotPulseRow[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(ROWS_KEY) ?? "null") as unknown;
+    return Array.isArray(v) ? (v as BotPulseRow[]).filter((b) => b && typeof b.id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function memoWriteRows(next: BotPulseRow[]): void {
+  try {
+    localStorage.setItem(ROWS_KEY, JSON.stringify(next.filter((b) => b.pinned === true && !b.hidden)));
+  } catch {
+    /* no storage: nothing remembered */
+  }
+}
+
+/** BOTS UNAVAILABLE (the config's answer, platform/lib/bots-available): the
+ *  remembered faces are of nothing this server offers — forget them, so no
+ *  reload draws them again (CodeRabbit on #2205). */
+export function forgetPinnedBots(): void {
+  try {
+    localStorage.removeItem(ROWS_KEY);
+  } catch {
+    /* no storage */
+  }
+  if (rows.length === 0) return;
+  rows = [];
+  for (const l of rowListeners) l(rows);
+}
+
 function recompute(next_rows: BotPulseRow[]) {
   rows = next_rows;
+  memoWriteRows(next_rows);
   for (const l of rowListeners) l(rows);
   const next = botsPulse(rows);
   if (sameBotsPulse(pulse, next)) return;
@@ -164,7 +201,22 @@ const REQUEST_MS = 15_000;
  *  this page): the pin, name and face are read once per poll off the full
  *  `/api/bots` listing instead, `fast=1` (no screenshots), and merged by
  *  id. A pulse that carries the field is taken as is. */
-async function withPins(rows: BotPulseRow[]): Promise<BotPulseRow[]> {
+/** THE PIN, NAME AND FACE OF THE ROWS BEFORE, for rows that came without
+ *  them (an older owner's pulse whose `/api/bots` enrichment failed;
+ *  CodeRabbit on #2205): a failed read is no answer about pins, so it must
+ *  not unpin every face on the rail — or blank the remembered ones for the
+ *  next reload. A row that carries its own `pinned` is taken as is; a bot
+ *  `prev` never knew stays unpinned. */
+export function carryPins(next: readonly BotPulseRow[], prev: readonly BotPulseRow[]): BotPulseRow[] {
+  const byId = new Map(prev.filter((b) => typeof b.pinned === "boolean").map((b) => [b.id, b]));
+  return next.map((b) => {
+    if (typeof b.pinned === "boolean") return b;
+    const p = byId.get(b.id);
+    return p ? { ...b, pinned: p.pinned, name: p.name, face: p.face ?? null } : b;
+  });
+}
+
+async function withPins(rows: BotPulseRow[], prev: readonly BotPulseRow[]): Promise<BotPulseRow[]> {
   if (rows.length === 0 || rows.some((b) => typeof b.pinned === "boolean")) return rows;
   try {
     const full = await getJson<{ bots: { id: string; pinned?: boolean; name?: string; face?: unknown }[] }>(
@@ -177,12 +229,17 @@ async function withPins(rows: BotPulseRow[]): Promise<BotPulseRow[]> {
       return f ? { ...b, pinned: !!f.pinned, name: f.name, face: f.face ?? null } : b;
     });
   } catch {
-    return rows;
+    return carryPins(rows, prev);
   }
 }
 
 export function getBotsPulse(): Promise<{ bots: BotPulseRow[] }> {
   return getJson<{ bots: BotPulseRow[] }>("/api/bots/pulse", { signal: AbortSignal.timeout(REQUEST_MS) });
+}
+
+/** The store's rows (`poll` names its own answer `rows`). */
+function current(): BotPulseRow[] {
+  return rows;
 }
 
 async function poll() {
@@ -191,7 +248,7 @@ async function poll() {
   const departed = generation;
   try {
     const r = await getBotsPulse();
-    const rows = await withPins(r.bots ?? []);
+    const rows = await withPins(r.bots ?? [], current());
     if (feeders === 0 && generation === departed) publishBots(rows);
   } catch {
     // Bots off, no owner (503), or a restart mid-poll: not news. The row keeps
@@ -287,6 +344,11 @@ const EMPTY_ROWS: BotPulseRow[] = [];
 export function resetBotsPulseForTests() {
   pulse = EMPTY_BOTS_PULSE;
   rows = [];
+  try {
+    localStorage.removeItem(ROWS_KEY);
+  } catch {
+    /* no storage */
+  }
   rowListeners.clear();
   generation = 0;
   feeders = 0;

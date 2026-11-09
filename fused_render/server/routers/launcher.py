@@ -99,6 +99,18 @@ def api_launcher_show(body: dict = Body(default={}),
     return {"ok": True}
 
 
+@router.get("/api/launcher/shown")
+def api_launcher_shown():
+    """Whether the launcher panel stands right now — the Claude rail's Search
+    door wears its open state while it does (ClaudeRail). ``false`` where
+    this process has no panel."""
+    hook = launcher.native_hooks.get("is_shown")
+    try:
+        return {"shown": bool(hook()) if hook is not None else False}
+    except Exception:  # noqa: BLE001 — a dead panel is a closed one
+        return {"shown": False}
+
+
 @router.get("/api/launcher")
 def api_launcher(q: str = Query(default="")):
     """``apps`` as before; ``files`` (and the index's coverage ``reason``
