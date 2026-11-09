@@ -7,6 +7,10 @@ main(action=...):
   list   -> {ok, servers:[{name,endpoint,transport,status,kind,connected,
                            needsAuth,canAuth,removable}], stale, checkedAt}
             | {ok:false, error}                                (mcp.md §2)
+           Each status is a SESSION's verdict where one could be had (a headless
+           `claude -p` read up to its `init` event), falling back to the CLI's
+           own transport check: the CLI says "Connected" for a claude.ai
+           connector the user has never authorised.
            `claude mcp list` health-checks every server and takes ~11 s, so a cached
            list is returned at once with stale=true (and a background refresh is
            started); `checkedAt` is the epoch second the cache was taken. With no
@@ -32,6 +36,12 @@ import time
 from . import lib
 
 _LIST_TIMEOUT = 28
+# What one refresh can take at worst: two probe attempts and the pause between
+# them (lib.claude_session_mcp_status), then the list. The waiters in main()
+# wait THIS long, so a hung probe cannot turn a refresh still under way into a
+# reported failure.
+# (+5 per attempt: the terminate -> kill escalation in lib._stop_probe.)
+_REFRESH_BUDGET = 2 * (lib._SESSION_PROBE_TIMEOUT + 5) + 1 + _LIST_TIMEOUT + 5
 
 _lock = threading.Lock()
 _inflight = None
@@ -70,11 +80,47 @@ def _invalidate() -> None:
         pass
 
 
+def _overlay_session(servers: list, seen: dict) -> list:
+    """The session's verdict wins over the CLI's transport check (lib.py,
+    `claude_session_mcp_status`): `claude mcp list` calls a claude.ai connector
+    "Connected" as soon as its endpoint answers, authorised or not, and showed
+    Google Drive as signed in on a machine where every session said otherwise.
+    A name the session did not report keeps the CLI's answer; the CLI's reason
+    text is kept only where the two agree, since it explains the CLI's status
+    and not the session's."""
+    out = []
+    for server in servers:
+        row = seen.get(server["name"])
+        if row is None:
+            out.append(server)
+            continue
+        status = row["status"]
+        merged = dict(server)
+        if row.get("source") == "claudeai":
+            merged["kind"] = "connector"
+            merged["removable"] = False
+        if status != server["status"]:
+            merged["statusDetail"] = ""
+        merged["status"] = status
+        merged["connected"] = status == "connected"
+        merged["needsAuth"] = status == "needs-auth"
+        out.append(merged)
+    return out
+
+
 def _refresh(generation=None) -> dict:
+    # The probe (~2 s) runs BEFORE the list (~11 s on a dozen connectors), not
+    # beside it: two `claude` processes at once left the session's `init` with
+    # an empty or still-connecting server list, and the overlay then had
+    # nothing to say. Sequential, it answered the same six times in a row.
+    try:
+        seen = lib.claude_session_mcp_status()
+    except Exception:  # noqa: BLE001 — best-effort; the list stands alone
+        seen = {}
     res = lib.claude_cli("mcp", "list", timeout=_LIST_TIMEOUT)
     if not res["ok"]:
         return {"ok": False, "error": res.get("stderr") or "failed to list MCP servers"}
-    servers = lib.parse_mcp_list(res["stdout"])
+    servers = _overlay_session(lib.parse_mcp_list(res["stdout"]), seen)
     checked = time.time()
     with _lock:
         current = generation is None or generation == _generation
@@ -141,12 +187,12 @@ def main(action: str = "list", name: str = "", **kwargs) -> dict:
     if action == "list":
         if _truthy(kwargs.get("fresh")):
             flight = _flight()
-            flight.done.wait(_LIST_TIMEOUT + 5)
+            flight.done.wait(_REFRESH_BUDGET)
             return flight.result
         cached = _read_cache()
         if cached is None:
             flight = _flight()
-            flight.done.wait(_LIST_TIMEOUT + 5)
+            flight.done.wait(_REFRESH_BUDGET)
             return flight.result
         _flight()
         return {"ok": True, "servers": cached["servers"],
