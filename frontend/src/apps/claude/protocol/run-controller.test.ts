@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 // The run loop against a FAKE agent.py. Every test here is one of the rules the
 // template earned the hard way: whole-turn replay, D687 slicing after a
 // follow-up, ownership by the newest loop, card placement, the two poll
@@ -5483,10 +5482,43 @@ describe("the run's tasks", () => {
     controller.newChat();
   });
 
-  test("Bugbot 4307278686: only the OWNING loop's done starts (or retires) a host watch", () => {
-    const src = readFileSync(new URL("./run-controller.ts", import.meta.url), "utf8");
-    expect(src).toContain("if (loopSeq === seat) watchHostTasks(runId, seat);");
-    expect(src).not.toMatch(/if \(poll\.tasks_pending\) watchHostTasks\(runId, seat\);/);
+  test("a watch cannot be stranded: a loop that retires it without ever polling tasks still sees the host's death end the rows", async () => {
+    // The old host r1 holds a running row; a send opens r2, whose first poll
+    // is an unknown-run refusal (no tasks block at all), so the loop-seat
+    // change retired r1's watch and nothing started another.
+    let r1Alive = true;
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: () => unknownRunPoll(),
+      tasks: () =>
+        r1Alive
+          ? { tasks: [T("h", "running")], tasks_pending: true, host_alive: true }
+          : { tasks: [{ ...T("h"), status: "killed" as const }], tasks_pending: false, host_alive: false },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    await settle();
+    expect(controller.getState().tasksRunId).toBe("r1");
+    expect(controller.getState().tasks[0]!.status).toBe("running");
+    r1Alive = false;
+    await settle();
+    expect(agent.of("tasks").every((c) => c.fields.run_id === "r1")).toBe(true);
+    expect(controller.getState().tasks.every((t) => t.status !== "running")).toBe(true);
+  });
+
+  test("a host whose run dir is gone ends the rows instead of leaving them live", async () => {
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      tasks: () => ({ error: "unknown run_id" }),
+    });
+    await controller.openSession("s9");
+    await settle();
+    expect(controller.getState().tasks.every((t) => t.status !== "running")).toBe(true);
   });
 
   test("a host that dies under the watch downgrades the live rows, the one case that still does", async () => {

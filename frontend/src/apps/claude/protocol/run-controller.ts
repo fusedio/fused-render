@@ -633,9 +633,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
   const publishTasks = (rows: TaskRecord[] | null | undefined, runId: string | null) => {
     const list = Array.isArray(rows) ? rows.filter((t) => !!t && typeof t.id === "string") : [];
     const sig = (runId ?? "") + "\u0002" + JSON.stringify(list);
-    if (sig === tasksSig) return;
-    tasksSig = sig;
-    emit({ tasks: list, tasksRunId: runId });
+    if (sig !== tasksSig) {
+      tasksSig = sig;
+      emit({ tasks: list, tasksRunId: runId });
+    }
+    ensureHostWatch();
   };
   /**
    * THE RUN THAT OWNS THE LIST HAS ENDED (SPEC T-5 review #4): anything it
@@ -658,35 +660,32 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (ended) publishTasks(ended, runId);
   };
   /**
-   * WATCH A HOST THAT OUTLIVED ITS TURN (Akshil, 2026-10-18). Nothing else
-   * polls it: the poll loop stopped at `done`, and the standing watch only
-   * refreshes history when the TRANSCRIPT grows — which a job that exits, or
-   * is stopped from the Tasks list, without waking the model never does. So
-   * while the panel holds live rows owned by `runId` and no turn is running,
+   * WATCH THE HOST THAT OWNS THE STRIP (Akshil, 2026-10-18). The strip's rows
+   * come from one authority: the host registry of `state.tasksRunId`. Nothing
+   * else polls a host that outlived its turn — the poll loop stopped at `done`,
+   * and the standing watch only refreshes history when the TRANSCRIPT grows,
+   * which a job that exits, or is stopped from the Tasks list, without waking
+   * the model never does. So while the strip holds live rows owned by `runId`,
    * ask the agent's `tasks` (the registry caught up from `out.jsonl`) every
-   * `HOST_TASKS_MS`, and publish what it says.
+   * `HOST_TASKS_MS` and publish what it says.
    *
-   * It stops by itself: a turn starting (a new poll loop owns the list), another
-   * conversation or run taking the panel, nothing left running
-   * (`tasks_pending` false), the host gone (`host_alive` false — the
-   * downgrade above, the one case it still applies), `HOST_TASKS_TRIES`
-   * failed asks in a row, or dispose. One watch at a time: a call for the run
-   * and seat already watched is a no-op (a history refresh every few seconds
-   * must not keep restarting the wait); any other call retires the older one.
-   *
-   * `loop` is the poll-loop seat the watch belongs to — the seat whose turn
-   * just ended (its own `seat`, so a stale loop unwinding late cannot adopt a
-   * newer one), or the current one for a history landing. A turn starting is a
-   * NEW seat, and ends the watch: that turn's poll owns the list.
+   * The watch belongs to the OWNER RUN, never to a poll loop: a loop starting,
+   * ending or being retired does not touch it, and `ensureHostWatch` (called by
+   * every `publishTasks` and by every loop's end) restarts it whenever live
+   * rows are owned and nothing is asking. It stops by itself: another
+   * conversation or run taking the strip, nothing left running
+   * (`tasks_pending` false), the host gone (`host_alive` false, or its run dir
+   * swept — the rows end as `unknown`), `HOST_TASKS_TRIES` failed asks in a
+   * row, or dispose. One watch at a time: a call for the run already watched
+   * is a no-op, and any other call retires the older one.
    */
   let hostWatch = 0;
   let hostWatched = "";
-  const watchHostTasks = (runId: string, loop: number = loopSeq) => {
-    const key = runId + "\u0000" + loop;
-    if (hostWatched === key) return;
-    hostWatched = key;
+  const watchHostTasks = (runId: string) => {
+    if (hostWatched === runId) return;
+    hostWatched = runId;
     const seq = ++hostWatch;
-    const mine = () => seq === hostWatch && !disposed && loopSeq === loop && state.tasksRunId === runId;
+    const mine = () => seq === hostWatch && !disposed && state.tasksRunId === runId;
     void (async () => {
       let failures = 0;
       try {
@@ -703,6 +702,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
             res = null;
           }
           if (!mine()) return;
+          if (res && isUnknownRun(res.error)) {
+            // The host's run dir is gone: nothing answers for these rows.
+            endRunTasks(runId);
+            return;
+          }
           if (!res || res.error || !("tasks" in res) || !Array.isArray(res.tasks)) {
             // A dropped socket or a busy server is not the job ending: try a
             // few laps before giving up on the host.
@@ -725,6 +729,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
       }
     })();
   };
+  /** Start the owner's watch when the strip holds live rows and none is
+   *  running. Idempotent, and cheap enough to call on every publish. A run this
+   *  page is polling right now needs none: its own poll carries the rows (the
+   *  loop's end calls this again once `activeRun` is let go). */
+  function ensureHostWatch(): void {
+    const owner = state.tasksRunId;
+    if (!owner || disposed || activeRun === owner || !stillShown(state.tasks)) return;
+    watchHostTasks(owner);
+  }
   /**
    * HISTORY'S TASKS, on a restore and on every refresh — one rule for both
    * (`openSession` has already cleared the last conversation's list).
@@ -749,7 +762,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // lands history.)
       if (activeRun) return;
       publishTasks(rows, res.tasks_run);
-      watchHostTasks(res.tasks_run);
       // …and that work can still ASK something nobody would see (`cardWatch`;
       // Bugbot 4312038980): this road has no poll loop to start it.
       void cardWatch(res.tasks_run, logGen, state.transcriptGen);
@@ -760,7 +772,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // can name another run dir, or race the host's own liveness, and nulling
     // the owner here would kill the watch — the job's real end, the dead-host
     // downgrade and its leaving would never come. The watch ends by itself.
-    if (!res.live_run && state.tasksRunId && hostWatched.startsWith(state.tasksRunId + "\u0000")) return;
+    if (!res.live_run && state.tasksRunId && hostWatched === state.tasksRunId) return;
     const owner = res.live_run || res.tasks_run || null;
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
@@ -2102,7 +2114,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           const rows = Array.isArray(poll.tasks) ? poll.tasks : [];
           const owner = state.tasksRunId;
           if (!rows.length && owner && owner !== runId && stillShown(state.tasks)) {
-            if (loopSeq === seat) watchHostTasks(owner, seat);
+            ensureHostWatch();
           } else if (rows.length || owner !== runId) publishTasks(rows, runId);
         }
         // THE SLASH-COMMAND LIST MAY HAVE MOVED (SPEC C-2) — the host re-reads it.
@@ -2353,7 +2365,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // superseded loop's late `done` must not retire the newer loop's
           // host watch and leave none.
           if (poll.tasks_pending) {
-            if (loopSeq === seat) watchHostTasks(runId, seat);
+            watchHostTasks(runId);
             // …and that task can still ASK something, with no loop left to
             // see it (`cardWatch`). Same guard.
             if (loopSeq === seat) watchCards = true;
@@ -2509,6 +2521,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // Turn boundary either way — the tasks surfaces should hear about it even
       // when a newer loop owns the chrome (the ACTIVITY is real regardless).
       noteChatActivity();
+      // The strip's owner is watched again now that this loop no longer is.
+      ensureHostWatch();
       // Started HERE rather than in the `done` branch so `activeRun` is already
       // let go — the watch reads a set `activeRun` as "a new loop took over".
       if (watchCards && loopSeq === seat) void cardWatch(runId, gen, tGen);
