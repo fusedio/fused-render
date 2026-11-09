@@ -750,7 +750,10 @@ export function ClaudeRail({
     const sorted = pinnedBots(botRows, { footOrder: peekOn });
     const held = holdBotOrder(heldBotOrder, sorted, botsOn && peekOn);
     heldBotOrder = held.held;
-    return held.out;
+    // STACKED FROM THE BOTTOM (owner, 2026-11-09: "it should be reverse —
+    // 1st pin bottom right, 2nd pin 2nd to the bottom"): the Bots page's
+    // first is the rail's last seat, nearest the window's corner.
+    return peekOn ? [...held.out].reverse() : held.out;
   }, [botRows, peekOn, botsOn]);
   const allSeats = useMemo(
     () => (favouritesOnly ? [] : listSeats(railRows(rows, full, seatPlace), favsOn)),

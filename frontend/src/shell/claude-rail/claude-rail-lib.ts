@@ -609,8 +609,9 @@ export const LIST_ROWS_MAX = 10;
  *  — or, with `footOrder` (the rail flag; owner, 2026-11-08), the Bots
  *  page's order (apps/bots lib/order `botOrder`: waiting on you and not yet
  *  read first, then the bot you last wrote to, then the newest made), top to
- *  bottom as the page reads. (A reversed stack was tried the same day and
- *  turned back: "reverse the order for now".) An older server's pulse
+ *  bottom as the page reads. The rail draws it bottom-up (ClaudeRail; owner,
+ *  2026-11-09: "1st pin bottom right, 2nd pin 2nd to the bottom"), after a
+ *  top-down stack on 2026-11-08. An older server's pulse
  *  carries no `pinned`: none; one without `last_user_ts`/`created` sorts by
  *  waiting alone. */
 export function pinnedBots<
