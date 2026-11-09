@@ -2860,23 +2860,36 @@ class _SyncManager:
         pull's backup lands."""
         return os.path.join(self.root, ".sync", "trash", self.name)
 
-    def _new_trash_dir(self) -> str | None:
+    def _new_trash_dir(self, *, prune: bool = True) -> str | None:
         """A fresh timestamped folder under .sync/trash/<name>/ for the files
         the current pull/merge is about to overwrite or delete; prunes the
-        oldest snapshots beyond _TRASH_MAX. None if it can't be created."""
+        oldest snapshots beyond _TRASH_MAX (`prune=False` defers that to
+        `_prune_trash`, for a caller that must not burn a recovery point
+        before its own snapshot is known complete). None if it can't be
+        created."""
         root = self.trash_root()
         path = os.path.join(root, time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}")
         try:
             os.makedirs(path, exist_ok=True)
+        except OSError:
+            return None
+        if prune:
+            self._prune_trash(keep=path)
+        return path
+
+    def _prune_trash(self, *, keep: str) -> None:
+        """Drop the oldest trash snapshots beyond _TRASH_MAX, never `keep`."""
+        root = self.trash_root()
+        try:
             snapshots = sorted(
                 d for d in os.listdir(root)
                 if os.path.isdir(os.path.join(root, d))
             )
-            for stale in snapshots[:-_TRASH_MAX]:
-                _rmtree_quiet(os.path.join(root, stale))
         except OSError:
-            return None
-        return path
+            return
+        for stale in snapshots[:-_TRASH_MAX]:
+            if os.path.join(root, stale) != keep:
+                _rmtree_quiet(os.path.join(root, stale))
 
     def _backup_to(self, trash: str | None, rel: str, data: bytes) -> bool:
         """Copy one file into the trash snapshot. False when it could not be
@@ -2897,30 +2910,38 @@ class _SyncManager:
         """Copy the whole clone into a trash snapshot — run before the CLI's
         wholesale `pull --force`, whose overwrites/deletes we can't
         intercept per file. Returns the snapshot folder, or None when it
-        could not be created OR any file could not be copied into it — a
-        folder on a full disk is not a backup (a hard pull then refuses to
-        run, see _pull; the merge legs never call this)."""
-        trash = self._new_trash_dir()
+        could not be created OR any file could not be read or copied into
+        it — a folder on a full disk, or one missing a file a live session
+        held mid-replace, is not a backup (a hard pull then refuses to run,
+        see _pull; the merge legs never call this). A failed snapshot is
+        removed, and older snapshots are pruned only after a complete one,
+        so retrying on a full disk never burns a real recovery point."""
+        trash = self._new_trash_dir(prune=False)
         if trash is None:
             return None
-        failed = 0
+        failed: list[str] = []
         for root, dirs, files in os.walk(self.dir):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in files:
                 if f.startswith("."):
                     continue
                 path = os.path.join(root, f)
+                rel = os.path.relpath(path, self.dir)
                 try:
                     with open(path, "rb") as fh:
                         data = fh.read()
                 except OSError:
+                    failed.append(rel)
                     continue
-                if not self._backup_to(trash, os.path.relpath(path, self.dir), data):
-                    failed += 1
+                if not self._backup_to(trash, rel, data):
+                    failed.append(rel)
         if failed:
             self.log_event("server_to_disk", "backup incomplete", ok=False,
-                           detail=f"{failed} file(s) could not be copied into {trash}")
+                           detail=f"{len(failed)} file(s) could not be copied into {trash}: "
+                                  + ", ".join(failed[:5]))
+            _rmtree_quiet(trash)
             return None
+        self._prune_trash(keep=trash)
         return trash
 
     def _validate_clone(self) -> bool | None:
