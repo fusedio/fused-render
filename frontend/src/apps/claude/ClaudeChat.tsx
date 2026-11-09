@@ -4473,19 +4473,16 @@ function ChatBody(props: ChatBodyProps) {
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
-  // THE SEND-NOW HINT lives on the NEWEST waiting bubble (one, not one per
-  // bubble): a parked outbox line (`pending === "queued"`) or a follow-up the
-  // live run holds (the controller's `queuedKeys`). Ctrl+X on an empty box
-  // sends them now.
-  let newestQueuedKey: string | null = null;
-  for (let i = state.turns.length - 1; i >= 0; i--) {
-    const t = state.turns[i];
+  // THE SEND-NOW HINT rides on EVERY waiting bubble: a parked outbox line
+  // (`pending === "queued"`) or a follow-up the live run holds (the
+  // controller's `queuedKeys`). Ctrl+X on an empty box sends them all now.
+  const queuedBubbleKeys: string[] = [];
+  for (const t of state.turns) {
     if (t.role === "user" && (t.pending === "queued" || state.queuedKeys.includes(t.key))) {
-      newestQueuedKey = t.key;
-      break;
+      queuedBubbleKeys.push(t.key);
     }
   }
-  const hasQueued = state.queuedKeys.length > 0 || newestQueuedKey !== null;
+  const hasQueued = state.queuedKeys.length > 0 || queuedBubbleKeys.length > 0;
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
   const shownHint = shownWorktreeHint(state.worktreeHint, state.tasks, chatWorkdir(file, pane.noun) ?? undefined);
   // A breakout starts in the worktree the header chip names: only an absolute
@@ -6070,7 +6067,7 @@ function ChatBody(props: ChatBodyProps) {
               onAnchorSpent={onAnchorSpent}
               {...(debugSent ? { onShowSent: setSent } : {})}
               onPullPending={onPullPending}
-              sendNowKey={running ? newestQueuedKey : null}
+              sendNowKeys={running ? queuedBubbleKeys : []}
               onSendNow={onSendQueuedNow}
               {...(chatBackend === "claude" && !running && !props.breakout ? { onFork } : {})}
               {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}

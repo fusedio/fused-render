@@ -66,6 +66,7 @@ import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit, isPlanLimitText } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
 import { advanceTurnClock } from "./turn-clock";
+import { inboxKey } from "./inbox";
 import { endActiveTasks, isActive, stillShown } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
@@ -629,9 +630,51 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
     if (moved) publishQueued();
   };
-  /** Nothing is held once the run is over: the CLI has answered its inbox or
-   *  died with it, the same rule `clearQueued` states for the optimistic half. */
+  /** The conversation on screen is being replaced: the held lines were its. */
   const clearInbox = () => publishInbox([]);
+  /**
+   * THE SERVER'S INBOX IS THE TRUTH FOR EVERY LINE THE INBOX CONFIRMED. An
+   * optimistic entry whose `send` landed stays listed exactly as long as the
+   * run reports it (undrained, or drained and not yet echoed); once the run no
+   * longer names it the CLI has the line, or the host is gone, and the entry
+   * goes. Keyed by the line's own id, never by its words, so two identical
+   * lines are two entries. An entry still in flight (`!landed`) is not the
+   * server's to judge yet.
+   */
+  const reconcileQueued = (rows: readonly InboxMessage[]) => {
+    const held = new Set(rows.map((r) => r && r.uuid).filter((u): u is string => !!u));
+    // A line sent without an id can only be matched by its words, one row per
+    // entry.
+    const words = new Map<string, number>();
+    for (const r of rows) {
+      if (r && !r.uuid) words.set(inboxKey(r.text), (words.get(inboxKey(r.text)) ?? 0) + 1);
+    }
+    let moved = false;
+    for (let i = 0; i < queued.length; i++) {
+      const q = queued[i];
+      if (!q.landed) continue;
+      const id = q.opts.clientId;
+      let gone: boolean;
+      if (id) gone = !held.has(id);
+      else {
+        const k = inboxKey(q.wire);
+        const n = words.get(k) ?? 0;
+        gone = n === 0;
+        if (n > 0) words.set(k, n - 1);
+      }
+      if (gone) {
+        queued.splice(i--, 1);
+        moved = true;
+      }
+    }
+    if (moved) publishQueued();
+  };
+  /** An authoritative inbox answer (a poll's, or a history read beside a live
+   *  run): published, and the optimistic list brought into line with it. */
+  const landInbox = (rows: InboxMessage[]) => {
+    publishInbox(rows);
+    reconcileQueued(rows);
+  };
 
   /**
    * THE RUN'S BACKGROUND TASKS (SPEC T-5, `ChatState.tasks`). Sticky for the
@@ -1892,6 +1935,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     turnStamp = 0;
     /** `out.jsonl`'s length at this loop's last poll — see `streamedEnd`. */
     let outSize = 0;
+    /** The server's own inbox report reached this loop — see `reconcileQueued`.
+     *  An agent that sends none cannot say a line is gone, so its loop's end
+     *  does. */
+    let sawInbox = false;
     setRunningUi(true);
     setStats(0, "thinking", null, null);
     noteChatActivity();
@@ -2115,7 +2162,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
-        publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
+        if (Array.isArray(poll.inbox)) {
+          sawInbox = true;
+          landInbox(poll.inbox);
+        } else publishInbox([]);
         noteTaken(poll.inbox_taken);
         // THE RUN'S BACKGROUND TASKS (SPEC T-5) — sticky per run, see `publishTasks`.
         // …BUT NOT OVER A JOB ANOTHER HOST STILL HOLDS (Akshil, 2026-10-19):
@@ -2525,15 +2575,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
       forgetTurnStart(runId);
       if (runId && outSize) streamedEnd.set(runId, outSize);
+      if (loopSeq === seat && !sawInbox) {
+        clearQueued();
+        clearInbox();
+      }
       // Nothing is "queued for this turn" once the turn is over: the CLI drains
       // its queue as part of the run, so whatever is still listed here has
       // either been answered above or died with the process. Guarded on
       // ownership for the same reason the chrome is — an abandoned loop's late
       // finally must not wipe the hint the newer loop's follow-up just put up.
-      if (loopSeq === seat) {
-        clearQueued();
-        clearInbox();
-      }
       // Turn boundary either way — the tasks surfaces should hear about it even
       // when a newer loop owns the chrome (the ACTIVITY is real regardless).
       noteChatActivity();
@@ -3248,14 +3298,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // run's own inbox report is all there is to name.
     const mine = queued.find((q) => q.landed && q.opts.clientId)?.opts.clientId;
     const target = mine || state.inbox.find((m) => m.uuid)?.uuid;
-    if (!target) return false;
+    const refused = () => {
+      addNote("Couldn't send that now. It stays queued and runs when the current turn ends.", "◆");
+      return false;
+    };
+    if (!target) return refused();
     try {
       const res = await run("send_now", { run_id: runId, client_uuid: target });
       const sent = "sent" in res && res.sent;
-      if (sent) sendNowRun = runId;
-      return sent;
+      if (!sent) return refused();
+      sendNowRun = runId;
+      return true;
     } catch {
-      return false;
+      return refused();
     }
   }
 
@@ -3736,7 +3791,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // beside `live_run`, which is the field that says whether anything is running
     // at all — and `live_run: ""` publishes the empty list, because nothing is
     // held when nothing is running.
-    if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);
+    if (live) landInbox(Array.isArray(res.inbox) ? res.inbox : []);
     noteTaken(res.inbox_taken);
     // THE SESSION'S LAST RUN'S TASKS (SPEC T-1/T-5): a reload shows the panel
     // it left. An empty answer about the run already drawn keeps the list —
@@ -4791,6 +4846,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // its own.
         context: res.context ?? null,
       });
+      // THE LIVE RUN'S INBOX, on every refresh as on a restore: the `turns`
+      // replace above is what used to take the queued lines off the screen.
+      if (typeof res.live_run === "string") landInbox(Array.isArray(res.inbox) ? res.inbox : []);
+      noteTaken(res.inbox_taken);
       landHistoryTasks(res);
     } catch (err) {
       // The transcript stays exactly as it rendered. The watermark is NOT

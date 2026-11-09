@@ -386,3 +386,22 @@ def test_a_subagent_jobs_notification_is_bookkeeping_even_when_its_start_is_befo
 
     _write(run_dir, rows + [note])
     assert agent._poll("run")["done"] is True
+
+
+def test_the_echo_of_one_line_does_not_lift_the_gate_for_a_later_one(agent, run_dir):
+    """Two follow-ups sent before either is echoed leave two offsets in the
+    marker; the first echo alone keeps the gate up, the second lifts it."""
+    _write(run_dir, [_user_row("turn one"), _text_row("Turn one answer."),
+                     _result_row("Turn one answer.")])
+    _setup(agent, run_dir)
+    assert agent._send("run", "line A", "") == {"sent": True}
+    assert agent._send("run", "line B", "") == {"sent": True}
+    assert len((run_dir / "pending_echo").read_text().split()) == 2
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_user_row("line A")) + "\n")
+    agent._poll("run")
+    assert (run_dir / "pending_echo").exists(), "line B is still unechoed"
+    with (run_dir / "out.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_user_row("line B")) + "\n")
+    agent._poll("run")
+    assert not (run_dir / "pending_echo").exists()

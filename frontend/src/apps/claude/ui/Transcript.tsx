@@ -116,8 +116,8 @@ export interface TranscriptProps {
   /** A queued / not-sent bubble was clicked: pull it back into the box
    *  (`TurnProps.onPullPending`). */
   onPullPending?: (key: string) => void;
-  /** The key of the one queued bubble that carries "(Ctrl+X to send now)". */
-  sendNowKey?: string | null;
+  /** The keys of the queued bubbles that carry "(Ctrl+X to send now)". */
+  sendNowKeys?: readonly string[];
   /** Click on that hint: the same as Ctrl+X on an empty box. */
   onSendNow?: () => void;
   /** "Fork from here" on a user turn (`TurnProps.onFork`). */
@@ -187,7 +187,7 @@ export const Transcript = memo(function Transcript({
   onAnchorSpent,
   onShowSent,
   onPullPending,
-  sendNowKey,
+  sendNowKeys,
   onSendNow,
   onFork,
   pick,
@@ -1022,7 +1022,7 @@ export const Transcript = memo(function Transcript({
                   {...(onShowSent ? { onShowSent } : {})}
                   {...(onPullPending ? { onPullPending } : {})}
                   onOpenReply={onOpenReply}
-                  {...(sendNowKey && sendNowKey === turn.key ? { sendNowHint: true } : {})}
+                  {...(sendNowKeys && sendNowKeys.includes(turn.key) ? { sendNowHint: true } : {})}
                   {...(onSendNow ? { onSendNow } : {})}
                   {...(onFork ? { onFork } : {})}
                   {...(pickFor.get(turn.key) ? { pick: pickFor.get(turn.key)! } : {})}

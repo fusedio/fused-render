@@ -5728,3 +5728,88 @@ describe("one host, many turns: a turn the page has not streamed is attached aga
     controller.dispose();
   });
 });
+
+describe("queued lines follow the server's inbox", () => {
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const held = (...uuids: string[]) =>
+    uuids.map((uuid, i) => ({ id: `i${i}`, text: "again", uuid }));
+
+  test("two identical lines stay two entries, each keyed by its own id", async () => {
+    let controller!: ChatController;
+    const seen: string[][] = [];
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("again", { clientId: "u1" });
+          await controller.sendFollowUp("again", { clientId: "u2" });
+          return poll({ inbox: held("u1", "u2") });
+        }
+        seen.push(controller.getState().queued);
+        if (n === 1) return poll({ inbox: held("u2") });
+        seen.push(controller.getState().queued);
+        return poll({ done: true, inbox: [] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    // After the first poll both are held; once the server drops u1 only u2 is.
+    expect(seen[0]).toEqual(["again", "again"]);
+    expect(seen[1]).toEqual(["again"]);
+  });
+
+  test("a loop's end does not wipe lines the server still holds", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) await controller.sendFollowUp("later", { clientId: "u1" });
+        return poll({ done: n > 0, inbox: [{ id: "i0", text: "later", uuid: "u1" }] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(controller.getState().queued).toEqual(["later"]);
+    expect(controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+  });
+
+  test("a history refresh republishes the live run's inbox", async () => {
+    const made = makeController({
+      history: () => ({
+        turns: [],
+        transcript: null,
+        live_run: "r1",
+        inbox: [{ id: "i0", text: "later", uuid: "u1" }],
+      }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await made.controller.refreshHistory("s1");
+    await settle();
+    expect(made.controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+  });
+
+  test("a refused send-now says so", async () => {
+    let controller!: ChatController;
+    let said = false;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      send_now: () => ({ error: "no live session" }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("urgent", { clientId: "u1" });
+          expect(await controller.sendQueuedNow()).toBe(false);
+          said = controller.getState().turns.some((t) => JSON.stringify(t).includes("Couldn't send that now"));
+        }
+        return poll({ done: n > 0, inbox: [{ id: "i0", text: "urgent", uuid: "u1" }] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(said).toBe(true);
+  });
+});

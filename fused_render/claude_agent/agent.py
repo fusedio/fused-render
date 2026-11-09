@@ -6711,8 +6711,11 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
     except OSError:
         pending_offset = 0
-    with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
-        f.write(str(pending_offset))
+    # ONE OFFSET LINE PER OUTSTANDING SEND: the gate lifts only when every
+    # line has been echoed, so the echo of an earlier line never lifts it for a
+    # later one.
+    with open(os.path.join(run_dir, "pending_echo"), "a", encoding="utf-8") as f:
+        f.write(f"{pending_offset}\n")
     # A RE-SEND OF A LINE THE HOST ALREADY HOLDS is a no-op: the page keeps a
     # line until its `send` is acknowledged, so a 504 or a reload in that gap
     # can send the same `client_uuid` twice.
@@ -10483,9 +10486,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     if os.path.exists(pending_echo_path):
         try:
             with open(pending_echo_path, encoding="utf-8") as fh:
-                pending_offset = int(fh.read().strip())
+                offsets = [int(t) for t in fh.read().split()]
         except (OSError, ValueError):
-            pending_offset = 0
+            offsets = []
+        pending_offset = min(offsets) if offsets else 0
+        sends_outstanding = max(1, len(offsets))
         saw_echo_since_send = False
         # Where the echo's line ENDS in `out.jsonl` — the same absolute
         # offsets `ends` records for the window's rows, so the two compare.
@@ -10497,6 +10502,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         except OSError:
             tail = b""
         line_off = pending_offset
+        echoes = 0
         for raw_line in tail.split(b"\n"):
             line_end = line_off + len(raw_line) + 1
             if raw_line:
@@ -10505,8 +10511,17 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 except ValueError:
                     row = None
                 if row is not None and _starts_new_turn(row, slash=False):
-                    saw_echo_since_send = True
+                    echoes += 1
                     echo_end = line_end
+                    # Every outstanding line echoed. A turn that has produced
+                    # its `result` after the first echo has answered the rest
+                    # too (the CLI can merge queued lines into one turn).
+                    if echoes >= sends_outstanding:
+                        saw_echo_since_send = True
+                        break
+                elif (echoes and isinstance(row, dict)
+                      and row.get("type") == "result"):
+                    saw_echo_since_send = True
                     break
             line_off = line_end
         # THE ECHO CAN LAND BETWEEN THE TWO READS: `rows` above came off the
