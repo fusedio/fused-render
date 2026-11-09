@@ -289,7 +289,7 @@ import {
   LIST_ROWS_MAX,
   nodeName,
   pinnedBots,
-  holdOrder,
+  holdBotOrder,
   botRingRoute,
   botStatusWords,
   plusShown,
@@ -739,17 +739,19 @@ export function ClaudeRail({
   // own gate) — no pulse poll on Windows — and the config is read only when
   // something here would use the answer (favourites or the nav doors).
   const botsOffered = useBotsAvailable(favsOn || peekOn);
-  const botRows = useBotsRows(favsOn && botsOffered);
+  const botsOn = favsOn && botsOffered;
+  const botRows = useBotsRows(botsOn);
   // …IN AN ORDER SET ONCE PER PAGE LOAD (claude-rail-lib `holdOrder`; owner,
   // 2026-11-09): a press on a bot no longer reshuffles the foot. Held at the
-  // module, not the mount, so a view switch (a new page rail) keeps it too.
+  // module, not the mount, so a view switch (a new page rail) keeps it too;
+  // dropped while the foot is off, so turning it back on seeds afresh
+  // (`holdBotOrder`).
   const bots = useMemo(() => {
     const sorted = pinnedBots(botRows, { footOrder: peekOn });
-    if (!peekOn) return sorted;
-    const out = holdOrder(heldBotOrder, sorted);
-    if (out.length > 0) heldBotOrder = out.map((b) => b.id);
-    return out;
-  }, [botRows, peekOn]);
+    const held = holdBotOrder(heldBotOrder, sorted, botsOn && peekOn);
+    heldBotOrder = held.held;
+    return held.out;
+  }, [botRows, peekOn, botsOn]);
   const allSeats = useMemo(
     () => (favouritesOnly ? [] : listSeats(railRows(rows, full, seatPlace), favsOn)),
     [rows, full, seatPlace, favsOn, favouritesOnly],

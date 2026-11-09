@@ -39,6 +39,10 @@ function memoWrite(v: boolean): void {
 
 let answer: boolean | null = memoRead();
 let reading: Promise<void> | null = null;
+/** A failed read is retried while a reader is mounted (CodeRabbit on #2205):
+ *  the remembered answer stands until the GET answers, never for good. */
+const RETRY_MS = 15_000;
+let retry: ReturnType<typeof setTimeout> | null = null;
 let generation = 0;
 const listeners = new Set<(v: boolean) => void>();
 
@@ -62,8 +66,15 @@ function read(): Promise<void> {
       if (generation === departed) set(fromPrefs(p.canvas_rail_peek));
     })
     .catch(() => {
-      // Not an answer: stay off (the default) and let the next mount ask again.
+      // Not an answer: the remembered one (or off) stands; ask again while a
+      // reader is up, and the next mount asks too.
       reading = null;
+      if (listeners.size > 0 && !retry) {
+        retry = setTimeout(() => {
+          retry = null;
+          if (listeners.size > 0) void read();
+        }, RETRY_MS);
+      }
     })
     .then(() => {});
   return reading;
@@ -104,6 +115,8 @@ export function useCanvasRailPeek(): boolean {
 export function resetCanvasRailPeekFlagForTests() {
   dropSharedPrefsRead();
   reading = null;
+  if (retry) clearTimeout(retry);
+  retry = null;
   generation += 1;
   answer = null;
   try {

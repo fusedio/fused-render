@@ -11,6 +11,7 @@
 // reader hears the first answer that lands.
 import { useEffect, useState } from "react";
 import { botsAvailable, getConfig, launcherAvailable, type Config } from "./api";
+import { forgetPinnedBots } from "./botsPulse";
 
 const READ_MS = 10_000;
 const RETRY_MS = 15_000;
@@ -40,7 +41,7 @@ function memoWrite(c: Config): void {
     /* no storage: nothing remembered */
   }
 }
-const remembered = memoRead();
+let remembered = memoRead();
 
 let known: Config | null = null;
 /** What the server said, apart from any test pin laid over it (`known` is the
@@ -52,6 +53,8 @@ let retry: ReturnType<typeof setTimeout> | null = null;
 
 function settle(c: Config): void {
   memoWrite(c);
+  // No Bots here: the remembered pinned faces go with the answer.
+  if (!botsAvailable(c)) forgetPinnedBots();
   server = c;
   known = { ...c, ...pins };
   for (const l of [...listeners]) l(c);
@@ -130,6 +133,16 @@ function pinForTests(key: "bots_available" | "launcher_available", v: boolean | 
   // The pins over the server's own answer, never over an earlier pin: a flag
   // let go reads the server's value again (CodeRabbit on #2201).
   known = Object.keys(pins).length > 0 ? ({ ...(server ?? {}), ...pins } as Config) : server;
+  // Every pin let go: the remembered answer goes too, so the next suite does
+  // not start from an earlier one's doors.
+  if (Object.keys(pins).length === 0) {
+    remembered = null;
+    try {
+      localStorage.removeItem(MEMO_KEY);
+    } catch {
+      /* no storage */
+    }
+  }
   forget();
 }
 

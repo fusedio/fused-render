@@ -15,6 +15,7 @@ import {
   botsPulseTitle,
   botsRunningLabel,
   botsWaitingLabel,
+  carryPins,
   sameBotsPulse,
 } from "@platform/lib/botsPulse";
 import type { BotPulseRow } from "@platform/lib/botsPulse";
@@ -69,6 +70,18 @@ describe("botsPulse", () => {
   it("sameBotsPulse is a field-wise compare", () => {
     expect(sameBotsPulse(EMPTY_BOTS_PULSE, { ...EMPTY_BOTS_PULSE })).toBe(true);
     expect(sameBotsPulse(EMPTY_BOTS_PULSE, { ...EMPTY_BOTS_PULSE, error: 1 })).toBe(false);
+  });
+});
+
+describe("carryPins (a failed enrichment is no answer about pins)", () => {
+  it("rows without a pin take the previous row's pin, name and face; a pin carried is kept; unknown bots stay unpinned", () => {
+    const prev = [bot({ id: "a", pinned: true, name: "A", face: { k: 1 } }), bot({ id: "b", pinned: false })];
+    const next = [bot({ id: "a", status: "running" }), bot({ id: "b" }), bot({ id: "c" }), bot({ id: "d", pinned: false })];
+    const out = carryPins(next, prev);
+    expect(out[0]).toMatchObject({ id: "a", status: "running", pinned: true, name: "A", face: { k: 1 } });
+    expect(out[1].pinned).toBe(false);
+    expect(out[2].pinned).toBeUndefined();
+    expect(out[3].pinned).toBe(false);
   });
 });
 

@@ -19,6 +19,7 @@ import {
   plusShown,
   pinnedBots,
   holdOrder,
+  holdBotOrder,
   botRingRoute,
   botStatusWords,
   keepMarks,
@@ -376,6 +377,22 @@ describe("holdOrder (the foot's bot order holds, 2026-11-09)", () => {
     expect(ids(holdOrder(["a", "b"], [{ id: "b" }, { id: "a" }]))).toEqual(["a", "b"]);
     // c newly pinned (sorted first), a unpinned.
     expect(ids(holdOrder(["a", "b"], [{ id: "c" }, { id: "b" }]))).toEqual(["b", "c"]);
+  });
+  it("holdBotOrder: off drops the held order so the next on re-seeds; an empty list keeps it", () => {
+    // Foot off (flag or Bots gate): nothing held, the sort passes through.
+    expect(holdBotOrder(["a", "c"], [{ id: "c" }, { id: "a" }], false)).toEqual({
+      held: [],
+      out: [{ id: "c" }, { id: "a" }],
+    });
+    // Back on with the held order dropped: C and A seat in the sort's order, not A's old seat.
+    const seeded = holdBotOrder([], [{ id: "c" }, { id: "a" }], true);
+    expect(seeded.held).toEqual(["c", "a"]);
+    // A press re-sorts a ahead: the seats hold.
+    expect(ids(holdBotOrder(seeded.held, [{ id: "a" }, { id: "c" }], true).out)).toEqual(["c", "a"]);
+    // An unpinned bot leaves the held order.
+    expect(holdBotOrder(["c", "a"], [{ id: "a" }], true).held).toEqual(["a"]);
+    // An empty publish is no answer about seats.
+    expect(holdBotOrder(["c", "a"], [], true)).toEqual({ held: ["c", "a"], out: [] });
   });
 });
 

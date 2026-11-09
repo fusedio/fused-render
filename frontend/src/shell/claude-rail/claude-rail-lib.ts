@@ -651,6 +651,24 @@ export function holdOrder<B extends { id: string }>(held: readonly string[], sor
   return out;
 }
 
+/** THE HELD ORDER ACROSS THE RAIL'S SWITCHES (CodeRabbit on #2205): `on` is
+ *  "the foot draws pinned bots in the held order" (the rail flag and the
+ *  Bots gate). Off, the held order is dropped, so the next on re-seeds it
+ *  from `pinnedBots`' sort instead of restoring seats from before. On,
+ *  `holdOrder` decides and its ids are the held order — a bot gone from the
+ *  list leaves it. An EMPTY list keeps the held order: it is no answer about
+ *  seats (a feeder publishing before its first read), and the faces come
+ *  back where they stood. */
+export function holdBotOrder<B extends { id: string }>(
+  held: readonly string[],
+  sorted: readonly B[],
+  on: boolean,
+): { held: string[]; out: B[] } {
+  if (!on) return { held: [], out: [...sorted] };
+  const out = holdOrder(held, sorted);
+  return { held: out.length > 0 ? out.map((b) => b.id) : [...held], out };
+}
+
 /** WHERE A PINNED BOT'S RING GOES (ClaudeRail `ringOf` for bots; owner,
  *  2026-11-05: "a small overlay that just displays the chat exchange of the
  *  bot, the same as the task floating box"): its CARD (BotPeek — a hover
