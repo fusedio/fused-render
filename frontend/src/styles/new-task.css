@@ -1375,3 +1375,52 @@ button.new-task-source:focus-visible {
   background: var(--ctl-quiet-bg);
   color: var(--fg);
 }
+
+/* NARROW CARDS (a slim rail popover): the head's three parts give way rather
+   than push the ✕ out — the name and the Folder/When values ellipsize, the
+   agent crumb and the ✕ keep their size. */
+.new-task-dialog .modal-head {
+  min-width: 0;
+}
+
+.new-task-dialog .modal-head-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.new-task-dialog .modal-head-title h2 {
+  min-width: 0;
+}
+
+.new-task-dialog .modal-head-title .pp--agent {
+  flex: none;
+}
+
+.new-task-dialog .nt-name-wrap {
+  min-width: 0;
+}
+
+.new-task-dialog .nt-name {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 48px;
+}
+
+.new-task-dialog .modal-head-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.new-task-dialog .nt-pills--head,
+.new-task-dialog .nt-pills--head .nt-pills-right {
+  min-width: 0;
+}
+
+.new-task-dialog .nt-pills--head .pp {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.new-task-dialog .modal-close {
+  flex: none;
+}

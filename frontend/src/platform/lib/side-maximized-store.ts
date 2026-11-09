@@ -53,13 +53,15 @@ export function subscribeSideMaximized(fn: () => void): () => void {
  * it once it is mounted there (ClaudeChat). Short-lived: a request nobody
  * takes must not maximize some later chat.
  */
-const REQUEST_TTL_MS = 15_000;
-let request: { sessionId: string; at: number } | null = null;
+const REQUEST_TTL_MS = 10_000;
+// `path`: the page the hop landed on. A request is taken only there, so one
+// whose reader left before the chat mounted cannot fill a pane later.
+let request: { sessionId: string; at: number; path: string } | null = null;
 const requestListeners = new Set<() => void>();
 
 export function requestSideMaximized(sessionId: string): void {
   if (!sessionId) return;
-  request = { sessionId, at: Date.now() };
+  request = { sessionId, at: Date.now(), path: location.pathname };
   requestListeners.forEach((fn) => fn());
 }
 
@@ -71,6 +73,10 @@ export function takeSideMaximizedRequest(sessionId: string): boolean {
     return false;
   }
   if (request.sessionId !== sessionId) return false;
+  if (request.path !== location.pathname) {
+    request = null;
+    return false;
+  }
   request = null;
   return true;
 }

@@ -5775,7 +5775,13 @@ function ChatBody(props: ChatBodyProps) {
     if (!inSidePane || !paneSessionId) return;
     const take = () => {
       if (!takeSideMaximizedRequest(paneSessionId)) return;
-      requestAnimationFrame(() => setSideMaximized(true));
+      // …unless the pane closed in that frame: a closed pane dropped full
+      // screen on purpose, and the flag must not come back for its reopen.
+      requestAnimationFrame(() => {
+        if (document.querySelector(".preview-side .chat-root, .listing-pane-slot .chat-root")) {
+          setSideMaximized(true);
+        }
+      });
     };
     take();
     return subscribeSideMaximizedRequest(take);
