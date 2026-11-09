@@ -2381,6 +2381,20 @@ export function ComposerCard({
             </div>
           );
         })() : null}
+        {/* THE PAPERCLIP WHILE FOLDED (owner, 2026-11-09: "the clip icon also
+            shows up in the collapsed composer"): the shelf's clip is gone with
+            the shelf, so the folded card has its own, seated left of Send with
+            the model label beside it. It fades as the card opens and the
+            shelf's clip takes over, as the label does for the pills. */}
+        {variant === "chat" && onAttachFiles ? (
+          <AttachButton
+            onFiles={onAttachFiles}
+            className="c-attach-idle"
+            hidden={!collapsed}
+            disabled={!!navLocked}
+            {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
+          />
+        ) : null}
         {menuOpen ? (
           <CommandMenu
             id={menuId}

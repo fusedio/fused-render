@@ -557,7 +557,14 @@ test("the paperclip: shown only with a picks handler, hands the picks over, off 
   });
   expect(clip().length).toBe(1);
   expect(clip()[0]!.props.disabled).toBe(false);
-  const input = renderer!.root.findByProps({ type: "file" });
+  // Two seats, one road: the shelf's clip and the folded card's (`c-attach-idle`).
+  const idle = () => renderer!.root.findAll((n) => n.type === "button" && /\bc-attach-idle\b/.test(n.props.className ?? ""));
+  expect(idle().length).toBe(1);
+  // This card mounts folded (no focus in it): the folded seat shows.
+  expect(idle()[0]!.props.className).toBe("c-attach-idle");
+  const inputs = renderer!.root.findAllByProps({ type: "file" });
+  expect(inputs.length).toBe(2);
+  const input = inputs[0]!;
   const file = new File(["x"], "a.txt");
   act(() => {
     input.props.onChange({ target: { files: [file], value: "C:/fakepath/a.txt" } });
