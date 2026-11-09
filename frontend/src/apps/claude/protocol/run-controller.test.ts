@@ -8,6 +8,8 @@ import { describe, expect, test } from "bun:test";
 
 const {
   PERM_CARD_MAX,
+  POLL_MS,
+  pollDelay,
   POLL_NETWORK_RETRIES,
   POLL_TIMEOUT_RETRIES,
   SEND_TIMEOUT_PROBES,
@@ -5811,5 +5813,13 @@ describe("queued lines follow the server's inbox", () => {
     controller = made.controller;
     await controller.sendMessage("go");
     expect(said).toBe(true);
+  });
+});
+
+describe("pollDelay", () => {
+  test("a hidden document polls slower, never stops", () => {
+    expect(pollDelay(false)).toBe(POLL_MS);
+    expect(pollDelay(true)).toBeGreaterThan(POLL_MS);
+    expect(Number.isFinite(pollDelay(true))).toBe(true);
   });
 });

@@ -111,8 +111,14 @@ import type { Receipt } from "../shots/types";
  *  8+ character word ("continue"), which here would swallow a typed line. */
 const CLIENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** T:16377 — the poll cadence. No backoff, ever. */
+/** T:16377 — the poll cadence while the page is looked at. */
 export const POLL_MS = 400;
+/** The cadence while the document is hidden: nobody is watching the stream, but
+ *  the loop keeps the turn's end, cards and queue landing, so it slows down
+ *  rather than stops. */
+export const HIDDEN_POLL_MS = 2000;
+/** The wait between two polls of a live turn. */
+export const pollDelay = (hidden: boolean): number => (hidden ? HIDDEN_POLL_MS : POLL_MS);
 /** How often a finished turn's tasks panel asks the session host that is still
  *  running its background work (`watchHostTasks`, agent.py `_run_tasks`): 1 s,
  *  so an ended job leaves the strip about a second later, like the CLI. */
@@ -2520,7 +2526,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
           break;
         }
-        await sleep(POLL_MS);
+        await sleep(pollDelay(typeof document !== "undefined" && document.hidden));
       }
     } catch (err) {
       // Drop the partial bubble so a failed run never leaves a half-streamed
