@@ -154,7 +154,8 @@ import {
   taskChatTarget,
 } from "@shell/tasks-lib";
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
-import { chipDoor, chipLabel, chipPath, chipPlace, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { chipDoor, chipLabel, chipPath, chipPlace, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { queueCaption } from "@platform/lib/queue";
 import { PlaceTags } from "./PlaceTags";
 import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
@@ -263,7 +264,7 @@ function seatFacts(seat: RailRow, place: RailPlace): SeatFacts {
   // The List's own title line (recap as the title once recaps are on).
   const line = cardTitleLine(merged);
   const draft = !!row && isDraftTask(row);
-  const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged);
+  const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged) ?? queuedEditHref(row, t.status);
   const at = chipPlace(merged, place);
   return {
     t,
@@ -421,20 +422,26 @@ export interface RailPeekProps {
 
 /** A seat with no conversation yet (header of the body above). */
 function PlainBody({ facts }: { facts: SeatFacts }) {
-  const { row, draft, label } = facts;
+  const { row, draft, label, merged } = facts;
+  // A QUEUED ROW (the project queue; owner, 2026-11-09) waits for its folder,
+  // not for a time: it says so in the Tasks page's own words (`queueCaption`:
+  // "after TASK-038 · 2nd"), and its words are the message waiting to go —
+  // the List row's sole message — rather than "No message yet".
+  const queue = !draft ? queueCaption(merged) : null;
   const form = (row?.form ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
   // The words: a task draft's description, a chat draft's composer preview.
   // Never the title again — it is in the head.
   const preview = str(row?.draft?.preview);
   const description = str(form.description);
-  const words = (draft ? description || preview : "") || "";
+  const waiting = queue ? str(row?.messages?.find((m) => m.state === "pending")?.body) : "";
+  const words = (draft ? description || preview : waiting) || "";
   const same = words.toLowerCase() === label.trim().toLowerCase();
   const saved = draft ? timeAgo(row?.draft?.updated_at) : null;
   // The run itself, not the List's chip: `nextRunChip` is null for an
   // Upcoming row because the row's own stamp already says the time there —
   // this card has no such stamp (CodeRabbit on #2029).
-  const at = !draft && row ? nextRunAt(row) : null;
+  const at = !draft && !queue && row ? nextRunAt(row) : null;
   const next = at ? `Runs ${relativeWhen(at)} · ${messageStamp(at)}` : null;
   const meta = draft
     ? [str(form.model), str(form.effort), str(form.permission)].filter(Boolean)
@@ -442,14 +449,16 @@ function PlainBody({ facts }: { facts: SeatFacts }) {
   return (
     <div className="claude-rail-peek-plain">
       <div className="claude-rail-peek-plain-row">
-        <span className={"claude-rail-peek-pill" + (draft ? " is-draft" : "")}>
-          {draft ? "Draft" : "Scheduled"}
+        <span className={"claude-rail-peek-pill" + (draft ? " is-draft" : queue ? " is-queued" : "")}>
+          {draft ? "Draft" : queue ? "Queued" : "Scheduled"}
         </span>
         <span className="claude-rail-peek-plain-when">
           {draft
             ? saved
               ? `Not sent · saved ${saved}`
               : "Not sent"
+            : queue
+            ? queue.text
             : next ?? "Not started yet"}
         </span>
       </div>

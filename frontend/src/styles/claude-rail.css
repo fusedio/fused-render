@@ -1322,6 +1322,10 @@ a.claude-rail-peek-scope:focus-visible {
   color: var(--error);
   border-color: color-mix(in srgb, var(--error) 45%, transparent);
 }
+.claude-rail-peek-pill.is-queued {
+  color: var(--status-queued);
+  border-color: color-mix(in srgb, var(--status-queued) 45%, transparent);
+}
 .claude-rail-peek-plain-when {
   flex: 1 1 auto;
   min-width: 0;

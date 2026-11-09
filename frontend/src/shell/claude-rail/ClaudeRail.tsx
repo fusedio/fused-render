@@ -299,6 +299,7 @@ import {
   ringPress,
   placeName,
   placeRoot,
+  queuedEditHref,
   railRows,
   railScope,
   railShown,
@@ -571,7 +572,7 @@ const SCHEDULE_WAIT_MS = 8000;
  *  Null while a pulse-only draft waits for the listing to name it. */
 function seatHref({ pulse: t, row }: RailRow): string | null {
   const merged = row ? { ...row, status: t.status } : t;
-  return (row && isDraftTask(row) ? draftHref(row) : null) ?? taskHref(merged);
+  return (row && isDraftTask(row) ? draftHref(row) : null) ?? taskHref(merged) ?? queuedEditHref(row, t.status);
 }
 
 /** The schedule's answer for the card, or empty if the read fails or outlasts

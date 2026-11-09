@@ -27,6 +27,7 @@ import {
   onRail,
   placeName,
   placeRoot,
+  queuedEditHref,
   railRows,
   railScope,
   railShown,
@@ -1005,5 +1006,50 @@ describe("placeTags (the place as one or two tags, 2026-11-06)", () => {
     expect(file).toHaveLength(1);
     expect(file[0].label).toBe("x.py");
     expect(file[0].door).toBeNull();
+  });
+});
+
+
+describe("queuedEditHref (a queued form row's door)", () => {
+  /** A `pending:<entry>` row the New task form put in a busy folder's line:
+   *  no session, one message waiting, `entry_origin: "page"`. */
+  function queuedForm(entry: string, over: Partial<Task> = {}): Task {
+    return task({
+      key: `pending:${entry}`,
+      session_id: "",
+      status: "queued",
+      entry_origin: "page",
+      message_count: 1,
+      messages: [{ message_id: "MSG-001", kind: "scheduled", body: "go", at: 1_000, ran_at: 0, state: "pending", entry_id: entry }],
+      ...over,
+    } as Partial<Task> & { key: string });
+  }
+
+  it("opens the Edit card on the waiting entry, as the pane's Recent list does", () => {
+    expect(queuedEditHref(queuedForm("e1"), "queued")).toBe("/tasks?edit=e1");
+  });
+
+  it("answers for queued rows only, and only with the full row held", () => {
+    // Upcoming keeps the rail's old answer (no ring); the pulse's status wins.
+    expect(queuedEditHref(queuedForm("e1"), "upcoming")).toBeNull();
+    expect(queuedEditHref(queuedForm("e1", { status: "upcoming" }), "queued")).toBe("/tasks?edit=e1");
+    expect(queuedEditHref(null, "queued")).toBeNull();
+    // A row with a session has its chat for a door (`taskHref`).
+    expect(queuedEditHref(queuedForm("e1", { session_id: "s1" }), "queued")).toBeNull();
+  });
+
+  it("every queued row of the place gets a door, in the List's order", () => {
+    const holder = task({ key: "h", status: "needs_attention", session_id: "s-h" });
+    const formA = queuedForm("eA", { queue_position: 1 } as Partial<Task>);
+    const formB = queuedForm("eB", { queue_position: 2 } as Partial<Task>);
+    const chat = task({ key: "pending:eC", session_id: "", status: "queued", entry_origin: "chat", queue_position: 3 } as Partial<Task> & { key: string });
+    const rows = [holder, chat, formB, formA];
+    const listing = new Map(rows.map((r) => [r.key, r]));
+    const seats = railRows(rows.map((r) => pulse(r)), listing, PLACE_ALL, 2_000);
+    // The rail's order IS the List's (sortForList), queued rows included.
+    expect(seats.map((s) => s.pulse.key)).toEqual(sortForList(rows, 2_000).map((r) => r.key));
+    for (const s of seats.filter((x) => x.pulse.status === "queued" && x.row?.entry_origin !== "chat")) {
+      expect(queuedEditHref(s.row, s.pulse.status)).toBe(`/tasks?edit=${s.pulse.key.slice("pending:".length)}`);
+    }
   });
 });

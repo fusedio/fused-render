@@ -41,7 +41,8 @@
 // the listed rows rather than above them — a chat that just finished takes
 // its place under the running ones, not the rail's head.
 import type { Task, TaskPulseTask } from "@platform/lib/api";
-import { isDraftTask, sortForList, taskColumn } from "@shell/tasks-lib";
+import { isDraftTask, sortForList, taskColumn, upcomingEditEntry } from "@shell/tasks-lib";
+import { SCHEDULE_URL } from "@apps/claude/sched/scheduled";
 import { canvasPagePath, type WorkbenchEnv } from "@apps/canvases/api";
 import { urlForFsPath } from "@platform/lib/router";
 import { isBlockedChat } from "./rail-peek-lib";
@@ -495,6 +496,25 @@ export function railRows(
       return pulse ? { pulse, row: held.get(row.key) ?? null } : null;
     })
     .filter((r): r is RailRow => r !== null);
+}
+
+/** A QUEUED FORM ROW'S DOOR (owner, 2026-11-09: "with project queue flag on,
+ *  the queued tasks don't appear on the rail"). A task the New task form, a
+ *  page (`fused.tasks.create`) or the calendar put in a busy folder's line is
+ *  a `pending:<entry>` row with no session, and `taskHref` gives it no door —
+ *  only a CHAT's queued words open a chat (tasks-lib `taskHrefView`). The
+ *  rail drew no ring for a row with no door, so those tasks left the rail
+ *  while the pane's Recent list showed them. Their door is the pane list's
+ *  own (apps/claude/ui/Lists `pressFor`): the Edit card on the one message
+ *  waiting (`upcomingEditEntry`). Queued rows only — an Upcoming row keeps
+ *  the rail's old answer — and only once the listing holds the full row
+ *  (the entry is read off its messages), as a draft's door waits for it. */
+export function queuedEditHref(row: Task | null, status: string): string | null {
+  if (!row || row.session_id) return null;
+  const live = { ...row, status } as Task;
+  if (taskColumn(live) !== "queued") return null;
+  const entry = upcomingEditEntry(live);
+  return entry ? `${SCHEDULE_URL}?edit=${encodeURIComponent(entry)}` : null;
 }
 
 /** What a pressed ring's row reported at the press. */
