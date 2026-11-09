@@ -168,7 +168,8 @@ export function savePending(
   lines: readonly PendingLine[],
   store: PendingStore | null = pendingStore(),
 ): boolean {
-  if (!sessionId || !store) return true;
+  if (!sessionId) return true;
+  if (!store) return !lines.length;
   try {
     if (lines.length) store.setItem(pendingKey(sessionId), JSON.stringify(lines));
     else store.removeItem(pendingKey(sessionId));
