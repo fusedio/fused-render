@@ -483,6 +483,9 @@ def _session_probe_once(binary: str, env: dict) -> dict:
         proc = subprocess.Popen(
             [binary, "-p", "hi", "--output-format", "stream-json", "--verbose",
              "--no-session-persistence", "--max-turns", "1", "--model", "haiku",
+             # The kill lands at `init`, before the turn; this is the ceiling
+             # if it ever lands late — one minimal call, never a second.
+             "--max-budget-usd", "0.01",
              "--setting-sources", ""],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env=env, **SUBPROCESS_KWARGS,
@@ -490,10 +493,9 @@ def _session_probe_once(binary: str, env: dict) -> dict:
     except OSError:
         return {}
     found = {}
-    timer = threading.Timer(_SESSION_PROBE_TIMEOUT, _stop_probe, args=(proc,))
-    timer.start()
+    deadline = time.monotonic() + _SESSION_PROBE_TIMEOUT
     try:
-        for line in proc.stdout:
+        for line in _lines_until(proc, deadline):
             try:
                 event = json.loads(line)
             except ValueError:
@@ -509,22 +511,63 @@ def _session_probe_once(binary: str, env: dict) -> dict:
                     found[name] = {"status": status, "source": row.get("source") or ""}
             break
     finally:
-        timer.cancel()
         _stop_probe(proc)
         with contextlib.suppress(Exception):
             proc.stdout.close()
-        try:
-            proc.wait(5)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(Exception):
-                proc.kill()
     return found
 
 
+def _lines_until(proc, deadline: float):
+    """Lines of `proc.stdout` until EOF or the deadline — the read itself is
+    bounded, so cleanup never waits on a pipe something else may hold open.
+    POSIX polls the fd; Windows (no selectors on pipes) reads blocking under a
+    timer that escalates terminate -> kill, which closes the pipe."""
+    if _platform.IS_WINDOWS:
+        timer = threading.Timer(max(0.0, deadline - time.monotonic()), _stop_probe, args=(proc,))
+        timer.start()
+        try:
+            yield from proc.stdout
+        finally:
+            timer.cancel()
+        return
+    import selectors
+
+    fd = proc.stdout.fileno()
+    sel = selectors.DefaultSelector()
+    sel.register(fd, selectors.EVENT_READ)
+    buf = b""
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0 or not sel.select(left):
+                return
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buf += chunk
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                yield raw.decode("utf-8", "replace")
+    finally:
+        sel.close()
+
+
 def _stop_probe(proc) -> None:
-    if proc.poll() is None:
+    """terminate, then kill: a probe that ignores SIGTERM still ends."""
+    if proc.poll() is not None:
+        return
+    with contextlib.suppress(OSError):
+        proc.terminate()
+    try:
+        proc.wait(3)
+    except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
-            proc.terminate()
+            proc.kill()
+        with contextlib.suppress(Exception):
+            proc.wait(2)
 
 
 # mcp.md §2: `claude mcp list` has no structured output, so parse its human-readable

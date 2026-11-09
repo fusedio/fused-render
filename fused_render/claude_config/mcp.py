@@ -40,7 +40,8 @@ _LIST_TIMEOUT = 28
 # them (lib.claude_session_mcp_status), then the list. The waiters in main()
 # wait THIS long, so a hung probe cannot turn a refresh still under way into a
 # reported failure.
-_REFRESH_BUDGET = 2 * lib._SESSION_PROBE_TIMEOUT + 1 + _LIST_TIMEOUT + 5
+# (+5 per attempt: the terminate -> kill escalation in lib._stop_probe.)
+_REFRESH_BUDGET = 2 * (lib._SESSION_PROBE_TIMEOUT + 5) + 1 + _LIST_TIMEOUT + 5
 
 _lock = threading.Lock()
 _inflight = None
