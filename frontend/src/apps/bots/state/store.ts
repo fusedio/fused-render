@@ -56,6 +56,9 @@ export interface BotsState {
   /** The thread sits at its end (following along). */
   pinned: boolean;
   showHidden: boolean;
+  /** A poll has answered at least once in this document (pollOnce): until then an empty `bots` is "not yet known",
+   *  not "none" — the rail's Bots card shows "Loading…" on the one and "No bots yet" on the other (Bugbot on #2206). */
+  polled: boolean;
   /** A poll landed while the live view was open; the thread pins to the end when it closes. */
   /** Calls slower than SLOW_MS (last 30). */
   slow: SlowCall[];
@@ -89,7 +92,7 @@ let S: BotsState = {
   bots: [], events: {}, cursors: {}, sel: typeof location === "undefined" ? null : urlSel(),
   usage: null, imessage: null,
   seen: {}, base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
-  showHidden: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
+  showHidden: false, polled: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
   banner: { show: false, text: "" }, toasts: [],
   buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Tasks · Claude tasks that create fused apps", hidden: false },
   ui: { dialog: null, menu: null },
@@ -568,7 +571,7 @@ export async function pollOnce(): Promise<void> {
       // Nothing moved (and no bot left): keep the reference.
       if (seenSame && Object.keys(seen).length === Object.keys(S.seen).length) seen = S.seen;
       commit({
-        bots: r.bots, events, cursors, seen,
+        bots: r.bots, events, cursors, seen, polled: true,
         ...(r.usage ? { usage: r.usage } : {}), ...(r.imessage ? { imessage: r.imessage } : {}),
       });
       // The sidebar's Bots entry: while this page polls, it is the one source, and the rail moves on the same tick

@@ -381,6 +381,16 @@ import {
   tasksDoorAction,
   useTasksCard,
 } from "./tasks-peek-store";
+import {
+  BOTS_CARD_KEY,
+  BOTS_PEEK_ID,
+  botsCardIntent,
+  botsDoorAction,
+  closeBotsCard,
+  focusBotsCard,
+  registerBotsDoor,
+  useBotsCard,
+} from "./bots-peek-store";
 
 /** THE RAIL'S WIDTH, SAID TO THE DOCUMENT (owner, 2026-11-05: "move the
  *  notification modal to the right a little bit so it doesn't cover the mini
@@ -1690,13 +1700,17 @@ export function ClaudeRail({
   // (`shutPop`, declared with its close signal below; a card mid-Create
   // keeps its place).
   const tasksCard = useTasksCard();
+  // …AND THE BOTS CARD'S (2026-11-09): the Bots door's own window A card
+  // (BotsPeek, bots-peek-store), the Tasks card's twin in every rule below.
+  const botsCard = useBotsCard();
   const pinnedUp = pinned && peekKey !== null;
   const botPinnedUp = botPinned && botKey !== null;
   const popPinnedUp = !!card?.pop && !!card.pinned;
   const tasksHeldUp = navDoors && tasksCard.up && tasksCard.pinned;
-  const anyPinned = pinnedUp || botPinnedUp || popPinnedUp || tasksHeldUp;
-  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp });
-  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp };
+  const botsHeldUp = navDoors && botsCard.up && botsCard.pinned;
+  const anyPinned = pinnedUp || botPinnedUp || popPinnedUp || tasksHeldUp || botsHeldUp;
+  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp });
+  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp };
   const shutPopRef = useRef<() => boolean>(() => false);
   const pinnedRef = useRef(onCardPinned);
   pinnedRef.current = onCardPinned;
@@ -1712,6 +1726,7 @@ export function ClaudeRail({
         if (pinnedNow.current.task && !heldRef.current && !document.getElementById(PEEK_ID)?.contains(a)) intent.dismiss();
         if (pinnedNow.current.bot && !botHeldRef.current && !document.getElementById(BOT_PEEK_ID)?.contains(a)) botIntent.dismiss();
         if (pinnedNow.current.tasks && !document.getElementById(TASKS_PEEK_ID)?.contains(a)) closeTasksCard();
+        if (pinnedNow.current.bots && !document.getElementById(BOTS_PEEK_ID)?.contains(a)) closeBotsCard();
         if (pinnedNow.current.pop && !document.querySelector(".modal-popover")?.contains(a)) shutPopRef.current();
       }, 0);
     };
@@ -1941,8 +1956,14 @@ export function ClaudeRail({
   const tasksSeq = navDoors && tasksCard.up ? tasksCard.seq : null;
   const tasksUpRef = useRef(false);
   tasksUpRef.current = tasksSeq !== null;
+  // …AND THE BOTS CARD (2026-11-09), window A's too: the two door cards put
+  // each other down, and the list's card and the + popover put both down.
+  const botsSeq = navDoors && botsCard.up ? botsCard.seq : null;
+  const botsUpRef = useRef(false);
+  botsUpRef.current = botsSeq !== null;
   useEffect(() => {
     if (tasksSeq === null) return;
+    closeBotsCard();
     if (cardRef.current?.pop) {
       const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
       if (!shut || shut.disabled) {
@@ -1955,11 +1976,29 @@ export function ClaudeRail({
     intent.dismiss();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasksSeq]);
+  useEffect(() => {
+    if (botsSeq === null) return;
+    closeTasksCard();
+    if (cardRef.current?.pop) {
+      const shut = railRef.current?.ownerDocument.querySelector<HTMLButtonElement>(".modal-popover .deploy-close");
+      if (!shut || shut.disabled) {
+        closeBotsCard();
+        return;
+      }
+      setCardCloseSignal((n) => n + 1);
+    }
+    setHeld(false);
+    intent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [botsSeq]);
   // …up OR still a hover's pending read (CodeRabbit on #2189: the pointer
   // resting on the Tasks door while the + pins by keyboard): `dismiss` is a
   // no-op on a card that is not up, and cancels the open that was coming.
   useEffect(() => {
-    if ((peekKey ?? popSeq) !== null) closeTasksCard();
+    if ((peekKey ?? popSeq) !== null) {
+      closeTasksCard();
+      closeBotsCard();
+    }
   }, [peekKey, popSeq]);
   // ANOTHER WINDOW A CARD PINNED (the Tasks card by its door, the list card
   // by a ring) while a + or draft hover's read is still out: that preview
@@ -1967,25 +2006,27 @@ export function ClaudeRail({
   // `cancelPreview`; CodeRabbit on #2189). `plusIntent` is declared below;
   // the effect runs after the render that declared it.
   const tasksPinnedUp = navDoors && tasksCard.up && tasksCard.pinned;
+  const botsPinnedUp = navDoors && botsCard.up && botsCard.pinned;
   const listPinnedUp = pinned && peekKey !== null;
   useEffect(() => {
-    if (tasksPinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
-  }, [tasksPinnedUp, listPinnedUp]);
+    if (tasksPinnedUp || botsPinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
+  }, [tasksPinnedUp, botsPinnedUp, listPinnedUp]);
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned + popover or Tasks card, as
   // it closes the pinned list card (its rule above; owner, 2026-11-08: the
   // gaps between window A's cards closed). Inside either, Escape is its own.
   useEffect(() => {
-    if (!popPinnedUp && !tasksPinnedUp) return;
+    if (!popPinnedUp && !tasksPinnedUp && !botsPinnedUp) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       if (e.target !== document.body && e.target !== document.documentElement) return;
       e.preventDefault();
       if (tasksPinnedUp) closeTasksCard();
+      if (botsPinnedUp) closeBotsCard();
       if (popPinnedUp) shutPop();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [popPinnedUp, tasksPinnedUp, shutPop]);
+  }, [popPinnedUp, tasksPinnedUp, botsPinnedUp, shutPop]);
   // BESIDE THE OPEN PANE IT GOES THE WAY WINDOW A GOES (owner, 2026-11-08:
   // "if the sidebar is open, a press opens in the sidebar and closes window
   // A; in the expanded sidebar, when the sidebar's chat changes, close window
@@ -2002,6 +2043,7 @@ export function ClaudeRail({
     paneChatWas.current = activeSessionId;
     if (!paneOpen || (wasOpen && chatWas === activeSessionId)) return;
     if (tasksUpRef.current) closeTasksCard();
+    if (botsUpRef.current) closeBotsCard();
     // …and the + popover, the same way (owner, 2026-11-08: the gaps between
     // window A's cards closed).
     shutPop();
@@ -2018,6 +2060,7 @@ export function ClaudeRail({
       listPinned: pinned && peekKey !== null,
       popPinned: !!card?.pop && !!card.pinned,
       tasksPinned: tasksCard.up && tasksCard.pinned,
+      botsPinned: botsCard.up && botsCard.pinned,
       modalCard: !!card && !card.pop,
     });
   // A hover on the + previews only where its press opens the popover card,
@@ -2395,12 +2438,6 @@ export function ClaudeRail({
     botsPulse.waiting > 0 ? "is-attention" : botsPulse.running > 0 ? "is-running" : botsPulse.unread > 0 ? "is-unread" : null;
   const tasksTip = pulseTitle(tasksPulse);
   const botsTip = botsPulseTitle(botsPulse);
-  const navPress = (href: string) => (e: ReactMouseEvent<HTMLAnchorElement>) => {
-    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-    e.preventDefault();
-    hideHint();
-    void navigateUrl(href);
-  };
   // THE TASKS DOOR OPENS THE TASKS CARD (TasksPeek; owner, 2026-11-07):
   // resting on it previews the card (window A's timings, tasks-peek-store's
   // intent), a press pins it, a press while pinned closes it; a modified press
@@ -2432,6 +2469,34 @@ export function ClaudeRail({
       // the card, as a ring's does into the list card (CodeRabbit,
       // 2026-11-08: left on the door, the next Tab reached the + instead).
       if (e.detail === 0) cardFocusSoon(TASKS_PEEK_ID, focusTasksCard);
+    }
+  };
+  // THE BOTS DOOR OPENS THE BOTS CARD (BotsPeek; owner, 2026-11-09), the
+  // Tasks door's rules to the letter: a hover previews, a press pins, a
+  // press while pinned closes; a modified press is the link's, and with no
+  // card to show the door is the plain link to /bots (bots-peek-store
+  // `botsDoorAction`). Registered so the card stands level with it.
+  const botsDoorRef = useRef<HTMLAnchorElement | null>(null);
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    const door = botsDoorRef.current;
+    return navDoors && shown && el && door ? registerBotsDoor(el, door) : undefined;
+  }, [navDoors, shown, botsDoor]);
+  const botsUp = navDoors && botsCard.up;
+  const pressBotsDoor = (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    const act = botsDoorAction({
+      modified: e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0,
+      ready: botsCard.ready,
+      pinned: botsCard.up && botsCard.pinned,
+    });
+    if (act === "native") return;
+    e.preventDefault();
+    hideHint();
+    if (act === "navigate") void navigateUrl("/bots");
+    else if (act === "close") closeBotsCard();
+    else {
+      botsCardIntent().press(BOTS_CARD_KEY);
+      if (e.detail === 0) cardFocusSoon(BOTS_PEEK_ID, focusBotsCard);
     }
   };
 
@@ -2524,7 +2589,7 @@ export function ClaudeRail({
                 botHeld: botUp !== null,
                 // Window A held by the + popover or the Tasks card: the list's
                 // rings say their title (`aHovers` shows them no card).
-                windowAHeld: (!!card?.pop && !!card.pinned) || (tasksCard.up && tasksCard.pinned),
+                windowAHeld: (!!card?.pop && !!card.pinned) || (tasksCard.up && tasksCard.pinned) || (botsCard.up && botsCard.pinned),
                 sectionSize: foot ? favs.length : baseSeats.length,
               });
               // The rings' own captions step aside for the card: a hover
@@ -2782,12 +2847,28 @@ export function ClaudeRail({
               stay at the rail's foot (window B's). */}
           {botsDoor && (
             <a
+              ref={botsDoorRef}
               href="/bots"
               className={"sidebar-rail-btn claude-rail-item" + (botsHere ? " active" : "")}
               title={botsTip ? `Bots — ${botsTip}` : "Bots"}
               aria-label="Bots"
               {...(botsHere ? { "aria-current": "page" as const } : {})}
-              onClick={navPress("/bots")}
+              {...(botsCard.ready
+                ? { "aria-haspopup": "dialog" as const, "aria-expanded": botsUp, "aria-controls": BOTS_PEEK_ID }
+                : {})}
+              onClick={pressBotsDoor}
+              onPointerEnter={(e) => {
+                if (e.pointerType !== "touch" && botsCard.ready && aHovers()) botsCardIntent().enterRing(BOTS_CARD_KEY, "pointer");
+              }}
+              onPointerLeave={() => botsCardIntent().leaveRing("pointer")}
+              onKeyDown={(e) => {
+                // Escape lets a PREVIEW go (a pinned card closes by its ×, or
+                // this door's press).
+                if (e.key === "Escape" && botsUp && !botsCard.pinned) {
+                  e.preventDefault();
+                  closeBotsCard(true);
+                }
+              }}
             >
               {BOTS_ICON}
               {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}

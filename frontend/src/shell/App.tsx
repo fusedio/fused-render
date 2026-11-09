@@ -66,6 +66,7 @@ import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
 import { TasksPeek } from "@shell/claude-rail/TasksPeek";
+import { BotsPeek } from "@shell/claude-rail/BotsPeek";
 import { BotCardHost } from "@shell/claude-rail/BotCardHost";
 import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
@@ -1371,6 +1372,10 @@ export default function App({ config }: { config: Config }) {
           TasksPeek): mounted once here for the same reason — its view,
           filters and scroll survive a hop (owner, 2026-11-07). */}
       {!IS_EMBED && <TasksPeek />}
+      {/* The Bots card off the rail's Bots door (shell/claude-rail BotsPeek):
+          window A's too, mounted once here for the same reason — its list's
+          search and scroll survive a hop (owner, 2026-11-09). */}
+      {!IS_EMBED && <BotsPeek />}
       {/* The pinned bot's card (shell/claude-rail BotCardHost): window B's
           other card, mounted once here for the favourite's reason — a page's
           view switch remounts its rail, and a card that lived there
