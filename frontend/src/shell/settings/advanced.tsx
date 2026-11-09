@@ -9,7 +9,6 @@ import {
   putCallsParamsMode,
   putCallsRetentionDays,
   putClaudeMaxConcurrentSessions,
-  revealPath,
   runIndexQuery,
   type CallsParamsMode,
   type DiagnosticsPlan,
@@ -447,9 +446,17 @@ export function DiagnosticsControl() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => revealPath(result.path).catch((e: Error) => setError(e.message))}
+            onClick={() => {
+              // The in-app explorer's listing of the folder, the zip selected
+              // — stays inside the app rather than handing off to Finder.
+              const cut = Math.max(result.path.lastIndexOf("/"), result.path.lastIndexOf("\\"));
+              navigate(cut > 0 ? result.path.slice(0, cut) : result.path, {
+                isDir: true,
+                sel: cut > 0 ? result.path.slice(cut + 1) : null,
+              });
+            }}
           >
-            {isMac ? "Show in Finder" : "Show in folder"}
+            Show in explorer
           </Button>
           <Button
             variant="outline"
