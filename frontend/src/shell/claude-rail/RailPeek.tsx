@@ -133,6 +133,8 @@ import { shortTaskId } from "@platform/lib/task-id";
 import { ChatMount, draftHref } from "@apps/claude";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { Kebab } from "@apps/claude/ui/Kebab";
+import type { BreakoutControl } from "@apps/claude/ClaudeChat";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
@@ -349,7 +351,7 @@ export interface RailPeekProps {
    *  the ring is not left saying `aria-expanded` for a card that never drew. */
   onNoRoom: () => void;
   /** "Open in panel →", and any hop the chat itself makes. */
-  onOpenChat: (href: string) => void;
+  onOpenChat: (href: string) => void | Promise<boolean>;
   /** The canvas the PAGE stands on, where the page can select a node in
    *  place (claude-rail-lib `RailHere`; the canvas page only): the where-chip
    *  of a chat on that canvas selects its node there instead of navigating.
@@ -948,6 +950,22 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // → `onHold(true)`), and a press on one of its rows is "inside" by the
   // same route (`onPressInside`). Filing or erasing the task re-reads the
   // listing; the pulse then takes the ring, and the card with it (prune).
+  // ONE ⋮ EVERYWHERE (Akshil, 2026-11-09: "keep all options in window A/B
+  // kebab menu as well"): the pane chat's menu leads with Full screen and
+  // Breakout…, so this card's does too. Breakout is reported by each mounted
+  // chat (`onBreakoutControl`, TaskPeek's route); one stable reporter per chat
+  // key, because a fresh callback each render would re-fire the chat's report
+  // effect and loop.
+  const [breakoutCtls, setBreakoutCtls] = useState<Record<string, BreakoutControl | null>>({});
+  const breakoutReporters = useRef(new Map<string, (ctl: BreakoutControl | null) => void>());
+  const breakoutReporter = (key: string) => {
+    let fn = breakoutReporters.current.get(key);
+    if (!fn) {
+      fn = (ctl) => setBreakoutCtls((m) => (m[key] === ctl ? m : { ...m, [key]: ctl }));
+      breakoutReporters.current.set(key, fn);
+    }
+    return fn;
+  };
   const onFiled = () => {
     // A filed or erased chat leaves the rail: a held card lets go with it
     // (a hold must not keep a ring for a chat the reader just put away).
@@ -1548,6 +1566,31 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                       queued={taskColumn(head.t) === "queued"}
                       onErased={onFiled}
                       onArchived={onFiled}
+                      // FULL SCREEN: the Open door, then the Claude panel
+                      // filling the window (side-maximized-store).
+                      {...(head.href && head.t.session_id && opensInSidePane(head.href) ? {
+                        fullScreen: {
+                          on: false,
+                          onToggle: () => {
+                            // A request the side-pane chat takes once it is
+                            // mounted there (side-maximized-store) — made only
+                            // once the hop went, so a refused leave never
+                            // maximizes the pane it stayed on.
+                            const sid = head.t.session_id;
+                            void Promise.resolve(onOpenChat(head.href!)).then((went) => {
+                              if (went !== false) requestSideMaximized(sid);
+                            });
+                            onHeld(false);
+                            onDismiss("door");
+                          },
+                        },
+                      } : {})}
+                      {...(breakoutCtls[head.t.key]?.available ? {
+                        breakout: {
+                          picking: breakoutCtls[head.t.key]!.picking,
+                          onToggle: breakoutCtls[head.t.key]!.toggle,
+                        },
+                      } : {})}
                     />
                   </AgentProvider>
                 </span>
@@ -1688,6 +1731,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 {t.session_id ? (
                   <ChatMount
                     onBreakout={breakoutOpener()}
+                    onBreakoutControl={breakoutReporter(t.key)}
                     file={taskChatTarget(row ?? t)}
                     sessionId={t.session_id}
                     // The task's own settings, a seed (TaskPeek passes the same).

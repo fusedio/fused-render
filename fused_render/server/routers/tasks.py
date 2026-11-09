@@ -4981,7 +4981,9 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
     and fetching it separately would mean a request between the click and the
     modal, which is exactly the pause the feature exists to remove.
     """
-    title = str(record.get("title") or "").strip()
+    # A NAME TYPED INTO THE CARD'S HEAD wins over the words' first line
+    # (drafts.TASK_FIELDS `name`, 2026-11-09).
+    title = str(record.get("name") or "").strip() or str(record.get("title") or "").strip()
     if not title:
         title = _draft_title(record.get("description"), "")
     target = str(record.get("target") or "")

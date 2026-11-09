@@ -1415,10 +1415,13 @@ a.claude-rail-peek-scope:focus-visible {
    chat floating bottom-right, one per open breakout, stacked by an inline
    offset. The card chrome is `.claude-rail-peek-card`; this is only the fixed
    box (no transform on it, for the same fixed-popover reason as the rail
-   peek) and the head's two buttons. */
+   peek) and the head's two buttons.
+   47: one above the pinned door cards (Tasks/Bots, 46) and the chat cards
+   (45), so a breakout opened from a card lands on top of it (Akshil,
+   2026-11-09); still under the + popover / modals (48). */
 .breakout-card {
   position: fixed;
-  z-index: 45;
+  z-index: 47;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;

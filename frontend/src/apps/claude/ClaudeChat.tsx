@@ -104,7 +104,13 @@ import {
   type PaneSrcFlags,
   type TargetNoun,
 } from "./pane";
-import { setSideMaximized, useSideMaximized } from "@platform/lib/side-maximized-store";
+import {
+  setSideMaximized,
+  subscribeSideMaximizedRequest,
+  takeSideMaximizedRequest,
+  useSideMaximized,
+} from "@platform/lib/side-maximized-store";
+import { TASK_ICON_EXIT_FULL_SCREEN } from "@platform/ui/TaskActionIcons";
 import {
   AnnStrip,
   ArtStrip,
@@ -5757,9 +5763,47 @@ function ChatBody(props: ChatBodyProps) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [picking]);
+  // A FULL SCREEN ASKED FOR BY A RAIL CARD (side-maximized-store): taken here,
+  // once this chat is mounted in a side pane on that session — after the new
+  // page's pane has settled its tab, so its "not the chat tab" guard cannot
+  // undo it. A frame later for the same reason: the pane's own effects run
+  // after this child's. A TAKEN request is spent, so its frame is not
+  // cancelled with this instance: the store is the window's, and the pane on
+  // that session that replaces this one (the hop's remount) is the one it fills.
+  const paneSessionId = state.sessionId ?? "";
+  useEffect(() => {
+    if (!inSidePane || !paneSessionId) return;
+    const take = () => {
+      if (!takeSideMaximizedRequest(paneSessionId)) return;
+      // …unless the pane closed in that frame: a closed pane dropped full
+      // screen on purpose, and the flag must not come back for its reopen.
+      requestAnimationFrame(() => {
+        if (document.querySelector(".preview-side .chat-root, .listing-pane-slot .chat-root")) {
+          setSideMaximized(true);
+        }
+      });
+    };
+    take();
+    return subscribeSideMaximizedRequest(take);
+  }, [inSidePane, paneSessionId]);
   const kebabEl = (
     <>
       {canvasShotSeat}
+      {/* EXIT FULL SCREEN, ON THE BAR (Akshil, 2026-11-09: "in full screen on
+          top left have a exit fullscreen button outside kebab menu"): the
+          menu's item stays, this is the one-press way back beside it. Only
+          while this side pane is full screen. */}
+      {inSidePane && sideMaximized ? (
+        <button
+          type="button"
+          className="c-kebabbtn c-exitfs"
+          aria-label="Exit full screen"
+          title="Exit full screen"
+          onClick={() => setSideMaximized(false)}
+        >
+          {TASK_ICON_EXIT_FULL_SCREEN}
+        </button>
+      ) : null}
       <Kebab
         {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
         file={file}

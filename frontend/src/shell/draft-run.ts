@@ -36,6 +36,7 @@ import type { DraftAttachment } from "@platform/lib/drafts";
 import { copyToTaskShots } from "@apps/claude/ui/SchedButton";
 import {
   buildSchedulePayload,
+  composeTaskMessage,
   seededDraftForm,
   toLocalInput,
 } from "./NewJobModal";
@@ -146,6 +147,10 @@ export function boundDraftPayload(
     ? saved.customRule
     : repeatChoicesFor(now).find((c) => c.key === repeat)?.rule ?? null;
   const attachments = saved.attachments ?? [];
+  // THE HEAD'S NAME, when the card was given one (`name`): it names the task,
+  // as Create's `taskTitle` does, and the words then go whole — the first line
+  // included — instead of being recomposed under a title they no longer share.
+  const named = (saved.name ?? "").trim();
   // THE AGENT THIS RUNS ON, resolved the way the card resolved it — its pick,
   // else the catalog's default — and the model/effort held to THAT agent's
   // vocabulary (D2): a draft written before its agent was stored can carry the
@@ -163,7 +168,10 @@ export function boundDraftPayload(
   }
   return buildSchedulePayload({
     target: saved.target ?? "",
-    title: saved.title ?? "",
+    title: named || (saved.title ?? ""),
+    ...(named
+      ? { text: saved.text || composeTaskMessage(saved.title ?? "", saved.description ?? "") }
+      : {}),
     // The card's second field. Empty is legal — a task whose whole instruction
     // fits in its title should not have to say it twice.
     message: saved.description ?? "",

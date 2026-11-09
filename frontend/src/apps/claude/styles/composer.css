@@ -2164,3 +2164,12 @@ select.c-pill {
   color: var(--c-dim, var(--fg-muted));
   overflow-wrap: anywhere;
 }
+/* Exit full screen beside the ⋮ (ClaudeChat `kebabEl`): the ⋮'s own chassis,
+   a glyph instead of the dots. */
+.c-exitfs {
+  width: 26px;
+}
+.c-exitfs svg {
+  width: 14px;
+  height: 14px;
+}

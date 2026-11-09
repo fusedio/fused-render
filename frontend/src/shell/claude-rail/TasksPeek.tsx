@@ -51,6 +51,8 @@ import { breakoutOpener } from "@platform/lib/breakouts";
 import { navigateUrl } from "@platform/lib/router";
 import { ChatMount } from "@apps/claude";
 import { Kebab } from "@apps/claude/ui/Kebab";
+import type { BreakoutControl } from "@apps/claude/ClaudeChat";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { readListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
 import { cardTitleLine, taskChatTarget, taskColumn, taskHref } from "@shell/tasks-lib";
@@ -105,6 +107,11 @@ export function TasksPeek() {
   // the card; Back (or the views' own close) lets it go — and so does the
   // card going down (header): the next opening is the list.
   const [chat, setChat] = useState<{ key: string; anchor: string | null } | null>(null);
+  // The open chat's Breakout, as it reports it (`onBreakoutControl`, TaskPeek's
+  // route) — so this card's ⋮ carries the pane chat's items too (Akshil,
+  // 2026-11-09). `setState` is stable, so the chat's report effect is not
+  // re-fired by a fresh callback.
+  const [breakoutCtl, setBreakoutCtl] = useState<BreakoutControl | null>(null);
   useEffect(() => {
     if (!up) setChat(null);
   }, [up]);
@@ -248,6 +255,27 @@ export function TasksPeek() {
                           queued={taskColumn(task) === "queued"}
                           onErased={() => setChat(null)}
                           onArchived={() => setChat(null)}
+                          // FULL SCREEN: the Open door, then the Claude panel
+                          // filling the window (side-maximized-store).
+                          {...(taskHref(task) && opensInSidePane(taskHref(task)!) ? {
+                            fullScreen: {
+                              on: false,
+                              onToggle: () => {
+                                const href = taskHref(task);
+                                if (!href) return;
+                                // A request the side-pane chat takes once
+                                // it is mounted there (side-maximized-store) —
+                                // made only once the hop went.
+                                const sid = task.session_id;
+                                void api.openPage(href).then((went) => {
+                                  if (went !== false) requestSideMaximized(sid);
+                                });
+                              },
+                            },
+                          } : {})}
+                          {...(breakoutCtl?.available ? {
+                            breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle },
+                          } : {})}
                         />
                       </AgentProvider>
                     </span>
@@ -297,6 +325,7 @@ export function TasksPeek() {
                 {task?.session_id ? (
                   <ChatMount
                     onBreakout={breakoutOpener()}
+                    onBreakoutControl={setBreakoutCtl}
                     file={taskChatTarget(task)}
                     sessionId={task.session_id}
                     // The task's own settings, a seed (TaskPeek passes the same).

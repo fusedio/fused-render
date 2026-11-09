@@ -81,8 +81,9 @@ export interface DoorCardApi {
   /** The ×: hands the keyboard to the door and puts the card down. */
   close(): void;
   /** Open: the page itself (`href` unless another is given); the card goes
-   *  once the hop went (a leave guard may refuse it — FavouritePeek's rule). */
-  openPage(href?: string): void;
+   *  once the hop went (a leave guard may refuse it — FavouritePeek's rule).
+   *  Resolves false when refused. */
+  openPage(href?: string): Promise<boolean>;
   /** The head's × — the keyboard's seat with the list up. */
   closeRef: RefObject<HTMLButtonElement>;
   /** The chat head's Back — the keyboard's seat with a chat up. */
@@ -436,11 +437,11 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
   // OPEN: the page itself; the card goes once the hop went (a leave guard
   // may refuse it — FavouritePeek's rule).
   const openPage = useCallback(
-    (to = href) => {
-      void navigateUrl(to).then((went) => {
+    (to = href) =>
+      navigateUrl(to).then((went) => {
         if (went !== false) close();
-      });
-    },
+        return went;
+      }),
     [close, href],
   );
 

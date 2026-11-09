@@ -214,6 +214,13 @@ describe("a bound form, dropped from the row that wears its chip", () => {
     expect(body.draft_id).toBe("d9");
   });
 
+  test("a head name names the task, and the words still go whole (Bugbot #2208)", () => {
+    const body = boundDraftPayload("d9", { ...FORM, name: "Changelog sweep" }, NOW)!;
+    expect(body.title).toBe("Changelog sweep");
+    expect(body.message).toContain("Update the changelog");
+    expect(body.message).toContain("Pull the merged PRs since the last tag.");
+  });
+
   test("still refuses a form the card itself would refuse", () => {
     expect(boundDraftPayload("d9", { ...FORM, title: "" }, NOW)).toBeNull();
     expect(boundDraftPayload("d9", null, NOW)).toBeNull();

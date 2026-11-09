@@ -370,12 +370,14 @@ export function FavouritePeek() {
       const door = railDoor(rail);
       const went = door ? door(href) : navigateUrl(href);
       const key = open?.key ?? null;
-      if (!key) return;
-      void Promise.resolve(went).then((ok) => {
-        if (ok === false) return;
-        clearFavOpen(key);
-        setFavRestore(key);
-      });
+      if (key) {
+        void Promise.resolve(went).then((ok) => {
+          if (ok === false) return;
+          clearFavOpen(key);
+          setFavRestore(key);
+        });
+      }
+      return went;
     },
     [seat, rail, open],
   );

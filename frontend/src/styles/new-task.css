@@ -1258,3 +1258,169 @@ button.new-task-source:focus-visible {
   border-radius: 8px;
   gap: 8px;
 }
+
+/* FOLDER AND WHEN IN THE HEAD (Akshil, 2026-11-09): the pill group sits in
+   Modal `headActions`, against the ✕. The row's own wrap/slack rules are off
+   here — one line, no wrap, and the value cell narrower so a long folder name
+   cannot shove the title out of the head. */
+/* Boxless: only there so the body-scoped popover rules (`.deploy-body …`,
+   `.schedule-form …`) still reach the head's Folder and When panels. */
+.new-task-dialog .nt-head-scope {
+  display: contents;
+}
+
+.new-task-dialog .nt-pills--head {
+  flex-wrap: nowrap;
+}
+
+.new-task-dialog .nt-pills--head .nt-pills-right {
+  flex-wrap: nowrap;
+  margin-left: 0;
+}
+
+.new-task-dialog .nt-pills--head .pp-v {
+  max-width: 140px;
+}
+
+/* THE CARD'S VERBS at the right end of the pill row: Discard/Delete, Back to
+   chat, Create — the pills' height so the row reads as one line. Takes the
+   row's slack, and on a row too narrow drops to its own line, flush right. */
+.nt-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.nt-row-actions .nt-foot-left {
+  gap: 6px;
+  margin-right: 0;
+}
+
+.new-task-dialog .nt-row-actions .btn {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  align-self: center;
+}
+
+.new-task-dialog .nt-row-actions .btn-danger-text {
+  padding: 0 8px;
+}
+
+/* THE TASK'S NAME in the head (NewJobModal `title`): an input that reads as
+   the heading. Grey while unnamed (placeholder: the text's first line or
+   "Untitled task"); on hover the quiet wash the pills use, the text cursor and
+   a pencil say it can be typed into. */
+.nt-name-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  border-radius: 6px;
+  padding: 0 6px;
+  margin-left: -6px;
+}
+
+.nt-name-wrap:hover,
+.nt-name-wrap:focus-within {
+  background: var(--ctl-quiet-bg);
+}
+
+.new-task-dialog .nt-name {
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  cursor: text;
+  text-overflow: ellipsis;
+}
+
+.new-task-dialog .nt-name::placeholder {
+  color: var(--fg-muted);
+  opacity: 1;
+}
+
+.nt-name-pen {
+  display: inline-flex;
+  flex: none;
+  color: var(--fg-muted);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.nt-name-wrap:hover .nt-name-pen,
+.nt-name-wrap:focus-within .nt-name-pen {
+  opacity: 1;
+}
+
+/* ✕ wears the head pills' hover (Folder, When): the same quiet wash, box and
+   radius, so the three controls on the right read as one group. */
+.new-task-dialog .modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+}
+
+.new-task-dialog .modal-close:hover:not(.is-armed) {
+  background: var(--ctl-quiet-bg);
+  color: var(--fg);
+}
+
+/* NARROW CARDS (a slim rail popover): the head's three parts give way rather
+   than push the ✕ out — the name and the Folder/When values ellipsize, the
+   agent crumb and the ✕ keep their size. */
+.new-task-dialog .modal-head {
+  min-width: 0;
+}
+
+.new-task-dialog .modal-head-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.new-task-dialog .modal-head-title h2 {
+  min-width: 0;
+}
+
+.new-task-dialog .modal-head-title .pp--agent {
+  flex: none;
+}
+
+.new-task-dialog .nt-name-wrap {
+  min-width: 0;
+}
+
+.new-task-dialog .nt-name {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 48px;
+}
+
+.new-task-dialog .modal-head-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.new-task-dialog .nt-pills--head,
+.new-task-dialog .nt-pills--head .nt-pills-right {
+  min-width: 0;
+}
+
+.new-task-dialog .nt-pills--head .pp {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.new-task-dialog .modal-close {
+  flex: none;
+}
