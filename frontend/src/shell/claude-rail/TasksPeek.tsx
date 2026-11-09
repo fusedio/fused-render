@@ -52,7 +52,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { ChatMount } from "@apps/claude";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import type { BreakoutControl } from "@apps/claude/ClaudeChat";
-import { cancelSideMaximizedRequest, opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { readListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
 import { cardTitleLine, taskChatTarget, taskColumn, taskHref } from "@shell/tasks-lib";
@@ -264,12 +264,11 @@ export function TasksPeek() {
                                 const href = taskHref(task);
                                 if (!href) return;
                                 // A request the side-pane chat takes once
-                                // it is mounted there (side-maximized-store);
-                                // a refused leave drops it.
+                                // it is mounted there (side-maximized-store) —
+                                // made only once the hop went.
                                 const sid = task.session_id;
-                                requestSideMaximized(sid);
                                 void api.openPage(href).then((went) => {
-                                  if (went === false) cancelSideMaximizedRequest(sid);
+                                  if (went !== false) requestSideMaximized(sid);
                                 });
                               },
                             },

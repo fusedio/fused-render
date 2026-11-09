@@ -134,7 +134,7 @@ import { ChatMount, draftHref } from "@apps/claude";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import type { BreakoutControl } from "@apps/claude/ClaudeChat";
-import { cancelSideMaximizedRequest, opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
@@ -1573,12 +1573,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                           on: false,
                           onToggle: () => {
                             // A request the side-pane chat takes once it is
-                            // mounted there (side-maximized-store); a refused
-                            // leave drops it and stays unmaximized.
+                            // mounted there (side-maximized-store) — made only
+                            // once the hop went, so a refused leave never
+                            // maximizes the pane it stayed on.
                             const sid = head.t.session_id;
-                            requestSideMaximized(sid);
                             void Promise.resolve(onOpenChat(head.href!)).then((went) => {
-                              if (went === false) cancelSideMaximizedRequest(sid);
+                              if (went !== false) requestSideMaximized(sid);
                             });
                             onHeld(false);
                             onDismiss("door");

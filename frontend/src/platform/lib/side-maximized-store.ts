@@ -63,11 +63,6 @@ export function requestSideMaximized(sessionId: string): void {
   requestListeners.forEach((fn) => fn());
 }
 
-/** Drop a request whose hop was refused (a leave guard said no). */
-export function cancelSideMaximizedRequest(sessionId: string): void {
-  if (request?.sessionId === sessionId) request = null;
-}
-
 /** True once, for the chat the request names, while it is fresh. */
 export function takeSideMaximizedRequest(sessionId: string): boolean {
   if (!request || !sessionId) return false;

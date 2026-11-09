@@ -5767,21 +5767,18 @@ function ChatBody(props: ChatBodyProps) {
   // once this chat is mounted in a side pane on that session — after the new
   // page's pane has settled its tab, so its "not the chat tab" guard cannot
   // undo it. A frame later for the same reason: the pane's own effects run
-  // after this child's.
+  // after this child's. A TAKEN request is spent, so its frame is not
+  // cancelled with this instance: the store is the window's, and the pane on
+  // that session that replaces this one (the hop's remount) is the one it fills.
   const paneSessionId = state.sessionId ?? "";
   useEffect(() => {
     if (!inSidePane || !paneSessionId) return;
-    let raf = 0;
     const take = () => {
       if (!takeSideMaximizedRequest(paneSessionId)) return;
-      raf = requestAnimationFrame(() => setSideMaximized(true));
+      requestAnimationFrame(() => setSideMaximized(true));
     };
     take();
-    const off = subscribeSideMaximizedRequest(take);
-    return () => {
-      off();
-      cancelAnimationFrame(raf);
-    };
+    return subscribeSideMaximizedRequest(take);
   }, [inSidePane, paneSessionId]);
   const kebabEl = (
     <>
