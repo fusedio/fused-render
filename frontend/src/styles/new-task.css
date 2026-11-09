@@ -1707,6 +1707,8 @@ button.new-task-source:focus-visible {
   height: 28px;
   padding: 0;
   margin-left: -6px;
+  /* The Tasks card's gap between Back and the ring (task-side-peek-head). */
+  margin-right: 10px;
   border: none;
   border-radius: 7px;
   background: none;
