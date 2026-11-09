@@ -2436,7 +2436,7 @@ describe("Delete and Discard share one seat and one skin", () => {
 
   test("…and Delete's glyph, with the label and the tooltip that are its own", () => {
     const s = src();
-    const discard = s.slice(s.indexOf("{(draftId || (recordKey && !editing)) && ("));
+    const discard = s.slice(s.indexOf("{!landing && (draftId || (recordKey && !editing)) && ("));
     const button = discard.slice(0, discard.indexOf("</button>"));
     expect(button).toContain("{ICON_TRASH}");
     expect(button).toContain('title="Discard this draft"');
@@ -2453,7 +2453,7 @@ describe("Delete and Discard share one seat and one skin", () => {
     // would draw both, which is the one thing this seat may not do.
     expect(s).toContain("const del = deleteActionFor(editing);");
     expect(s).toContain("{del && (");
-    expect(s).toContain("{(draftId || (recordKey && !editing)) && (");
+    expect(s).toContain("{!landing && (draftId || (recordKey && !editing)) && (");
   });
 });
 

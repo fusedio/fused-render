@@ -6478,7 +6478,10 @@ export default function NewJobModal({
               depending on what you opened. The LABEL still differs, because the
               verbs do: one withdraws a running task, one drops an unfinished
               form. No arming step here — there is nothing scheduled to undo. */}
-          {(draftId || (recordKey && !editing)) && (
+          {/* NOT ON THE RAIL'S CARD (Akshil, 2026-11-09: "doesn't look good"):
+              the chat's composer has no Discard; a draft goes from its row's
+              trash in the list under the box. */}
+          {!landing && (draftId || (recordKey && !editing)) && (
             <button
               type="button"
               className="btn btn-danger-text new-task-delete"
