@@ -1532,3 +1532,51 @@ a.claude-rail-peek-scope:focus-visible {
 .claude-rail-tasks-list > .schedule-page > .prefs-section.schedule-main {
   gap: 8px;
 }
+
+/* THE BOTS CARD (shell/claude-rail BotsPeek; owner, 2026-11-09): the Bots
+   page's list, then a bot's chat, in window A's chassis off the rail's Bots
+   door — the Tasks card's twin (DoorCard), one step above the rail's own card
+   as that one is. */
+#claude-rail-bots-peek {
+  z-index: 46;
+}
+/* Back wears the ×'s seat; the walk's arrows beside it, the head's 26px
+   seats, dim at the list's ends. */
+.claude-rail-bots-peek .claude-rail-peek-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* The list fills the card's body and scrolls inside: the page's column rules
+   apply (bots.css, `.bots-page .bots`), its own background dropped for the
+   card's. The list stays mounted under an open chat — its layer hidden, its
+   scroll kept (`.claude-rail-peek-chat`). */
+.claude-rail-bots-list > .bots-page.bots-pick {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: transparent;
+}
+.claude-rail-bots-list .bots-page.bots-pick .bots {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: transparent;
+  padding-top: 8px;
+}
+.claude-rail-bots-list .bots-page.bots-pick .bots .search {
+  margin: 0 10px 8px;
+}
+.claude-rail-bots-list .bots-page.bots-pick .botlist {
+  padding: 2px 6px 8px;
+}
+/* The thumb the page draws over the list's right edge: shown while the
+   pointer is over the card (the page shows it over the column). */
+.claude-rail-bots-list .bots-page.bots-pick .bots:hover .railbar {
+  opacity: 1;
+}
+/* A row's last line and time read at the card's small type; the row keeps
+   the page's 44px face so the two lists tell one story. */
+.claude-rail-bots-list .bots-page.bots-pick .bot {
+  padding: 8px 10px;
+}
+.claude-rail-bots-list .bots-page.bots-pick .empty {
+  padding: 32px 16px;
+}
