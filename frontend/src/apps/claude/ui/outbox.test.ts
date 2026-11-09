@@ -129,3 +129,17 @@ test("the pending journal keeps a held line's bit across a reload", async () => 
   savePending("s", [{ id: "a", text: "x", hold: true }, { id: "b", text: "y" }], store);
   expect(loadPending("s", store)).toEqual([{ id: "a", text: "x", hold: true }, { id: "b", text: "y" }]);
 });
+
+test("savePending says when the store refused the write, so the caller can tell the reader", async () => {
+  const { savePending } = await import("./outbox");
+  const full = {
+    getItem: () => null,
+    setItem: () => {
+      throw new Error("QuotaExceededError");
+    },
+    removeItem: () => {},
+  };
+  expect(savePending("s", [{ id: "a", text: "x" }], full)).toBe(false);
+  expect(savePending("s", [], full)).toBe(true);
+  expect(savePending("s", [{ id: "a", text: "x" }], { ...full, setItem: () => {} })).toBe(true);
+});

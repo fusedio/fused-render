@@ -1229,6 +1229,7 @@ function ChatBody(props: ChatBodyProps) {
     (e: { sid: string }) => e.sid || journalRunKey(),
     [journalRunKey],
   );
+  const journalWarned = useRef(false);
   const journalFlush = useCallback(
     (owner: string) => {
       if (!owner) return;
@@ -1236,7 +1237,14 @@ function ChatBody(props: ChatBodyProps) {
       for (const [id, e] of journal.current) {
         if (journalOwner(e) === owner) lines.push({ id, text: e.text, ...(e.hold ? { hold: true as const } : {}) });
       }
-      savePending(owner, lines);
+      if (savePending(owner, lines)) journalWarned.current = false;
+      else if (!journalWarned.current) {
+        journalWarned.current = true;
+        controllerRef.current?.addNote(
+          "Couldn't keep your queued message in this browser. If you reload before it is sent, it is lost.",
+          "◆",
+        );
+      }
     },
     [journalOwner],
   );
