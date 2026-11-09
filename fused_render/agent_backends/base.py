@@ -139,8 +139,15 @@ class Backend:
         old record) passes the foreign-model gate as "on nobody's list"."""
         return tuple(m.id for m in self.effective_models(discovered=discovered))
 
+    #: When the discovered list is in use, the catalog's `default_model` is
+    #: its FIRST row rather than the static default — for a backend whose
+    #: discovered rows are ordered by preference (OpenCode lists the local
+    #: models first, so a machine with one defaults to it).
+    default_from_discovered: bool = False
+
     def to_catalog(self, enabled: bool, health: Optional[dict] = None,
-                   models: Optional[tuple] = None) -> dict:
+                   models: Optional[tuple] = None,
+                   default_model: Optional[str] = None) -> dict:
         """The shape `GET /api/agent-backends` serves per backend. `models`
         is the discovered list when the caller has one (registry.catalog
         reads it off the same cached snapshot it hands in as `health`)."""
@@ -149,7 +156,7 @@ class Backend:
             "label": self.label,
             "enabled": enabled,
             "models": [m.to_catalog(self.efforts) for m in (models or self.models)],
-            "default_model": self.default_model,
+            "default_model": default_model or self.default_model,
             "efforts": list(self.efforts),
             "modes": list(self.modes),
             "caps": self.caps.__dict__.copy(),

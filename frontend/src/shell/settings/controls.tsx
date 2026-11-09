@@ -21,6 +21,7 @@ import {
   DefaultAgentControl,
   EnginesPointer,
   GeminiAgentControl,
+  OpencodeAgentControl,
 } from "./ai";
 import {
   CanvasesControl,
@@ -73,6 +74,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "agent-copilot": CopilotAgentControl,
   "agent-codex": CodexAgentControl,
   "agent-gemini": GeminiAgentControl,
+  "agent-opencode": OpencodeAgentControl,
   "agent-default": DefaultAgentControl,
   "claude-model": ClaudeModelPointer,
   "claude-cli-missing": ClaudeCliMissing,

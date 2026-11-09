@@ -3,7 +3,7 @@
 Each list here is spelled in more than one place because the readers cannot
 share an import: the frontend paints its first frame from a hand-kept copy of
 the catalog (`CLAUDE_FALLBACK` / `COPILOT_FALLBACK` / `CODEX_FALLBACK` /
-`GEMINI_FALLBACK` in
+`GEMINI_FALLBACK` / `OPENCODE_FALLBACK` in
 frontend/src/platform/lib/agent-backends.ts) before `GET /api/agent-backends`
 answers; agent.py is stdlib-only and loaded by path, so it keeps its own
 effort and permission-mode tables; and the prefs and tasks routers validate
@@ -16,7 +16,8 @@ import importlib.util
 import os
 import re
 
-from fused_render.agent_backends import claude, codex, copilot, gemini, registry
+from fused_render.agent_backends import claude, codex, copilot, gemini, opencode, registry
+from fused_render.agent_backends import opencode_config
 from fused_render.server.routers import tasks as tasks_mod
 from fused_render.shell import prefs
 
@@ -83,7 +84,8 @@ def test_the_frontends_fallback_rows_match_the_catalog():
     for name, backend_id in (("CLAUDE_FALLBACK", "claude"),
                              ("COPILOT_FALLBACK", "copilot"),
                              ("CODEX_FALLBACK", "codex"),
-                             ("GEMINI_FALLBACK", "gemini")):
+                             ("GEMINI_FALLBACK", "gemini"),
+                             ("OPENCODE_FALLBACK", "opencode")):
         client = _fallback(src, name)
         server = {k: rows[backend_id][k] for k in keys}
         # Of a model's catalog row the first frame knows id, label and
@@ -116,6 +118,10 @@ def test_every_effort_list_is_one_list():
     assert gemini.EFFORTS == ()
     assert all(not m.reasoning for m in gemini.MODELS)
     assert all(m["efforts"] == [] for m in gemini.GEMINI.to_catalog(False)["models"])
+    # ...and OpenCode likewise (docs/OPENCODE_BACKEND.md D7).
+    assert opencode.EFFORTS == ()
+    assert all(not m.reasoning for m in opencode.MODELS)
+    assert all(m["efforts"] == [] for m in opencode.OPENCODE.to_catalog(False)["models"])
 
 
 def test_copilots_effortless_models_are_agent_pys():
@@ -137,6 +143,13 @@ def test_the_permission_modes_are_agent_pys_and_the_others_are_a_subset():
     # pinned to it in tests/test_gemini_host.py.
     assert set(agent._GEMINI_MODES) == {agent.PERMISSION_MODES[m] for m in gemini.MODES}
     assert set(agent._GEMINI_MODES.values()) == {"default", "autoEdit", "yolo"}
+    # OpenCode's modes are `permission` blocks of the injected config
+    # (docs/OPENCODE_BACKEND.md D5): agent.py's table covers every CLI-wire
+    # mode `_start` can send, and each names a block the builder knows.
+    assert set(opencode.MODES) <= set(claude.MODES)
+    assert set(agent._OPENCODE_MODES) == {agent.PERMISSION_MODES[m] for m in opencode.MODES}
+    assert set(agent._OPENCODE_MODES.values()) <= set(opencode_config.PERMISSIONS)
+    assert set(opencode_config.PERMISSIONS) == {"prompt", "default", "acceptEdits", "auto"}
 
 
 def test_every_agent_list_is_one_order():

@@ -14,16 +14,18 @@ import { signedInHint } from "../onboarding/ToolsStep";
 import type { SettingId } from "./registry";
 import { RowSwitch, SettingRow, SettingSelect, SettingsViewContext, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
-type AgentId = "claude" | "copilot" | "codex" | "gemini";
+type AgentId = "claude" | "copilot" | "codex" | "gemini" | "opencode";
 
 /** Every switch, in the registry's ORDER (docs/CODEX_BACKEND.md §1,
- *  docs/GEMINI_BACKEND.md §1). */
-const AGENT_IDS: readonly AgentId[] = ["claude", "copilot", "codex", "gemini"];
+ *  docs/GEMINI_BACKEND.md §1, docs/OPENCODE_BACKEND.md §1). */
+const AGENT_IDS: readonly AgentId[] = ["claude", "copilot", "codex", "gemini", "opencode"];
 
 /** The name the health line uses — the product's, where the label is the
  *  short word the pills use. */
 const HEALTH_NAME: Record<AgentId, string> = {
   claude: "Claude Code", copilot: "Copilot", codex: "Codex", gemini: "Gemini CLI",
+  // "OpenCode" is both the short word and the long form (docs/OPENCODE_BACKEND.md D18).
+  opencode: "OpenCode",
 };
 
 // ONE busy flag for every agent write on the page. The three switches and the
@@ -64,11 +66,11 @@ function useAgentWrite(onChange: PrefControlProps["onChange"]) {
 /** Absent (an older server) reads as the only answer it could give: Claude. */
 function agentsOf(prefs: Prefs) {
   const a = prefs.agents;
-  // A server from before Codex or Gemini answers without their keys: off,
-  // their default.
+  // A server from before Codex, Gemini or OpenCode answers without their
+  // keys: off, their default (D17).
   return a
-    ? { ...a, codex: a.codex ?? false, gemini: a.gemini ?? false }
-    : { claude: true, copilot: false, codex: false, gemini: false, default: "claude" };
+    ? { ...a, codex: a.codex ?? false, gemini: a.gemini ?? false, opencode: a.opencode ?? false }
+    : { claude: true, copilot: false, codex: false, gemini: false, opencode: false, default: "claude" };
 }
 
 /** One switched-on agent's health: a line when all is well, the strip's own
@@ -153,6 +155,12 @@ export const ClaudeAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} i
 export const CopilotAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-copilot" backend="copilot" />;
 export const CodexAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-codex" backend="codex" />;
 export const GeminiAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-gemini" backend="gemini" />;
+/** OpenCode's switch (docs/OPENCODE_BACKEND.md D17). Its Sign in runs
+ *  `opencode auth login` in the status-bar terminal (D10): the copy under the
+ *  signed-out row says "Sign in opens a terminal" (`SETUP_WORDS.opencode`),
+ *  and the account line names "Local models (no account needed)" or
+ *  "OpenCode providers" (`agentAccountLine`). */
+export const OpencodeAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-opencode" backend="opencode" />;
 
 export function DefaultAgentControl({ prefs, onChange }: PrefControlProps) {
   useAgentBackends();

@@ -56,6 +56,7 @@ from fused_render.server.routers.claude_health import router as claude_health_ro
 from fused_render.server.routers.copilot_health import router as copilot_health_router
 from fused_render.server.routers.codex_health import router as codex_health_router
 from fused_render.server.routers.gemini_health import router as gemini_health_router
+from fused_render.server.routers.opencode_health import router as opencode_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.marketplace import router as marketplace_router
 from fused_render.server.routers.github import router as github_router
@@ -84,6 +85,7 @@ from fused_render.connect.routes import router as connect_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.ai_benchmark import router as ai_benchmark_router
+from fused_render.server.routers.v1 import router as v1_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.schedule import router as schedule_router
@@ -1124,6 +1126,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # time, the second destroys measurements that cannot be recomputed for an
     # app version that has moved on.
     app.include_router(ai_benchmark_router)
+    # The local model gateway (routers/v1.py, docs/LOCAL_MODEL_GATEWAY.md):
+    # OpenAI-compatible `/v1/models` and `/v1/chat/completions` over every
+    # local text runner, for agent CLIs. Bearer-key guarded (ai/gateway_keys)
+    # and therefore EXEMPT from the D3 X-Fused guard (common.CSRF_EXEMPT_
+    # PREFIXES); never allow-listed on the LAN (lan.py).
+    app.include_router(v1_router)
     # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
     # (routers/claude_config.py): one dispatch POST over the
     # fused_render/claude_config/ feature modules, plus a cheap availability
@@ -1148,6 +1156,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # ...and Gemini's (routers/gemini_health.py): /api/gemini/{health,
     # health/refresh, install, login, login/cancel, link-path}, same rules.
     app.include_router(gemini_health_router)
+    # ...and OpenCode's (routers/opencode_health.py): /api/opencode/{health,
+    # health/refresh, install, login, login/cancel, link-path}, same rules.
+    app.include_router(opencode_health_router)
     # The agent catalog (routers/agent_backends.py): which agents exist, which
     # are on, and each one's models/efforts/modes/caps — the one list every
     # picker reads (docs/COPILOT_BACKEND.md D11). Read-only, no auth guard.

@@ -140,7 +140,7 @@
 //   which this host POSTs to /api/ai/turns/<turn>/results (api.ts
 //   postAiToolResult), unblocking the CLI's bridge. One call at a time.
 // → the host aborts the fetch → the relay cancels the turn (Claude) or
-// kills the one-shot CLI (Copilot, Codex, Gemini). Every run is aborted
+// kills the one-shot CLI (Copilot, Codex, Gemini, OpenCode). Every run is aborted
 // when the frame reloads or this page unmounts. The frame never reaches
 // /api/ai itself: the X-Fused header is a same-origin guard with no CORS.
 // Accepted only from the workbench frame's own window, like the body.

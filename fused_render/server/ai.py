@@ -1379,10 +1379,13 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
 
     warnings = list(warnings or [])
     if not stream:
-        text, usage, finish = [], {}, "stop"
+        text, think, usage, finish = [], [], {}, "stop"
         for event in walk():
             if event.get("type") == "chunk":
-                text.append(event.get("text") or "")
+                # The worker split deliberation from answer (`channel`,
+                # docs/LOCAL_MODEL_GATEWAY.md §3): `text` is the answer only.
+                (think if event.get("channel") == "reasoning" else text).append(
+                    event.get("text") or "")
             elif event.get("type") == "done":
                 if not event.get("ok", True):
                     return _ai_failed(model, "ai_error",
@@ -1395,7 +1398,8 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # response can never disagree about what this completion generated.
         ai_metrics.record(model, usage)
         return JSONResponse({"ok": True, "result": ai_result(
-            {"text": "".join(text)}, provider="local", model=model,
+            {"text": "".join(text), "thinking": "".join(think) or None},
+            provider="local", model=model,
             usage=ai_usage_tokens(usage), finish_reason=finish, warnings=warnings,
             request_id=job, metadata={"seconds": usage.get("seconds")})})
 
@@ -1411,13 +1415,18 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # on the first property it read. The full text is accumulated here
         # rather than left to the caller — the caller may have been streaming
         # into a DOM node and have no string to hand back.
-        text = []
+        text, think = [], []
         try:
             for event in walk():
                 if event.get("type") == "chunk":
                     chunk = event.get("text") or ""
-                    text.append(chunk)
-                    yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
+                    row = {"type": "chunk", "text": chunk}
+                    if event.get("channel") == "reasoning":
+                        think.append(chunk)
+                        row["channel"] = "reasoning"
+                    else:
+                        text.append(chunk)
+                    yield json.dumps(row) + "\n"
                 elif event.get("type") == "done":
                     ok = bool(event.get("ok", True))
                     usage = _local_usage(event)
@@ -1432,7 +1441,7 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                     yield json.dumps({
                         "type": "done", "ok": ok,
                         **({"result": ai_result(
-                            {"text": "".join(text)}, provider="local", model=model,
+                        {"text": "".join(text), "thinking": "".join(think) or None}, provider="local", model=model,
                             usage=ai_usage_tokens(usage),
                             finish_reason=_local_finish_reason(event, body),
                             warnings=warnings, request_id=job,
@@ -2686,13 +2695,18 @@ def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         return JSONResponse({"ok": True, "result": frame("".join(text), final or {})})
 
     def lines():
-        text = []
+        text, think = [], []
         try:
             for event in walk():
                 if event.get("type") == "chunk":
                     chunk = event.get("text") or ""
-                    text.append(chunk)
-                    yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
+                    row = {"type": "chunk", "text": chunk}
+                    if event.get("channel") == "reasoning":
+                        think.append(chunk)
+                        row["channel"] = "reasoning"
+                    else:
+                        text.append(chunk)
+                    yield json.dumps(row) + "\n"
                 elif event.get("type") == "done":
                     ok = bool(event.get("ok", True))
                     if ok:

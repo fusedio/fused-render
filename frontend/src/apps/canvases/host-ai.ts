@@ -15,7 +15,7 @@ export interface HostAiModel {
   backend: string;
   model: string;
   label: string;
-  /** "Claude" / "Copilot" / "Codex" / "Gemini" — for the picker's row text. */
+  /** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" — for the picker's row text. */
   backendLabel: string;
   /** The effort levels this model takes; `[]` when the CLI takes none. */
   efforts: string[];

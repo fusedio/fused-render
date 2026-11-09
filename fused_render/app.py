@@ -294,6 +294,9 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
         codex_health.warm_in_background()
     if _agent_registry.is_enabled("gemini"):
         gemini_health.warm_in_background()
+    if _agent_registry.is_enabled("opencode"):
+        from fused_render import opencode_health
+        opencode_health.warm_in_background()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.

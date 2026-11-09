@@ -16,14 +16,17 @@ export function localModelArg(arg: string, backend = "claude"): string {
   const labels = modelLabelsOf(backend);
   const short = modelsOf(backend).find((m) => m === want || (labels[m] ?? "").toLowerCase() === want);
   if (short) return short;
-  const full = rawModelIds(backend) ? /^[a-z][a-z0-9.-]+$/ : /^claude-[a-z0-9.-]+$/;
+  // OpenCode's ids are `provider/model` (docs/OPENCODE_BACKEND.md D7), so a
+  // single `/` is allowed between two plain segments.
+  const full = rawModelIds(backend) ? /^[a-z][a-z0-9.-]+(?:\/[a-z0-9][a-z0-9.-]*)?$/ : /^claude-[a-z0-9.-]+$/;
   return full.test(want) ? want : "";
 }
 
 /** The agents whose full model ids are the provider's own, any shape
- *  ("gpt-5.4", "gpt-6-luna", "gemini-2.5-pro") — not Claude's `claude-…` ones. */
+ *  ("gpt-5.4", "gpt-6-luna", "gemini-2.5-pro", "anthropic/claude-sonnet-5-5")
+ *  — not Claude's `claude-…` ones. */
 function rawModelIds(backend: string | undefined): boolean {
-  return backend === "copilot" || backend === "codex" || backend === "gemini";
+  return backend === "copilot" || backend === "codex" || backend === "gemini" || backend === "opencode";
 }
 
 /** `/effort <level>`'s argument as a pill value, or "" — one of the levels

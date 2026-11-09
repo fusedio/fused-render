@@ -1,5 +1,5 @@
 """One tool-less, session-free text completion from an agent CLI — GitHub
-Copilot, OpenAI Codex or Google Gemini — the way the session recaps have
+Copilot, OpenAI Codex, Google Gemini or OpenCode — the way the session recaps have
 always run them, lifted here so `/api/ai` can run the same thing (D1433).
 
 Two callers, one argv per backend:
@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 #: The backends this module runs. Claude is NOT one: `/api/ai` keeps its
 #: persistent `_AiSession` (D168/D169) and the recap keeps its own
 #: `claude -p` argv, both of which stream.
-BACKENDS = ("copilot", "codex", "gemini")
+BACKENDS = ("copilot", "codex", "gemini", "opencode")
 
 #: `claude_health.SUBPROCESS_KWARGS` minus the text-mode keys: asyncio's
 #: `create_subprocess_exec` refuses `text` / `encoding` / `errors` with a
@@ -122,6 +122,11 @@ GEMINI_POLICY = (
     'decision = "deny"\n'
     "priority = 999\n")
 GEMINI_POLICY_NAME = "gemini-recap-policy.toml"
+
+#: What `opencode run` is told when the whole prompt rides stdin: the CLI
+#: appends the positional message after the piped input (ASSUMED,
+#: docs/OPENCODE_BACKEND.md D12; the design's own pointer rule).
+OPENCODE_POINTER = GEMINI_POINTER
 
 #: The levels the Copilot CLI's `--reasoning-effort` takes (1.0.102 `--help`).
 COPILOT_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -210,7 +215,8 @@ def _agent():
 def _bin(agent, backend: str) -> str:
     try:
         return {"copilot": agent._copilot_bin, "codex": agent._codex_bin,
-                "gemini": agent._gemini_bin}[backend]()
+                "gemini": agent._gemini_bin,
+                "opencode": agent._opencode_bin}[backend]()
     except OneShotError:
         raise
     except Exception as exc:  # noqa: BLE001 - the resolver's own "not found" text
@@ -292,6 +298,8 @@ def prepare(backend: str, model: str, system: str, prompt: str,
         return _prepare_copilot(agent, model, effort, common, tools_mcp)
     if backend == "codex":
         return _prepare_codex(agent, model, effort, common, tools_mcp)
+    if backend == "opencode":
+        return _prepare_opencode(agent, model, effort, common, tools_mcp)
     return _prepare_gemini(agent, model, effort, common, tools_mcp)
 
 
@@ -519,6 +527,101 @@ def _prepare_gemini(agent, model: str, effort: Optional[str], common: dict,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                    parse=parse, cleanup=cleanup, effort_dropped=dropped,
                    extra=found, **common)
+    return spec
+
+
+def _opencode_reply_text(stdout: str) -> str:
+    """The assistant text out of `opencode run --format json`'s output
+    (ASSUMED shape, D12): one JSON event per line, the text riding
+    `{"type": "text", "part": {"text": ...}}` (1.x's part events); a single
+    JSON object with `response` / `text` / `content` is read too, and a
+    stream that is no JSON at all is taken as the reply itself."""
+    texts: list[str] = []
+    objects = 0
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        objects += 1
+        if event.get("type") in ("error",):
+            raise OneShotError(*_opencode_error(event))
+        part = event.get("part") if isinstance(event.get("part"), dict) else event
+        kind = str(event.get("type") or part.get("type") or "")
+        if kind in ("text", "message", "assistant"):
+            text = part.get("text") or part.get("content") or part.get("response")
+            if isinstance(text, str):
+                texts.append(text)
+        elif objects == 1 and not texts:
+            for k in ("response", "text", "content"):
+                if isinstance(event.get(k), str):
+                    texts.append(event[k])
+                    break
+    if texts:
+        return "".join(texts).strip()
+    if objects:
+        return ""
+    return (stdout or "").strip()
+
+
+def _opencode_error(event: dict) -> tuple[str, str]:
+    err = event.get("error") if "error" in event else event.get("part")
+    if isinstance(err, dict):
+        said = str(err.get("message") or err.get("name") or err)
+    else:
+        said = str(err or event)
+    return "ai_error", f"opencode CLI failed: {said[:300]}"
+
+
+def _prepare_opencode(agent, model: str, effort: Optional[str], common: dict,
+                      tools_mcp: Optional[dict] = None) -> OneShot:
+    """`opencode run --format json -m <model> <pointer>`, OpenCode's headless
+    one-shot, never the ACP server the sessions use (docs/OPENCODE_BACKEND.md
+    D12/D16). The prompt rides stdin; every tool is DENIED through the
+    injected config's `permission` block (`opencode_config.build(
+    deny_all_tools=True)` on `OPENCODE_CONFIG_CONTENT`), since the text it
+    is handed is untrusted and a read-only tool would otherwise run without
+    asking. A tools run (`tools_mcp`) names the turn's MCP server in the
+    same config (`mcp.<name>: {type: local, command, environment}` —
+    ASSUMED from OpenCode's config reference) and allows only its tools.
+    Nothing persists that fused could clean: OpenCode's record of the run
+    lives in its own SQLite store, which is not ours (D15)."""
+    cfg = agent._opencode_config()
+    env = agent._spawn_env(backend="opencode")
+    config = cfg.build(model=model or None, mode="default", instructions_path=None,
+                       local=cfg.local_models(), origin=None, key=None,
+                       deny_all_tools=True)
+    if tools_mcp is not None:
+        name = _mcp_server_name()
+        config["mcp"] = {name: {
+            "type": "local",
+            "command": [tools_mcp["command"], *list(tools_mcp["args"])],
+            "environment": dict(tools_mcp.get("env") or {}),
+            "enabled": True}}
+        config["permission"][name + "*"] = "allow"
+    env[cfg.CONTENT_ENV] = json.dumps(config)
+    argv = [_bin(agent, "opencode"), "run", "--format", "json"]
+    if model:
+        argv += ["-m", model]
+    argv.append(OPENCODE_POINTER)
+    dropped = "OpenCode has no reasoning effort control" if effort else ""
+
+    def parse(stdout: str, stderr: str, rc: int) -> str:
+        if rc != 0:
+            raise OneShotError(*_failure_type(stderr or stdout, spec))
+        reply = _opencode_reply_text(stdout)
+        if not reply:
+            raise OneShotError("ai_error", "the OpenCode CLI answered nothing")
+        return reply
+
+    spec = OneShot(argv=argv, env=env,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   parse=parse, effort_dropped=dropped, **common)
     return spec
 
 

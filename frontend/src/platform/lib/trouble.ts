@@ -35,6 +35,9 @@ export const CODEX_INSTALL_COMMAND = "npm install -g @openai/codex";
 /** Gemini CLI's documented install route (docs/GEMINI_BACKEND.md D10). */
 export const GEMINI_INSTALL_COMMAND = "npm install -g @google/gemini-cli";
 
+/** OpenCode's documented install route (docs/OPENCODE_BACKEND.md D10). */
+export const OPENCODE_INSTALL_COMMAND = "npm install -g opencode-ai";
+
 // TWO TIERS, and the split is the whole correctness argument.
 //
 // Some phrases NAME the thing — "claude cli not found", "please run /login" —
@@ -57,11 +60,13 @@ export const GEMINI_INSTALL_COMMAND = "npm install -g @google/gemini-cli";
 // would be guessing. The Claude output is unchanged. Codex likewise
 // (docs/CODEX_BACKEND.md D13): its shapes count when the message names Codex
 // or the account it signs in with; Gemini's (docs/GEMINI_BACKEND.md D13) when
-// it names Gemini or Google.
+// it names Gemini or Google; OpenCode's (docs/OPENCODE_BACKEND.md D13) when
+// it names OpenCode or a provider/model ("provider", "model", "api key").
 const ABOUT_CLAUDE = /claude/i;
 const ABOUT_COPILOT = /copilot|github/i;
 const ABOUT_CODEX = /codex|openai|chatgpt/i;
 const ABOUT_GEMINI = /gemini|google/i;
+const ABOUT_OPENCODE = /opencode|open code|provider|api key/i;
 
 // Unconditional: these name Claude Code or quote the CLI's own vocabulary.
 const NAMED: [TroubleKind, RegExp][] = [
@@ -109,12 +114,25 @@ const GEMINI_NAMED: [TroubleKind, RegExp][] = [
   ["notfound", /gemini cli not found/i],
 ];
 
+// OPENCODE'S OWN MARKERS (docs/OPENCODE_BACKEND.md D13, §8), unconditional for
+// an OpenCode session. KEEP IN SYNC BY HAND with `account_error_markers` /
+// `limit_error_markers` in fused_render/agent_backends/opencode.py. `429` is
+// matched as a whole number here, as Codex's is. "Signed in" for OpenCode
+// means "has a usable provider", so a missing provider or model is a login
+// failure too — Sign in (`opencode auth login`) is what fixes it.
+const OPENCODE_NAMED: [TroubleKind, RegExp][] = [
+  ["login", /no api key|not authenticated|unauthorized|invalid api key|provider not found|model not found|not signed in/i],
+  ["limit", /rate limit|quota|too many requests|\b429\b|overloaded/i],
+  ["notfound", /opencode (?:cli )?not found/i],
+];
+
 /** Each non-Claude agent's unconditional markers and subject test. Claude's
  *  are `NAMED` / `ABOUT_CLAUDE`, and any id not here reads as Claude. */
 const AGENT_TROUBLE: Record<string, { named: [TroubleKind, RegExp][]; about: RegExp }> = {
   copilot: { named: COPILOT_NAMED, about: ABOUT_COPILOT },
   codex: { named: CODEX_NAMED, about: ABOUT_CODEX },
   gemini: { named: GEMINI_NAMED, about: ABOUT_GEMINI },
+  opencode: { named: OPENCODE_NAMED, about: ABOUT_OPENCODE },
 };
 
 // An ENOENT whose path sits INSIDE an agent's own config dir (or is the dir
@@ -122,8 +140,8 @@ const AGENT_TROUBLE: Record<string, { named: [TroubleKind, RegExp][]; about: Reg
 // a missing CLI: the notfound shape must not read it as "install the CLI".
 // Unless the path's last segment IS the binary: `~/.claude/local/claude` is
 // a real (legacy) install location, and a half-removed one is a missing CLI.
-const AGENT_CONFIG_PATH = /[\\/]\.(?:claude|copilot|codex|gemini)(?:[\\/]|['"\s]|$)/i;
-const CLI_BINARY_PATH = /[\\/](?:claude|copilot|codex|gemini)(?:\.cmd|\.exe)?(?=$|['"\s:,)])/i;
+const AGENT_CONFIG_PATH = /[\\/]\.(?:claude|copilot|codex|gemini|opencode)(?:[\\/]|['"\s]|$)/i;
+const CLI_BINARY_PATH = /[\\/](?:claude|copilot|codex|gemini|opencode)(?:\.cmd|\.exe)?(?=$|['"\s:,)])/i;
 
 // Only when the message is about Claude — see above.
 const SHAPES: [TroubleKind, RegExp][] = [
@@ -349,8 +367,16 @@ export function troubleInstructions(ctx: TroubleContext): string {
   const copilot = ctx.backend === "copilot";
   const codex = ctx.backend === "codex";
   const gemini = ctx.backend === "gemini";
+  const opencode = ctx.backend === "opencode";
   const steps: Record<TroubleKind, string[]> = {
-    notfound: gemini
+    notfound: opencode
+      ? [
+        "Check whether the CLI exists and where: `which opencode`, and look in ~/.opencode/bin, ~/.npm-global/bin, /opt/homebrew/bin, /usr/local/bin, ~/.local/bin and ~/.bun/bin.",
+        `If it is missing, install it: \`${OPENCODE_INSTALL_COMMAND}\`.`,
+        "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
+        `Confirm with \`opencode --version\`, then tell me to quit ${displayName()} and reopen it.`,
+      ]
+      : gemini
       ? [
         "Check whether the CLI exists and where: `which gemini`, and look in ~/.npm-global/bin, /opt/homebrew/bin, /usr/local/bin and ~/.local/bin.",
         `If it is missing, install it: \`${GEMINI_INSTALL_COMMAND}\`.`,
@@ -377,7 +403,13 @@ export function troubleInstructions(ctx: TroubleContext): string {
         "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
         `Confirm with \`claude --version\`, then tell me to quit ${displayName()} and reopen it.`,
       ],
-    login: gemini
+    login: opencode
+      ? [
+        "Confirm the CLI runs: `opencode --version`.",
+        "Sign in: run `opencode auth login`, pick a provider and paste its API key — or load a local model in the app, which needs no account at all. `opencode auth list` shows what is connected.",
+        `Confirm the session works, then tell me to retry in ${displayName()}.`,
+      ]
+      : gemini
       ? [
         "Confirm the CLI runs: `gemini --version`.",
         "Sign in: run `gemini`, pick a sign-in method (`/auth`) and finish it in the browser. An exported `GEMINI_API_KEY` works for new chats, but resuming a chat needs the method picked once in `gemini` (the CLI refuses `session/load` without it).",

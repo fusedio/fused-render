@@ -332,6 +332,12 @@ _EXACT: dict[str, frozenset[str]] = {
 #: Prefixes forwarded without body inspection: the runtime and template
 #: assets, the engine proxy (the daemon behind it is validated by
 #: engine_host, and the browser never sees its port), job cancel/dismiss.
+#:
+#: **`/v1` is deliberately NOT here, nor in `_EXACT`** (docs/
+#: LOCAL_MODEL_GATEWAY.md §1): the local model gateway is for agent CLIs on
+#: THIS machine holding a bearer key, not for a paired phone — a LAN client
+#: must never be able to load a model and spend the Mac's memory and GPU
+#: through it. `tests/test_v1_gateway.py` pins the absence.
 _PREFIXES = ("/static/", "/template-assets/", "/template-shared/", "/api/engines/", "/api/jobs/")
 #: THE PHONE DOOR (docs/bots.md §14, D1468). The iOS app renders the desktop's
 #: own bots app and task chat (frontend/src/lan/main.tsx mounts `@apps/bots`
