@@ -83,8 +83,10 @@
 // minus code, as
 //   iframe → { type: "fused-embed-snapshot", gen, seq, body }
 // (`body.rev`: the last delta rev the frame had applied when it serialized
-// the body — the server applies only what the frame changed since what it
-// was shown, so a Claude edit still on its way to the frame is not undone)
+// the body; a body older than a delta the server already cut is BOUNCED —
+// answered `stale: true, rebuild: true, rev` with nothing written, and the
+// frame re-sends once it has applied that delta — so a Claude edit still on
+// its way to the frame is never undone by a stale picture of the canvas)
 // which this page relays to POST /api/canvases/snapshot; the answer goes back
 // as fused-embed-snapshot-applied / -rejected. A relay the page ABANDONS
 // because a newer snapshot superseded it while the clone was busy (the newer
@@ -1817,7 +1819,18 @@ export default function CanvasWorkspace({
               nodeSessions.delete(nodeSessionKey(env, name, file));
             }
           }
-          post({ type: "fused-embed-snapshot-applied", gen, seq, push_seq: ack.push_seq });
+          // `stale` + `rebuild`: the server wrote nothing — the body was
+          // built before a delta it had cut (`rev`); the frame applies that
+          // delta and posts a fresh snapshot.
+          const bounced = ack as { stale?: boolean; rebuild?: boolean; rev?: number };
+          post({
+            type: "fused-embed-snapshot-applied",
+            gen,
+            seq,
+            push_seq: ack.push_seq,
+            ...(bounced.stale ? { stale: true } : {}),
+            ...(bounced.rebuild ? { rebuild: true, rev: bounced.rev } : {}),
+          });
           return;
         } catch (e) {
           const status = (e as { status?: number }).status;

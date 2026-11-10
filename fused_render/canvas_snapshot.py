@@ -125,9 +125,6 @@ EMBED_ROW_KEYS = frozenset(
 )
 CANVAS_KEYS = ("viewport", "viewportBounds", "comments")
 
-# "No such key" in a three-way compare (a row key can legitimately be None).
-MISSING: Any = object()
-
 # The one file kind whose body the embed can change without its code editor.
 EMBED_BODY_SUFFIXES = (".md",)
 
@@ -821,49 +818,6 @@ def apply_rename(clone_dir: str, frm: str, to: str,
             "moved": moved, "at": time.time()}
 
 
-def _merge_list(base: list, disk: list, frame: list) -> list:
-    """A list-valued key (a folder's `childUdfOrder`, `tags`, the canvas's
-    `comments`) the frame changed, merged per ELEMENT against what it was
-    shown: disk's list minus what the frame removed, plus what it added.
-    Written whole, the frame's list would also undo Claude's own edits to the
-    same list (moving a node out of a folder while the user drops another
-    in put the moved node back). Plain names merge as an ordered set (disk's
-    order, then the frame's additions); dicts with an `id` (comments) by id,
-    the frame's version where it changed one; anything else is the frame's
-    list as it is."""
-    def plain(items: list) -> bool:
-        return all(isinstance(x, (str, int, float)) and not isinstance(x, bool) for x in items)
-
-    def keyed(items: list) -> bool:
-        return all(isinstance(x, dict) and isinstance(x.get("id"), (str, int)) for x in items)
-
-    if disk == base:
-        # Claude did not touch this list: the frame's, order and all (a pure
-        # reorder by the user is a change too).
-        return list(frame)
-    if plain(base) and plain(disk) and plain(frame):
-        removed = {x for x in base if x not in frame}
-        out = [x for x in disk if x not in removed]
-        out += [x for x in frame if x not in base and x not in out]
-        return out
-    if keyed(base) and keyed(disk) and keyed(frame):
-        was = {x["id"]: x for x in base}
-        now = {x["id"]: x for x in frame}
-        out = []
-        for x in disk:
-            i = x["id"]
-            if i in was and i not in now:
-                continue  # the frame removed it
-            if i in now and now[i] != was.get(i):
-                out.append(now[i])  # the frame changed it: the user wins
-            else:
-                out.append(x)
-        have = {x["id"] for x in out}
-        out += [x for x in frame if x["id"] not in was and x["id"] not in have]
-        return out
-    return list(frame)
-
-
 def apply_snapshot(
     clone_dir: str,
     new: dict,
@@ -871,55 +825,33 @@ def apply_snapshot(
     *,
     backup: Callable[[str, bytes], None] | None = None,
     rowless_prev: Iterable[str] = (),
-    late: Iterable[str] = (),
-    late_rows: Iterable[str] = (),
-    stale_base: bool = False,
 ) -> dict:
     """Fold `new` (a `compact_state`) into `<clone_dir>/canvas.toml`.
 
-    `prev` is what the host believes the embed held when it built `new`
-    (its `embed_view`), or None. The snapshot is applied as the FRAME'S
-    CHANGES against `prev`, never as the canvas's full truth (see "the frame's
-    changes, not its state" below): a row key, an edge or a canvas scalar the
-    frame did not change since `prev` keeps whatever disk holds, so a Claude
-    edit the frame had not received yet when it serialized `new` is not
-    reverted. Where both changed the same thing the frame wins (owner,
-    2026-11-10: the user is looking at it). `late` are nodes the host's view
-    gained from a delta the frame had NOT applied when it built `new` (the
-    snapshot's `rev` predates their arrival — a replayed body): their absence
-    from `new` is not a delete. `late_rows` are nodes whose view row came
-    from such a delta, so the frame's own previous send (`embed_rows`), not
-    the view row, is what its row is compared against. `stale_base` (the
-    snapshot predates the last delta the frame acked) compares edges and
-    canvas scalars against the frame's previous send for the same reason.
-    `backup(rel, data)` receives every file about to be deleted or
+    `prev` is the previous compact state from the same embed generation, or
+    None.     `backup(rel, data)` receives every file about to be deleted or
     overwritten. `rowless_prev` are the files this embed generation created
     that still have no row (the host's `rowless_files` so far): one this
     snapshot no longer lists (no UDF, no node, no row) has its file trashed
     and is reported in `deleted`. Returns `{changed, upserted,
     deleted, deleted_files, renamed, created, written, fileless,
-    rowless_files, deferred_deletes, folder_fixes, unseen, unseen_canvas,
-    added}` (`added`: rows this snapshot appended; `deleted_files`: the
+    rowless_files, deferred_deletes, folder_fixes, added}` (`added`: rows this
+    snapshot appended; `deleted_files`: the
     source files this snapshot removed from the clone, by basename, a
     folder in `deleted` has none; `fileless`: rows added for nodes whose
     source has not arrived; `rowless_files`: the embed's files still
     without a row; `deferred_deletes`: known nodes the snapshot omitted
     while still listing their UDF, the host keeps them in its view;
-    `folder_fixes`: `normalise_folders`' lines; `unseen`: per node, the row
-    keys where disk kept a value the frame does not hold — `{name: {key:
-    the frame's value, or MISSING}}`, which the host writes into its view so
-    the next delta delivers disk's value). Raises FileNotFoundError when the
-    clone has no canvas.toml, whatever `rtoml` raises on a malformed one, and
-    DiskMoved when canvas.toml changed on disk while this ran (the caller
+    `folder_fixes`: `normalise_folders`' lines). Raises FileNotFoundError when
+    the clone has no canvas.toml, whatever `rtoml` raises on a malformed one,
+    and DiskMoved when canvas.toml changed on disk while this ran (the caller
     answers busy; the retry re-reads).
 
-    The frame's changes, not its state: a snapshot is serialized from what
-    the frame holds, and the disk → embed leg delivers Claude's edits a
-    delta later (~100–300 ms). A drag posts a snapshot every 100 ms, so one
-    built before the frame applied Claude's delta used to write the frame's
-    stale title, position or folder membership straight over Claude's (audit
-    R2, 2026-11-10). Measured against `prev` instead, only what the frame
-    itself changed is written.
+    A snapshot is applied as the frame's FULL state. It is the host's job
+    (canvases._SyncManager.apply_snapshot) to refuse one the frame built
+    before applying a delta the host had already cut — `body.rev` names that
+    delta — so a stale picture never reaches this function: the frame
+    re-serializes after applying the delta and posts again.
     """
     path = os.path.join(clone_dir, "canvas.toml")
     doc, raw_before = _load_toml_raw(path)
@@ -956,15 +888,9 @@ def apply_snapshot(
         if data is not None:
             backup(rel, data)
 
-    late = set(late)
-    late_rows = set(late_rows)
     # What the embed KNEW: the previous snapshot, else its own hydration base.
-    # A node the view gained from a delta the frame had not applied yet when
-    # it serialized this snapshot (`late`) was not known to it: its absence
-    # is no delete (audit R3 — a replayed body read Claude's newer node as
-    # deleted and trashed its file).
     if prev is not None:
-        known_before = set(prev["nodes"]) - late
+        known_before = set(prev["nodes"])
         ids_before = dict(prev.get("ids", {}))
     else:
         # KNOWN GAP (frame side): the embed's `base_nodes` lists UDF slugs
@@ -991,11 +917,7 @@ def apply_snapshot(
         changed = True
 
     files_changed = False
-    # `late` nodes the snapshot omits stay in the host's view like a
-    # stale-closure omission: the frame acked them since, and its next
-    # snapshot (built on a newer rev) can still delete them.
-    deferred_deletes: list[str] = sorted(n for n in late if n not in new["nodes"]
-                                         and prev is not None and n in prev["nodes"])
+    deferred_deletes: list[str] = []
 
     checked = [False]
 
@@ -1048,38 +970,20 @@ def apply_snapshot(
         remove(on_disk[slug])
         deleted.append(slug)
 
-    # Upserts, as the FRAME'S CHANGES (see "the frame's changes, not its
-    # state" in the docstring). Per node, `base` is the row the frame was
-    # shown (the view's row), or — for a row the view took from a delta newer
-    # than this snapshot (`late_rows`) — the frame's own previous send. A key
-    # whose value moved from `base` is the frame's edit and is written, even
-    # over a Claude edit of the same key (the user wins a clash). A key the
-    # frame left as it was keeps disk's value; where that differs from what
-    # the frame holds it goes to `unseen`, so the host's view says what the
-    # frame really holds and the next delta delivers disk's value.
-    #
-    # A key the embed's row LACKS is the frame's removal only when its own
-    # PREVIOUS send carried it (`embed_rows`) — never because the DISK row has
-    # it: `compact_node` emits several keys conditionally (an empty
-    # description, a catalog key that is None), so measured against the disk
-    # row every snapshot after a delta would strip them and rewrite the toml
-    # for nothing.
-    view_rows = prev["nodes"] if prev is not None else {}
-    prev_nodes = (prev.get("embed_rows") or {}) if prev is not None else {}
+    # Upserts: rows that differ on the keys the embed owns. A key the embed's
+    # row LACKS is deleted from disk only when the embed's own PREVIOUS row
+    # carried it (`embed_rows`, recorded on the view by the host after each
+    # snapshot) — never because the DISK row has it: `compact_node` emits
+    # several keys conditionally (an empty description, a catalog key that is
+    # None), so measured against the disk row every snapshot after a delta
+    # would strip them and rewrite the toml for nothing.
+    prev_nodes = (prev.get("embed_rows") or {}) if prev else {}
     fileless: list[str] = []
     added: list[str] = []
-    unseen: dict[str, dict[str, Any]] = {}
     for name, row in new["nodes"].items():
         disk = by_name.get(name)
         if disk is None:
             if prev is not None and name in prev["nodes"]:
-                continue
-            # A body that predates deltas the frame has applied since (a
-            # replay) and names a node with no file anywhere describes one
-            # that is gone (Claude deleted it meanwhile), not one the user
-            # just added: its source would have come with it.
-            if (stale_base and not is_folder(row) and name not in on_disk
-                    and not any(os.path.splitext(e["file"])[0] == name for e in new["new_files"])):
                 continue
             if name not in on_disk and not is_folder(row):
                 fileless.append(name)
@@ -1089,156 +993,45 @@ def apply_snapshot(
             upserted.append(name)
             added.append(name)
             continue
-        if prev is None:
-            base = None  # no picture of the frame: its row is the truth, as before
-        elif name in late_rows:
-            # Never sent: nothing to tell the frame's edits from its stale
-            # copy, so nothing of it overwrites disk until a newer snapshot.
-            base = prev_nodes.get(name, row)
-        else:
-            base = view_rows.get(name, prev_nodes.get(name))
-        sent = prev_nodes.get(name, {})
         diff = False
-        held: dict[str, Any] = {}
         for key in EMBED_ROW_KEYS:
             if key in row:
-                # The frame changed a key when its value moved from what it
-                # was shown. (KNOWN LIMIT: a key Claude REMOVED from a row the
-                # frame still shows reads as the frame's and comes back — a
-                # delta can set keys on the frame's node, never take one away.)
-                mine = base is None or base.get(key, MISSING) != row[key]
-                if mine:
-                    value = row[key]
-                    if (base is not None and isinstance(value, list)
-                            and isinstance(base.get(key), list)
-                            and isinstance(disk.get(key), list)):
-                        value = _merge_list(base[key], disk[key], value)
-                        if value != row[key]:
-                            held[key] = row[key]
-                    if disk.get(key, MISSING) != value:
-                        disk[key] = value
-                        diff = True
-                elif disk.get(key, MISSING) != row[key]:
-                    held[key] = row[key]
-            elif key in sent:
-                if key in disk:
-                    del disk[key]
+                if disk.get(key) != row[key]:
+                    disk[key] = row[key]
                     diff = True
-            elif (base is not None and key in disk
-                  and disk[key] != base.get(key, MISSING)):
-                held[key] = base.get(key, MISSING)
-        if held:
-            unseen[name] = held
+            elif key in disk and key in prev_nodes.get(name, {}):
+                del disk[key]
+                diff = True
         if diff:
             changed = True
             upserted.append(name)
 
-    # Folder membership, user first: a child the FRAME moved (its folder in
-    # the snapshot is not the one it was shown) sits in the frame's folder and
-    # nowhere else, whatever Claude did to the other folders' lists meanwhile.
-    # Merged per list alone, a child Claude put in F that the user dropped in
-    # G was listed by both, `normalise_folders` kept the first in document
-    # order, and the child's frame-relative x/y were read against the wrong
-    # folder.
-    if prev is not None:
-        def owners(table: dict) -> dict[str, str]:
-            out: dict[str, str] = {}
-            for fname, frow in table.items():
-                if is_folder(frow) and isinstance(frow.get("childUdfOrder"), list):
-                    for child in frow["childUdfOrder"]:
-                        if isinstance(child, str):
-                            out.setdefault(child, fname)
-            return out
-
-        frame_owner = owners(new["nodes"])
-        base_owner = owners(view_rows)
-        for child in set(frame_owner) | set(base_owner):
-            want = frame_owner.get(child)
-            if want == base_owner.get(child) or child not in new["nodes"]:
-                continue
-            for fname, frow in by_name.items():
-                order = frow.get("childUdfOrder") if is_folder(frow) else None
-                if not isinstance(order, list):
-                    continue
-                if fname != want and child in order:
-                    frow["childUdfOrder"] = [n for n in order if n != child]
-                    changed = True
-                elif fname == want and child not in order:
-                    frow["childUdfOrder"] = order + [child]
-                    changed = True
-
-    # Edges, the same way: the frame's additions and removals against what it
-    # was shown, applied to disk's set — so an edge Claude added or removed
-    # between nodes the frame knows survives a snapshot that predates it.
-    # Without a picture (`prev` None) the old rule stands: the embed's set
-    # plus disk edges touching nodes it does not know. Either way a node
-    # deleted just above takes its edges, and only edges whose both ends are
-    # rows on disk are kept: a dangling edge (a node id written as a name by
-    # an older build, a row removed by hand) fails every push.
+    # Edges: the embed's set, plus disk edges touching nodes it does not know.
+    # A node deleted just above is NOT "unknown": its edges go with it, or
+    # they would be copied back dangling and fail validation on the push.
+    known = set(new["nodes"])
     gone = set(deleted)
     disk_edges = canvas.get("edges") if isinstance(canvas.get("edges"), list) else []
-
-    def edge_ok(e: Any) -> bool:
-        return (isinstance(e, list) and len(e) == 2
-                and e[0] in by_name and e[1] in by_name
-                and e[0] not in gone and e[1] not in gone)
-
-    new_edges = [list(e) for e in new["edges"]]
-    base_edges = None
-    if prev is not None:
-        if stale_base:
-            # The view took edges from a delta this snapshot predates: the
-            # frame's own previous send is the base; unknown, nothing it
-            # lacks counts as removed and only what disk lacks is added.
-            base_edges = prev.get("embed_edges")
-            if base_edges is None:
-                base_edges = [e for e in new_edges if e in disk_edges]
-        else:
-            base_edges = prev.get("edges")
-    if base_edges is None:
-        known = set(new["nodes"])
-        merged = list(new_edges)
-        for e in disk_edges:
-            if edge_ok(e) and (e[0] not in known or e[1] not in known) and list(e) not in merged:
-                merged.append(list(e))
-    else:
-        was = {tuple(e) for e in base_edges if isinstance(e, (list, tuple)) and len(e) == 2}
-        now = {tuple(e) for e in new_edges}
-        merged = [list(e) for e in disk_edges if edge_ok(e) and tuple(e) not in was - now]
-        for e in new_edges:
-            if tuple(e) not in was and e not in merged and edge_ok(e):
-                merged.append(e)
+    # … and only edges whose both ends are rows on disk: a dangling edge (a
+    # node id written as a name by an older build, a row removed by hand)
+    # would otherwise be preserved forever as "touching a node the embed does
+    # not know" and fail every push.
+    kept = [e for e in disk_edges
+            if isinstance(e, list) and len(e) == 2
+            and e[0] in by_name and e[1] in by_name
+            and e[0] not in gone and e[1] not in gone
+            and (e[0] not in known or e[1] not in known)]
+    merged = [list(e) for e in new["edges"]]
+    for e in kept:
+        if list(e) not in merged:
+            merged.append(list(e))
     if merged != disk_edges:
         canvas["edges"] = merged
         changed = True
 
-    # Canvas scalars (viewport, comments): the frame's when it changed them
-    # since what it was shown; otherwise disk's (Claude resolving a comment
-    # is not undone by a snapshot that predates it), recorded in
-    # `unseen_canvas` so the view keeps the frame's copy.
-    base_canvas = None
-    if prev is not None:
-        if stale_base:
-            base_canvas = prev.get("embed_canvas") or dict(new["canvas"])
-        else:
-            base_canvas = prev.get("canvas")
-    unseen_canvas: dict[str, Any] = {}
     for key in CANVAS_KEYS:
-        if key not in new["canvas"]:
-            continue
-        value = new["canvas"][key]
-        if base_canvas is not None and base_canvas.get(key, MISSING) == value:
-            if canvas.get(key, MISSING) != value:
-                unseen_canvas[key] = value
-            continue
-        if (base_canvas is not None and isinstance(value, list)
-                and isinstance(base_canvas.get(key), list) and isinstance(canvas.get(key), list)):
-            merged_value = _merge_list(base_canvas[key], canvas[key], value)
-            if merged_value != value:
-                unseen_canvas[key] = value
-            value = merged_value
-        if canvas.get(key) != value:
-            canvas[key] = value
+        if key in new["canvas"] and canvas.get(key) != new["canvas"][key]:
+            canvas[key] = new["canvas"][key]
             changed = True
 
     # Note bodies: written only when the EMBED changed them since its
@@ -1305,16 +1098,12 @@ def apply_snapshot(
             "renamed": renamed,
             "created": created, "written": written, "fileless": fileless,
             "rowless_files": rowless_files, "deferred_deletes": deferred_deletes,
-            "folder_fixes": folder_fixes, "unseen": unseen, "added": added,
-            "unseen_canvas": unseen_canvas, "at": time.time()}
+            "folder_fixes": folder_fixes, "added": added, "at": time.time()}
 
 
 def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
               bodies: dict, embed_rows: dict | None,
-              extra_names: Iterable[str] = (),
-              unseen: dict | None = None, unseen_canvas: dict | None = None,
-              embed_canvas: dict | None = None,
-              embed_edges: list | None = None) -> dict:
+              extra_names: Iterable[str] = ()) -> dict:
     """The view the embed holds after one of its own writes landed: `disk`
     (a `compact_state_from_disk` reading taken AFTER the write) restricted
     to `names`, the nodes the embed is known to hold, plus `extra_names`
@@ -1328,65 +1117,19 @@ def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
     re-sends (`diff_views` reads a missing view body as "differs"). Canvas
     scalars are disk's: a snapshot always carries the embed's and the write
     took them. See "the disk → embed leg" above for why this is not simply
-    `disk`.
-
-    `unseen` / `unseen_canvas` (from `apply_snapshot`) are the row keys and
-    canvas scalars where disk kept a value the frame does not hold (Claude's
-    edit the snapshot predated): the view takes the frame's value there, so
-    the next delta delivers disk's. `embed_canvas` and `edges` are also kept
-    as the frame's own last send (`embed_canvas`, `embed_edges`), what a
-    snapshot that predates a later delta is compared against."""
+    `disk`."""
     keep = set(names) | set(extra_names)
     rows = {**(embed_rows or {}), **disk["rowed"]}
     known = [n for n in rows if n in keep]
-    nodes = {}
-    for n in known:
-        row = rows[n]
-        held = (unseen or {}).get(n)
-        if held:
-            row = dict(row)
-            for key, value in held.items():
-                if value is MISSING:
-                    row.pop(key, None)
-                else:
-                    row[key] = value
-        nodes[n] = row
-    canvas = dict(disk["canvas"])
-    for key, value in (unseen_canvas or {}).items():
-        canvas[key] = value
     return {
-        "nodes": nodes,
+        "nodes": {n: rows[n] for n in known},
         "edges": [list(e) for e in edges],
-        "canvas": canvas,
+        "canvas": dict(disk["canvas"]),
         "files": {n: disk["files"][n] for n in known if n in disk["files"]},
         "ids": {n: ids[n] for n in known if n in ids},
         "bodies": {n: bodies[n] for n in known if n in bodies},
         "embed_rows": {k: dict(v) for k, v in (embed_rows or {}).items()},
-        "embed_edges": [list(e) for e in (edges if embed_edges is None else embed_edges)],
-        "embed_canvas": dict(embed_canvas or {}),
     }
-
-
-def view_unseen(view: dict | None, disk: dict) -> tuple[dict, dict]:
-    """`(unseen, unseen_canvas)` for re-reading a view from disk without a
-    snapshot to say what the frame changed (a rename hint): every embed-owned
-    row key and canvas scalar where the view — what the frame holds — differs
-    from disk. Claude's edits the frame has not received yet, in short, kept
-    owed instead of being folded into the view as if delivered."""
-    if not view:
-        return {}, {}
-    unseen: dict[str, dict[str, Any]] = {}
-    for name, held in (view.get("nodes") or {}).items():
-        row = disk["rowed"].get(name)
-        if row is None or not isinstance(held, dict):
-            continue
-        diff = {key: held.get(key, MISSING) for key in EMBED_ROW_KEYS
-                if key != "udfName" and held.get(key, MISSING) != row.get(key, MISSING)}
-        if diff:
-            unseen[name] = diff
-    canvas = {key: value for key, value in (view.get("canvas") or {}).items()
-              if key in CANVAS_KEYS and disk["canvas"].get(key, MISSING) != value}
-    return unseen, canvas
 
 
 def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> dict | None:
@@ -1425,10 +1168,7 @@ def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> di
     base = prev.get("base_nodes")
     if base is not None and frm in base:
         out["base_nodes"] = (set(base) - {frm}) | {to}
-    for key in ("edges", "embed_edges"):
-        if key in prev:
-            out[key] = [[to if a == frm else a, to if b == frm else b]
-                        for a, b in prev.get(key) or []]
+    out["edges"] = [[to if a == frm else a, to if b == frm else b] for a, b in prev.get("edges", [])]
     return out
 
 
