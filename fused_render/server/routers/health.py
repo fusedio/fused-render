@@ -192,7 +192,10 @@ def api_diagnostics(
         while not finished.wait(HEARTBEAT_S):
             report()
 
-    threading.Thread(target=heartbeat, name="diagnostics-heartbeat", daemon=True).start()
+    try:
+        threading.Thread(target=heartbeat, name="diagnostics-heartbeat", daemon=True).start()
+    except RuntimeError:  # best-effort: no thread means a stale row, not no bundle
+        logger.debug("could not start the diagnostics heartbeat")
     try:
         from fused_render import diagnostics
 
