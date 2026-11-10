@@ -582,116 +582,136 @@
   user-select: none;
   -webkit-user-select: none;
 }
-/* THE GRIPS (RailPeek, owner 2026-11-02): the pinned card's two LEFT
-   corners (and its edges, below) — the right edge stands against the rail — as 12px hit areas
-   (8px of them over the card's rounded corner, clear of the pin seat), with
-   the corner's resize cursor. Quiet until the pointer rests on the corner
-   (owner, 2026-11-02: "show it when we hover over the corner … when we drag
-   the corner it changes color to accent"): a short L in the ink's tone
-   traces the corner under the pointer, and stays in that tone while the
-   drag is on — NO ACCENT while resizing (owner, 2026-11-04: "when resizing
-   we show accent border colour — let's not do that"): the cursor and the
-   ink's trace are the whole feedback. Children of the fixed box, not of the card
-   (the card clips its overflow), above the head and the chat. */
-/* …AND THE SAME GRIPS ON A SIZED POPOVER CARD (Modal `popover.resize`;
-   owner, 2026-11-08: the +'s New task card "is supposed to be window A, but
-   resize is not working"): `.modal-popover-grip` wears every rule below, so
-   the two cards resize with one look. Their frame is deploy.css's
-   `.modal-popover-frame`. */
+/* THE GRIPS (RailPeek, owner 2026-11-02): hit areas on the card's two LEFT
+   corners and its left, top and bottom edges (owner, 2026-11-04) — the right
+   edge stands against the rail — each with its resize cursor. Children of
+   the fixed box, not of the card (the card clips its overflow), above the
+   head and the chat. The SAME GRIPS ON A SIZED POPOVER CARD (Modal
+   `popover.resize`, owner 2026-11-08: the +'s New task card is window A):
+   `.modal-popover-grip` wears every rule here, in deploy.css's
+   `.modal-popover-frame`, so every card resizes with one look.
+   The grips draw nothing themselves. ONE LOOK FOR EDGE AND CORNER (owner,
+   2026-11-10: "we have edge and corner which is different and looks a bit
+   off"): the CARD'S OWN OUTLINE lights up where the drag will move it —
+   `.rail-grip-ring`, one per grip, a 2px ring on the card's 10px radius
+   masked to the part in play. An edge lights its whole side and rounds both
+   its corners; a corner lights its arc and fades out along its two sides.
+   The way window and pane edges do it (macOS, VS Code's sashes, Linear's
+   sidebar): the cursor says "resize", the outline says which part. A short
+   wait before a hover lights it, so a pointer crossing an edge does not
+   flash; the ink's tone, never the accent (owner, 2026-11-04: "when
+   resizing we show accent border colour — let's not do that"). */
 :is(.claude-rail-peek-grip, .modal-popover-grip) {
   position: absolute;
-  left: -4px;
-  width: 12px;
-  height: 12px;
   z-index: 3;
   touch-action: none;
 }
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl {
+  left: -6px;
+  width: 18px;
+  height: 18px;
+}
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-tl {
-  top: -4px;
+  top: -6px;
   cursor: nwse-resize;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-bl {
-  bottom: -4px;
+  bottom: -6px;
   cursor: nesw-resize;
 }
-:is(.claude-rail-peek-grip, .modal-popover-grip)::after {
-  content: "";
-  position: absolute;
-  left: 4px;
-  width: 7px;
-  height: 7px;
-  border-left: 2px solid currentColor;
-  color: var(--fg);
-  opacity: 0;
-  transition:
-    opacity var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
-}
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl::after {
-  top: 4px;
-  border-top: 2px solid currentColor;
-  border-top-left-radius: 4px;
-}
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl::after {
-  bottom: 4px;
-  border-bottom: 2px solid currentColor;
-  border-bottom-left-radius: 4px;
-}
-:is(.claude-rail-peek-grip, .modal-popover-grip):hover::after,
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-active::after {
-  opacity: 1;
-}
-/* THE EDGE GRIPS (owner, 2026-11-04: "resize … from edges as well: left,
-   top and bottom"): 6px hit strips centred on the card's border, short of
-   the corners (whose 12px grips sit over the strips' ends and win). The
-   same quiet trace as the corners — a 2px line along the edge, the ink's
-   tone on hover and while the drag is on (no accent). */
+/* The edges: 8px strips centred on the border, short of the corners (whose
+   grips sit over the strips' ends and win). */
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-l,
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-t,
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
   z-index: 2;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-l {
-  left: -3px;
-  top: 8px;
-  bottom: 8px;
-  width: 6px;
-  height: auto;
+  left: -4px;
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
   cursor: ew-resize;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-t,
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
-  left: 8px;
-  right: 8px;
-  width: auto;
-  height: 6px;
+  left: 12px;
+  right: 12px;
+  height: 8px;
   cursor: ns-resize;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-t {
-  top: -3px;
+  top: -4px;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
-  bottom: -3px;
+  bottom: -4px;
 }
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-l::after,
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-t::after,
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-b::after {
-  border: 0;
-  background: currentColor;
-  border-radius: 1px;
+.rail-grip-ring {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in srgb, var(--fg) 55%, transparent);
+  border-radius: 10px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-l::after {
-  left: 2px;
-  top: 0;
-  width: 2px;
-  height: 100%;
+.rail-grip-ring.is-l {
+  -webkit-mask-image: linear-gradient(to right, #000 11px, transparent 24px);
+  mask-image: linear-gradient(to right, #000 11px, transparent 24px);
 }
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-t::after,
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-b::after {
-  left: 0;
-  top: 2px;
-  width: 100%;
-  height: 2px;
+.rail-grip-ring.is-t {
+  -webkit-mask-image: linear-gradient(to bottom, #000 11px, transparent 24px);
+  mask-image: linear-gradient(to bottom, #000 11px, transparent 24px);
+}
+.rail-grip-ring.is-b {
+  -webkit-mask-image: linear-gradient(to top, #000 11px, transparent 24px);
+  mask-image: linear-gradient(to top, #000 11px, transparent 24px);
+}
+.rail-grip-ring.is-tl {
+  -webkit-mask-image: radial-gradient(circle at 0 0, #000 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 0 0, #000 14px, transparent 44px);
+}
+.rail-grip-ring.is-bl {
+  -webkit-mask-image: radial-gradient(circle at 0 100%, #000 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 0 100%, #000 14px, transparent 44px);
+}
+/* Lit: on a hover after a beat, at once and a shade stronger under a drag. */
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l:hover ~ .rail-grip-ring.is-l,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t:hover ~ .rail-grip-ring.is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b:hover ~ .rail-grip-ring.is-b,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl:hover ~ .rail-grip-ring.is-tl,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl:hover ~ .rail-grip-ring.is-bl {
+  opacity: 1;
+  transition-delay: 80ms;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l.is-active ~ .rail-grip-ring.is-l,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t.is-active ~ .rail-grip-ring.is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b.is-active ~ .rail-grip-ring.is-b,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl.is-active ~ .rail-grip-ring.is-tl,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl.is-active ~ .rail-grip-ring.is-bl {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--fg) 75%, transparent);
+  transition-delay: 0s;
+}
+/* THE WIDTH MAGNET'S GUIDE (card-snap.ts, owner 2026-11-10): one line on
+   <body> along the left edge two stacked cards share once a width drag
+   snapped them level — a quiet grey, dashed (owner, 2026-11-10: "shouldn't
+   be accent colour … a bit more greyish subtle"), a little past both cards' ends,
+   over every card and taking no pointer. Fades out where it last stood. */
+.rail-snap-guide {
+  position: fixed;
+  width: 0;
+  border-left: 1px dashed color-mix(in srgb, var(--fg) 35%, transparent);
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.rail-snap-guide.is-on {
+  opacity: 1;
 }
 .claude-rail-peek-card {
   flex: 1 1 auto;

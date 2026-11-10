@@ -167,8 +167,10 @@ import {
   PEEK_WIDTH,
   STAR_MARK_MS,
   bottomClear,
+  dragMaxWidth,
   dragResize,
   errorWords,
+  snapWidth,
   favCardWish,
   favMaxHeight,
   listCardWish,
@@ -186,6 +188,7 @@ import {
   type ResizeEdge,
   type StarMark,
 } from "./rail-peek-lib";
+import { publishWindowABox, setSnapGuide, windowABox } from "./card-snap";
 
 /** Where a card's dragged size is kept in the ui-layout document: the
  *  rail's pinned card, or the favourite's (RailPeekProps `resizeKey`). */
@@ -647,15 +650,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     if (!start || start.pointerId !== e.pointerId || !row) return;
-    const next = dragResize(
-      start.corner,
-      start.box,
-      e.clientX - start.x,
-      e.clientY - start.y,
-      row.getBoundingClientRect(),
-      start.floor,
-      start.cap,
-    );
+    const bounds = row.getBoundingClientRect();
+    const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, start.floor, start.cap);
+    // THE WIDTH MAGNET (card-snap.ts): the other window's card — window A's
+    // for the favourite's card, window B's (`avoid`) for the list's.
+    const snapped = snapWidth(asked, start.corner, resizeKey ? windowABox() : avoid, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
+    setSnapGuide(snapped.guide);
+    const next = snapped.box;
     dragLast.current = next;
     setBox((prev) =>
       prev && prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height
@@ -673,6 +674,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const start = dragStart.current;
     dragStart.current = null;
     setResizing(null);
+    setSnapGuide(null);
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
@@ -721,6 +723,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onBoxRef.current?.(visible ? box : null);
   }, [visible, box, onBox]);
   useEffect(() => () => onBoxRef.current?.(null), []);
+  // The list's card is window A's: the box window B's grips snap to
+  // (card-snap.ts).
+  useEffect(() => {
+    if (resizeKey || !visible || !box) return;
+    publishWindowABox("list", box);
+    return () => publishWindowABox("list", null);
+  }, [resizeKey, visible, box]);
   // A pinned list card — any list card with favourites on (`oneSize`) — or
   // a card sized by the reader whatever its pin (the favourite's,
   // `resizeKey`); a fixed-size card never.
@@ -1297,6 +1306,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             onLostPointerCapture={() => dragStart.current && endDrag(true)}
           />
         ))}
+      {gripsOn && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
       <div className="claude-rail-peek-card">
         {head && (
           // THE HEAD, TWO ROWS (owner, 2026-11-02, after the one-row head of
