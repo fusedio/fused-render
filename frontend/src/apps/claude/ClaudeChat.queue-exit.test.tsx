@@ -23,6 +23,11 @@ import { dropSharedPrefsRead } from "@platform/lib/api";
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { publishProjectQueueEnabled } = await import("./feature-flag");
+// ONE CONTROLLER PER SESSION is module state (`protocol/chat-store`): a
+// session id one test left in its 30 s grace must not hand the next test its
+// controller.
+const { _registry: chatRegistry } = await import("./protocol/chat-store");
+afterEach(() => chatRegistry().disposeAll());
 
 // ---- the server, cut down to what a queued chat touches ---------------------
 

@@ -8,7 +8,7 @@
 // walk over three awaits, and only a real mount/unmount can cross it.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
@@ -17,6 +17,12 @@ const { Kebab } = await import("./ui/Kebab");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
+// ONE CONTROLLER PER SESSION is module state (`protocol/chat-store`): a
+// session id one test left in its 30 s grace must not hand the next test its
+// controller.
+const { _registry: chatRegistry } = await import("./protocol/chat-store");
+afterEach(() => chatRegistry().disposeAll());
+const runControllerModule = await import("./protocol/run-controller");
 
 /** One `/api/claude/agent` call: the action, plus the fields. */
 interface RunCall {
@@ -28,6 +34,11 @@ const runs: RunCall[] = [];
 let historyReads = 0;
 let historyTurns: unknown[] = [];
 let pollHint: unknown = undefined;
+/** `canvas_shot` rows the next poll carries, and a gate a test can hold the
+ *  poll behind (so a second mount can attach before the rows land). */
+let pollCanvas: unknown[] | undefined = undefined;
+let pollGate: Promise<void> | null = null;
+let canvasLaps = 0;
 /** Held back so a test can park the boot inside its detection wait: the
  *  agent's `defaults` read never answers. */
 let holdDetection = false;
@@ -108,6 +119,13 @@ function stubFetch(): void {
       }
       if (action === "live_host") return jsonRes({ run_id: "" });
       if (action === "start") return jsonRes({ run_id: "r1" });
+      if (action === "poll" && pollGate) await pollGate;
+      if (action === "poll" && pollCanvas) {
+        // A FEW live laps carrying the rows, then the run ends as usual.
+        const rows = pollCanvas;
+        if (++canvasLaps >= 3) pollCanvas = undefined;
+        return jsonRes({ done: false, session_id: "s-canvas", text: "", canvas_shot: rows });
+      }
       if (action === "poll") return jsonRes({ done: true, session_id: "s1", text: "ok", ...(pollHint === undefined ? {} : { worktree_hint: pollHint }) });
       return jsonRes({});
     }
@@ -120,6 +138,9 @@ beforeEach(() => {
   historyReads = 0;
   historyTurns = [];
   pollHint = undefined;
+  pollCanvas = undefined;
+  pollGate = null;
+  canvasLaps = 0;
   holdDetection = false;
   holdPaneStat = false;
   holdSessions = false;
@@ -490,6 +511,195 @@ test("a CONTROLLER REBUILD does not re-send a spent ask (QA #1061)", async () =>
   expect(started().length).toBe(1);
   expect(params.get("session_id")).toBe(sessionAfterAsk);
   expect(params.get("session_id")).toBeTruthy();
+});
+
+// ---- one controller per session, shared across mounts (design.md) -----------
+
+/** Every controller the registry builds, with whether it was disposed. */
+function countControllers() {
+  const realCreate = runControllerModule.createChatController;
+  const made: Array<{ disposed: boolean }> = [];
+  const spy = spyOn(runControllerModule, "createChatController").mockImplementation(((
+    ...a: Parameters<typeof realCreate>
+  ) => {
+    const c = realCreate(...a);
+    const rec = { disposed: false };
+    made.push(rec);
+    const dispose = c.dispose.bind(c);
+    c.dispose = () => {
+      rec.disposed = true;
+      dispose();
+    };
+    return c;
+  }) as typeof realCreate);
+  return { made, restore: () => spy.mockRestore() };
+}
+
+test("two mounts on one session share ONE controller, and the second does not reload it", async () => {
+  const ctl = countControllers();
+  try {
+    historyTurns = [{ role: "user", text: "hello there" }];
+    const a = await mountChat({ initialSessionId: "s-shared" });
+    await settle(20);
+    expect(historyReads).toBe(1);
+    const b = await mountChat({ initialSessionId: "s-shared" });
+    await settle(20);
+    // The popover and the pane: one state machine, one restore.
+    expect(ctl.made).toHaveLength(1);
+    expect(historyReads).toBe(1);
+    expect(b.params.get("session_id")).toBe("s-shared");
+    expect(JSON.stringify(b.r.toJSON())).toContain("hello there");
+    expect(JSON.stringify(a.r.toJSON())).toContain("hello there");
+  } finally {
+    ctl.restore();
+  }
+});
+
+test("unmounting one of two mounts leaves the shared controller running", async () => {
+  const ctl = countControllers();
+  try {
+    const a = await mountChat({ initialSessionId: "s-two" });
+    await mountChat({ initialSessionId: "s-two" });
+    expect(ctl.made).toHaveLength(1);
+    act(() => a.r.unmount());
+    mounted.splice(mounted.indexOf(a.r), 1);
+    await settle(20);
+    expect(ctl.made[0]!.disposed).toBe(false);
+    // …and a third mount on the same session still joins it.
+    await mountChat({ initialSessionId: "s-two" });
+    expect(ctl.made).toHaveLength(1);
+  } finally {
+    ctl.restore();
+  }
+});
+
+test("only a mount the reader has TOUCHED gets the caret back on a re-attach", async () => {
+  // The `?run=` boot's `resumeRun` ends with `focusComposer` (T:17866). The
+  // registry routes it to the front seat, and the seat takes it only once the
+  // reader has pressed or focused inside it: a kept popover seat nobody
+  // touched never steals the caret; one the reader clicked into gets it back.
+  const focusCalls = (touch: boolean) => async () => {
+    let calls = 0;
+    let open!: () => void;
+    pollGate = new Promise<void>((res) => (open = res));
+    const params = createMemoryParamsStore();
+    let r!: ReturnType<typeof create>;
+    await act(async () => {
+      r = create(
+        <ClaudeChat {...baseProps} params={params} initialSessionId={"s-focus-" + touch} initialRunId="r1" />,
+        {
+          createNodeMock: (el) =>
+            el.type === "textarea"
+              ? {
+                  focus: () => void calls++,
+                  value: "",
+                  scrollHeight: 20,
+                  style: {},
+                  addEventListener() {},
+                  removeEventListener() {},
+                  setSelectionRange() {},
+                }
+              : null,
+        },
+      );
+    });
+    mounted.push(r);
+    await settle(20);
+    if (touch) {
+      // The chat's root: its focus and press markers are the one `markFront`.
+      const root = r.root.findAll(
+        (n) => typeof n.props.onPointerDownCapture === "function" && n.props.onPointerDownCapture === n.props.onFocusCapture,
+      )[0]!;
+      act(() => root.props.onPointerDownCapture());
+    }
+    const before = calls;
+    await act(async () => open());
+    await settle(50);
+    pollGate = null;
+    // Gone before the next case: the stub's poll names "s1" for every run, so
+    // a second chat would otherwise join this one (`adoptKey`).
+    act(() => r.unmount());
+    mounted.splice(mounted.indexOf(r), 1);
+    chatRegistry().disposeAll();
+    return calls - before;
+  };
+  const g = globalThis as { getComputedStyle?: unknown };
+  const had = g.getComputedStyle;
+  g.getComputedStyle = () => ({ lineHeight: "20px", paddingTop: "0", paddingBottom: "0", borderTopWidth: "0", borderBottomWidth: "0" });
+  try {
+    expect(await focusCalls(false)()).toBe(0);
+    expect(await focusCalls(true)()).toBeGreaterThan(0);
+  } finally {
+    g.getComputedStyle = had;
+  }
+});
+
+test("a new FILE under the same session is a new controller, and the boot runs again", async () => {
+  const ctl = countControllers();
+  try {
+    const params = createMemoryParamsStore();
+    let r!: ReturnType<typeof create>;
+    await act(async () => {
+      r = create(<ClaudeChat {...baseProps} file="/w/p/a.html" params={params} initialSessionId="s-file" />);
+    });
+    mounted.push(r);
+    await settle(20);
+    expect(ctl.made).toHaveLength(1);
+    expect(historyReads).toBe(1);
+    await act(async () => {
+      r.update(<ClaudeChat {...baseProps} file="/w/p/b.html" params={params} initialSessionId="s-file" />);
+    });
+    await settle(20);
+    expect(ctl.made).toHaveLength(2);
+    expect(historyReads).toBe(2);
+    expect(params.get("session_id")).toBe("s-file");
+  } finally {
+    ctl.restore();
+  }
+});
+
+test("a second mount's stale ?run= the shared chat already finished is dropped, not re-attached", async () => {
+  // Mount A re-attaches to r1 and the turn ends. The pane opens later with
+  // `run=r1` still in its address bar: the shared chat has shown that run, so
+  // the second mount does not resume it — and takes the spent id OFF its own
+  // store, where it would otherwise read as a live run.
+  // "s1" is the session the stub's poll names, so the chat stays filed under it.
+  await mountChat({ initialSessionId: "s1", initialRunId: "r1" });
+  await settle(20);
+  const polls = runs.filter((c) => c.action === "poll").length;
+  expect(polls).toBeGreaterThan(0);
+  const b = await mountChat({ initialSessionId: "s1", initialRunId: "r1" });
+  await settle(20);
+  expect(runs.filter((c) => c.action === "poll").length).toBe(polls);
+  expect(b.params.get("run")).toBeUndefined();
+  expect(b.params.get("session_id")).toBe("s1");
+});
+
+test("a popover with no canvas never answers a canvas shot the pane beside it can take", async () => {
+  // Popover A (no canvas) and the canvas pane on one session share one
+  // controller, so both see the `canvas_screenshot` row. The pane photographs;
+  // the popover must not answer "no canvas" over it — not even after the wait
+  // (`created_at: 0` is long past it).
+  let open!: () => void;
+  pollGate = new Promise<void>((res) => (open = res));
+  pollCanvas = [{ id: "shot-1", what: "canvas", udf: "", reason: "", created_at: 0 }];
+  let captures = 0;
+  const canvasShot = {
+    targets: ["canvas"] as const,
+    capture: async () => {
+      captures++;
+      return { ok: false as const, error: "boom" };
+    },
+  };
+  await mountChat({ initialSessionId: "s-canvas", initialRunId: "r-canvas" });
+  await mountChat({ initialSessionId: "s-canvas", canvasShot });
+  await act(async () => open());
+  await settle(1000);
+  const answers = runs.filter((c) => c.action === "canvas_shot").map((c) => String(c.params.state));
+  expect(captures).toBe(1);
+  expect(answers).toHaveLength(1);
+  expect(answers[0]).toContain("boom");
+  expect(answers.join(" ")).not.toContain("no canvas page");
 });
 
 /** The rendered TEXT of every element with exactly this class — flattened off

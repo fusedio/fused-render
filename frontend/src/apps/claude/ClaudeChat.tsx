@@ -46,7 +46,8 @@ import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
 import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type ComposerDraftDetail } from "@platform/lib/breakouts";
 
-import { createUrlParamsStore, type ParamsStore } from "./params/store";
+import { createUrlParamsStore, type ParamsSnapshot, type ParamsStore } from "./params/store";
+import { mirrorParams } from "./params/mirror";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
 import type { BreakoutContext, BreakoutRequest, SendOptions, StrandedLine, Turn, UserTurn } from "./protocol/controller-api";
@@ -55,6 +56,7 @@ import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
 import { createChatController } from "./protocol/run-controller";
+import { CHAT_SHARED_KEYS, acquireSharedChat, adoptKey, type HostSeat, type SharedChat } from "./protocol/chat-store";
 import { finishedTailText, parseTailKey, streamingTailOf } from "./protocol/segments";
 import { createTyper, type Typer } from "./protocol/typer";
 import { createFrameClock } from "./ui/frameClock";
@@ -665,6 +667,55 @@ const NO_TAKEN: OutboxPayload["taken"] = { opts: {}, items: [] };
 
 interface ChatBodyProps extends ClaudeChatProps {
   params: ParamsStore;
+}
+
+/** A mount's HOST SEAT on its shared chat (`protocol/chat-store`): one stable
+ *  object per mount, its methods re-pointed at the current render's refs and
+ *  callbacks on every render (the registry reads them at CALL time). */
+let seatSeq = 0;
+/** …plus whether this mount can photograph a canvas (`props.canvasShot`), so a
+ *  canvas-less mount can tell a seat beside it will answer a canvas shot. */
+type ChatSeat = HostSeat & { hasCanvas(): boolean };
+/** Rows a mount that must not answer canvas shots hands its responder. */
+const NO_SHOT_ROWS: never[] = [];
+function blankSeat(): ChatSeat {
+  const none = () => {};
+  return {
+    id: `chat-seat-${++seatSeq}`,
+    hasCanvas: () => false,
+    model: () => "",
+    effort: () => "",
+    backend: () => "",
+    hasPane: () => null,
+    appStateBlock: () => Promise.resolve(""),
+    terminalHint: () => Promise.resolve(""),
+    focusComposer: none,
+    onStranded: none,
+    onSendDelivered: none,
+    onSendReturned: none,
+    onArtifactsTick: none,
+    onRunEnded: none,
+    onRunAbandoned: none,
+    onCommandsChanged: none,
+  };
+}
+
+/** The shared store's starting values: this mount's own copy of the shared
+ *  keys, with the host's ids where the store has none. An ASK starts a new
+ *  conversation, so it carries no ids at all (the boot clears them too). */
+function sharedSeed(params: ParamsStore, props: ClaudeChatProps): ParamsSnapshot {
+  const seed: ParamsSnapshot = {};
+  for (const k of CHAT_SHARED_KEYS) {
+    const v = params.get(k);
+    if (v) seed[k] = v;
+  }
+  if (props.initialSessionId && !seed.session_id) seed.session_id = props.initialSessionId;
+  if (props.initialRunId && !seed.run) seed.run = props.initialRunId;
+  if (props.initialAsk) {
+    delete seed.session_id;
+    delete seed.run;
+  }
+  return seed;
 }
 
 function ChatBody(props: ChatBodyProps) {
@@ -1410,157 +1461,349 @@ function ChatBody(props: ChatBodyProps) {
   const [cardPolicy] = useState(createCardPolicy);
   /** `onCommandsChanged`'s target — a ref, because the controller is built once. */
   const commandsChanged = useRef<() => void>(() => {});
-  const controller = useMemo(
-    () =>
-      createChatController({
-        file,
-        params,
+  // ── ONE CONTROLLER PER SESSION, SHARED ACROSS MOUNTS (design.md) ─────────
+  //
+  // The rail popover, its kept seats, the canvas pane and the explorer panes
+  // used to build a controller EACH for the same conversation, and their
+  // status, transcript and cards drifted apart. The controller now lives in
+  // the registry (`protocol/chat-store`), keyed by session id; this mount is a
+  // HOST SEAT on it. Reads at send time (model, pane, app state…) and the caret
+  // go to the FRONT seat, a send's hand-backs to the seat that sent it, and the
+  // run-wide events to every seat — so everything below that the old deps
+  // closed over is still where it was, re-pointed every render.
+  //
+  // THE KEY is the session this mount opens on: the host's id, else the
+  // store's. A breakout or an ask is always a NEW conversation, so private
+  // (null) — and a private chat joins the registry the moment its first poll
+  // names a session (`adoptKey`, below).
+  const [seat] = useState(blankSeat);
+  Object.assign(seat, {
+    model: () => liveModel.current,
+    effort: () => liveEffort.current,
+    backend: () => liveBackend.current,
+    hasPane: () => paneAnswer.current(),
+    // The controller already announces on THIS document
+    // (`announceTasksChanged`); the stamp is for every OTHER one (T:16435).
+    onActivity: stampChatActivity,
+    // A poll saw the slash-command list move (SPEC C-2): re-fetch it.
+    onCommandsChanged: () => commandsChanged.current(),
+    // Follow-ups the CLI never delivered come back as "not sent" bubbles
+    // in place, one each, never into the box (`still_queued`, T:15911;
+    // browser QA 2026-09-24).
+    onStranded: strandAll,
+    // THE PUSH CHANNEL. Read at SEND time from the watcher, which is the
+    // same object the pull channel answers through — `blockForSend` does
+    // push → offload → block, in T's order (T:16483, 5177-5218). Gated on
+    // `appFrame()` — A FRAME, RESOLVED HERE, not the polled `hasPane` flag:
+    // this is the moment whose state the user is describing. A mount with
+    // neither pane still sends nothing, so a cards tile never claims to
+    // describe an app it cannot see.
+    appStateBlock: () => (appFrame() ? watcher.blockForSend() : Promise.resolve("")),
+    // Which status-bar terminal the user means: metadata only, "" when the
+    // drawer holds no live terminal (platform/lib/terminalFocus.ts).
+    terminalHint,
+    // PR4's run-clock hook, through a ref: the strip's store is built after
+    // this seat (T:16229, 16321-16330).
+    onArtifactsTick: () => artTick.current?.(),
+    // T:10608/16341 — the run this turn started is over, so the annotations
+    // it carried are HANDLED: drop them. Even on error, deliberately (T's
+    // own note): an errored run may not have acted on them, but they were
+    // already stamped `sent` and folded into the transcript — re-annotating
+    // is one click, silently re-sending is not.
+    onRunEnded: () => {
+      annRef.current?.resolveSent();
+      // T:19078 `snapInvalidate` — the turn that just ended may have edited
+      // the file, so the checkpoint chain the landing drew is stale.
+      snapInvalidate.current?.();
+    },
+    // T:17792 — a stale `run` param is not a turn ending: the annotations
+    // still have to come back, but nothing ran, so the checkpoint chain the
+    // landing drew is exactly as fresh as it was.
+    onRunAbandoned: () => {
+      annRef.current?.resolveSent();
+    },
+    /**
+     * T:17866 — the caret goes back in the box at the end of EVERY re-attach
+     * (a boot `?run=`, an adoption by the standing watch, a scheduled
+     * message's attach, P4-17). The registry asks the FRONT seat only, and
+     * only a front seat the reader has TOUCHED (a focus or press inside it,
+     * `markFront`) takes it: a popover clicked into gets its caret back, a
+     * kept seat or a card merely hovered never steals it — focus inside a
+     * frame scrolls that frame into view (D348).
+     *
+     * `preventScroll`, like every other focus in this view: the composer is
+     * pinned to the bottom of a scrolling transcript and taking the caret
+     * must not move what the reader is looking at.
+     */
+    focusComposer: () => {
+      if (!touched.current || sharedRef.current.frontId() !== seat.id) return;
+      boxRef.current?.focus({ preventScroll: true });
+    },
+    // The agent saw none of it, so the pictures come back to the tray —
+    // never revoked on this road, because those very thumbnails are what the
+    // returned chips show (T:16693-16720).
+    onSendDelivered: (clientId: string) => journalDrop(clientId),
+    hasCanvas: () => !!props.canvasShot,
+    onSendReturned: ({ attachments, sendId, text, refused, clientId }) => {
+      // Handed back to the reader: it is theirs now, not the page's to
+      // re-send after a reload.
+      if (clientId) journalDrop(clientId);
+      // A REFUSED SEND OWES THE WORDS BACK. The composer cleared its box on
+      // the keystroke and the controller turned the message away before it
+      // ever reached `addUser`, so there is no bubble and no queue entry
+      // holding them: unless they come back to the box they are simply
+      // gone (Bugbot, PR #1074). The latch below makes this window hard to
+      // reach from the composer; ✓ Done and the walkthrough share the seat,
+      // and a refusal must never cost the user a sentence.
+      if (refused) strand(text);
+      // A DRAINED PARKED LINE THAT DID NOT GO (the host was gone, `send`
+      // answered nothing) is not dropped with its bubble: it comes back as
+      // a "not sent" row that keeps its words AND its pictures, for the
+      // reader to pull (Bugbot, PR #1323). Its `inFlight` entry is spent
+      // below like any other; the pictures stay on the row, not the tray.
+      // …LOOKED UP BY ITS OWN SEND ID (`parkedBySendId`): a return for any
+      // send that was not a parked line takes the ordinary road below.
+      const sid = sendId || "";
+      const parked = sid ? (parkedBySendId.current.get(sid) ?? null) : null;
+      if (parked && !refused && text) {
+        // ONE ROW PER SEND ID (Bugbot rounds 3–4). A stop strands BEFORE it
+        // returns, so `strandAll` has already posted this line's row in
+        // typed order and recorded the id: nothing to post, the id is
+        // spent. A `send` that failed on its own strands nothing, so the
+        // row is posted here and the id recorded against a later stop.
+        if (postedForSend.current.has(sid)) {
+          postedForSend.current.delete(sid);
+        } else {
+          const row = postNotSent(text, parked);
+          if (row) {
+            setOutbox(pushFront(outboxRef.current, row));
+            postedForSend.current.add(sid);
+          }
+        }
+        returnedSends.current.add(sid);
+        if (attachments) inFlight.current.delete(attachments);
+        return;
+      }
+      // T:16068 — THE ROLL-BACK SIGNAL, and it NAMES ITS SEND: the agent saw
+      // none of THAT message, which is what its notes' `sent = 0` and its
+      // overview's revoke hang off. It used to be a counter, and a counter
+      // cannot tell "my send came back" from "a send came back while mine
+      // was still out" — a second submit inside the first send's capture
+      // window bumped it, and the first send rolled back a turn the agent
+      // had already taken (Bugbot, PR #1074).
+      if (sendId) returnedSends.current.add(sendId);
+      if (!attachments) return;
+      const back = inFlight.current.get(attachments);
+      if (!back) return;
+      inFlight.current.delete(attachments);
+      attachBack.current?.(back);
+    },
+  } satisfies Omit<ChatSeat, "id">);
+  /** Every shared chat this mount has acquired and not yet let go — the one it
+   *  holds, plus any a discarded render's initializer took (StrictMode calls
+   *  it twice). Released at unmount, all of them, so no count is ever leaked. */
+  const acquired = useRef<SharedChat[]>([]);
+  /** What `acquireSharedChat` needs besides the seat: the terminal-free half
+   *  of the old deps. Through a ref so a swap (below) builds for the CURRENT
+   *  props without being a hook dependency. Keyed on file + session: the
+   *  controller's FILE follows the mount. */
+  const acquireRef = useRef<(key: string | null, seed: ParamsSnapshot, f: string | null) => SharedChat>(null!);
+  acquireRef.current = (key, seed, f) => {
+    const got = acquireSharedChat({
+      // Registered under file + session (`sharedChatKey(config.file, key)`).
+      key: props.breakout ? null : key,
+      make: createChatController,
+      config: {
+        file: f,
         ...(props.breakout ? { breakout: true } : {}),
         ...(props.breakout && props.breakoutContext ? { breakoutContext: props.breakoutContext.block } : {}),
         // The transcript restore takes its own road (owner E2E R1, F5):
         // `/api/claude-sessions/history`. See `fetchHistory`.
-        history: (f, s) => fetchHistory(f, s),
+        history: (hf, sid) => fetchHistory(hf, sid),
         historyCache: sharedHistoryCache,
-        model: () => liveModel.current,
-        effort: () => liveEffort.current,
-        backend: () => liveBackend.current,
-        hasPane: () => paneAnswer.current(),
-        // The controller already announces on THIS document
-        // (`announceTasksChanged`); the stamp is for every OTHER one (T:16435).
-        onActivity: stampChatActivity,
-        // A poll saw the slash-command list move (SPEC C-2): re-fetch it.
-        onCommandsChanged: () => commandsChanged.current(),
-        // Follow-ups the CLI never delivered come back as "not sent" bubbles
-        // in place, one each, never into the box (`still_queued`, T:15911;
-        // browser QA 2026-09-24).
-        onStranded: strandAll,
-        // THE PUSH CHANNEL. Read at SEND time from the watcher, which is the
-        // same object the pull channel answers through — `blockForSend` does
-        // push → offload → block, in T's order (T:16483, 5177-5218). Gated on
-        // `appFrame()` — A FRAME, RESOLVED HERE, not the polled `hasPane` flag:
-        // this is the moment whose state the user is describing, and asking the
-        // frame directly cannot be a render behind a mark that has just landed.
-        // A mount with neither pane still sends nothing, so a cards tile never
-        // claims to describe an app it cannot see.
-        //
-        // Through a ref, like every other send-time read here: the watcher
-        // outlives a pane reload and rebuilding the controller for it would
-        // restart the run loop.
-        appStateBlock: () =>
-          appFrame() ? watcher.blockForSend() : Promise.resolve(""),
-        // Which status-bar terminal the user means: metadata only, "" when the
-        // drawer holds no live terminal (platform/lib/terminalFocus.ts).
-        terminalHint,
-        // PR4's two run-clock hooks. Both go through refs: the controller is
-        // built before the strip's store and the landing's counter exist, and
-        // rebuilding it for either would restart the run loop (T:16229,
-        // 16321-16330).
-        onArtifactsTick: () => artTick.current?.(),
-        // T:10608/16341 — the run this turn started is over, so the annotations
-        // it carried are HANDLED: drop them. Even on error, deliberately (T's
-        // own note): an errored run may not have acted on them, but they were
-        // already stamped `sent` and folded into the transcript — re-annotating
-        // is one click, silently re-sending is not.
-        onRunEnded: () => {
-          annRef.current?.resolveSent();
-          // T:19078 `snapInvalidate` — the turn that just ended may have edited
-          // the file, so the checkpoint chain the landing drew is stale. The
-          // panel is unmounted while a chat is on screen, so what survives the
-          // round trip is the FACT of a run ending, counted here and handed to
-          // `useSnapshots` as its invalidation key.
-          snapInvalidate.current?.();
-        },
-        // T:17792 — a stale `run` param is not a turn ending: the annotations
-        // still have to come back (this is the one road on which they would be
-        // stranded `sent` forever), but nothing ran, so the checkpoint chain
-        // the landing drew is exactly as fresh as it was.
-        onRunAbandoned: () => {
-          annRef.current?.resolveSent();
-        },
-        /**
-         * T:17866 — the caret goes back in the box at the end of EVERY
-         * re-attach: a boot `?run=`, an adoption by the standing watch, a
-         * scheduled message's attach (P4-17). `autoFocus` covered boot
-         * incidentally; a mid-session adoption left a reader who had just been
-         * handed a streaming reply having to click to answer it.
-         *
-         * `preventScroll`, like every other focus in this view: the composer is
-         * pinned to the bottom of a scrolling transcript and taking the caret
-         * must not move what the reader is looking at — which also means this
-         * does not fight the repair's own scroll-to-bottom beside it.
-         */
-        focusComposer: () => {
-          boxRef.current?.focus({ preventScroll: true });
-        },
-        // The agent saw none of it, so the pictures come back to the tray —
-        // never revoked on this road, because those very thumbnails are what the
-        // returned chips show (T:16693-16720).
-        onSendDelivered: (clientId) => journalDrop(clientId),
-        onSendReturned: ({ attachments, sendId, text, refused, clientId }) => {
-          // Handed back to the reader: it is theirs now, not the page's to
-          // re-send after a reload.
-          if (clientId) journalDrop(clientId);
-          // A REFUSED SEND OWES THE WORDS BACK. The composer cleared its box on
-          // the keystroke and the controller turned the message away before it
-          // ever reached `addUser`, so there is no bubble and no queue entry
-          // holding them: unless they come back to the box they are simply
-          // gone (Bugbot, PR #1074). The latch below makes this window hard to
-          // reach from the composer; ✓ Done and the walkthrough share the seat,
-          // and a refusal must never cost the user a sentence.
-          if (refused) strand(text);
-          // A DRAINED PARKED LINE THAT DID NOT GO (the host was gone, `send`
-          // answered nothing) is not dropped with its bubble: it comes back as
-          // a "not sent" row that keeps its words AND its pictures, for the
-          // reader to pull (Bugbot, PR #1323). Its `inFlight` entry is spent
-          // below like any other; the pictures stay on the row, not the tray.
-          // …LOOKED UP BY ITS OWN SEND ID (`parkedBySendId`): a return for any
-          // send that was not a parked line takes the ordinary road below.
-          const sid = sendId || "";
-          const parked = sid ? (parkedBySendId.current.get(sid) ?? null) : null;
-          if (parked && !refused && text) {
-            // ONE ROW PER SEND ID (Bugbot rounds 3–4). A stop strands BEFORE it
-            // returns, so `strandAll` has already posted this line's row in
-            // typed order and recorded the id: nothing to post, the id is
-            // spent. A `send` that failed on its own strands nothing, so the
-            // row is posted here and the id recorded against a later stop.
-            if (postedForSend.current.has(sid)) {
-              postedForSend.current.delete(sid);
-            } else {
-              const row = postNotSent(text, parked);
-              if (row) {
-                setOutbox(pushFront(outboxRef.current, row));
-                postedForSend.current.add(sid);
-              }
-            }
-            returnedSends.current.add(sid);
-            if (attachments) inFlight.current.delete(attachments);
-            return;
-          }
-          // T:16068 — THE ROLL-BACK SIGNAL, and it NAMES ITS SEND: the agent saw
-          // none of THAT message, which is what its notes' `sent = 0` and its
-          // overview's revoke hang off. It used to be a counter, and a counter
-          // cannot tell "my send came back" from "a send came back while mine
-          // was still out" — a second submit inside the first send's capture
-          // window bumped it, and the first send rolled back a turn the agent
-          // had already taken (Bugbot, PR #1074).
-          if (sendId) returnedSends.current.add(sendId);
-          if (!attachments) return;
-          const back = inFlight.current.get(attachments);
-          if (!back) return;
-          inFlight.current.delete(attachments);
-          attachBack.current?.(back);
-        },
-      }),
-    [file, params, strand, strandAll, journalDrop],
+      },
+      seed,
+    });
+    acquired.current.push(got);
+    return got;
+  };
+  /** Let go of ONE count this mount took on `s`. */
+  const releaseOne = useCallback((s: SharedChat) => {
+    const i = acquired.current.indexOf(s);
+    if (i < 0) return;
+    acquired.current.splice(i, 1);
+    s.release();
+  }, []);
+  // ACQUIRED ONCE PER MOUNT — a lazy initializer, not a memo React may drop —
+  // and swapped only by the gestures that change WHICH conversation this mount
+  // shows: Back, opening another session, a new `session_id` from the host or
+  // the URL, a new `file`.
+  const [shared, setShared] = useState<SharedChat>(() =>
+    acquireRef.current(
+      props.breakout || props.initialAsk ? null : props.initialSessionId || params.get("session_id") || null,
+      sharedSeed(params, props),
+      file,
+    ),
   );
+  /** The shared chat this mount holds RIGHT NOW — ahead of `shared` between a
+   *  swap and its render, which is what the boot's guard reads. */
+  const sharedRef = useRef(shared);
+  /** The `file` `sharedRef.current` was acquired for. */
+  const sharedFile = useRef(file);
+  const autoFocusRef = useRef(props.autoFocus);
+  autoFocusRef.current = props.autoFocus;
+  /** The reader has touched THIS mount (a focus or a press inside it) — what
+   *  lets the registry's `focusComposer` hand the caret back here. A kept seat
+   *  or a hovered card nobody pressed never takes it. */
+  const touched = useRef(false);
+  /** This mount's seat + params mirror on the shared chat it holds. */
+  const bound = useRef<{ shared: SharedChat; undo: () => void } | null>(null);
+  /**
+   * SEAT THIS MOUNT ON `next`: attach the host seat and mirror the shared
+   * chat facts (`CHAT_SHARED_KEYS`) between this mount's own store — the URL
+   * for a pane, memory for a popover — and the controller's. Everything else
+   * in the mount's store (model, effort, msg, paneview, queued…) stays this
+   * mount's. `session_id` only ever flows shared → mount: a change on the
+   * mount's side is a SWAP (the watcher below), never a re-point of a chat
+   * other windows share.
+   *
+   * `prep` runs while NO mirror is up, so what it writes reaches only this
+   * mount's store.
+   *
+   * A mount that may not take the keyboard does not take FRONT by arriving
+   * either: a kept seat or a thumbnail mounting behind the window the reader
+   * is in must not become the seat the caret and the send-time reads go to.
+   * It becomes front the first time the reader touches it.
+   */
+  const bind = useCallback(
+    (next: SharedChat, prep?: () => void) => {
+      if (bound.current?.shared === next) return;
+      bound.current?.undo();
+      bound.current = null;
+      prep?.();
+      const before = next.frontId();
+      const detach = next.attachHost(seat);
+      if (!autoFocusRef.current && before) next.setFront(before);
+      const unmirror = mirrorParams(params, next.params, CHAT_SHARED_KEYS);
+      bound.current = {
+        shared: next,
+        undo: () => {
+          unmirror();
+          detach();
+        },
+      };
+    },
+    [params, seat],
+  );
+  /** Move this mount to another conversation's shared chat (or a fresh private
+   *  one): seat it there, let go of the old one. The old one keeps running for
+   *  any other mount on it — its run loop is never this mount's to stop. */
+  const swapShared = useCallback(
+    (key: string | null, seed: ParamsSnapshot, f: string | null, prep?: () => void): SharedChat => {
+      const prev = sharedRef.current;
+      const next = acquireRef.current(key, seed, f);
+      sharedFile.current = f;
+      if (next === prev) {
+        releaseOne(next); // the acquire above was a second count on the one we hold
+        return prev;
+      }
+      bind(next, prep);
+      releaseOne(prev);
+      sharedRef.current = next;
+      setShared(next);
+      return next;
+    },
+    [bind, releaseOne],
+  );
+  /** A release the cleanup below scheduled and a re-run may take back. */
+  const pendingRelease = useRef<SharedChat[] | null>(null);
+  useEffect(() => {
+    // A RE-RUN, not a new mount (StrictMode's double pass, a new `params`):
+    // keep the chat the cleanup was about to let go — a private one could not
+    // be taken again by key.
+    pendingRelease.current = null;
+    // Any count a DISCARDED render took is let go now: it was never attached.
+    for (const s of [...acquired.current]) if (s !== sharedRef.current) releaseOne(s);
+    bind(sharedRef.current);
+    if (autoFocusRef.current) sharedRef.current.setFront(seat.id);
+    return () => {
+      bound.current?.undo();
+      bound.current = null;
+      // NOT a dispose: the registry keeps the loop for any other mount on this
+      // chat, and for 30 s after the last one leaves (a popover reopened).
+      const all = [...acquired.current];
+      pendingRelease.current = all;
+      queueMicrotask(() => {
+        if (pendingRelease.current !== all) return;
+        pendingRelease.current = null;
+        for (const s of all) releaseOne(s);
+      });
+    };
+  }, [bind, params, seat, releaseOne]);
+  // A NEW TARGET IN PLACE (`ChatBody` is not keyed on `file`): a new chat for
+  // it — the registry keys on file + session, so even the same session gets a
+  // controller built for the new file — and the boot below runs again on it
+  // (`bootedFor`).
+  useEffect(() => {
+    if (sharedFile.current === file) return;
+    swapShared(
+      props.breakout ? null : params.get("session_id") || null,
+      sharedSeed(params, props),
+      file,
+    );
+  }, [file, swapShared]);
+  const controller = shared.controller;
+  /** Every send this mount makes goes through here, so its hand-backs
+   *  (`onSendReturned`, `onStranded`) come back to THIS seat. */
+  const sender = useMemo(() => shared.bindSender(seat.id), [shared, seat]);
+  /** The front seat — the mount the reader last touched. */
+  const markFront = useCallback(() => {
+    touched.current = true;
+    sharedRef.current.setFront(seat.id);
+  }, [seat]);
   // For `strand`, which the controller itself calls (see `controllerRef`).
   controllerRef.current = controller;
-  useEffect(() => () => controller.dispose(), [controller]);
 
   const state = useSyncExternalStore(
     controller.subscribe,
     controller.getState,
     controller.getState,
+  );
+  // A PRIVATE CHAT LEARNED ITS SESSION (a new chat's first poll, a queued
+  // chat's adoption) — or a fork moved this one to a new id: file it under
+  // that id, so the next mount on the session joins this controller rather
+  // than building a second. A breakout stays private for its whole life.
+  // ANOTHER CONTROLLER ALREADY HOLDS THAT SESSION (a queued leader adopted by
+  // two chats): this mount moves onto the registered one, and lets the private
+  // duplicate go.
+  useEffect(() => {
+    const sid = state.sessionId;
+    if (!sid || props.breakout) return;
+    const s = sharedRef.current;
+    if (s.controller !== controller || s.key === sid) return;
+    if (adoptKey(s, sid)) return;
+    swapShared(sid, { session_id: sid }, sharedFile.current);
+  }, [state.sessionId, controller, props.breakout, swapShared]);
+  // A NEW `session_id` ON THIS MOUNT'S OWN STORE — the host's (`useHostIds`),
+  // the address bar's (Back/Forward) — is another conversation: a swap, never
+  // a write into the chat other windows share (the mirror does not carry
+  // `session_id` that way). Deferred a microtask so it reads the settled
+  // stores, not a write the mirror is in the middle of.
+  useEffect(
+    () =>
+      params.onChange(() => {
+        queueMicrotask(() => {
+          const want = params.get("session_id") || "";
+          const cur = sharedRef.current;
+          const have = cur.params.get("session_id") || cur.controller.getState().sessionId || "";
+          if (!want || want === have || props.breakout) return;
+          const next = swapShared(want, { session_id: want }, sharedFile.current);
+          if (next.controller.getState().sessionId !== want) {
+            void next.controller.openSession(want, { backend: sessionSeed(want)?.backend || "" });
+          }
+        });
+      }),
+    [params, swapShared, props.breakout],
   );
   // The task registry by id, for the agent / monitor chips (`ui/tasksContext`).
   const tasksById = useMemo(() => taskIndex(state.tasks), [state.tasks]);
@@ -2097,8 +2340,16 @@ function ChatBody(props: ChatBodyProps) {
   // Every chat polls its run, so every chat sees the rows; only a canvas page
   // (`canvasShot`) can take the picture, the rest answer "open the canvas"
   // after giving it its chance (`useCanvasShotResponder`).
+  // ONE ANSWER PER CANVAS SHOT across the mounts on this chat: the registry
+  // names the one seat that answers (a canvas seat if any is attached, else
+  // the front one, which says "no canvas" after the wait), and re-names it
+  // when the front moves or a canvas pane leaves.
+  const subscribeSeats = useCallback((cb: () => void) => shared.onSeatsChange(cb), [shared]);
+  const canvasResponder = useCallback(() => shared.canvasResponderId(), [shared]);
+  const shotResponder = useSyncExternalStore(subscribeSeats, canvasResponder, canvasResponder);
+  const shotRows = shotResponder === seat.id ? state.canvasShot : NO_SHOT_ROWS;
   useCanvasShotResponder({
-    rows: state.canvasShot,
+    rows: shotRows,
     shot: props.canvasShot ?? null,
     answer: controller.answerCanvasShot,
   });
@@ -2199,14 +2450,20 @@ function ChatBody(props: ChatBodyProps) {
   // re-ran, found the latch set, and the new controller never got its
   // `openSession` / `resumeRun` / ask at all — a live conversation replaced by
   // an empty transcript that boots nothing.
-  const bootedFor = useRef<object | null>(null);
+  const bootedFor = useRef<string | null | undefined>(undefined);
   /** The boot's ONE dispatch — the ask, or the restore — the moment it reaches
    *  the controller. What makes the re-arm below safe: a boot cancelled before
    *  it dispatched can be run again, one that dispatched never is. */
   const bootDispatched = useRef(false);
   useEffect(() => {
-    if (bootedFor.current === controller) return;
-    bootedFor.current = controller;
+    // A SWAP IN FLIGHT (a new `file`): this render's controller is the one
+    // being let go, and the re-render the swap asked for boots the new one.
+    if (sharedRef.current.controller !== controller) return;
+    // PER MOUNT AND TARGET, not per controller: Back and opening another
+    // session swap the shared chat under this mount and do their own opening,
+    // so only a new `file` (or a first boot) boots.
+    if (bootedFor.current === file) return;
+    bootedFor.current = file;
     // A NEW CONTROLLER IS A NEW BOOT, so the dispatch guard re-arms with it —
     // it exists to keep ONE boot from dispatching twice, not to keep a second
     // target from dispatching at all.
@@ -2291,8 +2548,8 @@ function ChatBody(props: ChatBodyProps) {
         // floor with nowhere to read it back from — the host's pending ask was
         // taken and cleared before this ran. A follow-up is the existing answer
         // to "something wants to send while a turn is live" (T:19250-19266).
-        if (controller.getState().status === "idle") await controller.sendMessage(ask);
-        else await controller.sendFollowUp(ask);
+        if (controller.getState().status === "idle") await sender.sendMessage(ask);
+        else await sender.sendFollowUp(ask);
         if (cancelled) return;
         markReady();
       } else if (sessionId || runId) {
@@ -2301,7 +2558,13 @@ function ChatBody(props: ChatBodyProps) {
         if (bootDispatched.current) return;
         bootDispatched.current = true;
         setEntered(true);
-        if (sessionId) {
+        // A SECOND MOUNT ON A CHAT ALREADY OPEN (the pane opened on the task
+        // the popover shows): the shared controller has this conversation on
+        // screen, or is loading it — loading it again would blank every other
+        // window's transcript for a round trip. Loading counts as open: the
+        // first mount's restore is in flight and paints every window.
+        const alreadyOpen = !!sessionId && controller.getState().sessionId === sessionId;
+        if (sessionId && !alreadyOpen) {
           resetCardPolicy(cardPolicy);
           // RACED, because `markReady` is below it and the host keeps this pane
           // covered until it fires. `openSession` awaits a history round trip,
@@ -2326,7 +2589,19 @@ function ChatBody(props: ChatBodyProps) {
         // A bare `run` has nothing to restore, and a restored session is on
         // screen by now: either way this is the moment the host may uncover us.
         markReady();
-        if (runId) await controller.resumeRun(runId);
+        // …and a run the shared loop is already streaming (or has shown) is
+        // not re-attached: it is on screen in every window already.
+        const live = controller.hasActiveRun();
+        const shown = !!runId && controller.hasShownRun(runId);
+        // A `?run=` THE SHARED CHAT HAS ALREADY FINISHED (this window's URL is
+        // older than the chat): spent, so it is taken off this mount — left on,
+        // it would read as a live run and keep the standing watch away.
+        if ((live || shown) && runId && runId !== controller.getState().runId) {
+          params.set({ run: null }, { history: "replace" });
+        }
+        if (live) {
+          /* the shared loop is streaming it */
+        } else if (runId && !shown) await controller.resumeRun(runId);
         else if (sessionId && !props.breakout) {
           // NO `run` ON THE URL and a session that may well be busy: ask the
           // session itself. `openSession` above already started this watch, so
@@ -2355,7 +2630,7 @@ function ChatBody(props: ChatBodyProps) {
       // would be cancelled and never redone, and a "Fix with AI" mount would sit
       // there with the prompt unsent. Once the boot HAS reached the controller
       // the latch stays: whatever it started is the one thing this mount does.
-      if (!bootDispatched.current) bootedFor.current = null;
+      if (!bootDispatched.current) bootedFor.current = undefined;
     };
     // `props.initialAsk` IS DELIBERATELY NOT A DEP. The ask is read through
     // `askRef`, which is stable for the mount, and a new ask is a new mount by
@@ -2363,7 +2638,7 @@ function ChatBody(props: ChatBodyProps) {
     // teardown whenever the host's one-shot derivation flipped it back to
     // `undefined` mid-wait (R4-4, `askRef`'s note). A real UNMOUNT still
     // cancels: `cancelled` is set by the same cleanup either way.
-  }, [controller, params, markReady, cardPolicy]);
+  }, [controller, sender, file, params, markReady, cardPolicy]);
 
   // ── the typewriter (T:15063-15142, drained at T:16336) ─────────────────────
   //
@@ -3534,8 +3809,8 @@ function ChatBody(props: ChatBodyProps) {
               counted = true;
             }
             const sent = followUp
-              ? controller.sendFollowUp(text, wire)
-              : controller.sendMessage(text, wire);
+              ? sender.sendFollowUp(text, wire)
+              : sender.sendMessage(text, wire);
             // The controller has taken it: its own `sending` gate is set and
             // its bubble is up, both before its first await. But TAKEN IS NOT
             // LIVE — the status the composer routes on stays `idle` until
@@ -3580,6 +3855,7 @@ function ChatBody(props: ChatBodyProps) {
     },
     [
       controller,
+      sender,
       file,
       beginSend,
       releaseSend,
@@ -4176,7 +4452,12 @@ function ChatBody(props: ChatBodyProps) {
     // next 15 s tick. Called directly, the way `openSession` gets it from the
     // generation bump (Bugbot PR #1075).
     schedReset.current();
-    controller.newChat();
+    // BACK LEAVES THE SHARED CHAT, it does not empty it: every other window on
+    // this conversation keeps it. This mount takes a fresh private chat and
+    // empties THAT (its `newChat` clears `session_id`/`run` through the
+    // mirror, with its own history rule).
+    const home = sharedRef.current.key === null ? controller : swapShared(null, {}, sharedFile.current).controller;
+    home.newChat();
     setEntered(false);
     // AND THE STRANDED TEXT GOES WITH THE CONVERSATION IT WAS TYPED IN. It was
     // never cleared, and `card.restore` reaches the LANDING's composer as well
@@ -4220,7 +4501,7 @@ function ChatBody(props: ChatBodyProps) {
     // own record rather than pouring the words into the landing's composer
     // (design-drafts-one-record.md §1), so there is no fill to strand and no
     // one-gesture focus counter to spend.)
-  }, [controller, cardPolicy, leader, params]);
+  }, [controller, swapShared, cardPolicy, leader, params]);
   const onBack = useCallback(() => {
     void confirmLeave().then((ok) => {
       if (ok) backNow();
@@ -4247,9 +4528,30 @@ function ChatBody(props: ChatBodyProps) {
       // transcript until something else re-rendered (Bugbot, d9f041e11).
       leader.forget();
       params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
-      void controller.openSession(sessionId, { backend: sessionSeed(sessionId)?.backend || "" });
+      // ANOTHER CONVERSATION IS ANOTHER SHARED CHAT: join the one already open
+      // on it (another window), or start one — never re-point the chat this
+      // mount shares with others. The `run` this mount's store holds is the
+      // conversation being left's, so it is dropped before the mirror is up;
+      // `openSession` then writes the new `session_id` with its own history
+      // rule, and the mirror carries it out.
+      //
+      // THE BACK ENTRY: `session_id` is written HERE with a bare set (the
+      // store pushes on a gesture, run-controller `setParam`'s contract) before
+      // the mirror is up — on the join road the mirror would otherwise copy it
+      // in with "replace" and the pane would lose the entry.
+      const cur = sharedRef.current;
+      const next =
+        cur.key === sessionId
+          ? cur
+          : swapShared(sessionId, { session_id: sessionId }, sharedFile.current, () => {
+              params.set({ run: null }, { history: "replace" });
+              params.set({ session_id: sessionId });
+            });
+      const st = next.controller.getState();
+      if (st.sessionId === sessionId && !st.historyLoading && next !== cur) return;
+      void next.controller.openSession(sessionId, { backend: sessionSeed(sessionId)?.backend || "" });
     },
-    [controller, cardPolicy, leader, params],
+    [swapShared, cardPolicy, leader, params],
   );
   const onOpenSession = useCallback(
     (sessionId: string) => {
@@ -4725,6 +5027,9 @@ function ChatBody(props: ChatBodyProps) {
     // T:17437 — `history: "replace"`: a fired scheduled run is not a place
     // anyone navigated to, so re-attaching from it must buy no Back entry.
     setRunParam: (runId) => params.set({ run: runId }, { history: "replace" }),
+    // Every mount on a shared chat polls the schedule; only the FRONT one acts
+    // on a fired run, or each would append the same turn.
+    isFront: () => sharedRef.current.frontId() === seat.id,
   });
   /** Stable across renders (`useSchedule` memoises it on the watcher), so the
    *  delete below may depend on it by name. */
@@ -5851,6 +6156,8 @@ function ChatBody(props: ChatBodyProps) {
     <RemoteControlConfirm open={rc.asking} onGo={rc.start} onCancel={rc.cancel} />
     <div
       ref={rootRef}
+      onFocusCapture={markFront}
+      onPointerDownCapture={markFront}
       className={rootClass(
         props,
         [
