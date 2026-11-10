@@ -10,6 +10,7 @@ import {
   activeRing,
   chipDoor,
   chipPath,
+  dragging,
   placeTags,
   chipLabel,
   chipPlace,
@@ -1058,5 +1059,13 @@ describe("queuedEditHref (a queued form row's door)", () => {
     for (const s of seats.filter((x) => x.pulse.status === "queued" && x.row?.entry_origin !== "chat")) {
       expect(queuedEditHref(s.row, s.pulse.status)).toBe(`/tasks?edit=${s.pulse.key.slice("pending:".length)}`);
     }
+  });
+});
+
+describe("dragging", () => {
+  it("a pointer arriving with a button held is a drag passing through, not a hover", () => {
+    expect(dragging({ buttons: 1 })).toBe(true); // a text selection, a resize
+    expect(dragging({ buttons: 2 })).toBe(true);
+    expect(dragging({ buttons: 0 })).toBe(false); // a plain hover
   });
 });
