@@ -11,7 +11,7 @@
 // card's height and scrolls inside it (claude-rail.css `.git-panel-commits`).
 import { ArrowDown, ArrowUp, GitBranch, Loader2, RefreshCw } from "lucide-react";
 import type { RailGitDoor } from "./claude-rail/rail-git-store";
-import { gitBranch, gitCounts, gitPushCount } from "./git-dock-lib";
+import { gitBranch, gitCounts, gitPullCount, gitPushCount } from "./git-dock-lib";
 
 export function GitPanelBody({ git, onTake }: { git: RailGitDoor; onTake?: () => void }) {
   const r = git.repo;
@@ -26,7 +26,9 @@ export function GitPanelBody({ git, onTake }: { git: RailGitDoor; onTake?: () =>
   // …and what a push / pull would move (owner, 2026-11-10): the upstream's,
   // or an unpublished branch's commits — the door's blue and green dots.
   const push = gitPushCount(r);
-  const pull = r.upstream?.behind ?? 0;
+  // The green dot's count (CodeRabbit on #2236): the upstream's behind, or
+  // the default branch's — a dot never stands without its "to pull".
+  const pull = gitPullCount(r);
   const pushWords = r.upstream ? `${push} to push` : `${push} not pushed yet`;
   // ON THE DEFAULT BRANCH ITSELF the vs-default pair says what the upstream
   // pair says (origin/<default> is both): only the to push / to pull pair
@@ -48,7 +50,8 @@ export function GitPanelBody({ git, onTake }: { git: RailGitDoor; onTake?: () =>
                 {ahead}
               </span>
             )}
-            {vsDefault && behind > 0 && (
+            {/* …not when it says what "to pull" says (the same count). */}
+            {vsDefault && behind > 0 && behind !== pull && (
               <span className="git-panel-tag" data-hint={`${behind} behind, vs ${base}`} aria-label={`${behind} behind ${base}`}>
                 <ArrowDown size={11} aria-hidden="true" />
                 {behind}

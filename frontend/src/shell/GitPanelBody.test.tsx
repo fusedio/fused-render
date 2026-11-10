@@ -57,6 +57,12 @@ describe("GitPanelBody", () => {
     expect(byClass(onMain, "git-panel-tag").map((t) => t.props["aria-label"])).toEqual(["1 to push", "1 to pull"]);
     // Elsewhere the vs-default pair's hint says so.
     expect(byClass(r, "git-panel-tag")[0]!.props["data-hint"]).toBe("1 ahead, vs main");
+    // Only the default branch behind (upstream even, or none): "↓3 to pull",
+    // the green dot's count, and no duplicate vs-default ↓3 (CodeRabbit on #2236).
+    for (const upstream of [{ ahead: 0, behind: 0 }, null]) {
+      const behindOnly = mount({ repo: repo({ branch: "main", ahead: 0, behind: 3, upstream }) });
+      expect(byClass(behindOnly, "git-panel-tag").map((t) => t.props["aria-label"])).toEqual(["3 to pull"]);
+    }
     // An unpublished branch: its commits ahead of the default branch are the push.
     const fresh = mount({ repo: repo({ ahead: 2, behind: 0, upstream: null }) });
     expect(byClass(fresh, "is-push")[0]!.props["aria-label"]).toBe("2 not pushed yet");

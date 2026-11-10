@@ -138,3 +138,20 @@ describe("cachedRailGit: a new rail's first frame (QA, 2026-11-10)", () => {
     resetRailGitCacheForTests();
   });
 });
+
+describe("the answers cache is bounded (CodeRabbit on #2236)", () => {
+  test("200 paths at most; a path answered again is the newest, so the least recent goes first", async () => {
+    const { cachedRailGit, railGitCacheSize, rememberRailGitForTests, resetRailGitCacheForTests } = await import("./rail-git");
+    resetRailGitCacheForTests();
+    for (let i = 0; i < 200; i++) rememberRailGitForTests(`/p${i}`, null);
+    expect(railGitCacheSize()).toBe(200);
+    // /p0 answered again: now the newest.
+    rememberRailGitForTests("/p0", null);
+    rememberRailGitForTests("/p200", null);
+    expect(railGitCacheSize()).toBe(200);
+    expect(cachedRailGit("/p0")).toBeNull();
+    expect(cachedRailGit("/p1")).toBeUndefined();
+    expect(cachedRailGit("/p200")).toBeNull();
+    resetRailGitCacheForTests();
+  });
+});

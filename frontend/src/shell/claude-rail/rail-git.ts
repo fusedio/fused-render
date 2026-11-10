@@ -40,10 +40,28 @@ export interface RailGit {
 // and its hairline went for a frame and a pinned Git card closed. A new
 // rail starts from the last answer for its path, else the repository whose
 // root holds it (the innermost); its own read then swaps that for the truth.
+// BOUNDED (CodeRabbit on #2236): the newest `ANSWERS_MAX` paths; a path
+// answered again moves to the newest end, so the least recent goes first.
+const ANSWERS_MAX = 200;
 const answers = new Map<string, RailGitRepo | null>();
 const trim = (p: string) => p.replace(/\/+$/, "") || "/";
 function remember(path: string, repo: RailGitRepo | null): void {
-  answers.set(trim(path), repo);
+  const key = trim(path);
+  answers.delete(key);
+  answers.set(key, repo);
+  while (answers.size > ANSWERS_MAX) {
+    const oldest = answers.keys().next().value;
+    if (oldest === undefined) break;
+    answers.delete(oldest);
+  }
+}
+
+/** Test-only: an answer, as a read would leave it. */
+export const rememberRailGitForTests = remember;
+
+/** How many paths the cache holds (tests). */
+export function railGitCacheSize(): number {
+  return answers.size;
 }
 
 /** What a new rail for `path` draws until its own read answers. */

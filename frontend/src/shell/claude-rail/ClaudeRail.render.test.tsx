@@ -33,6 +33,7 @@ const { gitCardRail, gitCardState, registerGitCard, resetGitCardForTests } = awa
 const { resetRailGitCacheForTests } = await import("./rail-git");
 const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
 const { DoorCard } = await import("./DoorCard");
+const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
 
@@ -697,8 +698,8 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
     expect(gitGroup(r)).toHaveLength(0);
     expect(items(r).slice(0, 2)).toEqual(["sidebar-rail-sep is-tight", "claude-rail-nav claude-rail-git-door"]);
     const door = gitDoor(r)[0]!;
-    expect(door.props.title).toBe("Git — on feature · 0 ahead · 2 behind main · 1 to push");
-    expect(door.props["aria-label"]).toBe("Git, on feature, 1 to push, updates on the remote");
+    expect(door.props.title).toBe("Git — on feature · 0 ahead · 2 behind main · 1 to push · 2 to pull");
+    expect(door.props["aria-label"]).toBe("Git, on feature, 1 to push, 2 to pull, updates on the remote");
     // Green on top (2 behind main), the push dot bottom-right.
     const dots = door.findAll((n) => typeof n.props?.className === "string" && n.props.className.startsWith("sidebar-rail-dot"));
     expect(dots.map((d) => d.props.className)).toEqual(["sidebar-rail-dot is-unread", "sidebar-rail-dot is-push is-second"]);
@@ -865,6 +866,73 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
         await new Promise((res) => setTimeout(res, GIT_FOLLOW_MS + 50));
       });
       expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+    } finally {
+      for (const m of mounted.splice(0)) act(() => m.unmount());
+      removePortalContainer();
+      if (!hadGetById) delete doc.getElementById;
+    }
+  });
+
+  test("a split whose TOP rail has no repository: the other rail's door still previews and pins, the card on its repo (Bugbot on #2236)", async () => {
+    installPortalContainer();
+    const doc = (globalThis as unknown as { document: Record<string, unknown> }).document;
+    (doc.body as { createNodeMock: unknown }).createNodeMock = () => fakeEl();
+    const hadGetById = "getElementById" in doc;
+    doc.getElementById ??= () => null;
+    (globalThis as { fetch: unknown }).fetch = (url: string) =>
+      String(url).includes("/api/git/rail")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ ok: true, repo: String(url).includes("left") ? { ...REPO, branch: "left" } : null }), { status: 200 }),
+          )
+        : new Promise<Response>(() => {});
+    try {
+      publishCanvasRailPeek({ enabled: true });
+      publishFavouritesParent({ enabled: true });
+      publishTaskFavourites({ enabled: false });
+      const rail = (at: string) => (
+        <ClaudeRail
+          key={at}
+          paneOpen={false}
+          place={{ kind: "folder", dir: DIR }}
+          newTask={{ target: DIR, waiting: null, on: null }}
+          activeSessionId={null}
+          onOpen={() => {}}
+          onOpenChat={() => {}}
+          onPullStart={() => {}}
+          git={{ path: at }}
+        />
+      );
+      let r!: ReactTestRenderer;
+      await act(async () => {
+        r = create(
+          <>
+            {rail(`${DIR}/left`)}
+            {rail(`${DIR}/right`)}
+            <GitPeek />
+          </>,
+          { createNodeMock: () => fakeEl() },
+        );
+      });
+      mounted.push(r);
+      await settle();
+      // The top rail (the right, mounted last) has no repository; the left has.
+      expect(railGitOf(favPeekState().rail)).toBeNull();
+      expect(gitDoor(r)).toHaveLength(1);
+      expect(gitCardState().ready).toBe(true);
+      expect(gitDoor(r)[0]!.props["aria-haspopup"]).toBe("dialog");
+      // A hover previews…
+      await act(async () => {
+        gitDoor(r)[0]!.props.onPointerEnter({ pointerType: "mouse", buttons: 0 });
+        await new Promise((res) => setTimeout(res, PEEK_OPEN_MS + 20));
+      });
+      expect(gitCardState()).toMatchObject({ up: true, pinned: false });
+      // …and a press pins it, beside the left rail, on its repository.
+      await pressGit(r);
+      expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+      const card = r.root.findByType(DoorCard);
+      expect(card.props.rail).toBe(gitCardRail());
+      expect(railGitOf(card.props.rail)?.repo.branch).toBe("left");
+      expect(card.findAll((n) => n.props?.className === "git-panel-branch-name")[0]!.children).toEqual(["left"]);
     } finally {
       for (const m of mounted.splice(0)) act(() => m.unmount());
       removePortalContainer();

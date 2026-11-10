@@ -61,7 +61,8 @@ export function gitSyncWords(r: RailGitRepo): string[] {
   const out: string[] = [];
   const push = gitPushCount(r);
   if (push > 0) out.push(r.upstream ? `${push} to push` : `${push} not pushed yet`);
-  const pull = r.upstream?.behind ?? 0;
+  // The green dot's own count (`gitPullCount`): never a dot without words.
+  const pull = gitPullCount(r);
   if (pull > 0) out.push(`${pull} to pull`);
   return out;
 }

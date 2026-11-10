@@ -36,17 +36,23 @@ import { gitCardStore, useGitCard, useGitCardRail } from "./git-peek-store";
  *  shell's top rail moves a microtask later, and a page may mount its rail
  *  after a stat). No repository by then: it closes. */
 export const GIT_FOLLOW_MS = 600;
-import { useRailGitDoor, useRailGitMaybe } from "./rail-git-store";
+import { useRailGitAnyRail, useRailGitDoor, useRailGitMaybe } from "./rail-git-store";
 
 export function GitPeek() {
-  // BESIDE THE RAIL THAT OPENED IT (git-peek-store `setGitCardRail`; an
-  // explorer split's other rail), else the top rail — and that rail's facts.
+  // BESIDE THE RAIL THAT OPENED IT (git-peek-store `setGitCardRail`, set by
+  // the door before its hover or press reaches the card; an explorer split's
+  // other rail), else the top rail where it has git, else the latest rail
+  // that has — and that rail's facts.
   const top = useFavPeekState().rail;
-  const rail = useGitCardRail() ?? top;
+  const opener = useGitCardRail();
+  const topHasGit = useRailGitMaybe(top);
+  const anyRail = useRailGitAnyRail();
+  const rail = opener ?? (topHasGit ? top : (anyRail ?? top));
   const git = useRailGitDoor(rail);
-  // On while the rail has a repository or its first read is out (a pinned
-  // card following a hop waits for the answer; rail-git-store header).
-  const maybe = useRailGitMaybe(rail);
+  // REGISTERED WHILE ANY RAIL HAS A REPOSITORY (or a first read out) — not
+  // only the watched one (Bugbot on #2236: a split whose top rail has none
+  // left the other rail's door with no card, its press the panel's).
+  const maybe = anyRail !== null;
   // A PINNED CARD FOLLOWS A HOP (QA, 2026-11-10: a folder → file hop in one
   // repository closed it): the moment its rail says "no git" it is held, not
   // closed, for `GIT_FOLLOW_MS` — set during the render, so the chassis never

@@ -24,8 +24,18 @@ const door: RailGitDoor = {
   check: () => {},
 };
 
+/** What the card's refs see: enough of an element for the chassis. An
+ *  earlier file in the run may have left its own body mock behind. */
+const node = () => ({
+  toggleAttribute() {},
+  contains: () => false,
+  focus() {},
+  getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }),
+});
 beforeEach(() => {
   installPortalContainer();
+  const body = (globalThis as unknown as { document: { body?: { createNodeMock?: unknown } } }).document.body;
+  if (body) body.createNodeMock = node;
   resetCanvasRailPeekFlagForTests();
   resetFavPeekStoreForTests();
   resetRailGitStoreForTests();

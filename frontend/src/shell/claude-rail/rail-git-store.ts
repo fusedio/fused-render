@@ -77,6 +77,20 @@ export function useRailGitMaybe(rail: HTMLElement | null): boolean {
   return useSyncExternalStore(subscribe, get, get);
 }
 
+/** The most recent rail with a repository (or a read out), or null. */
+export function railGitAnyRail(): HTMLElement | null {
+  let last: HTMLElement | null = null;
+  for (const k of entries.keys()) last = k;
+  return last;
+}
+
+/** `railGitAnyRail`, live: the Git card is registered while ANY mounted rail
+ *  has a repository (Bugbot on #2236: a split whose top rail has none left
+ *  the other rail's door with no card behind it). */
+export function useRailGitAnyRail(): HTMLElement | null {
+  return useSyncExternalStore(subscribe, railGitAnyRail, railGitAnyRail);
+}
+
 /** How many rails hold a repository now (tests). */
 export function railGitCount(): number {
   return entries.size;

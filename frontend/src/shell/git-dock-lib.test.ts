@@ -55,6 +55,13 @@ describe("gitCounts / gitBranch: the rail's own words", () => {
 });
 
 describe("the Git door's push / pull (owner, 2026-11-10)", () => {
+  test("only the default branch behind (upstream even, or none): the green dot and its words agree (CodeRabbit on #2236)", () => {
+    for (const upstream of [{ ahead: 0, behind: 0 }, null]) {
+      const r = repo({ branch: "main", ahead: 0, behind: 3, upstream });
+      expect(gitDoorDots({ checking: false, checked: null, repo: r }).top).toBe("unread");
+      expect(gitSyncWords(r)).toEqual(["3 to pull"]);
+    }
+  });
   test("push: the upstream's ahead, else an unpublished non-default branch's ahead of default", () => {
     expect(gitPushCount(repo({ upstream: { ahead: 2, behind: 0 } }))).toBe(2);
     expect(gitPushCount(repo({ upstream: { ahead: 0, behind: 0 }, ahead: 5 }))).toBe(0);
@@ -81,10 +88,10 @@ describe("the Git door's push / pull (owner, 2026-11-10)", () => {
     expect(gitDoorDots({ checking: false, checked: null, repo: pull })).toEqual({ top: "unread", second: null });
   });
   test("the words and the tooltip", () => {
-    expect(gitSyncWords(repo({ upstream: { ahead: 2, behind: 1 } }))).toEqual(["2 to push", "1 to pull"]);
-    expect(gitSyncWords(repo({ upstream: null, ahead: 3 }))).toEqual(["3 not pushed yet"]);
-    expect(gitSyncWords(repo({ upstream: { ahead: 0, behind: 0 } }))).toEqual([]);
-    expect(gitDoorTitle(repo({ upstream: { ahead: 2, behind: 0 } }))).toBe("Git — on feature · 1 ahead · 2 behind main · 2 to push");
+    expect(gitSyncWords(repo({ upstream: { ahead: 2, behind: 1 }, behind: 0 }))).toEqual(["2 to push", "1 to pull"]);
+    expect(gitSyncWords(repo({ upstream: null, ahead: 3, behind: 0 }))).toEqual(["3 not pushed yet"]);
+    expect(gitSyncWords(repo({ upstream: { ahead: 0, behind: 0 }, behind: 0 }))).toEqual([]);
+    expect(gitDoorTitle(repo({ upstream: { ahead: 2, behind: 0 } }))).toBe("Git — on feature · 1 ahead · 2 behind main · 2 to push · 2 to pull");
     expect(gitDoorTitle(repo({ has_remote: false, ahead: null, behind: null }))).toBe("Git — on feature · No remote");
   });
 });
