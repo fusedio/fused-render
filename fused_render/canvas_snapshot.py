@@ -821,6 +821,45 @@ def apply_rename(clone_dir: str, frm: str, to: str,
             "moved": moved, "at": time.time()}
 
 
+def _merge_list(base: list, disk: list, frame: list) -> list:
+    """A list-valued key (a folder's `childUdfOrder`, `tags`, the canvas's
+    `comments`) the frame changed, merged per ELEMENT against what it was
+    shown: disk's list minus what the frame removed, plus what it added.
+    Written whole, the frame's list would also undo Claude's own edits to the
+    same list (moving a node out of a folder while the user drops another
+    in put the moved node back). Plain names merge as an ordered set (disk's
+    order, then the frame's additions); dicts with an `id` (comments) by id,
+    the frame's version where it changed one; anything else is the frame's
+    list as it is."""
+    def plain(items: list) -> bool:
+        return all(isinstance(x, (str, int, float)) and not isinstance(x, bool) for x in items)
+
+    def keyed(items: list) -> bool:
+        return all(isinstance(x, dict) and isinstance(x.get("id"), (str, int)) for x in items)
+
+    if plain(base) and plain(disk) and plain(frame):
+        removed = {x for x in base if x not in frame}
+        out = [x for x in disk if x not in removed]
+        out += [x for x in frame if x not in base and x not in out]
+        return out
+    if keyed(base) and keyed(disk) and keyed(frame):
+        was = {x["id"]: x for x in base}
+        now = {x["id"]: x for x in frame}
+        out = []
+        for x in disk:
+            i = x["id"]
+            if i in was and i not in now:
+                continue  # the frame removed it
+            if i in now and now[i] != was.get(i):
+                out.append(now[i])  # the frame changed it: the user wins
+            else:
+                out.append(x)
+        have = {x["id"] for x in out}
+        out += [x for x in frame if x["id"] not in was and x["id"] not in have]
+        return out
+    return list(frame)
+
+
 def apply_snapshot(
     clone_dir: str,
     new: dict,
@@ -951,11 +990,23 @@ def apply_snapshot(
     # `late` nodes the snapshot omits stay in the host's view like a
     # stale-closure omission: the frame acked them since, and its next
     # snapshot (built on a newer rev) can still delete them.
-    deferred_deletes: list[str] = sorted(n for n in late if n not in new["nodes"])
+    deferred_deletes: list[str] = sorted(n for n in late if n not in new["nodes"]
+                                         and prev is not None and n in prev["nodes"])
+
+    checked = [False]
 
     def remove(file: str | None) -> None:
         nonlocal files_changed
         if file and os.path.isfile(os.path.join(clone_dir, file)):
+            if not checked[0]:
+                # Before the first file goes: if canvas.toml already moved
+                # since it was read, give up now (busy → retried against the
+                # new text) rather than trash files and then fail the
+                # compare-and-swap at the end with the rows still listing them.
+                checked[0] = True
+                if _read_bytes(path) != raw_before:
+                    raise DiskMoved("canvas.toml changed on disk while the snapshot was "
+                                    "being applied; it will be re-read")
             trash(file)
             pathlib.Path(clone_dir, file).unlink(missing_ok=True)
             files_changed = True
@@ -1047,9 +1098,25 @@ def apply_snapshot(
         held: dict[str, Any] = {}
         for key in EMBED_ROW_KEYS:
             if key in row:
-                if base is None or base.get(key, MISSING) != row[key]:
-                    if disk.get(key, MISSING) != row[key]:
-                        disk[key] = row[key]
+                # The frame changed a key when its value moved from what it
+                # was shown. A key the view LACKS that the frame still sends
+                # unchanged since its previous send is one it simply still
+                # holds — a key Claude removed on disk, which a delta cannot
+                # take away from the frame (`studio_patch_from_row` only sets
+                # keys) — and must not come back on the next drag.
+                mine = base is None or (
+                    base.get(key, MISSING) != row[key]
+                    and (key in base or sent.get(key, MISSING) != row[key]))
+                if mine:
+                    value = row[key]
+                    if (base is not None and isinstance(value, list)
+                            and isinstance(base.get(key), list)
+                            and isinstance(disk.get(key), list)):
+                        value = _merge_list(base[key], disk[key], value)
+                        if value != row[key]:
+                            held[key] = row[key]
+                    if disk.get(key, MISSING) != value:
+                        disk[key] = value
                         diff = True
                 elif disk.get(key, MISSING) != row[key]:
                     held[key] = row[key]
@@ -1130,6 +1197,12 @@ def apply_snapshot(
             if canvas.get(key, MISSING) != value:
                 unseen_canvas[key] = value
             continue
+        if (base_canvas is not None and isinstance(value, list)
+                and isinstance(base_canvas.get(key), list) and isinstance(canvas.get(key), list)):
+            merged_value = _merge_list(base_canvas[key], canvas[key], value)
+            if merged_value != value:
+                unseen_canvas[key] = value
+            value = merged_value
         if canvas.get(key) != value:
             canvas[key] = value
             changed = True
@@ -1206,7 +1279,8 @@ def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
               bodies: dict, embed_rows: dict | None,
               extra_names: Iterable[str] = (),
               unseen: dict | None = None, unseen_canvas: dict | None = None,
-              embed_canvas: dict | None = None) -> dict:
+              embed_canvas: dict | None = None,
+              embed_edges: list | None = None) -> dict:
     """The view the embed holds after one of its own writes landed: `disk`
     (a `compact_state_from_disk` reading taken AFTER the write) restricted
     to `names`, the nodes the embed is known to hold, plus `extra_names`
@@ -1254,9 +1328,31 @@ def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
         "ids": {n: ids[n] for n in known if n in ids},
         "bodies": {n: bodies[n] for n in known if n in bodies},
         "embed_rows": {k: dict(v) for k, v in (embed_rows or {}).items()},
-        "embed_edges": [list(e) for e in edges],
+        "embed_edges": [list(e) for e in (edges if embed_edges is None else embed_edges)],
         "embed_canvas": dict(embed_canvas or {}),
     }
+
+
+def view_unseen(view: dict | None, disk: dict) -> tuple[dict, dict]:
+    """`(unseen, unseen_canvas)` for re-reading a view from disk without a
+    snapshot to say what the frame changed (a rename hint): every embed-owned
+    row key and canvas scalar where the view — what the frame holds — differs
+    from disk. Claude's edits the frame has not received yet, in short, kept
+    owed instead of being folded into the view as if delivered."""
+    if not view:
+        return {}, {}
+    unseen: dict[str, dict[str, Any]] = {}
+    for name, held in (view.get("nodes") or {}).items():
+        row = disk["rowed"].get(name)
+        if row is None or not isinstance(held, dict):
+            continue
+        diff = {key: held.get(key, MISSING) for key in EMBED_ROW_KEYS
+                if key != "udfName" and held.get(key, MISSING) != row.get(key, MISSING)}
+        if diff:
+            unseen[name] = diff
+    canvas = {key: value for key, value in (view.get("canvas") or {}).items()
+              if key in CANVAS_KEYS and disk["canvas"].get(key, MISSING) != value}
+    return unseen, canvas
 
 
 def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> dict | None:

@@ -182,7 +182,8 @@ SCAN_INTERVAL_S = 1.0
 PULL_POLL_S = 10.0
 # The user's canvas changes kept for Claude sessions' hooks, per canvas.
 JOURNAL_MAX = 200
-# A tombstone (a node the user deleted) ends on its own after this long.
+# A tombstone (a node the user deleted) whose file stays gone is forgotten
+# after this long; one whose file is back without a row is kept.
 TOMBSTONE_TTL_S = 7 * 24 * 3600.0
 # How long after a landed hard pull the frame's snapshots are acked stale
 # without a delta ack from it (see _SyncManager._hard_fence).
@@ -1578,9 +1579,10 @@ only when the user pulls.) So:
   in `../.sync/trash/<canvas>/<timestamp>/`). Do not recreate it unless the
   user asks; say what you found. A recreated file with no row in
   `canvas.toml` stays off the canvas.
-- **When you and the user change the same thing, the user's change wins.**
-  If you set a node's title or position and the user drags or renames that
-  node in the same moment, theirs is kept; re-read and adjust.
+- **When you and the user change the same property, the user's wins.** If
+  you set a node's title, position or folder and the user changes that same
+  property of that node at the same moment, theirs is kept (your other
+  changes stay); re-read and adjust.
 - After your tool calls you may get a note listing what the user changed
   meanwhile (nodes added, deleted, renamed, moved). Take it as the current
   state of the folder.
@@ -2533,6 +2535,10 @@ class _SyncManager:
         # `_acked_rev` is the newest delta rev adopted into the view.
         self._node_revs: dict[str, tuple[int, int]] = {}
         self._acked_rev = 0
+        # The snapshot seq the last skip-triggered re-cut was made at (see
+        # ack_delta): never two re-cuts for one seq, so a frame that keeps
+        # skipping cannot drive a delta loop.
+        self._skip_recut_seq: tuple[int, int] | None = None
         # What the user did to the canvas from the workbench, for the Claude
         # sessions working in this clone (owner, 2026-11-10: Claude is told in
         # real time). `_journal` is a bounded ring of {seq, at, kind, name,
@@ -2552,6 +2558,7 @@ class _SyncManager:
         # the tombstone.
         self._tombstones_path = os.path.join(self.root, ".sync", f"{name}.tombstones.json")
         self._tombstones: dict[str, dict] = self._load_tombstones()
+        self._held_out_logged: list[str] = []
         # Highest seq applied in this generation. A snapshot is the embed's
         # FULL state, so one that arrives after a later seq (a 409 retry that
         # lost the race, a replayed queue) is superseded: it is acked as
@@ -3853,10 +3860,11 @@ class _SyncManager:
             self._dirty_since = None
             held_files = canvas_snapshot.node_files(self.dir) if held else {}
             held_out = sorted(held_files[n] for n in held if n in held_files)
-            if held_out:
+            if held_out and held_out != self._held_out_logged:
                 self.log_event("disk_to_server", "held out of the push",
                                detail=f"{', '.join(held_out)}: the user deleted "
                                       "this node on the canvas; a row in canvas.toml brings it back")
+            self._held_out_logged = held_out
             try:
                 copy_dir = self._freeze_copy(exclude=held_out)
             except (OSError, shutil.Error) as exc:
@@ -4393,30 +4401,37 @@ class _SyncManager:
         already given for this (gen, seq), or a no-op ack for a seq older than
         one already applied in this generation. None means: apply, then record
         the ack with _embed_record."""
+        # Dedupe FIRST: a replayed (gen, seq) this host already applied is
+        # answered with its ack and touches nothing — not even the generation.
+        # Looked up after the generation switch below, an old pair flipped the
+        # generation back (view, revs and fences reset) and the snapshot after
+        # it ran with no picture of the frame, its rows overwriting Claude's.
+        done = self._embed_applied.get((gen, seq))
+        if done is not None:
+            return done
         if gen != self._embed_gen:
+            newer = gen > self._embed_gen
             self._embed_gen = gen
             # A new generation: the embed re-hydrated from the SERVER, so what
             # it holds is no longer any disk reading. Its hello brings a full
-            # delta that re-seeds the view. It also holds what a hard pull
-            # just brought down, so the fence has nothing left to hold out.
+            # delta that re-seeds the view.
             self._embed_view = None
             self._rowless = set()
             if self._fileless:
                 self._reconcile_rows("embed_to_disk", self.dir, drop=self._fileless, add=False)
                 self._fileless = set()
-            # `_embed_applied` is NOT cleared: (gen, seq) pairs never collide
-            # across generations (gen is the frame's clock), and a reloaded
-            # frame replays its stored queue under the OLD gen — cleared here,
-            # an already-applied old snapshot flipped the generation back and
-            # was applied a second time over everything since.
+            # `_embed_applied` is NOT cleared: (gen, seq) pairs never repeat
+            # (a fresh tab's gen is its clock, a refetch bumps it by one and
+            # restarts seq), and keeping them is what answers a replay above.
             self._embed_max_seq = -1
             self._node_revs = {}
             self._acked_rev = 0
-            self._hard_fence = None
-            self._body_fence_rev = None
-        done = self._embed_applied.get((gen, seq))
-        if done is not None:
-            return done
+            if newer:
+                # A NEWER generation holds what a hard pull just brought down
+                # (it refetched), so the fences have nothing left to hold out.
+                # An OLDER one (a second frame on this canvas) predates it.
+                self._hard_fence = None
+                self._body_fence_rev = None
         fence = self._hard_fence
         if fence is not None and time.time() >= fence["until"]:
             self._hard_fence = fence = None
@@ -4546,8 +4561,12 @@ class _SyncManager:
             return set(self._tombstones)
         now = time.time()
         held: set[str] = set()
-        ended = [n for n, t in self._tombstones.items()
-                 if n in rows or now - float(t.get("at") or 0) > TOMBSTONE_TTL_S]
+        # A row ends a tombstone at once; age only one whose file is gone too
+        # — expiring one with the file still back and rowless would hand the
+        # deleted node a default row on the next push.
+        ended = [n for n, t in list(self._tombstones.items())
+                 if n in rows or (n not in files
+                                  and now - float(t.get("at") or 0) > TOMBSTONE_TTL_S)]
         for name in ended:
             del self._tombstones[name]
         if ended:
@@ -4653,7 +4672,9 @@ class _SyncManager:
                                   bodies: dict, embed_rows: dict | None,
                                   unseen: dict | None = None,
                                   unseen_canvas: dict | None = None,
-                                  embed_canvas: dict | None = None) -> None:
+                                  embed_canvas: dict | None = None,
+                                  embed_edges: list | None = None,
+                                  held_from: dict | None = None) -> None:
         """After a snapshot or rename landed on disk: the embed holds disk
         restricted to `names`, the nodes it is known to hold, with its own
         `edges`, `ids` and `bodies` (canvas_snapshot.held_view). `embed_rows`
@@ -4675,9 +4696,14 @@ class _SyncManager:
                            _sync_key(self.env, self.name), exc)
             self._embed_view = None
             return
+        if held_from is not None:
+            # No snapshot says what the frame changed (a rename hint): what
+            # the previous view held and disk lacks stays owed.
+            unseen, unseen_canvas = canvas_snapshot.view_unseen(held_from, disk)
         self._embed_view = canvas_snapshot.held_view(
             disk, names, edges=edges, ids=ids, bodies=bodies, embed_rows=embed_rows,
-            unseen=unseen, unseen_canvas=unseen_canvas, embed_canvas=embed_canvas)
+            unseen=unseen, unseen_canvas=unseen_canvas, embed_canvas=embed_canvas,
+            embed_edges=embed_edges)
         live = set(self._embed_view["nodes"])
         for gone in [n for n in self._node_revs if n not in live]:
             del self._node_revs[gone]
@@ -4808,8 +4834,10 @@ class _SyncManager:
         if skipped:
             # The frame kept its own newer change for these (its unacked
             # snapshot touched them after the snapshot this delta was cut
-            # behind): the view keeps its previous entry, so the next cut
-            # re-sends what the frame did not take.
+            # behind): the view keeps its previous entry — node and the edges
+            # touching it — so the next cut re-sends what the frame did not
+            # take, and the frame's next snapshot is not read as removing an
+            # edge it never received.
             for table in ("nodes", "files", "bodies", "ids"):
                 fresh = dict(view.get(table) or {})
                 for name in skipped:
@@ -4818,6 +4846,13 @@ class _SyncManager:
                     else:
                         fresh.pop(name, None)
                 view[table] = fresh
+            view["edges"] = (
+                [list(e) for e in view.get("edges") or []
+                 if e[0] not in skipped and e[1] not in skipped]
+                + [list(e) for e in cur.get("edges") or []
+                   if (e[0] in skipped or e[1] in skipped)])
+        for gone in [n for n in self._node_revs if n not in view.get("nodes", {})]:
+            del self._node_revs[gone]
         for name, row in view.get("nodes", {}).items():
             if name in skipped:
                 continue
@@ -4832,10 +4867,22 @@ class _SyncManager:
         self._view_rev = rev
         self._delta_error = None
         if skipped:
+            # The snapshot that made the frame skip reached this host before
+            # this ack (the page relays both through one ordered chain), so a
+            # cut now carries its seq and the frame has settled it: the
+            # re-sent ops apply. Once per applied seq only — a frame still
+            # skipping on the same seq waits for its next snapshot, whose
+            # write re-reads disk into the view (`unseen` keeps what the
+            # frame lacks) and cuts on its own.
+            key = (self._embed_gen, self._embed_max_seq)
+            names = sorted(skipped)
             self.log_event("disk_to_embed", "delta partly kept",
                            detail=f"rev {rev}: the workbench kept its own newer "
-                                  f"{', '.join(sorted(skipped))}; re-sending")
-            self._force_recut()
+                                  f"{', '.join(names[:8])}"
+                                  + (f" (+{len(names) - 8})" if len(names) > 8 else ""))
+            if key != self._skip_recut_seq:
+                self._skip_recut_seq = key
+                self._force_recut()
         cut_at = self._rev_times.get(rev)
         self.log_event("disk_to_embed", "delta acked",
                        ms=None if cut_at is None else (time.time() - cut_at) * 1000,
@@ -4902,12 +4949,21 @@ class _SyncManager:
         # the snapshot chain); a replayed body — a reloaded frame re-posts its
         # stored queue — can predate deltas the view has adopted since.
         snap_rev = body.get("rev")
+        if (not isinstance(snap_rev, int) or isinstance(snap_rev, bool)
+                or snap_rev > self.disk_rev):
+            # Absent (an older workbench), or a rev this watcher never cut — a
+            # body from before a server restart, counted by the old watcher:
+            # no claim about this manager's deltas, read as today.
+            snap_rev = None
         late: set[str] = set()
         late_rows: set[str] = set()
         stale_base = False
-        if prev is not None and isinstance(snap_rev, int) and not isinstance(snap_rev, bool):
+        if prev is not None and snap_rev is not None:
             stale_base = snap_rev < self._acked_rev
+            held = set(prev["nodes"])
             for node, (intro, row_rev) in self._node_revs.items():
+                if node not in held:
+                    continue
                 if intro > snap_rev:
                     late.add(node)
                 if row_rev > snap_rev:
@@ -5129,7 +5185,8 @@ class _SyncManager:
             self._refresh_view_after_write(
                 renamed["nodes"], edges=renamed.get("edges", []), ids=renamed.get("ids", {}),
                 bodies=renamed.get("bodies", {}), embed_rows=renamed.get("embed_rows"),
-                embed_canvas=renamed.get("embed_canvas"))
+                embed_canvas=renamed.get("embed_canvas"),
+                embed_edges=renamed.get("embed_edges"), held_from=renamed)
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "renamed": result["renamed"], "moved": result["moved"],
                "push_seq": self.push_seq}
