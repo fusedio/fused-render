@@ -2270,6 +2270,13 @@ export function ComposerCard({
   );
 
   const collapsed = variant === "chat" && !active && !blocked;
+  // The chat text zoom reaches the textarea only while the card is OPEN
+  // (chat.css), so folding/unfolding changes its line height with no new
+  // value or width for the auto-grow hook to hear: re-fit on the flip, or a
+  // draft unfolded at 150 % keeps its 1× height and clips (Bugbot, #2233).
+  useLayoutEffect(() => {
+    grow();
+  }, [collapsed, grow]);
   // …AND A DRAFT PAST THE LINE OPENS IT (`smallCard`): the folded box is one
   // line tall with its overflow hidden, so the moment the words need a second
   // line the card opens to show them, and stays open. The words can outgrow

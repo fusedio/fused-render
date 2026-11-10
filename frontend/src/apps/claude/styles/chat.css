@@ -422,7 +422,8 @@
    comment, annotate), the whole composer card (pills, attachment chips, the
    folded card's model label), the worktree chip — and the menus those pills
    and that chip open (`.c-selpop`, `.chat-worktree-pop`, portaled out of the
-   card) — sit in fixed-width seats
+   card), and the annotation pins and bar drawn over the page — sit in
+   fixed-width seats
    and clip when their text grows. Only what the chat SAYS (and what you type)
    zooms. The `:where()` base size re-seats anything in there that names no
    size of its own — it would otherwise inherit the zoomed `.chat-root` size —
@@ -431,10 +432,12 @@
 .c-composer,
 .chat-worktree-menu,
 .c-selpop,
-.chat-worktree-pop {
+.chat-worktree-pop,
+.annpin,
+.annbar {
   --c-zoom: 1;
 }
-:where(.c-anntools, .c-composer, .chat-worktree-menu, .c-selpop, .chat-worktree-pop) {
+:where(.c-anntools, .c-composer, .chat-worktree-menu, .c-selpop, .chat-worktree-pop, .annpin, .annbar) {
   font-size: var(--c-fs-read);
 }
 /* …except the words being typed: while the card is OPEN its textarea follows
