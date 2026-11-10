@@ -10,6 +10,7 @@ installDomShim();
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
+import type { RailPlace } from "./claude-rail-lib";
 
 const { ClaudeRail } = await import("./ClaudeRail");
 const { RailPeek } = await import("./RailPeek");
@@ -175,6 +176,9 @@ async function mountRail(o: {
   git?: { path: string; onOpenGit?: () => void };
   /** Mount the shell's bot card (BotCardHost) beside the rail, as App does. */
   botHost?: boolean;
+  /** The rail's place; the demo folder unless said. */
+  place?: RailPlace;
+  onSelectNode?: (udfName: string | null) => void;
 }) {
   // The card's flag and the favourites' pair, as Settings would publish them.
   publishCanvasRailPeek({ enabled: o.peek ?? true });
@@ -189,7 +193,8 @@ async function mountRail(o: {
       <>
         <ClaudeRail
           paneOpen={o.paneOpen}
-          place={{ kind: "folder", dir: DIR }}
+          place={o.place ?? { kind: "folder", dir: DIR }}
+          {...(o.onSelectNode ? { onSelectNode: o.onSelectNode } : {})}
           newTask={{ target: DIR, waiting: null, on: null }}
           activeSessionId={o.activeSessionId ?? null}
           onOpen={() => {}}
@@ -676,5 +681,45 @@ describe("ClaudeRail's git with the rail flag", () => {
     });
     expect(gitGroup(r)).toHaveLength(1);
     expect(railGitNow()).toBeNull();
+  });
+});
+
+describe("ClaudeRail on a canvas with a node selected (owner, 2026-11-10)", () => {
+  const CANVAS: RailPlace = { kind: "canvas", env: "prod", name: "demo", dir: DIR };
+  const chats = [
+    chat("other", { target: `${DIR}/o.py`, happened_at: 3_000, last_active: 3_000 }),
+    chat("mine", { target: `${DIR}/n.py`, happened_at: 1_000 }),
+  ];
+  const seatKeys = (r: ReactTestRenderer) =>
+    r.root
+      .findAll((n) => typeof n.type === "string" && n.props.role === "listitem")
+      .map((n) => [n.findAll((c) => typeof c.props?.["data-task-key"] === "string")[0]!.props["data-task-key"], n.props.className]);
+  const seps = (r: ReactTestRenderer) => r.root.findAll((n) => n.props?.className === "claude-rail-node-sep").length;
+
+  for (const favourites of [false, true]) {
+    test(`favourites ${favourites ? "on" : "off"}: every canvas chat stays — the node's first, a hairline, the rest faded — and no way-back seat`, async () => {
+      const r = await mountRail({ paneOpen: false, favourites, chats, place: { ...CANVAS, file: "n.py" }, onSelectNode: () => {} });
+      expect(seatKeys(r)).toEqual([
+        ["mine", "claude-rail-seat"],
+        ["other", "claude-rail-seat is-off"],
+      ]);
+      expect(seps(r)).toBe(1);
+      expect(r.root.findAll((n) => typeof n.props?.className === "string" && n.props.className.includes("claude-rail-all")).length).toBe(0);
+    });
+  }
+
+  test("no node: the List's order, nothing faded, no hairline", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: CANVAS, onSelectNode: () => {} });
+    expect(seatKeys(r)).toEqual([
+      ["other", "claude-rail-seat"],
+      ["mine", "claude-rail-seat"],
+    ]);
+    expect(seps(r)).toBe(0);
+  });
+
+  test("a node with no chat of its own: every chat faded, no hairline above them", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { ...CANVAS, file: "x.py" }, onSelectNode: () => {} });
+    expect(seatKeys(r).map(([, c]) => c)).toEqual(["claude-rail-seat is-off", "claude-rail-seat is-off"]);
+    expect(seps(r)).toBe(0);
   });
 });

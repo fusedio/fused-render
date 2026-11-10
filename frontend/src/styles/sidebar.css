@@ -343,7 +343,7 @@ a.sidebar-rail-btn {
      the collapsed rail read too loose. 4 (owner, 2026-11-09: "the separator
      between expand sidebar and home is perfect spacing — use it everywhere"):
      4 + the column's 4px gap = the top divider's 8px each side. The Claude
-     rail's dividers (claude-rail.css `.is-tight`, `.claude-rail-all-seat`)
+     rail's dividers (claude-rail.css `.is-tight`, `.claude-rail-node-sep`)
      wear the same. */
   margin: 4px 0;
   background: var(--rail-sep);
