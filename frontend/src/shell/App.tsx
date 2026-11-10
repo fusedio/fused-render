@@ -68,6 +68,7 @@ import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
 import { TasksPeek } from "@shell/claude-rail/TasksPeek";
 import { PlusCardHost } from "@shell/claude-rail/PlusCardHost";
 import { BotsPeek } from "@shell/claude-rail/BotsPeek";
+import { GitPeek } from "@shell/claude-rail/GitPeek";
 import { BotCardHost } from "@shell/claude-rail/BotCardHost";
 import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
@@ -87,7 +88,6 @@ import BreakoutCards from "@shell/breakout/BreakoutCards";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import NativeAppSyncNotices from "@shell/NativeAppSyncNotices";
 import TerminalDock from "@shell/TerminalDock";
-import GitDock from "@shell/GitDock";
 import TerminalDrawer from "@shell/TerminalDrawer";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
@@ -1316,7 +1316,6 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             terminalDock={terminalOn && <TerminalDock />}
-            git={<GitDock />}
             updates={<UpdatesDock version={config.version} hasUpdater={config.update != null} />}
             system={monitorOn === true && <SystemDock />}
             models={<ModelsDock />}
@@ -1381,6 +1380,10 @@ export default function App({ config }: { config: Config }) {
           window A's too, mounted once here for the same reason — its list's
           search and scroll survive a hop (owner, 2026-11-09). */}
       {!IS_EMBED && <BotsPeek />}
+      {/* The Git card off the rail's Git door (shell/claude-rail GitPeek):
+          window A's too, mounted once here for the same reason (owner,
+          2026-11-10: Git moved off the status bar onto the rail). */}
+      {!IS_EMBED && <GitPeek />}
       {/* The pinned bot's card (shell/claude-rail BotCardHost): window B's
           other card, mounted once here for the favourite's reason — a page's
           view switch remounts its rail, and a card that lived there

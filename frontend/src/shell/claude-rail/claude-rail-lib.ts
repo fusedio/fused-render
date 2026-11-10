@@ -1037,10 +1037,12 @@ export function windowAHovers(o: {
   tasksPinned: boolean;
   /** The Bots card is up and pinned (2026-11-09: the Bots door's own card). */
   botsPinned: boolean;
+  /** The Git card is up and pinned (2026-11-10: the Git door's own card). */
+  gitPinned: boolean;
   /** A draft's modal card (not the popover) is up. */
   modalCard: boolean;
 }): boolean {
-  return !o.listPinned && !o.popPinned && !o.tasksPinned && !o.botsPinned && !o.modalCard;
+  return !o.listPinned && !o.popPinned && !o.tasksPinned && !o.botsPinned && !o.gitPinned && !o.modalCard;
 }
 
 /** A pointer that arrives on a rail door with a button held is a drag passing

@@ -143,7 +143,7 @@ describe("sizes per window", () => {
 
 
 describe("after a click, only a click changes window A (owner, 2026-11-08)", () => {
-  const open = { listPinned: false, popPinned: false, tasksPinned: false, botsPinned: false, modalCard: false };
+  const open = { listPinned: false, popPinned: false, tasksPinned: false, botsPinned: false, gitPinned: false, modalCard: false };
   it("with nothing pinned, every window A door previews on a hover", () => {
     expect(windowAHovers(open)).toBe(true);
   });
@@ -158,6 +158,9 @@ describe("after a click, only a click changes window A (owner, 2026-11-08)", () 
   });
   it("a pinned Bots card silences the list's rings, the +, the draft rings and the Tasks door (2026-11-09)", () => {
     expect(windowAHovers({ ...open, botsPinned: true })).toBe(false);
+  });
+  it("a pinned Git card silences every other window A door too (2026-11-10)", () => {
+    expect(windowAHovers({ ...open, gitPinned: true })).toBe(false);
   });
   it("a draft's modal card (the popover's flag off) silences them too", () => {
     expect(windowAHovers({ ...open, modalCard: true })).toBe(false);
