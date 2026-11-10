@@ -1,6 +1,6 @@
 // THE RAIL'S GIT FACTS (ClaudeRail `git`): what the Git section under the
 // chat rings draws — the branch, how far it stands from the remote's default
-// branch, the last three commits that touched the page's folder or file —
+// branch, the last commits that touched the page's folder or file —
 // read off `GET /api/git/rail` (routers/git_rail.py) for the page's path.
 //
 // Read on mount and whenever the path changes; re-read a beat after the
@@ -18,8 +18,14 @@ import { useTasksPulseRows } from "@shell/tasksPulse";
  *  after the row's status does, and a burst of rows is one read. */
 const PULSE_SETTLE_MS = 2500;
 
+/** How many commits a read asks for: a full window A card's worth for the
+ *  Git door (owner, 2026-11-10: "fill it with commits"); the flag-off rail
+ *  draws the first three. */
+export const RAIL_GIT_COMMITS = 50;
+
 export interface RailGit {
-  /** `undefined` until the first read answers; `null` = not in a repo. */
+  /** `undefined` until the first read answers (or with no path); `null` =
+   *  not in a repo. A path change keeps the last answer until the next. */
   repo: RailGitRepo | null | undefined;
   checking: boolean;
   /** The last check reached the remote (null until one has run). */
@@ -28,8 +34,39 @@ export interface RailGit {
   reload: () => void;
 }
 
+// THE LAST ANSWERS, FOR A NEW RAIL'S FIRST FRAME (QA, 2026-11-10): the
+// explorer swaps Listing ↔ Preview on a folder → file hop, so a NEW rail
+// mounts — and with nothing to draw until its read answered, the Git door
+// and its hairline went for a frame and a pinned Git card closed. A new
+// rail starts from the last answer for its path, else the repository whose
+// root holds it (the innermost); its own read then swaps that for the truth.
+const answers = new Map<string, RailGitRepo | null>();
+const trim = (p: string) => p.replace(/\/+$/, "") || "/";
+function remember(path: string, repo: RailGitRepo | null): void {
+  answers.set(trim(path), repo);
+}
+
+/** What a new rail for `path` draws until its own read answers. */
+export function cachedRailGit(path: string | null): RailGitRepo | null | undefined {
+  if (!path) return undefined;
+  const p = trim(path);
+  if (answers.has(p)) return answers.get(p);
+  let best: RailGitRepo | undefined;
+  for (const r of answers.values()) {
+    if (!r) continue;
+    const root = trim(r.root);
+    if ((p === root || p.startsWith(root + "/")) && (!best || root.length > trim(best.root).length)) best = r;
+  }
+  return best;
+}
+
+/** Test-only. */
+export function resetRailGitCacheForTests(): void {
+  answers.clear();
+}
+
 export function useRailGit(path: string | null): RailGit {
-  const [repo, setRepo] = useState<RailGitRepo | null | undefined>(undefined);
+  const [repo, setRepo] = useState<RailGitRepo | null | undefined>(() => cachedRailGit(path));
   const [checking, setChecking] = useState(false);
   const [checked, setChecked] = useState<boolean | null>(null);
   const alive = useRef(true);
@@ -55,8 +92,9 @@ export function useRailGit(path: string | null): RailGit {
   const reload = useCallback(() => {
     if (!path || checkingRef.current) return;
     const mine = ++seq.current;
-    getRailGit(path).then(
+    getRailGit(path, RAIL_GIT_COMMITS).then(
       (r) => {
+        remember(path, r.repo);
         if (alive.current && mine === seq.current && !checkingRef.current) setRepo(r.repo);
       },
       () => {
@@ -70,10 +108,15 @@ export function useRailGit(path: string | null): RailGit {
     checkToken.current += 1;
     checkingRef.current = false;
     setChecking(false);
-    setRepo(undefined);
     setChecked(null);
+    // THE LAST REPOSITORY STAYS DRAWN while the new path's read is out
+    // (owner, 2026-11-10: the explorer's folder → file hop in one repository
+    // flickered the Git door, its hairline and its card): the answer swaps
+    // it, and only an answer of "no repository" takes it away. No path: no
+    // repository at all.
+    if (!path) setRepo(undefined);
     reload();
-  }, [reload]);
+  }, [reload, path]);
   // After a task's STATUS moves (header) — a run that ended may have
   // committed. ONLY the tasks in this repository (the rows whose project or
   // target lies under the root the first read named): a task churning in
@@ -116,8 +159,9 @@ export function useRailGit(path: string | null): RailGit {
     const asked = path;
     const token = ++checkToken.current;
     const mine = () => alive.current && token === checkToken.current && pathRef.current === asked;
-    postRailGitCheck(path).then(
+    postRailGitCheck(path, RAIL_GIT_COMMITS).then(
       (r) => {
+        remember(asked, r.repo);
         // Abandoned (the page moved on): not ours to show, nor to end.
         if (!mine()) return;
         checkingRef.current = false;

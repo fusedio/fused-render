@@ -6675,6 +6675,10 @@ export interface RailGitRepo {
   default_branch: string | null;
   ahead: number | null;
   behind: number | null;
+  /** Against the branch's own upstream (`@{u}`): what a push / pull would
+   *  move (the rail Git door's dots). Null with no upstream or a detached
+   *  HEAD; absent from an older server. */
+  upstream?: { ahead: number; behind: number } | null;
   commits: GitCommit[];
 }
 
@@ -6684,15 +6688,17 @@ export interface RailGit {
   repo: RailGitRepo | null;
 }
 
-export function getRailGit(path: string): Promise<RailGit> {
-  return getJson<RailGit>(`/api/git/rail?path=${encodeURIComponent(path)}`);
+/** `limit`: how many commits (server default 3, capped at 100). */
+export function getRailGit(path: string, limit?: number): Promise<RailGit> {
+  const n = limit === undefined ? "" : `&limit=${limit}`;
+  return getJson<RailGit>(`/api/git/rail?path=${encodeURIComponent(path)}${n}`);
 }
 
 /** The rail's "Check for updates": git_upstream's own bounded check, then the
  *  fresh counts. `checked` is false when no fetch landed inside its wait
  *  (no remote, unreachable, another check holding the slot, still running). */
-export function postRailGitCheck(path: string): Promise<RailGit & { checked: boolean }> {
-  return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", { path });
+export function postRailGitCheck(path: string, limit?: number): Promise<RailGit & { checked: boolean }> {
+  return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", limit === undefined ? { path } : { path, limit });
 }
 
 export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {

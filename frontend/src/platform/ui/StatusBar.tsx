@@ -117,7 +117,6 @@ import DownloadManager from "@platform/ui/DownloadManager";
 
 export default function StatusBar({
   terminalDock,
-  git,
   updates,
   system,
   models,
@@ -130,11 +129,6 @@ export default function StatusBar({
    *  Optional so a caller/test with no terminal feature wired up renders
    *  nothing here. */
   terminalDock?: ReactNode;
-  /** The Git chip (`shell/GitDock.tsx`, behind the rail flag): right beside
-   *  Terminal (owner, 2026-11-07: "beside Terminal say Git") — the page's
-   *  repository, which the Claude rail drew until then. Renders nothing on a
-   *  page with no repository. */
-  git?: ReactNode;
   /** The self-update chip (`shell/UpdatesDock.tsx`): version, Check for
    *  updates and the download/restart story, at the bar's LEFT edge before
    *  System (Akshil, 2026-10-08: "left side of where we show cpu and memory"). */
@@ -155,7 +149,6 @@ export default function StatusBar({
         </div>
       )}
       {terminalDock}
-      {git}
       {models}
       {activity ?? <DownloadManager />}
       {repoUpdates}

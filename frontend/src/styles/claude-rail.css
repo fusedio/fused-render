@@ -1657,3 +1657,179 @@ a.claude-rail-peek-scope:focus-visible {
 .claude-rail-bots-list .bots-page.bots-pick .empty {
   padding: 32px 16px;
 }
+
+/* THE GIT DOOR (ClaudeRail; owner, 2026-11-10): one nav-door seat under the
+   rings, past its hairline — the nav doors' wash and open states
+   (`.claude-rail-nav` above), on a column of its own. */
+.claude-rail-git-door {
+  width: 100%;
+}
+/* …with no rings its hairline is the items column's first child: the
+   column's own 2px of wash padding (`.has-nav .sidebar-rail-items`) comes
+   off its margin, so it stands 8px under the + as above the door (the
+   #2213 rule: 8px each side). */
+.claude-rail.has-nav .sidebar-rail-items > .sidebar-rail-sep.is-tight:first-child {
+  margin-top: 2px;
+}
+
+/* THE GIT CARD (shell/claude-rail GitPeek; owner, 2026-11-10): the status
+   bar's old Git panel (shell/GitPanelBody) in window A's chassis off the
+   rail's Git door — the Bots card's twin (DoorCard), one step above the
+   rail's own card as that one is. The branch row stays put; the commits fill
+   the card and scroll inside it. */
+#claude-rail-git-peek {
+  z-index: 46;
+}
+.claude-rail-git-peek .git-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.git-panel-head {
+  flex: 0 0 auto;
+  padding: 8px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.git-panel-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.git-panel-branch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg);
+}
+.git-panel-branch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.git-panel-branch-icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+/* ↑n / ↓n beside the branch: how far it stands from the default branch;
+   then what a push / pull would move, in the door's dot hues. */
+.git-panel-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  padding: 1px 6px 1px 4px;
+  border-radius: 999px;
+  background: var(--ctl-quiet-bg);
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.git-panel-tag.is-push {
+  background: color-mix(in srgb, var(--status-background) 16%, transparent);
+  color: var(--status-background);
+}
+.git-panel-tag.is-pull {
+  background: color-mix(in srgb, var(--status-done) 16%, transparent);
+  color: var(--status-done);
+}
+.git-panel-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+/* The Updates chip's check button, at the card's ink (not the bar's). */
+.git-panel-check {
+  margin: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--fg-muted);
+}
+.git-panel-check:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.git-panel-check:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.git-panel-warn {
+  font-size: 11px;
+  color: var(--status-failed);
+}
+/* THE COMMITS ARE THE SCROLLING SECTION (owner, 2026-11-10): the rest of the
+   card, a thin native scrollbar. */
+.git-panel-commits {
+  flex: 1 1 auto;
+  min-height: 0;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 6px;
+  border-top: 1px solid var(--border);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+/* One line a commit: subject left, short sha right. */
+.git-commit {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+}
+button.git-commit {
+  cursor: pointer;
+}
+button.git-commit:hover {
+  background: rgba(var(--tint), 0.06);
+}
+button.git-commit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.git-commit-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-commit-sha {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.git-panel-empty {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+}

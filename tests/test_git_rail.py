@@ -107,3 +107,38 @@ def test_detached_head_has_no_branch_but_still_its_commits(repo):
     r = gr.rail_status(str(repo["app_dir"]))["repo"]
     assert r["branch"] is None
     assert [c["subject"] for c in r["commits"]] == ["v4", "v3", "v2"]
+
+
+def test_limit_asks_for_more_commits_and_is_clamped(repo):
+    # Default: the flag-off rail's three.
+    assert len(gr.rail_status(str(repo["root"]))["repo"]["commits"]) == 3
+    # The Git door's card asks for a window's worth (owner, 2026-11-10).
+    whole = gr.rail_status(str(repo["root"]), limit=50)["repo"]
+    assert [c["subject"] for c in whole["commits"]] == ["v4", "v3", "elsewhere", "v2", "v1"]
+    assert len(gr.rail_status(str(repo["root"]), limit=0)["repo"]["commits"]) == 1
+    assert gr._limit(10_000) == gr.COMMITS_MAX
+    assert gr._limit(None) == gr.COMMITS
+    out = gr.rail_check(str(repo["app_dir"]), limit=50)
+    assert [c["subject"] for c in out["repo"]["commits"]] == ["v4", "v3", "v2", "v1"]
+
+
+def test_upstream_counts_what_a_push_or_pull_would_move(repo, tmp_path):
+    # No remote, no upstream: null.
+    assert gr.rail_status(str(repo["root"]))["repo"]["upstream"] is None
+    bare = tmp_path / "origin.git"
+    bare.mkdir()
+    _git("init", "-q", "--bare", "-b", "main", cwd=bare)
+    _git("remote", "add", "origin", str(bare), cwd=repo["root"])
+    _git("push", "-q", "origin", "main", cwd=repo["root"])
+    # Pushed but no tracking set: still no upstream.
+    assert gr.rail_status(str(repo["root"]))["repo"]["upstream"] is None
+    _git("branch", "-q", "--set-upstream-to=origin/main", cwd=repo["root"])
+    assert gr.rail_status(str(repo["root"]))["repo"]["upstream"] == {"ahead": 0, "behind": 0}
+    (repo["root"] / "other.txt").write_text("z\n", encoding="utf-8")
+    _commit(repo["root"], "local")
+    assert gr.rail_status(str(repo["root"]))["repo"]["upstream"] == {"ahead": 1, "behind": 0}
+    _git("reset", "-q", "--hard", "HEAD~2", cwd=repo["root"])
+    assert gr.rail_status(str(repo["root"]))["repo"]["upstream"] == {"ahead": 0, "behind": 1}
+    # Detached: no upstream.
+    _git("checkout", "-q", "--detach", cwd=repo["root"])
+    assert gr.rail_status(str(repo["root"]))["repo"]["upstream"] is None

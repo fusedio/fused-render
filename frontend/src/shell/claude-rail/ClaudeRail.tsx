@@ -246,7 +246,8 @@ import {
   useTasksPulse,
   useTasksPulseRows,
 } from "@shell/tasksPulse";
-import { BOTS_ICON, TASKS_ICON } from "@shell/nav-icons";
+import { BOTS_ICON, GIT_ICON, TASKS_ICON } from "@shell/nav-icons";
+import { GIT_DOT_WORDS, gitBranch, gitDoorDots, gitDoorTitle, gitSyncWords } from "@shell/git-dock-lib";
 import { pulseTitle } from "@shell/tasks-lib";
 import { isBotsPath } from "@apps/bots/routes";
 import {
@@ -350,7 +351,7 @@ import {
 import { FAV_PEEK_ID } from "./FavouritePeek";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useRailGit } from "./rail-git";
-import { publishRailGit, registerRailGit } from "./rail-git-store";
+import { publishRailGit } from "./rail-git-store";
 import { PLUS_DOOR, PlusPopIntent } from "./plus-pop-lib";
 import { publishPlusRender, usePlusCard, usePlusHosted, withdrawPlusRender } from "./plus-card-store";
 import { useLauncherOpen } from "./launcher-open";
@@ -396,6 +397,18 @@ import {
   registerBotsDoor,
   useBotsCard,
 } from "./bots-peek-store";
+import {
+  GIT_CARD_KEY,
+  GIT_PEEK_ID,
+  closeGitCard,
+  focusGitCard,
+  forgetGitCardRail,
+  setGitCardRail,
+  gitCardIntent,
+  gitDoorAction,
+  registerGitDoor,
+  useGitCard,
+} from "./git-peek-store";
 
 /** THE RAIL'S WIDTH, SAID TO THE DOCUMENT (owner, 2026-11-05: "move the
  *  notification modal to the right a little bit so it doesn't cover the mini
@@ -650,7 +663,9 @@ export function ClaudeRail({
    *  and the last three commits that touched `path` (rail-git.ts). Drawn only
    *  where `path` sits in a repository; absent on a canvas (a clone is not
    *  one). `onOpenGit` is the branch's and the commits' door: the page's git
-   *  panel (the explorer's git companion, the app page's git peek). */
+   *  panel (the explorer's git companion, the app page's git peek).
+   *  With the rail flag (owner, 2026-11-10) the section is one Git door
+   *  under the rings whose window A card (GitPeek) holds all of it. */
   git?: { path: string; onOpenGit?: () => void };
   /** The session the page's URL names, drawn as the current row. */
   activeSessionId: string | null;
@@ -827,33 +842,16 @@ export function ClaudeRail({
   // (the shell's fallback stands on every page without a page rail,
   // claude-rail-lib `fallbackRailUp`). Off, the rail of 2026-11-06.
   const navDoors = peekOn;
-  // THE GIT SECTION MOVES TO THE STATUS BAR with the nav doors (owner,
-  // 2026-11-07: "remove git icons from the sidebar, and instead beside
-  // Terminal say Git"): the rail still reads the page's repository and hands
-  // it, with the page's Git panel door, to the status bar's Git chip
-  // (rail-git-store.ts, shell/GitDock.tsx) — and draws no Git section.
-  const gitToken = useRef({});
+  // THE GIT SECTION BECOMES A DOOR with the nav doors (owner, 2026-11-10:
+  // "move Git to a door on the rail, under the task rings"): the rail reads
+  // the page's repository, draws the Git door (below the rings, past a
+  // hairline) and hands the facts, with the page's Git panel door, to the
+  // shell's Git card (rail-git-store.ts, keyed by this rail; GitPeek).
   const openGitRef = useRef(git?.onOpenGit);
   openGitRef.current = git?.onOpenGit;
   const gitOn = !!git;
   const gitDoor = !!git?.onOpenGit;
-  useEffect(() => (navDoors ? registerRailGit(gitToken.current) : undefined), [navDoors]);
-  useEffect(() => {
-    if (!navDoors) return;
-    const repo = gitOn ? railGit.repo : null;
-    publishRailGit(
-      gitToken.current,
-      repo
-        ? {
-            repo,
-            checking: railGit.checking,
-            checked: railGit.checked,
-            check: railGit.check,
-            ...(gitDoor ? { onOpenGit: () => openGitRef.current?.() } : {}),
-          }
-        : null,
-    );
-  }, [navDoors, gitOn, gitDoor, railGit.repo, railGit.checking, railGit.checked, railGit.check]);
+  const gitRepo = navDoors && gitOn ? (railGit.repo ?? null) : null;
   const hideList = listHidden({ paneOpen, favsOn, paneHome });
   const stands =
     navDoors ||
@@ -1218,6 +1216,40 @@ export function ClaudeRail({
     // starred; a blocked one is running), so no draft card is in question.
     return el && shown ? registerRail(el, hereOf, (href) => onOpenChatRef.current(href)) : undefined;
   }, [hereOf, shown]);
+  // THE GIT DOOR'S FACTS, for the shell's Git card (rail-git-store, by this
+  // rail). In the layout phase, with the rail's own registration just above:
+  // a hop's next rail says "reading" in the same commit it stands up in, so
+  // a pinned Git card following the reader never sees a rail without git.
+  const gitReading = navDoors && gitOn && railGit.repo === undefined;
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    if (!el) return;
+    publishRailGit(
+      el,
+      gitRepo
+        ? {
+            repo: gitRepo,
+            checking: railGit.checking,
+            checked: railGit.checked,
+            check: railGit.check,
+            ...(gitDoor ? { onOpenGit: () => openGitRef.current?.() } : {}),
+          }
+        : gitReading
+          ? "reading"
+          : null,
+    );
+  }, [gitRepo, gitReading, gitDoor, railGit.checking, railGit.checked, railGit.check]);
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    return el
+      ? () => {
+          publishRailGit(el, null);
+          // The Git card this rail opened: a preview goes, a pinned one
+          // follows to the top rail (git-peek-store `forgetGitCardRail`).
+          forgetGitCardRail(el);
+        }
+      : undefined;
+  }, []);
   // Favourites on only (flag-off parity: the rail of 2026-11-04 moved
   // nothing).
   useLayoutEffect(() => (shown && favsOn ? railUp() : undefined), [shown, favsOn]);
@@ -1750,14 +1782,18 @@ export function ClaudeRail({
   // …AND THE BOTS CARD'S (2026-11-09): the Bots door's own window A card
   // (BotsPeek, bots-peek-store), the Tasks card's twin in every rule below.
   const botsCard = useBotsCard();
+  // …AND THE GIT CARD'S (2026-11-10): the Git door's window A card (GitPeek,
+  // git-peek-store), the Bots card's twin in every rule below.
+  const gitCard = useGitCard();
   const pinnedUp = pinned && peekKey !== null;
   const botPinnedUp = botPinned && botKey !== null;
   const popPinnedUp = !!card?.pop && !!card.pinned;
   const tasksHeldUp = navDoors && tasksCard.up && tasksCard.pinned;
   const botsHeldUp = navDoors && botsCard.up && botsCard.pinned;
-  const anyPinned = pinnedUp || botPinnedUp || popPinnedUp || tasksHeldUp || botsHeldUp;
-  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp });
-  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp };
+  const gitHeldUp = navDoors && gitCard.up && gitCard.pinned;
+  const anyPinned = pinnedUp || botPinnedUp || popPinnedUp || tasksHeldUp || botsHeldUp || gitHeldUp;
+  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp, git: gitHeldUp });
+  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp, git: gitHeldUp };
   const shutPopRef = useRef<() => boolean>(() => false);
   const pinnedRef = useRef(onCardPinned);
   pinnedRef.current = onCardPinned;
@@ -1774,6 +1810,7 @@ export function ClaudeRail({
         if (pinnedNow.current.bot && !botHeldRef.current && !document.getElementById(BOT_PEEK_ID)?.contains(a)) botIntent.dismiss();
         if (pinnedNow.current.tasks && !document.getElementById(TASKS_PEEK_ID)?.contains(a)) closeTasksCard();
         if (pinnedNow.current.bots && !document.getElementById(BOTS_PEEK_ID)?.contains(a)) closeBotsCard();
+        if (pinnedNow.current.git && !document.getElementById(GIT_PEEK_ID)?.contains(a)) closeGitCard();
         if (pinnedNow.current.pop && !document.querySelector(".modal-popover")?.contains(a)) shutPopRef.current();
       }, 0);
     };
@@ -2018,9 +2055,15 @@ export function ClaudeRail({
   const botsSeq = navDoors && botsCard.up ? botsCard.seq : null;
   const botsUpRef = useRef(false);
   botsUpRef.current = botsSeq !== null;
+  // …AND THE GIT CARD (2026-11-10), the third door card: the three put each
+  // other down, and the list's card and the + popover put all three down.
+  const gitSeq = navDoors && gitCard.up ? gitCard.seq : null;
+  const gitUpRef = useRef(false);
+  gitUpRef.current = gitSeq !== null;
   useEffect(() => {
     if (tasksSeq === null) return;
     closeBotsCard();
+    closeGitCard();
     if (cardRef.current?.pop) {
       const busyPop = popBusy(railRef.current);
       if (busyPop) {
@@ -2036,6 +2079,7 @@ export function ClaudeRail({
   useEffect(() => {
     if (botsSeq === null) return;
     closeTasksCard();
+    closeGitCard();
     if (cardRef.current?.pop) {
       const busyPop = popBusy(railRef.current);
       if (busyPop) {
@@ -2048,6 +2092,22 @@ export function ClaudeRail({
     intent.dismiss();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [botsSeq]);
+  useEffect(() => {
+    if (gitSeq === null) return;
+    closeTasksCard();
+    closeBotsCard();
+    if (cardRef.current?.pop) {
+      const busyPop = popBusy(railRef.current);
+      if (busyPop) {
+        closeGitCard();
+        return;
+      }
+      setCardCloseSignal((n) => n + 1);
+    }
+    setHeld(false);
+    intent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gitSeq]);
   // …up OR still a hover's pending read (CodeRabbit on #2189: the pointer
   // resting on the Tasks door while the + pins by keyboard): `dismiss` is a
   // no-op on a card that is not up, and cancels the open that was coming.
@@ -2055,6 +2115,7 @@ export function ClaudeRail({
     if ((peekKey ?? popSeq) !== null) {
       closeTasksCard();
       closeBotsCard();
+      closeGitCard();
     }
   }, [peekKey, popSeq]);
   // ANOTHER WINDOW A CARD PINNED (the Tasks card by its door, the list card
@@ -2064,26 +2125,28 @@ export function ClaudeRail({
   // the effect runs after the render that declared it.
   const tasksPinnedUp = navDoors && tasksCard.up && tasksCard.pinned;
   const botsPinnedUp = navDoors && botsCard.up && botsCard.pinned;
+  const gitPinnedUp = navDoors && gitCard.up && gitCard.pinned;
   const listPinnedUp = pinned && peekKey !== null;
   useEffect(() => {
-    if (tasksPinnedUp || botsPinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
-  }, [tasksPinnedUp, botsPinnedUp, listPinnedUp]);
+    if (tasksPinnedUp || botsPinnedUp || gitPinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
+  }, [tasksPinnedUp, botsPinnedUp, gitPinnedUp, listPinnedUp]);
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned + popover or Tasks card, as
   // it closes the pinned list card (its rule above; owner, 2026-11-08: the
   // gaps between window A's cards closed). Inside either, Escape is its own.
   useEffect(() => {
-    if (!popPinnedUp && !tasksPinnedUp && !botsPinnedUp) return;
+    if (!popPinnedUp && !tasksPinnedUp && !botsPinnedUp && !gitPinnedUp) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       if (e.target !== document.body && e.target !== document.documentElement) return;
       e.preventDefault();
       if (tasksPinnedUp) closeTasksCard();
       if (botsPinnedUp) closeBotsCard();
+      if (gitPinnedUp) closeGitCard();
       if (popPinnedUp) shutPop();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [popPinnedUp, tasksPinnedUp, botsPinnedUp, shutPop]);
+  }, [popPinnedUp, tasksPinnedUp, botsPinnedUp, gitPinnedUp, shutPop]);
   // BESIDE THE OPEN PANE IT GOES THE WAY WINDOW A GOES (owner, 2026-11-08:
   // "if the sidebar is open, a press opens in the sidebar and closes window
   // A; in the expanded sidebar, when the sidebar's chat changes, close window
@@ -2101,6 +2164,7 @@ export function ClaudeRail({
     if (!paneOpen || (wasOpen && chatWas === activeSessionId)) return;
     if (tasksUpRef.current) closeTasksCard();
     if (botsUpRef.current) closeBotsCard();
+    if (gitUpRef.current) closeGitCard();
     // …and the + popover, the same way (owner, 2026-11-08: the gaps between
     // window A's cards closed).
     shutPop();
@@ -2118,6 +2182,7 @@ export function ClaudeRail({
       popPinned: !!card?.pop && !!card.pinned,
       tasksPinned: tasksCard.up && tasksCard.pinned,
       botsPinned: botsCard.up && botsCard.pinned,
+      gitPinned: gitCard.up && gitCard.pinned,
       modalCard: !!card && !card.pop,
     });
   // A hover on the + previews only where its press opens the popover card,
@@ -2573,6 +2638,40 @@ export function ClaudeRail({
       if (e.detail === 0) cardFocusSoon(BOTS_PEEK_ID, focusBotsCard);
     }
   };
+  // THE GIT DOOR OPENS THE GIT CARD (GitPeek; owner, 2026-11-10), the Bots
+  // door's rules to the letter: a hover previews, a press pins, a press
+  // while pinned closes. A button, not a link — no page of its own: with no
+  // card to show (none mounted, no room) the press opens the page's Git
+  // panel (git-peek-store `gitDoorAction`). Under the rings, past a hairline,
+  // only while the page's path sits in a repository (`gitRepo`).
+  const gitDoorRef = useRef<HTMLButtonElement | null>(null);
+  const gitDoorShown = gitRepo !== null;
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    const door = gitDoorRef.current;
+    return navDoors && shown && el && door ? registerGitDoor(el, door) : undefined;
+  }, [navDoors, shown, gitDoorShown]);
+  const gitUp = navDoors && gitCard.up;
+  const pressGitDoor = (e: ReactMouseEvent<HTMLButtonElement>) => {
+    const act = gitDoorAction({ ready: gitCard.ready, pinned: gitCard.up && gitCard.pinned });
+    hideHint();
+    if (act === "open") openGitRef.current?.();
+    else if (act === "close") closeGitCard();
+    else {
+      // This rail opens it (an explorer split's two rails, two repositories).
+      setGitCardRail(railRef.current);
+      gitCardIntent().press(GIT_CARD_KEY);
+      if (e.detail === 0) cardFocusSoon(GIT_PEEK_ID, focusGitCard);
+    }
+  };
+  const gitDots = gitRepo ? gitDoorDots({ checking: railGit.checking, checked: railGit.checked, repo: gitRepo }) : null;
+  const gitLabel = gitRepo
+    ? [
+        `Git, on ${gitBranch(gitRepo)}`,
+        ...gitSyncWords(gitRepo),
+        ...(gitDots?.top && gitDots.top !== "push" ? [GIT_DOT_WORDS[gitDots.top]] : []),
+      ].join(", ")
+    : "Git";
 
   // ONE ACTIVE RING PER SECTION (header; rail-peek-lib `activeRing`). The
   // list's section is its rings (no outsider in the foot since 2026-11-06). With the
@@ -2663,7 +2762,11 @@ export function ClaudeRail({
                 botHeld: botUp !== null,
                 // Window A held by the + popover or the Tasks card: the list's
                 // rings say their title (`aHovers` shows them no card).
-                windowAHeld: (!!card?.pop && !!card.pinned) || (tasksCard.up && tasksCard.pinned) || (botsCard.up && botsCard.pinned),
+                windowAHeld:
+                  (!!card?.pop && !!card.pinned) ||
+                  (tasksCard.up && tasksCard.pinned) ||
+                  (botsCard.up && botsCard.pinned) ||
+                  (gitCard.up && gitCard.pinned),
                 sectionSize: foot ? favs.length : baseSeats.length,
               });
               // The rings' own captions step aside for the card: a hover
@@ -3212,9 +3315,50 @@ export function ClaudeRail({
             ))}
           </div>
         )}
+        {navDoors && gitRepo && (
+          // THE GIT DOOR (owner, 2026-11-10): under the rings, past a hairline
+          // always drawn while it stands (it parts Git from the nav doors when
+          // there are no rings), one seat — the Git card's door (GitPeek),
+          // wearing the push / pull dots (git-dock-lib `gitDoorDots`).
+          <>
+            <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
+            <div className="claude-rail-nav claude-rail-git-door">
+              <button
+                ref={gitDoorRef}
+                type="button"
+                className={"sidebar-rail-btn claude-rail-item" + doorOpen(gitUp, gitCard.pinned)}
+                title={gitDoorTitle(gitRepo)}
+                aria-label={gitLabel}
+                {...(gitCard.ready
+                  ? { "aria-haspopup": "dialog" as const, "aria-expanded": gitUp, "aria-controls": GIT_PEEK_ID }
+                  : {})}
+                onClick={pressGitDoor}
+                onPointerEnter={(e) => {
+                  if (e.pointerType !== "touch" && !dragging(e) && gitCard.ready && aHovers()) {
+                    setGitCardRail(railRef.current);
+                    gitCardIntent().enterRing(GIT_CARD_KEY, "pointer");
+                  }
+                }}
+                onPointerLeave={() => gitCardIntent().leaveRing("pointer")}
+                onKeyDown={(e) => {
+                  // Escape lets a PREVIEW go (a pinned card closes by its ×, or
+                  // this door's press).
+                  if (e.key === "Escape" && gitUp && !gitCard.pinned) {
+                    e.preventDefault();
+                    closeGitCard(true);
+                  }
+                }}
+              >
+                {GIT_ICON}
+                {gitDots?.top && <span className={`sidebar-rail-dot is-${gitDots.top}`} aria-hidden="true" />}
+                {gitDots?.second && <span className={`sidebar-rail-dot is-${gitDots.second} is-second`} aria-hidden="true" />}
+              </button>
+            </div>
+          </>
+        )}
         {!navDoors && git && railGit.repo && (
-          // THE GIT SECTION (header), off with the nav doors — the status
-          // bar's Git chip draws it then (rail-git-store.ts): past the left rail's own separator
+          // THE GIT SECTION (header), off with the nav doors — the Git door
+          // above draws it then (rail-git-store.ts, GitPeek): past the left rail's own separator
           // (sidebar.css `.sidebar-rail-sep`), the repository the page sits
           // in. Each seat wears the app's hint (platform/lib/hints), beside
           // the rail like the rings' — a 48px column has no room for words.
@@ -3283,7 +3427,9 @@ export function ClaudeRail({
                       <RefreshCw size={16} aria-hidden="true" />
                       {behind > 0 && <span className="sidebar-rail-dot is-unread" aria-hidden="true" />}
                     </button>
-                    {r.commits.map((c) => {
+                    {/* Three seats: the read asks for a card's worth
+                        (rail-git.ts `RAIL_GIT_COMMITS`). */}
+                    {r.commits.slice(0, 3).map((c) => {
                       const when = timeAgo(c.when) ?? "";
                       const who = [c.author, when].filter(Boolean).join(" · ");
                       return (
