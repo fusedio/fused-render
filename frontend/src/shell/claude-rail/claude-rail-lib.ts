@@ -1042,3 +1042,12 @@ export function windowAHovers(o: {
 }): boolean {
   return !o.listPinned && !o.popPinned && !o.tasksPinned && !o.botsPinned && !o.modalCard;
 }
+
+/** A pointer that arrives on a rail door with a button held is a drag passing
+ *  through — a text selection, a resize, a scrollbar — not a hover, so it
+ *  opens no card (owner, 2026-11-10: a selection dragged across the rail
+ *  popped a card and broke the selection). The next plain arrival, once the
+ *  button is up, hovers as ever. */
+export function dragging(e: { buttons: number }): boolean {
+  return e.buttons !== 0;
+}

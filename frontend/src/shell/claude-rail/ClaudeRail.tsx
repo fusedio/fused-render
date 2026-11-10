@@ -279,6 +279,7 @@ import { hideHint } from "@platform/lib/hints";
 import {
   activeRing,
   dotCleared,
+  dragging,
   favSeats,
   keepMarks,
   listHidden,
@@ -1847,6 +1848,7 @@ export function ClaudeRail({
   }, [ringOrder]);
   // `to`: the section's window — the list's card (A) or the favourites' (B).
   const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>, to: PeekIntent) => {
+    if (dragging(e)) return;
     const at = stillAt.current;
     if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
     stillAt.current = null;
@@ -2182,6 +2184,7 @@ export function ClaudeRail({
   // (`pressRing` → `openDraftCard`). The ring's own reshape guard
   // (`stillAt`, `enterRing`) applies.
   const enterDraftDoor = (row: Task, href: string, e: ReactPointerEvent<HTMLAnchorElement>) => {
+    if (dragging(e)) return;
     const at = stillAt.current;
     if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
     stillAt.current = null;
@@ -3070,7 +3073,7 @@ export function ClaudeRail({
                 : {})}
               onClick={pressBotsDoor}
               onPointerEnter={(e) => {
-                if (e.pointerType !== "touch" && botsCard.ready && aHovers()) botsCardIntent().enterRing(BOTS_CARD_KEY, "pointer");
+                if (e.pointerType !== "touch" && !dragging(e) && botsCard.ready && aHovers()) botsCardIntent().enterRing(BOTS_CARD_KEY, "pointer");
               }}
               onPointerLeave={() => botsCardIntent().leaveRing("pointer")}
               onKeyDown={(e) => {
@@ -3098,7 +3101,7 @@ export function ClaudeRail({
               : {})}
             onClick={pressTasksDoor}
             onPointerEnter={(e) => {
-              if (e.pointerType !== "touch" && tasksCard.ready && aHovers()) tasksCardIntent().enterRing(TASKS_CARD_KEY, "pointer");
+              if (e.pointerType !== "touch" && !dragging(e) && tasksCard.ready && aHovers()) tasksCardIntent().enterRing(TASKS_CARD_KEY, "pointer");
             }}
             onPointerLeave={() => tasksCardIntent().leaveRing("pointer")}
             onKeyDown={(e) => {
@@ -3130,7 +3133,7 @@ export function ClaudeRail({
             disabled={waiting !== null}
             onClick={openNewTask}
             onPointerEnter={(e) => {
-              if (e.pointerType !== "touch" && plusHovers()) plusIntent.enterPlus();
+              if (e.pointerType !== "touch" && !dragging(e) && plusHovers()) plusIntent.enterPlus();
             }}
             onPointerLeave={() => plusIntent.leavePlus()}
           >
