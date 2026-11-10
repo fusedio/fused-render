@@ -75,8 +75,12 @@
 .task-head-place {
   display: inline-flex;
   align-items: center;
-  flex: 0 1 auto;
-  min-width: 0;
+  /* FIXED, not shrinking (QA, 2026-11-10): a seat that shrinks is measured
+     at its squeezed width (row-fit `rowNeed`, `min(width, 72)`), so the row
+     "fit" with the folder name cut to "Fus" and the ladder never reached the
+     rung that folds it. Held at its own width it overflows honestly and
+     folds at rung 2. */
+  flex: 0 0 auto;
   max-width: 180px;
   overflow: hidden;
 }
@@ -105,8 +109,10 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex: 0 1 auto;
-  min-width: 0;
+  /* Same rule as `.task-head-place`: held at its width (capped below) so the
+     ladder sees the overflow and folds Open → place → id → stacks the title,
+     rather than the count/when chips being clipped out of the seat. */
+  flex: 0 0 auto;
   overflow: hidden;
   white-space: nowrap;
 }
