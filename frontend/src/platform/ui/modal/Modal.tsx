@@ -97,6 +97,21 @@ export interface ModalProps {
    * renders the bare `h2`, byte-identical for every existing caller.
    */
   titleLead?: ReactNode;
+  /**
+   * THE CALLER'S OWN HEAD, in place of the chassis' `.modal-head` — the shared
+   * task head (shell/TaskHead) on the New task card's open chat and the Cards
+   * popup, so a task reads the same in a dialog as in every other view of it.
+   * `title`, `titleAside`, `titleLead`, `headActions` and the ✕ are then not
+   * drawn: the head brings its own corner control.
+   *
+   * A FUNCTION OF THE CHASSIS' CONTEXT: `titleId`, because the dialog is still
+   * named by its heading (`aria-labelledby`, unless `ariaLabel` says
+   * otherwise) and the head puts the id on its own title element; and `close`,
+   * the ✕'s own guarded close (busy, dirty, the exit animation), which the
+   * head's corner control must call instead of the caller's raw `onClose`.
+   * Absent: the head every caller has always had, byte for byte.
+   */
+  head?: (ctx: { titleId: string; close: () => void }) => ReactNode;
   onClose: () => void;
   children: ReactNode;
   // When true, Esc / backdrop / ✕ do NOT close (an action is running that must
@@ -253,6 +268,7 @@ export function Modal({
   ariaLabel,
   titleAside,
   titleLead,
+  head,
   onClose,
   children,
   busy = false,
@@ -316,7 +332,7 @@ export function Modal({
       );
       const target =
         dialog?.querySelector<HTMLElement>("[autofocus]") ??
-        focusables.find((el) => !el.closest(".modal-head")) ??
+        focusables.find((el) => !el.closest(".modal-head, .modal-head-slot")) ??
         focusables[0] ??
         dialog;
       target?.focus();
@@ -355,7 +371,7 @@ export function Modal({
     if (!el) return;
     const active = ownerDoc.activeElement as HTMLElement | null;
     const dialog = dialogRef.current;
-    if (active && dialog?.contains(active) && !active.closest(".modal-head")) return;
+    if (active && dialog?.contains(active) && !active.closest(".modal-head, .modal-head-slot")) return;
     el.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusSignal]);
@@ -792,6 +808,9 @@ export function Modal({
             }
           : {})}
       >
+        {head ? (
+          <div className="modal-head-slot">{head({ titleId, close: attemptClose })}</div>
+        ) : (
         <div className={"modal-head deploy-head" + (closeAtStart ? " has-close-start" : "")}>
           {closeAtStart && closeButton}
           {titleAside || titleLead ? (
@@ -840,6 +859,7 @@ export function Modal({
           {headActions && <div className="modal-head-actions">{headActions}</div>}
           {!closeAtStart && closeButton}
         </div>
+        )}
         <div className={"modal-body " + (plainBody ? "modal-body-plain" : "deploy-body")}>{children}</div>
         {(footer || confirmClose) && (
           <div

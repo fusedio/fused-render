@@ -247,3 +247,34 @@ test("an Enter that confirms an IME candidate does not save", async () => {
   expect(calls).toEqual([]);
   expect(inputOf(v.r)).toBeDefined();
 });
+
+// ---- `part`: the halves a stacked head draws on its two rows -----------------
+
+const whoBox = (r: ReactTestRenderer) =>
+  r.root.findAll((n) => n.type === "div" && String(n.props.className).startsWith("task-side-peek-who"))[0];
+
+test("part: all is the block every caller has always drawn, class list included", () => {
+  const v = render({ task: task() });
+  expect(whoBox(v.r).props.className).toBe("task-side-peek-who");
+  expect(v.text()).toContain("T042");
+  expect(v.text()).toContain("Rename the pane noun");
+  expect(pencilOf(v.r)).toBeDefined();
+});
+
+test("part: marks is the ring and the number with no title and no pencil", () => {
+  const v = render({ task: task(), part: "marks" });
+  expect(whoBox(v.r).props.className).toBe("task-side-peek-who is-marks");
+  expect(v.text()).toContain("task-side-peek-status");
+  expect(v.text()).toContain("T042");
+  expect(v.text()).not.toContain("Rename the pane noun");
+  expect(pencilOf(v.r)).toBeUndefined();
+});
+
+test("part: title is the title and its pencil, none of the marks", () => {
+  const v = render({ task: task(), part: "title", titleId: "t-1", className: "host-seat" });
+  expect(whoBox(v.r).props.className).toBe("task-side-peek-who is-title host-seat");
+  expect(v.text()).not.toContain("task-side-peek-status");
+  expect(v.text()).not.toContain("T042");
+  expect(titleSpan(v.r)!.props.id).toBe("t-1");
+  expect(pencilOf(v.r)).toBeDefined();
+});

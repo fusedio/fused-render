@@ -663,6 +663,33 @@ export const PEEK_HEAD_DROPS = [
 ] as const;
 
 /**
+ * THE SHARED TASK HEAD'S LADDER (shell/TaskHead.tsx; design.md, "One task head,
+ * everywhere"). The peek's one rung above is its first; the rest are what a
+ * head that also carries a place and a number gives up, in the order they can
+ * be spared:
+ *
+ *   1. the ↗ Open door — an act, so it reappears in the ⋮ (`foldedOpen`);
+ *   2. the place (PlaceTags / the project) — a fact the page around says too;
+ *   3. the TASK-nnn number — the ring and the title still name the task;
+ *   4. the title leaves the row for a line of its own (`stacked: "auto"`),
+ *      so a head at its narrowest is two short rows rather than a title
+ *      ellipsised to nothing.
+ *
+ * THE CHIPS ARE ON NO RUNG: the worktree pill is a door the shared head is the
+ * only home for, so it SHRINKS (styles/task-head.css) rather than leaves. Nor
+ * are the lead corner, the chevrons, the ring and the ⋮: the way out of a
+ * container and the way to its actions are what a narrow one must keep.
+ * The selectors document which seat each rung folds; the stylesheet
+ * (styles/task-head.css) does the folding, cumulatively, off `data-fit`.
+ */
+export const TASK_HEAD_DROPS = [
+  ".task-head-open",
+  ".task-head-place",
+  ".task-side-peek-id",
+  ".task-head-title-seat",
+] as const;
+
+/**
  * WATCH ONE ROW AND ANSWER HOW MANY OF ITS SEATS HAVE TO FOLD — the engine
  * under both `useToolbarFit` and the peek header's fit, parameterised only by
  * the ladder.

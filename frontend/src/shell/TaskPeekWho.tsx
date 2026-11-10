@@ -25,7 +25,8 @@ import { TaskStar } from "@platform/ui/TaskStar";
 import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { columnLabel } from "./schedule-lib";
 import { pokeTasks } from "./tasksPulse";
-import { StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
+import { QueueCaptionText, StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
+import type { QueueCaption } from "@platform/lib/queue";
 import {
   BACKGROUND_LABEL,
   basename,
@@ -89,8 +90,32 @@ function renamable(task: Task): boolean {
  * automatic title back. Same draft / busy / error shape as the Current apps
  * rename. `rename` is injectable so a test needs no network.
  */
-export function TaskPeekWho({ task, running = false, bare = false, rename = renameTask, star = false }: {
+export function TaskPeekWho({
+  task,
+  running = false,
+  bare = false,
+  rename = renameTask,
+  star = false,
+  part = "all",
+  className,
+  titleId,
+}: {
   task: Task;
+  /**
+   * WHICH HALF OF THE BLOCK, for a head that has folded its title onto a row of
+   * its own (shell/TaskHead `stacked`): `"marks"` is the ring, the agent mark,
+   * the star and the number with no title; `"title"` is the title and its
+   * rename pencil with none of the marks. `"all"` — the default — is the block
+   * every caller has always drawn, byte for byte.
+   */
+  part?: "all" | "marks" | "title";
+  /** Extra class on the block's own box (TaskHead marks the seat its ladder
+   *  folds away). Absent: the class list every caller has always had. */
+  className?: string;
+  /** An `id` on the title's own span — the shared head's `titleId`, which a
+   *  `Modal` names its dialog by (`aria-labelledby`). On the TITLE and not the
+   *  block, so the dialog's name is the task's title and not "Rename task". */
+  titleId?: string;
   /** Title only: no ring, agent mark or task number (the chat in a side pane,
    *  where the width is the title's). */
   bare?: boolean;
@@ -161,9 +186,17 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
   // …and a finished turn whose chat still holds a live background job wears the
   // List row's blue "Background" ring (tasks-lib.liveJobRow).
   const background = !running && liveJobRow(task);
+  const showMarks = !bare && part !== "title";
+  const showTitle = part !== "marks";
   return (
-    <div className="task-side-peek-who">
-      {bare ? null : (
+    <div
+      className={
+        "task-side-peek-who" +
+        (part === "all" ? "" : ` is-${part}`) +
+        (className ? ` ${className}` : "")
+      }
+    >
+      {!showMarks ? null : (
         <>
       <span
         className="task-side-peek-status"
@@ -180,10 +213,13 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
       <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
         </>
       )}
-      {draft === null ? (
+      {!showTitle ? null : draft === null ? (
         <>
           <span
             className="task-side-peek-title"
+            // …and the heading role the dialog's `h2` carried before the
+            // shared head replaced it (Modal `head`).
+            {...(titleId ? { id: titleId, role: "heading", "aria-level": 2 } : {})}
             title={title}
             onDoubleClick={canRename ? startRename : undefined}
           >
@@ -263,6 +299,49 @@ export function TaskPeekProject({ task, home = "" }: { task: Task; home?: string
   return (
     <span className="task-side-peek-project" title={tildePath(task.project, home)}>
       {basename(task.project)}
+    </span>
+  );
+}
+
+/**
+ * WHERE THIS CHAT STANDS IN ITS FOLDER'S LINE — "after TASK-046 | 2nd".
+ *
+ * THE TASKS ROW'S OWN MARKUP, classes and all (`tasks-row-queue` /
+ * `tasks-queue-text`, styles/tasks.css, which `shell.css` loads for every page —
+ * the chat draws inside that document). The words are `queueCaption`'s, the
+ * pointer's title is the row's, and the ink is the row's muted register: one
+ * fact, one sentence, one look, wherever a reader meets it.
+ *
+ * NO ⤒ AND NO SECOND COLOUR, for the reason the row and the card dropped them
+ * (Akshil, 2026-09-19): a skip changes the ORDER, which this sentence prints,
+ * and nothing about it is a highlight.
+ *
+ * THE HEADER IS NOT A ROW, so there is nothing for a press on the words to open
+ * — only the id is a door, and it is the same `<a>` the list draws.
+ *
+ * IT IS NOT THE USAGE LIMIT'S SEAT any more (`.c-tb-paused`, which keeps its one
+ * job): that span is Blocked's red at the right end of the line, and a queued
+ * chat is neither blocked nor at the end of anything — it is a task with a place
+ * in a line, and the place belongs beside the name it is a place for.
+ *
+ * `aria-live="polite"`: an ambient state, mentioned when the reader next comes up
+ * for air. The ring beside it already says "Queued" out loud.
+ *
+ * LIVES HERE, beside the identity block it trails, since 2026-11-10: the chat's
+ * Topbar and the shared task head (shell/TaskHead) both draw it, and the chat
+ * may import this module (scripts/check-boundaries.mjs) where the head may not
+ * import the chat's.
+ */
+export function QueuedCaption({ line }: { line: QueueCaption }) {
+  return (
+    <span
+      className="tasks-row-queue"
+      data-hint={line.aheadTitle || line.text}
+      aria-live="polite"
+    >
+      <span className="tasks-queue-text">
+        <QueueCaptionText queue={line} />
+      </span>
     </span>
   );
 }

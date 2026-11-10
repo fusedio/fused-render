@@ -143,10 +143,15 @@ describe("the surfaces that say them", () => {
     // OFF THIS CHAT'S OWN ROW, not off the scheduled-message card's (Bugbot
     // PR #1124): that row is only fetched while a card is drawn, so a session
     // that hit the limit with nothing waiting behind it had none at all.
-    // …and asked only under the flag and only where the header is drawn: the
-    // hook is one listing read per instance, and a cards wall mounts a dozen.
+    // …and asked only under the flag and only where the header is drawn — the
+    // chat's own, or a host head's chip seat (`headChipsHost`, which seats the
+    // same span): the hook is one listing read per instance, and a cards wall
+    // mounts a dozen.
     expect(CHAT).toContain(
-      'const limitWord = useLimitWord(queueOn && showHead ? taskKey : "");',
+      'const limitWord = useLimitWord(queueOn && (showHead || !!props.headChipsHost) ? taskKey : "");',
+    );
+    expect(CHAT.slice(CHAT.indexOf("props.headChipsHost ? ("))).toContain(
+      '<span className="c-tb-paused" aria-live="polite">',
     );
     expect(LIMIT_HOOK).toContain("usageLimitStatusWord(row)");
     expect(LIMIT_HOOK).toContain("TASKS_CHANGED_EVENT");

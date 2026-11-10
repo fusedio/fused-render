@@ -62,6 +62,7 @@
    own fill), and it beats them by being later — not by being more specific and
    not with `!important`. */
 @import "./styles/task-peek.css";
+@import "./styles/task-head.css";
 /* After the whole tasks family: the app page (/apps/<slug>, D488) hosts the
    Tasks page inside its Tasks tab and adds only the header and frame around it. */
 @import "./styles/app-page.css";

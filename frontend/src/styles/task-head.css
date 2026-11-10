@@ -1,0 +1,307 @@
+/* ONE TASK HEAD, EVERYWHERE (shell/TaskHead.tsx; design.md, "One task head,
+   everywhere"). The side panel's head (task-peek.css `.task-side-peek-head`)
+   under its own names, so every task view — the Tasks page's panel, the rail's
+   Tasks card, the New task card's chat, the Cards popup — draws the same row
+   at the same height. The old `.task-side-peek-*` rules stay in task-peek.css
+   while the flag keeps the old heads alive (PR 4 deletes them).
+
+   One 44px line: [lead][↑][↓] · who · [queue][status][place] · [chips][seats]
+   [↗ Open][⋮]. Only the title flexes; everything else is a mark or a control.
+   A head whose ladder has reached its last rung (or that pins `stacked`) is
+   two rows: the marks and controls, then the title on a line of its own. */
+:root {
+  --task-head-h: 44px;
+}
+
+.task-head {
+  flex: 0 0 auto;
+  min-height: var(--task-head-h);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.task-head-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--task-head-h);
+  min-width: 0;
+}
+
+/* Holds the middle open while there is no task yet, so the two clusters do not
+   slide together and back as one lands. */
+.task-head-idle {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.task-head-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* The static title (the card's list head: "Tasks") — the identity block's
+   title type, one line, ellipsised. */
+.task-head-title-static {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The paused word — a fact, muted, never shimmering (it is the one state whose
+   whole content is that nothing is moving). */
+.task-head-status {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.task-head .tasks-row-queue {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.task-head-place {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+}
+
+/* Everything that can be DONE, pushed to the row's end — so a short static
+   title and a missing task never pull the controls into the middle. */
+.task-head-marks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 0 1 auto;
+  margin-left: auto;
+}
+/* Only the chips give way inside it; every control keeps its size. */
+.task-head-marks > :not(.task-head-chips) {
+  flex-shrink: 0;
+}
+
+/* THE CHIPS — the chat's worktree pill (portaled in from the chat, ChatMount
+   `headChipsHost`) and the task's PR chip — the way the slim peek line drew
+   them (chat.css `.chat-peek-head .c-topbar`): one line. ON NO RUNG of the
+   ladder — the pill has no other home in this head — so the seat SHRINKS and
+   the pill ellipsises inside it instead. An empty seat takes no gap. */
+.task-head-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.task-head-chips:not(:has(> :not(.task-head-chips-host))):not(:has(> .task-head-chips-host > *)) {
+  display: none;
+}
+.task-head-chips-host {
+  display: contents;
+}
+.task-head-chips .chat-worktree-menu {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: 0;
+}
+.task-head-chips .chat-worktree-btn {
+  min-width: 0;
+  max-width: 100%;
+}
+.task-head-chips .chat-worktree-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: 0;
+  overflow: hidden;
+  color: var(--c-fg);
+  border-color: var(--c-border-strong);
+}
+/* The usage limit's word ("paused · resumes 4:00 AM"), portaled in by the chat
+   after its worktree pieces — the slim line's own `.c-tb-paused`, kept whole. */
+.task-head-chips .c-tb-paused {
+  flex: 0 0 auto;
+}
+.task-head-chips .task-pr-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.task-head-chips .task-pr-chip,
+.task-head-chips .task-pr-more {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  white-space: nowrap;
+  background: none;
+  border: 1px solid var(--c-border, var(--border));
+  border-radius: 999px;
+  color: var(--c-dim, var(--fg-muted));
+  text-decoration: none;
+  cursor: pointer;
+}
+.task-head-chips .task-pr-chip:hover,
+.task-head-chips .task-pr-more:hover {
+  color: var(--c-fg, var(--fg));
+  border-color: var(--c-border-strong, var(--fg-faint));
+}
+
+/* ↗ OPEN — a word behind a mark, a quiet ghost link: nothing at rest, a wash
+   and full ink on hover (task-peek.css `.task-side-peek-open`). Sized off the
+   icon button so it sits on the row's baseline beside the ⋮. */
+.task-head-open {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--peek-icon-w);
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.task-head-open:hover {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+
+/* THE ONE ICON BUTTON — lead (× or ←) and the chevrons alike. */
+.task-head-btn {
+  width: var(--peek-icon-w);
+  height: var(--peek-icon-w);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.task-head-btn:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+.task-head-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* The chat's own ⋮ (apps/claude/ui/Kebab), at the head's icon size and wash —
+   level with the lead and the chevrons. */
+.task-head-kebab {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.task-head-kebab .c-kebabbtn {
+  width: var(--peek-icon-w);
+  height: var(--peek-icon-w);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.task-head-kebab .c-kebabbtn:hover {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+
+/* THE TITLE'S OWN ROW (rung 5, or `stacked` pinned): the identity block's
+   title and pencil alone, under the marks. */
+.task-head-titlerow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 22px;
+  padding: 0 2px 6px 6px;
+}
+.task-head-titlerow .task-side-peek-who {
+  flex: 1 1 auto;
+}
+
+/* THE LADDER (shell/row-fit.ts `TASK_HEAD_DROPS`), cumulative: each rung keeps
+   every fold below it. Measured, never a breakpoint. Rung 4 is drawn by the
+   component (the title moves rows), so it has no rule of its own here; the
+   chips are on no rung — they shrink (above). */
+.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"]) .task-head-open {
+  display: none;
+}
+.task-head:is([data-fit="2"], [data-fit="3"], [data-fit="4"]) .task-head-place {
+  display: none;
+}
+.task-head:is([data-fit="3"], [data-fit="4"]) .task-side-peek-id {
+  display: none;
+}
+
+/* IN A MODAL (Modal `head`): the head is the dialog's first row, in place of
+   `.modal-head`, and keeps the dialog's own corner radius clear. */
+.modal-dialog > .modal-head-slot > .task-head {
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+}
+
+/* THE TITLE KEEPS ITS FLOOR (row-fit.ts `FIT_TEXT_FLOOR`, 72px). The fit engine
+   charges a shrinking text seat `min(width, 72)`, so a title that siblings had
+   already crushed to 0 counted as 0 and the row "fit" with no title in it
+   (QA, 2026-11-10: a worktree pill and a PR chip ate the whole line). With the
+   floor stated in CSS the row overflows instead, the ladder sees it and folds;
+   the chips cap below so a long branch name shares the line rather than
+   taking it. */
+.task-head-row .task-side-peek-who .task-side-peek-title {
+  min-width: 72px;
+}
+.task-head-chips {
+  max-width: 220px;
+}
+/* …and the pill keeps a readable stub ("wor…") rather than collapsing to its
+   outline; the PR chips are short and never shrink. */
+.task-head-chips .chat-worktree-btn {
+  min-width: 56px;
+}
+.task-head-chips .task-pr-chips {
+  flex: 0 0 auto;
+}

@@ -192,6 +192,14 @@ export interface ChatMountProps {
   headerInPeek?: boolean;
   /** With `headerInPeek`: host node for the slim header's right-hand seat. */
   headerExtra?: ReactNode;
+  /**
+   * THE HOST'S HEAD HAS A SEAT FOR THE CHAT'S CHIPS (shell/TaskHead
+   * `chipsRef`): the worktree menu (or the hint chip naming where the work
+   * moved) and `headerExtra` are portaled into this node, and the chat draws
+   * no top bar of its own — the host's head is the one line. Null while the
+   * host's head has not mounted its seat yet.
+   */
+  headChipsHost?: HTMLElement | null;
   /** Draw the task's PR chip in the chat header (the explorer's Claude pane).
    *  The peek and cards hosts pass `headerExtra` themselves instead. */
   prChip?: boolean;
@@ -352,6 +360,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.pageRoot !== undefined ? { pageRoot: props.pageRoot } : {})}
         {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
         {...(props.headerExtra ? { headerExtra: props.headerExtra } : {})}
+        {...(props.headChipsHost ? { headChipsHost: props.headChipsHost } : {})}
         {...(props.prChip ? { prChip: true } : {})}
         params={props.paramsSource === "url" ? "url" : memory}
         // WHOSE `?model=`/`?effort=` the composer is looking at. These two props

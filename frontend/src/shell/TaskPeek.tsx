@@ -98,6 +98,7 @@ import {
   taskHref,
   pageDoorLabel,
   taskChatTarget,
+  taskColumn,
 } from "./tasks-lib";
 import { useChatRecapEnabled } from "@apps/claude/feature-flag";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
@@ -134,6 +135,14 @@ import { publishPeekSession } from "@platform/lib/peek-session";
 import type { BreakoutControl } from "@apps/claude/ClaudeChat";
 import { MessagesSquare } from "lucide-react";
 import { breakoutOpener } from "@platform/lib/breakouts";
+// THE SHARED TASK HEAD (design.md, "One task head, everywhere"), behind its
+// flag: with it on, this panel's head is `TaskHead` and its ⋮ is the chat's own
+// `Kebab`; with it off, the head below is the one this panel has always drawn.
+import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { TaskHead, foldedOpen } from "./TaskHead";
+import { Kebab } from "@apps/claude/ui/Kebab";
+import { AgentProvider } from "@apps/claude/ui/agent-context";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 
 /** How long an EMPTY task list is given to turn out to be a list that has not
  *  arrived yet, before a `?peek=` naming nothing is treated as naming nothing
@@ -640,9 +649,16 @@ export function TaskPeek({
   // Whether the arrows have anywhere to go, re-read whenever the open task or
   // the set changes — the walk is the DOM's, so it cannot be memoised on props.
   const [ends, setEnds] = useState<{ prev: boolean; next: boolean }>({ prev: false, next: false });
+  /** THE LAST VISIBLE ORDER THAT STILL HELD THE OPEN TASK — the shared head's
+   *  ⋮ (`Kebab`) reports an archive or a delete only once it has happened, and
+   *  by then the poll may have dropped the row; `nextAfterRemoval` needs an
+   *  order that still names it to find the neighbour (the legacy menu captured
+   *  the order at the press instead). */
+  const lastOrderWithKey = useRef<readonly string[]>([]);
   useEffect(() => {
     if (key === null) return;
     const list = visibleOrder();
+    if (list.includes(key)) lastOrderWithKey.current = list;
     setEnds({
       prev: stepPeekKey(list, key, -1) !== null,
       next: stepPeekKey(list, key, 1) !== null,
@@ -652,6 +668,13 @@ export function TaskPeek({
   // THE HEADER'S OWN FIT LADDER (shell/row-fit.ts `PEEK_HEAD_DROPS`): measured,
   // never a breakpoint, and armed only while the panel is actually up.
   const [headFit, headRef] = useStripFit(PEEK_HEAD_DROPS, key !== null);
+  const unified = useTaskHeadUnified();
+  /** The shared head's chip seat, for the chat's worktree menu to portal into
+   *  (ChatMount `headChipsHost`). State, so the chat re-renders once it lands. */
+  const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  /** The shared head's fit, as its last render reported it — read by the
+   *  legacy menu for a task with no session yet, which keeps that menu. */
+  const unifiedFit = useRef(0);
 
   // ---- the keyboard ----------------------------------------------------------
   /**
@@ -1025,7 +1048,7 @@ export function TaskPeek({
     const items: MenuEntry[] = [];
     // BREAKOUT, from the chat's own report: the peek's head hides the chat's ⋮.
     items.push(...breakoutMenuEntries(breakoutCtl));
-    if (SHOW_PAGE_DOOR && page && headFit >= PEEK_HEAD_DROPS.length) {
+    if (SHOW_PAGE_DOOR && page && (unified ? foldedOpen(unifiedFit.current) : headFit >= PEEK_HEAD_DROPS.length)) {
       items.push({ label: pageDoorLabel(task), icon: ICON_OPEN_DOOR, onClick: openAsPage });
       items.push("separator");
     }
@@ -1113,6 +1136,99 @@ export function TaskPeek({
     return items;
   };
 
+  /**
+   * THE SHARED HEAD'S ⋮ — the chat's own `Kebab`, the same props the rail's
+   * Tasks card gives it, so the panel's menu reads exactly as every other task
+   * menu does (design.md: "⋮ is always Kebab"). What is this panel's own rides
+   * in `extraItems`: the folded Open door, and the door greyed with why when
+   * the folder is gone. Full screen is the hop to the page, then the Claude
+   * panel filling the window — new here (Decisions, 4).
+   *
+   * A TASK WITH NO SESSION (a message not sent yet) has no `Kebab` — there is
+   * nothing for it to read — and keeps this panel's own menu, so Delete of a
+   * never-run message is not lost.
+   */
+  const unifiedKebab = (t: Task, fit: number) => {
+    if (!t.session_id) {
+      return (
+        <button
+          type="button"
+          className="task-head-btn task-side-peek-kebab"
+          // The chat's ⋮'s own words (Kebab), so the trigger reads the same
+          // whichever menu is behind it.
+          aria-label="More options"
+          data-hint="More options"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenuAt({ x: r.right - 200, y: r.bottom + 4 });
+          }}
+        >
+          {ICON_DOTS}
+        </button>
+      );
+    }
+    const sid = t.session_id;
+    const fsHref = gone ? null : taskHref(t);
+    const column = taskColumn(t);
+    return (
+      <AgentProvider backend={t.backend ?? ""}>
+        <Kebab
+          key={t.key}
+          file={taskChatTarget(t)}
+          sessionId={sid}
+          running={column === "in_progress" || column === "queued"}
+          asking={column === "needs_attention"}
+          queued={column === "queued"}
+          // The TASK KEY this ⋮ was built for, not the callback's session
+          // id: the visible order (`nextAfterRemoval`) is keyed by task key,
+          // and a session id is not one.
+          onArchived={() => {
+            onReload?.();
+            advancePast(t.key, lastOrderWithKey.current);
+          }}
+          onErased={() => {
+            notify({ title: `Deleted ${shortTaskId(t.task_id)}`, tone: "info" });
+            onReload?.();
+            advancePast(t.key, lastOrderWithKey.current);
+          }}
+          {...(fsHref && opensInSidePane(fsHref)
+            ? {
+                fullScreen: {
+                  on: false,
+                  onToggle: () => {
+                    // The request is keyed to the page the side-pane chat
+                    // mounts on, so it is made once the hop has landed.
+                    closePeek({ push: false });
+                    void navigateUrl(fsHref).then((went) => {
+                      if (went !== false) requestSideMaximized(sid);
+                    });
+                  },
+                },
+              }
+            : {})}
+          {...(breakoutCtl?.available
+            ? { breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle } }
+            : {})}
+          extraItems={[
+            ...(SHOW_PAGE_DOOR && page && foldedOpen(fit)
+              ? [{ label: pageDoorLabel(t), icon: ICON_OPEN_DOOR, onClick: openAsPage }]
+              : []),
+            ...(SHOW_PAGE_DOOR && gone
+              ? [
+                  {
+                    label: pageDoorLabel(t),
+                    icon: ICON_OPEN_DOOR,
+                    disabled: true,
+                    onClick: () => notify({ title: MISSING_FOLDER_TOAST, tone: "error" }),
+                  },
+                ]
+              : []),
+          ]}
+        />
+      </AgentProvider>
+    );
+  };
+
   // The same line the row and the chat header print (TaskPeekWho).
   const title = useTaskHeadline(task);
 
@@ -1178,6 +1294,21 @@ export function TaskPeek({
             `data-fit` is measured, never a breakpoint (shell/row-fit.ts): at
             the narrowest widths the Open door folds —
             and the door reappears in the ⋮ so the act is never unreachable. */}
+        {unified ? (
+          <TaskHead
+            lead={{ kind: "close", label: "Close the task panel", hint: "Close · Esc", onPress: () => closePeek() }}
+            nav={{ prev: ends.prev, next: ends.next, step: (d) => void step(d), keyHints: true }}
+            task={task}
+            fitEnabled={key !== null}
+            chipsRef={setChipsHost}
+            chips={task ? <TaskPrChip task={task} /> : null}
+            open={SHOW_PAGE_DOOR && page && task ? { href: page, label: pageDoorLabel(task), onOpen: () => openAsPage() } : null}
+            kebab={(fit) => {
+              unifiedFit.current = fit;
+              return task ? unifiedKebab(task, fit) : null;
+            }}
+          />
+        ) : (
         <header className="task-side-peek-head" ref={headRef} data-fit={headFit}>
           <div className="task-side-peek-acts">
             {/* CLOSE, IN EVERY MODE (Akshil, 2026-09-14 — design.md, Polish
@@ -1277,6 +1408,7 @@ export function TaskPeek({
             </div>
           )}
         </header>
+        )}
 
         <div className="task-side-peek-body" ref={bodyRef}>
           {showPreview && previewSrc && (
@@ -1409,8 +1541,11 @@ export function TaskPeek({
                 {...(anchor ? { msgAnchor: anchor } : {})}
                 chatOnly
                 peek
-                headerInPeek
-                headerExtra={<TaskPrChip task={task} />}
+                // The shared head seats the chat's worktree pieces itself
+                // (`headChipsHost`); the old head keeps the chat's slim line.
+                {...(unified
+                  ? { headChipsHost: chipsHost }
+                  : { headerInPeek: true, headerExtra: <TaskPrChip task={task} /> })}
                 paramsSource="memory"
                 // THE RECAP OPT-IN (ChatMount `recap`): the peek is the one chat
                 // the reader opened on this page, so it gets the "While you were

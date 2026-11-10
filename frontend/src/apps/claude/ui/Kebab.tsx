@@ -321,6 +321,25 @@ export interface KebabProps {
   /** BREAKOUT PICK MODE's door (the bar's old button). Passed only where a
    *  breakout can start; absent, no item is drawn. */
   breakout?: { picking: boolean; onToggle: () => void };
+  /**
+   * THE HOST'S OWN DOORS, in the first group after Full screen and Breakout
+   * (shell/TaskHead; design.md "One task head, everywhere"). The shared task
+   * head folds its ↗ Open into this menu when the row runs out of width, and a
+   * task whose folder is gone shows the same door greyed with why — the host
+   * knows both facts, this menu only seats them. Absent or empty: the menu it
+   * always was.
+   */
+  extraItems?: KebabExtraItem[];
+}
+
+/** One host row (`KebabProps.extraItems`): a label, its mark, the press. */
+export interface KebabExtraItem {
+  label: string;
+  icon?: React.ReactNode;
+  onClick(): void;
+  disabled?: boolean;
+  title?: string;
+  danger?: boolean;
 }
 
 export function Kebab({
@@ -337,6 +356,7 @@ export function Kebab({
   fullScreen,
   breakout,
   asking = false,
+  extraItems,
 }: KebabProps) {
   const [open, setOpen] = useState(false);
   const [erasing, setErasing] = useState(false);
@@ -705,7 +725,7 @@ export function Kebab({
           {/* ONE ORDER, both task menus (platform/lib/task-actions): this
               surface's own door, then the hand-offs, then filing — a separator
               between groups, an icon on every row. */}
-          {fullScreen || breakout ? (
+          {fullScreen || breakout || extraItems?.length ? (
             <>
               {fullScreen ? (
                 <DropdownMenuItem className="c-kebab-opt" onClick={fullScreen.onToggle}>
@@ -723,6 +743,19 @@ export function Kebab({
                   {breakout.picking ? "Cancel breakout pick" : "Breakout…"}
                 </DropdownMenuItem>
               ) : null}
+              {extraItems?.map((item, i) => (
+                <DropdownMenuItem
+                  key={`${i}:${item.label}`}
+                  className={"c-kebab-opt" + (item.danger ? " is-danger" : "")}
+                  {...(item.danger ? { variant: "destructive" as const } : {})}
+                  disabled={!!item.disabled}
+                  title={item.title}
+                  onClick={() => item.onClick()}
+                >
+                  <span className="c-kebab-icon">{item.icon}</span>
+                  {item.label}
+                </DropdownMenuItem>
+              ))}
               {showHandoffs || showFiling ? <DropdownMenuSeparator className="c-kebab-sep" /> : null}
             </>
           ) : null}

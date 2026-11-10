@@ -284,6 +284,9 @@ export interface ClaudeChatProps {
   headerInPeek?: boolean;
   /** Host-supplied node for the slim header's right-hand seat (a PR chip). */
   headerExtra?: ReactNode;
+  /** The host head's chip seat (ChatMount `headChipsHost`): the worktree menu
+   *  or hint and `headerExtra` portal there, and no Topbar is drawn. */
+  headChipsHost?: HTMLElement | null;
   /** Draw `TaskPrChip` for the open task in the header, ahead of any
    *  `headerExtra` (the explorer's pane; TaskPeek passes its own chip). */
   prChip?: boolean;
@@ -5575,7 +5578,9 @@ function ChatBody(props: ChatBodyProps) {
    *  comeback's own POST rings), floored at five seconds. */
   // Only where the header is drawn, and only under the flag: the read is one
   // listing per hook instance, and a cards wall mounts a dozen.
-  const limitWord = useLimitWord(queueOn && showHead ? taskKey : "");
+  // …or where a host's head seats it (`headChipsHost`): the paused word rides
+  // the chips there, as it rode the slim line.
+  const limitWord = useLimitWord(queueOn && (showHead || !!props.headChipsHost) ? taskKey : "");
   /**
    * THE LISTING'S ROW FOR THE CONVERSATION ON SCREEN, for the header
    * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
@@ -6093,6 +6098,26 @@ function ChatBody(props: ChatBodyProps) {
                     : null
                 }
               />
+            ) : props.headChipsHost ? (
+              // THE HOST'S HEAD IS THE ONE LINE (ChatMount `headChipsHost`):
+              // the worktree pieces the slim line used to seat — the same
+              // menu-or-hint rule — and the host's extra, portaled into the
+              // host's chip seat, and no top bar of the chat's own.
+              createPortal(
+                <>
+                  {shownHint ? null : worktreeMenu}
+                  <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
+                  {/* THE PLAN'S PAUSE, the slim line's own span: a chat the
+                      usage limit stopped still says "paused · resumes …". */}
+                  {limitWord ? (
+                    <span className="c-tb-paused" aria-live="polite">
+                      {limitWord}
+                    </span>
+                  ) : null}
+                  {props.headerExtra}
+                </>,
+                props.headChipsHost,
+              )
             ) : null}
             <TasksContext.Provider value={tasksById}>
             <Transcript

@@ -538,6 +538,15 @@ const ENTRIES = [
     keywords: "rail hover click preview peek card chat collapsed claude panel popover canvas app explorer",
     renderOnly: true,
   },
+  {
+    id: "tasks-unified-head",
+    group: "features",
+    section: "Sidebar",
+    label: "Unified task header",
+    description: "One header for every task view: the Tasks page panel, the rail cards and the New task card.",
+    keywords: "task header unified head close back prev next status star open kebab card panel rail",
+    renderOnly: true,
+  },
   // FAVOURITE CHATS (owner, 2026-11-03): the star on that preview card, so
   // a child of it — nothing to star without the card. Always shown, though:
   // a stored "on" under a preview switched off must stay reachable.

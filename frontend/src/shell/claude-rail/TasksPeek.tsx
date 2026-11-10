@@ -55,8 +55,13 @@ import type { BreakoutControl } from "@apps/claude/ClaudeChat";
 import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { readListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
-import { cardTitleLine, taskChatTarget, taskColumn, taskHref } from "@shell/tasks-lib";
+import { cardTitleLine, pageDoorLabel, taskChatTarget, taskColumn, taskHref } from "@shell/tasks-lib";
 import { TaskPeekWho } from "@shell/TaskPeekWho";
+// THE SHARED TASK HEAD (design.md, "One task head, everywhere"), behind its
+// flag: both of this card's heads — the list's and the chat's — on one chassis
+// at one height, so the list↔chat swap no longer jumps 26→44px.
+import { TaskHead, foldedOpen } from "@shell/TaskHead";
+import { useTaskHeadUnified } from "@shell/task-head-flag";
 import {
   CardPeekContext,
   PEEK_ITEM_ATTR,
@@ -112,6 +117,10 @@ export function TasksPeek() {
   // 2026-11-09). `setState` is stable, so the chat's report effect is not
   // re-fired by a fresh callback.
   const [breakoutCtl, setBreakoutCtl] = useState<BreakoutControl | null>(null);
+  const unified = useTaskHeadUnified();
+  /** The shared head's chip seat (ChatMount `headChipsHost`): the card's chat
+   *  shows its worktree pill there — it showed none before. */
+  const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (!up) setChat(null);
   }, [up]);
@@ -188,7 +197,82 @@ export function TasksPeek() {
     >
       {(api) => (
         <>
-          {chat ? (
+          {unified ? (
+            chat ? (
+              <TaskHead
+                key="chat"
+                className="claude-rail-tasks-chat-head"
+                lead={{ kind: "back", label: "Back to tasks", onPress: () => setChat(null), ref: api.backRef }}
+                nav={{ prev: chatEnds.prev, next: chatEnds.next, step: stepChat }}
+                task={task}
+                chipsRef={setChipsHost}
+                open={
+                  task && taskHref(task)
+                    ? { href: taskHref(task)!, label: pageDoorLabel(task), onOpen: (h) => api.openPage(h) }
+                    : null
+                }
+                // A folded ↗ Open needs a ⋮ to land in: no session, no ⋮,
+                // so the ladder stands down rather than hide the only door.
+                fitEnabled={!!task?.session_id}
+                kebab={(fit) => task?.session_id ? (
+                  <AgentProvider backend={task.backend ?? ""}>
+                    <Kebab
+                      key={task.key}
+                      file={taskChatTarget(task)}
+                      sessionId={task.session_id}
+                      running={taskColumn(task) === "in_progress" || taskColumn(task) === "queued"}
+                      asking={taskColumn(task) === "needs_attention"}
+                      queued={taskColumn(task) === "queued"}
+                      onErased={() => setChat(null)}
+                      onArchived={() => setChat(null)}
+                      {...(taskHref(task) && opensInSidePane(taskHref(task)!) ? {
+                        fullScreen: {
+                          on: false,
+                          onToggle: () => {
+                            const href = taskHref(task);
+                            if (!href) return;
+                            const sid = task.session_id;
+                            void api.openPage(href).then((went) => {
+                              if (went !== false) requestSideMaximized(sid);
+                            });
+                          },
+                        },
+                      } : {})}
+                      {...(breakoutCtl?.available ? {
+                        breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle },
+                      } : {})}
+                      // THE FOLDED DOOR (TaskHead rung 1): the row has hidden
+                      // ↗ Open, so the ⋮ carries it.
+                      extraItems={(() => {
+                        const href = taskHref(task);
+                        return foldedOpen(fit) && href
+                          ? [{
+                              label: pageDoorLabel(task),
+                              icon: <ArrowUpRight size={16} strokeWidth={1.6} aria-hidden="true" />,
+                              onClick: () => void api.openPage(href),
+                            }]
+                          : [];
+                      })()}
+                    />
+                  </AgentProvider>
+                ) : null}
+              />
+            ) : (
+              <TaskHead
+                key="list"
+                className="claude-rail-tasks-list-head"
+                lead={{ kind: "close", label: "Close Tasks", hint: "Close", onPress: api.close, ref: api.closeRef }}
+                task={null}
+                title="Tasks"
+                // No ⋮ to carry a folded door, and "Open tasks" is the only
+                // one: this head never folds.
+                fitEnabled={false}
+                // "Open tasks", not the other cards' "Open" (owner,
+                // 2026-11-08): this door is the page's, not a chat's.
+                open={{ href: "/tasks", label: "Open the Tasks page", word: "Open tasks", onOpen: () => api.openPage() }}
+              />
+            )
+          ) : chat ? (
             // THE SIDE PEEK'S HEAD, Back in the ×'s corner (`chatOrder` above).
             <header className="task-side-peek-head claude-rail-tasks-chat-head">
               <div className="task-side-peek-acts">
@@ -343,6 +427,7 @@ export function TasksPeek() {
                     onNavigate={(href) => void navigateUrl(href)}
                     smallCard
                     smallCardShown={api.visible}
+                    {...(unified ? { headChipsHost: chipsHost } : {})}
                   />
                 ) : (
                   <p className="claude-rail-peek-note">{listing ? "This task has no conversation yet." : "Loading…"}</p>

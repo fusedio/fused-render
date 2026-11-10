@@ -537,6 +537,15 @@ def task_favourites_enabled() -> bool:
     return read_prefs().get("task_favourites_enabled") is True
 
 
+def task_head_unified_enabled() -> bool:
+    """Whether every task view (the Tasks page side panel, the rail Tasks
+    card, the New task card, the Cards popup) draws ONE shared task header
+    instead of its own. Default off. Same idiom as `canvas_rail_peek_enabled`:
+    only a stored `true` is on.
+    """
+    return read_prefs().get("task_head_unified_enabled") is True
+
+
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
@@ -1254,6 +1263,9 @@ def _prefs_response() -> dict:
         "canvas_rail_peek": {"enabled": canvas_rail_peek_enabled()},
         # Favourite chats (`task_favourites_enabled`; off by default).
         "task_favourites": {"enabled": task_favourites_enabled()},
+        # One shared task header in every task view (`task_head_unified_enabled`;
+        # off by default).
+        "task_head_unified": {"enabled": task_head_unified_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1613,6 +1625,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["task_favourites_enabled"] = value
             changed = True
+        if "task_head_unified_enabled" in body:
+            value = body.get("task_head_unified_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'task_head_unified_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["task_head_unified_enabled"] = value
+            changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
             if not isinstance(value, bool):
@@ -1936,6 +1955,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'chat_recap_enabled', 'breakout_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
                           "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
+                          "'task_head_unified_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

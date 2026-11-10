@@ -26,6 +26,10 @@ import { ChatMount } from "@apps/claude";
 import { homePlaceholderFor, type TargetNoun } from "@apps/claude/pane/paneUrl";
 import { runAppEntry } from "@apps/claude/protocol/agent";
 import { TaskPeekWho } from "./TaskPeekWho";
+// THE SHARED TASK HEAD on the open chat (design.md, "One task head,
+// everywhere"), behind its flag; off, the chat's head below is unchanged.
+import { TaskHead, foldedOpen } from "./TaskHead";
+import { useTaskHeadUnified } from "./task-head-flag";
 import { usePlusCardHidden } from "./claude-rail/plus-card-store";
 import { useAutoReadOpenTasks, useDocumentVisible } from "./task-open-read";
 import { useTasksPulseRows } from "./tasksPulse";
@@ -5248,6 +5252,10 @@ export default function NewJobModal({
   const chatFile = liveChat ? taskChatTarget(liveChat) : landingTarget;
   const chatTitle = liveChat ? (cardTitleLine(liveChat).text || liveChat.title || "Chat") : "";
   const chatHref = liveChat ? taskHref(liveChat) : null;
+  const unified = useTaskHeadUnified();
+  /** The shared head's chip seat (ChatMount `headChipsHost`): the chat's
+   *  worktree pill shows there, as in every other task view. */
+  const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
   // MARKED READ LIKE THE TASKS CARD DOES (TasksPeek, task-open-read): the open
   // chat, while the card shows it and the window is in view.
   const chatPulse = useTasksPulseRows(landing);
@@ -5266,6 +5274,42 @@ export default function NewJobModal({
     if (onOpenChat) return onOpenChat(href);
     window.location.assign(href);
   };
+  /** THE OPEN CHAT'S ⋮ on the shared head — the same `Kebab`, with the same
+   *  props, the old head below renders inline — plus the folded ↗ Open when
+   *  the head's ladder has hidden it (`fit`, TaskHead rung 1). */
+  const chatKebab = (fit: number) => liveChat?.session_id ? (
+    <AgentProvider backend={liveChat.backend ?? ""}>
+      <Kebab
+        key={liveChat.key}
+        file={taskChatTarget(liveChat)}
+        sessionId={liveChat.session_id}
+        running={taskColumn(liveChat) === "in_progress" || taskColumn(liveChat) === "queued"}
+        asking={taskColumn(liveChat) === "needs_attention"}
+        queued={taskColumn(liveChat) === "queued"}
+        onErased={leaveChat}
+        onArchived={leaveChat}
+        {...(chatHref && opensInSidePane(chatHref) ? {
+          fullScreen: {
+            on: false,
+            onToggle: () => {
+              const sid = liveChat.session_id;
+              void Promise.resolve(openFromLanding(chatHref)).then((went) => {
+                if (went !== false && sid) requestSideMaximized(sid);
+              });
+            },
+          },
+        } : {})}
+        {...(chatBreakout?.available ? {
+          breakout: { picking: chatBreakout.picking, onToggle: chatBreakout.toggle },
+        } : {})}
+        extraItems={foldedOpen(fit) && chatHref ? [{
+          label: "Open this chat",
+          icon: <ArrowUpRight size={16} strokeWidth={1.6} aria-hidden="true" />,
+          onClick: () => void openFromLanding(chatHref),
+        }] : []}
+      />
+    </AgentProvider>
+  ) : null;
 
   return (
     <Modal
@@ -6040,6 +6084,25 @@ export default function NewJobModal({
           </>
         ),
       } : {})}
+      // …AND WITH THE SHARED HEAD ON, that whole swap is one `TaskHead` in
+      // place of the chassis' head (Modal `head`): Back, the identity, ↗ Open
+      // and the ⋮, at every task view's height.
+      {...(chatOpen && unified ? {
+        head: ({ titleId }: { titleId: string }) => (
+          <TaskHead
+            className="nt-chat-head"
+            lead={{ kind: "back", label: "Back", onPress: leaveChat }}
+            task={liveChat}
+            title={liveChat ? undefined : (name || fields.title || "New task")}
+            titleId={titleId}
+            open={chatHref ? { href: chatHref, label: "Open this chat", onOpen: (h) => openFromLanding(h) } : null}
+            chipsRef={setChipsHost}
+            // A folded ↗ Open needs the ⋮ to land in: none before a session.
+            fitEnabled={!!liveChat?.session_id}
+            kebab={chatKebab}
+          />
+        ),
+      } : {})}
     >
       {chatOpen && !chatSession && (
         <div className="nt-landing-chat nt-landing-wait">
@@ -6070,6 +6133,7 @@ export default function NewJobModal({
             onNavigate={(href) => openFromLanding(href)}
             smallCard
             smallCardShown
+            {...(unified ? { headChipsHost: chipsHost } : {})}
           />
         </div>
       )}
