@@ -52,16 +52,19 @@ import { navigateUrl } from "@platform/lib/router";
 import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import type { DoorCardStore } from "./door-card-store";
 import { useFavPeekState } from "./fav-peek-store";
+import { publishWindowABox, setSnapGuide } from "./card-snap";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import {
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
   bottomClear,
+  dragMaxWidth,
   dragResize,
   inSafeCone,
   placeClear,
   railCardSize,
   rowOf,
+  snapWidth,
   type Box,
   type ResizeEdge,
 } from "./rail-peek-lib";
@@ -214,14 +217,12 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
     if (!start || start.pointerId !== e.pointerId || !row) return;
     // Never over window B's card under it (RailPeek's own floor,
     // rail-peek-lib `bottomClear`; owner, 2026-11-08).
-    const next = dragResize(
-      start.corner,
-      start.box,
-      e.clientX - start.x,
-      e.clientY - start.y,
-      row.getBoundingClientRect(),
-      bottomClear(start.box, favBox),
-    );
+    const bounds = row.getBoundingClientRect();
+    const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, bottomClear(start.box, favBox));
+    // THE WIDTH MAGNET (card-snap.ts): to window B's card.
+    const snapped = snapWidth(asked, start.corner, favBox, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
+    setSnapGuide(snapped.guide);
+    const next = snapped.box;
     dragLast.current = next;
     setBox((prev) => (prev && sameBox(prev, next) ? prev : next));
   };
@@ -229,6 +230,7 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
     const start = dragStart.current;
     dragStart.current = null;
     setResizing(null);
+    setSnapGuide(null);
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
@@ -251,6 +253,12 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
   useEffect(() => {
     if (dragStart.current && !visible) endDrag(false);
   }, [visible]);
+  // Window A's box, for window B's grips to snap to (card-snap.ts).
+  useEffect(() => {
+    if (!visible || !box) return;
+    publishWindowABox("door:" + className, box);
+    return () => publishWindowABox("door:" + className, null);
+  }, [visible, box, className]);
   const onVisibleRef = useRef(onVisible);
   onVisibleRef.current = onVisible;
   useEffect(() => {
@@ -499,6 +507,7 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
               onLostPointerCapture={() => dragStart.current && endDrag(true)}
             />
           ))}
+        {visible && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
         <div className="claude-rail-peek-card">{children(api)}</div>
       </div>
     </>,

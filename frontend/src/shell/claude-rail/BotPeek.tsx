@@ -74,18 +74,21 @@ import type { FaceSubject } from "@apps/bots/lib/face";
 import { botStatusWords } from "./claude-rail-lib";
 import { isBotsPath } from "@apps/bots/routes";
 import { publishFavBox } from "./fav-peek-store";
+import { setSnapGuide, windowABox } from "./card-snap";
 import {
   FAV_HEIGHT,
   FAV_WIDTH,
   PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
+  dragMaxWidth,
   dragResize,
   favCardWish,
   favMaxHeight,
   inSafeCone,
   peekPlacement,
   rowOf,
+  snapWidth,
   type Box,
   type PeekWish,
   type ResizeEdge,
@@ -229,7 +232,12 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     if (!start || start.pointerId !== e.pointerId || !row) return;
-    const next = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, row.getBoundingClientRect(), start.floor, start.cap);
+    const bounds = row.getBoundingClientRect();
+    const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, start.floor, start.cap);
+    // THE WIDTH MAGNET (card-snap.ts): to window A's card.
+    const snapped = snapWidth(asked, start.corner, windowABox(), PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
+    setSnapGuide(snapped.guide);
+    const next = snapped.box;
     dragLast.current = next;
     setBox((prev) => (prev && prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height ? prev : next));
   };
@@ -237,6 +245,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     const start = dragStart.current;
     dragStart.current = null;
     setResizing(null);
+    setSnapGuide(null);
     const lastBox = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
@@ -470,6 +479,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
               onLostPointerCapture={() => dragStart.current && endDrag(true)}
             />
           ))}
+        {gripsOn && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
         <div className="claude-rail-peek-card">
           {view && subject && (
             <div className="claude-rail-peek-head">

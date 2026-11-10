@@ -330,7 +330,11 @@ import {
   statusWords,
   placeClear,
   bottomClear,
+  dragMaxWidth,
+  snapWidth,
+  type Box,
 } from "./rail-peek-lib";
+import { publishWindowABox, setSnapGuide } from "./card-snap";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import {
   dismissFavHover,
@@ -613,6 +617,13 @@ let heldBotOrder: string[] = [];
 function popBusy(rail: HTMLElement | null): boolean {
   const card = rail?.ownerDocument.querySelector(".modal-popover .modal-dialog");
   return !card || card.hasAttribute("data-busy");
+}
+
+
+/** The + popover's box as window A's (card-snap.ts) — stable, so the Modal's
+ *  publish effect runs only when the box moves. */
+function publishPlusBox(box: Box | null): void {
+  publishWindowABox("plus", box);
 }
 
 export function ClaudeRail({
@@ -2943,11 +2954,21 @@ export function ClaudeRail({
                         // bounds), never over the sidebar or the header.
                         bounds: () => rowOf(railRef.current)?.getBoundingClientRect() ?? null,
                         onResize: savePopSize,
+                        // THE WIDTH MAGNET (card-snap.ts): to window B's card.
+                        adjust: (next, edge, start) => {
+                          const row = rowOf(railRef.current)?.getBoundingClientRect();
+                          const s = snapWidth(next, edge, favBox, PEEK_MIN_WIDTH, row ? dragMaxWidth(start, row) : PEEK_MAX_WIDTH);
+                          setSnapGuide(s.guide);
+                          return s.box;
+                        },
+                        onDragEnd: () => setSnapGuide(null),
                       },
                     }
                   : {}),
                 ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
                 place: popPlace,
+                // Window A's box, for window B's grips to snap to.
+                onBox: publishPlusBox,
                 // Per rail (a hop re-places the card beside the new rail).
                 placeKey: popPlaceKey,
                 // The row reshaping (the sidebar collapsing) re-places it.
