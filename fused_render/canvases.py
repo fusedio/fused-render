@@ -2525,6 +2525,7 @@ class _SyncManager:
         # Disk readings handed to the page, by rev, until the frame acks.
         self._delta_views: dict[int, dict] = {}
         self._embed_applied: dict[tuple[int, int], dict] = {}
+        self._gen_applied_max: dict[int, int] = {}
         # Causality between the two legs (audit 2026-11-10). Per view node,
         # (intro_rev, row_rev): the delta rev whose ack brought the node into
         # the view, and the one that last changed its row there (0 = it came
@@ -4409,6 +4410,15 @@ class _SyncManager:
         done = self._embed_applied.get((gen, seq))
         if done is not None:
             return done
+        if gen != self._embed_gen and seq <= self._gen_applied_max.get(gen, -1):
+            # An OLDER generation's pair at or below the highest seq applied
+            # in it: applied, or superseded by a later full state of that
+            # generation — a replay whose ack was pruned from
+            # `_embed_applied`. Answered stale, and the generation stays put:
+            # flipped back, the view, revs and (on the next newer post) the
+            # hard-pull fences would all reset for a body that is no news.
+            return {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                    "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
         if gen != self._embed_gen:
             newer = gen > self._embed_gen
             self._embed_gen = gen
@@ -4420,9 +4430,10 @@ class _SyncManager:
             if self._fileless:
                 self._reconcile_rows("embed_to_disk", self.dir, drop=self._fileless, add=False)
                 self._fileless = set()
-            # `_embed_applied` is NOT cleared: (gen, seq) pairs never repeat
-            # (a fresh tab's gen is its clock, a refetch bumps it by one and
-            # restarts seq), and keeping them is what answers a replay above.
+            # `_embed_applied` and `_gen_applied_max` are NOT cleared: (gen,
+            # seq) pairs never repeat (a fresh tab's gen is its clock, a
+            # refetch bumps it by one and restarts seq), and keeping them is
+            # what answers a replay above.
             self._embed_max_seq = -1
             self._node_revs = {}
             self._acked_rev = 0
@@ -4454,6 +4465,12 @@ class _SyncManager:
     def _embed_record(self, gen: int, seq: int, ack: dict) -> dict:
         self._embed_max_seq = max(self._embed_max_seq, seq)
         self._embed_applied[(gen, seq)] = ack
+        # Per generation, the highest seq applied — what answers a replay
+        # once its own ack has been pruned below (`_embed_enter`).
+        self._gen_applied_max[gen] = max(self._gen_applied_max.get(gen, -1), seq)
+        if len(self._gen_applied_max) > 32:
+            for old in sorted(self._gen_applied_max)[:-16]:
+                del self._gen_applied_max[old]
         # Bound the dedupe memory: the embed's queue is never deep.
         if len(self._embed_applied) > 64:
             for key in sorted(self._embed_applied)[:-32]:
@@ -4851,8 +4868,6 @@ class _SyncManager:
                  if e[0] not in skipped and e[1] not in skipped]
                 + [list(e) for e in cur.get("edges") or []
                    if (e[0] in skipped or e[1] in skipped)])
-        for gone in [n for n in self._node_revs if n not in view.get("nodes", {})]:
-            del self._node_revs[gone]
         for name, row in view.get("nodes", {}).items():
             if name in skipped:
                 continue
@@ -4864,6 +4879,12 @@ class _SyncManager:
             self._node_revs[name] = (intro, row_rev)
         self._acked_rev = max(self._acked_rev, rev)
         self._embed_view = self._adopt(view)
+        # Pruned against what the view ADOPTED, which keeps nodes the frame
+        # holds that the reading lacks a file for (`_adopt`'s `held`) — pruned
+        # against the reading, such a node lost its intro rev and a replayed
+        # body could read it as deleted once its file came back.
+        for gone in [n for n in self._node_revs if n not in self._embed_view["nodes"]]:
+            del self._node_revs[gone]
         self._view_rev = rev
         self._delta_error = None
         if skipped:

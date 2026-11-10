@@ -837,6 +837,10 @@ def _merge_list(base: list, disk: list, frame: list) -> list:
     def keyed(items: list) -> bool:
         return all(isinstance(x, dict) and isinstance(x.get("id"), (str, int)) for x in items)
 
+    if disk == base:
+        # Claude did not touch this list: the frame's, order and all (a pure
+        # reorder by the user is a change too).
+        return list(frame)
     if plain(base) and plain(disk) and plain(frame):
         removed = {x for x in base if x not in frame}
         out = [x for x in disk if x not in removed]
@@ -1099,14 +1103,10 @@ def apply_snapshot(
         for key in EMBED_ROW_KEYS:
             if key in row:
                 # The frame changed a key when its value moved from what it
-                # was shown. A key the view LACKS that the frame still sends
-                # unchanged since its previous send is one it simply still
-                # holds — a key Claude removed on disk, which a delta cannot
-                # take away from the frame (`studio_patch_from_row` only sets
-                # keys) — and must not come back on the next drag.
-                mine = base is None or (
-                    base.get(key, MISSING) != row[key]
-                    and (key in base or sent.get(key, MISSING) != row[key]))
+                # was shown. (KNOWN LIMIT: a key Claude REMOVED from a row the
+                # frame still shows reads as the frame's and comes back — a
+                # delta can set keys on the frame's node, never take one away.)
+                mine = base is None or base.get(key, MISSING) != row[key]
                 if mine:
                     value = row[key]
                     if (base is not None and isinstance(value, list)
@@ -1132,6 +1132,40 @@ def apply_snapshot(
         if diff:
             changed = True
             upserted.append(name)
+
+    # Folder membership, user first: a child the FRAME moved (its folder in
+    # the snapshot is not the one it was shown) sits in the frame's folder and
+    # nowhere else, whatever Claude did to the other folders' lists meanwhile.
+    # Merged per list alone, a child Claude put in F that the user dropped in
+    # G was listed by both, `normalise_folders` kept the first in document
+    # order, and the child's frame-relative x/y were read against the wrong
+    # folder.
+    if prev is not None:
+        def owners(table: dict) -> dict[str, str]:
+            out: dict[str, str] = {}
+            for fname, frow in table.items():
+                if is_folder(frow) and isinstance(frow.get("childUdfOrder"), list):
+                    for child in frow["childUdfOrder"]:
+                        if isinstance(child, str):
+                            out.setdefault(child, fname)
+            return out
+
+        frame_owner = owners(new["nodes"])
+        base_owner = owners(view_rows)
+        for child in set(frame_owner) | set(base_owner):
+            want = frame_owner.get(child)
+            if want == base_owner.get(child) or child not in new["nodes"]:
+                continue
+            for fname, frow in by_name.items():
+                order = frow.get("childUdfOrder") if is_folder(frow) else None
+                if not isinstance(order, list):
+                    continue
+                if fname != want and child in order:
+                    frow["childUdfOrder"] = [n for n in order if n != child]
+                    changed = True
+                elif fname == want and child not in order:
+                    frow["childUdfOrder"] = order + [child]
+                    changed = True
 
     # Edges, the same way: the frame's additions and removals against what it
     # was shown, applied to disk's set — so an edge Claude added or removed
@@ -1367,8 +1401,24 @@ def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> di
         table = dict(prev.get(key) or {})
         if frm in table:
             table[to] = table.pop(frm)
-            if key == "nodes" and isinstance(table[to], dict):
-                table[to] = dict(table[to], udfName=to)
+        if key in ("nodes", "embed_rows"):
+            # The same rewrite `_rename_in_doc` makes on disk — the name, a
+            # title that was just the name, every folder's member list — so
+            # the view does not read those as Claude edits the frame lacks.
+            for name, row in list(table.items()):
+                if not isinstance(row, dict):
+                    continue
+                fixed = row
+                if name == to:
+                    fixed = dict(fixed, udfName=to)
+                    if fixed.get("title") == frm:
+                        fixed["title"] = to
+                    if is_folder(fixed) and fixed.get("folderName") == frm:
+                        fixed["folderName"] = to
+                order = fixed.get("childUdfOrder")
+                if is_folder(fixed) and isinstance(order, list) and frm in order:
+                    fixed = dict(fixed, childUdfOrder=[to if n == frm else n for n in order])
+                table[name] = fixed
         out[key] = table
     if file_to:
         out["files"] = dict(out.get("files", {}), **{to: file_to})
