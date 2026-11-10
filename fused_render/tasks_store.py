@@ -802,11 +802,20 @@ def icon_overrides() -> dict[str, int]:
     return out
 
 
-def reroll_icon(key: str) -> int | None:
+def reroll_icon(key: str, live: set[str] | frozenset[str] | None = None) -> int | None:
     """Give one task a new, random face from the slots nobody else in its
     project wears (any slot but the current one once the project has used
     them all). Persisted on the task's number record, so it survives
-    listings and restarts. None when the task has no number yet."""
+    listings and restarts. None when the task has no number yet.
+
+    `live` is the set of task keys that EXIST right now (the listing's
+    `_collect()` plus its drafts — routers/tasks.py `api_task_icon`): only
+    their faces count as worn. The store alone cannot tell (Bugbot, PR
+    #2238): a deleted or erased task keeps its number record forever so the
+    number is never handed out again, and after 299 allocations every slot
+    would read as taken by a tombstone, leaving the fallback to hand a live
+    neighbour's face out. Without `live` (tests, a caller with no listing)
+    every unspent, unerased record counts."""
     def mutate(store: dict):
         rec = _record(store, key)
         if rec is None or rec.get("spent"):
@@ -815,7 +824,10 @@ def reroll_icon(key: str) -> int | None:
         current = icon_slot_for(rec["n"], rec["project"], rec.get("icon_slot"))
         worn: set[int] = set()
         for other_key in store:
-            if other_key == key:
+            if other_key == key or (live is not None and other_key not in live):
+                continue
+            raw = store.get(other_key)
+            if isinstance(raw, dict) and raw.get("erased"):
                 continue
             other = _record(store, other_key)
             if other is None or other.get("spent") or _counter(other["project"]) != counter:

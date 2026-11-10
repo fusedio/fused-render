@@ -77,3 +77,34 @@ def test_a_hand_edited_slot_out_of_range_is_dropped(state):
     tasks_store._update(tasks_store.TASK_IDS_FILE, lambda store: (store["s1"].__setitem__("icon_slot", 999), True))
     assert "icon_slot" not in tasks_store.task_ids()["s1"]
     assert tasks_store.icon_overrides() == {}
+
+
+def test_reroll_counts_only_live_tasks_as_wearing_a_face(state):
+    """A deleted task keeps its number record (so the number is never
+    recycled) but its face is free again: with `live` given, only listed
+    keys' slots are avoided, and a long-lived project cannot run dry."""
+    items = [(f"s{i}", P, float(i)) for i in range(1, 300)]
+    numbers = tasks_store.ensure_ids(items)
+    # Every slot is worn by SOME record...
+    assert len({tasks_store.icon_slot(numbers[k], P) for k, _, _ in items}) == 299
+    # ...but only s1 and s2 still exist. A reroll of s1 must land on a face
+    # neither s1 nor s2 wears, not on "anything but current".
+    worn_live = {tasks_store.icon_slot(numbers["s2"], P)}
+    current = tasks_store.icon_slot(numbers["s1"], P)
+    for _ in range(20):
+        new = tasks_store.reroll_icon("s1", live={"s1", "s2"})
+        assert new != current and new not in worn_live
+        current = new
+    # Without `live`, every unspent record counts and the project reads full:
+    # the fallback still never answers the current face.
+    assert tasks_store.reroll_icon("s1") != current
+
+
+def test_reroll_ignores_erased_tombstones(state):
+    tasks_store.ensure_ids([("s1", P, 1.0), ("s2", P, 2.0)])
+    s2_face = tasks_store.icon_slot_for(tasks_store.task_ids()["s2"]["n"], P)
+    tasks_store._update(tasks_store.TASK_IDS_FILE, lambda store: (store["s2"].__setitem__("erased", True), True))
+    # s2's face is free now: with only 2 numbers allocated the project is far
+    # from full, so prove it the direct way — s2's slot is pickable.
+    seen = {tasks_store.reroll_icon("s1") for _ in range(400)}
+    assert s2_face in seen

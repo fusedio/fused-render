@@ -8123,8 +8123,21 @@ def api_task_icon(patch: IconPatch, x_fused: str | None = Header(default=None)):
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
+    # WHICH FACES ARE TAKEN is a question about the tasks that EXIST, not
+    # about the number records (Bugbot): a deleted task keeps its record so
+    # its number is never reused, and counting those would leave a long-lived
+    # project with no free slot. So the listing's own collection — every
+    # transcript-backed task plus every draft — is what the store compares
+    # against; `reroll_icon` then narrows to this task's project itself.
+    live = set(_collect())
     try:
-        slot = tasks_store.reroll_icon(key)
+        task_drafts, chat_drafts = drafts.list_all()
+    except OSError:
+        task_drafts, chat_drafts = {}, {}
+    live.update(drafts.task_key(ident) for ident in task_drafts)
+    live.update(k for k in chat_drafts if drafts.is_new_chat_key(k))
+    try:
+        slot = tasks_store.reroll_icon(key, live)
     except OSError:
         return _error("the task store is not writable right now")
     if slot is None:
