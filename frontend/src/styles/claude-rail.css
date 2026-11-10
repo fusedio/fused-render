@@ -698,12 +698,13 @@
 }
 /* THE WIDTH MAGNET'S GUIDE (card-snap.ts, owner 2026-11-10): one line on
    <body> along the left edge two stacked cards share once a width drag
-   snapped them level — the accent, dashed, a little past both cards' ends,
+   snapped them level — a quiet grey, dashed (owner, 2026-11-10: "shouldn't
+   be accent colour … a bit more greyish subtle"), a little past both cards' ends,
    over every card and taking no pointer. Fades out where it last stood. */
 .rail-snap-guide {
   position: fixed;
   width: 0;
-  border-left: 1px dashed var(--accent);
+  border-left: 1px dashed color-mix(in srgb, var(--fg) 35%, transparent);
   z-index: 60;
   pointer-events: none;
   opacity: 0;
