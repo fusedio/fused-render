@@ -1595,6 +1595,10 @@ export interface Prefs {
   // favourite's own card, the rail beside the open pane, the star beside the
   // id in every task list. Optional: absent (older server) reads as off.
   task_favourites?: { enabled: boolean };
+  // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
+  // experiment 2026-11-10): every task wears one of 299 glyphs in place of
+  // its status ring. Optional: absent (older server) reads as off.
+  task_icons?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2175,6 +2179,10 @@ export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskFavouritesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_favourites_enabled: enabled });
+}
+
+export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_icons_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */
@@ -3936,6 +3944,12 @@ export interface TaskBackgroundJobs {
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
+  // THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): which of the 299
+  // glyphs in shell/task-icons.ts this task wears — arithmetic on its number
+  // server-side (tasks_store.icon_slot), so no two tasks in a project share
+  // one; a reroll (`rerollTaskIcon`) stamps a new one. null while the task has
+  // no number; absent from an older server.
+  icon_slot?: number | null;
   // FAVOURITE (owner, 2026-11-03): the star on the rail card. Server-side,
   // global (`tasks_store.FAVOURITES_FILE`), so every rail and every pane on
   // every page lists the same starred tasks. `starred_open` is the server's
@@ -4343,6 +4357,7 @@ export type TaskPulseTask = Pick<
   | "happened_at"
   | "project"
   | "task_id"
+  | "icon_slot"
   | "title"
   | "target"
   | "session_id"
@@ -4958,6 +4973,12 @@ export function removeTaskWorktrees(
  *  trimmed, capped). */
 export function renameTask(key: string, title: string): Promise<{ ok: boolean; title: string }> {
   return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
+}
+
+/** A NEW FACE for one task (`task_icons_enabled`): the server picks a glyph
+ *  no other task in the project wears and keeps it. Answers the new slot. */
+export function rerollTaskIcon(key: string): Promise<{ ok: boolean; icon_slot: number }> {
+  return postJson<{ ok: boolean; icon_slot: number }>("/api/tasks/icon", { key });
 }
 
 /** THE STAR (owner, 2026-11-03): make a task a favourite, or take it back.

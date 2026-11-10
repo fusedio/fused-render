@@ -551,6 +551,16 @@ const ENTRIES = [
     renderOnly: true,
     child: true,
   },
+  // TASK ICONS (owner, 2026-11-10): a face per task, in place of the ring.
+  {
+    id: "tasks-icons",
+    group: "features",
+    section: "Sidebar",
+    label: "Task icons",
+    description: "Every task wears its own small picture — an animal, a food, a thing — in place of the status ring, in the ring's colour, on the rail, the Tasks list and the task's head. No two tasks in a project share one. While editing a title, click the picture for a different one.",
+    keywords: "icon glyph picture emoji animal face ring task rail avatar",
+    renderOnly: true,
+  },
   {
     id: "monitor",
     group: "general",

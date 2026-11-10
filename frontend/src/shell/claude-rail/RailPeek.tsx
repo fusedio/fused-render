@@ -159,6 +159,7 @@ import { queueCaption } from "@platform/lib/queue";
 import { PlaceTags } from "./PlaceTags";
 import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
+import { TaskIconReroll } from "@shell/TaskIconReroll";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -1626,14 +1627,25 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 // stands over it on hover —, the star, the task's number.
                 <>
                   <span className="claude-rail-peek-status">
-                    <StatusIcon
-                      status={taskColumn(head.merged)}
-                      unread={head.unread > 0}
-                      background={liveJobRow(head.t)}
-                      draftHeld={!!head.row && draftRing(head.merged as Task)}
-                      {...(head.row?.failed ? { failed: true } : {})}
-                    />
-                    {head.t.session_id && !head.draft && archiveButton(head)}
+                    <TaskIconReroll
+                      task={{ key: head.t.key, icon_slot: head.merged.icon_slot ?? head.t.icon_slot }}
+                      editing={draft !== null}
+                      onDone={onReload}
+                    >
+                      <StatusIcon
+                        status={taskColumn(head.merged)}
+                        unread={head.unread > 0}
+                        background={liveJobRow(head.t)}
+                        draftHeld={!!head.row && draftRing(head.merged as Task)}
+                        {...(head.row?.failed ? { failed: true } : {})}
+                        icon={head.merged.icon_slot ?? head.t.icon_slot}
+                      />
+                    </TaskIconReroll>
+                    {/* Not while the title is being edited: the Archive seat
+                        stands OVER the ring on hover, and during a rename
+                        the ring is the New-icon button (TaskIconReroll) —
+                        a press there must reroll, not archive. */}
+                    {head.t.session_id && !head.draft && draft === null && archiveButton(head)}
                   </span>
                   {head.t.session_id && (
                     // Behind the favourites switch (favourites-flag). Only a

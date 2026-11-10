@@ -4232,8 +4232,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          last_message: bool = False,
          recaps: list | None = None,
          pending: dict | None = None,
-         summary_titles: bool = False) -> dict:
+         summary_titles: bool = False,
+         icons: dict[str, int] | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
+
+    `icons` is `tasks_store.icon_overrides()`, read once per listing: the
+    rerolled slots. Every other row's `icon_slot` is arithmetic on its number
+    (`tasks_store.icon_slot`), so the dict is small and usually empty.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
     card — computed once by the caller for the same reason `busy` is: it is one
@@ -4516,6 +4521,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     row = {
         "key": task["key"],
         "task_id": number,
+        # THE TASK'S FACE (`task_icons_enabled`, experiment 2026-11-10): which
+        # of the 299 glyphs this row wears, from its number — see
+        # `tasks_store.icon_slot`. None while the number is "".
+        "icon_slot": tasks_store.icon_slot(number, task["project"],
+                                           (icons or {}).get(task["key"])),
         # THE RAIL CARD'S STAR, and whether that favourite is the one expanded
         # card (`tasks_store.favourite_of`). Global, so every row answers.
         "starred": bool(task.get("starred")),
@@ -4938,7 +4948,8 @@ def _draft_title(text, fallback: str) -> str:
     return line or fallback
 
 
-def _draft_row(ident: str, record: dict, number: str = "") -> dict:
+def _draft_row(ident: str, record: dict, number: str = "",
+               icon: int | None = None) -> dict:
     """One task draft as a listing row.
 
     THE SAME FIELD SET AS `_row`, deliberately and in full: the List, the Board
@@ -5000,6 +5011,7 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
         # is scheduled. "" only when the state dir is unwritable, which is the
         # same "" every other row falls back to.
         "task_id": number,
+        "icon_slot": tasks_store.icon_slot(number, place, icon),
         "draft_id": ident,
         "kind": "draft",
         # WHICH composer this draft belongs to. The two are opened by different
@@ -5074,7 +5086,8 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
     }
 
 
-def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
+def _new_chat_draft_row(key: str, record: dict, number: str = "",
+                        icon: int | None = None) -> dict:
     """One UNSENT CHAT as a listing row — a draft keyed `new:<file>`.
 
     Round 1 gave this key no row: it names no session, so there was nothing for
@@ -5114,6 +5127,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     return {
         "key": key,
         "task_id": number,
+        "icon_slot": tasks_store.icon_slot(number, project, icon),
         # There is no `draft:<id>` behind this one — the store keys it on the
         # folder. "" rather than the key so a client testing `draft_id` cannot
         # send this to the task-draft routes, which would 400 on the shape.
@@ -5510,6 +5524,7 @@ def _draft_rows(only: frozenset | set | None = None,
         if chat_drafts is None:
             chat_drafts = loaded_chat
     numbers = _draft_numbers(task_drafts, chat_drafts)
+    icons = _icon_overrides()
     # Which sessions this machine has ERASED — read at most once per build, and
     # only when a bound draft is actually seen, because it is a file read and
     # nearly every listing has nothing bound at all. See the skip below.
@@ -5554,13 +5569,13 @@ def _draft_rows(only: frozenset | set | None = None,
                     erased = set()
             if bound not in erased:
                 continue
-        rows.append(_draft_row(ident, record, numbers.get(key, "")))
+        rows.append(_draft_row(ident, record, numbers.get(key, ""), icons.get(key)))
     for key, record in chat_drafts.items():
         if not drafts.is_new_chat_key(key):
             continue
         if only is not None and key not in only:
             continue
-        rows.append(_new_chat_draft_row(key, record, numbers.get(key, "")))
+        rows.append(_new_chat_draft_row(key, record, numbers.get(key, ""), icons.get(key)))
     return rows
 
 
@@ -6274,6 +6289,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     for task in listed.values():
         _place(task)
     numbers = _numbers(listed)
+    icons = _icon_overrides()
     # The number and the name of whoever is in front, once the listing's own
     # allocation has run: a task seeing its first listing gets its number HERE,
     # and a holder outside a narrowed answer is named from the stored table.
@@ -6296,7 +6312,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
                        busy, revived, parked, queue, queue_on,
                        chat_drafts, bound_chips, settings, last_message,
-                       recap_wants, pending, summary_titles)
+                       recap_wants, pending, summary_titles, icons)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -6838,7 +6854,7 @@ async def api_tasks_changes_ws(ws: WebSocket):
 # which is where a task listing's weight actually is.
 _PULSE_FIELDS = (
     "key", "status", "unread", "last_active", "project",
-    "task_id", "title", "target", "session_id",
+    "task_id", "icon_slot", "title", "target", "session_id",
     # The desk's change detector (shell/CurrentAppsSection `pulseSignal`): the
     # sidebar refetches the projects table when a task's `happened_at` moves,
     # since that is exactly when `current_apps.observe` can have flipped a
@@ -8078,6 +8094,43 @@ def api_task_rename(patch: RenamePatch,
     stored = tasks_store.record_title(session_id, first[:200])
     tasks_watch.notify({key})
     return {"ok": True, "title": stored}
+
+
+def _icon_overrides() -> dict[str, int]:
+    """The rerolled icon slots (`tasks_store.icon_overrides`), or {} when the
+    state dir cannot be read — a row then wears its arithmetic face."""
+    try:
+        return tasks_store.icon_overrides()
+    except OSError:
+        return {}
+
+
+class IconPatch(BaseModel):
+    key: str
+
+
+@router.post("/api/tasks/icon")
+def api_task_icon(patch: IconPatch, x_fused: str | None = Header(default=None)):
+    """Give one task a NEW FACE (`task_icons_enabled`, 2026-11-10): the icon
+    pressed while its title is being edited. The server picks, at random,
+    from the glyphs no other task in the project wears
+    (`tasks_store.reroll_icon`) and stamps the choice on the task's number
+    record, so it never changes again by itself. Any numbered task — a draft
+    too — can be rerolled; one without a number yet is refused."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    try:
+        slot = tasks_store.reroll_icon(key)
+    except OSError:
+        return _error("the task store is not writable right now")
+    if slot is None:
+        return _error("this task has no number yet; try again in a moment")
+    tasks_watch.notify({key})
+    return {"ok": True, "icon_slot": slot}
 
 
 def archive_task(task: dict, parked: dict, *,
