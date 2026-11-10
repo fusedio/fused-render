@@ -174,6 +174,12 @@ import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { isLanHost } from "@platform/lib/host";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { PlaceTags } from "@shell/claude-rail/PlaceTags";
+// THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"),
+// behind its flag: with it on, the strip and the identity line below are one
+// head — the same one every other task view draws.
+import { TaskHead } from "@shell/TaskHead";
+import { useTaskHeadUnified } from "@shell/task-head-flag";
+import { TaskPeekProject } from "@shell/TaskPeekWho";
 import { ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
@@ -673,6 +679,9 @@ interface ChatBodyProps extends ClaudeChatProps {
 function ChatBody(props: ChatBodyProps) {
   const { params, file, chatOnly, compact, peek } = props;
   const showHead = !compact && (!peek || !!props.headerInPeek);
+  // THE SHARED HEAD replaces the strip and the identity line wherever the chat
+  // draws its own head (not compact, not a host's peek).
+  const headUnified = useTaskHeadUnified() && !compact && !peek;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const columnRef = useRef<HTMLDivElement | null>(null);
   const ownBox = useRef<HTMLTextAreaElement | null>(null);
@@ -5787,9 +5796,11 @@ function ChatBody(props: ChatBodyProps) {
     take();
     return subscribeSideMaximizedRequest(take);
   }, [inSidePane, paneSessionId]);
-  const kebabEl = (
+  // The ⋮'s seat in three pieces — the canvas camera, the exit-full-screen
+  // button and the menu itself — because the shared head seats the first two
+  // with the host's tools and the menu at the row's end (`unifiedHead`).
+  const exitFsBtn = (
     <>
-      {canvasShotSeat}
       {/* EXIT FULL SCREEN, ON THE BAR (Akshil, 2026-11-09: "in full screen on
           top left have a exit fullscreen button outside kebab menu"): the
           menu's item stays, this is the one-press way back beside it. Only
@@ -5805,6 +5816,9 @@ function ChatBody(props: ChatBodyProps) {
           {TASK_ICON_EXIT_FULL_SCREEN}
         </button>
       ) : null}
+    </>
+  );
+  const kebabMenu = (
       <Kebab
         {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
         file={file}
@@ -5847,8 +5861,117 @@ function ChatBody(props: ChatBodyProps) {
             : undefined
         }
       />
+  );
+  const kebabEl = (
+    <>
+      {canvasShotSeat}
+      {exitFsBtn}
+      {kebabMenu}
     </>
   );
+  /**
+   * THE SHARED HEAD (flag on; shell/TaskHead): the strip and the identity line
+   * as ONE row, in every task view's order —
+   *
+   *   [× hide pane][← Back to chats] │ ring ★ TASK-nnn title [queue][paused]
+   *   [place] │ [worktree · PR][seats: picker · toggle · camera · exit-fs][⋮]
+   *
+   * The lead is the hide-pane × on the landing (when the host gives one) and
+   * ← in a chat; a pane that has no other close keeps its × BEFORE the ← there.
+   * The identity is the full block — ring, star, number — in the explorer's
+   * pane too (`bare` is the old head's). Every seat is the node the strip
+   * draws, under the strip's own conditions; full screen portals the whole
+   * head into the pane header's `.side-header-lead`, as it did the strip.
+   */
+  const hidePaneBtn = props.onHidePane ? (
+    <button
+      type="button"
+      className="task-head-btn c-hide-pane"
+      aria-label="Hide the Claude panel"
+      data-hint="Hide the Claude panel"
+      onClick={props.onHidePane}
+    >
+      <X size={14} aria-hidden="true" />
+    </button>
+  ) : null;
+  const unifiedHead = headUnified ? (
+    <TaskHead
+      className="c-task-head"
+      {...(inChat && hidePaneBtn ? { preLead: hidePaneBtn } : {})}
+      lead={
+        inChat
+          ? {
+              kind: "back",
+              label: "Back to chats",
+              hint: "Back to chats",
+              onPress: onBack,
+              disabled: ann.locked,
+              reason: NAV_LOCKED_REASON,
+            }
+          : props.onHidePane
+            ? { kind: "close", label: "Hide the Claude panel", onPress: props.onHidePane }
+            : null
+      }
+      task={inChat ? head.task : null}
+      pending={inChat && head.pending}
+      running={running}
+      queue={
+        inChat && queueOn
+          ? headerQueue(sched.row, waitFacts, waitCount, running || sched.row?.status === "in_progress")
+          : null
+      }
+      status={inChat ? limitWord : ""}
+      place={
+        inChat && head.task
+          ? (placeTag ?? (props.mergedHead ? null : <TaskPeekProject task={head.task} />))
+          : null
+      }
+      chips={
+        inChat ? (
+          <>
+            {shownHint ? null : worktreeMenu}
+            <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
+            {headerExtra}
+          </>
+        ) : null
+      }
+      seats={
+        <>
+          <AnnStrip
+            paneNoun={pane.paneNoun}
+            shown={annTarget && !props.noAnnTools}
+            commentShown={!(paneShown && narrowView.narrow && narrowView.view === "chat")}
+            capable={ann.capable}
+            mode={ann.mode}
+            armed={ann.armed}
+            capturing={attach.capturing}
+            blocked={sched.blocked}
+            onScreenshot={() => void attach.capture()}
+            onComment={ann.onCommentSeat}
+            recSeat={
+              <RecControls
+                rec={recSnap}
+                shown={micShown}
+                commentArmed={ann.mode === "comment"}
+                blocked={sched.blocked}
+                discardable={false}
+                onBegin={() => void recorder.begin()}
+                onEnd={() => void recorder.end()}
+                onDiscard={() => void recorder.discard()}
+              />
+            }
+          />
+          {host === "anntools" ? (
+            <LeftModePicker modes={pane.decision?.leftModes ?? []} params={params} leftMode={leftMode} />
+          ) : null}
+          {narrowView.narrow && !props.noAnnTools ? <ViewToggle narrowView={narrowView} /> : null}
+          {canvasShotSeat}
+          {exitFsBtn}
+        </>
+      }
+      kebab={kebabMenu}
+    />
+  ) : null;
   return (
    <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
@@ -5916,7 +6039,7 @@ function ChatBody(props: ChatBodyProps) {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        {!compact && !peek && !mergedHeadRow ? inLead(
+        {unifiedHead ? inLead(unifiedHead) : !compact && !peek && !mergedHeadRow ? inLead(
           // ONE HEADER ROW, WHICH IS WHAT T HAS (T:3934-4010, P2-1). `#anntools`
           // is a real layout row above both views and it carries FIVE things:
           // `← Chats` at its left end, then the picker, the three preview seats,
@@ -6048,7 +6171,7 @@ function ChatBody(props: ChatBodyProps) {
             {/* Taken away by the compact and peek cuts: the card's own head and
                 the popup's own head already say which task this is
                 (T:1412-1438). */}
-            {showHead ? (
+            {headUnified ? null : showHead ? (
               <Topbar
                 slim={peek}
                 {...(inSidePane ? { bare: true } : {})}

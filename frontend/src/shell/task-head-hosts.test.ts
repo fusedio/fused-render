@@ -49,7 +49,7 @@ test("the New task card's chat: the shared head in place of the dialog's, named 
   const src = read("NewJobModal.tsx");
   expect(src).toContain("const unified = useTaskHeadUnified();");
   const shared = between(src, "{...(chatOpen && unified ? {", "} : {})}");
-  expect(shared).toContain("head: ({ titleId }: { titleId: string }) => (");
+  expect(shared).toContain("head: ({ titleId }: ModalHeadContext) => (");
   expect(shared).toContain('lead={{ kind: "back", label: "Back", onPress: leaveChat }}');
   expect(shared).toContain("task={liveChat}");
   expect(shared).toContain("titleId={titleId}");
@@ -72,7 +72,7 @@ test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips i
   expect(src).toContain("const sharedHead = unified && !!task.session_id;");
   const shared = between(src, "{...(sharedHead ? {", "// The footer exists only while");
   // The × is the chassis' guarded close, not the raw prop.
-  expect(shared).toContain("head: ({ titleId, close }: { titleId: string; close: () => void }) => (");
+  expect(shared).toContain("head: ({ titleId, close }: ModalHeadContext) => (");
   expect(shared).toContain('lead={{ kind: "close", label: "Close", onPress: close }}');
   expect(shared).toContain("titleId={titleId}");
   expect(shared).toContain("chips={<TaskPrChip task={task} />}");
@@ -99,4 +99,30 @@ test("the Tasks page's panel: the old slim line with the old head, the chip seat
   expect(src).toContain("advancePast(t.key, lastOrderWithKey.current)");
   expect(src).not.toContain("advancePast(s, lastOrderWithKey.current)");
   expect(src).toContain("if (list.includes(key)) lastOrderWithKey.current = list;");
+});
+
+test("the New task card's FORM: the chassis' own head pieces on the shared head, × in the lead", () => {
+  const src = read("NewJobModal.tsx");
+  const form = between(src, "{...(!chatOpen && unified ? {", "// …AND WITH THE SHARED HEAD ON");
+  expect(form).toContain("head: ({ titleId, close, busy: closing, armed, parts }: ModalHeadContext) => (");
+  // The ✕'s two states carry over: gone while busy, armed after a dirty close.
+  expect(form).toContain("lead={closing ? null : {");
+  expect(form).toContain('label: armed ? "Close and discard changes" : "Close"');
+  expect(form).toContain("onPress: close,");
+  // The same nodes the chassis' head is given: crumb, name, source chip, pills.
+  expect(form).toContain("{parts.titleLead}");
+  expect(form).toContain("<h2 id={titleId}>{parts.title}</h2>");
+  expect(form).toContain("{parts.titleAside}");
+  expect(form).toContain("chips={parts.headActions}");
+  expect(form).toContain("fitEnabled={false}");
+});
+
+test("the chat's own head (ClaudeChat): one shared head behind the flag, the strip and Topbar kept for off", () => {
+  const src = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
+  expect(src).toContain("const headUnified = useTaskHeadUnified() && !compact && !peek;");
+  expect(src).toContain("{unifiedHead ? inLead(unifiedHead) : !compact && !peek && !mergedHeadRow ? inLead(");
+  expect(src).toContain("{headUnified ? null : showHead ? (");
+  // The legacy strip and its ← Chats are still there for the flag off.
+  expect(src).toContain('<div className="c-anntools" ref={stripRef}>');
+  expect(src).toContain('←<span className="c-back-word"> Chats</span>');
 });

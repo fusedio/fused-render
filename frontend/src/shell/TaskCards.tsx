@@ -36,6 +36,7 @@ import { notify } from "@platform/lib/notifications";
 import { ChatFramePlaceholder, ChatMount } from "@apps/claude";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { Modal } from "@platform/ui/modal/Modal";
+import type { ModalHeadContext } from "@platform/ui/modal/Modal";
 import { TaskStar } from "@platform/ui/TaskStar";
 import { folderHref } from "./schedule-lib";
 import {
@@ -1148,7 +1149,7 @@ function TaskPeek({
       // no ⋮, and the old head's doors (Archive, Delete, the folder-deleted
       // door) are the only place those acts live — TaskPeek's rule.
       {...(sharedHead ? {
-        head: ({ titleId, close }: { titleId: string; close: () => void }) => (
+        head: ({ titleId, close }: ModalHeadContext) => (
           <TaskHead
             className="task-peek-head"
             lead={{ kind: "close", label: "Close", onPress: close }}

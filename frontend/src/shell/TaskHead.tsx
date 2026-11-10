@@ -96,6 +96,17 @@ export type TaskHeadQueue = (QueueFacts & Pick<Partial<Task>, "task_id" | "title
 
 export interface TaskHeadProps {
   lead: TaskHeadLead | null;
+  /** A host-built corner control, drawn in the lead's seat INSTEAD of
+   *  `lead` (the rail's favourite card: its pin/× button keeps its own
+   *  behaviour). */
+  leadNode?: ReactNode;
+  /** A control BEFORE the lead, in the same cluster: the canvas and app
+   *  panes' hide-the-panel × while a chat's ← holds the lead — those panes
+   *  have no other close. Order: [preLead][lead][↑][↓]. */
+  preLead?: ReactNode;
+  /** The favourite star in the identity (default on). Off where the
+   *  favourites switch is off (the rail card's legacy rule). */
+  star?: boolean;
   nav?: TaskHeadNav;
   /** Identity: `<TaskPeekWho star …>`. Null for a head with no task (yet). */
   task: Task | null;
@@ -159,6 +170,9 @@ export function TaskHead({
   stacked = "auto",
   fitEnabled = true,
   className,
+  leadNode,
+  preLead,
+  star = true,
 }: TaskHeadProps) {
   const [fit, rowRef] = useStripFit(stacked === "auto" ? DROPS_AUTO : DROPS_NO_STACK, fitEnabled);
   // THE TITLE MOVES ROWS HERE, which remounts it: a rename half-typed when the
@@ -195,9 +209,12 @@ export function TaskHead({
       data-fit={fit}
     >
       <div className="task-head-row" ref={rowRef}>
-        {lead || nav ? (
+        {preLead || leadNode || lead || nav ? (
           <div className="task-head-acts">
-            {lead ? (
+            {preLead}
+            {leadNode ? (
+              leadNode
+            ) : lead ? (
               <button
                 ref={lead.ref}
                 type="button"
@@ -240,7 +257,7 @@ export function TaskHead({
           <TaskPeekWho
             task={who}
             running={line ? false : running}
-            star
+            star={star}
             part={stackedNow ? "marks" : "all"}
             {...(stackedNow ? {} : { className: "task-head-title-seat" })}
             {...(!stackedNow && titleId ? { titleId } : {})}

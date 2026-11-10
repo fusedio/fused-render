@@ -305,3 +305,80 @@
 .task-head-chips .task-pr-chips {
   flex: 0 0 auto;
 }
+
+/* -- in the chat's own column (apps/claude ClaudeChat, flag on) ---------------
+   The side pane, the canvas pane and the app page's pane draw the shared head
+   in place of the `.c-anntools` strip and the identity line. The column's
+   panel shows through, as it did through the strip. */
+.chat-root .c-task-head {
+  background: none;
+}
+/* THE NARROW PREVIEW VIEW hides every child of the chat column but the strip
+   (chat.css `.c-chat > *:not(.c-anntools)`), because the strip carries the view
+   toggle — the one way back to the chat. The head carries it now, so it stays;
+   and ← goes, as the strip's did: the list it returns to is off screen. */
+.chat-root.narrow.view-preview .c-chat > .task-head.c-task-head {
+  display: flex;
+}
+.chat-root.narrow.view-preview .c-task-head .task-head-lead.is-back {
+  display: none;
+}
+/* FULL SCREEN portals the whole head into the pane header's
+   `.side-header-lead` (preview.css), as it did the strip: there it is a bare
+   flex item — no border, no padding, no height of its own — so the header
+   does not grow. */
+.side-header-lead .task-head {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border-bottom: 0;
+  background: none;
+}
+.side-header-lead .task-head-row {
+  min-height: 0;
+}
+
+/* -- the rail's hover / favourite card (shell/claude-rail RailPeek) ----------
+   The old head's box stays as a wrapper that lays out as NOTHING, so its
+   Escape handler and its hover-archive rules still reach the shared head
+   inside. The pulse (count, when, archive) rides the chips seat. */
+.claude-rail-peek-head.is-unified {
+  display: contents;
+}
+.claude-rail-peek-task-head .claude-rail-peek-pulse {
+  flex: 0 0 auto;
+}
+
+/* -- the New task card's FORM head (NewJobModal, flag on) --------------------
+   The chassis' head pieces on the shared chassis: the agent crumb, the name
+   (an input inside the heading, as before) and the source chip as the title,
+   Folder and When as the chips. The title takes the squeeze (the dialog's own
+   `.modal-head-title` rule, 1000 shrink weight); nothing here clips, because
+   the agent, Folder and When popovers hang off their pills. */
+.nt-form-head .task-head-title-static {
+  display: flex;
+  align-items: center;
+  flex: 1 1000 auto;
+  min-width: 0;
+  overflow: visible;
+  font-size: inherit;
+  font-weight: inherit;
+}
+.nt-form-head .modal-head-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.nt-form-head .modal-head-title h2 {
+  margin: 0;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+}
+.nt-form-head .task-head-chips {
+  flex: 0 1 auto;
+  overflow: visible;
+}

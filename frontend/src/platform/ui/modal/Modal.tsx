@@ -47,6 +47,23 @@ import {
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),iframe,[tabindex]:not([tabindex="-1"])';
 
+/** What the chassis hands a caller's own head (`ModalProps.head`). */
+export interface ModalHeadContext {
+  titleId: string;
+  /** The ✕'s guarded close: busy and dirty guards, the exit animation. */
+  close: () => void;
+  /** No close while an action that must not be abandoned is running. */
+  busy: boolean;
+  /** A dirty close was asked for once: the next press discards. */
+  armed: boolean;
+  parts: {
+    title: ReactNode;
+    titleLead?: ReactNode;
+    titleAside?: ReactNode;
+    headActions?: ReactNode;
+  };
+}
+
 export interface ModalProps {
   title: ReactNode;
   /**
@@ -110,8 +127,15 @@ export interface ModalProps {
    * the ✕'s own guarded close (busy, dirty, the exit animation), which the
    * head's corner control must call instead of the caller's raw `onClose`.
    * Absent: the head every caller has always had, byte for byte.
+   *
+   * …AND THE PIECES THE CALLER PASSED for the chassis' own head (`parts`), so a
+   * caller whose head is built from them (the New task card's form: the agent
+   * crumb, the name, the source chip, the Folder and When pills) hands the
+   * same nodes to its own head instead of building them twice; and `busy` /
+   * `armed`, the two states the ✕ shows (hidden while busy, amber once a
+   * dirty close has been asked for).
    */
-  head?: (ctx: { titleId: string; close: () => void }) => ReactNode;
+  head?: (ctx: ModalHeadContext) => ReactNode;
   onClose: () => void;
   children: ReactNode;
   // When true, Esc / backdrop / ✕ do NOT close (an action is running that must
@@ -809,7 +833,15 @@ export function Modal({
           : {})}
       >
         {head ? (
-          <div className="modal-head-slot">{head({ titleId, close: attemptClose })}</div>
+          <div className="modal-head-slot">
+            {head({
+              titleId,
+              close: attemptClose,
+              busy,
+              armed: confirmClose,
+              parts: { title, titleLead, titleAside, headActions },
+            })}
+          </div>
         ) : (
         <div className={"modal-head deploy-head" + (closeAtStart ? " has-close-start" : "")}>
           {closeAtStart && closeButton}

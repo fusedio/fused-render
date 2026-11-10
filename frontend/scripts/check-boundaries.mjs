@@ -161,6 +161,13 @@ const SHELL_OPEN_TO_APPS = new Set([
   // whole rail in for a few functions and one small component.
   "shell/claude-rail/claude-rail-lib",
   "shell/claude-rail/PlaceTags",
+  // THE ONE TASK HEAD (shell/TaskHead, design.md "One task head, everywhere")
+  // and its flag: the chat's own head in a side pane, the canvas pane and the
+  // app page's pane draws the same head every task view draws, behind the same
+  // switch. TaskHead imports only TaskPeekWho (already open here) and
+  // row-fit (pure); the flag reads only platform's prefs — no cycle.
+  "shell/TaskHead",
+  "shell/task-head-flag",
 ]);
 
 const violations = [];

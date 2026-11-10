@@ -30,6 +30,7 @@ const { resetBotCardForTests } = await import("./bot-card-store");
 const { railGitNow, resetRailGitStoreForTests } = await import("./rail-git-store");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
+const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("@shell/task-head-flag");
 
 const DIR = "/home/me/apps/demo";
 
@@ -388,6 +389,36 @@ describe("ClaudeRail's card beside the pane", () => {
     expect(peek).toHaveLength(1);
     expect(peek[0]!.props.pinned).toBe(true);
     expect(peek[0]!.props.shown.pulse.key).toBe(chat("a").key);
+  });
+
+  // THE SHARED TASK HEAD (shell/TaskHead; design.md "One task head,
+  // everywhere"), behind its flag: the card's two-row head becomes the one
+  // every task view draws — its own rename row gone, TaskPeekWho's in its place.
+  const cls = (n: ReactTestInstance) => String(n.props?.className ?? "").split(" ");
+  test("flag on: the card wears the shared head — the ×, the identity, the ⋮ — and no title row of its own", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    publishTaskHeadUnified({ enabled: true });
+    try {
+      const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });
+      await press(r, "a");
+      const peek = r.root.findByType(RailPeek);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(1);
+      expect(peek.findAll((n) => cls(n).includes("claude-rail-peek-titlerow"))).toHaveLength(0);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-side-peek-who")).length).toBeGreaterThan(0);
+      const lead = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-lead"));
+      expect(lead.props["aria-label"]).toBe("Close the preview");
+    } finally {
+      resetTaskHeadUnifiedFlagForTests();
+    }
+  });
+
+  test("flag off: the card's own two-row head, title row and all", async () => {
+    resetTaskHeadUnifiedFlagForTests();
+    const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });
+    await press(r, "a");
+    const peek = r.root.findByType(RailPeek);
+    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(0);
+    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-titlerow"))).toHaveLength(1);
   });
 
 });

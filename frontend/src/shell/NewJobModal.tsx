@@ -60,7 +60,7 @@ import {
   isUnlistedEffort,
   useAgentBackends,
 } from "@platform/lib/agent-backends";
-import { Modal, type ModalProps } from "@platform/ui/modal/Modal";
+import { Modal, type ModalHeadContext, type ModalProps } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
   getClaudeSessionFolders,
@@ -6084,11 +6084,39 @@ export default function NewJobModal({
           </>
         ),
       } : {})}
+      // THE FORM'S OWN HEAD, with the shared head on (design.md "One task
+      // head, everywhere"): the same pieces the chassis' head is given above —
+      // the agent crumb, the name, the source chip, Folder and When — on the
+      // shared chassis, × in the lead corner. The ✕'s two states carry over:
+      // gone while busy, armed after a dirty close (the chassis' `ctx`).
+      {...(!chatOpen && unified ? {
+        head: ({ titleId, close, busy: closing, armed, parts }: ModalHeadContext) => (
+          <TaskHead
+            className="nt-form-head"
+            lead={closing ? null : {
+              kind: "close",
+              label: armed ? "Close and discard changes" : "Close",
+              hint: armed ? "Press again to discard" : "Close",
+              onPress: close,
+            }}
+            task={null}
+            title={
+              <div className="modal-head-title">
+                {parts.titleLead}
+                <h2 id={titleId}>{parts.title}</h2>
+                {parts.titleAside}
+              </div>
+            }
+            chips={parts.headActions}
+            fitEnabled={false}
+          />
+        ),
+      } : {})}
       // …AND WITH THE SHARED HEAD ON, that whole swap is one `TaskHead` in
       // place of the chassis' head (Modal `head`): Back, the identity, ↗ Open
       // and the ⋮, at every task view's height.
       {...(chatOpen && unified ? {
-        head: ({ titleId }: { titleId: string }) => (
+        head: ({ titleId }: ModalHeadContext) => (
           <TaskHead
             className="nt-chat-head"
             lead={{ kind: "back", label: "Back", onPress: leaveChat }}
