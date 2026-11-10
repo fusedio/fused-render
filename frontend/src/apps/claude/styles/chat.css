@@ -29,6 +29,11 @@
 .c-tokens,
 .c-overlay {
   color-scheme: dark;
+  /* CHAT TEXT ZOOM (⌘+ / ⌘− / ⌘0, chat-zoom.ts): one global factor the shell
+     writes on <html> as `--c-chat-zoom`, read here so only chat surfaces see
+     it. Every px font-size and px line-height in apps/claude/styles is
+     `calc(Npx * var(--c-zoom, 1))`; icons, paddings and widths do not scale. */
+  --c-zoom: var(--c-chat-zoom, 1);
   --c-bg: var(--bg);
   --c-panel: var(--bg-alt);
   --c-surface: var(--row-bg-hover);
@@ -187,7 +192,7 @@
      over the taste call: T sets `normal`, so this sets nothing. */
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
     sans-serif;
-  font-size: var(--c-fs-read);
+  font-size: calc(var(--c-fs-read) * var(--c-zoom, 1));
   line-height: var(--c-lh-read);
   -webkit-font-smoothing: antialiased;
 
@@ -413,6 +418,34 @@
 .chat-root.chat-compact .c-home {
   display: none;
 }
+/* Chat CHROME never follows the text zoom: the top tool strip (back, camera,
+   comment, annotate), the whole composer card (pills, attachment chips, the
+   folded card's model label), the worktree chip — and the menus those pills
+   and that chip open (`.c-selpop`, `.chat-worktree-pop`, portaled out of the
+   card) — sit in fixed-width seats
+   and clip when their text grows. Only what the chat SAYS (and what you type)
+   zooms. The `:where()` base size re-seats anything in there that names no
+   size of its own — it would otherwise inherit the zoomed `.chat-root` size —
+   at zero specificity, so every rule that does name one still wins. */
+.c-anntools,
+.c-composer,
+.chat-worktree-menu,
+.c-selpop,
+.chat-worktree-pop {
+  --c-zoom: 1;
+}
+:where(.c-anntools, .c-composer, .chat-worktree-menu, .c-selpop, .chat-worktree-pop) {
+  font-size: var(--c-fs-read);
+}
+/* …except the words being typed: while the card is OPEN its textarea follows
+   the zoom (it grows to fit, nothing clips). The folded card is chrome — a
+   one-line 32px preview beside the model label — so it stays at 1×. */
+.c-composer:not(.is-idle) textarea {
+  --c-zoom: var(--c-chat-zoom, 1);
+}
+.chat-root.chat-compact .c-composer textarea {
+  --c-zoom: 1;
+}
 /* SCALED BY TYPE, NOT BY TRANSFORM. Six cards across a laptop leave each tile
    ~380px, and at 1:1 the template's text was too big to read as a wall (Akshil,
    2026-09-04) — so the old fit laid the frame out at 133.33% and drew it at
@@ -420,6 +453,8 @@
    0.75, the layout is real at the tile's real width, and hit-testing, wheel and
    text selection are the browser's own rather than mapped through a matrix. */
 .chat-root.chat-compact {
+  /* A wall tile is a thumbnail: it never follows the chat text zoom. */
+  --c-zoom: 1;
   --c-fs-body: 10px;
   --c-fs-meta: 9px;
   --c-fs-small: 8px;
@@ -445,7 +480,7 @@
 .chat-root.chat-compact .perm .gate-status,
 .chat-root.chat-compact .perm .qopt,
 .chat-root.chat-compact .perm .plan-body {
-  font-size: var(--c-fs-body);
+  font-size: calc(var(--c-fs-body) * var(--c-zoom, 1));
 }
 .chat-root.chat-compact .turn.note,
 .chat-root.chat-compact .turn.compact,
@@ -457,7 +492,7 @@
 .chat-root.chat-compact .perm .gate-btn,
 .chat-root.chat-compact .toolchip .chip-sub,
 .chat-root.chat-compact .toolchip .chip-label {
-  font-size: var(--c-fs-meta);
+  font-size: calc(var(--c-fs-meta) * var(--c-zoom, 1));
 }
 /* THE QUESTION CARD'S OWN CHROME, which the cut had missed (R2-11). Each of
    these names a px size in transcript.css, so the token on the root does not
@@ -469,16 +504,16 @@
 .chat-root.chat-compact .perm .qsend .qsend-left,
 .chat-root.chat-compact .perm .qanswer,
 .chat-root.chat-compact .perm .qopt .qtype {
-  font-size: var(--c-fs-meta);
+  font-size: calc(var(--c-fs-meta) * var(--c-zoom, 1));
 }
 .chat-root.chat-compact .perm .qhead {
-  font-size: var(--c-fs-small);
+  font-size: calc(var(--c-fs-small) * var(--c-zoom, 1));
 }
 /* NOT `.chip-marker` any more (R2-7): its box is the chip's own em, so that it
    and `.chip-body`'s indent are one length resolved once — a font-size here put
    them 2.4px apart again. The glyph is scaled instead (styles/transcript.css). */
 .chat-root.chat-compact .seg-notice-glyph {
-  font-size: var(--c-fs-small);
+  font-size: calc(var(--c-fs-small) * var(--c-zoom, 1));
 }
 /* THE RECEIPT TAKES THE CUTS TOO. Every neighbour in this block shrank at 0.75
    while the receipt under a sent turn kept its 11.5px rows and its 140px
@@ -487,7 +522,7 @@
 .chat-root.chat-compact .annsum .annsum-row,
 .chat-root.chat-compact .annsum .annsum-el,
 .chat-root.chat-compact .annsum .annsum-gone {
-  font-size: var(--c-fs-meta);
+  font-size: calc(var(--c-fs-meta) * var(--c-zoom, 1));
 }
 /* Same 0.75 the four type tokens take, so the picture keeps its proportion to
    the words beside it. */
@@ -504,7 +539,7 @@
   max-height: 96px;
 }
 .chat-root.chat-compact .perm .qtext {
-  font-size: var(--c-fs-lead);
+  font-size: calc(var(--c-fs-lead) * var(--c-zoom, 1));
 }
 /* With the bar gone, 24px of top padding is no longer the gap under a border —
    it is dead space above the only thing the card is for. Halved rather than
@@ -610,7 +645,7 @@
   background: transparent;
   color: var(--c-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   white-space: nowrap;
   height: 26px;
   padding: 0 10px;
@@ -715,8 +750,8 @@
   margin: 0;
   padding: 2px 8px;
   font: inherit;
-  font-size: 11.5px;
-  line-height: 18px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
+  line-height: calc(18px * var(--c-zoom, 1));
   white-space: nowrap;
   background: none;
   border: 1px solid var(--c-border);

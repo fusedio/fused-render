@@ -49,7 +49,7 @@
 }
 .c-filepreview-modal .c-fp-path {
   margin-left: 8px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   font-weight: 400;
   color: var(--c-faint, #888);
   font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
@@ -60,7 +60,7 @@
   border-radius: 6px;
   background: transparent;
   color: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   cursor: pointer;
 }
 .c-filepreview-modal .c-fp-btn:hover {

@@ -2226,6 +2226,9 @@ export interface UiLayoutDoc {
   /** …and the favourite's card (FavouritePeek), dragged from its top and
    *  left edges; unset = its default 380×520. */
   canvasRailFav?: { width: number; height: number };
+  /** The chat text zoom, 1 = 100 % (platform/lib/chat-zoom.ts): one factor for
+   *  every chat, always one of `CHAT_TEXT_SCALES` (ui-layout.ts). */
+  chatTextScale?: number;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {

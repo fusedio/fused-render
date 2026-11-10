@@ -11,7 +11,7 @@
   width: 100%;
   margin: 0 auto;
   padding: 0 20px 6px;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   line-height: 1.45;
 }
 .chat-root .chat-tasks-head {
@@ -72,7 +72,7 @@
 .chat-root .chat-task-model {
   flex-shrink: 0;
   color: var(--c-dim);
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   white-space: nowrap;
 }
 .chat-root .chat-task:first-child {
@@ -119,8 +119,8 @@
   border-radius: 999px;
   border: 1px solid var(--c-border);
   color: var(--c-dim);
-  font-size: 11px;
-  line-height: 17px;
+  font-size: calc(11px * var(--c-zoom, 1));
+  line-height: calc(17px * var(--c-zoom, 1));
 }
 .chat-root .chip-task-status.is-running,
 .chat-root .chip-task-status.is-pending {
@@ -192,7 +192,7 @@
   overflow-y: hidden;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
 }
 .chat-root .chat-task-out pre.is-collapsed {
   --perm-pre-lines: 6;
@@ -229,7 +229,7 @@
   gap: 6px;
   flex-shrink: 0;
   margin-left: 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   color: var(--c-dim);
 }
 .chat-root .toolchip .chip-task-type {
