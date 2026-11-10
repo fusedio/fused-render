@@ -99,6 +99,7 @@ enum FRMenuCommand {
 - (void)popupAborted;
 - (void)popupCreationStarted;
 - (void)addressChanged:(const CefString &)url;
+- (void)mainFrameLoaded;
 - (CefRefPtr<CefClient>)client;
 - (FRChromiumEngine *)engine;
 - (cef_color_t)backgroundCefColor;
@@ -260,6 +261,12 @@ class FRClient : public CefClient,
     view_.isLoading = isLoading;
     view_.canGoBack = canGoBack;
     view_.canGoForward = canGoForward;
+  }
+
+  void OnLoadEnd(CefRefPtr<CefBrowser> browser,
+                 CefRefPtr<CefFrame> frame,
+                 int httpStatusCode) override {
+    if (frame->IsMain()) [view_ mainFrameLoaded];
   }
 
   void OnLoadError(CefRefPtr<CefBrowser> browser,
@@ -735,6 +742,8 @@ class FRClient : public CefClient,
   BOOL _closing;
   BOOL _closeWhenCreated;  // closeBrowser before OnAfterCreated
   id _fullscreenObserver;
+  id _occlusionObserver;
+  BOOL _occluded;  // what the page was last told (syncOcclusion)
 }
 
 @synthesize URL = _URL;
@@ -762,13 +771,62 @@ class FRClient : public CefClient,
         me->_browser->GetHost()->ExitFullscreen(true);
       }
     }];
+    // The window going out of sight (covered, minimised, another Space) or
+    // back: the page pauses its CSS loops meanwhile (syncOcclusion).
+    _occlusionObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowDidChangeOcclusionStateNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification *note) {
+      FRChromiumView *me = weakSelf;
+      if (me && note.object == me.window) [me syncOcclusion];
+    }];
   }
   return self;
 }
 
 - (void)dealloc {
   if (_fullscreenObserver) [[NSNotificationCenter defaultCenter] removeObserver:_fullscreenObserver];
+  if (_occlusionObserver) [[NSNotificationCenter defaultCenter] removeObserver:_occlusionObserver];
   [_engine unregisterView:self];
+}
+
+// ---- a covered window pauses the page's CSS loops ----
+//
+// `disable-backgrounding-occluded-windows` (FRCefApp.cc) keeps a covered
+// window rendering so Mission Control shows its last frame, and with it every
+// infinite CSS animation on the page keeps ticking (WKWebView throttles such a
+// window itself). The page cannot see occlusion — Chromium still reports it
+// visible — so the view tells it: `data-fused-occluded` on the root element,
+// which the shell's base.css answers with `animation-play-state: paused`.
+// Nothing else changes: the window still composites, its frame stays live.
+
+- (BOOL)windowOccluded {
+  NSWindow *w = self.window;
+  return w != nil && !(w.occlusionState & NSWindowOcclusionStateVisible);
+}
+
+- (void)syncOcclusion {
+  BOOL occluded = [self windowOccluded];
+  if (occluded == _occluded) return;
+  _occluded = occluded;
+  [self tellPageOccluded:occluded];
+}
+
+- (void)mainFrameLoaded {
+  // A new document starts without the attribute, so only a hidden window
+  // has anything to say to it.
+  if (_occluded) [self tellPageOccluded:YES];
+}
+
+- (void)tellPageOccluded:(BOOL)occluded {
+  if (!_browser) return;  // mainFrameLoaded tells the first document
+  CefRefPtr<CefFrame> frame = _browser->GetMainFrame();
+  if (!frame) return;
+  NSString *js = [NSString stringWithFormat:
+      @"document.documentElement&&document.documentElement.toggleAttribute('data-fused-occluded',%@)",
+      occluded ? @"true" : @"false"];
+  frame->ExecuteJavaScript(js.UTF8String, frame->GetURL(), 0);
 }
 
 - (BOOL)isFlipped {
@@ -907,6 +965,7 @@ class FRClient : public CefClient,
   [super viewDidMoveToWindow];
   [self layoutBrowserView];
   [self focusBrowserView];
+  [self syncOcclusion];
 }
 
 // ---- WKWebView-shaped API ----
