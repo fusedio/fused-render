@@ -75,24 +75,6 @@ void FRCefApp::OnBeforeCommandLineProcessing(const CefString& process_type,
   // for the windows covered longest. WKWebView kept its last frame; keep
   // rendering occluded windows so the engine does too.
   command_line->AppendSwitch("disable-backgrounding-occluded-windows");
-  // MAIN-THREAD FRAMES AT 60 Hz, as WKWebView runs them. On a 120 Hz
-  // (ProMotion) display Chromium starts a main frame every 8.3 ms, so an
-  // animation that re-lays-out the page each frame (the Bots sidebar's
-  // grid-template-columns slide, the Tasks peek's width glide, the rail
-  // card's size glide) has half the budget WebKit gives it — WebKit holds
-  // page rendering updates near 60 fps by default — and misses frames
-  // unevenly, which reads as sluggish next to the same slide in a WebKit
-  // window. This cc scheduler feature (Chromium's own experiment, off by
-  // default) sends a BeginMainFrame every other vsync only when the display
-  // runs at ~120 Hz or faster; the compositor thread stays at the full rate,
-  // so scrolling and transform/opacity animations keep 120 Hz. A 60 Hz
-  // display is untouched. rAF-driven pages (canvases, WebGL) tick at 60, as
-  // they do under WebKit. Merged into any value already present, never
-  // replacing it: CEF appends its own feature lists to the same switch.
-  std::string enable = command_line->GetSwitchValue("enable-features").ToString();
-  if (!enable.empty()) enable += ",";
-  enable += "ThrottleMainFrameTo60Hz";
-  command_line->AppendSwitchWithValue("enable-features", enable);
   // No keychain: the cookie-encryption key is Chromium's fixed mock one,
   // not a login-keychain item. The shared item ("Chromium Safe Storage",
   // every CEF app on the Mac) threw a keychain ACL prompt on first start;

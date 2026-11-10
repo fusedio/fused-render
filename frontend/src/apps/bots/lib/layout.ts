@@ -1,17 +1,17 @@
 // Column layout (OpenBot live.js "layout" + chat.js glideRows): panel widths and collapsed state are a per-machine
-// preference in localStorage; classes and CSS variables on the page root (`.bots-page`, lib/root.ts — FusedBot put
-// them on <body>, which here is the shell's) drive the grid in bots.css.
+// preference in localStorage; classes on the page root (`.bots-page`, lib/root.ts — FusedBot put them on <body>, which
+// here is the shell's) and the width variables on <main> (non-inheriting, bots.css) drive the grid in bots.css.
 //   root.lcol / .rcol  the user collapsed the sidebar / hid the preview
 //   body.lfit / .rfit  the window is too narrow, so it collapsed / hid itself (with hysteresis)
 //   body.lanim / .lfast  the rail is mid-slide (rows morph and glide) / closing (quick slide)
 //   root.dragging      a gutter drag is in progress
-//   root.stage         the live view is open in the preview column (Stage: icon sidebar, chat rail --chatw, the page takes the rest)
+//   root.stage         the live view is open in the preview column (Stage: icon sidebar, chat rail --bots-chatw, the page takes the rest)
 //   root.lstuck        the window is too narrow for the full sidebar even with the preview hidden: the expand toggle hides
 //   root.sfull         Stage, but the window is too narrow for it: the live view falls back to a fixed overlay (CSS only)
 // This module touches the DOM directly (main, .preview, #botlist, #lcol, #add, the root): it is the plumbing the
 // React tree sits on, exactly as in OpenBot. The fit is measured on the page's own <main> (ResizeObserver), never
 // window.innerWidth: the shell's sidebar takes width the page cannot use.
-import { botsRoot } from "./root";
+import { botsMounted, botsRoot } from "./root";
 import { isLanHost } from "@platform/lib/host";
 
 export const LAYOUT_KEY = "browser-bot.layout";
@@ -122,17 +122,19 @@ export function flipEls(els: HTMLElement[], before: DOMRect[]): void {
   });
 }
 
-// Preview open/close: pin the section to its open width (--rwlock) for the slide so its content rides along instead of reflowing (see .preview in the CSS).
-// Closing keeps the lock (the hidden panel needs it to slide back in); opening drops it once the slide is done so the handle can resize again.
+// Preview open/close: pin the section to its open width (--bots-rwlock) for the slide so its content rides along instead of reflowing (see .preview in
+// the CSS). Closing keeps the lock (the hidden panel needs it to slide back in); opening drops it once the slide is done so the handle can resize again.
+// The variable is written on .preview itself, the one box that reads it (non-inheriting, bots.css): on the root it restyled the whole page.
 let lockT: ReturnType<typeof setTimeout> | undefined;
+const unlockPreview = (): void => { previewEl()?.style.removeProperty("--bots-rwlock"); };
 export function lockPreview(fn: () => void): void {
   const was = previewShown(), pv = previewEl();
-  if (was && pv) body().style.setProperty("--rwlock", pv.getBoundingClientRect().width + "px");
+  if (was && pv) pv.style.setProperty("--bots-rwlock", pv.getBoundingClientRect().width + "px");
   fn();
   const now = previewShown();
   clearTimeout(lockT);
-  if (was && now) body().style.removeProperty("--rwlock");  // a plain resize: never hold the width
-  else if (now) lockT = setTimeout(() => body().style.removeProperty("--rwlock"), 350);
+  if (was && now) unlockPreview();  // a plain resize: never hold the width
+  else if (now) lockT = setTimeout(unlockPreview, 350);
 }
 
 // Rail collapse/expand: rows morph and glide (FLIP, see glideRows) in step with the panel slide. Not during a drag, which must track the pointer.
@@ -183,20 +185,168 @@ export function fitPreview(): void {
 /** Stage on/off (the store's `fast`): the sidebar folds to icons with the same row glide as a collapse, the preview column widens into the live view. */
 export function setStage(on: boolean): void {
   if (staged() === on) return;
-  // No lockPreview: leaving Stage with the preview hidden would pin --rwlock at the stage's full width for the next open.
+  // No lockPreview: leaving Stage with the preview hidden would pin --bots-rwlock at the stage's full width for the next open.
+  // Never a view transition (slideAsViewTransition): openFull flushes Stage in so #full is laid out in the column before it focuses there.
   withRailGlide(() => bodyClass("stage", on));
 }
 
-export function applyLayout(save: boolean): void {
-  withRailGlide(() => lockPreview(() => {
-    body().style.setProperty("--lw", layout.lw + "px");
-    body().style.setProperty("--rw", layout.rw + "px");
-    body().style.setProperty("--chatw", layout.cw + "px");
-    body().classList.toggle("lcol", !!layout.lcol);
-    body().classList.toggle("rcol", !!layout.rcol);
-    fitPreview();
-  }));
+/** Put the layout on the page: the widths on <main> (bots.css reads them there, non-inheriting), the panel classes on the root, the
+ *  narrow-window folds. `unfold`: this write is a hand expand (fitPreview's lfit hysteresis restarts from off; see `unfolding`). Reads
+ *  `layout` when it RUNS, which for a view transition is a frame after the click. */
+function writeLayout(unfold: boolean): void {
+  const main = mainEl();
+  if (main) {
+    main.style.setProperty("--bots-lw", layout.lw + "px");
+    main.style.setProperty("--bots-rw", layout.rw + "px");
+    main.style.setProperty("--bots-chatw", layout.cw + "px");
+  }
+  body().classList.toggle("lcol", !!layout.lcol);
+  body().classList.toggle("rcol", !!layout.rcol);
+  unfolding = unfold;
+  try { fitPreview(); } finally { unfolding = false; }
+}
+
+/** Apply the layout. `slide`: a button asked for it (the sidebar toggle, the preview's show / hide, a gutter's reset), so it may run as a
+ *  view transition; drags, window resizes and boot never do. `unfold`: see writeLayout. */
+export function applyLayout(save: boolean, opts: { slide?: boolean; unfold?: boolean } = {}): void {
+  const write = () => writeLayout(!!opts.unfold);
+  if (!(opts.slide && slideAsViewTransition(write))) withRailGlide(() => lockPreview(write));
   if (save) try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch { /* storage blocked */ }
+}
+
+// ---- a button's layout change, as a view transition ----
+//
+// WHY. The grid slide above animates grid-template-columns, so every frame re-lays-out the page on the main thread: the chat re-wraps
+// its messages (4–6 ms), its ResizeObserver re-pins the scroll and the scroll handler runs (1.5–3 ms). A Chromium trace put a slide frame
+// at 4–8 ms against the 8.3 ms a 120 Hz display gives it. A view transition lays the end state out ONCE, then the compositor morphs
+// snapshots of the named parts: a slide frame measured 1.2 ms median, 5.9 ms worst, none over budget. The look is the same slide on the
+// same clock; the chat shows its final wrap from the first frame while its edge glides (bots.css, "THE BUTTONS' SLIDE").
+//
+// WHEN NOT. Only for a click: a drag must track the pointer through the grid, and a window resize is continuous. Never in Stage (openFull
+// needs the Stage grid laid out synchronously) or its full-window fallback, never on the phone layout, never under reduced motion, never in
+// a hidden tab. Not while something is drawn over the columns (a route page, a dialog): the snapshots would be painted above it for the
+// 0.3 s. And only where the API takes `types` (Chromium 125+, Safari 18.2+): the chat's anchor rides on one. Everywhere else the grid
+// slide runs, as before. For the 0.3 s the page ignores clicks (the transition's own overlay takes them); the transition's default.
+
+/** Writes waiting for the pending transition's update (it runs a frame after the click): a second click in that frame joins it. */
+let vtQueue: (() => void)[] | null = null;
+/** The newest transition; an older one's cleanup must not strip the names a newer one has just set on the same elements. */
+let vtGen = 0;
+/** What the newest transition named. A click during a slide starts a new one (the browser skips the old to its end): the old names go
+ *  first, or a row named by both under different indexes would collide and the new transition would be dropped. */
+let vtNamed: HTMLElement[] = [];
+/** Bot rows named for one transition, at most: each is a snapshot of its own on the GPU. */
+const VT_ROWS = 40;
+
+function canViewTransition(): boolean {
+  if (typeof document === "undefined" || typeof document.startViewTransition !== "function") return false;
+  if (typeof ViewTransition === "undefined" || !("types" in ViewTransition.prototype)) return false;
+  const cl = body().classList;
+  // `lanim`: a grid slide (a window-resize fold) is still gliding its rows; a transition over it would catch them mid-morph.
+  if (!botsMounted() || isLanHost() || ["dragging", "lanim", "stage", "sfull"].some((c) => cl.contains(c))) return false;
+  if (document.visibilityState !== "visible") return false;
+  if (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
+  if (body().querySelector(":scope > :is(#bpanel, #ppanel, #apanel)")) return false;
+  // A MODAL only: the rail's cards stay in the DOM as hidden role="dialog" boxes, and would turn this off for good.
+  if (document.querySelector('[data-slot="dialog-overlay"], .modal-overlay, [aria-modal="true"]')) return false;
+  return true;
+}
+
+function nameForSlide(el: HTMLElement, name: string, cls: string): void {
+  el.style.setProperty("view-transition-name", name);
+  el.style.setProperty("view-transition-class", cls);
+}
+function unnameForSlide(el: HTMLElement): void {
+  el.style.removeProperty("view-transition-name");
+  el.style.removeProperty("view-transition-class");
+}
+/** Fully inside the list's scroll box: a named row is painted above everything for the slide, so one half-scrolled out of the list would
+ *  float over the header or the footer. */
+function inList(row: HTMLElement, box: DOMRect): boolean {
+  const r = row.getBoundingClientRect();
+  return r.height > 0 && r.top >= box.top && r.bottom <= box.bottom;
+}
+
+/** Run `write` as a view transition. False when it cannot (see WHEN NOT): the caller writes through the grid slide instead. */
+function slideAsViewTransition(write: () => void): boolean {
+  if (vtQueue) { vtQueue.push(write); return true; }
+  if (!canViewTransition()) return false;
+  const main = mainEl(), chat = main?.querySelector<HTMLElement>(":scope > .chat"), list = listEl() as HTMLElement | null;
+  if (!main || !chat) return false;
+  for (const el of vtNamed) unnameForSlide(el);
+  const named: HTMLElement[] = [];
+  vtNamed = named;
+  const name = (el: HTMLElement | null | undefined, n: string, cls = "bots-slide") => { if (el) { nameForSlide(el, n, cls); named.push(el); } };
+  name(main.querySelector<HTMLElement>(":scope > .bots"), "bots-list");
+  name(main.querySelector<HTMLElement>(":scope > .gutter.l"), "bots-gutter-l");
+  name(chat, "bots-chat");
+  name(main.querySelector<HTMLElement>(":scope > .gutter.r"), "bots-gutter-r");
+  name(previewEl(), "bots-preview");
+  const rows: HTMLElement[] = [];
+  if (list) {
+    const box = list.getBoundingClientRect();
+    for (const row of list.querySelectorAll<HTMLElement>(".bot")) {
+      if (rows.length >= VT_ROWS) break;
+      if (!inList(row, box)) continue;
+      name(row, `bots-row-${rows.length}`, "bots-slide bots-row");
+      rows.push(row);
+    }
+  }
+  // The grid's own transition and the +'s size transition must not run inside the new snapshot as well: inline, so only these two
+  // elements restyle (a root class would restyle the page).
+  const add = body().querySelector<HTMLElement>("#add");
+  const before = chat.getBoundingClientRect();
+  const pvWas = previewShown(), pvW = previewEl()?.getBoundingClientRect().width ?? 0;
+  const gen = ++vtGen;
+  vtQueue = [write];
+  let vt: ViewTransition | null = null;
+  // The queue must not outlive an update that never comes: every later click would join it and write nothing. The browser runs the
+  // update even for a skipped transition, so this is a guard, not a path: past a second, the writes land without the slide.
+  const stuck = setTimeout(() => {
+    if (gen !== vtGen || !vtQueue) return;
+    const writes = vtQueue;
+    vtQueue = null;
+    for (const w of writes) w();
+  }, 1000);
+  const update = () => {
+    clearTimeout(stuck);
+    const writes = gen === vtGen ? vtQueue || [] : [];
+    if (gen === vtGen) vtQueue = null;
+    main.style.setProperty("transition", "none");
+    add?.style.setProperty("transition", "none");
+    for (const w of writes) w();
+    // lockPreview's rule, kept: a preview that closes holds its open width (pinned, it slides off past the window's edge as one piece,
+    // here and in a later grid slide back in); one that is shown holds none, or its gutter could not resize it.
+    clearTimeout(lockT);
+    const pv = previewEl();
+    if (previewShown()) unlockPreview();
+    else if (pvWas && pv) pv.style.setProperty("--bots-rwlock", pvW + "px");
+    // Rows that end outside the list (the header restacks on a collapse) leave the slide: their old snapshot fades where it was.
+    if (list) {
+      const box = list.getBoundingClientRect();
+      for (const row of rows) if (!inList(row, box)) unnameForSlide(row);
+    }
+    const after = chat.getBoundingClientRect();
+    if (vt && Math.abs(after.right - before.right) < 0.5 && Math.abs(after.left - before.left) >= 0.5) vt.types.add("bots-chat-right");
+  };
+  try {
+    vt = document.startViewTransition({ update, types: ["bots-slide"] });
+  } catch {
+    clearTimeout(stuck);
+    vtQueue = null;
+    for (const el of named) unnameForSlide(el);
+    vtNamed = [];
+    return false;
+  }
+  const done = () => {
+    if (gen !== vtGen) return;
+    for (const el of named) unnameForSlide(el);
+    vtNamed = [];
+    main.style.removeProperty("transition");
+    add?.style.removeProperty("transition");
+  };
+  vt.finished.then(done, done);
+  return true;
 }
 
 /** Replace part of the layout and apply it. */
@@ -208,26 +358,28 @@ export function setLayout(patch: Partial<Layout>, save = true): void { layout = 
  *  full sidebar + thread + preview still cannot fit, rather than lfit snapping the sidebar straight back to icons. Stage folding the
  *  sidebar on open is the other half (the .stage rules in bots.css): the two never show side by side, as Notion's peek and sidebar. */
 export function toggleLeft(): void {
-  const next = { ...layout, lcol: !railShut() };
+  // A view transition writes a frame after the click (slideAsViewTransition): a second click inside that frame reads the layout it
+  // queued, not the classes it has not written yet, or it would compute the same toggle and cancel itself.
+  const next = { ...layout, lcol: vtQueue ? !layout.lcol : !railShut() };
   if (!next.lcol && !next.rcol) {
     const w = mainEl()?.clientWidth || 0;
     if (w - Math.min(next.lw, w * 0.4) - 12 - MID_MIN - R_MIN < 0) next.rcol = true;
   }
   // Layout first: the Stage grid ignores lcol / rcol, so this moves nothing yet, and the close then glides the rail open in one step.
-  layout = next; unfolding = !next.lcol;
-  try { applyLayout(true); } finally { unfolding = false; }
+  layout = next;
+  applyLayout(true, { slide: true, unfold: !next.lcol });
   if (!next.lcol && staged() && stageShut) stageShut();
 }
 /** #rcol: show or hide the preview. */
-export function toggleRight(): void { layout = { ...layout, rcol: !layout.rcol }; applyLayout(true); }
+export function toggleRight(): void { layout = { ...layout, rcol: !layout.rcol }; applyLayout(true, { slide: true }); }
 /** #pclose: hide the preview. */
-export function closePreview(): void { layout = { ...layout, rcol: true }; applyLayout(true); }
+export function closePreview(): void { layout = { ...layout, rcol: true }; applyLayout(true, { slide: true }); }
 /** Gutter double-click: that side back to its default width, expanded. */
 export function resetSide(side: Side): void {
   side = effSide(side);
-  if (side === "c") { layout = { ...layout, cw: LAYOUT_DEF.cw }; applyLayout(true); return; }
+  if (side === "c") { layout = { ...layout, cw: LAYOUT_DEF.cw }; applyLayout(true, { slide: true }); return; }
   const key = side === "l" ? "lw" : "rw", col = side === "l" ? "lcol" : "rcol";
-  layout = { ...layout, [key]: LAYOUT_DEF[key], [col]: false }; applyLayout(true);
+  layout = { ...layout, [key]: LAYOUT_DEF[key], [col]: false }; applyLayout(true, { slide: true });
 }
 
 /** Gutter pointerdown: track the pointer until release (pointer capture on the gutter itself). */
@@ -235,9 +387,9 @@ export function startGutterDrag(side: Side, g: HTMLElement, e: PointerEvent): vo
   const main = mainEl(); if (!main) return;
   if (side !== "l") { startBrowserDrag(main, g, e); return; }
   const other = main.querySelector(".preview");
-  // Width the preview takes. A hidden preview still measures its last open width (--rwlock keeps it for the slide back in) although its track is 0: count it as 0.
+  // Width the preview takes. A hidden preview still measures its last open width (--bots-rwlock keeps it for the slide back in) although its track is 0: count it as 0.
   const otherW = () => previewShown() && other ? other.getBoundingClientRect().width : 0;
-  // The sidebar's track is min(--lw, 40%): cap its room the same way, or a drag saves a width the track never shows.
+  // The sidebar's track is min(--bots-lw, 40%): cap its room the same way, or a drag saves a width the track never shows.
   const roomFor = () => Math.min(main.clientWidth - otherW() - 12 - MID_MIN, main.clientWidth * 0.4);
   e.preventDefault(); g.setPointerCapture(e.pointerId); g.classList.add("drag"); body().classList.add("dragging");
   const x0 = e.clientX, w0 = layout.lcol ? LIM.l.shut : shownWidth(main.querySelector(".bots"), layout.lw, LIM.l.min);
@@ -309,7 +461,7 @@ function startBrowserDrag(main: HTMLElement, g: HTMLElement, e: PointerEvent): v
       if (b < flipAt() - STAGE_BAND && stageShut) {
         // The preview step first (rw and the sidebar fold it needs for room): with control held the close resolves after the giveback,
         // maybe after the pointer is up, and the preview must then show at the dragged width, not the one saved before Stage opened.
-        // --rw and lcol are unused while the Stage grid is up, so this costs nothing.
+        // --bots-rw and lcol are unused while the Stage grid is up, so this costs nothing.
         previewStep(b);
         stageShut();
       }
