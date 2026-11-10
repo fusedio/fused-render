@@ -1216,9 +1216,10 @@ export function TaskPeek({
             ...(SHOW_PAGE_DOOR && gone
               ? [
                   {
-                    label: pageDoorLabel(t),
+                    label: `${pageDoorLabel(t)} — folder deleted`,
                     icon: ICON_OPEN_DOOR,
                     disabled: true,
+                    title: MISSING_FOLDER_TOAST,
                     onClick: () => notify({ title: MISSING_FOLDER_TOAST, tone: "error" }),
                   },
                 ]
