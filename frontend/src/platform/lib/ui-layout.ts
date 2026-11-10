@@ -73,6 +73,17 @@ const TASKS_IDENT = /^[a-z0-9_-]{1,32}$/;
 const RAIL_PEEK_MIN = 120;
 const RAIL_PEEK_MAX = 10000;
 
+/** The chat text zoom's steps (⌘+ / ⌘− / ⌘0 in a chat, platform/lib/chat-zoom.ts),
+ *  1 = 100 %. shell/ui_layout.py snaps to the same list. */
+export const CHAT_TEXT_SCALES: readonly number[] = [0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+
+/** `n` clamped to the step list's ends and snapped to its nearest step. */
+export function snapChatTextScale(n: number): number {
+  let best = 1;
+  for (const s of CHAT_TEXT_SCALES) if (Math.abs(s - n) < Math.abs(best - n)) best = s;
+  return best;
+}
+
 /** Debounce before the whole-document PUT: a resize drag or a burst of sort
  *  clicks is one write, not one per event. */
 const FLUSH_DEBOUNCE_MS = 300;
@@ -159,6 +170,7 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
       };
     }
   }
+  if (isNum(src.chatTextScale)) out.chatTextScale = snapChatTextScale(src.chatTextScale);
   return out;
 }
 

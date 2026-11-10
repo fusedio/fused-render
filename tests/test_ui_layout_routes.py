@@ -29,6 +29,7 @@ def _doc():
         "rememberLastFolder": True,
         "canvasRailPeek": {"width": 520, "height": 720},
         "canvasRailFav": {"width": 400, "height": 480},
+        "chatTextScale": 1.25,
     }
 
 
@@ -54,6 +55,7 @@ def test_put_roundtrips_and_drops_unknown_keys(tmp_path, monkeypatch):
         "v": 1,
         "canvasRailPeek": doc["canvasRailPeek"],
         "canvasRailFav": doc["canvasRailFav"],
+        "chatTextScale": doc["chatTextScale"],
     }
 
 
@@ -112,9 +114,29 @@ def test_put_invalid_is_400(tmp_path, monkeypatch):
         {**base, "canvasRailFav": {"height": 480}},
         {**base, "canvasRailFav": {"width": 400, "height": 119}},
         {**base, "canvasRailFav": "400x480"},
+        {**base, "chatTextScale": "1.25"},
+        {**base, "chatTextScale": True},
+        {**base, "chatTextScale": None},
     ]
     for doc in bad:
         assert client.put("/api/ui-layout", json=doc, headers=FUSED).status_code == 400, doc
+
+
+def test_chat_text_scale_clamps_and_snaps_to_a_step(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    for sent, kept in [(1, 1), (1.3, 1.25), (0.5, 0.8), (9, 2), (1.04, 1)]:
+        assert client.put("/api/ui-layout", json={"v": 1, "chatTextScale": sent},
+                          headers=FUSED).status_code == 200
+        assert client.get("/api/ui-layout").json()["layout"]["chatTextScale"] == kept, sent
+
+
+def test_put_without_chat_text_scale_keeps_the_stored_zoom(tmp_path, monkeypatch):
+    """An older bundle's PUT never names `chatTextScale`: the zoom survives it."""
+    client = _client(tmp_path, monkeypatch)
+    client.put("/api/ui-layout", json={"v": 1, "chatTextScale": 1.5}, headers=FUSED)
+    assert client.put("/api/ui-layout", json={"v": 1, "bookmarksCollapsed": True},
+                      headers=FUSED).status_code == 200
+    assert client.get("/api/ui-layout").json()["layout"]["chatTextScale"] == 1.5
 
 
 def test_corrupt_stored_doc_reads_absent(tmp_path, monkeypatch):

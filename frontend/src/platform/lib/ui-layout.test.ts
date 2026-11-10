@@ -34,3 +34,17 @@ describe("sanitizeUiLayout canvasRailFav", () => {
     expect(sanitizeUiLayout({ v: 1, canvasRailFav: { width: 400 } }).canvasRailFav).toBeUndefined();
   });
 });
+
+describe("sanitizeUiLayout chatTextScale", () => {
+  it("keeps a step, snaps an off-step number and clamps to 0.8–2", () => {
+    expect(sanitizeUiLayout({ v: 1, chatTextScale: 1.25 }).chatTextScale).toBe(1.25);
+    expect(sanitizeUiLayout({ v: 1, chatTextScale: 1.3 }).chatTextScale).toBe(1.25);
+    expect(sanitizeUiLayout({ v: 1, chatTextScale: 0.1 }).chatTextScale).toBe(0.8);
+    expect(sanitizeUiLayout({ v: 1, chatTextScale: 40 }).chatTextScale).toBe(2);
+  });
+  it("drops a non-number", () => {
+    expect(sanitizeUiLayout({ v: 1, chatTextScale: "1.25" }).chatTextScale).toBeUndefined();
+    expect(sanitizeUiLayout({ v: 1, chatTextScale: NaN }).chatTextScale).toBeUndefined();
+    expect(sanitizeUiLayout({ v: 1, chatTextScale: null }).chatTextScale).toBeUndefined();
+  });
+});

@@ -1537,11 +1537,11 @@ a.claude-rail-peek-scope:focus-visible {
 }
 .chat-root .agent-peek-label {
   margin-bottom: 4px;
-  font-size: var(--c-fs-meta);
+  font-size: calc(var(--c-fs-meta) * var(--c-zoom, 1));
   color: var(--c-faint);
 }
 .chat-root .agent-peek-prompt-text.is-clamped {
-  max-height: calc(4 * var(--c-fs-read) * var(--c-lh-read));
+  max-height: calc(4 * var(--c-fs-read) * var(--c-lh-read) * var(--c-zoom, 1));
   overflow: hidden;
 }
 /* The trigger sits on the column's left edge, not in a paragraph's corner. */
