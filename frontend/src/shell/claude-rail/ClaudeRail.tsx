@@ -94,10 +94,10 @@
 // is mounted (fav-peek-store `registerPageRail`, claude-rail-lib
 // `fallbackRailUp`): every page rail counts itself from its layout phase.
 //
-// A SELECTED NODE NARROWS THE RAIL the way it narrows the open pane (owner,
-// 2026-10-29: "collapsed sidebar should behave exact same way as expanded
-// sidebar but in a collapsed view"): the chats are that node's alone
-// (claude-rail-lib `onRail`), and the + makes a task ON the node — the card
+// A SELECTED NODE SORTS THE RAIL (owner, 2026-11-10; it narrowed it from
+// 2026-10-29): every chat on the canvas stays, the node's first, then a
+// hairline, then the rest faded (claude-rail-lib `railRows`, `off`) — and the
+// + makes a task ON the node — the card
 // locked on the node's file, the target the node pane's own chats carry, so
 // the new task is filed under the node (`task.canvas.file`) and shows in the
 // node's Recent list once the pane opens.
@@ -216,15 +216,11 @@
 // that lands after the press, brings the dot back). A modified press (a new
 // tab) clears nothing: the page it opens does its own reading.
 //
-// THE LAST SEAT WHILE A NODE IS SELECTED is the way back to the whole
-// canvas (owner, 2026-11-01: "at the end of that list, only in the collapsed
-// list, a canvas icon button which when clicked shows all canvas chats, not
-// just filtered chats"): the canvas glyph, which asks the workbench to
-// DESELECT (`onSelectNode(null)`) — the selection echo sets `node` back to
-// null, and the rail widens to every chat on the canvas, the + with it. It
-// stands even when the node has no chat of its own: an empty list with no
-// way out of the filter is the thing to avoid.
+// NO WAY-BACK SEAT (owner, 2026-11-10: "remove back to canvas button"): the
+// canvas glyph that deselected the node (2026-11-01) is gone — with every
+// chat on the canvas listed, there is no filter to get out of.
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -312,7 +308,6 @@ import {
   type ReadMark,
   windowAHovers,
 } from "./claude-rail-lib";
-import { CanvasGlyph } from "@apps/canvases/glyph";
 import {
   FAV_SETTLE_MS,
   PEEK_MAX_WIDTH,
@@ -1817,11 +1812,7 @@ export function ClaudeRail({
     };
   }, []);
   const [opening, setOpening] = useState(false);
-  // The all-chats seat pressed by keyboard (below): when the node goes, the
-  // keyboard goes to the +, the rail's first seat, rather than to the body.
-  const allRef = useRef<HTMLButtonElement | null>(null);
   const plusRef = useRef<HTMLButtonElement | null>(null);
-  const refocusPlus = useRef(false);
   // THE POINTER'S RESTING PLACE AT THE SEAT'S PRESS. The press reshapes the
   // rail (the seat goes, the list grows), and the engine then reports a
   // pointer ENTER on whichever ring slid under the unmoved pointer — which
@@ -1853,11 +1844,6 @@ export function ClaudeRail({
     if (to === intent && !aHovers()) return;
     to.enterRing(key, "pointer");
   };
-  useEffect(() => {
-    if (node || !refocusPlus.current) return;
-    refocusPlus.current = false;
-    plusRef.current?.focus({ preventScroll: true });
-  }, [node]);
   const waiting = newTask.waiting;
   // THE POPOVER'S HOVER PREVIEW AND PIN (owner, 2026-11-07; plus-pop-lib.ts),
   // with the nav doors: the pointer resting on the + — or on a DRAFT's ring,
@@ -2608,7 +2594,7 @@ export function ClaudeRail({
   }, [place, activeList, measureEdges, hideList]);
 
   // ONE RING, as the list draws it (and as the favourites' section does).
-  const ringOf = ({ pulse: t, row }: RailRow, foot = false) => {
+  const ringOf = ({ pulse: t, row, off }: RailRow, foot = false) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
               // Hollow since the press, until the pulse agrees (header).
@@ -2681,7 +2667,7 @@ export function ClaudeRail({
               // and `aria-expanded` are not allowed on `listitem`, and a link
               // that opens a dialog is the shape they describe.
               return (
-                <div key={t.key} role="listitem" className="claude-rail-seat">
+                <div key={t.key} role="listitem" className={`claude-rail-seat${off ? " is-off" : ""}`}>
                 <a
                   ref={(el) => {
                     // THE LIST'S RINGS ANCHOR WINDOW A (header): with the
@@ -3170,7 +3156,7 @@ export function ClaudeRail({
             ref={listRef}
             className="claude-rail-chats"
             role="list"
-            aria-label={`Chats on ${scope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
+            aria-label={`Chats on ${node ? name : scope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
             // AT MOST TEN RINGS TALL, then it scrolls (claude-rail-lib
             // `LIST_ROWS_MAX`, claude-rail.css `.is-scroll`); the fades at
             // its edges say there is more above / below (`listEdges`).
@@ -3183,46 +3169,16 @@ export function ClaudeRail({
             }
             onScroll={measureEdges}
           >
-            {baseSeats.map((seat) => ringOf(seat))}
-          </div>
-        )}
-        {node && (
-          // THE FOOT, under the list's hairline: the way back to the whole
-          // canvas — the canvas glyph, which deselects the node in the
-          // workbench. BELOW the list, not its last row: the list clips to
-          // the rings that fit, and a way out that was clipped off is no
-          // way out.
-          <div className="claude-rail-all-seat">
-            {onSelectNode && (
-            <button
-              ref={allRef}
-              type="button"
-              className="sidebar-rail-btn claude-rail-item claude-rail-all"
-              // No native `title` beside the app's hint (owner, 2026-11-02:
-              // "there are two tooltips here — only have our one").
-              aria-label={`All chats on ${name} (deselect ${node.udfName})`}
-              data-hint={`All chats on ${name}`}
-              data-hint-side="left"
-              onClick={(e) => {
-                hideHint();
-                // A keyboard press: this button is about to unmount under
-                // the focus, which would fall to the body — hand it to the
-                // + once the node is gone (the effect above).
-                refocusPlus.current = e.detail === 0;
-                // A pinned card closes on this press like any other outside
-                // press — from the keyboard too, which the document's
-                // pointerdown rule never hears (Bugbot on #2049).
-                if (intent.current && !heldRef.current) intent.dismiss();
-                // Where the pointer rests now (the press's own spot, or the
-                // last move for a keyboard press): a ring sliding under it
-                // is not a hover (`stillAt`).
-                stillAt.current = e.detail === 0 ? lastPointer.current : { x: e.clientX, y: e.clientY };
-                onSelectNode(null);
-              }}
-            >
-              <CanvasGlyph size={16} />
-            </button>
-            )}
+            {baseSeats.map((seat, i) => (
+              <Fragment key={seat.pulse.key}>
+                {/* THE NODE'S CHATS, THEN A HAIRLINE, THEN THE REST faded
+                    (claude-rail-lib `railRows`; owner, 2026-11-10). */}
+                {seat.off && i > 0 && !baseSeats[i - 1].off && (
+                  <span className="claude-rail-node-sep" aria-hidden="true" />
+                )}
+                {ringOf(seat)}
+              </Fragment>
+            ))}
           </div>
         )}
         {!navDoors && git && railGit.repo && (

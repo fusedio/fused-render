@@ -297,26 +297,26 @@
 .claude-rail-chat.peeked::after {
   background: rgba(var(--tint), 0.08);
 }
-/* The seat under the list while a node is selected (ClaudeRail
-   `.claude-rail-all`): the canvas glyph, the way back to every chat on the
-   canvas. Below the scroller, so a short window never scrolls it away; a
-   hairline above it, the rail's own divider (.sidebar-rail-items wears the
-   same), so it reads as the list's foot and not as one more chat. */
-.claude-rail-all-seat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  /* Never shrinks: the foot is the rail's fixed part, and the list above it
-     (basis 0) is what gives way — a favourite is a thing the reader chose to
-     keep in view, so it is never the thing that clips. */
+/* A SELECTED NODE SORTS THE LIST (ClaudeRail, claude-rail-lib `railRows`;
+   owner, 2026-11-10): the node's chats first, a hairline, then every other
+   chat on the canvas at half strength — full again under the pointer or the
+   keyboard, so the ring being read is never the faded one. The hairline is
+   the rail's own divider (sidebar.css `.sidebar-rail-sep`), its margin taken
+   in by the list's 4px gap. */
+.claude-rail-node-sep {
   flex: 0 0 auto;
   width: 28px;
-  /* 8px each side of the hairline, as every rail divider (sidebar.css
-     `.sidebar-rail-sep`): 4 + the column's 4px gap above, 8 below. */
-  margin-top: 4px;
-  padding-top: 8px;
-  border-top: 1px solid var(--rail-sep);
+  height: 1px;
+  margin: 2px 0;
+  background: var(--rail-sep);
+}
+.claude-rail-seat.is-off {
+  opacity: 0.5;
+  transition: opacity 120ms ease;
+}
+.claude-rail-seat.is-off:hover,
+.claude-rail-seat.is-off:focus-within {
+  opacity: 1;
 }
 /* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): the rail's last
    section, under the git seats and a tight hairline of its own. The ring

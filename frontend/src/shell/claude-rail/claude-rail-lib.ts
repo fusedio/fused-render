@@ -52,6 +52,9 @@ import { isBlockedChat } from "./rail-peek-lib";
 export interface RailRow {
   pulse: TaskPulseTask;
   row: Task | null;
+  /** On a canvas with a node selected: a chat of the canvas that is not the
+   *  node's — drawn faded, under the node's own (`railRows`). */
+  off?: boolean;
 }
 
 /** Where the rail stands (header). `sessionless` admits rows with no session
@@ -467,13 +470,20 @@ export function railRows(
   place: RailPlace,
   now: number = Date.now(),
 ): RailRow[] {
+  // A SELECTED NODE SORTS THE LIST, it no longer narrows it (owner,
+  // 2026-11-10: "we show all tasks, the tasks related with node will sort up
+  // and then there will be separator then the other tasks [faded]"): the
+  // seats are the whole canvas's, the node's first (each group in the List's
+  // order), the rest marked `off`.
+  const nodeOf = place.kind === "canvas" && place.file ? place : null;
+  const at: RailPlace = nodeOf ? { ...nodeOf, file: null } : place;
   const pulseKeys = new Set(rows.map((t) => t.key));
   // Drafts the pulse does not carry (header): the listing's own draft rows
   // on this canvas stand in as their own pulse row — a `Task` is a superset.
-  const drafts: TaskPulseTask[] = place.sessionless
-    ? [...listing.values()].filter((r) => !pulseKeys.has(r.key) && isDraftTask(r) && onRail(r, place))
+  const drafts: TaskPulseTask[] = at.sessionless
+    ? [...listing.values()].filter((r) => !pulseKeys.has(r.key) && isDraftTask(r) && onRail(r, at))
     : [];
-  const mine = [...rows.filter((t) => onRail(t, place)), ...drafts];
+  const mine = [...rows.filter((t) => onRail(t, at)), ...drafts];
   const byKey = new Map(mine.map((t) => [t.key, t]));
   const held = new Map<string, Task>();
   const ranked: Task[] = mine.map((t) => {
@@ -490,12 +500,20 @@ export function railRows(
     // unsent words and no app page is.
     return t as Task;
   });
-  return sortForList(ranked, now)
+  const seats = sortForList(ranked, now)
     .map((row): RailRow | null => {
       const pulse = byKey.get(row.key);
       return pulse ? { pulse, row: held.get(row.key) ?? null } : null;
     })
     .filter((r): r is RailRow => r !== null);
+  if (!nodeOf) return seats;
+  const ours: RailRow[] = [];
+  const rest: RailRow[] = [];
+  for (const s of seats) {
+    if (onRail(s.pulse, nodeOf)) ours.push(s);
+    else rest.push({ ...s, off: true });
+  }
+  return [...ours, ...rest];
 }
 
 /** A QUEUED FORM ROW'S DOOR (owner, 2026-11-09: "with project queue flag on,
