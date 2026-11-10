@@ -2196,6 +2196,13 @@ export function ClaudeRail({
   const openNewTask = () => {
     if (navDoors) {
       if (waiting || (card && !card.pop)) return;
+      // A TOGGLE (owner, 2026-11-10): a press on the + while ITS card stands
+      // pinned closes it, the chassis' way (busy / dirty guards, fade) — the
+      // first press pinned the preview, the next one puts it down.
+      if (card?.pop && card.pinned && (card.door || PLUS_DOOR) === PLUS_DOOR) {
+        setCardCloseSignal((n) => n + 1);
+        return;
+      }
       plusIntent.press(PLUS_DOOR);
       return;
     }
