@@ -91,8 +91,12 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
-  flex: 0 1 auto;
+  /* NEVER SHRINKS (QA, 2026-11-10): every seat in here is a fixed control
+     or a capped chip, so a cluster that gave width while its children could
+     not simply pushed the ⋮ past the panel's edge — and the fit engine, which
+     models the children, never saw an overflow to fold. The title is the one
+     thing that gives; the ladder folds the rest. */
+  flex: 0 0 auto;
   margin-left: auto;
 }
 /* Only the chips (once stacked, below) and the host's seats give way inside
