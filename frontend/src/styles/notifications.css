@@ -207,6 +207,10 @@
 .term-drawer {
   position: relative;
   flex: 0 0 auto;
+  /* Ends at the Claude rail while one stands, as the status bar does
+     (`--status-bar-end`): the rail runs down past the drawer to the window's
+     bottom (claude-rail.css), like the global sidebar on the left. */
+  margin-right: var(--claude-rail-w, 0px);
   display: flex;
   flex-direction: column;
   min-height: 120px;

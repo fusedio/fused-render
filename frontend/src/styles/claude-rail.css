@@ -45,10 +45,14 @@
    height (a stretched flex item with a negative bottom margin grows by it;
    no ancestor clips, measured on the canvas, app, explorer and fallback
    rows), so the last section sits on the window's edge, as the global
-   sidebar's bottom cluster does on the left. The same `is-scroll` rail,
-   the same no-drawer rule. */
-#main:not(:has(> .term-drawer)) .claude-rail.is-scroll:not([hidden]) {
-  margin-bottom: calc(-1 * var(--status-bar-h, 22px));
+   sidebar's bottom cluster does on the left. The same `is-scroll` rail.
+   THROUGH AN OPEN TERMINAL DRAWER TOO (owner, 2026-11-10: "left sidebar
+   doesn't move, right sidebar moves"): the drawer says its height on the
+   document (TerminalDrawer `--term-drawer-h`, 0 while shut) and the rail is
+   pulled down by it as well, while the drawer ends at the rail's edge
+   (notifications.css `.term-drawer`), the same as the bar does. */
+#main .claude-rail.is-scroll:not([hidden]) {
+  margin-bottom: calc(-1 * (var(--status-bar-h, 22px) + var(--term-drawer-h, 0px)));
 }
 /* A rail with nothing to draw beside the open pane (ClaudeRail `shown`,
    claude-rail-lib `railShown`) is hidden, not unmounted: the attribute alone

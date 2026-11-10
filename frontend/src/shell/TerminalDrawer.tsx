@@ -67,7 +67,7 @@
 // Both `e.code === "Backquote"` chords route through `isMod()`
 // (platform/lib/platform.ts), the same exclusive Mac-vs-other test every
 // other shortcut in the app uses.
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 
 import TerminalView from "@platform/ui/TerminalView";
 import type { ShellFailure } from "@platform/lib/terminalAi";
@@ -319,6 +319,24 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   const openRef = useRef(open);
   openRef.current = open;
   const [height, setHeight] = useState(() => loadState().height);
+  // THE DRAWER'S HEIGHT, SAID TO THE DOCUMENT (`--term-drawer-h`): the Claude
+  // rail runs down past it to the window's bottom (claude-rail.css), so it
+  // needs the drawer's border-box height, live through a drag. Unset while
+  // shut, so the rail only spans the status bar.
+  const drawerRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const el = drawerRef.current;
+    const root = typeof document !== "undefined" ? document.documentElement : null;
+    if (!open || !el || !root) return;
+    const say = () => root.style.setProperty("--term-drawer-h", `${el.offsetHeight}px`);
+    say();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(say) : null;
+    ro?.observe(el);
+    return () => {
+      ro?.disconnect();
+      root.style.removeProperty("--term-drawer-h");
+    };
+  }, [open]);
   // Deliberately NOT seeded from the cached list: doing that made this state
   // non-null on first render whenever cached ids existed, which made the
   // effect below bail out on its OWN guard (`tabs !== null`) before the
@@ -780,7 +798,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   if (!open) return null;
 
   return (
-    <div className="term-drawer" style={{ height }}>
+    <div ref={drawerRef} className="term-drawer" style={{ height }}>
       <div
         className="term-drawer-handle"
         role="separator"
