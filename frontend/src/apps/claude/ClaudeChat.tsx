@@ -117,6 +117,7 @@ import {
   AttachTray,
   BreakoutContextChip,
   Kebab,
+  knownTaskId,
   CardPolicyProvider,
   Composer,
   createCardPolicy,
@@ -180,6 +181,10 @@ import { PlaceTags } from "@shell/claude-rail/PlaceTags";
 import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { TaskPeekProject } from "@shell/TaskPeekWho";
+import { StatusIcon } from "@shell/ScheduleTaskViews";
+import { shortTaskId } from "@shell/tasks-lib";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { queueCaption } from "@platform/lib/queue";
 import { ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
@@ -5894,6 +5899,51 @@ function ChatBody(props: ChatBodyProps) {
       <X size={14} aria-hidden="true" />
     </button>
   ) : null;
+  // The queue facts the identity reads (Topbar's `queue`), and their line.
+  const headQueue =
+    inChat && queueOn
+      ? headerQueue(sched.row, waitFacts, waitCount, running || sched.row?.status === "in_progress")
+      : null;
+  const headLine = headQueue ? queueCaption(headQueue) : null;
+  /**
+   * A CHAT WITH NO TASK ROW YET still says what it is (Topbar's fallback line,
+   * same words): the agent's mark — or, waiting in a line, the queued ring —
+   * its name, the target's name, and the task number or the session hash
+   * until the number lands; "running" while a turn is live and no pause word
+   * is said. Not while nobody has answered (`pending`, the skeleton) — unless
+   * a queued line is the answer.
+   */
+  const fallbackSid = state.sessionId ?? "";
+  const fallbackLabel =
+    shortTaskId(taskId || knownTaskId(fallbackSid) || "") || (fallbackSid ? fallbackSid.slice(0, 8) : "");
+  const fallbackTitle =
+    inChat && !head.task && (!head.pending || headLine) ? (
+      <span className="c-tb-fallback" title={fallbackSid || undefined}>
+        {headLine ? (
+          <span className="task-side-peek-status" title="Queued">
+            <StatusIcon status="queued" />
+          </span>
+        ) : (
+          <AgentMark backend={chatBackend} className="c-spark" />
+        )}
+        <span className="c-tb-title">{agentLabel(chatBackend)}</span>
+        {props.mergedHead ? null : (
+          <span className="c-tb-file" title={name || undefined}>
+            {name}
+          </span>
+        )}
+        {fallbackLabel ? (
+          <span className="c-session" title={fallbackSid || undefined}>
+            {fallbackLabel}
+          </span>
+        ) : null}
+        {!limitWord && running ? (
+          <span className="c-tb-run" aria-live="polite">
+            running
+          </span>
+        ) : null}
+      </span>
+    ) : null;
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
@@ -5913,13 +5963,10 @@ function ChatBody(props: ChatBodyProps) {
             : null
       }
       task={inChat ? head.task : null}
-      pending={inChat && head.pending}
+      {...(fallbackTitle ? { title: fallbackTitle } : {})}
+      pending={inChat && head.pending && !headLine}
       running={running}
-      queue={
-        inChat && queueOn
-          ? headerQueue(sched.row, waitFacts, waitCount, running || sched.row?.status === "in_progress")
-          : null
-      }
+      queue={headQueue}
       status={inChat ? limitWord : ""}
       place={
         inChat && head.task
@@ -5970,6 +6017,8 @@ function ChatBody(props: ChatBodyProps) {
         </>
       }
       kebab={kebabMenu}
+      // The seat labels fold the way they did on the strip (`.tight`).
+      seatsRef={stripRef}
     />
   ) : null;
   return (

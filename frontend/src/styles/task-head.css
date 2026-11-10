@@ -95,9 +95,74 @@
   flex: 0 1 auto;
   margin-left: auto;
 }
-/* Only the chips give way inside it; every control keeps its size. */
-.task-head-marks > :not(.task-head-chips) {
+/* Only the chips (once stacked, below) and the host's seats give way inside
+   it; every control keeps its size. */
+.task-head-marks > :not(.task-head-chips):not(.task-head-seats) {
   flex-shrink: 0;
+}
+
+/* THE HOST'S SEATS (the chat's AnnStrip, picker, view toggle, camera,
+   exit-full-screen). A box of their own so the chat can measure them and fold
+   their WORDS (`useFitStrip` stamps `.tight`, as it did on the strip): it is
+   allowed to shrink, which is what makes that measurement see an overflow. */
+.task-head-seats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-root .task-head-seats.tight .c-anncta,
+.task-head-seats.tight .c-anncta {
+  --c-annlbl: none;
+}
+
+/* A STACKED HEAD HAS ONE ROW OF MARKS LEFT, and at the panel's 220px floor
+   even that can overflow — so once the title has its own row the chip seat
+   may shrink again and the pill ellipsise inside it (the ladder has nothing
+   further to fold by then). */
+.task-head.is-stacked .task-head-chips {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.task-head.is-stacked .task-head-chips > *,
+.task-head.is-stacked .task-head-chips .chat-worktree-btn {
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* The reply line after the title (TaskHead `subtitle`; the rail card's last
+   reply): muted, italic, one line — the List row's way. */
+.task-head-subtitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+/* The identity's silhouette while nobody has answered (TaskHead `pending`):
+   composer.css's `.c-tb-skel`, held to the identity's seat. */
+.task-head-skel {
+  flex: 1 1 auto;
+}
+
+/* A chat with no task row yet names the tool and the file (ClaudeChat's
+   fallback title, Topbar's line): the mark at the identity line's colour. */
+.task-head .c-tb-fallback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 400;
+}
+.task-head .c-tb-fallback .c-spark {
+  color: var(--c-accent);
+  font-size: 15px;
 }
 
 /* THE CHIPS — the chat's worktree pill (portaled in from the chat, ChatMount
@@ -387,4 +452,59 @@
 .nt-form-head .task-head-chips {
   flex: 0 1 auto;
   overflow: visible;
+}
+
+/* THE ARMED ✕ (a dirty form's first close): `.deploy-close.is-armed`'s warm
+   wash, held on hover so the mouse cannot cool a state that is still live. */
+.nt-form-head .task-head-lead.is-armed,
+.nt-form-head .task-head-lead.is-armed:hover:not(:disabled) {
+  background: rgba(var(--warning-rgb), 0.16);
+  color: var(--warning);
+}
+
+/* THE RAIL CARD'S ARCHIVE OVER THE RING (favourites on; claude-rail.css's
+   `.claude-rail-peek-status` rules, for the identity's own ring seat): hidden
+   until the head is hovered or the button is focused, the ring stepping aside
+   under it. */
+.claude-rail-peek-task-head .task-side-peek-status {
+  position: relative;
+}
+.claude-rail-peek-task-head .task-side-peek-status .claude-rail-peek-archive {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+}
+.claude-rail-peek-head:hover .claude-rail-peek-task-head .task-side-peek-status .claude-rail-peek-archive,
+.claude-rail-peek-task-head .task-side-peek-status .claude-rail-peek-archive:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.claude-rail-peek-head:hover .claude-rail-peek-task-head .task-side-peek-status:has(.claude-rail-peek-archive) .schedule-ring,
+.claude-rail-peek-task-head .task-side-peek-status:has(.claude-rail-peek-archive:focus-visible) .schedule-ring {
+  opacity: 0;
+  pointer-events: none;
+}
+.claude-rail-peek-task-head .task-side-peek-status .claude-rail-peek-archive:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+}
+/* The reply line keeps its own face inside the subtitle seat. */
+.claude-rail-peek-task-head .task-head-subtitle {
+  flex: 1 1 0;
+  font-style: normal;
+}
+.claude-rail-peek-task-head .task-head-subtitle .claude-rail-peek-reply {
+  margin-left: 0;
 }

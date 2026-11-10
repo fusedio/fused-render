@@ -203,3 +203,16 @@ test("flag on, full screen in a side pane: the whole head is portaled into `.sid
     }
   }
 });
+
+test("flag on, a chat with no task row yet: the tool's own line — mark, agent, target, session — as the Topbar said it", async () => {
+  publishTaskHeadUnified({ enabled: true });
+  const r = await mountChat({ initialSessionId: "sess-abc12345" });
+  await settle(40);
+  const line = byClass(r, "c-tb-fallback");
+  expect(line).toHaveLength(1);
+  expect(byClass(r, "c-tb-title")[0]!.children).toEqual(["Claude"]);
+  expect(byClass(r, "c-tb-file")[0]!.children).toEqual(["p"]);
+  expect(byClass(r, "c-session")[0]!.children).toEqual(["sess-abc"]);
+  // The seats sit in the box the chat measures to fold their words.
+  expect(byClass(r, "task-head-seats")).toHaveLength(1);
+});

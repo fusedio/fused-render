@@ -6097,6 +6097,7 @@ export default function NewJobModal({
               kind: "close",
               label: armed ? "Close and discard changes" : "Close",
               hint: armed ? "Press again to discard" : "Close",
+              armed,
               onPress: close,
             }}
             task={null}
@@ -6107,7 +6108,9 @@ export default function NewJobModal({
                 {parts.titleAside}
               </div>
             }
-            chips={parts.headActions}
+            // In the chassis' own `.modal-head-actions` box, so its row rules
+            // (deploy.css, new-task.css) still lay the pills out.
+            chips={<div className="modal-head-actions">{parts.headActions}</div>}
             fitEnabled={false}
           />
         ),

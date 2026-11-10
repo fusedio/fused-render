@@ -278,3 +278,43 @@ test("part: title is the title and its pencil, none of the marks", () => {
   expect(titleSpan(v.r)!.props.id).toBe("t-1");
   expect(pencilOf(v.r)).toBeDefined();
 });
+
+// ---- a host's own pieces (the rail card on the shared head) ------------------
+
+test("a host's star stands in the star's seat, its overlay over the ring, its reply after the title", () => {
+  const v = render({
+    task: task(),
+    star: true,
+    starNode: createElement("button", { className: "host-star" }, "★"),
+    statusOverlay: createElement("button", { className: "host-archive" }, "a"),
+    subtitle: "the last reply",
+  });
+  const status = v.r.root.findAll((n) => n.type === "span" && n.props.className === "task-side-peek-status")[0]!;
+  expect(status.findAll((n) => n.props.className === "host-archive")).toHaveLength(1);
+  expect(v.r.root.findAll((n) => n.props.className === "host-star")).toHaveLength(1);
+  expect(v.text()).not.toContain("task-star");
+  const sub = v.r.root.findAll((n) => n.type === "span" && n.props.className === "task-head-subtitle")[0]!;
+  expect(sub.children).toEqual(["the last reply"]);
+  // The marks half has no title, so no reply either.
+  expect(render({ task: task(), part: "marks", subtitle: "x" }).text()).not.toContain("task-head-subtitle");
+});
+
+test("onRenamed is heard after a rename the server took — and not after a failed one", async () => {
+  let heard = 0;
+  const ok = render({ task: task(), rename: async () => {}, onRenamed: () => (heard += 1) });
+  act(() => titleSpan(ok.r).props.onDoubleClick());
+  edit(ok.r, "Better");
+  await act(async () => key(ok.r, "Enter"));
+  expect(heard).toBe(1);
+  const bad = render({
+    task: task(),
+    rename: async () => {
+      throw new Error("no");
+    },
+    onRenamed: () => (heard += 1),
+  });
+  act(() => titleSpan(bad.r).props.onDoubleClick());
+  edit(bad.r, "Worse");
+  await act(async () => key(bad.r, "Enter"));
+  expect(heard).toBe(1);
+});

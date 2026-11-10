@@ -31,6 +31,7 @@ const { railGitNow, resetRailGitStoreForTests } = await import("./rail-git-store
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
 const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("@shell/task-head-flag");
+const { TaskHead: TaskHeadC } = await import("@shell/TaskHead");
 
 const DIR = "/home/me/apps/demo";
 
@@ -407,6 +408,14 @@ describe("ClaudeRail's card beside the pane", () => {
       expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-side-peek-who")).length).toBeGreaterThan(0);
       const lead = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-lead"));
       expect(lead.props["aria-label"]).toBe("Close the preview");
+      // The card's OWN star (toggleStar: tells the rail, dismisses on unstar),
+      // not the identity's plain TaskStar — and its archive over the ring.
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
+      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-star"))).toHaveLength(0);
+      const ring = peek.find((n) => typeof n.type === "string" && n.props.className === "task-side-peek-status");
+      expect(ring.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(1);
+      // Keyed per chat, so a half-typed rename cannot follow a swap.
+      expect(peek.findByType(TaskHeadC).props.task.key).toBe(chat("a").key);
     } finally {
       resetTaskHeadUnifiedFlagForTests();
     }

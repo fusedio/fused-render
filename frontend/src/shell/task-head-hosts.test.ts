@@ -113,7 +113,8 @@ test("the New task card's FORM: the chassis' own head pieces on the shared head,
   expect(form).toContain("{parts.titleLead}");
   expect(form).toContain("<h2 id={titleId}>{parts.title}</h2>");
   expect(form).toContain("{parts.titleAside}");
-  expect(form).toContain("chips={parts.headActions}");
+  expect(form).toContain('chips={<div className="modal-head-actions">{parts.headActions}</div>}');
+  expect(form).toContain("armed,");
   expect(form).toContain("fitEnabled={false}");
 });
 

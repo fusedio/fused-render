@@ -69,6 +69,8 @@ export interface TaskHeadLead {
   /** Why it is disabled — said in the hint and the name, since a disabled
    *  button's tooltip is the one place a reader looks. */
   reason?: string;
+  /** The next press does it (a dirty dialog's second ✕): `is-armed`. */
+  armed?: boolean;
 }
 
 export interface TaskHeadNav {
@@ -87,6 +89,9 @@ export interface TaskHeadOpen {
   label: string;
   /** The word after the ↗ — "Open", or "Open tasks" on the card's list head. */
   word?: string;
+  /** The ↗ itself (default on). Off where the door does not leave the page
+   *  on screen (the rail card, #2218's rule). */
+  arrow?: boolean;
   onOpen(href: string): void | boolean | Promise<boolean | void>;
 }
 
@@ -107,6 +112,19 @@ export interface TaskHeadProps {
   /** The favourite star in the identity (default on). Off where the
    *  favourites switch is off (the rail card's legacy rule). */
   star?: boolean;
+  /** A host's own star control in the star's seat (TaskPeekWho `starNode`). */
+  starNode?: ReactNode;
+  /** Over the ring, inside its seat (TaskPeekWho `statusOverlay`). */
+  statusOverlay?: ReactNode;
+  /** A muted line after the title, in the title's row (TaskPeekWho). */
+  subtitle?: ReactNode;
+  /** After a rename the server took (TaskPeekWho `onRenamed`). */
+  onRenamed?: () => void;
+  /** The node the host's seats sit in (`.task-head-seats`) — the chat
+   *  measures it to fold its seat labels (`useFitStrip`). */
+  seatsRef?: (el: HTMLElement | null) => void;
+  /** The group's accessible name (default "Task header"). */
+  ariaLabel?: string;
   nav?: TaskHeadNav;
   /** Identity: `<TaskPeekWho star …>`. Null for a head with no task (yet). */
   task: Task | null;
@@ -173,6 +191,12 @@ export function TaskHead({
   leadNode,
   preLead,
   star = true,
+  starNode,
+  statusOverlay,
+  subtitle,
+  onRenamed,
+  seatsRef,
+  ariaLabel = "Task header",
 }: TaskHeadProps) {
   const [fit, rowRef] = useStripFit(stacked === "auto" ? DROPS_AUTO : DROPS_NO_STACK, fitEnabled);
   // THE TITLE MOVES ROWS HERE, which remounts it: a rename half-typed when the
@@ -201,11 +225,24 @@ export function TaskHead({
       <X size={14} aria-hidden="true" />
     );
   const blockedWhy = lead?.disabled && lead.reason ? lead.reason : "";
+  /** What both identity halves share: the host's star, overlay, reply line
+   *  and rename hook. */
+  const whoExtras = {
+    ...(starNode ? { starNode } : {}),
+    ...(statusOverlay ? { statusOverlay } : {}),
+    ...(subtitle ? { subtitle } : {}),
+    ...(onRenamed ? { onRenamed } : {}),
+  };
   const keys = !!nav?.keyHints;
 
   return (
-    <header
+    // A GROUP, not a <header>: a head inside a panel, a card or a dialog is
+    // not the page's banner, and several of them stood on one page as several
+    // banner landmarks.
+    <div
       className={"task-head" + (stackedNow ? " is-stacked" : "") + (className ? ` ${className}` : "")}
+      role="group"
+      aria-label={ariaLabel}
       data-fit={fit}
     >
       <div className="task-head-row" ref={rowRef}>
@@ -218,7 +255,7 @@ export function TaskHead({
               <button
                 ref={lead.ref}
                 type="button"
-                className={`task-head-btn task-head-lead is-${lead.kind}`}
+                className={`task-head-btn task-head-lead is-${lead.kind}` + (lead.armed ? " is-armed" : "")}
                 aria-label={blockedWhy ? `${lead.label} — ${blockedWhy}` : lead.label}
                 data-hint={blockedWhy || lead.hint || lead.label}
                 disabled={lead.disabled}
@@ -261,6 +298,7 @@ export function TaskHead({
             part={stackedNow ? "marks" : "all"}
             {...(stackedNow ? {} : { className: "task-head-title-seat" })}
             {...(!stackedNow && titleId ? { titleId } : {})}
+            {...whoExtras}
           />
         ) : title && !stackedNow ? (
           <span
@@ -270,8 +308,16 @@ export function TaskHead({
           >
             {title}
           </span>
+        ) : pending && !stackedNow ? (
+          // NOBODY HAS ANSWERED FOR THIS SESSION YET (Topbar's `pending`): the
+          // identity's silhouette — a ring-sized dot and a title's bar — so the
+          // row does not resize when the real one lands.
+          <span className="c-tb-skel task-head-skel" aria-hidden="true">
+            <span className="c-skel-dot" />
+            <span className="c-skel-bar is-title" />
+          </span>
         ) : (
-          <span className={"task-head-idle" + (pending ? " is-pending" : "")} aria-hidden />
+          <span className="task-head-idle" aria-hidden />
         )}
         {line ? <QueuedCaption line={line} /> : null}
         {status ? (
@@ -289,7 +335,11 @@ export function TaskHead({
               {chips}
             </span>
           ) : null}
-          {seats}
+          {seats ? (
+            <span className="task-head-seats" ref={seatsRef}>
+              {seats}
+            </span>
+          ) : null}
           {open ? (
             // A real link with a real href, so ⌘-click opens a tab, exactly
             // like a row's own door.
@@ -304,7 +354,7 @@ export function TaskHead({
                 void open.onOpen(open.href);
               }}
             >
-              <ArrowUpRight size={13} strokeWidth={1.6} aria-hidden="true" />
+              {open.arrow === false ? null : <ArrowUpRight size={13} strokeWidth={1.6} aria-hidden="true" />}
               {open.word ?? "Open"}
             </a>
           ) : null}
@@ -314,7 +364,7 @@ export function TaskHead({
       {stackedNow && (who || title) ? (
         <div className="task-head-titlerow">
           {who ? (
-            <TaskPeekWho task={who} part="title" {...(titleId ? { titleId } : {})} />
+            <TaskPeekWho task={who} part="title" {...(titleId ? { titleId } : {})} {...whoExtras} />
           ) : (
             <span
               className="task-head-title-static"
@@ -326,7 +376,7 @@ export function TaskHead({
           )}
         </div>
       ) : null}
-    </header>
+    </div>
   );
 }
 

@@ -1456,6 +1456,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       {archive && archiveButton(head)}
     </span>
   );
+  const starButton = (head: SeatFacts) => (
+    <button
+      type="button"
+      className={"claude-rail-peek-btn claude-rail-peek-star" + (starOf(head.t) ? " is-on" : "")}
+      aria-pressed={starOf(head.t)}
+      // One label, the state in `aria-pressed`.
+      aria-label="Favourite"
+      title={starOf(head.t) ? "Remove from favourites" : "Add to favourites"}
+      onClick={() => void toggleStar(head.t)}
+    >
+      <Star size={14} fill={starOf(head.t) ? "currentColor" : "none"} aria-hidden="true" />
+    </button>
+  );
   const kebabFor = (head: SeatFacts, extraItems?: KebabExtraItem[]) => (
     <AgentProvider backend={head.row?.backend ?? head.t.backend ?? ""}>
       <Kebab
@@ -1565,6 +1578,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           // and lays out as nothing (`is-unified`, task-head.css).
           <div className="claude-rail-peek-head is-unified" onKeyDown={onHeadKeyDown}>
             <TaskHead
+              // KEYED ON THE CHAT: a rename half-typed on one chat must not
+              // survive a swap to another and save there (the old head
+              // dropped its draft on every change of shown chat).
+              key={head.t.key}
               className="claude-rail-peek-task-head"
               {...(favsOn ? {} : { leadNode: pinButton })}
               lead={
@@ -1580,17 +1597,46 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   : null
               }
               task={head.merged as Task}
-              star={favsOn && !!head.t.session_id}
+              // THE CARD'S OWN STAR (toggleStar): it tells the rail, marks the
+              // ring's pulse and dismisses the card on an unstar — the
+              // identity's plain TaskStar does none of that.
+              star={false}
+              {...(favsOn && head.t.session_id ? { starNode: starButton(head) } : {})}
+              // …and its archive over the ring, on hover (favourites on; off,
+              // it rides the pulse as it did).
+              {...(favsOn && head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
+              // The last reply after the title, as the old title row drew it.
+              {...(head.reply
+                ? {
+                    subtitle: (
+                      <span
+                        className="claude-rail-peek-reply"
+                        data-hint={head.reply}
+                        data-hint-title={head.line.hint ?? head.label}
+                        data-hint-reply={head.reply}
+                      >
+                        {head.reply}
+                      </span>
+                    ),
+                  }
+                : {})}
+              onRenamed={onReload}
               stacked="auto"
               // A folded ↗ Open needs the ⋮ to land in: only while it is up.
               fitEnabled={!!head.t.session_id && !!shownKey}
               place={placeEl(head)}
-              chips={head.t.session_id && !head.draft ? pulseEl(head, true) : null}
+              chips={
+                head.t.session_id && !head.draft && (!favsOn || head.when || head.count > 0)
+                  ? pulseEl(head, !favsOn)
+                  : null
+              }
               open={
                 head.href
                   ? {
                       href: head.href,
                       label: head.draft ? "Open the draft" : "Open this chat in the Claude panel",
+                      // ↗ only for a door that leaves the page on screen (#2218).
+                      arrow: openArrow,
                       onOpen: (href) => {
                         onOpenChat(href);
                         onHeld(false);
@@ -1715,17 +1761,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // Behind the favourites switch (favourites-flag). Only a
                     // STARTED chat can be starred (a draft or a queued row has
                     // no key that lasts; the server refuses them too).
-                    <button
-                      type="button"
-                      className={"claude-rail-peek-btn claude-rail-peek-star" + (starOf(head.t) ? " is-on" : "")}
-                      aria-pressed={starOf(head.t)}
-                      // One label, the state in `aria-pressed`.
-                      aria-label="Favourite"
-                      title={starOf(head.t) ? "Remove from favourites" : "Add to favourites"}
-                      onClick={() => void toggleStar(head.t)}
-                    >
-                      <Star size={14} fill={starOf(head.t) ? "currentColor" : "none"} aria-hidden="true" />
-                    </button>
+                    starButton(head)
                   )}
                   {head.id && (
                     <span className="claude-rail-peek-id" title={head.words}>

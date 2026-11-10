@@ -18,7 +18,7 @@
 // hosts `@apps/claude`'s `ChatMount`, so a chat importing it would close an
 // import cycle — and the boundary check (scripts/check-boundaries.mjs) opens a
 // hole for named shell modules one file at a time for the same reason.
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Pencil } from "lucide-react";
 import { renameTask, type Task } from "@platform/lib/api";
 import { TaskStar } from "@platform/ui/TaskStar";
@@ -99,6 +99,10 @@ export function TaskPeekWho({
   part = "all",
   className,
   titleId,
+  starNode,
+  statusOverlay,
+  subtitle,
+  onRenamed,
 }: {
   task: Task;
   /**
@@ -116,6 +120,16 @@ export function TaskPeekWho({
    *  `Modal` names its dialog by (`aria-labelledby`). On the TITLE and not the
    *  block, so the dialog's name is the task's title and not "Rename task". */
   titleId?: string;
+  /** A host's own star control in the star's seat, instead of `TaskStar` (the
+   *  rail card's, which tells its rail and dismisses on unstar). */
+  starNode?: ReactNode;
+  /** Drawn INSIDE the ring's seat, over it (the rail card's hover-archive). */
+  statusOverlay?: ReactNode;
+  /** A muted line after the title, in the title's row (the rail card's last
+   *  reply). */
+  subtitle?: ReactNode;
+  /** After a rename the server took (and `pokeTasks`): the host re-reads. */
+  onRenamed?: () => void;
   /** Title only: no ring, agent mark or task number (the chat in a side pane,
    *  where the width is the title's). */
   bare?: boolean;
@@ -171,6 +185,7 @@ export function TaskPeekWho({
       setDraft(null);
       setError("");
       pokeTasks();
+      onRenamed?.();
     } catch (e) {
       setError((e as Error).message || "Could not rename");
     } finally {
@@ -207,9 +222,10 @@ export function TaskPeekWho({
           failed={running ? false : ringFailed(task)}
           background={background}
         />
+        {statusOverlay}
       </span>
       <TaskAgentMark backend={task.backend} />
-      {star && <TaskStar task={task} />}
+      {starNode ?? (star && <TaskStar task={task} />)}
       <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
         </>
       )}
@@ -267,6 +283,7 @@ export function TaskPeekWho({
           {error && <span className="task-side-peek-rename-error">{error}</span>}
         </>
       )}
+      {showTitle && subtitle ? <span className="task-head-subtitle">{subtitle}</span> : null}
     </div>
   );
 }

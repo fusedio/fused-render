@@ -312,3 +312,41 @@ test("the ladder has four rungs and the chips are on none of them", async () => 
     ".task-head-title-seat",
   ]);
 });
+
+test("a group, not a banner: role=group with its name", () => {
+  const r = render(head({ ariaLabel: "Chat header" }));
+  const root = headNode(r);
+  expect(root.type).toBe("div");
+  expect(root.props.role).toBe("group");
+  expect(root.props["aria-label"]).toBe("Chat header");
+  expect(headNode(render(head())).props["aria-label"]).toBe("Task header");
+});
+
+test("an armed lead says so in its class; a door that stays on the page drops its ↗", () => {
+  const r = render(
+    head({
+      lead: { kind: "close", label: "Close and discard changes", onPress: () => {}, armed: true },
+      open: { href: "/x", label: "Open", arrow: false, onOpen: () => {} },
+    }),
+  );
+  expect(cls(byLabel(r, "Close and discard changes")!)).toContain("is-armed");
+  expect(JSON.stringify(byClass(r, "task-head-open")[0])).not.toContain("lucide-arrow-up-right");
+  const withArrow = render(head({ open: { href: "/x", label: "Open", onOpen: () => {} } }));
+  expect(JSON.stringify(byClass(withArrow, "task-head-open")[0])).toContain("lucide-arrow-up-right");
+});
+
+test("the host's seats sit in their own measurable box", () => {
+  const got: unknown[] = [];
+  const r = render(head({ seats: createElement("span", { className: "my-seat" }), seatsRef: (el) => got.push(el) }));
+  const box = byClass(r, "task-head-seats")[0]!;
+  expect(((box.children ?? []) as ReactTestRendererJSON[]).map(cls)).toEqual(["my-seat"]);
+  expect(got.some((el) => el !== null)).toBe(true);
+  expect(byClass(render(head()), "task-head-seats")).toHaveLength(0);
+});
+
+test("pending with no task: the identity's skeleton holds the seat", () => {
+  const r = render(head({ task: null, pending: true }));
+  expect(byClass(r, "c-tb-skel")).toHaveLength(1);
+  expect(byClass(r, "c-skel-dot")).toHaveLength(1);
+  expect(byClass(render(head({ task: null })), "c-tb-skel")).toHaveLength(0);
+});
