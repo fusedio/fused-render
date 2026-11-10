@@ -55,7 +55,7 @@ import {
 import { EraseTaskModal } from "./EraseTaskModal";
 // THE SHARED TASK HEAD on the popup (design.md, "One task head, everywhere"),
 // behind its flag; off, the popup's head below is unchanged.
-import { TaskHead, foldedOpen } from "./TaskHead";
+import { TaskHead } from "./TaskHead";
 import type { BreakoutControl } from "@apps/claude/ClaudeChat";
 import { useTaskHeadUnified } from "./task-head-flag";
 import { Kebab } from "@apps/claude/ui/Kebab";
@@ -1165,7 +1165,7 @@ function TaskPeek({
                 void navigateUrl(h);
               },
             } : null}
-            kebab={(fit) => task.session_id ? (
+            kebab={task.session_id ? (
               <AgentProvider backend={task.backend ?? ""}>
                 <Kebab
                   file={taskChatTarget(task)}
@@ -1202,15 +1202,6 @@ function TaskPeek({
                     breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle },
                   } : {})}
                   extraItems={[
-                    // The folded ↗ Open (TaskHead rung 1).
-                    ...(foldedOpen(fit) && explorer ? [{
-                      label: pageDoorLabel(task),
-                      icon: ICON_FOLDER,
-                      onClick: () => {
-                        onClose();
-                        void navigateUrl(explorer);
-                      },
-                    }] : []),
                     ...(gone ? [{
                       label: `${pageDoorLabel(task)} — folder deleted`,
                       icon: ICON_FOLDER,

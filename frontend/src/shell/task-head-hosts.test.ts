@@ -28,10 +28,11 @@ test("the rail's Tasks card: both heads on the shared chassis, the old ones kept
   expect(shared).toContain("label: pageDoorLabel(task)");
   expect(shared).toContain("<Kebab");
   expect(shared).toContain("chipsRef={setChipsHost}");
-  expect(shared).toContain("kebab={(fit) => task?.session_id ? (");
-  expect(shared).toContain("return foldedOpen(fit) && href");
+  expect(shared).toContain("kebab={task?.session_id ? (");
+  // ↗ Open never folds, so no host's ⋮ carries it (Akshil, 2026-11-10).
+  expect(shared).not.toContain("foldedOpen");
   // The list head: × closing the card, a static "Tasks", "Open tasks" — and
-  // no ladder, since it has no ⋮ to fold its only door into.
+  // no ladder: it has nothing that folds.
   expect(shared).toContain("fitEnabled={false}");
   expect(shared).toContain('lead={{ kind: "close", label: "Close Tasks", hint: "Close", onPress: api.close, ref: api.closeRef }}');
   expect(shared).toContain('title="Tasks"');
@@ -56,8 +57,8 @@ test("the New task card's chat: the shared head in place of the dialog's, named 
   expect(shared).toContain('label: "Open this chat"');
   expect(shared).toContain("kebab={chatKebab}");
   expect(shared).toContain("chipsRef={setChipsHost}");
-  // The folded ↗ Open lands in the ⋮, and the chat's pill in the head's seat.
-  expect(src).toContain("extraItems={foldedOpen(fit) && chatHref ? [{");
+  // The chat's pill in the head's seat; no folded ↗ Open in the ⋮.
+  expect(src).not.toContain("foldedOpen");
   expect(src).toContain("{...(unified ? { headChipsHost: chipsHost } : {})}");
   // The old head's swap is untouched.
   expect(src).toContain('className="nt-chat-back"');
@@ -77,7 +78,8 @@ test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips i
   expect(shared).toContain("titleId={titleId}");
   expect(shared).toContain("chips={<TaskPrChip task={task} />}");
   expect(shared).toContain("<Kebab");
-  expect(shared).toContain("...(foldedOpen(fit) && explorer ? [{");
+  expect(shared).not.toContain("foldedOpen");
+  // The disabled "folder deleted" door stays in the ⋮.
   expect(shared).toContain("...(gone ? [{");
   expect(shared).toContain("breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle }");
   // The ChatMount: the shared head's seat and Breakout report, or the old

@@ -158,7 +158,7 @@ import { chipDoor, chipLabel, chipPath, chipPlace, queuedEditHref, railScope, ty
 import { queueCaption } from "@platform/lib/queue";
 import { PlaceTags } from "./PlaceTags";
 // THE ONE TASK HEAD (design.md "One task head, everywhere"), behind its flag.
-import { TaskHead, foldedOpen } from "@shell/TaskHead";
+import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
@@ -1622,8 +1622,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 : {})}
               onRenamed={onReload}
               stacked="auto"
-              // A folded ↗ Open needs the ⋮ to land in: only while it is up.
-              fitEnabled={!!head.t.session_id && !!shownKey}
+              // Measured only while the card is up.
+              fitEnabled={!!shownKey}
               place={placeEl(head)}
               chips={
                 head.t.session_id && !head.draft && (!favsOn || head.when || head.count > 0)
@@ -1645,27 +1645,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     }
                   : null
               }
-              kebab={
-                head.t.session_id && shownKey
-                  ? (fit: number) =>
-                      kebabFor(
-                        head,
-                        foldedOpen(fit) && head.href
-                          ? [
-                              {
-                                label: head.draft ? "Open the draft" : "Open this chat in the Claude panel",
-                                icon: <ArrowUpRight size={16} aria-hidden="true" />,
-                                onClick: () => {
-                                  onOpenChat(head.href!);
-                                  onHeld(false);
-                                  onDismiss("door");
-                                },
-                              },
-                            ]
-                          : undefined,
-                      )
-                  : null
-              }
+              kebab={head.t.session_id && shownKey ? kebabFor(head) : null}
             />
             {askedKey.current === head.t.key && archiveAsk.node}
           </div>

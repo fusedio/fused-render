@@ -30,32 +30,27 @@
 //     row prints them; the place after them.
 //   * CHIPS (worktree, PR), host SEATS, the ↗ OPEN door, and the ⋮ at the end.
 //
-// ONLY THE TITLE FLEXES. Everything else is a mark or a control, and a mark
-// that ellipsises is a mark that lies (the peek head's rule, task-peek.css).
-// When even a floored title will not fit, seats leave in a measured order —
-// never a breakpoint (row-fit.ts `TASK_HEAD_DROPS`, `data-fit` below):
+// NEVER MOVED, NEVER HIDDEN (Akshil, 2026-11-10): the lead, the place, ↗ Open
+// beside the ⋮, and the ⋮ — the way out, where the task lives, and the doors.
+// Only the title flexes; when even a floored title will not fit, the rest
+// gives in a measured order — never a breakpoint (row-fit.ts
+// `TASK_HEAD_DROPS`, `data-fit` below), cumulatively:
 //
-//   1. ↗ Open folds into the ⋮ — the host adds it there (`foldedOpen`);
-//   2. the place; 3. the TASK-nnn number;
-//   4. the title leaves the row for a line of its own (`stacked: "auto"`).
-//
-// The chips are on no rung — the worktree pill has no other home in a shared
-// head, so they shrink instead. The lead, the chevrons, the ring and the ⋮
-// are on no rung either: the way out of a container and the way to its
-// actions are what a narrow one must keep.
+//   1. the chips; 2. the host's seats; 3. the ↑↓ chevrons;
+//   4. the whole identity takes row 2 and the place moves up beside the lead
+//      — row 1 is [lead] [place] … [↗ Open] [⋮] (`stacked: "auto"`);
+//   5. the TASK-nnn number, on row 2.
 //
 // WHAT THE HOST OWNS. The ⋮ is the host's `<Kebab …/>` handed in whole, because
 // what it does on Archive and Delete (advance to the next task, go back to the
 // list, close the dialog) is the host's business; the head only seats it. The
-// same for `chips` and `seats`. And because only this head knows how far its
-// ladder has folded, a `kebab` may be a function of the fit — the host then
-// builds its `extraItems` with `foldedOpen(fit)`.
+// same for `chips` and `seats`.
 import type { ReactNode, Ref } from "react";
 import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronUp, X } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 import { queueCaption, type QueueFacts } from "@platform/lib/queue";
 import { QueuedCaption, TaskPeekWho } from "./TaskPeekWho";
-import { TASK_HEAD_DROPS, useStripFit } from "./row-fit";
+import { TASK_HEAD_DROPS, TASK_HEAD_STACK_LEVEL, taskHeadNeed, useStripFit } from "./row-fit";
 
 export interface TaskHeadLead {
   kind: "close" | "back";
@@ -147,27 +142,30 @@ export interface TaskHeadProps {
   chipsRef?: (el: HTMLElement | null) => void;
   /** ↗ Open. Null where the head IS the page. */
   open?: TaskHeadOpen | null;
-  /** The host's ⋮ (a `Kebab`), or a function of the fit for a host whose ⋮
-   *  must carry the folded door. Null before a session exists. */
+  /** The host's ⋮ (a `Kebab`), or a function of the ladder's fit. Null
+   *  before a session exists. */
   kebab?: ReactNode | ((fit: number) => ReactNode);
-  /** The title on a row of its own: `"auto"` (default) lets the ladder decide
-   *  at its last rung; `true` pins it (the rail's favourite card); `false`
-   *  never stacks. Pinned or never, the ladder stops at rung 3. */
+  /** The identity on a row of its own: `"auto"` (default) lets the ladder
+   *  decide at rung 4; `true` pins that layout (rungs 1–3 and 5 still
+   *  measured); `false` never stacks and caps the ladder at rung 3. */
   stacked?: boolean | "auto";
   /** Arm the fit ladder (the peek: only while the panel is up). */
   fitEnabled?: boolean;
   className?: string;
 }
 
-/** Has the ladder folded ↗ Open away? Then the host's ⋮ carries the door. */
-export function foldedOpen(fit: number): boolean {
-  return fit >= 1;
+/** Has the ladder folded ↗ Open away? Never any more (Akshil, 2026-11-10):
+ *  Open stands beside the ⋮ at every width, so no host's ⋮ carries it. Kept
+ *  so a host that still asks gets the honest answer. */
+export function foldedOpen(_fit: number): boolean {
+  return false;
 }
 
 // Module constants, because `useStripFit` re-arms its observers whenever the
 // ladder's identity changes.
-const DROPS_AUTO: readonly string[] = TASK_HEAD_DROPS;
-const DROPS_NO_STACK: readonly string[] = TASK_HEAD_DROPS.slice(0, TASK_HEAD_DROPS.length - 1);
+const DROPS_ALL: readonly string[] = TASK_HEAD_DROPS;
+/** `stacked: false`: chips, seats, chevrons — never the identity's rungs. */
+const DROPS_NO_STACK: readonly string[] = TASK_HEAD_DROPS.slice(0, TASK_HEAD_STACK_LEVEL - 1);
 
 export function TaskHead({
   lead,
@@ -198,10 +196,11 @@ export function TaskHead({
   seatsRef,
   ariaLabel = "Task header",
 }: TaskHeadProps) {
-  const [fit, rowRef] = useStripFit(stacked === "auto" ? DROPS_AUTO : DROPS_NO_STACK, fitEnabled);
-  // THE TITLE MOVES ROWS HERE, which remounts it: a rename half-typed when the
-  // ladder crosses its last rung loses its draft (an accepted edge case).
-  const stackedNow = stacked === true || (stacked === "auto" && fit >= TASK_HEAD_DROPS.length);
+  // Measured on the whole head — both rows — so rung 5 can answer row 2.
+  const [fit, headRef] = useStripFit(stacked === false ? DROPS_NO_STACK : DROPS_ALL, fitEnabled, taskHeadNeed);
+  // THE IDENTITY MOVES ROWS HERE, which remounts it: a rename half-typed when
+  // the ladder crosses rung 4 loses its draft (an accepted edge case).
+  const stackedNow = stacked === true || (stacked === "auto" && fit >= TASK_HEAD_STACK_LEVEL);
   /** The heading the dialog is named by, when there is a dialog (`titleId`). */
   const headingAttrs = titleId ? { id: titleId, role: "heading", "aria-level": 2 } : {};
   // A QUEUED LINE NAMES THE QUEUED ROW (Topbar's rule, Bugbot PR #1194): its
@@ -235,17 +234,59 @@ export function TaskHead({
   };
   const keys = !!nav?.keyHints;
 
+  // The identity block, wherever it stands: on row 1, or — stacked — alone on
+  // row 2, the whole block (ring, ★, number, title, reply).
+  const identity = who ? (
+    <TaskPeekWho
+      task={who}
+      running={line ? false : running}
+      star={star}
+      className="task-head-title-seat"
+      {...(titleId ? { titleId } : {})}
+      {...whoExtras}
+    />
+  ) : title ? (
+    <span
+      className="task-head-title-static task-head-title-seat"
+      {...headingAttrs}
+      {...(typeof title === "string" ? { title } : {})}
+    >
+      {title}
+    </span>
+  ) : pending ? (
+    // NOBODY HAS ANSWERED FOR THIS SESSION YET (Topbar's `pending`): the
+    // identity's silhouette — a ring-sized dot and a title's bar — so the row
+    // does not resize when the real one lands.
+    <span className="c-tb-skel task-head-skel" aria-hidden="true">
+      <span className="c-skel-dot" />
+      <span className="c-skel-bar is-title" />
+    </span>
+  ) : null;
+  // The queue caption and the paused word trail the identity, on its row.
+  const trail = (
+    <>
+      {line ? <QueuedCaption line={line} /> : null}
+      {status ? (
+        <span className="task-head-status" aria-live="polite">
+          {status}
+        </span>
+      ) : null}
+    </>
+  );
+  const placeEl = place ? <span className="task-head-place">{place}</span> : null;
+
   return (
     // A GROUP, not a <header>: a head inside a panel, a card or a dialog is
     // not the page's banner, and several of them stood on one page as several
     // banner landmarks.
     <div
+      ref={headRef}
       className={"task-head" + (stackedNow ? " is-stacked" : "") + (className ? ` ${className}` : "")}
       role="group"
       aria-label={ariaLabel}
       data-fit={fit}
     >
-      <div className="task-head-row" ref={rowRef}>
+      <div className="task-head-row">
         {preLead || leadNode || lead || nav ? (
           <div className="task-head-acts">
             {preLead}
@@ -265,7 +306,8 @@ export function TaskHead({
               </button>
             ) : null}
             {nav ? (
-              <>
+              // One seat for both chevrons, so one rung folds them (3).
+              <span className="task-head-nav">
                 <button
                   type="button"
                   className="task-head-btn"
@@ -286,46 +328,24 @@ export function TaskHead({
                 >
                   <ChevronDown size={16} strokeWidth={1.6} aria-hidden="true" />
                 </button>
-              </>
+              </span>
             ) : null}
           </div>
         ) : null}
-        {who ? (
-          <TaskPeekWho
-            task={who}
-            running={line ? false : running}
-            star={star}
-            part={stackedNow ? "marks" : "all"}
-            {...(stackedNow ? {} : { className: "task-head-title-seat" })}
-            {...(!stackedNow && titleId ? { titleId } : {})}
-            {...whoExtras}
-          />
-        ) : title && !stackedNow ? (
-          <span
-            className="task-head-title-static task-head-title-seat"
-            {...headingAttrs}
-            {...(typeof title === "string" ? { title } : {})}
-          >
-            {title}
-          </span>
-        ) : pending && !stackedNow ? (
-          // NOBODY HAS ANSWERED FOR THIS SESSION YET (Topbar's `pending`): the
-          // identity's silhouette — a ring-sized dot and a title's bar — so the
-          // row does not resize when the real one lands.
-          <span className="c-tb-skel task-head-skel" aria-hidden="true">
-            <span className="c-skel-dot" />
-            <span className="c-skel-bar is-title" />
-          </span>
+        {stackedNow ? (
+          // STACKED: the place moves up beside the lead, and the gap holds the
+          // doors at the row's end.
+          <>
+            {placeEl}
+            <span className="task-head-idle" aria-hidden />
+          </>
         ) : (
-          <span className="task-head-idle" aria-hidden />
+          <>
+            {identity ?? <span className="task-head-idle" aria-hidden />}
+            {trail}
+            {placeEl}
+          </>
         )}
-        {line ? <QueuedCaption line={line} /> : null}
-        {status ? (
-          <span className="task-head-status" aria-live="polite">
-            {status}
-          </span>
-        ) : null}
-        {place ? <span className="task-head-place">{place}</span> : null}
         <div className="task-head-marks">
           {chips || chipsRef ? (
             // `c-tokens`: the chat's worktree pill and PR chip paint from the
@@ -342,7 +362,7 @@ export function TaskHead({
           ) : null}
           {open ? (
             // A real link with a real href, so ⌘-click opens a tab, exactly
-            // like a row's own door.
+            // like a row's own door. Never folded: it stands beside the ⋮.
             <a
               className="task-head-open"
               href={open.href}
@@ -361,19 +381,10 @@ export function TaskHead({
           {kebabNode ? <span className="task-head-kebab">{kebabNode}</span> : null}
         </div>
       </div>
-      {stackedNow && (who || title) ? (
+      {stackedNow && (identity || line || status) ? (
         <div className="task-head-titlerow">
-          {who ? (
-            <TaskPeekWho task={who} part="title" {...(titleId ? { titleId } : {})} {...whoExtras} />
-          ) : (
-            <span
-              className="task-head-title-static"
-              {...headingAttrs}
-              {...(typeof title === "string" ? { title } : {})}
-            >
-              {title}
-            </span>
-          )}
+          {identity}
+          {trail}
         </div>
       ) : null}
     </div>

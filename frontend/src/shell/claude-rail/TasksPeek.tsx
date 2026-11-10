@@ -60,7 +60,7 @@ import { TaskPeekWho } from "@shell/TaskPeekWho";
 // THE SHARED TASK HEAD (design.md, "One task head, everywhere"), behind its
 // flag: both of this card's heads — the list's and the chat's — on one chassis
 // at one height, so the list↔chat swap no longer jumps 26→44px.
-import { TaskHead, foldedOpen } from "@shell/TaskHead";
+import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import {
   CardPeekContext,
@@ -211,10 +211,7 @@ export function TasksPeek() {
                     ? { href: taskHref(task)!, label: pageDoorLabel(task), onOpen: (h) => api.openPage(h) }
                     : null
                 }
-                // A folded ↗ Open needs a ⋮ to land in: no session, no ⋮,
-                // so the ladder stands down rather than hide the only door.
-                fitEnabled={!!task?.session_id}
-                kebab={(fit) => task?.session_id ? (
+                kebab={task?.session_id ? (
                   <AgentProvider backend={task.backend ?? ""}>
                     <Kebab
                       key={task.key}
@@ -241,18 +238,6 @@ export function TasksPeek() {
                       {...(breakoutCtl?.available ? {
                         breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle },
                       } : {})}
-                      // THE FOLDED DOOR (TaskHead rung 1): the row has hidden
-                      // ↗ Open, so the ⋮ carries it.
-                      extraItems={(() => {
-                        const href = taskHref(task);
-                        return foldedOpen(fit) && href
-                          ? [{
-                              label: pageDoorLabel(task),
-                              icon: <ArrowUpRight size={16} strokeWidth={1.6} aria-hidden="true" />,
-                              onClick: () => void api.openPage(href),
-                            }]
-                          : [];
-                      })()}
                     />
                   </AgentProvider>
                 ) : null}

@@ -7,8 +7,9 @@
 
    One 44px line: [lead][↑][↓] · who · [queue][status][place] · [chips][seats]
    [↗ Open][⋮]. Only the title flexes; everything else is a mark or a control.
-   A head whose ladder has reached its last rung (or that pins `stacked`) is
-   two rows: the marks and controls, then the title on a line of its own. */
+   The lead, the place, ↗ Open and the ⋮ never move and never hide. A head
+   whose ladder has reached rung 4 (or that pins `stacked`) is two rows:
+   [lead][place] … [↗ Open][⋮], then the whole identity on a row of its own. */
 :root {
   --task-head-h: 44px;
 }
@@ -77,9 +78,10 @@
   align-items: center;
   /* FIXED, not shrinking (QA, 2026-11-10): a seat that shrinks is measured
      at its squeezed width (row-fit `rowNeed`, `min(width, 72)`), so the row
-     "fit" with the folder name cut to "Fus" and the ladder never reached the
-     rung that folds it. Held at its own width it overflows honestly and
-     folds at rung 2. */
+     "fit" with the folder name cut to "Fus" and the ladder never saw the
+     overflow. Held at its own width it overflows honestly and the ladder
+     folds the seats that may go. On NO rung itself: where the task lives is
+     never hidden, and stacked it stands beside the lead. */
   flex: 0 0 auto;
   max-width: 180px;
   overflow: hidden;
@@ -99,7 +101,7 @@
   flex: 0 0 auto;
   margin-left: auto;
 }
-/* Only the chips (once stacked, below) and the host's seats give way inside
+/* Only the chips (pinned stacked, below) and the host's seats give way inside
    it; every control keeps its size. */
 .task-head-marks > :not(.task-head-chips):not(.task-head-seats) {
   flex-shrink: 0;
@@ -121,10 +123,9 @@
   --c-annlbl: none;
 }
 
-/* A STACKED HEAD HAS ONE ROW OF MARKS LEFT, and at the panel's 220px floor
-   even that can overflow — so once the title has its own row the chip seat
-   may shrink again and the pill ellipsise inside it (the ladder has nothing
-   further to fold by then). */
+/* A HEAD PINNED STACKED (`stacked: true`) keeps its chips on row 1 until rung
+   1 folds them; at the card's floor that row can still be tight, so the chip
+   seat may shrink there and the pill ellipsise inside it. */
 .task-head.is-stacked .task-head-chips {
   flex: 0 1 auto;
   min-width: 0;
@@ -171,16 +172,17 @@
 
 /* THE CHIPS — the chat's worktree pill (portaled in from the chat, ChatMount
    `headChipsHost`) and the task's PR chip — the way the slim peek line drew
-   them (chat.css `.chat-peek-head .c-topbar`): one line. ON NO RUNG of the
-   ladder — the pill has no other home in this head — so the seat SHRINKS and
-   the pill ellipsises inside it instead. An empty seat takes no gap. */
+   them (chat.css `.chat-peek-head .c-topbar`): one line. The ladder's FIRST
+   rung (Akshil, 2026-11-10): they are the first thing a narrow head gives up.
+   An empty seat takes no gap. */
 .task-head-chips {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   /* Same rule as `.task-head-place`: held at its width (capped below) so the
-     ladder sees the overflow and folds Open → place → id → stacks the title,
-     rather than the count/when chips being clipped out of the seat. */
+     ladder sees the overflow and folds chips → seats → chevrons → stacks the
+     identity → the number, rather than the count/when chips being clipped
+     out of the seat. */
   flex: 0 0 auto;
   overflow: hidden;
   white-space: nowrap;
@@ -325,8 +327,9 @@
   color: var(--fg);
 }
 
-/* THE TITLE'S OWN ROW (rung 5, or `stacked` pinned): the identity block's
-   title and pencil alone, under the marks. */
+/* THE IDENTITY'S OWN ROW (rung 4, or `stacked` pinned): the whole block —
+   ring, ★, number, title, reply — with its queue caption and paused word,
+   under the doors. Only the title ellipsises here; rung 5 takes the number. */
 .task-head-titlerow {
   display: flex;
   align-items: center;
@@ -340,15 +343,22 @@
 
 /* THE LADDER (shell/row-fit.ts `TASK_HEAD_DROPS`), cumulative: each rung keeps
    every fold below it. Measured, never a breakpoint. Rung 4 is drawn by the
-   component (the title moves rows), so it has no rule of its own here; the
-   chips are on no rung — they shrink (above). */
-.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"]) .task-head-open {
+   component (the identity moves rows, the place moves up beside the lead), so
+   it has no rule of its own here. The lead, the place, ↗ Open and the ⋮ are on
+   no rung. */
+.task-head-nav {
+  display: contents;
+}
+.task-head:is([data-fit="1"], [data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"]) .task-head-chips {
   display: none;
 }
-.task-head:is([data-fit="2"], [data-fit="3"], [data-fit="4"]) .task-head-place {
+.task-head:is([data-fit="2"], [data-fit="3"], [data-fit="4"], [data-fit="5"]) .task-head-seats {
   display: none;
 }
-.task-head:is([data-fit="3"], [data-fit="4"]) .task-side-peek-id {
+.task-head:is([data-fit="3"], [data-fit="4"], [data-fit="5"]) .task-head-nav {
+  display: none;
+}
+.task-head[data-fit="5"] .task-side-peek-id {
   display: none;
 }
 
@@ -366,7 +376,7 @@
    floor stated in CSS the row overflows instead, the ladder sees it and folds;
    the chips cap below so a long branch name shares the line rather than
    taking it. */
-.task-head-row .task-side-peek-who .task-side-peek-title {
+.task-head .task-side-peek-who .task-side-peek-title {
   min-width: 72px;
 }
 .task-head-chips {

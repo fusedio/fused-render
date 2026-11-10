@@ -139,7 +139,7 @@ import { breakoutOpener } from "@platform/lib/breakouts";
 // flag: with it on, this panel's head is `TaskHead` and its ⋮ is the chat's own
 // `Kebab`; with it off, the head below is the one this panel has always drawn.
 import { useTaskHeadUnified } from "@shell/task-head-flag";
-import { TaskHead, foldedOpen } from "./TaskHead";
+import { TaskHead } from "./TaskHead";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
@@ -672,9 +672,6 @@ export function TaskPeek({
   /** The shared head's chip seat, for the chat's worktree menu to portal into
    *  (ChatMount `headChipsHost`). State, so the chat re-renders once it lands. */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
-  /** The shared head's fit, as its last render reported it — read by the
-   *  legacy menu for a task with no session yet, which keeps that menu. */
-  const unifiedFit = useRef(0);
 
   // ---- the keyboard ----------------------------------------------------------
   /**
@@ -1048,7 +1045,9 @@ export function TaskPeek({
     const items: MenuEntry[] = [];
     // BREAKOUT, from the chat's own report: the peek's head hides the chat's ⋮.
     items.push(...breakoutMenuEntries(breakoutCtl));
-    if (SHOW_PAGE_DOOR && page && (unified ? foldedOpen(unifiedFit.current) : headFit >= PEEK_HEAD_DROPS.length)) {
+    // The shared head never folds its ↗ Open, so only the old head's ladder
+    // puts the door in this menu.
+    if (SHOW_PAGE_DOOR && page && !unified && headFit >= PEEK_HEAD_DROPS.length) {
       items.push({ label: pageDoorLabel(task), icon: ICON_OPEN_DOOR, onClick: openAsPage });
       items.push("separator");
     }
@@ -1148,7 +1147,7 @@ export function TaskPeek({
    * nothing for it to read — and keeps this panel's own menu, so Delete of a
    * never-run message is not lost.
    */
-  const unifiedKebab = (t: Task, fit: number) => {
+  const unifiedKebab = (t: Task) => {
     if (!t.session_id) {
       return (
         <button
@@ -1210,9 +1209,6 @@ export function TaskPeek({
             ? { breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle } }
             : {})}
           extraItems={[
-            ...(SHOW_PAGE_DOOR && page && foldedOpen(fit)
-              ? [{ label: pageDoorLabel(t), icon: ICON_OPEN_DOOR, onClick: openAsPage }]
-              : []),
             ...(SHOW_PAGE_DOOR && gone
               ? [
                   {
@@ -1304,10 +1300,7 @@ export function TaskPeek({
             chipsRef={setChipsHost}
             chips={task ? <TaskPrChip task={task} /> : null}
             open={SHOW_PAGE_DOOR && page && task ? { href: page, label: pageDoorLabel(task), onOpen: () => openAsPage() } : null}
-            kebab={(fit) => {
-              unifiedFit.current = fit;
-              return task ? unifiedKebab(task, fit) : null;
-            }}
+            kebab={task ? unifiedKebab(task) : null}
           />
         ) : (
         <header className="task-side-peek-head" ref={headRef} data-fit={headFit}>

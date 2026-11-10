@@ -54,8 +54,9 @@ afterEach(() => {
   saved.clear();
 });
 
-/** The row's node: `available` px wide, holding one seat that wants 500px. */
-function rowOf(available: number) {
+/** The head's node: `available` px wide, its row holding one seat that wants
+ *  500px (the ladder measures the head's rows, row-fit `taskHeadNeed`). */
+function headOf(available: number) {
   const seat = {
     getBoundingClientRect: () => ({ width: 500 }),
     scrollWidth: 500,
@@ -63,7 +64,8 @@ function rowOf(available: number) {
     textContent: "seat",
     __style: STYLE,
   };
-  return { clientWidth: available, children: [seat], __style: STYLE };
+  const row = { className: "task-head-row", children: [seat], __style: STYLE };
+  return { clientWidth: available, children: [row], __style: STYLE };
 }
 
 function render(el: ReactElement, available = 2000) {
@@ -71,7 +73,9 @@ function render(el: ReactElement, available = 2000) {
   act(() => {
     r = create(el, {
       createNodeMock: (node) =>
-        (node.props as { className?: string }).className === "task-head-row" ? rowOf(available) : {},
+        String((node.props as { className?: string }).className ?? "").split(" ")[0] === "task-head"
+          ? headOf(available)
+          : {},
     });
   });
   mounted.push(r);
@@ -227,35 +231,59 @@ test("↗ Open is a real link: a plain press calls the host, a ⌘-press is the 
   expect(prevented).toBe(true);
 });
 
-test("the ladder: wide, nothing folds; narrow, it walks to the last rung and the title stacks", () => {
+test("the ladder: wide, nothing folds; narrow, it walks every rung and the identity takes row 2", () => {
   const seen: number[] = [];
   const kebab = (fit: number) => {
     seen.push(fit);
     return createElement("button", { className: "my-kebab" }, "⋮");
   };
-  const wide = render(head({ kebab }), 2000);
+  const props = {
+    kebab,
+    nav: { prev: true, next: true, step: () => {} },
+    place: createElement("span", { className: "my-place" }, "app"),
+    open: { href: "/x", label: "Open in Explorer", onOpen: () => {} },
+  };
+  const wide = render(head(props), 2000);
   expect(headNode(wide).props["data-fit"]).toBe(0);
   expect(byClass(wide, "task-head-titlerow")).toHaveLength(0);
-  expect(foldedOpen(0)).toBe(false);
 
   seen.length = 0;
-  const narrow = render(head({ kebab }), 100);
-  expect(headNode(narrow).props["data-fit"]).toBe(4);
+  const narrow = render(head(props), 100);
+  // Chips, seats, chevrons, the identity's row, the number: all five rungs.
+  expect(headNode(narrow).props["data-fit"]).toBe(5);
   expect(cls(headNode(narrow))).toContain("is-stacked");
-  // The ⋮ heard every rung the walk tried, ending on the folded one — and a
-  // folded Open is the host's cue to carry the door in its menu.
-  expect(seen[seen.length - 1]).toBe(4);
-  expect(foldedOpen(1)).toBe(true);
-  // Row 1 keeps the marks (no title); row 2 is the title alone.
-  const marks = byClass(narrow, "task-side-peek-who")[0]!;
-  expect(cls(marks)).toContain("is-marks");
-  expect(JSON.stringify(marks)).not.toContain("Rename the pane noun");
+  expect(seen[seen.length - 1]).toBe(5);
+  // ↗ Open never folds: it stands beside the ⋮ at every width.
+  expect(foldedOpen(0)).toBe(false);
+  expect(foldedOpen(5)).toBe(false);
+  for (const r of [wide, narrow]) expect(byClass(r, "task-head-open")).toHaveLength(1);
+  // Row 1 is [lead][↑↓ seat][place] … [Open][⋮]: no identity on it, and the
+  // place right after the lead's cluster.
+  const row1 = byClass(narrow, "task-head-row")[0]!;
+  const kids = (row1.children ?? []) as ReactTestRendererJSON[];
+  expect(kids.map(cls)).toEqual(["task-head-acts", "task-head-place", "task-head-idle", "task-head-marks"]);
+  expect(JSON.stringify(row1)).not.toContain("task-side-peek-who");
+  // Row 2 is the WHOLE identity: ring, number, title.
   const row2 = byClass(narrow, "task-head-titlerow")[0]!;
   expect(JSON.stringify(row2)).toContain("Rename the pane noun");
-  expect(JSON.stringify(row2)).not.toContain("T042");
+  expect(JSON.stringify(row2)).toContain("T042");
+  expect(JSON.stringify(row2)).toContain("task-side-peek-status");
+  // Unstacked, the place trails the identity.
+  const wideKids = ((byClass(wide, "task-head-row")[0]!.children ?? []) as ReactTestRendererJSON[]).map(cls);
+  expect(wideKids.indexOf("task-head-place")).toBeGreaterThan(
+    wideKids.findIndex((c) => c.startsWith("task-side-peek-who")),
+  );
 });
 
-test("stacked: true pins the title row at any width; false never stacks and stops at rung 3", () => {
+test("the chevrons share one seat, so one rung folds them; the lead is not in it", () => {
+  const r = render(head({ nav: { prev: true, next: true, step: () => {} } }));
+  const nav = byClass(r, "task-head-nav")[0]!;
+  const labels = ((nav.children ?? []) as ReactTestRendererJSON[]).map((b) => b.props["aria-label"]);
+  expect(labels).toEqual(["Previous task", "Next task"]);
+  expect(JSON.stringify(nav)).not.toContain("Close the task panel");
+});
+
+test("stacked: true pins the identity's row at any width; false never stacks and stops at rung 3", () => {
   const pinned = render(head({ stacked: true }), 2000);
   expect(cls(headNode(pinned))).toContain("is-stacked");
   expect(byClass(pinned, "task-head-titlerow")).toHaveLength(1);
@@ -303,13 +331,14 @@ test("the chip seat hands the chat a node to portal into, at the head of the chi
   expect(got.some((el) => el !== null)).toBe(true);
 });
 
-test("the ladder has four rungs and the chips are on none of them", async () => {
+test("the ladder: chips, seats, chevrons, the identity's row, the number — never Open or the place", async () => {
   const { TASK_HEAD_DROPS } = await import("./row-fit");
   expect([...TASK_HEAD_DROPS]).toEqual([
-    ".task-head-open",
-    ".task-head-place",
-    ".task-side-peek-id",
+    ".task-head-chips",
+    ".task-head-seats",
+    ".task-head-nav",
     ".task-head-title-seat",
+    ".task-side-peek-id",
   ]);
 });
 

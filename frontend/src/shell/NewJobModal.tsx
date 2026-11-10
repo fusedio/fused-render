@@ -28,7 +28,7 @@ import { runAppEntry } from "@apps/claude/protocol/agent";
 import { TaskPeekWho } from "./TaskPeekWho";
 // THE SHARED TASK HEAD on the open chat (design.md, "One task head,
 // everywhere"), behind its flag; off, the chat's head below is unchanged.
-import { TaskHead, foldedOpen } from "./TaskHead";
+import { TaskHead } from "./TaskHead";
 import { useTaskHeadUnified } from "./task-head-flag";
 import { usePlusCardHidden } from "./claude-rail/plus-card-store";
 import { useAutoReadOpenTasks, useDocumentVisible } from "./task-open-read";
@@ -5275,9 +5275,8 @@ export default function NewJobModal({
     window.location.assign(href);
   };
   /** THE OPEN CHAT'S ⋮ on the shared head — the same `Kebab`, with the same
-   *  props, the old head below renders inline — plus the folded ↗ Open when
-   *  the head's ladder has hidden it (`fit`, TaskHead rung 1). */
-  const chatKebab = (fit: number) => liveChat?.session_id ? (
+   *  props, the old head below renders inline. */
+  const chatKebab = liveChat?.session_id ? (
     <AgentProvider backend={liveChat.backend ?? ""}>
       <Kebab
         key={liveChat.key}
@@ -5302,11 +5301,6 @@ export default function NewJobModal({
         {...(chatBreakout?.available ? {
           breakout: { picking: chatBreakout.picking, onToggle: chatBreakout.toggle },
         } : {})}
-        extraItems={foldedOpen(fit) && chatHref ? [{
-          label: "Open this chat",
-          icon: <ArrowUpRight size={16} strokeWidth={1.6} aria-hidden="true" />,
-          onClick: () => void openFromLanding(chatHref),
-        }] : []}
       />
     </AgentProvider>
   ) : null;
@@ -6128,8 +6122,6 @@ export default function NewJobModal({
             titleId={titleId}
             open={chatHref ? { href: chatHref, label: "Open this chat", onOpen: (h) => openFromLanding(h) } : null}
             chipsRef={setChipsHost}
-            // A folded ↗ Open needs the ⋮ to land in: none before a session.
-            fitEnabled={!!liveChat?.session_id}
             kebab={chatKebab}
           />
         ),

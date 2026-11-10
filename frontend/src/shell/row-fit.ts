@@ -664,30 +664,51 @@ export const PEEK_HEAD_DROPS = [
 
 /**
  * THE SHARED TASK HEAD'S LADDER (shell/TaskHead.tsx; design.md, "One task head,
- * everywhere"). The peek's one rung above is its first; the rest are what a
- * head that also carries a place and a number gives up, in the order they can
- * be spared:
+ * everywhere"; Akshil, 2026-11-10). What NEVER moves and never hides: the lead
+ * corner (× / ←), the place chip, ↗ Open right beside the ⋮, and the ⋮ — the
+ * way out, where the task lives, and the two doors to everything else. What
+ * gives, in order, cumulatively:
  *
- *   1. the ↗ Open door — an act, so it reappears in the ⋮ (`foldedOpen`);
- *   2. the place (PlaceTags / the project) — a fact the page around says too;
- *   3. the TASK-nnn number — the ring and the title still name the task;
- *   4. the title leaves the row for a line of its own (`stacked: "auto"`),
- *      so a head at its narrowest is two short rows rather than a title
- *      ellipsised to nothing.
+ *   1. the chips (worktree, PR, the rail card's pulse);
+ *   2. the host's seats (the pane's tools);
+ *   3. the ↑↓ chevrons (the lead stays);
+ *   4. the whole identity — ring, ★, number, title — leaves row 1 for a row of
+ *      its own, and the place chip moves up beside the lead (`stacked`);
+ *   5. the TASK-nnn number, on that second row.
  *
- * THE CHIPS ARE ON NO RUNG: the worktree pill is a door the shared head is the
- * only home for, so it SHRINKS (styles/task-head.css) rather than leaves. Nor
- * are the lead corner, the chevrons, the ring and the ⋮: the way out of a
- * container and the way to its actions are what a narrow one must keep.
  * The selectors document which seat each rung folds; the stylesheet
- * (styles/task-head.css) does the folding, cumulatively, off `data-fit`.
+ * (styles/task-head.css) does the folding off `data-fit`, and rung 4 is the
+ * component's own layout. `taskHeadNeed` below is what the rungs are measured
+ * by: both rows, so rung 5 can answer the second row's overflow.
  */
 export const TASK_HEAD_DROPS = [
-  ".task-head-open",
-  ".task-head-place",
-  ".task-side-peek-id",
+  ".task-head-chips",
+  ".task-head-seats",
+  ".task-head-nav",
   ".task-head-title-seat",
+  ".task-side-peek-id",
 ] as const;
+
+/** The rung at which the identity takes its own row (TaskHead `stacked`). */
+export const TASK_HEAD_STACK_LEVEL = 4;
+
+/**
+ * WHAT A TASK HEAD NEEDS — the wider of its rows (`.task-head-row`, and the
+ * stacked `.task-head-titlerow` once it exists), each measured the row's way
+ * (`rowNeed`), plus the head's own side padding: the ladder compares this with
+ * the head's `clientWidth`, which counts that padding.
+ */
+export function taskHeadNeed(head: HTMLElement): number {
+  const cs = getComputedStyle(head);
+  const pad = (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
+  let need = 0;
+  for (const row of Array.from(head.children) as HTMLElement[]) {
+    const cls = typeof row.className === "string" ? row.className.split(" ") : [];
+    if (!cls.includes("task-head-row") && !cls.includes("task-head-titlerow")) continue;
+    need = Math.max(need, rowNeed(row));
+  }
+  return need + pad;
+}
 
 /**
  * WATCH ONE ROW AND ANSWER HOW MANY OF ITS SEATS HAVE TO FOLD — the engine
