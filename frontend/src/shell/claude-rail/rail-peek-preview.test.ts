@@ -7,13 +7,14 @@ import {
   PEEK_CLOSE_MS,
   PEEK_KEEP,
   PEEK_SWAP_MS,
-  PeekIntent,
   PreviewIntent,
   keepAlivePinned,
   lookShown,
   quickLookPress,
   type Timers,
 } from "./rail-peek-lib";
+import { liveLookRing, lookTarget, previewSink, previewable, shiftIsPlain, turnedAims } from "./quick-look-lib";
+import type { RailRow } from "./claude-rail-lib";
 
 class Clock implements Timers {
   now = 0;
@@ -52,14 +53,15 @@ beforeEach(() => {
 });
 
 describe("PreviewIntent", () => {
-  it("an aim shows after the swap delay, warming the chat at once", () => {
+  it("an aim shows after the swap delay, warming the chat as the swap lands", () => {
     look.aim("Y");
-    expect(warmed).toEqual(["Y"]);
+    expect(warmed).toEqual([]);
     clock.tick(PEEK_SWAP_MS - 1);
     expect(look.current).toBeNull();
     clock.tick(1);
     expect(look.current).toBe("Y");
     expect(shown).toEqual(["Y"]);
+    expect(warmed).toEqual(["Y"]);
   });
 
   it("another ring swaps after the same delay; a ring crossed faster shows nothing", () => {
@@ -72,6 +74,40 @@ describe("PreviewIntent", () => {
     look.aim("W");
     clock.tick(PEEK_SWAP_MS);
     expect(shown).toEqual(["Y", "W"]);
+    // The ring crossed too fast was never mounted.
+    expect(warmed).toEqual(["Y", "W"]);
+  });
+
+  it("the bridge or the cone holds a preview across the gap, whatever order card and cone report in", () => {
+    look.aim("Y");
+    clock.tick(PEEK_SWAP_MS);
+    look.unaim();
+    look.cone(true);
+    clock.tick(10_000);
+    expect(look.current).toBe("Y");
+    // The card's enter, then the cone's leave: still on the card.
+    look.enterCard();
+    look.cone(false);
+    clock.tick(10_000);
+    expect(look.current).toBe("Y");
+    // Back out through the bridge to nowhere: the grace.
+    look.cone(true);
+    look.leaveCard();
+    look.cone(false);
+    clock.tick(PEEK_CLOSE_MS);
+    expect(look.current).toBeNull();
+  });
+
+  it("clear forgets the pointer on the card (an unmounted card sends no leave)", () => {
+    look.aim("Y");
+    clock.tick(PEEK_SWAP_MS);
+    look.enterCard();
+    look.clear();
+    look.aim("Z");
+    clock.tick(PEEK_SWAP_MS);
+    look.unaim();
+    clock.tick(PEEK_CLOSE_MS);
+    expect(look.current).toBeNull();
   });
 
   it("ring → card keeps it; leaving both goes back to pinned after the grace", () => {
@@ -134,21 +170,6 @@ describe("PreviewIntent", () => {
     clock.tick(10_000);
     expect(look.current).toBeNull();
   });
-
-  it("the pinned chat is never written: window A's intent keeps its pin through a preview", () => {
-    const pinned: (string | null)[] = [];
-    const a = new PeekIntent({ show: (k) => pinned.push(k), warm: () => {} }, clock);
-    a.press("X");
-    look.aim("Y");
-    clock.tick(PEEK_SWAP_MS);
-    look.unaim();
-    clock.tick(10_000);
-    look.clear();
-    expect(a.current).toBe("X");
-    expect(a.isPinned).toBe(true);
-    expect(pinned).toEqual(["X"]);
-    a.dispose();
-  });
 });
 
 describe("shown, presses and the warm set", () => {
@@ -172,5 +193,82 @@ describe("shown, presses and the warm set", () => {
     expect(kept).toContain("X");
     // A pinned chat not kept is not added.
     expect(keepAlivePinned([], "A", "X")).toEqual(["A"]);
+  });
+});
+
+describe("the wiring (quick-look-lib)", () => {
+  const seat = (key: string, session: string | null): RailRow =>
+    ({ pulse: { key, session_id: session ?? undefined }, row: null }) as unknown as RailRow;
+
+  it("window A's sink writes the preview key and the kept set — never the pinned chat", () => {
+    let preview = null as string | null;
+    let kept: readonly string[] = ["X", "A", "B"];
+    const pinned = { key: "X" };
+    const writes: string[] = [];
+    const a = new PreviewIntent(
+      previewSink({
+        setPreview: (k) => {
+          writes.push("preview");
+          preview = k;
+        },
+        setKept: (fn) => {
+          writes.push("kept");
+          kept = fn(kept);
+        },
+        pinned: () => pinned.key,
+      }),
+      clock,
+    );
+    for (const k of ["Y", "Z", "W"]) {
+      a.aim(k);
+      clock.tick(PEEK_SWAP_MS);
+      a.unaim();
+    }
+    expect(preview).toBe("W");
+    expect(lookShown(preview, pinned.key)).toBe("W");
+    expect(kept).toContain("X");
+    a.clear();
+    expect(preview).toBeNull();
+    expect(lookShown(preview, pinned.key)).toBe("X");
+    expect(pinned.key).toBe("X");
+    expect(new Set(writes)).toEqual(new Set(["preview", "kept"]));
+  });
+
+  it("one predicate: a window previews only while it draws a PINNED CHAT", () => {
+    expect(previewable({ shown: seat("X", "s"), pinned: true })).toBe(true);
+    expect(previewable({ shown: seat("X", "s"), pinned: false })).toBe(false);
+    expect(previewable({ shown: seat("X", null), pinned: true })).toBe(false);
+    expect(previewable({ shown: null, pinned: true })).toBe(false);
+  });
+
+  it("lookAt's gate: Shift held, a window's ring, that window previewable, the ring still drawn", () => {
+    const base = { held: true, section: "a" as const, looks: true, live: true, key: "Y", pinned: "X" };
+    expect(lookTarget(base)).toBe("aim");
+    expect(lookTarget({ ...base, key: "X" })).toBe("clear");
+    expect(lookTarget({ ...base, held: false })).toBeNull();
+    expect(lookTarget({ ...base, section: null })).toBeNull();
+    expect(lookTarget({ ...base, looks: false })).toBeNull();
+    expect(lookTarget({ ...base, live: false })).toBeNull();
+  });
+
+  it("a rested ring that left its section is forgotten", () => {
+    const ring = { key: "Y", section: "a" as const };
+    expect(liveLookRing(ring, new Set(["Y"]), new Set())).toBe(ring);
+    expect(liveLookRing(ring, new Set(["X"]), new Set(["Y"]))).toBeNull();
+    expect(liveLookRing({ key: "F", section: "b" as const }, new Set(), new Set(["F"]))).not.toBeNull();
+    expect(liveLookRing(null, new Set(), new Set())).toBeNull();
+  });
+
+  it("Shift pressed over a resting ring aims it — never with a field holding the caret", () => {
+    expect(turnedAims({ turned: true, ring: true, editable: false })).toBe(true);
+    expect(turnedAims({ turned: true, ring: true, editable: true })).toBe(false);
+    expect(turnedAims({ turned: false, ring: true, editable: false })).toBe(false);
+    expect(turnedAims({ turned: true, ring: false, editable: false })).toBe(false);
+  });
+
+  it("Shift+press is plain only while a window previews", () => {
+    expect(shiftIsPlain({ held: true, previewing: true })).toBe(true);
+    expect(shiftIsPlain({ held: true, previewing: false })).toBe(false);
+    expect(shiftIsPlain({ held: false, previewing: false })).toBe(false);
   });
 });

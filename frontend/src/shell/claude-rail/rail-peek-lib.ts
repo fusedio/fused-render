@@ -728,6 +728,9 @@ export class PreviewIntent {
   /** The ring the pointer rests on (an aim not yet un-aimed). */
   private pointerKey: string | null = null;
   private overCard = false;
+  /** In the bridge over the gap, or the safe cone toward the card (RailPeek
+   *  `onCone`): on the way to the card, so "on the card" for the grace. */
+  private inCone = false;
 
   constructor(
     private readonly sink: PreviewSink,
@@ -751,12 +754,15 @@ export class PreviewIntent {
     if (this.pending === key) return;
     this.cancelSwap();
     this.pending = key;
-    this.sink.warm?.(key);
+    // Warmed when the swap lands, not on every ring the pointer crosses
+    // (review, 2026-11-10): a sweep down the rail mounts nothing.
     this.swapTimer = this.timers.set(() => {
       this.swapTimer = 0;
       const k = this.pending;
       this.pending = null;
-      if (k !== null) this.set(k);
+      if (k === null) return;
+      this.sink.warm?.(k);
+      this.set(k);
     }, PEEK_SWAP_MS);
   }
 
@@ -765,7 +771,7 @@ export class PreviewIntent {
   unaim(): void {
     this.pointerKey = null;
     this.cancelSwap();
-    if (!this.overCard) this.graceClose();
+    if (!this.onCard()) this.graceClose();
   }
 
   enterCard(): void {
@@ -775,14 +781,28 @@ export class PreviewIntent {
 
   leaveCard(): void {
     this.overCard = false;
-    if (this.pointerKey === null) this.graceClose();
+    if (this.pointerKey === null && !this.inCone) this.graceClose();
   }
 
-  /** Back to pinned NOW, nothing left pending. */
+  /** The pointer entered (`true`) or left the bridge / safe cone between the
+   *  ring and the card — tracked apart from the card itself, whose enter and
+   *  the cone's leave can come in either order. */
+  cone(inside: boolean): void {
+    this.inCone = inside;
+    if (inside) this.cancelClose();
+    else if (this.pointerKey === null && !this.overCard) this.graceClose();
+  }
+
+  /** Back to pinned NOW, nothing left pending — and nothing remembered of
+   *  the pointer: a card that unmounts (or hides) under it sends no
+   *  pointerleave, and a stale "on the card" would hold the next preview up
+   *  until Shift came up (review, 2026-11-10). */
   clear(): void {
     this.cancelSwap();
     this.cancelClose();
     this.pointerKey = null;
+    this.overCard = false;
+    this.inCone = false;
     this.set(null);
   }
 
@@ -797,6 +817,13 @@ export class PreviewIntent {
   dispose(): void {
     this.cancelSwap();
     this.cancelClose();
+    this.pointerKey = null;
+    this.overCard = false;
+    this.inCone = false;
+  }
+
+  private onCard(): boolean {
+    return this.overCard || this.inCone;
   }
 
   private set(key: string | null): void {
@@ -810,7 +837,7 @@ export class PreviewIntent {
     if (this.shown === null) return;
     this.closeTimer = this.timers.set(() => {
       this.closeTimer = 0;
-      if (this.pointerKey !== null || this.overCard) return;
+      if (this.pointerKey !== null || this.onCard()) return;
       this.set(null);
     }, PEEK_CLOSE_MS);
   }

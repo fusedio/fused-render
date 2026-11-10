@@ -51,9 +51,10 @@ export function installQuickLookKeys(win: KeyHost = window, doc: Document = docu
   };
   const onUp = (ev: Event) => {
     const e = ev as KeyboardEvent;
-    // Shift's own keyup; or any other key's once Shift is up (its keyup went
-    // elsewhere).
-    if (quickLookHeld() && (e.key === "Shift" || !e.shiftKey)) releaseQuickLook();
+    // Shift's own keyup — unless the OTHER Shift is still down (`shiftKey`
+    // still true: two Shift keys) — or any other key's once Shift is up (its
+    // keyup went elsewhere).
+    if (quickLookHeld() && !e.shiftKey) releaseQuickLook();
   };
   const onPointer = (ev: Event) => {
     if (quickLookHeld() && !(ev as PointerEvent).shiftKey) releaseQuickLook();

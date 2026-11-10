@@ -1643,13 +1643,27 @@ a.claude-rail-peek-scope:focus-visible {
    shows that chat where the pinned one stood — same place, same size. The
    head is one row: the preview's dot and title, the way back at the right in
    the head's quiet type. A glance has no composer: typing belongs to the
-   pinned chat, which comes back with Shift up. */
+   pinned chat, which comes back with Shift up. Only the PREVIEW'S composer
+   goes (review, 2026-11-10): the pinned chat's stays laid out — its layer
+   is only `visibility: hidden` under the preview — so a caret already in it
+   is not dropped by a `display: none` (RailPeek `caretBack` covers an
+   engine that blurs it anyway). */
 .claude-rail-peek-look-hint {
   flex: none;
   font-size: 11px;
   color: var(--fg-muted);
   white-space: nowrap;
 }
-.claude-rail-peek.is-previewing .c-composer-chat {
+.claude-rail-peek.is-previewing .claude-rail-peek-chat.is-shown .c-composer-chat {
   display: none;
+}
+/* …and THE RING IT SHOWS (ClaudeRail `.is-looked`): lit as firmly as the
+   pinned ring, its hairline DASHED — both read as lit, and the solid one is
+   the chat Shift up goes back to (design.md "both lit"). Only while a
+   preview stands; the plain hover is unchanged. */
+.claude-rail-chat.is-looked::after {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: none;
+  outline: 1px dashed rgba(var(--tint), 0.5);
+  outline-offset: -1px;
 }

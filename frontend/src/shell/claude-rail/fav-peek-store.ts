@@ -476,6 +476,26 @@ export function favPreview(): PreviewIntent {
   return previewIntent;
 }
 
+/** WHETHER WINDOW B CAN PREVIEW NOW — published by the card itself
+ *  (FavouritePeek: quick-look-lib `previewable` over the seat it draws), so
+ *  the rail's rings ask what is really on screen, never a guess of their own
+ *  (review, 2026-11-10). */
+let previewOpen = false;
+
+export function setFavPreviewOpen(on: boolean): void {
+  if (previewOpen === on) return;
+  previewOpen = on;
+  for (const fn of [...previewSubs]) fn();
+}
+
+export function favPreviewOpen(): boolean {
+  return previewOpen;
+}
+
+export function useFavPreviewOpen(): boolean {
+  return useSyncExternalStore(subscribePreview, favPreviewOpen, favPreviewOpen);
+}
+
 /** The card keeps its previewed chats warm (FavouritePeek's kept set). */
 export function onFavPreviewWarm(fn: ((key: string) => void) | null): void {
   previewWarm = fn;
@@ -487,6 +507,7 @@ export function resetFavPreviewForTests(timers?: Timers): void {
   previewTimers = timers;
   previewKey = null;
   previewWarm = null;
+  previewOpen = false;
   previewSubs.clear();
 }
 

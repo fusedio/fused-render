@@ -99,6 +99,7 @@ import {
   favPreview,
   focusRail,
   onFavPreviewWarm,
+  setFavPreviewOpen,
   publishFavBox,
   publishFavBoxFor,
   railDoor,
@@ -114,13 +115,14 @@ import {
 } from "./fav-peek-store";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { installQuickLookKeys } from "./quick-look-keys";
+import { previewable } from "./quick-look-lib";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ownPlace, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   FAV_HEIGHT,
   FAV_WIDTH,
   favHoverRow,
-  keepAlive,
+  keepAlivePinned,
   rowOf,
   type PeekWish,
   favLike,
@@ -237,12 +239,25 @@ export function FavouritePeek() {
   // fav-peek-store `favPreview`): Shift held over another favourite's ring
   // while this card stands OPEN shows that favourite's chat here — the open
   // key untouched, the card's place and size its own. Only an open card; a
-  // hover's is not a window anyone pinned.
-  const looks = !!open && !!shown;
+  // hover's is not a window anyone pinned. THE ONE PREDICATE (quick-look-lib
+  // `previewable`, over the very seat drawn), published for the rail's rings.
+  const looks = previewable({ shown, pinned: !!open });
   const lookKey = useFavPreviewKey();
   useEffect(() => {
-    if (!looks) favPreview().clear();
+    setFavPreviewOpen(looks);
+    if (!looks) {
+      favPreview().clear();
+      setLookKept([]);
+    }
   }, [looks]);
+  // Gone with the card: nothing previewed, nothing said previewable.
+  useEffect(
+    () => () => {
+      setFavPreviewOpen(false);
+      favPreview().clear();
+    },
+    [],
+  );
   // The open favourite changing under a preview: back to it.
   const openKey = open?.key ?? null;
   useEffect(() => {
@@ -251,10 +266,18 @@ export function FavouritePeek() {
   useEffect(() => {
     if (lookKey) hideHint();
   }, [lookKey]);
-  // The previewed chats stay warm, as the rail card's do (PEEK_KEEP).
+  // The previewed chats stay warm, as the rail card's do: PEEK_KEEP in all,
+  // the open favourite one of them and never pushed out (`keepAlivePinned`).
   const [lookKept, setLookKept] = useState<readonly string[]>([]);
+  const openKeyRef = useRef(openKey);
+  openKeyRef.current = openKey;
   useEffect(() => {
-    onFavPreviewWarm((k) => setLookKept((s) => keepAlive(s, k)));
+    onFavPreviewWarm((k) =>
+      setLookKept((s) => {
+        const pin = openKeyRef.current;
+        return keepAlivePinned(pin && !s.includes(pin) ? [...s, pin] : s, k, pin);
+      }),
+    );
     return () => onFavPreviewWarm(null);
   }, []);
   const seatOf = useCallback(
@@ -473,7 +496,14 @@ export function FavouritePeek() {
         if (hovering) favHoverIntent().leaveCard();
         favPreview().leaveCard();
       }}
-      onCone={hovering ? (inside) => (inside ? favHoverIntent().enterCone() : favHoverIntent().leaveCone()) : noop}
+      onCone={(inside) => {
+        if (hovering) {
+          if (inside) favHoverIntent().enterCone();
+          else favHoverIntent().leaveCone();
+        }
+        // The bridge and the cone carry a preview across the gap too.
+        favPreview().cone(inside);
+      }}
       onPressInside={pressInside}
       onHold={hovering ? (on) => favHoverIntent().hold(on) : noop}
       onDismiss={close}

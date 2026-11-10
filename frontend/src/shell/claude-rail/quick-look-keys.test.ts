@@ -115,6 +115,23 @@ describe("installQuickLookKeys", () => {
     expect(quickLookHeld()).toBe(false);
   });
 
+  it("a pointer press without Shift releases", () => {
+    win.fire("keydown", key());
+    win.fire("pointerdown", { shiftKey: true });
+    expect(quickLookHeld()).toBe(true);
+    win.fire("pointerdown", { shiftKey: false });
+    expect(quickLookHeld()).toBe(false);
+  });
+
+  it("two Shift keys: one coming up while the other is down keeps the hold", () => {
+    win.fire("keydown", key());
+    win.fire("keydown", key({ repeat: false }));
+    win.fire("keyup", key({ shiftKey: true }));
+    expect(quickLookHeld()).toBe(true);
+    win.fire("keyup", key({ shiftKey: false }));
+    expect(quickLookHeld()).toBe(false);
+  });
+
   it("a window blur or the page going hidden releases", () => {
     win.fire("keydown", key());
     win.fire("blur");

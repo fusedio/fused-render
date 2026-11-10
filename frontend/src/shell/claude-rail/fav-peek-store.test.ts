@@ -563,8 +563,9 @@ describe("window B's quick look (favPreview)", () => {
     const warmed: string[] = [];
     onFavPreviewWarm((k) => warmed.push(k));
     favPreview().aim("G");
-    expect(warmed).toEqual(["G"]);
+    expect(warmed).toEqual([]);
     clock.tick(PEEK_SWAP_MS);
+    expect(warmed).toEqual(["G"]);
     expect(favPreviewKey()).toBe("G");
     expect(favOpen()).toBe("F");
     favPreview().unaim();
