@@ -3,11 +3,12 @@
 // a keyboard press's wish to focus the card waits for the card's key.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { TaskPulseTask } from "@platform/lib/api";
-import { PEEK_CLOSE_MS, PEEK_OPEN_MS } from "./rail-peek-lib";
+import { PEEK_CLOSE_MS, PEEK_OPEN_MS, PEEK_SWAP_MS, type Timers } from "./rail-peek-lib";
+import { holdQuickLook, releaseQuickLook, resetQuickLookForTests, revertPreviews } from "./quick-look-store";
 import { favOpen, setFavOpen } from "@platform/lib/last-chat";
 import {
   PENDING_FOCUS_MS,
@@ -37,6 +38,10 @@ import {
   takeQuietFocus,
   useFavOpenRow,
   withdrawFavFocusOn,
+  favPreview,
+  favPreviewKey,
+  onFavPreviewWarm,
+  resetFavPreviewForTests,
 } from "./fav-peek-store";
 
 const rail = (name: string) => ({ name, isConnected: true }) as unknown as HTMLElement;
@@ -510,5 +515,93 @@ describe("window B's two holders (bot card, fav restore)", () => {
     off();
     expect(railDoor(el)).toBeNull();
     expect(railDoor(null)).toBeNull();
+  });
+});
+
+// WINDOW B'S QUICK LOOK (owner, 2026-11-10; design.md "Quick look v2"): a
+// preview key beside this window's open favourite, never written into it.
+describe("window B's quick look (favPreview)", () => {
+  class Clock implements Timers {
+    now = 0;
+    private id = 0;
+    private timers = new Map<number, { at: number; fn: () => void }>();
+    set(fn: () => void, ms: number): number {
+      const id = ++this.id;
+      this.timers.set(id, { at: this.now + ms, fn });
+      return id;
+    }
+    clear(id: number): void {
+      this.timers.delete(id);
+    }
+    tick(ms: number): void {
+      const end = this.now + ms;
+      for (;;) {
+        const next = [...this.timers.entries()].filter(([, t]) => t.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) break;
+        this.timers.delete(next[0]);
+        this.now = next[1].at;
+        next[1].fn();
+      }
+      this.now = end;
+    }
+  }
+  let clock: Clock;
+  beforeEach(() => {
+    clock = new Clock();
+    resetQuickLookForTests();
+    resetFavPreviewForTests(clock);
+    setFavOpen(null);
+  });
+  afterEach(() => {
+    resetFavPreviewForTests();
+    resetQuickLookForTests();
+    setFavOpen(null);
+  });
+
+  it("a favourite's ring previews over the open one; the open key is never written", () => {
+    setFavOpen("F");
+    const warmed: string[] = [];
+    onFavPreviewWarm((k) => warmed.push(k));
+    favPreview().aim("G");
+    expect(warmed).toEqual(["G"]);
+    clock.tick(PEEK_SWAP_MS);
+    expect(favPreviewKey()).toBe("G");
+    expect(favOpen()).toBe("F");
+    favPreview().unaim();
+    favPreview().aim("H");
+    clock.tick(PEEK_SWAP_MS);
+    expect(favPreviewKey()).toBe("H");
+    expect(favOpen()).toBe("F");
+  });
+
+  it("leaving the ring and the card goes back to the open favourite after the grace", () => {
+    favPreview().aim("G");
+    clock.tick(PEEK_SWAP_MS);
+    favPreview().unaim();
+    favPreview().enterCard();
+    clock.tick(10_000);
+    expect(favPreviewKey()).toBe("G");
+    favPreview().leaveCard();
+    clock.tick(PEEK_CLOSE_MS);
+    expect(favPreviewKey()).toBeNull();
+  });
+
+  it("Shift up reverts it (registered with the hold), and so does Escape", () => {
+    holdQuickLook();
+    favPreview().aim("G");
+    clock.tick(PEEK_SWAP_MS);
+    releaseQuickLook();
+    expect(favPreviewKey()).toBeNull();
+    favPreview().aim("G");
+    clock.tick(PEEK_SWAP_MS);
+    expect(revertPreviews()).toBe(true);
+    expect(favPreviewKey()).toBeNull();
+  });
+
+  it("a favourite that leaves the section (unstarred, its ring gone) reverts", () => {
+    favPreview().aim("G");
+    clock.tick(PEEK_SWAP_MS);
+    favPreview().prune(new Set(["F"]));
+    expect(favPreviewKey()).toBeNull();
   });
 });

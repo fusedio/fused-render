@@ -56,7 +56,8 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import type { TaskPulseTask } from "@platform/lib/api";
 import { clearFavOpen, favOpenedAtMs, useFavOpen } from "@platform/lib/last-chat";
 import type { RailHere } from "./claude-rail-lib";
-import { FAV_SETTLE_MS, PeekIntent, favLike, favOpenVerdict, type Box } from "./rail-peek-lib";
+import { FAV_SETTLE_MS, PeekIntent, PreviewIntent, favLike, favOpenVerdict, type Box, type Timers } from "./rail-peek-lib";
+import { registerPreview } from "./quick-look-store";
 
 /** Where the page a rail stands on is (header): its `placeRoot`, and the
  *  canvas's selected node file (null: none, or not a canvas). */
@@ -429,6 +430,64 @@ export function resetFavHoverForTests(): void {
   hoverIntent?.dispose();
   hoverIntent = null;
   hoverKey = null;
+}
+
+// WINDOW B'S QUICK LOOK (owner, 2026-11-10; design.md "Quick look v2"): with
+// Shift held and this window's favourite card open, a favourite's ring shows
+// ITS chat in that same card; Shift up (or leaving the ring and the card)
+// shows the open favourite again. `previewKey` sits beside the open key and
+// never writes it (platform/lib/last-chat `useFavOpen` stays the pinned).
+// One machine for the shell (rail-peek-lib `PreviewIntent`), as the hover's.
+let previewKey: string | null = null;
+const previewSubs = new Set<() => void>();
+let previewIntent: PreviewIntent | null = null;
+let previewTimers: Timers | undefined;
+let previewWarm: ((key: string) => void) | null = null;
+
+function setPreviewKey(key: string | null): void {
+  if (previewKey === key) return;
+  previewKey = key;
+  for (const fn of [...previewSubs]) fn();
+}
+
+/** The favourite window B previews now, or null (its open card's own). */
+export function favPreviewKey(): string | null {
+  return previewKey;
+}
+
+function subscribePreview(fn: () => void): () => void {
+  previewSubs.add(fn);
+  return () => {
+    previewSubs.delete(fn);
+  };
+}
+
+export function useFavPreviewKey(): string | null {
+  return useSyncExternalStore(subscribePreview, favPreviewKey, favPreviewKey);
+}
+
+/** Window B's preview machine: the favourites' rings aim it while Shift is
+ *  held and a favourite's card is open; the card reports its pointer. */
+export function favPreview(): PreviewIntent {
+  if (!previewIntent) {
+    previewIntent = new PreviewIntent({ show: setPreviewKey, warm: (k) => previewWarm?.(k) }, previewTimers);
+    registerPreview(previewIntent);
+  }
+  return previewIntent;
+}
+
+/** The card keeps its previewed chats warm (FavouritePeek's kept set). */
+export function onFavPreviewWarm(fn: ((key: string) => void) | null): void {
+  previewWarm = fn;
+}
+
+export function resetFavPreviewForTests(timers?: Timers): void {
+  previewIntent?.dispose();
+  previewIntent = null;
+  previewTimers = timers;
+  previewKey = null;
+  previewWarm = null;
+  previewSubs.clear();
 }
 
 let pageRails = 0;

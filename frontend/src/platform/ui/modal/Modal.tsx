@@ -198,11 +198,6 @@ export interface ModalProps {
     pinned?: boolean;
     /** The reader acted inside a preview (`pinned: false`): pin it. */
     onPin?: () => void;
-    /** NO OUTSIDE-PRESS CLOSE (owner, 2026-11-10: the rail's Space quick
-     *  look, which lives exactly as long as Space is held — only the key's
-     *  release and Escape put it down). A preview still takes no focus.
-     *  Absent: the outside press closes it as above. */
-    keepOnOutsidePress?: boolean;
     /** The pointer entered / left the card (the opener's hover grace). */
     onPointerEnter?: () => void;
     onPointerLeave?: () => void;
@@ -514,8 +509,6 @@ export function Modal({
       if (!isTopmost(token.current)) return;
       // A pinned popover closes by its ✕ only (header of `popover.pinned`).
       if (pinnedRef.current === true) return;
-      // …nor one that asked for no outside-press close at all.
-      if (popoverRef.current?.keepOnOutsidePress) return;
       attemptCloseRef.current();
     };
     ownerDoc.addEventListener("pointerdown", onDown, true);

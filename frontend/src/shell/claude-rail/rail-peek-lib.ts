@@ -693,6 +693,166 @@ export class PeekIntent {
   }
 }
 
+// ---- QUICK LOOK: A PREVIEW IN THE WINDOW ------------------------------------
+
+/**
+ * QUICK LOOK IN PLACE (owner, 2026-11-10; design.md "Quick look v2"): with
+ * Shift held (quick-look-store) and a section's window standing on a pinned
+ * chat — window A's list card, window B's open favourite — the pointer on
+ * another ring of that section shows THAT ring's chat in the same card, and
+ * letting go of Shift (or of the ring and the card) shows the pinned one
+ * again. Pinned is never written: this machine holds the PREVIEW key alone,
+ * beside the pinned key, and the card shows `preview ?? pinned`
+ * (`shownKey`). Its position, size and pin stay the pinned card's.
+ *
+ * Window A's timings: an aim shows after PEEK_SWAP_MS — a held Shift is
+ * already the intent, so no PEEK_OPEN_MS dwell — and the same delay swaps
+ * between rings; leaving both the ring and the card goes back to pinned after
+ * PEEK_CLOSE_MS, the grace that carries the pointer across the gap. `clear`
+ * goes back at once (Shift up, Escape, a press, the window losing its pinned
+ * card). The rings report their pointer only while Shift is held; nothing
+ * here runs otherwise.
+ */
+export interface PreviewSink {
+  /** The preview key changed (null: back to pinned). Called only on change. */
+  show(key: string | null): void;
+  /** `key` is about to be wanted: mount it now (the window's kept chats). */
+  warm?(key: string): void;
+}
+
+export class PreviewIntent {
+  private shown: string | null = null;
+  private pending: string | null = null;
+  private swapTimer = 0;
+  private closeTimer = 0;
+  /** The ring the pointer rests on (an aim not yet un-aimed). */
+  private pointerKey: string | null = null;
+  private overCard = false;
+
+  constructor(
+    private readonly sink: PreviewSink,
+    private readonly timers: Timers = windowTimers,
+  ) {}
+
+  /** The previewed key, or null (the card shows its pinned chat). */
+  get current(): string | null {
+    return this.shown;
+  }
+
+  /** The pointer arrived on ring `key` (Shift held, the window previewable). */
+  aim(key: string): void {
+    this.pointerKey = key;
+    this.cancelClose();
+    // Back on the ring it shows: a swap still waiting for another is off.
+    if (this.shown === key) {
+      this.cancelSwap();
+      return;
+    }
+    if (this.pending === key) return;
+    this.cancelSwap();
+    this.pending = key;
+    this.sink.warm?.(key);
+    this.swapTimer = this.timers.set(() => {
+      this.swapTimer = 0;
+      const k = this.pending;
+      this.pending = null;
+      if (k !== null) this.set(k);
+    }, PEEK_SWAP_MS);
+  }
+
+  /** The pointer left the ring it was aimed at: a waiting aim is off; a
+   *  preview goes back after the grace unless the pointer reaches the card. */
+  unaim(): void {
+    this.pointerKey = null;
+    this.cancelSwap();
+    if (!this.overCard) this.graceClose();
+  }
+
+  enterCard(): void {
+    this.overCard = true;
+    this.cancelClose();
+  }
+
+  leaveCard(): void {
+    this.overCard = false;
+    if (this.pointerKey === null) this.graceClose();
+  }
+
+  /** Back to pinned NOW, nothing left pending. */
+  clear(): void {
+    this.cancelSwap();
+    this.cancelClose();
+    this.pointerKey = null;
+    this.set(null);
+  }
+
+  /** The section's rings as they stand: a preview (or an aim) on a ring that
+   *  left goes back at once — no pointerleave comes for an unmounted ring. */
+  prune(live: ReadonlySet<string>): void {
+    if (this.pending !== null && !live.has(this.pending)) this.cancelSwap();
+    if (this.pointerKey !== null && !live.has(this.pointerKey)) this.pointerKey = null;
+    if (this.shown !== null && !live.has(this.shown)) this.clear();
+  }
+
+  dispose(): void {
+    this.cancelSwap();
+    this.cancelClose();
+  }
+
+  private set(key: string | null): void {
+    if (this.shown === key) return;
+    this.shown = key;
+    this.sink.show(key);
+  }
+
+  private graceClose(): void {
+    this.cancelClose();
+    if (this.shown === null) return;
+    this.closeTimer = this.timers.set(() => {
+      this.closeTimer = 0;
+      if (this.pointerKey !== null || this.overCard) return;
+      this.set(null);
+    }, PEEK_CLOSE_MS);
+  }
+
+  private cancelSwap(): void {
+    if (this.swapTimer) this.timers.clear(this.swapTimer);
+    this.swapTimer = 0;
+    this.pending = null;
+  }
+
+  private cancelClose(): void {
+    if (this.closeTimer) this.timers.clear(this.closeTimer);
+    this.closeTimer = 0;
+  }
+}
+
+/** WHAT A RING'S PRESS DOES WHILE A WINDOW PREVIEWS (design.md "Quick look
+ *  v2"): nothing previewing — the ordinary press; on the window's PINNED
+ *  ring — back to pinned, no more (`revert`); on any other ring, the
+ *  previewed one included — the preview goes and the press pins that ring
+ *  (`commit`). */
+export type LookPress = "press" | "commit" | "revert";
+
+export function quickLookPress(o: { previewing: string | null; pinned: string | null; ring: string }): LookPress {
+  if (o.previewing === null) return "press";
+  return o.ring === o.pinned ? "revert" : "commit";
+}
+
+/** What the window shows: the preview over the pinned chat (design.md). */
+export function lookShown(preview: string | null, pinned: string | null): string | null {
+  return preview ?? pinned;
+}
+
+/** The kept set after a PREVIEW of `key` warmed (`keepAlive`), with the
+ *  window's pinned chat never pushed out of it: swapping across more rings
+ *  than PEEK_KEEP must not unmount the chat the reader goes back to. */
+export function keepAlivePinned(kept: readonly string[], key: string, pinned: string | null, max = PEEK_KEEP): readonly string[] {
+  const next = keepAlive(kept, key, max);
+  if (!pinned || next.includes(pinned) || !kept.includes(pinned)) return next;
+  return [...next.slice(0, Math.max(1, max) - 1), pinned];
+}
+
 // ---- THE STAR'S ANSWER ------------------------------------------------------
 
 /** THE STAR SHOWS THE ANSWER AT ONCE (RailPeek `starMark`): the server's

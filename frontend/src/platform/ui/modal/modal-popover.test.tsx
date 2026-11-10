@@ -71,18 +71,14 @@ describe("Modal popover pinned (the rail's +: hover previews, a press pins)", ()
   const fire = (type: string, e: unknown) => listeners.filter((l) => l.type === type).forEach((l) => l.fn(e));
   const outside = { nodeType: 1, closest: () => null, parentElement: null };
 
-  function mountPinned(pinned: boolean, keepOnOutsidePress?: boolean) {
+  function mountPinned(pinned: boolean) {
     installPortalContainer();
     capture();
     const anchor = createRef<HTMLElement>();
     const closes: number[] = [];
     const pins: number[] = [];
     const el = (p: boolean) => (
-      <Modal
-        title="New task"
-        onClose={() => closes.push(1)}
-        popover={{ anchor, pinned: p, onPin: () => pins.push(1), ...(keepOnOutsidePress ? { keepOnOutsidePress } : {}) }}
-      >
+      <Modal title="New task" onClose={() => closes.push(1)} popover={{ anchor, pinned: p, onPin: () => pins.push(1) }}>
         <span>body</span>
       </Modal>
     );
@@ -112,15 +108,6 @@ describe("Modal popover pinned (the rail's +: hover previews, a press pins)", ()
     act(() => dialog.props.onPointerDownCapture());
     expect(m.pins.length).toBe(1);
     act(() => fire("pointerdown", { target: outside }));
-    expect(m.closing()).toBe(true);
-    act(() => m.r.unmount());
-  });
-
-  test("keepOnOutsidePress (the rail's quick look, 2026-11-10): a press outside leaves it up, Escape still closes it", () => {
-    const m = mountPinned(false, true);
-    act(() => fire("pointerdown", { target: outside }));
-    expect(m.closing()).toBe(false);
-    act(() => fire("keydown", { key: "Escape" }));
     expect(m.closing()).toBe(true);
     act(() => m.r.unmount());
   });

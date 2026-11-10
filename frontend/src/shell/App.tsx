@@ -66,7 +66,6 @@ import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { FavouritePeek } from "@shell/claude-rail/FavouritePeek";
 import { TasksPeek } from "@shell/claude-rail/TasksPeek";
-import { QuickLook } from "@shell/claude-rail/QuickLook";
 import { PlusCardHost } from "@shell/claude-rail/PlusCardHost";
 import { BotsPeek } from "@shell/claude-rail/BotsPeek";
 import { BotCardHost } from "@shell/claude-rail/BotCardHost";
@@ -1374,10 +1373,6 @@ export default function App({ config }: { config: Config }) {
           TasksPeek): mounted once here for the same reason — its view,
           filters and scroll survive a hop (owner, 2026-11-07). */}
       {!IS_EMBED && <TasksPeek />}
-      {/* Quick look (shell/claude-rail QuickLook): hold Space over a list
-          ring, see its chat; let go, it's gone. Mounted once here beside the
-          rail's other cards (owner, 2026-11-10). */}
-      {!IS_EMBED && <QuickLook />}
       {/* The +'s New task card (shell/claude-rail PlusCardHost): window A's
           too, drawn here so a hop keeps it — words, open chat and all
           (owner, 2026-11-09). */}

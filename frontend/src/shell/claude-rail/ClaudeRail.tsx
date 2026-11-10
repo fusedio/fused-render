@@ -259,7 +259,6 @@ import {
   isChatDraftTask,
   isDraftTask,
   liveJobRow,
-  taskChatTarget,
   taskColumn,
   taskHref,
 } from "@shell/tasks-lib";
@@ -320,10 +319,13 @@ import {
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
   PeekIntent,
+  PreviewIntent,
   clampAnchor,
   railCardSize,
   favLike,
   keepAlive,
+  keepAlivePinned,
+  quickLookPress,
   railOnChipLeave,
   railOnStarred,
   railOpenFav,
@@ -333,9 +335,12 @@ import {
   bottomClear,
 } from "./rail-peek-lib";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
+import { quickLookHeld, registerPreview, subscribeQuickLook } from "./quick-look-store";
 import {
   dismissFavHover,
   favHoverIntent,
+  favPreview,
+  useFavPreviewKey,
   focusRail,
   registerPageRail,
   registerRail,
@@ -387,14 +392,6 @@ import {
   tasksDoorAction,
   useTasksCard,
 } from "./tasks-peek-store";
-import {
-  aimQuickLook,
-  dismissQuickLook,
-  quickLookState,
-  subscribeQuickLook,
-  unaimQuickLook,
-  type QuickLookChat,
-} from "./quick-look-store";
 import {
   BOTS_CARD_KEY,
   BOTS_PEEK_ID,
@@ -1049,6 +1046,38 @@ export function ClaudeRail({
   }
   const intent = intentRef.current;
   useEffect(() => () => intent.dispose(), [intent]);
+  // QUICK LOOK IN PLACE (owner, 2026-11-10; design.md "Quick look v2"): Shift
+  // held (quick-look-store) over another list ring while this card stands
+  // PINNED on a chat shows that ring's chat in the same card — `previewKey`,
+  // beside `peekKey`, never written into it (rail-peek-lib `PreviewIntent`).
+  // Everything that reads `peekKey` still reads the pinned chat: the rings'
+  // marks, the one-card rules, the card's place and size. Only the chat on
+  // screen and the head follow the preview (RailPeek `preview`). Shift up,
+  // Escape, leaving the ring and the card, a press: back to pinned.
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const peekKeyRef = useRef(peekKey);
+  peekKeyRef.current = peekKey;
+  const lookARef = useRef<PreviewIntent | null>(null);
+  if (!lookARef.current) {
+    lookARef.current = new PreviewIntent({
+      show: (key) => {
+        // The card is the caption (the ring's title hint steps aside).
+        if (key) hideHint();
+        setPreviewKey(key);
+      },
+      // Through the card's own kept set, so a swap is warm — the pinned chat
+      // never pushed out of it (`keepAlivePinned`).
+      warm: (key) => setKept((s) => keepAlivePinned(s, key, peekKeyRef.current)),
+    });
+  }
+  const lookA = lookARef.current;
+  useEffect(() => {
+    const off = registerPreview(lookA);
+    return () => {
+      off();
+      lookA.dispose();
+    };
+  }, [lookA]);
   useEffect(() => {
     if (!peekKey) setHeld(false);
   }, [peekKey]);
@@ -1152,6 +1181,18 @@ export function ClaudeRail({
   // takes its card with it; the kept set drops the same keys so a stale chat
   // never holds one of the three warm slots.
   const peekSeat = peekOn ? seats.find((s) => s.pulse.key === peekKey) ?? null : null;
+  // QUICK LOOK (above) only into a PINNED CHAT CARD: not a hover's card, not
+  // a seat with no conversation, not the + popover or a door card (those are
+  // not this card) — there the hover rules of before stand, untouched.
+  const aLooks = peekOn && pinned && !!peekSeat?.pulse.session_id;
+  useEffect(() => {
+    if (!aLooks) lookA.clear();
+  }, [aLooks, lookA]);
+  // The pinned chat changing under a preview (a press, a prune): back to it.
+  useEffect(() => {
+    lookA.clear();
+  }, [peekKey, lookA]);
+  const previewSeat = aLooks && previewKey ? seats.find((s) => s.pulse.key === previewKey) ?? null : null;
   useEffect(() => {
     if (!peekOn && peekKey) intent.dismiss();
   }, [peekOn, peekKey, intent]);
@@ -1335,17 +1376,20 @@ export function ClaudeRail({
   useEffect(() => {
     const live = new Set(JSON.parse(seatKeys) as string[]);
     intent.prune(live);
+    lookA.prune(live);
     setKept((k) => (k.every((key) => live.has(key)) ? k : k.filter((key) => live.has(key))));
-  }, [seatKeys, intent]);
+  }, [seatKeys, intent, lookA]);
   // …the pane's own chat included (owner, 2026-11-08: "why is the same task
   // blank in window A when the sidebar shows it, while window B works? it
   // should work in window A as well"): the chat stands in the pane and in
   // the card at once, the favourite's card's rule of 2026-11-05. The
   // one-chat-one-composer exclusion (`paneSids`) is retired.
-  const keptSeats = useMemo(
-    () => (peekOn ? kept.map((k) => seats.find((s) => s.pulse.key === k)).filter((s): s is NonNullable<typeof s> => !!s) : []),
-    [peekOn, kept, seats],
-  );
+  const keptSeats = useMemo(() => {
+    if (!peekOn) return [];
+    const out = kept.map((k) => seats.find((s) => s.pulse.key === k)).filter((s): s is NonNullable<typeof s> => !!s);
+    // The previewed chat is always mounted (RailPeek `preview`), warm or not.
+    return previewSeat && !out.includes(previewSeat) ? [...out, previewSeat] : out;
+  }, [peekOn, kept, seats, previewSeat]);
   // While the card is up: a press anywhere but the rail and the card closes
   // it. A click INTO the workbench frame is not a press this document sees,
   // and it needs no rule of its own: the pointer is on the canvas, off the
@@ -1551,6 +1595,10 @@ export function ClaudeRail({
   // and the two HOVERS close each other (a favourite's hover up while a
   // bot's is, or the other way round, would be two cards in one spot).
   const botUp = peekOn && botKey !== null && botPinned ? botKey : null;
+  // WINDOW B'S QUICK LOOK (fav-peek-store `favPreview`): only into this
+  // window's OPEN favourite card — not a hover's, not a bot's.
+  const favPreviewKey = useFavPreviewKey();
+  const bLooks = peekOn && favsOn && openFavKey !== null && botUp === null;
   // The favourite as THIS RAIL counts it open (`openFavKey`, rail-peek-lib
   // `railOpenFav`), not the raw window key: a key with no card standing
   // (unstarred elsewhere, its verdict pending) must not touch the bot's.
@@ -1852,39 +1900,59 @@ export function ClaudeRail({
     ringsWere.current = ringOrder;
     if (lastPointer.current) stillAt.current = lastPointer.current;
   }, [ringOrder]);
-  // QUICK LOOK (quick-look-store; owner, 2026-11-10): the list ring the
-  // pointer rests on, for a Space pressed while it rests there — and, with
-  // Space held, a list ring's hover is quick look's alone: window A hears
-  // nothing of it, whatever it holds (`aHovers` included). Space not held,
-  // nothing below changes.
-  const lookRing = useRef<{ key: string; el: HTMLElement } | null>(null);
-  // Each list ring's chat as THIS render draws it (`ringOf` fills it): an aim
-  // resolves the chat by key when it is made, never off a closure from the
-  // pointer's arrival, whose session or title may have moved since (review,
-  // 2026-11-10).
-  const lookChats = useRef(new Map<string, () => QuickLookChat>());
-  lookChats.current = new Map();
-  // Aim quick look at a list ring — unless window A already shows that very
-  // chat (quick look would be its copy).
-  const aimLook = (key: string, el: HTMLElement) => {
-    const chat = lookChats.current.get(key);
-    if (!chat || pinNow.current.peekKey === key) return;
-    aimQuickLook(key, { anchor: el.getBoundingClientRect(), ring: el, chat: chat() });
-  };
   // `to`: the section's window — the list's card (A) or the favourites' (B).
-  // `look`: a list ring, for quick look (list rings only, design.md).
-  const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>, to: PeekIntent, look = false) => {
-    // Remembered BEFORE the reshape guard below (review, 2026-11-10): a ring
-    // that slid under a resting pointer is still the ring a Space pressed
-    // there means. Nothing reads it while Space is not held.
-    if (look) lookRing.current = { key, el: e.currentTarget };
+  // QUICK LOOK (header of `previewKey`; window B's in fav-peek-store): with
+  // Shift held and the section's window standing on a pinned chat, the ring
+  // aims that window's preview — its own pinned ring goes back to pinned —
+  // and the hover rules hear nothing. True when it took the ring. Neither
+  // window previewable, or Shift not held: false, and nothing changes.
+  const lookAt = (key: string, to: PeekIntent): boolean => {
+    if (!quickLookHeld()) return false;
+    const p = to === intent && aLooks ? lookA : to === favHoverIntent() && bLooks ? favPreview() : null;
+    if (!p) return false;
+    if (key === (p === lookA ? peekKey : openFavKey)) p.clear();
+    else p.aim(key);
+    return true;
+  };
+  const lookAtRef = useRef(lookAt);
+  lookAtRef.current = lookAt;
+  // The ring the pointer rests on, for a Shift pressed while it rests there.
+  const lookRing = useRef<{ key: string; to: PeekIntent } | null>(null);
+  useEffect(() => {
+    let wasHeld = quickLookHeld();
+    return subscribeQuickLook(() => {
+      const held = quickLookHeld();
+      const turned = held && !wasHeld;
+      wasHeld = held;
+      const at = lookRing.current;
+      if (turned && at) lookAtRef.current(at.key, at.to);
+    });
+  }, []);
+  // A ring of either section left: its window's preview hears it (a no-op
+  // with nothing aimed — always, with Shift not held).
+  const leaveLook = (key: string, to: PeekIntent) => {
+    if (lookRing.current?.key === key) lookRing.current = null;
+    if (to === intent) lookA.unaim();
+    else if (to === favHoverIntent()) favPreview().unaim();
+  };
+  // A ring whose hover shows nothing (the open favourite's, a silenced one):
+  // still quick look's, with Shift held.
+  const enterLook = (key: string, e: ReactPointerEvent<HTMLAnchorElement>, to: PeekIntent) => {
+    lookRing.current = { key, to };
+    const at = stillAt.current;
+    if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
+    if (!quickLookHeld()) return;
+    stillAt.current = null;
+    lookAt(key, to);
+  };
+  const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>, to: PeekIntent) => {
+    // Remembered before the reshape guard: a ring that slid under a resting
+    // pointer is still the one a Shift pressed there means.
+    if (to === intent || to === favHoverIntent()) lookRing.current = { key, to };
     const at = stillAt.current;
     if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
     stillAt.current = null;
-    if (look && quickLookState().held) {
-      aimLook(key, e.currentTarget);
-      return;
-    }
+    if (lookAt(key, to)) return;
     // Window A's ring, with another of window A's cards pinned (the +
     // popover, the Tasks card): no hover (`aHovers` below).
     if (to === intent && !aHovers()) return;
@@ -2420,21 +2488,6 @@ export function ClaudeRail({
   };
   const pressRingRef = useRef(pressRing);
   pressRingRef.current = pressRing;
-  // SPACE PRESSED WITH THE POINTER ALREADY ON A LIST RING: quick look aims at
-  // it, as if the pointer had just arrived (`aimLook`'s rules).
-  const aimLookRef = useRef(aimLook);
-  aimLookRef.current = aimLook;
-  useEffect(() => {
-    let wasHeld = quickLookState().held;
-    return subscribeQuickLook(() => {
-      const held = quickLookState().held;
-      const turned = held && !wasHeld;
-      wasHeld = held;
-      const at = lookRing.current;
-      if (!turned || !at || !at.el.isConnected) return;
-      aimLookRef.current(at.key, at.el);
-    });
-  }, []);
   // THE PANE OPENING UNDER A PINNED LIST CARD (header): the card goes. On
   // the turn from shut to open only; read off refs, the turn is what decides.
   const pinNow = useRef({ pinned, peekKey, favsOn });
@@ -2729,19 +2782,9 @@ export function ClaudeRail({
               // (fav-peek-store `favHoverIntent`), a list ring to this
               // rail's card — neither ever moves the other.
               const win = foot && favsOn ? favHoverIntent() : intent;
-              // The ring's chat as quick look mounts it (quick-look-store),
-              // asked only when Space is held.
-              if (!foot) {
-                lookChats.current.set(t.key, () => ({
-                  file: taskChatTarget(row ?? t),
-                  sessionId: t.session_id || null,
-                  title: label,
-                  status: taskColumn(merged),
-                  ...(row?.model ? { model: row.model } : {}),
-                  ...(row?.effort ? { effort: row.effort } : {}),
-                  ...((row?.backend ?? t.backend) ? { backend: (row?.backend ?? t.backend)! } : {}),
-                }));
-              }
+              // The ring quick look shows (header of `previewKey`): lit as a
+              // hovered ring is, beside the pinned ring's own mark.
+              const looked = foot && favsOn ? favPreviewKey === t.key : !foot && previewKey === t.key;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
               // that opens a dialog is the shape they describe.
@@ -2771,6 +2814,7 @@ export function ClaudeRail({
                     "sidebar-rail-btn",
                     "claude-rail-chat",
                     ...wears.classes,
+                    ...(looked && !wears.classes.includes("peeked") ? ["peeked"] : []),
                     // A draft's ring whose New task popover stands: its window
                     // is open (2026-11-09), the list rings' own marks.
                     ...(popDoor && card?.pop && card.door === t.key
@@ -2836,10 +2880,12 @@ export function ClaudeRail({
                         // a leave is always heard: the intent must not think
                         // the pointer still rests on a ring it left.
                         ...(!wears.hovers
-                          ? {}
+                          ? {
+                              onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterLook(t.key, e, win),
+                            }
                           : {
                               onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) =>
-                                enterRing(t.key, e, win, !foot),
+                                enterRing(t.key, e, win),
                               // A focus HANDED here (a card shutting
                               // under the keyboard, fav-peek-store
                               // `focusRail`) opens no card.
@@ -2853,20 +2899,28 @@ export function ClaudeRail({
                             }),
                         onPointerLeave: () => {
                           win.leaveRing("pointer");
-                          // Quick look's half (`lookRing`): list rings only.
-                          if (foot) return;
-                          if (lookRing.current?.key === t.key) lookRing.current = null;
-                          unaimQuickLook();
+                          leaveLook(t.key, win);
                         },
                         onBlur: () => win.leaveRing("focus"),
                       }
                     : {})}
                   onClick={(e) => {
-                    // ANY press while Space is held is a real press, the
-                    // modified ones (a new tab) included: quick look goes
-                    // (design.md; review, 2026-11-10). Nothing shown: a no-op.
-                    dismissQuickLook();
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                    // QUICK LOOK'S PRESSES (design.md "Quick look v2"): with
+                    // Shift held, Shift is the hold, not a modifier — the
+                    // press is a plain one. On the previewed ring it COMMITS
+                    // (the press below pins it, the preview gone); on the
+                    // pinned ring it goes back to pinned, and no more.
+                    const looking = quickLookHeld();
+                    if (looking) {
+                      const p = foot && favsOn ? favPreview() : lookA;
+                      const did = quickLookPress({ previewing: p.current, pinned: p === lookA ? peekKey : openFavKey, ring: t.key });
+                      if (did !== "press") p.clear();
+                      if (did === "revert") {
+                        e.preventDefault();
+                        return;
+                      }
+                    }
+                    if (e.metaKey || e.ctrlKey || (e.shiftKey && !looking) || e.altKey || e.button !== 0) return;
                     e.preventDefault();
                     // Opened, by either door below: read (header), and the
                     // last ring pressed (header) — the favourites' own mark
@@ -3548,8 +3602,14 @@ export function ClaudeRail({
           railEl={railRef.current}
           place={place}
           onReload={refreshListing}
-          onPointerEnter={() => intent.enterCard()}
-          onPointerLeave={() => intent.leaveCard()}
+          onPointerEnter={() => {
+            intent.enterCard();
+            lookA.enterCard();
+          }}
+          onPointerLeave={() => {
+            intent.leaveCard();
+            lookA.leaveCard();
+          }}
           onCone={(inside) => (inside ? intent.enterCone() : intent.leaveCone())}
           onPressInside={onPressInside}
           onHold={(on) => intent.hold(on)}
@@ -3565,6 +3625,7 @@ export function ClaudeRail({
           avoid={favBox}
           oneSize={favsOn}
           pinned={pinned}
+          preview={previewSeat}
           onPin={() => {
             const key = intent.current;
             if (!key) return;

@@ -87,6 +87,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type Task, type TaskPulseTask } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { hideHint } from "@platform/lib/hints";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { opensOnThisPage } from "@shell/useAppPageClaudePane";
 import { readListing, refreshListing, subscribeListing, useTasksPulseRows } from "@shell/tasksPulse";
@@ -95,7 +96,9 @@ import { RailPeek } from "./RailPeek";
 import {
   dismissFavHover,
   favHoverIntent,
+  favPreview,
   focusRail,
+  onFavPreviewWarm,
   publishFavBox,
   publishFavBoxFor,
   railDoor,
@@ -106,15 +109,18 @@ import {
   useFavHoverKey,
   useFavOpenRow,
   useFavPeekState,
+  useFavPreviewKey,
   withdrawFavFocusOn,
 } from "./fav-peek-store";
 import { useCanvasRailPeek } from "./rail-peek-flag";
+import { installQuickLookKeys } from "./quick-look-keys";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ownPlace, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   FAV_HEIGHT,
   FAV_WIDTH,
   favHoverRow,
+  keepAlive,
   rowOf,
   type PeekWish,
   favLike,
@@ -148,6 +154,10 @@ export function FavouritePeek() {
   const peekOn = useCanvasRailPeek();
   const favsOn = useTaskFavourites();
   const on = peekOn && favsOn;
+  // QUICK LOOK'S SHIFT (quick-look-keys; owner, 2026-11-10): installed once
+  // for the shell, here — this card is mounted once above every page, under
+  // the rail flag every card rides — for both windows' previews.
+  useEffect(() => (peekOn ? installQuickLookKeys() : undefined), [peekOn]);
   const rows = useTasksPulseRows(on);
   const [listing, setListing] = useState<Task[] | null>(() => readListing());
   useEffect(() => {
@@ -209,11 +219,13 @@ export function FavouritePeek() {
   }, [open]);
   useEffect(() => {
     dismissFavHover();
+    favPreview().clear();
   }, [rail]);
   // A hover on a key the pulse no longer holds (unstarred, gone): forgotten.
   const hoverLive = useMemo(() => new Set(rows.filter((r) => favLike(r)).map((r) => r.key)), [rows]);
   useEffect(() => {
     if (on) favHoverIntent().prune(hoverLive);
+    favPreview().prune(hoverLive);
   }, [on, hoverLive]);
   // THE CARD STANDS WHATEVER THE PANE SHOWS (owner, 2026-11-05: "we can
   // have the same task open as the expanded view and as a window B pin
@@ -221,7 +233,49 @@ export function FavouritePeek() {
   // to mount it too — the rule of 2026-11-05 morning (a caption and a door
   // instead) is gone.
   const shown = on && seat && rail && !noRoom ? seat : null;
-  const kept = useMemo(() => (seat ? [seat] : []), [seat]);
+  // QUICK LOOK IN PLACE (owner, 2026-11-10; design.md "Quick look v2";
+  // fav-peek-store `favPreview`): Shift held over another favourite's ring
+  // while this card stands OPEN shows that favourite's chat here — the open
+  // key untouched, the card's place and size its own. Only an open card; a
+  // hover's is not a window anyone pinned.
+  const looks = !!open && !!shown;
+  const lookKey = useFavPreviewKey();
+  useEffect(() => {
+    if (!looks) favPreview().clear();
+  }, [looks]);
+  // The open favourite changing under a preview: back to it.
+  const openKey = open?.key ?? null;
+  useEffect(() => {
+    favPreview().clear();
+  }, [openKey]);
+  useEffect(() => {
+    if (lookKey) hideHint();
+  }, [lookKey]);
+  // The previewed chats stay warm, as the rail card's do (PEEK_KEEP).
+  const [lookKept, setLookKept] = useState<readonly string[]>([]);
+  useEffect(() => {
+    onFavPreviewWarm((k) => setLookKept((s) => keepAlive(s, k)));
+    return () => onFavPreviewWarm(null);
+  }, []);
+  const seatOf = useCallback(
+    (key: string): RailRow | null => {
+      const p = rows.find((r) => r.key === key && favLike(r));
+      return p ? { pulse: p, row: listing?.find((t) => t.key === key) ?? null } : null;
+    },
+    [rows, listing],
+  );
+  const previewSeat = useMemo(() => (looks && lookKey ? seatOf(lookKey) : null), [looks, lookKey, seatOf]);
+  const kept = useMemo(() => {
+    if (!seat) return [];
+    const out: RailRow[] = [seat];
+    for (const k of lookKept) {
+      if (k === seat.pulse.key) continue;
+      const s = k === previewSeat?.pulse.key ? previewSeat : seatOf(k);
+      if (s) out.push(s);
+    }
+    if (previewSeat && !out.includes(previewSeat)) out.push(previewSeat);
+    return out;
+  }, [seat, lookKept, previewSeat, seatOf]);
 
   // FOCUS NEVER FALLS TO THE BODY (header). Whether the keyboard was last
   // inside the card is followed document-wide: a card that unmounts takes
@@ -411,8 +465,14 @@ export function FavouritePeek() {
       resizeKey="canvasRailFav"
       onBox={onBox}
       onReload={refreshListing}
-      onPointerEnter={hovering ? () => favHoverIntent().enterCard() : noop}
-      onPointerLeave={hovering ? () => favHoverIntent().leaveCard() : noop}
+      onPointerEnter={() => {
+        if (hovering) favHoverIntent().enterCard();
+        favPreview().enterCard();
+      }}
+      onPointerLeave={() => {
+        if (hovering) favHoverIntent().leaveCard();
+        favPreview().leaveCard();
+      }}
       onCone={hovering ? (inside) => (inside ? favHoverIntent().enterCone() : favHoverIntent().leaveCone()) : noop}
       onPressInside={pressInside}
       onHold={hovering ? (on) => favHoverIntent().hold(on) : noop}
@@ -427,6 +487,7 @@ export function FavouritePeek() {
       held={!hovering}
       onHeld={noop}
       pinned={false}
+      preview={previewSeat}
     />
   );
 }

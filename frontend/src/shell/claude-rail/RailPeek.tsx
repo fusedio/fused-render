@@ -160,6 +160,7 @@ import { PlaceTags } from "./PlaceTags";
 import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
 import {
+  lookShown,
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
@@ -419,6 +420,13 @@ export interface RailPeekProps {
    *  passing hover. Only a pinned card wears the corner grips
    *  and takes the remembered size (header). */
   pinned: boolean;
+  /** QUICK LOOK IN PLACE (owner, 2026-11-10; design.md "Quick look v2"):
+   *  the seat a held Shift previews in THIS card, over `shown`, or null.
+   *  Only the chat on screen and the head change — the card's place, size,
+   *  pin and everything its seats act on stay `shown`'s; the head is the
+   *  preview's dot and title and the way back, and no composer is drawn (a
+   *  glance; typing belongs to the pinned chat). Must be in `kept`. */
+  preview?: RailRow | null;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -505,6 +513,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     openIcon,
     onBox,
     pinned,
+    preview = null,
   },
   ref,
 ) {
@@ -516,10 +525,31 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   if (shown) last.current = shown;
   const view = shown ?? last.current;
   const viewKey = view?.pulse.key ?? null;
+  // The chat on screen: the preview's while one stands (prop header).
+  const previewing = !!preview && !!shown && preview.pulse.key !== shown.pulse.key;
+  const look = previewing ? seatFacts(preview!, where) : null;
+  const bodyKey = lookShown(previewing ? preview!.pulse.key : null, viewKey);
 
   const [box, setBox] = useState<Box | null>(null);
   const [on, setOn] = useState(false);
   const shownKey = shown?.pulse.key ?? null;
+  // THE PINNED CHAT'S CARET OUTLIVES A PREVIEW (design.md "Quick look v2":
+  // the composer keeps its focus, the preview takes none): the pinned chat
+  // hides under a preview and the engine may drop its caret to the body;
+  // going back hands it back — unless the reader put it somewhere meanwhile.
+  const caretBack = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (previewing) {
+      const a = document.activeElement;
+      if (a instanceof HTMLElement && cardRef.current?.contains(a)) caretBack.current = a;
+      return;
+    }
+    const el = caretBack.current;
+    caretBack.current = null;
+    if (!el?.isConnected) return;
+    const a = document.activeElement;
+    if (!a || a === document.body) el.focus({ preventScroll: true });
+  }, [previewing]);
 
   // One composer ref per kept mount (ChatMount `focusRef`).
   const focusRefs = useRef(new Map<string, MutableRefObject<HTMLTextAreaElement | null>>());
@@ -1261,10 +1291,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         (held && !favsOn ? " is-held" : "") +
         (favsOn ? " favs-on" : "") +
         (resizing ? " is-resizing" : "") +
-        (view && !view.pulse.session_id ? " is-plain" : "")
+        (view && !view.pulse.session_id ? " is-plain" : "") +
+        (look ? " is-previewing" : "")
       }
       role="dialog"
-      aria-label={head ? `${head.label} — preview` : "Chat preview"}
+      aria-label={look ? `${look.label} — quick look` : head ? `${head.label} — preview` : "Chat preview"}
       style={
         box
           ? view?.pulse.session_id
@@ -1298,7 +1329,30 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           />
         ))}
       <div className="claude-rail-peek-card">
-        {head && (
+        {look ? (
+          // THE PREVIEW'S HEAD (prop header): its status dot and its title,
+          // and the way back at the right — nothing that acts on a chat, so
+          // nothing in it can act on the wrong one.
+          <div className="claude-rail-peek-head claude-rail-peek-look">
+            <div className="claude-rail-peek-row">
+              <span className="claude-rail-peek-status">
+                <StatusIcon
+                  status={taskColumn(look.merged)}
+                  label=""
+                  unread={look.unread > 0}
+                  background={liveJobRow(look.t)}
+                  draftHeld={!!look.row && draftRing(look.merged as Task)}
+                  {...(look.row?.failed ? { failed: true } : {})}
+                />
+              </span>
+              <span className="claude-rail-peek-title claude-rail-peek-look-title">{look.label}</span>
+              <span className="claude-rail-peek-gap" aria-hidden="true" />
+              <span className="claude-rail-peek-look-hint" role="note" aria-label="Release Shift to go back">
+                Shift <span aria-hidden="true">↑</span> to go back
+              </span>
+            </div>
+          </div>
+        ) : head && (
           // THE HEAD, TWO ROWS (owner, 2026-11-02, after the one-row head of
           // 2026-10-30): the first row is the task's FACTS and SEATS — the ×
           // and the star (2026-11-03), its number where the
@@ -1738,7 +1792,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             return (
               <div
                 key={t.key}
-                className={"claude-rail-peek-chat" + (t.key === viewKey ? " is-shown" : "")}
+                className={"claude-rail-peek-chat" + (t.key === bodyKey ? " is-shown" : "")}
               >
                 {t.session_id ? (
                   <ChatMount
