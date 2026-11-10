@@ -126,6 +126,7 @@ export function flipEls(els: HTMLElement[], before: DOMRect[]): void {
 // the CSS). Closing keeps the lock (the hidden panel needs it to slide back in); opening drops it once the slide is done so the handle can resize again.
 // The variable is written on .preview itself, the one box that reads it (non-inheriting, bots.css): on the root it restyled the whole page.
 let lockT: ReturnType<typeof setTimeout> | undefined;
+/** Let the preview go back to its grid track's width (drop the pinned open width). */
 const unlockPreview = (): void => { previewEl()?.style.removeProperty("--bots-rwlock"); };
 export function lockPreview(fn: () => void): void {
   const was = previewShown(), pv = previewEl();
@@ -238,6 +239,7 @@ let vtNamed: HTMLElement[] = [];
 /** Bot rows named for one transition, at most: each is a snapshot of its own on the GPU. */
 const VT_ROWS = 40;
 
+/** Whether a button's layout change may run as a view transition right now (see WHEN NOT above). */
 function canViewTransition(): boolean {
   if (typeof document === "undefined" || typeof document.startViewTransition !== "function") return false;
   if (typeof ViewTransition === "undefined" || !("types" in ViewTransition.prototype)) return false;
@@ -252,10 +254,12 @@ function canViewTransition(): boolean {
   return true;
 }
 
+/** Give `el` a view-transition name and class for one slide (inline, so only `el` restyles). */
 function nameForSlide(el: HTMLElement, name: string, cls: string): void {
   el.style.setProperty("view-transition-name", name);
   el.style.setProperty("view-transition-class", cls);
 }
+/** Take a slide's view-transition name and class off `el` again. */
 function unnameForSlide(el: HTMLElement): void {
   el.style.removeProperty("view-transition-name");
   el.style.removeProperty("view-transition-class");

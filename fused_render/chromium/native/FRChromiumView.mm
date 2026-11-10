@@ -801,11 +801,13 @@ class FRClient : public CefClient,
 // which the shell's base.css answers with `animation-play-state: paused`.
 // Nothing else changes: the window still composites, its frame stays live.
 
+/// YES when this view's window is out of sight: fully covered, minimised or on another Space.
 - (BOOL)windowOccluded {
   NSWindow *w = self.window;
   return w != nil && !(w.occlusionState & NSWindowOcclusionStateVisible);
 }
 
+/// Tell the page when its window's visibility changed since the last time it was told.
 - (void)syncOcclusion {
   BOOL occluded = [self windowOccluded];
   if (occluded == _occluded) return;
@@ -813,12 +815,14 @@ class FRClient : public CefClient,
   [self tellPageOccluded:occluded];
 }
 
+/// A main-frame document finished loading: re-tell it if the window is hidden.
 - (void)mainFrameLoaded {
   // A new document starts without the attribute, so only a hidden window
   // has anything to say to it.
   if (_occluded) [self tellPageOccluded:YES];
 }
 
+/// Set or clear `data-fused-occluded` on the current document's root element.
 - (void)tellPageOccluded:(BOOL)occluded {
   if (!_browser) return;  // mainFrameLoaded tells the first document
   CefRefPtr<CefFrame> frame = _browser->GetMainFrame();
