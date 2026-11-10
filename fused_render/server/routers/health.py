@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 
 from fastapi import APIRouter, Body, Header, Request
 from fastapi.concurrency import run_in_threadpool
@@ -45,6 +46,10 @@ _NO_STORE = {"Cache-Control": "no-store"}
 # `jobs._ORIGIN_BY_ROUTE`'s shell routes, so the dock navigates instead of
 # treating it as an fs path.
 DIAGNOSTICS_PAGE = "/preferences?s=diagnostics"
+
+# How often a running diagnostics build re-reports; well under
+# `jobs.STALE_AFTER_S` so the dock never calls it stalled.
+HEARTBEAT_S = 10.0
 
 
 @router.get("/api/health")
@@ -178,6 +183,16 @@ def api_diagnostics(
 
     report(title="Saving diagnostics", state=jobs.RUNNING,
            detail="Reading the system log…" if system_log else "Collecting…")
+    # `build_bundle` only ticks between phases, and `log show` alone can run
+    # 45 s — past `jobs.STALE_AFTER_S`, which would paint a working build as
+    # "no longer reporting". A bare re-report every few seconds keeps it fresh.
+    finished = threading.Event()
+
+    def heartbeat() -> None:
+        while not finished.wait(HEARTBEAT_S):
+            report()
+
+    threading.Thread(target=heartbeat, name="diagnostics-heartbeat", daemon=True).start()
     try:
         from fused_render import diagnostics
 
@@ -186,9 +201,11 @@ def api_diagnostics(
             progress=lambda msg: report(detail=msg),
         )
     except Exception as exc:  # noqa: BLE001 — the user clicked a button; say why
+        finished.set()
         logger.exception("diagnostics bundle failed")
         report(title="Diagnostics failed", state="error", detail="", message=str(exc))
         return _error(f"could not write diagnostics bundle: {exc}", status=500)
+    finished.set()
     report(title="Diagnostics saved", state="done", detail=os.path.basename(path))
     out = {"path": path}
     try:
