@@ -1637,3 +1637,54 @@ a.claude-rail-peek-scope:focus-visible {
 .claude-rail-bots-list .bots-page.bots-pick .empty {
   padding: 32px 16px;
 }
+
+/* QUICK LOOK (shell/claude-rail QuickLook; owner, 2026-11-10: hold Space,
+   rest on a ring, see its chat): the Modal chassis' popover, ABOVE EVERY
+   CARD — window A's (45–46), window B's (47), a breakout (48) — and still
+   under the true modals (1000), the menus (1200) and the hint panel. The
+   layer is the chassis' (`.modal-popover`, 46 for the +'s card), so the
+   step is taken on the layer that holds this card. */
+.modal-popover:has(> .claude-rail-quick-look) {
+  z-index: 49;
+}
+/* The head: the ring's dot, the chat's name, the hint at the right end —
+   the rail cards' small type, not a dialog's heading. */
+.modal-popover .claude-rail-quick-look > .modal-head {
+  padding: 8px 12px;
+  gap: 8px;
+}
+.claude-rail-quick-look > .modal-head h2 {
+  font-size: 13px;
+  font-weight: 500;
+}
+.claude-rail-quick-look-dot {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+}
+.claude-rail-quick-look-hint {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+/* The body is the chat's, which scrolls its own transcript: no second
+   scroller round it. */
+.modal-popover .modal-dialog.is-sized.claude-rail-quick-look > .modal-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.claude-rail-quick-look-chat {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* READ AND SCROLL ONLY (design.md): a glance has no composer. */
+.claude-rail-quick-look .c-composer-chat {
+  display: none;
+}

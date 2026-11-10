@@ -259,6 +259,7 @@ import {
   isChatDraftTask,
   isDraftTask,
   liveJobRow,
+  taskChatTarget,
   taskColumn,
   taskHref,
 } from "@shell/tasks-lib";
@@ -386,6 +387,14 @@ import {
   tasksDoorAction,
   useTasksCard,
 } from "./tasks-peek-store";
+import {
+  aimQuickLook,
+  dismissQuickLook,
+  quickLookState,
+  subscribeQuickLook,
+  unaimQuickLook,
+  type QuickLookChat,
+} from "./quick-look-store";
 import {
   BOTS_CARD_KEY,
   BOTS_PEEK_ID,
@@ -1843,11 +1852,39 @@ export function ClaudeRail({
     ringsWere.current = ringOrder;
     if (lastPointer.current) stillAt.current = lastPointer.current;
   }, [ringOrder]);
+  // QUICK LOOK (quick-look-store; owner, 2026-11-10): the list ring the
+  // pointer rests on, for a Space pressed while it rests there — and, with
+  // Space held, a list ring's hover is quick look's alone: window A hears
+  // nothing of it, whatever it holds (`aHovers` included). Space not held,
+  // nothing below changes.
+  const lookRing = useRef<{ key: string; el: HTMLElement } | null>(null);
+  // Each list ring's chat as THIS render draws it (`ringOf` fills it): an aim
+  // resolves the chat by key when it is made, never off a closure from the
+  // pointer's arrival, whose session or title may have moved since (review,
+  // 2026-11-10).
+  const lookChats = useRef(new Map<string, () => QuickLookChat>());
+  lookChats.current = new Map();
+  // Aim quick look at a list ring — unless window A already shows that very
+  // chat (quick look would be its copy).
+  const aimLook = (key: string, el: HTMLElement) => {
+    const chat = lookChats.current.get(key);
+    if (!chat || pinNow.current.peekKey === key) return;
+    aimQuickLook(key, { anchor: el.getBoundingClientRect(), ring: el, chat: chat() });
+  };
   // `to`: the section's window — the list's card (A) or the favourites' (B).
-  const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>, to: PeekIntent) => {
+  // `look`: a list ring, for quick look (list rings only, design.md).
+  const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>, to: PeekIntent, look = false) => {
+    // Remembered BEFORE the reshape guard below (review, 2026-11-10): a ring
+    // that slid under a resting pointer is still the ring a Space pressed
+    // there means. Nothing reads it while Space is not held.
+    if (look) lookRing.current = { key, el: e.currentTarget };
     const at = stillAt.current;
     if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
     stillAt.current = null;
+    if (look && quickLookState().held) {
+      aimLook(key, e.currentTarget);
+      return;
+    }
     // Window A's ring, with another of window A's cards pinned (the +
     // popover, the Tasks card): no hover (`aHovers` below).
     if (to === intent && !aHovers()) return;
@@ -2383,6 +2420,21 @@ export function ClaudeRail({
   };
   const pressRingRef = useRef(pressRing);
   pressRingRef.current = pressRing;
+  // SPACE PRESSED WITH THE POINTER ALREADY ON A LIST RING: quick look aims at
+  // it, as if the pointer had just arrived (`aimLook`'s rules).
+  const aimLookRef = useRef(aimLook);
+  aimLookRef.current = aimLook;
+  useEffect(() => {
+    let wasHeld = quickLookState().held;
+    return subscribeQuickLook(() => {
+      const held = quickLookState().held;
+      const turned = held && !wasHeld;
+      wasHeld = held;
+      const at = lookRing.current;
+      if (!turned || !at || !at.el.isConnected) return;
+      aimLookRef.current(at.key, at.el);
+    });
+  }, []);
   // THE PANE OPENING UNDER A PINNED LIST CARD (header): the card goes. On
   // the turn from shut to open only; read off refs, the turn is what decides.
   const pinNow = useRef({ pinned, peekKey, favsOn });
@@ -2677,6 +2729,19 @@ export function ClaudeRail({
               // (fav-peek-store `favHoverIntent`), a list ring to this
               // rail's card — neither ever moves the other.
               const win = foot && favsOn ? favHoverIntent() : intent;
+              // The ring's chat as quick look mounts it (quick-look-store),
+              // asked only when Space is held.
+              if (!foot) {
+                lookChats.current.set(t.key, () => ({
+                  file: taskChatTarget(row ?? t),
+                  sessionId: t.session_id || null,
+                  title: label,
+                  status: taskColumn(merged),
+                  ...(row?.model ? { model: row.model } : {}),
+                  ...(row?.effort ? { effort: row.effort } : {}),
+                  ...((row?.backend ?? t.backend) ? { backend: (row?.backend ?? t.backend)! } : {}),
+                }));
+              }
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
               // that opens a dialog is the shape they describe.
@@ -2774,7 +2839,7 @@ export function ClaudeRail({
                           ? {}
                           : {
                               onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) =>
-                                enterRing(t.key, e, win),
+                                enterRing(t.key, e, win, !foot),
                               // A focus HANDED here (a card shutting
                               // under the keyboard, fav-peek-store
                               // `focusRail`) opens no card.
@@ -2786,11 +2851,21 @@ export function ClaudeRail({
                                 else if (win !== intent || aHovers()) win.enterRing(t.key, "focus");
                               },
                             }),
-                        onPointerLeave: () => win.leaveRing("pointer"),
+                        onPointerLeave: () => {
+                          win.leaveRing("pointer");
+                          // Quick look's half (`lookRing`): list rings only.
+                          if (foot) return;
+                          if (lookRing.current?.key === t.key) lookRing.current = null;
+                          unaimQuickLook();
+                        },
                         onBlur: () => win.leaveRing("focus"),
                       }
                     : {})}
                   onClick={(e) => {
+                    // ANY press while Space is held is a real press, the
+                    // modified ones (a new tab) included: quick look goes
+                    // (design.md; review, 2026-11-10). Nothing shown: a no-op.
+                    dismissQuickLook();
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
                     // Opened, by either door below: read (header), and the
