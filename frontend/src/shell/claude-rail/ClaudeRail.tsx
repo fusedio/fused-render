@@ -2959,6 +2959,7 @@ export function ClaudeRail({
                     // settled row holding unsent words (tasks-lib.draftRing).
                     draftHeld={!!row && draftRing(merged as Task)}
                     {...(row?.failed ? { failed: true } : {})}
+                    icon={merged.icon_slot ?? t.icon_slot}
                   />
                 </a>
                 </div>

@@ -2907,6 +2907,97 @@ input.schedule-when-field {
   background: var(--status-failed);
 }
 
+/* -- Task icons (`task_icons_enabled`, experiment, 2026-11-10) -------------------
+   With the flag on, a task row's ring becomes a GLYPH: one of 299 line drawings
+   (frontend/public/task-icons.svg, slot order in shell/task-icons.ts) chosen
+   once per task by the server (`icon_slot`) so every task in a project wears a
+   different face. It is still `.schedule-ring` — same 16px box, same lane hue
+   via `currentColor`, same class vocabulary — so every caller and every rule
+   above keeps working; only the marks move off the centre, because the centre
+   is now the drawing. ONE CORNER, TOP-RIGHT, ONE MARK (owner, 2026-11-10:
+   "decide one place, top right, put dot ! everything there only"):
+     needs "!"   → 8px red badge on a knocked-out disc; outranks both dots
+     draft held  → 6px red dot (outranks unread's dot — same `::after`, the
+                   unsent wins, as on the plain ring)
+     unread      → 6px dot in the lane hue
+   Containers (lane headers, queue chip, calendar day) never get a slot and keep
+   the plain ring. `--ring-knock` is the surface the mark sits on; a host whose
+   surface is not `--bg` sets it. */
+.schedule-ring.schedule-ring--glyph {
+  --ring-knock: var(--bg);
+  border: 0;
+  display: inline-grid;
+  place-items: center;
+}
+.schedule-ring--glyph > svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  color: inherit;
+}
+/* `:is()` on purpose: `--glyph` is a SHAPE, not a lane, and the lane guard
+   (tasks-lib.test "gates that centre on UNREAD ALONE") reads every
+   `--x.--unread::after` pair as a lane gating the fill. */
+.schedule-ring--glyph:is(.schedule-ring--unread, .schedule-ring--draft-held)::after {
+  inset: auto;
+  margin: 0;
+  top: -3px;
+  right: -3px;
+  width: 6px;
+  height: 6px;
+  box-shadow: 0 0 0 2px var(--ring-knock);
+}
+/* The "!" takes the corner alone: the unread dot is already off on a waiting
+   ring (above), and the draft dot never meets it (draft-held is written on
+   settled lanes only). */
+.schedule-ring--glyph > .schedule-ring-bang {
+  inset: auto;
+  top: -4px;
+  right: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--ring-knock);
+  font-size: 8px;
+}
+
+/* The icon as a button while a title is being edited (shell/TaskIconReroll):
+   the ring's own box, a wash on hover, and a nudge so the press reads as
+   "this changes". Nothing else in the head moves. */
+.task-icon-reroll {
+  display: inline-grid;
+  place-items: center;
+  margin: -4px;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.task-icon-reroll:hover:not(:disabled) {
+  background: var(--row-hover, var(--bg-alt));
+}
+.task-icon-reroll:hover:not(:disabled) .schedule-ring {
+  transform: scale(1.12);
+}
+.task-icon-reroll .schedule-ring {
+  transition: transform 0.12s ease;
+}
+.task-icon-reroll:active:not(:disabled) .schedule-ring {
+  transform: rotate(18deg) scale(1.05);
+}
+.task-icon-reroll:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+.task-icon-reroll:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 1px;
+}
+
 /* -- The count on hover, without the browser's two-second wait -----------------
    "3 unread" is the one thing the mark does not print, so a reader who wants the
    number hovers for it — and a native `title` makes them hold still for one to

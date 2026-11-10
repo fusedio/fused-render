@@ -26,6 +26,7 @@ import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platfo
 import { columnLabel } from "./schedule-lib";
 import { pokeTasks } from "./tasksPulse";
 import { StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
+import { TaskIconReroll } from "./TaskIconReroll";
 import {
   BACKGROUND_LABEL,
   basename,
@@ -169,11 +170,14 @@ export function TaskPeekWho({ task, running = false, bare = false, rename = rena
         className="task-side-peek-status"
         title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
       >
-        <StatusIcon
-          status={status}
-          failed={running ? false : ringFailed(task)}
-          background={background}
-        />
+        <TaskIconReroll task={task} editing={draft !== null}>
+          <StatusIcon
+            status={status}
+            failed={running ? false : ringFailed(task)}
+            background={background}
+            icon={task.icon_slot}
+          />
+        </TaskIconReroll>
       </span>
       <TaskAgentMark backend={task.backend} />
       {star && <TaskStar task={task} />}
