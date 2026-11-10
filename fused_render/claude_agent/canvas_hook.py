@@ -50,6 +50,32 @@ def _ask(origin: str, payload: dict) -> dict:
     return answer if isinstance(answer, dict) else {}
 
 
+def _live_origin(failed: str) -> str:
+    """The origin in `$FUSED_RENDER_HOME_DIR/server.json` when it differs
+    from `failed` and its server pid is alive; "" otherwise."""
+    try:
+        home = os.environ.get("FUSED_RENDER_HOME_DIR") or ""
+        if not home:
+            return ""
+        with open(os.path.join(home, "server.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        origin = data.get("origin") if isinstance(data, dict) else None
+        pid = data.get("pid") if isinstance(data, dict) else None
+        if (not isinstance(origin, str) or not origin.startswith(("http://", "https://"))
+                or origin.rstrip("/") == failed.rstrip("/")
+                or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0):
+            return ""
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            pass
+        except (OSError, OverflowError):
+            return ""
+        return origin
+    except Exception:  # noqa: BLE001 — unreadable, half-written, absent
+        return ""
+
+
 def main(argv: list[str]) -> int:
     event = argv[1] if len(argv) > 1 else ""
     origin = os.environ.get(_ORIGIN_ENV, "")
@@ -68,7 +94,17 @@ def main(argv: list[str]) -> int:
     try:
         answer = _ask(origin, payload)
     except Exception:  # noqa: BLE001 — fail open (module docstring)
-        return 0
+        # The app may have been relaunched on another port while this session
+        # host lived on: ask this install's live server (event_origin.py's
+        # rule, inlined — this file is copied out of the package and cannot
+        # import its neighbours), once.
+        other = _live_origin(origin)
+        if not other:
+            return 0
+        try:
+            answer = _ask(other, payload)
+        except Exception:  # noqa: BLE001
+            return 0
     if event == "pre" and isinstance(answer.get("deny"), str) and answer["deny"]:
         out = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                       "permissionDecision": "deny",

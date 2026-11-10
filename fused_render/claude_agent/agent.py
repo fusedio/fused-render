@@ -1088,6 +1088,25 @@ def _in_canvases_root(target: str) -> bool:
 # (`os.path.expanduser`, not module-import time) so a test can monkeypatch HOME
 # and so a real change of HOME mid-process is honored rather than frozen at
 # whatever HOME happened to be when this module first loaded.
+# The environment segments fused-render clones live under
+# (`<canvases_root>/<env>/<name>`): fusedcli.WORKBENCH_ENV_CHOICES, duplicated
+# because this module does not import the server's (see appenv's own rule).
+_CLONE_ENVS = ("unstable", "prod", "custom")
+
+
+def _in_synced_clone(target: str) -> bool:
+    """Whether `target` is in one of fused-render's own canvas clones, the
+    ones its sync manages: `<canvases_root>/<env>/<name>[/...]`. Not Fused
+    Web's clones (`~/Fused/canvas/<name>`, same base, no env segment), whose
+    sessions the sync has nothing to tell."""
+    try:
+        rel = os.path.relpath(os.path.abspath(target), os.path.abspath(_canvases_root()))
+    except ValueError:  # another drive on Windows
+        return False
+    parts = rel.split(os.sep)
+    return len(parts) >= 2 and parts[0] in _CLONE_ENVS and parts[1] not in ("", os.pardir)
+
+
 def _fused_web_canvas_root() -> str:
     """`~/Fused/canvas` — Fused Web's local canvas-clones folder, a SECOND
     gate root alongside `_canvases_root()` (see `_in_workbench_root`)."""
@@ -4146,7 +4165,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                 "matcher": "Write|Edit|MultiEdit|NotebookEdit|mcp__.*",
                 "hooks": [{"type": "command", "command": hook_cmd,
                            "timeout": 10}]}]}})]
-    elif _in_canvases_root(file):
+    elif _in_synced_clone(file):
         # A session in a canvas clone shares the folder with the user's live
         # canvas: their adds, deletes, renames and drags land in canvas.toml
         # and the source files while this session works. Two hooks keep it
