@@ -311,13 +311,14 @@ test("a chat-only mount's first send says has_pane: 0", async () => {
   expect(started()[0].params.message).toContain("fix the chart");
 });
 
-test("a refused start says its error once: the trouble card, not the card AND a red row", async () => {
+test("a refused start says its message once: the red row, with the trouble card still up", async () => {
   startAnswer = { error: "target not found: /x" };
   const { r } = await mountChat({ initialAsk: "go" });
   await settle(20);
   expect(started().length).toBe(1);
   const said = JSON.stringify(r.toJSON()).split("target not found").length - 1;
   expect(said).toBe(1);
+  expect(JSON.stringify(r.toJSON())).toContain("Something went wrong");
 });
 
 test("an UNRESOLVED pane sends has_pane EMPTY and lets agent.py decide", async () => {

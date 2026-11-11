@@ -190,6 +190,7 @@ export function TroubleCard({
   explain,
   kind: kindProp,
   backend,
+  quoteError = true,
   children,
 }: {
   /** What the app was doing, in the user's terms — goes in the report. */
@@ -238,6 +239,10 @@ export function TroubleCard({
    *  (docs/GEMINI_BACKEND.md D10), OpenCode's own (docs/OPENCODE_BACKEND.md
    *  D10), none on a Copilot card. */
   backend?: string;
+  /** Whether the card prints `error` in its own verbatim box. A caller whose
+   *  surface already shows the same text right above passes false: the report
+   *  behind "Copy the details" still carries it in full. */
+  quoteError?: boolean;
   /** Extra actions belonging to the calling surface (e.g. "Fix this"). */
   children?: React.ReactNode;
 }) {
@@ -304,7 +309,7 @@ export function TroubleCard({
           CLI output, only our own two sentences above) now passes `""` and gets
           the title, the explanation and the actions with no dead box between
           them. Every caller that has real bytes is unaffected. */}
-      {String(error || "").trim() ? (
+      {quoteError && String(error || "").trim() ? (
         <pre className="trouble-error">{String(error).trim()}</pre>
       ) : null}
 

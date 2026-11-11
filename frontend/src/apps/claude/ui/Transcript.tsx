@@ -980,7 +980,6 @@ export const Transcript = memo(function Transcript({
 
   // BREAKOUT PICK MODE: every turn of an exchange shares one pick; the prompt
   // turn carries the check. An exchange still streaming or pending is locked.
-  const cardRowKey = state.trouble ? lastErrorKey(state.turns) : null;
   const pickFor = useMemo(() => (pick ? pickPlan(state.turns, pick.keys, pick.onToggle) : new Map<string, TurnPick>()), [pick, state.turns]);
 
   return (
@@ -991,8 +990,6 @@ export const Transcript = memo(function Transcript({
         ) : (
           <>
             {state.turns.map((turn) => {
-              // The trouble card at the tail IS the newest error row's report.
-              if (turn.key === cardRowKey) return null;
               const plan = parked.get(turn.key);
               // A `<CardStack/>` for one position, by id: the same list, the
               // same three card kinds, restricted to the rows that belong here.
@@ -1046,13 +1043,16 @@ export const Transcript = memo(function Transcript({
                 </Turn>
               );
             })}
-            {/* THE FAILURE, ONCE. While the trouble card is up it is the only
-                statement of the newest error: that row is skipped in the log
-                above, so the failure is not shown twice. Older errors stay as
-                their own rows; the card is what the user can act on. */}
+            {/* THE ROW AND THE CARD, both (#27). T appends a red row per failure
+                AND draws the actionable card for the newest one; the port
+                suppressed the row the card duplicated, which left an API error
+                or a session limit with no line at the end of the log saying the
+                turn had stopped — "last line = the error" is the request. The
+                row is the log entry, the card is what the user can act on. */}
             {state.trouble ? (
               <TroubleView
                 trouble={state.trouble}
+                messageShownAbove={newestErrorText(state.turns) === state.trouble.message.trim()}
                 {...(what ? { what } : {})}
                 {...(comebackPending !== undefined ? { comebackPending } : {})}
               />
@@ -1336,6 +1336,15 @@ export function lastAssistantKey(turns: ChatState["turns"]): string | null {
  *  test: the rule is "the newest error row is the card", not "any error row". */
 export function lastErrorKey(turns: ChatState["turns"]): string | null {
   for (let i = turns.length - 1; i >= 0; i--) if (turns[i].role === "error") return turns[i].key;
+  return null;
+}
+
+/** The trimmed text of the last `role: "error"` row, or null. */
+function newestErrorText(turns: ChatState["turns"]): string | null {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
+    if (t.role === "error") return String(t.text ?? "").trim();
+  }
   return null;
 }
 

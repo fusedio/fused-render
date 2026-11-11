@@ -122,6 +122,10 @@ export interface TroubleViewProps {
    *  is still up — false once the user cancels it, so the card stops promising
    *  a follow-up that will not come. Absent = trust the flag. */
   comebackPending?: boolean;
+  /** The newest error row above this card already says `trouble.message`: the
+   *  card keeps its title, explanation and actions but does not print the
+   *  message a second time. */
+  messageShownAbove?: boolean;
 }
 
 /** `SAID` with the AGENT named (D18): "Claude Code" is the CLI's own name and
@@ -150,6 +154,7 @@ export function TroubleView({
   retryLabel,
   said: saidProp,
   comebackPending,
+  messageShownAbove,
 }: TroubleViewProps) {
   const agent = useAgent();
   // A `disabled` card names the agent the REFUSAL named, which is this chat's
@@ -195,6 +200,7 @@ export function TroubleView({
            install box below. */
         kind={platformKindOf(trouble.kind)}
         backend={backend}
+        quoteError={!messageShownAbove}
         {...(said ? { title: said.title } : {})}
         {...(explain ? { explain } : {})}
         {...(onRetry ? { onRetry } : {})}
