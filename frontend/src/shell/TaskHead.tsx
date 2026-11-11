@@ -45,11 +45,12 @@
 // what it does on Archive and Delete (advance to the next task, go back to the
 // list, close the dialog) is the host's business; the head only seats it. The
 // same for `chips` and `seats`.
-import type { ReactNode, Ref } from "react";
+import { useState, type ReactNode, type Ref } from "react";
 import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronUp, X } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 import { queueCaption, type QueueFacts } from "@platform/lib/queue";
 import { QueuedCaption, TaskPeekWho } from "./TaskPeekWho";
+import { TaskFileSeat, type FiledKind } from "./TaskFileSeat";
 import { TASK_HEAD_DROPS, TASK_HEAD_STACK_LEVEL, taskHeadNeed, useStripFit } from "./row-fit";
 
 export interface TaskHeadLead {
@@ -118,6 +119,14 @@ export interface TaskHeadProps {
   /** The node the host's seats sit in (`.task-head-seats`) — the chat
    *  measures it to fold its seat labels (`useFitStrip`). */
   seatsRef?: (el: HTMLElement | null) => void;
+  /** THE RING FILES THE TASK (TaskFileSeat): on by default for a task with a
+   *  session — hovering the head turns the ring into Archive / Unarchive, the
+   *  Tasks row's gesture. A host's own `statusOverlay` wins; `false` turns it
+   *  off (a host whose archive lives elsewhere). */
+  fileSeat?: boolean;
+  /** After the seat filed the task: the host does what its ⋮ does on Archive
+   *  (advance, go back, close); an Unarchive keeps the reader in place. */
+  onFiled?: (kind: FiledKind) => void;
   /** The group's accessible name (default "Task header"). */
   ariaLabel?: string;
   nav?: TaskHeadNav;
@@ -195,7 +204,13 @@ export function TaskHead({
   onRenamed,
   seatsRef,
   ariaLabel = "Task header",
+  fileSeat = true,
+  onFiled,
 }: TaskHeadProps) {
+  // A SPENT PRESS HANDS THE RING BACK (the Tasks row's `.is-refiled`): up on
+  // the filing press, down when the pointer leaves the head — no selector can
+  // say "hovered, but the hover already spent its press".
+  const [refiled, setRefiled] = useState(false);
   // Measured on the whole head — both rows — so rung 5 can answer row 2.
   const [fit, headRef] = useStripFit(stacked === false ? DROPS_NO_STACK : DROPS_ALL, fitEnabled, taskHeadNeed);
   // THE IDENTITY MOVES ROWS HERE, which remounts it: a rename half-typed when
@@ -228,7 +243,19 @@ export function TaskHead({
    *  and rename hook. */
   const whoExtras = {
     ...(starNode ? { starNode } : {}),
-    ...(statusOverlay ? { statusOverlay } : {}),
+    ...(statusOverlay
+      ? { statusOverlay }
+      : fileSeat && who?.session_id
+        ? {
+            statusOverlay: (
+              <TaskFileSeat
+                task={who}
+                onPress={() => setRefiled(true)}
+                {...(onFiled ? { onFiled } : {})}
+              />
+            ),
+          }
+        : {}),
     ...(subtitle ? { subtitle } : {}),
     ...(onRenamed ? { onRenamed } : {}),
   };
@@ -281,7 +308,13 @@ export function TaskHead({
     // banner landmarks.
     <div
       ref={headRef}
-      className={"task-head" + (stackedNow ? " is-stacked" : "") + (className ? ` ${className}` : "")}
+      className={
+        "task-head" +
+        (stackedNow ? " is-stacked" : "") +
+        (refiled ? " is-refiled" : "") +
+        (className ? ` ${className}` : "")
+      }
+      onMouseLeave={refiled ? () => setRefiled(false) : undefined}
       role="group"
       aria-label={ariaLabel}
       data-fit={fit}

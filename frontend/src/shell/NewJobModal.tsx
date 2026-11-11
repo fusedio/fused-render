@@ -6123,6 +6123,10 @@ export default function NewJobModal({
             open={chatHref ? { href: chatHref, label: "Open this chat", onOpen: (h) => openFromLanding(h) } : null}
             chipsRef={setChipsHost}
             kebab={chatKebab}
+            // The ring's Archive goes back to the form, as the ⋮'s.
+            onFiled={(kind) => {
+              if (kind === "archive") leaveChat();
+            }}
           />
         ),
       } : {})}

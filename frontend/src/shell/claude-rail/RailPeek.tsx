@@ -1621,8 +1621,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               star={false}
               {...(favsOn && head.t.session_id ? { starNode: starButton(head) } : {})}
               // …and its archive over the ring, on hover (favourites on; off,
-              // it rides the pulse as it did).
+              // it rides the pulse as it did — and the head's own ring seat
+              // stays off, so there is one archive, not two).
               {...(favsOn && head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
+              fileSeat={false}
               // The last reply after the title, as the old title row drew it.
               {...(head.reply
                 ? {

@@ -6014,6 +6014,11 @@ function ChatBody(props: ChatBodyProps) {
         </>
       }
       kebab={kebabMenu}
+      // The ring's Archive leaves through the ⋮'s door (`onBack`, the
+      // landing); an Unarchive stays on the chat.
+      onFiled={(kind) => {
+        if (kind === "archive") onBack();
+      }}
       // The seat labels fold the way they did on the strip (`.tight`).
       seatsRef={stripRef}
     />

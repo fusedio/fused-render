@@ -1332,6 +1332,13 @@ export function TaskPeek({
             chips={task ? <TaskPrChip task={task} /> : null}
             open={SHOW_PAGE_DOOR && page && task ? { href: page, label: pageDoorLabel(task), onOpen: () => openAsPage() } : null}
             kebab={task ? unifiedKebab(task) : null}
+            // THE RING FILES IT (TaskFileSeat): an Archive advances along the
+            // order that still held the task, as the ⋮'s does; an Unarchive
+            // stays put.
+            onFiled={(kind) => {
+              onReload?.();
+              if (kind === "archive" && task) advancePast(task.key, lastOrderWithKey.current);
+            }}
           />
         ) : (
         <header className="task-side-peek-head" ref={headRef} data-fit={headFit}>

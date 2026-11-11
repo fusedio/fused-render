@@ -206,6 +206,10 @@ export function TasksPeek() {
                 nav={{ prev: chatEnds.prev, next: chatEnds.next, step: stepChat }}
                 task={task}
                 chipsRef={setChipsHost}
+                // The ring's Archive leaves the chat for the list, as the ⋮'s.
+                onFiled={(kind) => {
+                  if (kind === "archive") setChat(null);
+                }}
                 open={
                   task && taskHref(task)
                     ? { href: taskHref(task)!, label: pageDoorLabel(task), onOpen: (h) => api.openPage(h) }

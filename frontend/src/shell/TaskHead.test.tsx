@@ -379,3 +379,66 @@ test("pending with no task: the identity's skeleton holds the seat", () => {
   expect(byClass(r, "c-skel-dot")).toHaveLength(1);
   expect(byClass(render(head({ task: null })), "c-tb-skel")).toHaveLength(0);
 });
+
+// ---- the ring files the task (TaskFileSeat; the Tasks row's mark slot) ------
+
+const seatOf = (r: ReactTestRenderer) => byClass(r, "task-head-file")[0];
+
+test("the ring's Archive is there only when the task can be filed — never while a run is in flight", () => {
+  const done = render(head());
+  const seat = seatOf(done)!;
+  expect(seat.props["aria-label"]).toBe("Archive this task");
+  expect(seat.props["data-hint"]).toBe("Archive");
+  // It stands INSIDE the ring's seat, over the ring.
+  const ring = byClass(done, "task-side-peek-status")[0]!;
+  expect(JSON.stringify(ring)).toContain("task-head-file");
+  // Archived: the other direction.
+  expect(seatOf(render(head({ task: task({ status: "archived" }) })))!.props["aria-label"]).toBe(
+    "Unarchive this task",
+  );
+  // A run in flight: no button, the ring stays.
+  expect(seatOf(render(head({ task: task({ status: "in_progress" }) })))).toBeUndefined();
+  // No session yet: nothing to file.
+  expect(seatOf(render(head({ task: task({ session_id: undefined } as Partial<Task>) })))).toBeUndefined();
+  // A host that keeps its archive elsewhere turns it off.
+  expect(seatOf(render(head({ fileSeat: false })))).toBeUndefined();
+});
+
+test("a host's own overlay wins over the ring's Archive", () => {
+  const r = render(head({ statusOverlay: createElement("button", { className: "host-archive" }) }));
+  expect(seatOf(r)).toBeUndefined();
+  expect(byClass(r, "host-archive")).toHaveLength(1);
+});
+
+test("not while the title is being renamed: the ring is the icon's then, not Archive", () => {
+  const r = render(head());
+  expect(seatOf(r)).toBeDefined();
+  const pencil = flat(r).find((n) => n.props["aria-label"] === "Rename task")!;
+  act(() => pencil.props.onClick());
+  expect(seatOf(r)).toBeUndefined();
+});
+
+test("a press files it, tells the host, and hands the ring back until the pointer leaves", async () => {
+  const realFetch = globalThis.fetch;
+  const calls: string[] = [];
+  (globalThis as { fetch: unknown }).fetch = async (input: unknown) => {
+    calls.push(String(input));
+    return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
+  };
+  try {
+    const filed: string[] = [];
+    const r = render(head({ onFiled: (k) => filed.push(k) }));
+    await act(async () => {
+      seatOf(r)!.props.onClick({ stopPropagation() {} });
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    expect(calls).toContain("/api/tasks/archive");
+    expect(filed).toEqual(["archive"]);
+    // The spent press: the ring comes back in front while the pointer stays.
+    expect(cls(headNode(r))).toContain("is-refiled");
+    act(() => headNode(r).props.onMouseLeave());
+    expect(cls(headNode(r))).not.toContain("is-refiled");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

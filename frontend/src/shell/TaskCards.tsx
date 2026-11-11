@@ -1158,6 +1158,12 @@ function TaskPeek({
             titleId={titleId}
             chips={<TaskPrChip task={task} />}
             chipsRef={setChipsHost}
+            // The ring's Archive closes the popup, as the ⋮'s; an Unarchive
+            // re-reads and stays.
+            onFiled={(kind) => {
+              onReload?.();
+              if (kind === "archive") onClose();
+            }}
             open={explorer ? {
               href: explorer,
               label: pageDoorLabel(task),

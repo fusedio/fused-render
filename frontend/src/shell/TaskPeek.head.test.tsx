@@ -96,14 +96,14 @@ function fakeEl() {
   };
 }
 
-async function open(tasks: Task[]) {
+async function open(tasks: Task[], onReload?: () => void) {
   let r!: ReactTestRenderer;
   act(() => {
     store.setPeekHost(true);
     store.openPeek(tasks[0]!.key);
   });
   act(() => {
-    r = create(createElement(TaskPeek, { tasks, loaded: true }), { createNodeMock: () => fakeEl() });
+    r = create(createElement(TaskPeek, { tasks, loaded: true, ...(onReload ? { onReload } : {}) }), { createNodeMock: () => fakeEl() });
   });
   mounted.push(r);
   // The reads the mount started (the chat's template, the ⋮'s listing) land
@@ -156,4 +156,25 @@ test("flag OFF: the head this panel has always drawn", async () => {
   expect(hostAll(r, (n) => hasClass(n, "task-head"))).toHaveLength(0);
   expect(byLabel(r, "More actions")).toBeDefined();
   expect(byLabel(r, "More options")).toBeUndefined();
+});
+
+test("flag ON: the ring's Archive files the task and the panel moves on, as the ⋮'s Archive does", async () => {
+  publishTaskHeadUnified({ enabled: true });
+  const posted: string[] = [];
+  (globalThis as { fetch: unknown }).fetch = async (input: unknown) => {
+    posted.push(String(input));
+    return { ok: true, status: 200, json: async () => ({ tasks: [] }) } as unknown as Response;
+  };
+  let reloads = 0;
+  const r = await open([task()], () => (reloads += 1));
+  const seat = hostAll(r, (n) => hasClass(n, "task-head-file"))[0]!;
+  expect(seat.props["aria-label"]).toBe("Archive this task");
+  await act(async () => {
+    seat.props.onClick({ stopPropagation() {} });
+    await new Promise((done) => setTimeout(done, 0));
+  });
+  expect(posted).toContain("/api/tasks/archive");
+  expect(reloads).toBeGreaterThan(0);
+  // Nothing else on the page to move to: the panel closes (advancePast).
+  expect(store.getPeekState().key).toBeNull();
 });
