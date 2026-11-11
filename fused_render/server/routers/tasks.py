@@ -4236,9 +4236,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          icons: dict[str, int] | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
-    `icons` is `tasks_store.icon_overrides()`, read once per listing: the
-    rerolled slots. Every other row's `icon_slot` is arithmetic on its number
-    (`tasks_store.icon_slot`), so the dict is small and usually empty.
+    `icons` is `tasks_store.icon_slots()`, read once per listing: every
+    numbered task's face, computed from its number RECORD (the project the
+    number was minted in, plus a reroll), never from this row's own project
+    spelling — so the face cannot change between two listings of one task.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
     card — computed once by the caller for the same reason `busy` is: it is one
@@ -4522,10 +4523,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "key": task["key"],
         "task_id": number,
         # THE TASK'S FACE (`task_icons_enabled`, experiment 2026-11-10): which
-        # of the 299 glyphs this row wears, from its number — see
-        # `tasks_store.icon_slot`. None while the number is "".
-        "icon_slot": tasks_store.icon_slot(number, task["project"],
-                                           (icons or {}).get(task["key"])),
+        # of the 299 glyphs this row wears, from its number record — see
+        # `tasks_store.icon_slots`. None while the task has no number.
+        "icon_slot": (icons or {}).get(task["key"]),
         # THE RAIL CARD'S STAR, and whether that favourite is the one expanded
         # card (`tasks_store.favourite_of`). Global, so every row answers.
         "starred": bool(task.get("starred")),
@@ -5011,7 +5011,7 @@ def _draft_row(ident: str, record: dict, number: str = "",
         # is scheduled. "" only when the state dir is unwritable, which is the
         # same "" every other row falls back to.
         "task_id": number,
-        "icon_slot": tasks_store.icon_slot(number, place, icon),
+        "icon_slot": icon,
         "draft_id": ident,
         "kind": "draft",
         # WHICH composer this draft belongs to. The two are opened by different
@@ -5127,7 +5127,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "",
     return {
         "key": key,
         "task_id": number,
-        "icon_slot": tasks_store.icon_slot(number, project, icon),
+        "icon_slot": icon,
         # There is no `draft:<id>` behind this one — the store keys it on the
         # folder. "" rather than the key so a client testing `draft_id` cannot
         # send this to the task-draft routes, which would 400 on the shape.
@@ -5524,7 +5524,7 @@ def _draft_rows(only: frozenset | set | None = None,
         if chat_drafts is None:
             chat_drafts = loaded_chat
     numbers = _draft_numbers(task_drafts, chat_drafts)
-    icons = _icon_overrides()
+    icons = _icon_slots()
     # Which sessions this machine has ERASED — read at most once per build, and
     # only when a bound draft is actually seen, because it is a file read and
     # nearly every listing has nothing bound at all. See the skip below.
@@ -6289,7 +6289,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     for task in listed.values():
         _place(task)
     numbers = _numbers(listed)
-    icons = _icon_overrides()
+    icons = _icon_slots()
     # The number and the name of whoever is in front, once the listing's own
     # allocation has run: a task seeing its first listing gets its number HERE,
     # and a holder outside a narrowed answer is named from the stored table.
@@ -8096,11 +8096,11 @@ def api_task_rename(patch: RenamePatch,
     return {"ok": True, "title": stored}
 
 
-def _icon_overrides() -> dict[str, int]:
-    """The rerolled icon slots (`tasks_store.icon_overrides`), or {} when the
-    state dir cannot be read — a row then wears its arithmetic face."""
+def _icon_slots() -> dict[str, int]:
+    """Every numbered task's face (`tasks_store.icon_slots`), or {} when the
+    state dir cannot be read — rows then carry no face and draw the ring."""
     try:
-        return tasks_store.icon_overrides()
+        return tasks_store.icon_slots()
     except OSError:
         return {}
 

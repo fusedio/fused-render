@@ -791,9 +791,26 @@ def icon_slot(number: str, project: str, override: int | None = None) -> int | N
     return icon_slot_for(int(m.group(1)), project, override)
 
 
+def icon_slots() -> dict[str, int]:
+    """`{key: slot}` for every numbered task — read once per listing and
+    handed to each row (`routers/tasks.py::_row`). THE RECORD DECIDES, not
+    the row: the slot is computed from the number and the project the number
+    was allocated in (plus a reroll's override), so a task whose project the
+    listing spells differently on a later pass — a `pending:` row rekeyed
+    onto its session, a page-origin task whose cwd is read from the
+    transcript next time — keeps the face it was first drawn with. Spent
+    records (an old key after a rekey) are left out."""
+    out: dict[str, int] = {}
+    for key, rec in task_ids().items():
+        if rec.get("spent"):
+            continue
+        out[key] = icon_slot_for(rec["n"], rec["project"], rec.get("icon_slot"))
+    return out
+
+
 def icon_overrides() -> dict[str, int]:
-    """`{key: slot}` for every task whose icon was rerolled — small, read once
-    per listing and handed to each row (`routers/tasks.py::_row`)."""
+    """`{key: slot}` for every task whose icon was rerolled (tests, and the
+    one question "was this one rerolled?")."""
     out: dict[str, int] = {}
     for key, rec in task_ids().items():
         slot = rec.get("icon_slot")
