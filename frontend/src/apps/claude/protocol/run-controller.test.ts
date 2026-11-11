@@ -35,9 +35,11 @@ beforeAll(() => {
   resetFlagsForTests();
   setPrefsDeadlineForTests(1);
 });
+// The budget goes back; the flags stay SETTLED (not reset): a later file that
+// reads them — run-controller.cards.test.ts guards itself the same way — must
+// not be the one to meet an unasked flag over a pinned read.
 afterAll(() => {
   setPrefsDeadlineForTests();
-  resetFlagsForTests();
 });
 
 import type { runAgent } from "./agent";
