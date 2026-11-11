@@ -100,6 +100,7 @@ import {
   isFailedTask,
   needsAttention,
   attentionCaption,
+  needsYouCaption,
   isMessageRunning,
   isRunningNow,
   isRunningIn,
@@ -1209,14 +1210,20 @@ describe("attentionCaption", () => {
       blocked_reason: "permission",
       attention: { tool: "Bash", summary: "ls" },
     }))).toBe("");
-    // "failed", "usage_limit" and "" keep their own (or no) caption.
-    for (const reason of ["failed", "usage_limit", ""] as const) {
+    // "usage_limit" and "" keep their own (or no) caption.
+    for (const reason of ["usage_limit", ""] as const) {
       expect(attentionCaption(task({
         status: reason === "" ? "needs_attention" : "blocked",
         blocked_reason: reason,
         attention: { tool: "Bash", summary: "ls" },
       }))).toBe("");
     }
+  });
+
+  it("says a run that broke failed, on the blocked status and nothing else", () => {
+    expect(attentionCaption(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Run failed");
+    expect(attentionCaption(task({ status: "blocked", blocked_reason: "failed", attention: null }))).toBe("Run failed");
+    expect(attentionCaption(task({ status: "done", blocked_reason: "failed" }))).toBe("");
   });
 
   it("is drawn on all three surfaces and said by their rings", () => {
@@ -1232,6 +1239,28 @@ describe("attentionCaption", () => {
     expect(CARDS_SRC).toContain("const asking = attentionCaption(task);");
     expect(CARDS_SRC).toContain('{asking && <span className="task-card-limit">{asking}</span>}');
     expect(CARDS_SRC).toContain("label={asking || undefined}");
+  });
+});
+
+describe("needsYouCaption", () => {
+  // The Workspace card's one line: every cause that puts a task in "Needs you".
+  const t = (over: Partial<Task>) => task({ status: "needs_attention", ...over });
+
+  it("covers a question, an approval, a usage limit and a failed run", () => {
+    expect(needsYouCaption(t({ blocked_reason: "question", attention: { tool: "AskUserQuestion", summary: "Ship it?" } })))
+      .toBe("Waiting on your answer · Ship it?");
+    expect(needsYouCaption(t({ blocked_reason: "permission", attention: { tool: "Bash", summary: "ls" } })))
+      .toBe("Waiting on your approval · Bash: ls");
+    expect(needsYouCaption(task({ status: "blocked", blocked_reason: "usage_limit", resumes_at: 0 })))
+      .toBe("Usage limit");
+    expect(needsYouCaption(task({ status: "blocked", blocked_reason: "usage_limit", resumes_at: 1789066800 })))
+      .toMatch(/^Usage limit · resumes \d{1,2}:\d{2} (AM|PM)$/);
+    expect(needsYouCaption(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Run failed");
+  });
+
+  it("says nothing for a task that does not need you", () => {
+    expect(needsYouCaption(task({ status: "in_progress" }))).toBe("");
+    expect(needsYouCaption(task({ status: "done" }))).toBe("");
   });
 });
 

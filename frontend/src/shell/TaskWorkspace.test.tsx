@@ -791,3 +791,23 @@ test("n unfolds a folded Pinned group that holds the only task needing you", asy
   const card = r.root.findByProps({ "data-key": "p" });
   expect(card.props["aria-selected"]).toBe(true);
 });
+
+test("a Needs-you card says why in the preview's seat, instead of the last message", async () => {
+  serve();
+  const last = { role: "assistant" as const, text: "I asked a thing.", at: 1 };
+  const r = await render([
+    task({ key: "q", status: "needs_attention", blocked_reason: "question", attention: { tool: "AskUserQuestion", summary: "Ship it?" }, last_message: last } as Partial<Task>),
+    task({ key: "l", status: "blocked", blocked_reason: "usage_limit", resumes_at: 0 } as Partial<Task>),
+    task({ key: "f", status: "blocked", blocked_reason: "failed" } as Partial<Task>),
+    task({ key: "ok", status: "done", last_message: last } as Partial<Task>),
+  ]);
+  const ask = (key: string) =>
+    within(r.root.findByProps({ "data-key": key }), "ws-preview ws-ask") as Array<{ children: unknown[] }>;
+  expect(ask("q")).toHaveLength(1);
+  expect(ask("q")[0].children).toEqual(["Waiting on your answer · Ship it?"]);
+  expect(within(r.root.findByProps({ "data-key": "q" }), "ws-preview")).toHaveLength(0);
+  expect(ask("l")[0].children).toEqual(["Usage limit"]);
+  expect(ask("f")[0].children).toEqual(["Run failed"]);
+  expect(ask("ok")).toHaveLength(0);
+  expect(within(r.root.findByProps({ "data-key": "ok" }), "ws-preview")).toHaveLength(1);
+});
