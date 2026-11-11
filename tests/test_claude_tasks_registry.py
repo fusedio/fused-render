@@ -954,3 +954,23 @@ def test_an_agent_rows_model_and_effort_come_from_its_call(agent, run_dir):
                            task_type="local_agent")])
     rec = _rec(agent._poll("run"), "a1")
     assert rec["model"] == "sonnet" and rec["effort"] == "medium"
+
+
+def test_catch_up_takes_a_woken_turns_agent_model_from_its_call(agent, run_dir, monkeypatch):
+    """A job's end wakes the host into a turn that dispatches an Agent while
+    the page, still holding the ended turn's panel, asks `tasks`. The catch-up
+    absorbs that `task_started` first, so it reads the call's input too, or
+    the row reads the parent's model "(inherited)" for good."""
+    _append(run_dir, [_sys("task_started", task_id="b1", description="sleep",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    monkeypatch.setattr(agent, "_host_alive", lambda _d: True)
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="completed"),
+                      _tool("toolu_a", "Agent", {"description": "d", "model": "sonnet",
+                                                 "effort": "medium"}),
+                      _sys("task_started", task_id="a1", tool_use_id="toolu_a",
+                           description="d", subagent_type="general-purpose",
+                           is_backgrounded=True, task_type="local_agent")])
+    rec = _rec(agent._run_tasks("run"), "a1")
+    assert rec["model"] == "sonnet" and rec["effort"] == "medium"
+    assert rec["kind"] == "agent" and rec["subagent_type"] == "general-purpose"

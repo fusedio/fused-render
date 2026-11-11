@@ -10161,6 +10161,11 @@ def _catch_up_registry(run_dir: str) -> None:
         if size <= applied:
             return
         rows, ends = [], []
+        # The calls a `task_started` here names, as the poll collects them: a
+        # woken turn's Agent call is read here when the page, still on the
+        # ended turn, asks first — without it the record loses its model and
+        # effort, and reads the parent's model "(inherited)" for good.
+        tool_names, tool_inputs = {}, {}
         last = None   # the last whole line read, whatever its kind
         with open(path, "rb") as fh:
             fh.seek(applied)
@@ -10175,11 +10180,20 @@ def _catch_up_registry(run_dir: str) -> None:
                     break
                 pos += len(line)
                 last = line
-                if not system:
-                    continue   # task rows are all `system` rows; not parsed
+                if not system and b'"tool_use"' not in line:
+                    continue   # neither a task row nor a tool call; not parsed
                 try:
                     row = json.loads(line)
                 except ValueError:
+                    continue
+                if row.get("type") == "assistant":
+                    for blk in (row.get("message") or {}).get("content") or []:
+                        if isinstance(blk, dict) and blk.get("type") == "tool_use" \
+                                and blk.get("id"):
+                            tool_inputs[blk["id"]] = blk.get("input") or {}
+                            tool_names[blk["id"]] = str(blk.get("name") or "")
+                    continue
+                if not system:
                     continue
                 rows.append(row)
                 ends.append(pos)
@@ -10193,7 +10207,7 @@ def _catch_up_registry(run_dir: str) -> None:
             except ValueError:
                 pass
         if rows:
-            _update_run_registry(run_dir, rows, ends, {}, {})
+            _update_run_registry(run_dir, rows, ends, tool_names, tool_inputs)
     except Exception:  # noqa: BLE001 — a stale answer, never a failed read
         return
 
