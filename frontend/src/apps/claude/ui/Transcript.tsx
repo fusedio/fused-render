@@ -980,6 +980,7 @@ export const Transcript = memo(function Transcript({
 
   // BREAKOUT PICK MODE: every turn of an exchange shares one pick; the prompt
   // turn carries the check. An exchange still streaming or pending is locked.
+  const cardRowKey = state.trouble ? lastErrorKey(state.turns) : null;
   const pickFor = useMemo(() => (pick ? pickPlan(state.turns, pick.keys, pick.onToggle) : new Map<string, TurnPick>()), [pick, state.turns]);
 
   return (
@@ -990,6 +991,8 @@ export const Transcript = memo(function Transcript({
         ) : (
           <>
             {state.turns.map((turn) => {
+              // The trouble card at the tail IS the newest error row's report.
+              if (turn.key === cardRowKey) return null;
               const plan = parked.get(turn.key);
               // A `<CardStack/>` for one position, by id: the same list, the
               // same three card kinds, restricted to the rows that belong here.

@@ -457,22 +457,23 @@ test("a resolved card parks right after the tool chip it answered (#18)", () => 
   expect(at).toBeLessThan(kids.length - 1);
 });
 
-test("an error row AND the trouble card, both (#27)", () => {
+test("the trouble card stands for the newest error row; older error rows stay (#27)", () => {
   const r = mount(
     <Transcript
       state={state({
         turns: [
           { role: "user", key: "u:1", text: "go" },
-          { role: "error", key: "e:1", text: "Claude usage limit reached", kind: "generic" },
+          { role: "error", key: "e:1", text: "first failure", kind: "generic" },
+          { role: "user", key: "u:2", text: "again" },
+          { role: "error", key: "e:2", text: "Claude usage limit reached", kind: "generic" },
         ],
         trouble: { kind: "generic", message: "Claude usage limit reached" },
       })}
       actions={actions}
     />,
   );
-  // The red row is the log entry, in `--c-error` via `.turn.error`; the card
-  // beside it is the actionable surface. The port suppressed the row, which
-  // left an API error with no last line saying the turn had stopped.
+  // The card at the tail is the actionable surface and the newest failure's
+  // only report; the red row stays for failures the card no longer shows.
   const rows: Json[] = [];
   const troubles: Json[] = [];
   walk(r.toJSON() as Json, (n) => {
@@ -480,6 +481,7 @@ test("an error row AND the trouble card, both (#27)", () => {
     if (cls(n).includes("trouble") && cls(n).includes("turn")) troubles.push(n);
   });
   expect(rows).toHaveLength(1);
+  expect(JSON.stringify(rows[0])).toContain("first failure");
   expect(troubles).toHaveLength(1);
 });
 
