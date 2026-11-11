@@ -2714,6 +2714,11 @@ class _SyncManager:
         # first ACCEPTED post (`_embed_commit_gen`); a delta ack in between
         # re-seeds the view from the frame's own ack and cancels it.
         self._view_reset_pending = False
+        # The view was re-seeded by a FULL delta the frame acked (its hello)
+        # since the last snapshot was applied: it is that frame's picture, so
+        # a generation switch noticed only now (its first snapshot) has
+        # nothing to reset. A snapshot applied since clears it.
+        self._view_from_hello = False
         # The disk revision the view mirrors; a delta ack for an older rev is
         # stale (a snapshot write re-read disk since) and is ignored.
         self._view_rev = 0
@@ -2735,6 +2740,15 @@ class _SyncManager:
         self._rev_lock = threading.Lock()
         # Disk readings handed to the page, by rev, until the frame acks.
         self._delta_views: dict[int, dict] = {}
+        # Node names each cut delta carried an op for, and the names a frame
+        # ack reported SKIPPED (it kept its own newer change) that no later
+        # acked delta has re-sent yet: a delta cut behind the skipping one
+        # (diffed against its reading) never mentions them, and its ack must
+        # not make the view forget what the frame still shows for them.
+        self._delta_names: dict[int, set] = {}
+        # name → the disk_rev when the hold began: only a delta cut AFTER it
+        # (its base carries the held picture) settles the name.
+        self._skip_hold: dict[str, int] = {}
         self._embed_applied: dict[tuple[int, int], dict] = {}
         self._gen_applied_max: dict[int, int] = {}
         # Causality between the two legs (audit 2026-11-10): the highest delta
@@ -3390,7 +3404,9 @@ class _SyncManager:
         """One server state, for the once-per-state memos: its revision when
         the server has the spine, else its stamp and UDF edits."""
         if "revision" in probe:
-            return ("rev", probe.get("revision"))
+            # The id too: a canvas deleted and re-created restarts at
+            # revision 1 under a new id (`_remote_moved` reads it as a move).
+            return ("rev", probe.get("id"), probe.get("revision"))
         return ("stamp", probe.get("last_updated"),
                 tuple(sorted((k, repr(v)) for k, v in cls._udf_edits(probe).items())))
 
@@ -3693,6 +3709,9 @@ class _SyncManager:
                                   + ", ".join(r for r, _b, _p in rollback[:5]))
             rollback = []
             rolled_back = True
+            # Nothing of the server's move is on disk any more: nobody may
+            # be told it was merged (strip, journal, the session's hook).
+            self._last_merge_files = []
         else:
             rolled_back = False
         if not (rolled_back and self._base_files is None):
@@ -3735,6 +3754,18 @@ class _SyncManager:
         the caller merges it, or holds it while a Claude run is live). A
         move with no `bundle` (not fetched yet) answers "moved"."""
         if self._remote is None:
+            rev = probe.get("revision")
+            if (self._base_files is not None and self._base_revision is not None
+                    and isinstance(rev, int) and rev != self._base_revision):
+                # No manifest baseline (the post-push probe failed, a restart,
+                # a resume) but the sync point KNOWS its revision: a live one
+                # past it is a server MOVE since our files, to merge — never a
+                # new baseline (adopting it would If-Match the newer revision
+                # with the older files and skip the 412 that merges it).
+                self._remote = {**probe, "revision": self._base_revision}
+                self._note_disk()
+                self._save_base()
+                return "moved"
             # First look (fresh manager, or right after clone/push dropped
             # it): adopt as baseline. A remote edit made before this first
             # look is indistinguishable from the sync point — same blind
@@ -4649,7 +4680,11 @@ class _SyncManager:
         if probe is None:
             return
         self._note_probe(probe)
-        if self._remote is None or not self._remote_moved(self._remote, probe):
+        if self._remote is None:
+            with self._op_lock:
+                if self._poll_remote(probe) != "moved":
+                    return
+        elif not self._remote_moved(self._remote, probe):
             with self._op_lock:
                 self._poll_remote(probe)
             return
@@ -5078,7 +5113,7 @@ class _SyncManager:
             # before a delta it was owed) leaves the frame holding exactly the
             # view it acked, and a full cut against None would re-seat every
             # node — overwriting a drag the frame has not had acked (sim B).
-            self._view_reset_pending = True
+            self._view_reset_pending = not self._view_from_hello
             self._rowless = set()
             if self._fileless:
                 self._reconcile_rows("embed_to_disk", self.dir, drop=self._fileless, add=False)
@@ -5385,6 +5420,9 @@ class _SyncManager:
         self._note_disk()
         self._view_rev = self.disk_rev
         self._frame_seen = True
+        # The frame's own post describes what it shows now: nothing held over.
+        self._skip_hold = {}
+        self._view_from_hello = False
         self._bump()
         try:
             disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
@@ -5445,7 +5483,19 @@ class _SyncManager:
             pending = [r for r in self._delta_views if r > self._view_rev]
             if pending:
                 base_rev = max(pending)
+                acked = view
                 view = self._adopt(self._delta_views[base_rev])
+                # …except for names the frame SKIPPED (`_skip_hold`): it
+                # still shows the acked view's picture of them.
+                if self._skip_hold:
+                    view = {**view, **{t: dict(view.get(t) or {})
+                                       for t in ("nodes", "files", "bodies", "ids")}}
+                for name in self._skip_hold:
+                    for table in ("nodes", "files", "bodies", "ids"):
+                        if name in (acked.get(table) or {}):
+                            view[table][name] = acked[table][name]
+                        else:
+                            view[table].pop(name, None)
         ops = canvas_snapshot.diff_views(disk, view)
         disk["edges"] = canvas_snapshot.held_edges(disk, view["nodes"] if view else ())
         if view is not None and not ops:
@@ -5455,9 +5505,16 @@ class _SyncManager:
             self._bump()
             return {"rev": rev, "base_rev": rev, "ops": [], "full": False, **self._cut_seq()}
         self._delta_views[rev] = disk
+        if view is None:
+            self._delta_names.setdefault(-rev, set())  # marks rev as a full cut
+        self._delta_names[rev] = {n for o in ops for n in (o.get("name"), o.get("from"),
+                                                           o.get("to")) if isinstance(n, str)}
         self._cut_rev = max(self._cut_rev, rev)
         for old in sorted(self._delta_views)[:-8]:
             del self._delta_views[old]
+        for old in [r for r in self._delta_names
+                    if r not in self._delta_views and -r not in self._delta_views]:
+            del self._delta_names[old]
         self.log_event("disk_to_embed", "delta cut",
                        detail=f"rev {rev}: {len(ops)} op(s)" + (" (full)" if view is None else ""))
         return {"rev": rev, "base_rev": None if view is None else base_rev,
@@ -5490,6 +5547,8 @@ class _SyncManager:
         refusal mark a frame as seen: until the hello, there is no frame able
         to ack, and disk_to_embed must not read "pending" over a boot."""
         view = self._delta_views.pop(rev, None)
+        carried = self._delta_names.pop(rev, set())
+        was_full = self._delta_names.pop(-rev, None) is not None
         benign = (not ok and bool(reason)
                   and _BENIGN_DELTA_REFUSAL.search(reason) is not None)
         if not benign:
@@ -5498,6 +5557,7 @@ class _SyncManager:
             # The frame holds something we cannot describe: start over with a
             # full state on its next hello or the next disk move.
             self._embed_view = None
+            self._skip_hold = {}
             if not benign:
                 self._delta_error = (f"the workbench refused the delta for rev {rev}"
                                      + (f": {reason}" if reason else ""))
@@ -5532,7 +5592,13 @@ class _SyncManager:
             return {"ok": True, "rev": rev, "stale": True}
         cur = self._embed_view or {}
         skipped = {n for n in skipped if isinstance(n, str)}
-        if skipped:
+        # Earlier skips this delta did not re-send: the frame still shows its
+        # own picture of them, so the view keeps it (see `_skip_hold`).
+        held_over = {n: at for n, at in self._skip_hold.items()
+                     if n not in skipped and not (n in carried and rev > at)}
+        self._skip_hold = {**held_over, **{n: self.disk_rev for n in skipped}}
+        keep = skipped | set(held_over)
+        if keep:
             # The frame kept its own newer change for these (its unacked
             # snapshot touched them after the snapshot this delta was cut
             # behind): the view keeps its previous entry — node and the edges
@@ -5541,7 +5607,7 @@ class _SyncManager:
             # edge it never received.
             for table in ("nodes", "files", "bodies", "ids"):
                 fresh = dict(view.get(table) or {})
-                for name in skipped:
+                for name in keep:
                     if name in (cur.get(table) or {}):
                         fresh[name] = cur[table][name]
                     else:
@@ -5549,11 +5615,13 @@ class _SyncManager:
                 view[table] = fresh
             view["edges"] = (
                 [list(e) for e in view.get("edges") or []
-                 if e[0] not in skipped and e[1] not in skipped]
+                 if e[0] not in keep and e[1] not in keep]
                 + [list(e) for e in cur.get("edges") or []
-                   if (e[0] in skipped or e[1] in skipped)])
+                   if (e[0] in keep or e[1] in keep)])
         self._embed_view = self._adopt(view)
         self._view_reset_pending = False  # the frame's own ack: the view is its truth
+        if was_full:
+            self._view_from_hello = True
         self._view_rev = rev
         self._delta_error = None
         if skipped:
@@ -5674,6 +5742,29 @@ class _SyncManager:
             self._body_written.pop(gone, None)
         self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
                                        bodies=bodies, embed_rows=new["nodes"])
+        view = self._embed_view
+        if view is not None:
+            # Keys the frame still shows from before a delta it skipped
+            # (canvas_snapshot: never written over disk): the view holds the
+            # frame's value, so the next delta re-sends disk's.
+            for name, keys in (result.get("stale_keys") or {}).items():
+                if name in view["nodes"]:
+                    view["nodes"][name] = {**view["nodes"][name], **keys}
+        if result.get("stale_keys"):
+            self.log_event("embed_to_disk", "stale row keys not written",
+                           detail=", ".join(f"{n}.{k}" for n, ks in result["stale_keys"].items()
+                                            for k in ks)[:300]
+                                  + ": the workbench still showed them from before a delta")
+        if result.get("ignored"):
+            self.log_event("embed_to_disk", "row for a deleted node ignored",
+                           detail=", ".join(result["ignored"]) + ": deleted on disk; the next "
+                                  "delta deletes it on the canvas")
+            if view is not None:
+                for name in result["ignored"]:
+                    if name not in view["nodes"] and name in new["nodes"]:
+                        view["nodes"][name] = new["nodes"][name]
+        if result.get("stale_keys") or result.get("ignored"):
+            self._force_recut()
         if result.get("deleted"):
             self._note_user_deletes(result["deleted"], result.get("deleted_files") or [])
         self._note_user_changes(result, renamed=result.get("renamed"))

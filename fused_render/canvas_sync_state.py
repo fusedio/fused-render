@@ -105,8 +105,16 @@ class SyncLog:
             except OSError:
                 pass  # no journal yet
             os.makedirs(os.path.dirname(self._path), exist_ok=True)
-            with open(self._path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps({**event, "canvas": self.name}) + "\n")
+            # Owner-only: the journal names files, canvases and errors. Created
+            # 0600, and an existing one (from before this rule, or the rotated
+            # `.log.1` it moved from) narrowed to it on every open.
+            fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o600)
+                os.write(fd, (json.dumps({**event, "canvas": self.name}) + "\n").encode("utf-8"))
+            finally:
+                os.close(fd)
         except OSError:
             pass
 

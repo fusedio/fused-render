@@ -1801,3 +1801,71 @@ def test_quit_releases_every_lease_within_the_budget(harness, tmp_path, monkeypa
     canvases_mod.shutdown(latch=False)
     assert calls == [("release", canvases_mod.LEASE_RELEASE_QUIT_S)]
     assert time.time() - started < canvases_mod.LEASE_RELEASE_QUIT_S + canvases_mod.STOP_JOIN_S
+
+
+def test_a_lost_post_push_probe_never_adopts_a_newer_revision_as_the_base(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """After a push whose post-push probe failed (`_remote` None, the base
+    files and base_revision describe what WE pushed), a live revision past it
+    is a server move to merge — not a first-look baseline, which would
+    If-Match the newer revision with the older files and skip the merge."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    with m._op_lock:
+        m._rotate_remote(None)               # the post-push probe failed
+    assert m._base_revision == 1
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b-someone-else\n"})
+    shims.set_manifest("t2", revision=3)
+    _poll(m)
+    assert (harness.root / "alpha" / "b.py").read_text() == "b-someone-else\n"
+    assert m._base_revision == 3 and m.merge_seq == 1
+    # Same bytes on the server: a rebaseline, still never a blind adopt.
+    with m._op_lock:
+        m._rotate_remote(None)
+    shims.set_manifest("t3", revision=4)
+    _poll(m)
+    assert m._base_revision == 4 and m.merge_seq == 1
+    assert "server moved, same bytes, rebaselined" in _actions(harness)
+
+
+def test_a_rolled_back_pre_push_merge_is_not_reported_as_merged(
+        harness, tmp_path, monkeypatch, fake_agent):
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    (harness.root / "alpha" / "a.py").write_text("a-local\n")
+    shims.set_remote_files({**_BASE_FILES, "b.py": "b2\n"})
+    shims.set_manifest("t2", revision=2)
+    harness.set_scenario({"pull_files": _BASE_FILES, "validate_fail": True})
+    m.hook_post("s1")
+    with m._flight_lock:
+        m._push()
+    assert (harness.root / "alpha" / "b.py").read_text() == "b1\n"  # rolled back
+    assert "pull rollback" in _actions(harness)
+    assert "server merged" not in _actions(harness)
+    assert m._last_merge is None
+    assert "merged into this folder" not in (m.hook_post("s1").get("context") or "")
+
+
+def test_the_move_key_of_a_recreated_canvas_differs():
+    key = canvases_mod._SyncManager._move_key
+    assert key({"id": "c1", "revision": 1, "udfs": {}}) != key({"id": "c2", "revision": 1,
+                                                                "udfs": {}})
+    assert key({"id": "c1", "revision": 1, "udfs": {}}) == key({"id": "c1", "revision": 1,
+                                                                "udfs": {"x": {}}})
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_the_sync_journal_is_owner_only_and_rotates(tmp_path):
+    path = tmp_path / ".sync" / "alpha.log"
+    log = canvas_sync_state.SyncLog("unstable/alpha", lambda: None, path=str(path),
+                                    rotate_bytes=200)
+    path.parent.mkdir(parents=True)
+    path.write_text("")
+    os.chmod(path, 0o644)                    # a journal from before the rule
+    log.add("watcher", "x", detail="y" * 150)
+    assert (os.stat(path).st_mode & 0o777) == 0o600
+    log.add("watcher", "x", detail="z" * 150)  # rotates: the old one is now .log.1
+    assert (path.parent / "alpha.log.1").exists()
+    assert (os.stat(path.parent / "alpha.log.1").st_mode & 0o777) == 0o600
+    assert (os.stat(path).st_mode & 0o777) == 0o600
+    assert json.loads(path.read_text().splitlines()[-1])["detail"] == "z" * 150

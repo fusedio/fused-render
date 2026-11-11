@@ -1271,11 +1271,12 @@ def _fused_cli_note(backend: str = "") -> str:
         "`fused workbench login` or `fused cloud login` (they wait on a "
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
-        "terminal instead. Inside a canvas folder under ~/Fused/canvas/, "
-        "fused-render does all the syncing: the folder publishes itself when "
-        "your turn ends and server changes are merged into it for you, so "
-        "never run `fused workbench canvas push` or `pull` there (both are "
-        "refused); check your work with `fused workbench canvas validate .`."
+        "terminal instead. Inside a canvas clone fused-render syncs "
+        "(~/Fused/canvas/<unstable|prod|custom>/<canvas>/), fused-render does "
+        "all the syncing: the folder publishes itself when your turn ends and "
+        "server changes are merged into it for you, so never run `fused "
+        "workbench canvas push` or `pull` there (both are refused); check your "
+        "work with `fused workbench canvas validate .`."
         + _CANVAS_CLAUDE_MD
     )
 

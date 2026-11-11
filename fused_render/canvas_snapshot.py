@@ -978,12 +978,40 @@ def apply_snapshot(
     # None), so measured against the disk row every snapshot after a delta
     # would strip them and rewrite the toml for nothing.
     prev_nodes = (prev.get("embed_rows") or {}) if prev else {}
+    # What the host believes the frame holds per node (disk rows as of the
+    # last delta the frame took). A key whose snapshot value EQUALS it was
+    # not changed by the frame: the frame merely still shows its old picture
+    # (it skipped a delta for a node it is mid-way through dragging), so that
+    # value is never written over disk — it would revert Claude's edit (sim
+    # class 1: a stale title over Claude's retitle). `stale_keys` reports
+    # them; the host keeps them in its view so the next delta re-sends disk's.
+    view_nodes = (prev.get("nodes") or {}) if prev else {}
+    view_ids = (prev.get("ids") or {}) if prev else {}
+    new_file_slugs = {os.path.splitext(e["file"])[0] for e in new.get("new_files") or ()}
+    stale_keys: dict[str, dict] = {}
+    ignored: list[str] = []
     fileless: list[str] = []
     added: list[str] = []
     for name, row in new["nodes"].items():
         disk = by_name.get(name)
         if disk is None:
+            # Its source on disk NOW (a rename above may have moved it there).
+            sfile = new["files"].get(name)
+            has_file = name in on_disk or bool(
+                sfile and os.path.isfile(os.path.join(clone_dir, sfile)))
             if prev is not None and name in prev["nodes"]:
+                if not has_file and not is_folder(row):
+                    ignored.append(name)
+                continue
+            if (not has_file and not is_folder(row) and name not in new_file_slugs
+                    and (new["ids"].get(name) or view_ids.get(name))):
+                # A node the server knew (it has an id) whose row and file are
+                # gone from disk — deleted there (a session's delete the frame
+                # skipped while it held its own drag) — and that this
+                # snapshot does not re-create with a body: a row for it would
+                # be a ghost no push publishes. Converge to deleted: the host
+                # keeps it in its view so the next delta deletes it.
+                ignored.append(name)
                 continue
             if name not in on_disk and not is_folder(row):
                 fileless.append(name)
@@ -994,9 +1022,13 @@ def apply_snapshot(
             added.append(name)
             continue
         diff = False
+        vrow = view_nodes.get(name)
         for key in EMBED_ROW_KEYS:
             if key in row:
                 if disk.get(key) != row[key]:
+                    if vrow is not None and key in vrow and vrow[key] == row[key]:
+                        stale_keys.setdefault(name, {})[key] = row[key]
+                        continue
                     disk[key] = row[key]
                     diff = True
             elif key in disk and key in prev_nodes.get(name, {}):
@@ -1021,7 +1053,10 @@ def apply_snapshot(
             and e[0] in by_name and e[1] in by_name
             and e[0] not in gone and e[1] not in gone
             and (e[0] not in known or e[1] not in known)]
-    merged = [list(e) for e in new["edges"]]
+    # An edge to a node whose row this snapshot did not re-create (`ignored`)
+    # would dangle: it goes with the node.
+    merged = [list(e) for e in new["edges"]
+              if not (set(e) & set(ignored)) or all(n in by_name for n in e)]
     for e in kept:
         if list(e) not in merged:
             merged.append(list(e))
@@ -1098,7 +1133,8 @@ def apply_snapshot(
             "renamed": renamed,
             "created": created, "written": written, "fileless": fileless,
             "rowless_files": rowless_files, "deferred_deletes": deferred_deletes,
-            "folder_fixes": folder_fixes, "added": added, "at": time.time()}
+            "folder_fixes": folder_fixes, "added": added, "stale_keys": stale_keys,
+            "ignored": ignored, "at": time.time()}
 
 
 def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,

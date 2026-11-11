@@ -2428,7 +2428,7 @@ def test_opening_an_existing_canvas_fetches_the_workbench_skills(
     # Published for the sessions this canvas spawns, which is the whole point —
     # as its spliced, staged copy (skill_plugin.stage_workbench_plugin).
     assert _wait_for(
-        lambda: os.environ.get(skill_plugin.WORKBENCH_PLUGIN_DIR_ENV)
+        lambda: os.path.dirname(os.environ.get(skill_plugin.WORKBENCH_PLUGIN_DIR_ENV) or "")
         == skill_plugin.workbench_staged_dir())
     assert os.path.isfile(os.path.join(root, skill_plugin.SKILLS_SUBDIR,
                                        "canvas-toml", "SKILL.md"))

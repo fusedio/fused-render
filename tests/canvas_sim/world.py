@@ -170,18 +170,43 @@ class Ledger:
         self.refusals.append({"step": self.step, "actor": actor, "what": what,
                               "reason": reason, "files": files})
 
+    def _ancestors(self, key: str, value) -> set:
+        """Every value `value` knowingly superseded on `key` (the chain of
+        `observed` back through the writes)."""
+        parents: dict = {}
+        for w in self.writes:
+            if w["key"] == key:
+                parents.setdefault(w["value"], set()).add(w["observed"])
+        out: set = set()
+        todo = [value]
+        while todo:
+            for p in parents.get(todo.pop(), ()):
+                if p is not None and p not in out:
+                    out.add(p)
+                    todo.append(p)
+        return out
+
     def _delete_raced(self, key: str, deletes: list[dict]) -> bool:
         """Every delete that superseded `key`'s final value raced a write to
         the same node by another actor that the deleter had not seen: a
-        delete-vs-edit tie the merge may break either way."""
+        delete-vs-edit tie the merge may break either way. A write the
+        deleter's observed state already includes — the value it saw, or
+        one that value superseded — is history, not a race: a final value
+        from that history means the delete was reverted."""
         node = key.split(":", 1)[1]
         node_writes = [w for w in self.writes if w["key"].split(":", 1)[1] == node
-                       and w["actor"] != "init"]
+                       and w["actor"] != "init"
+                       and not (isinstance(w["value"], str) and w["value"].startswith("del_"))]
         for d in deletes:
             seen = d.get("seen") or {}
-            if not any(w["actor"] != d["actor"] and seen.get(w["key"], object()) != w["value"]
-                       and not w["value"] == d["value"] for w in node_writes
-                       if not (isinstance(w["value"], str) and w["value"].startswith("del_"))):
+
+            def unseen(w) -> bool:
+                if w["key"] not in seen:
+                    return True
+                saw = seen[w["key"]]
+                return w["value"] != saw and w["value"] not in self._ancestors(w["key"], saw)
+
+            if not any(w["actor"] != d["actor"] and unseen(w) for w in node_writes):
                 return False
         return True
 
@@ -270,6 +295,9 @@ class FakeFrame:
         self.outbox: list[dict] = []
         self.deltas: list[dict] = []
         self.inbox: list[dict] = []
+        # A bounced snapshot's `touched`, protected until the re-send carries
+        # them (the bridge's `rebuild.touched`).
+        self.rebuild_touched: set[str] = set()
         self.cut_rev = 0
 
     # -- disk → frame --------------------------------------------------------
@@ -300,12 +328,11 @@ class FakeFrame:
                 print("   delta", cut["rev"], "full" if cut.get("full") else "", cut.get("gen"),
                       cut.get("seq"), [(o["op"], o.get("name"), (o.get("node") or {}).get("position"))
                                        for o in cut["ops"]])
-            # The workbench applies every op (no per-node skip on main): its
-            # own unacked drag survives through mergeNode (see apply_ops).
-            self.apply_ops(cut["ops"], full=bool(cut.get("full")))
+            skipped = self.apply_ops(cut["ops"], full=bool(cut.get("full")),
+                                     guarded=self.protected_for(cut))
             ack = self.w.client.post("/api/canvases/delta/ack", json={
-                "env": self.w.env, "name": self.w.name, "rev": cut["rev"], "ok": True},
-                headers=GUARD)
+                "env": self.w.env, "name": self.w.name, "rev": cut["rev"], "ok": True,
+                "skipped": sorted(skipped)}, headers=GUARD)
             assert ack.status_code == 200, ack.text
             self.rev = max(self.rev, cut["rev"])
             n += 1
@@ -317,15 +344,59 @@ class FakeFrame:
         self.apply_inbox()
         return cut
 
-    def apply_ops(self, ops: list[dict], *, full: bool) -> None:
+    def protected_for(self, cut: dict) -> set[str]:
+        """embed-snapshot-bridge `protectedNamesFor`: the `touched` of every
+        pending snapshot the host had not applied when it cut this delta
+        (past the cut's `seq` in this gen; all of them when the host names no
+        seq of this gen), plus a bounced snapshot's names until its re-send."""
+        out = set(self.rebuild_touched)
+        if "gen" not in cut and "seq" not in cut:
+            return out  # an older host: nothing protected
+        host_seq = (cut["seq"] if cut.get("gen") == self.gen and isinstance(cut.get("seq"), int)
+                    else -1)
+        for item in self.outbox:
+            if item["kind"] != "snapshot" or (host_seq >= 0 and item["seq"] <= host_seq):
+                continue
+            out |= item["touched"]
+        return out
+
+    def apply_ops(self, ops: list[dict], *, full: bool, guarded=frozenset()) -> set[str]:
+        """embed-delta-apply `applyEmbedDelta` with PROTECTED NAMES (application
+        #8569): for a name a pending local change touched, an upsert of a
+        held node keeps only its code/body/hash/id, an upsert of a node the
+        frame no longer holds, a delete and a rename (both ends, guarded for
+        the rest of the delta) are skipped, and a full delta keeps a
+        protected name it does not list. Returns the skipped names."""
+        guarded = set(guarded)
+        skipped: set[str] = set()
         if full:
-            keep = {o["name"] for o in ops if o["op"] == "upsert"}
+            keep = {o["name"] for o in ops if o["op"] == "upsert"} | guarded
             for d in (self.nodes, self.bodies, self.files, self.ids, self.hashes, self.base):
                 for k in list(d):
                     if k not in keep:
                         d.pop(k)
         for op in ops:
             kind = op["op"]
+            if kind == "upsert" and op["name"] in guarded:
+                name = op["name"]
+                if name not in self.nodes:
+                    skipped.add(name)  # the user deleted it
+                    continue
+                if "row" in op or "node" in op:
+                    skipped.add(name)
+                text = op.get("code", op.get("body"))
+                if text is not None:
+                    self._body_from_host(name, text, op.get("hash"))
+                if "id" in op:
+                    self.ids[name] = op["id"]
+                continue
+            if kind == "delete" and op["name"] in guarded:
+                skipped.add(op["name"])
+                continue
+            if kind == "rename" and {op["from"], op["to"]} & guarded:
+                skipped |= {op["from"], op["to"]}
+                guarded |= {op["from"], op["to"]}
+                continue
             if kind == "upsert":
                 name = op["name"]
                 self.known.add(name)
@@ -365,7 +436,13 @@ class FakeFrame:
                 if op.get("file"):
                     self.files[to] = op["file"]
             elif kind == "edges":
-                self.edges = [list(e) for e in op["set"]]
+                new = [list(e) for e in op["set"]
+                       if not any(end in guarded and end not in self.nodes for end in e)]
+                kept = [e for e in self.edges
+                        if any(end in guarded for end in e) and e not in new]
+                skipped |= {end for e in op["set"] + kept for end in e if end in guarded}
+                self.edges = new + kept
+        return skipped
 
     def _body_from_host(self, name: str, text: str, hash_: str | None) -> None:
         """embed-body-sync.ts `previewBodyFromHost`: the host's text equal to
@@ -402,9 +479,12 @@ class FakeFrame:
                 "udfs": udfs, "body_channel": True, "rev": self.rev,
                 "base_nodes": sorted(self.known)}
 
-    def queue_snapshot(self) -> int:
+    def queue_snapshot(self, touched=()) -> int:
+        """`touched`: the names this snapshot changed locally — protected
+        from any delta the host cuts before applying it."""
         self.seq += 1
-        self.outbox.append({"kind": "snapshot", "seq": self.seq, "body": self.snapshot_body()})
+        self.outbox.append({"kind": "snapshot", "seq": self.seq, "body": self.snapshot_body(),
+                            "touched": set(touched)})
         return self.seq
 
     def drag(self, name: str, x: int) -> None:
@@ -414,7 +494,7 @@ class FakeFrame:
         row = self.nodes[name]
         self.w.ledger.write("frame", f"x:{name}", x, row.get("x"))
         row["x"] = x
-        self.queue_snapshot()
+        self.queue_snapshot(touched=[name])
 
     def delete(self, name: str, tok: str) -> None:
         self.apply_inbox()
@@ -430,7 +510,7 @@ class FakeFrame:
         self.edges = [e for e in self.edges if name not in e]
         # The node's Udf is gone: its debounced body post goes with it.
         self.outbox = [i for i in self.outbox if not (i["kind"] == "body" and i["node"] == name)]
-        self.queue_snapshot()
+        self.queue_snapshot(touched=[name])
 
     def edit_body(self, name: str, tok: str) -> None:
         self.apply_inbox()
@@ -473,7 +553,14 @@ class FakeFrame:
                 # Bounced: apply the delta it was built before, then post
                 # afresh. A snapshot is the frame's FULL state, so the re-serialised
                 # one supersedes every snapshot still queued behind it.
+                # Every bounced item's `touched` rides the re-sent entry, and
+                # stays protected until it is queued.
+                carried = set(item["touched"]) | self.rebuild_touched
+                for i in self.outbox:
+                    if i["kind"] == "snapshot":
+                        carried |= i["touched"]
                 self.outbox = [i for i in self.outbox if i["kind"] != "snapshot"]
+                self.rebuild_touched = carried
                 self.seq += 1
                 fresh = self.seq
                 # The delta the bounce names reached the frame already
@@ -483,7 +570,8 @@ class FakeFrame:
                 if self.rev < (body.get("rev") or 0):
                     self.sync()
                 self.outbox.insert(0, {"kind": "snapshot", "seq": fresh,
-                                       "body": self.snapshot_body()})
+                                       "body": self.snapshot_body(), "touched": carried})
+                self.rebuild_touched = set()
                 return True
             return True
         res = c.post("/api/canvases/body",
@@ -838,7 +926,9 @@ class World:
             for f in ("x", "title"):
                 if fr.nodes[n].get(f) != rows[n].get(f):
                     out.append(f"{f}:{n} frame {fr.nodes[n].get(f)!r} != disk {rows[n].get(f)!r}")
-            if n in fr.bodies and token_of(fr.bodies[n]) != token_of(files[n][1]):
+            if n in files and n not in fr.bodies:
+                out.append(f"body:{n} the frame shows the node without its source text")
+            elif n in fr.bodies and token_of(fr.bodies[n]) != token_of(files[n][1]):
                 out.append(f"body:{n} frame {token_of(fr.bodies[n])} != disk {token_of(files[n][1])}")
         if fr.outbox:
             out.append(f"frame still holds {len(fr.outbox)} unsent post(s)")

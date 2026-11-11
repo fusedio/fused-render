@@ -525,36 +525,52 @@ def fetch_workbench_skills() -> str | None:
 # ONE skill source serves two readers (owner Q9, 2026-11-11): a standalone
 # `claude` in a folder the user pulled by hand, and a fused-render session in a
 # live clone that must never pull or push. The skills repo marks the difference
-# in each `skills/*/SKILL.md`, on lines of their own at column 0, never nested:
+# in each `skills/*/SKILL.md`, never nested:
 #
 #   <!-- fused-render:strip -->      standalone-only guidance ("pull it first",
 #   ...                              the push/pull table rows, --no-validate):
-#   <!-- /fused-render:strip -->     deleted here, markers included.
+#   <!-- /fused-render:strip -->     deleted here, markers included. Both are
+#                                    lines that are EXACTLY the marker.
 #
-#   <!-- fused-render:only           clone guidance, an HTML comment (invisible)
+#   <!-- fused-render:only (prose)   clone guidance, an HTML comment (invisible)
 #   ...                              to every other reader: unwrapped here —
-#   -->                              the two marker lines deleted, body kept.
+#   -->                              the opener (a line STARTING with the
+#                                    marker, prose after it allowed, never
+#                                    `-->`) and the closer (a line exactly
+#                                    `-->`) deleted, body kept. The marker
+#                                    quoted inside a prose line is not one.
 #
-# The clone is never edited (the fetch resets it): a spliced COPY is staged under
-# `home_dir()/workbench-plugin` and that copy is what WORKBENCH_PLUGIN_DIR_ENV
-# publishes. Only `skills/*/SKILL.md` is spliced — the plugin README describes
-# the markers in prose and is copied verbatim like every other file. Re-staged
-# whenever the source tree's content changes (a refresh moving the clone's
-# HEAD, or a dev override's edit).
+# The clone is never edited (the fetch resets it): a spliced COPY is staged as
+# an immutable GENERATION, `home_dir()/workbench-plugin/g-<content stamp>`, and
+# that is what WORKBENCH_PLUGIN_DIR_ENV publishes. A changed source (a refresh
+# moving the clone's HEAD, a dev override's edit) builds a NEW generation
+# beside the live one and the export switches to it only once it is complete;
+# the live one is never rewritten under a session reading it, and the one
+# before is kept until the next switch. Only `skills/*/SKILL.md` is spliced —
+# the plugin README describes the markers in prose and is copied verbatim like
+# every other file.
 WORKBENCH_STAGED_SUBDIR = "workbench-plugin"
 _STRIP_OPEN = "<!-- fused-render:strip -->"
 _STRIP_CLOSE = "<!-- /fused-render:strip -->"
 _ONLY_OPEN = "<!-- fused-render:only"
 _ONLY_CLOSE = "-->"
-# Bumped when the splice rule itself changes, so a stamp from the old rule
-# re-stages.
-_SPLICE_VERSION = "1"
+# Bumped when the splice rule itself changes, so the old rule's generation is
+# not reused.
+_SPLICE_VERSION = "2"
+# The skills whose SKILL.md must carry the markers once the skills repo has
+# the clone profile; without them the splice is a copy (logged once).
+_MARKED_SKILLS = ("canvas-toml", "fused-workbench-cli")
+_predate_logged = False
+
+
+def _is_only_opener(line: str) -> bool:
+    bare = line.lstrip()
+    return bare.startswith(_ONLY_OPEN) and _ONLY_CLOSE not in bare
 
 
 def splice_fused_render_markers(text: str) -> str:
     """`text` as a fused-render session reads it: strip blocks deleted, only
-    blocks unwrapped. A marker is a line that is EXACTLY the marker (column
-    0, nothing after it but the line ending). An unterminated block runs to
+    blocks unwrapped (marker grammar above). An unterminated block runs to
     the end of the file (strip: dropped; only: kept)."""
     out: list[str] = []
     mode = "text"
@@ -563,7 +579,7 @@ def splice_fused_render_markers(text: str) -> str:
         if mode == "text":
             if bare == _STRIP_OPEN:
                 mode = "strip"
-            elif bare == _ONLY_OPEN:
+            elif _is_only_opener(bare):
                 mode = "only"
             else:
                 out.append(line)
@@ -577,7 +593,13 @@ def splice_fused_render_markers(text: str) -> str:
     return "".join(out)
 
 
+def _has_markers(text: str) -> bool:
+    return any(line.rstrip("\r\n") == _STRIP_OPEN or _is_only_opener(line.rstrip("\r\n"))
+               for line in text.splitlines())
+
+
 def workbench_staged_dir() -> str:
+    """The folder holding the staged generations (`g-<stamp>`)."""
     return os.path.join(home_dir(), WORKBENCH_STAGED_SUBDIR)
 
 
@@ -601,50 +623,69 @@ def _tree_stamp(root: str) -> str:
     return digest.hexdigest()
 
 
+def _prune_generations(parent: str, keep: set[str]) -> None:
+    try:
+        names = os.listdir(parent)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(parent, name)
+        if name.startswith("g-") and path not in keep:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def stage_workbench_plugin(source: str) -> str | None:
-    """The spliced copy of the workbench plugin at `source`, staged under
-    `workbench_staged_dir()` (a no-op when its stamp matches), or None when
-    it could not be staged. Never raises."""
-    staged = workbench_staged_dir()
-    stamp_path = staged + _STAMP_SUFFIX
+    """The spliced generation of the workbench plugin at `source` (built
+    when missing), or None when it could not be staged. Never raises."""
+    global _predate_logged
+    parent = workbench_staged_dir()
     staging = None
     try:
-        stamp = _tree_stamp(source)
-        if _is_loadable(staged, WORKBENCH_SKILLS):
-            try:
-                with open(stamp_path, encoding="utf-8") as fh:
-                    if fh.read() == stamp:
-                        return staged
-            except OSError:
-                pass
-        parent = os.path.dirname(staged)
+        gen = os.path.join(parent, "g-" + _tree_stamp(source)[:24])
+        # Kept through this switch: the generation sessions were handed last.
+        live = os.environ.get(WORKBENCH_PLUGIN_DIR_ENV) or ""
+        keep = {gen} | ({live} if os.path.dirname(live) == parent else set())
+        if _is_loadable(gen, WORKBENCH_SKILLS):
+            _prune_generations(parent, keep)
+            return gen
         os.makedirs(parent, exist_ok=True)
-        staging = tempfile.mkdtemp(prefix=os.path.basename(staged) + ".new-", dir=parent)
+        staging = tempfile.mkdtemp(prefix=".new-", dir=parent)
         dest = os.path.join(staging, "root")
         shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
         skills = os.path.join(dest, SKILLS_SUBDIR)
+        marked = False
         for name in sorted(os.listdir(skills)) if os.path.isdir(skills) else ():
             path = os.path.join(skills, name, "SKILL.md")
             if not os.path.isfile(path):
                 continue
             with open(path, encoding="utf-8", newline="") as fh:
                 text = fh.read()
+            if name in _MARKED_SKILLS and _has_markers(text):
+                marked = True
             spliced = splice_fused_render_markers(text)
             if spliced != text:
                 with open(path, "w", encoding="utf-8", newline="") as fh:
                     fh.write(spliced)
+        if not marked and not _predate_logged:
+            _predate_logged = True
+            logger.warning("workbench skills predate the clone profile: no fused-render "
+                           "markers in %s; publishing them as they are",
+                           ", ".join(f"{n}/SKILL.md" for n in _MARKED_SKILLS))
         if not _is_loadable(dest, WORKBENCH_SKILLS):
             logger.warning("the staged workbench plugin is not loadable; not publishing it")
-            return staged if _is_loadable(staged, WORKBENCH_SKILLS) else None
-        # Delete-then-rename, as the app's own plugin swap (`sync_skill_plugin`).
-        shutil.rmtree(staged, ignore_errors=True)
-        os.replace(dest, staged)
-        with open(stamp_path, "w", encoding="utf-8") as fh:
-            fh.write(stamp)
-        return staged
+            return live if live in keep and _is_loadable(live, WORKBENCH_SKILLS) else None
+        try:
+            os.replace(dest, gen)  # a fresh name: an atomic rename, never over a live tree
+        except OSError:
+            if not _is_loadable(gen, WORKBENCH_SKILLS):  # a concurrent stage won: fine
+                raise
+        _prune_generations(parent, keep)
+        return gen
     except (OSError, UnicodeDecodeError, shutil.Error) as exc:
-        logger.warning("could not stage the workbench plugin at %s: %s", staged, exc)
-        return staged if _is_loadable(staged, WORKBENCH_SKILLS) else None
+        logger.warning("could not stage the workbench plugin under %s: %s", parent, exc)
+        live = os.environ.get(WORKBENCH_PLUGIN_DIR_ENV) or ""
+        return (live if os.path.dirname(live) == parent and _is_loadable(live, WORKBENCH_SKILLS)
+                else None)
     finally:
         if staging is not None:
             shutil.rmtree(staging, ignore_errors=True)

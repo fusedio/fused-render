@@ -35,7 +35,8 @@ from fused_render import canvas_snapshot
 from fused_render.fusedcli import FusedCli
 
 from canvas_sim.server import SimProcs
-from canvas_sim.world import FakeAgent, World, body_text, make_row, token_of, write_file
+from canvas_sim.world import (ABSENT, FakeAgent, Ledger, World, body_text, make_row, token_of,
+                              write_file)
 from test_canvases import _reset_module_state, harness  # noqa: F401 — fixtures by name
 
 SEEDS = int(os.environ.get("FUSED_RENDER_SIM_SEEDS", "200"))
@@ -84,6 +85,61 @@ def _actions(w: World) -> list[str]:
 def _assert_invariants(w: World) -> None:
     problems = w.check_all()
     assert not problems, w.report(problems)
+
+
+# -- the checker itself ---------------------------------------------------------
+
+
+def _deletes_then_final(history: list[tuple]) -> tuple[list[str], int]:
+    """A ledger from (actor, value, observed, seen) rows on `body:a`, judged
+    against a final value of "C" (the node still there)."""
+    led = Ledger()
+    led.write("init", "body:a", "A", None)
+    for step, (actor, value, observed, seen) in enumerate(history, 1):
+        led.step = step
+        led.write(actor, "body:a", value, observed, seen=seen)
+    return led.lost_writes({"body:a": "C"})
+
+
+def test_ledger_a_delete_that_saw_the_history_is_reverted_not_a_tie():
+    """Session writes B then C; the human loads C and deletes. A final C is
+    the delete reverted: both session writes are in the deleter's observed
+    history, so nothing raced it (CodeRabbit on `_delete_raced`)."""
+    problems, ties = _deletes_then_final([
+        ("session", "B", "A", None),
+        ("session", "C", "B", None),
+        ("human", "del_h1", "C", {"body:a": "C"}),
+    ])
+    assert ties == 0
+    assert problems and "a reverted write" in problems[0], problems
+
+
+def test_ledger_a_delete_that_raced_an_unseen_edit_is_a_tie():
+    """The human loaded B and deleted while the session wrote C over B: the
+    delete never saw C, so either outcome is a tie, not a lost write."""
+    problems, ties = _deletes_then_final([
+        ("session", "B", "A", None),
+        ("human", "del_h1", "B", {"body:a": "B"}),
+        ("session", "C", "B", None),
+    ])
+    assert problems == [] and ties == 1
+
+
+def test_ledger_absent_final_needs_a_delete_head():
+    led = Ledger()
+    led.write("init", "body:a", "A", None)
+    led.write("session", "body:a", "B", "A")
+    problems, _ties = led.lost_writes({"body:a": ABSENT})
+    assert problems and "no delete is a head" in problems[0]
+
+
+def test_convergence_fails_when_the_frame_shows_a_node_without_its_text(sim):
+    """A displayed source node the frame holds no body for is not converged
+    (CodeRabbit on `check_convergence`): it used to be skipped."""
+    w = sim.world()
+    assert w.quiesce() and w.check_convergence() == []
+    del w.frame.bodies["a"]
+    assert "body:a the frame shows the node without its source text" in w.check_convergence()
 
 
 # -- the eight ledger traces (design page §2) -----------------------------------
