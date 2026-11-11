@@ -248,7 +248,10 @@ export function TroubleCard({
 }) {
   const kind = kindProp ?? troubleKind(error, backend);
   const fallback = (backend ? SAID_BY_AGENT[backend]?.[kind] : undefined) ?? SAID[kind] ?? SAID.raw;
-  const said = { title: title ?? fallback.title, explain: explain ?? fallback.explain };
+  // With the message printed elsewhere (`quoteError` off) it sits above the
+  // card, not below it.
+  const direct = (text: string) => (quoteError ? text : text.replace(/\bmessage below\b/g, "message above"));
+  const said = { title: title ?? fallback.title, explain: direct(explain ?? fallback.explain) };
   const ctx = { what, error, ...(facts ?? {}), ...(backend ? { backend } : {}) };
   const report = troubleReport(ctx);
   const instructions = troubleInstructions(ctx);

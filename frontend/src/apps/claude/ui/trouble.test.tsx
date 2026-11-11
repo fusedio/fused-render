@@ -21,6 +21,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import { splitTroubleMessage } from "../protocol/trouble";
+import { TroubleCard } from "@platform/ui/TroubleCard";
 import { TroubleView } from "./TroubleView";
 import { Turn } from "./Turn";
 
@@ -268,4 +269,19 @@ test("…and twice only when the detail genuinely says something else", () => {
     />,
   );
   expect(all(r, "trouble-error")).toHaveLength(2);
+});
+
+test("an explanation that points at the message points above it when the message is shown above", () => {
+  const shown = textOf(
+    mount(<TroubleView trouble={{ kind: "cli-broken", message: "boom" }} messageShownAbove />).toJSON() as Json,
+  );
+  expect(shown).toContain("The message above");
+  expect(shown).not.toContain("The message below");
+  const quoted = textOf(mount(<TroubleView trouble={{ kind: "cli-broken", message: "boom" }} />).toJSON() as Json);
+  expect(quoted).toContain("The message below");
+  // The card's own limit fallback, with and without the quote.
+  const card = (quoteError: boolean) =>
+    textOf(mount(<TroubleCard what="x" kind="limit" error="" quoteError={quoteError} />).toJSON() as Json);
+  expect(card(false)).toContain("The message above says when it resets");
+  expect(card(true)).toContain("The message below says when it resets");
 });
