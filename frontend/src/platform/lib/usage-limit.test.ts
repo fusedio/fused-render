@@ -144,13 +144,17 @@ describe("the surfaces that say them", () => {
     // PR #1124): that row is only fetched while a card is drawn, so a session
     // that hit the limit with nothing waiting behind it had none at all.
     // …and asked only under the flag and only where the header is drawn — the
-    // chat's own, or a host head's chip seat (`headChipsHost`, which seats the
-    // same span): the hook is one listing read per instance, and a cards wall
-    // mounts a dozen.
+    // chat's own, or a host head's seats (`headChipsHost` / `headStatusHost`,
+    // which seat the same span): the hook is one listing read per instance,
+    // and a cards wall mounts a dozen.
     expect(CHAT).toContain(
-      'const limitWord = useLimitWord(queueOn && (showHead || !!props.headChipsHost) ? taskKey : "");',
+      "queueOn && (showHead || !!props.headChipsHost || !!props.headStatusHost) ? taskKey : \"\"",
     );
-    expect(CHAT.slice(CHAT.indexOf("props.headChipsHost ? ("))).toContain(
+    // The host's status seat gets the span when it has one — never the chips,
+    // which fold first on the shared head's ladder.
+    const hosts = CHAT.slice(CHAT.indexOf("props.headChipsHost || props.headStatusHost ? ("));
+    expect(hosts).toContain("{limitWord && !props.headStatusHost ? (");
+    expect(hosts.slice(hosts.indexOf("props.headStatusHost && limitWord"))).toContain(
       '<span className="c-tb-paused" aria-live="polite">',
     );
     expect(LIMIT_HOOK).toContain("usageLimitStatusWord(row)");

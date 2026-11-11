@@ -5256,6 +5256,9 @@ export default function NewJobModal({
   /** The shared head's chip seat (ChatMount `headChipsHost`): the chat's
    *  worktree pill shows there, as in every other task view. */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  /** …and its status seat, for the chat's pause word (ChatMount
+   *  `headStatusHost`) — on no rung of the head's ladder. */
+  const [statusHost, setStatusHost] = useState<HTMLElement | null>(null);
   // MARKED READ LIKE THE TASKS CARD DOES (TasksPeek, task-open-read): the open
   // chat, while the card shows it and the window is in view.
   const chatPulse = useTasksPulseRows(landing);
@@ -6122,6 +6125,7 @@ export default function NewJobModal({
             titleId={titleId}
             open={chatHref ? { href: chatHref, label: "Open this chat", onOpen: (h) => openFromLanding(h) } : null}
             chipsRef={setChipsHost}
+            statusRef={setStatusHost}
             kebab={chatKebab}
             // The ring's Archive goes back to the form, as the ⋮'s.
             onFiled={(kind) => {
@@ -6160,7 +6164,7 @@ export default function NewJobModal({
             onNavigate={(href) => openFromLanding(href)}
             smallCard
             smallCardShown
-            {...(unified ? { headChipsHost: chipsHost } : {})}
+            {...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}
           />
         </div>
       )}

@@ -200,6 +200,13 @@ export interface ChatMountProps {
    * host's head has not mounted its seat yet.
    */
   headChipsHost?: HTMLElement | null;
+  /**
+   * THE HOST'S HEAD HAS A SEAT FOR THE PAUSE WORD (shell/TaskHead
+   * `statusRef`): "paused · resumes 4:00 AM" portals there, beside the task's
+   * identity and on no rung of the head's fold ladder — not into the chips,
+   * which fold first.
+   */
+  headStatusHost?: HTMLElement | null;
   /** Draw the task's PR chip in the chat header (the explorer's Claude pane).
    *  The peek and cards hosts pass `headerExtra` themselves instead. */
   prChip?: boolean;
@@ -361,6 +368,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
         {...(props.headerExtra ? { headerExtra: props.headerExtra } : {})}
         {...(props.headChipsHost ? { headChipsHost: props.headChipsHost } : {})}
+        {...(props.headStatusHost ? { headStatusHost: props.headStatusHost } : {})}
         {...(props.prChip ? { prChip: true } : {})}
         params={props.paramsSource === "url" ? "url" : memory}
         // WHOSE `?model=`/`?effort=` the composer is looking at. These two props

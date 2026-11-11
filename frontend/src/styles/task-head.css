@@ -566,3 +566,14 @@
 .chat-root :where(.task-head) {
   font-size: var(--c-fs-read);
 }
+
+/* THE PAUSE WORD'S SEAT (TaskHead `statusRef`; ChatMount `headStatusHost`):
+   the chat portals "paused · resumes 4:00 AM" here, beside the identity — on
+   no rung, so a narrow panel still says when the session comes back, and onto
+   row 2 with the identity when stacked. Lays out as nothing of its own. */
+.task-head-status-host {
+  display: contents;
+}
+.task-head-status-host .c-tb-paused {
+  flex: 0 0 auto;
+}

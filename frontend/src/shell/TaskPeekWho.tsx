@@ -274,6 +274,11 @@ export function TaskPeekWho({
         <>
           <input
             className="task-side-peek-title-input"
+            // THE DIALOG KEEPS ITS NAME while the title is being edited: a
+            // Modal's `aria-labelledby` points at `titleId`, which lived only on
+            // the title span this input replaces. The input carries it for as
+            // long as it stands (no heading role — it is a field).
+            {...(titleId ? { id: titleId } : {})}
             value={draft}
             maxLength={TITLE_MAX_LENGTH}
             disabled={busy}

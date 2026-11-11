@@ -1014,6 +1014,9 @@ function TaskPeek({
   const sharedHead = unified && !!task.session_id;
   /** The shared head's chip seat (ChatMount `headChipsHost`). */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  /** …and its status seat, for the chat's pause word (ChatMount
+   *  `headStatusHost`) — on no rung of the head's ladder. */
+  const [statusHost, setStatusHost] = useState<HTMLElement | null>(null);
   /** The chat's Breakout, as it reports it — so the shared ⋮ carries it. */
   const [breakoutCtl, setBreakoutCtl] = useState<BreakoutControl | null>(null);
 
@@ -1158,6 +1161,7 @@ function TaskPeek({
             titleId={titleId}
             chips={<TaskPrChip task={task} />}
             chipsRef={setChipsHost}
+            statusRef={setStatusHost}
             // The ring's Archive closes the popup, as the ⋮'s; an Unarchive
             // re-reads and stays.
             onFiled={(kind) => {
@@ -1251,7 +1255,7 @@ function TaskPeek({
           // The shared head seats the worktree pieces (`headChipsHost`); the
           // old head keeps the chat's slim line.
           {...(sharedHead
-            ? { headChipsHost: chipsHost, onBreakoutControl: setBreakoutCtl }
+            ? { headChipsHost: chipsHost, headStatusHost: statusHost, onBreakoutControl: setBreakoutCtl }
             : { headerInPeek: true, headerExtra: <TaskPrChip task={task} /> })}
           paramsSource="memory"
           onEscape={onClose}

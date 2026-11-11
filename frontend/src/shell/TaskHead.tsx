@@ -146,6 +146,10 @@ export interface TaskHeadProps {
   place?: ReactNode;
   chips?: ReactNode;
   seats?: ReactNode;
+  /** The node the chat portals its usage-limit word into (ChatMount
+   *  `headStatusHost`) — beside the identity, on no rung of the ladder:
+   *  "paused · resumes 4:00 AM" is the one fact the ring cannot carry. */
+  statusRef?: (el: HTMLElement | null) => void;
   /** The node the chat portals its worktree menu into (ChatMount
    *  `headChipsHost`) — a seat at the head of the chips. */
   chipsRef?: (el: HTMLElement | null) => void;
@@ -206,6 +210,7 @@ export function TaskHead({
   ariaLabel = "Task header",
   fileSeat = true,
   onFiled,
+  statusRef,
 }: TaskHeadProps) {
   // A SPENT PRESS HANDS THE RING BACK (the Tasks row's `.is-refiled`): up on
   // the filing press, down when the pointer leaves the head — no selector can
@@ -265,6 +270,9 @@ export function TaskHead({
   // row 2, the whole block (ring, ★, number, title, reply).
   const identity = who ? (
     <TaskPeekWho
+      // KEYED ON THE TASK: a walk to another task (⌃⇧J/K, ↑↓) under a
+      // standing head drops a half-typed rename rather than saving it there.
+      key={who.key}
       task={who}
       running={line ? false : running}
       star={star}
@@ -289,7 +297,9 @@ export function TaskHead({
       <span className="c-skel-bar is-title" />
     </span>
   ) : null;
-  // The queue caption and the paused word trail the identity, on its row.
+  // The queue caption and the paused word trail the identity, on its row —
+  // and the host's status seat (`statusRef`, the chat's portaled pause word)
+  // with them: on NO rung, and onto row 2 with the identity when stacked.
   const trail = (
     <>
       {line ? <QueuedCaption line={line} /> : null}
@@ -298,6 +308,7 @@ export function TaskHead({
           {status}
         </span>
       ) : null}
+      {statusRef ? <span className="task-head-status-host" ref={statusRef} /> : null}
     </>
   );
   const placeEl = place ? <span className="task-head-place">{place}</span> : null;
@@ -414,7 +425,7 @@ export function TaskHead({
           {kebabNode ? <span className="task-head-kebab">{kebabNode}</span> : null}
         </div>
       </div>
-      {stackedNow && (identity || line || status) ? (
+      {stackedNow && (identity || line || status || statusRef) ? (
         <div className="task-head-titlerow">
           {identity}
           {trail}

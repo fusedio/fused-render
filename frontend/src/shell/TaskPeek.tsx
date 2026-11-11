@@ -703,6 +703,9 @@ export function TaskPeek({
   /** The shared head's chip seat, for the chat's worktree menu to portal into
    *  (ChatMount `headChipsHost`). State, so the chat re-renders once it lands. */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  /** …and its status seat, for the chat's pause word (ChatMount
+   *  `headStatusHost`) — on no rung of the head's ladder. */
+  const [statusHost, setStatusHost] = useState<HTMLElement | null>(null);
 
   // ---- the keyboard ----------------------------------------------------------
   /**
@@ -1212,14 +1215,17 @@ export function TaskPeek({
           // The TASK KEY this ⋮ was built for, not the callback's session
           // id: the visible order (`nextAfterRemoval`) is keyed by task key,
           // and a session id is not one.
+          // …ONLY WHILE THE PANEL STILL SHOWS IT: a filing that answers after
+          // the reader walked on (⌃⇧J/K, ↑↓) re-reads the list and leaves the
+          // task now on screen where it is.
           onArchived={() => {
             onReload?.();
-            advancePast(t.key, lastOrderWithKey.current);
+            if (getPeekState().key === t.key) advancePast(t.key, lastOrderWithKey.current);
           }}
           onErased={() => {
             notify({ title: `Deleted ${shortTaskId(t.task_id)}`, tone: "info" });
             onReload?.();
-            advancePast(t.key, lastOrderWithKey.current);
+            if (getPeekState().key === t.key) advancePast(t.key, lastOrderWithKey.current);
           }}
           {...(fsHref && opensInSidePane(fsHref)
             ? {
@@ -1329,6 +1335,7 @@ export function TaskPeek({
             task={task}
             fitEnabled={key !== null}
             chipsRef={setChipsHost}
+            statusRef={setStatusHost}
             chips={task ? <TaskPrChip task={task} /> : null}
             open={SHOW_PAGE_DOOR && page && task ? { href: page, label: pageDoorLabel(task), onOpen: () => openAsPage() } : null}
             kebab={task ? unifiedKebab(task) : null}
@@ -1591,7 +1598,7 @@ export function TaskPeek({
                 // The shared head seats the chat's worktree pieces itself
                 // (`headChipsHost`); the old head keeps the chat's slim line.
                 {...(unified
-                  ? { headChipsHost: chipsHost }
+                  ? { headChipsHost: chipsHost, headStatusHost: statusHost }
                   : { headerInPeek: true, headerExtra: <TaskPrChip task={task} /> })}
                 paramsSource="memory"
                 // THE RECAP OPT-IN (ChatMount `recap`): the peek is the one chat

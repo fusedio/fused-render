@@ -442,3 +442,28 @@ test("a press files it, tells the host, and hands the ring back until the pointe
     globalThis.fetch = realFetch;
   }
 });
+
+// ---- a head that walks tasks (review, PR #2230) ------------------------------
+
+test("a rename half-typed on one task is dropped when the head walks to another", () => {
+  const r = render(head());
+  const pencil = flat(r).find((n) => n.props["aria-label"] === "Rename task")!;
+  act(() => pencil.props.onClick());
+  expect(flat(r).some((n) => n.type === "input")).toBe(true);
+  act(() => r.update(head({ task: task({ key: "sess-2", session_id: "sess-2", task_id: "TASK-043", title: "Other" }) })));
+  expect(flat(r).some((n) => n.type === "input")).toBe(false);
+  expect(JSON.stringify(r.toJSON())).toContain("Other");
+});
+
+test("the status seat sits beside the identity — on no rung — and moves to row 2 with it", () => {
+  const got: unknown[] = [];
+  const wide = render(head({ statusRef: (el) => got.push(el) }), 2000);
+  const row1 = byClass(wide, "task-head-row")[0]!;
+  expect(JSON.stringify(row1)).toContain("task-head-status-host");
+  // Not inside the chips (rung 1) or the seats (rung 2).
+  expect(JSON.stringify(byClass(wide, "task-head-marks")[0] ?? null)).not.toContain("task-head-status-host");
+  expect(got.some((el) => el !== null)).toBe(true);
+  const narrow = render(head({ statusRef: () => {} }), 100);
+  expect(JSON.stringify(byClass(narrow, "task-head-row")[0])).not.toContain("task-head-status-host");
+  expect(JSON.stringify(byClass(narrow, "task-head-titlerow")[0])).toContain("task-head-status-host");
+});

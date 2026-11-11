@@ -121,6 +121,9 @@ export function TasksPeek() {
   /** The shared head's chip seat (ChatMount `headChipsHost`): the card's chat
    *  shows its worktree pill there — it showed none before. */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  /** …and its status seat, for the chat's pause word (ChatMount
+   *  `headStatusHost`) — on no rung of the head's ladder. */
+  const [statusHost, setStatusHost] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (!up) setChat(null);
   }, [up]);
@@ -206,6 +209,7 @@ export function TasksPeek() {
                 nav={{ prev: chatEnds.prev, next: chatEnds.next, step: stepChat }}
                 task={task}
                 chipsRef={setChipsHost}
+                statusRef={setStatusHost}
                 // The ring's Archive leaves the chat for the list, as the ⋮'s.
                 onFiled={(kind) => {
                   if (kind === "archive") setChat(null);
@@ -416,7 +420,7 @@ export function TasksPeek() {
                     onNavigate={(href) => void navigateUrl(href)}
                     smallCard
                     smallCardShown={api.visible}
-                    {...(unified ? { headChipsHost: chipsHost } : {})}
+                    {...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}
                   />
                 ) : (
                   <p className="claude-rail-peek-note">{listing ? "This task has no conversation yet." : "Loading…"}</p>

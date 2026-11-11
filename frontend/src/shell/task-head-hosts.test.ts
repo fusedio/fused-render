@@ -43,7 +43,7 @@ test("the rail's Tasks card: both heads on the shared chassis, the old ones kept
   expect(src).toContain('className="btn claude-rail-peek-open"');
   expect(src).toMatch(/onClick=\{\(\) => api\.openPage\(\)\}>\s*Open tasks\s*<\/button>/);
   // The card's chat hands its worktree pill to the shared head's seat.
-  expect(src).toContain("{...(unified ? { headChipsHost: chipsHost } : {})}");
+  expect(src).toContain("{...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}");
 });
 
 test("the New task card's chat: the shared head in place of the dialog's, named by its title", () => {
@@ -59,7 +59,7 @@ test("the New task card's chat: the shared head in place of the dialog's, named 
   expect(shared).toContain("chipsRef={setChipsHost}");
   // The chat's pill in the head's seat; no folded ↗ Open in the ⋮.
   expect(src).not.toContain("foldedOpen");
-  expect(src).toContain("{...(unified ? { headChipsHost: chipsHost } : {})}");
+  expect(src).toContain("{...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}");
   // The old head's swap is untouched.
   expect(src).toContain('className="nt-chat-back"');
   expect(src).toContain('className="nt-chat-open"');
@@ -84,7 +84,7 @@ test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips i
   expect(shared).toContain("breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle }");
   // The ChatMount: the shared head's seat and Breakout report, or the old
   // slim line.
-  expect(src).toContain("? { headChipsHost: chipsHost, onBreakoutControl: setBreakoutCtl }");
+  expect(src).toContain("? { headChipsHost: chipsHost, headStatusHost: statusHost, onBreakoutControl: setBreakoutCtl }");
   expect(src).toContain(": { headerInPeek: true, headerExtra: <TaskPrChip task={task} /> })}");
   // The old head's doors are still drawn when the flag is off.
   expect(src).toContain('className="btn btn-secondary modal-head-act"');
@@ -92,7 +92,7 @@ test("the Cards popup: the shared head, the doors in its ⋮, the chat's chips i
 
 test("the Tasks page's panel: the old slim line with the old head, the chip seat with the new", () => {
   const src = read("TaskPeek.tsx");
-  expect(src).toContain("? { headChipsHost: chipsHost }");
+  expect(src).toContain("? { headChipsHost: chipsHost, headStatusHost: statusHost }");
   expect(src).toContain(": { headerInPeek: true, headerExtra: <TaskPrChip task={task} /> })}");
   // An archive or a delete the ⋮ reports after the fact still advances along
   // an order that held the task.
@@ -128,4 +128,18 @@ test("the chat's own head (ClaudeChat): one shared head behind the flag, the str
   // The legacy strip and its ← Chats are still there for the flag off.
   expect(src).toContain('<div className="c-anntools" ref={stripRef}>');
   expect(src).toContain('←<span className="c-back-word"> Chats</span>');
+});
+
+test("the panel's ⋮ filing moves the panel only while it still shows that task", () => {
+  const src = read("TaskPeek.tsx");
+  expect(src).toContain("if (getPeekState().key === t.key) advancePast(t.key, lastOrderWithKey.current);");
+  expect(src).not.toContain("            advancePast(t.key, lastOrderWithKey.current);\n          }}");
+});
+
+test("every chat host hands the chat both seats: the chips and the pause word's own", () => {
+  for (const f of ["TaskPeek.tsx", "claude-rail/TasksPeek.tsx", "NewJobModal.tsx", "TaskCards.tsx"]) {
+    const src = read(f);
+    expect(src).toContain("statusRef={setStatusHost}");
+    expect(src).toContain("headStatusHost: statusHost");
+  }
 });

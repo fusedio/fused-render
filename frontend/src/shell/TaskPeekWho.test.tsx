@@ -318,3 +318,13 @@ test("onRenamed is heard after a rename the server took — and not after a fail
   await act(async () => key(bad.r, "Enter"));
   expect(heard).toBe(1);
 });
+
+test("while the title is being renamed, the input carries the dialog's title id (no heading role)", () => {
+  const v = render({ task: task(), titleId: "dlg-t" });
+  expect(titleSpan(v.r)!.props.id).toBe("dlg-t");
+  act(() => titleSpan(v.r).props.onDoubleClick());
+  const input = inputOf(v.r);
+  expect(input.props.id).toBe("dlg-t");
+  expect(input.props.role).toBeUndefined();
+  expect(input.props["aria-label"]).toBe("Task title");
+});
