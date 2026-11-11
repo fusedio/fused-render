@@ -13,6 +13,7 @@ import type { AssistantTurn, Turn as TurnRow, UserTurn } from "../protocol/contr
 import { splitCommand } from "../protocol/commands";
 import { viewKind, type SegmentKind } from "../protocol/segments";
 import { toolChipSummary } from "../protocol/summaries";
+import { unansweredNotices } from "../protocol/unanswered";
 import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound, type AnnotationWire } from "../protocol/wire";
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
@@ -372,6 +373,7 @@ export const Turn = memo(function Turn({
   const bodyId = uid + "body";
   const folded = foldable && collapsed;
   const line = folded ? collapsedLine(turn) : null;
+  const notices = unansweredNotices(turn.segments);
   return (
     <>
       <div
@@ -500,6 +502,24 @@ export const Turn = memo(function Turn({
               {children}
             </>
           )}
+          {/* AN UNANSWERED QUESTION OR APPROVAL is drawn under the reply folded
+              or open: it is the one thing in a fold the reader needs to see
+              (nobody was there when it was asked), and the chip that carries it
+              sits inside a run's "show more". */}
+          {notices.length ? (
+            <div className="turn-unanswered-list">
+              {notices.map((n, i) => (
+                <div key={i} className="turn-unanswered" role="note">
+                  <div className="turn-unanswered-title">{n.title}</div>
+                  {n.detail.map((d, j) => (
+                    <div key={j} className="turn-unanswered-detail">
+                      {d}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ) : null}
           {workedFor && !folded && !turn.streaming ? (
             <div className="turn-worked" {...(workedHint ? { "data-hint": workedHint } : {})}>
               {workedFor}

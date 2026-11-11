@@ -827,3 +827,33 @@ describe("Turn `unfolded`", () => {
     expect(byClass(flat, "toolchip")).toHaveLength(3);
   });
 });
+
+describe("an unanswered question or approval", () => {
+  const ask = (): ToolSegment => ({
+    kind: "tool",
+    id: "q1",
+    name: "AskUserQuestion",
+    input: { questions: [{ question: "Ship it?" }] },
+    status: "error",
+    output: "No answer … treating this as denied. [fused:unanswered reason=timeout minutes=60]",
+    images: [],
+  });
+  const asked = assistant("a", { segments: [text("Checking.\nmore"), ask()] } as Partial<TurnRow>);
+
+  test("stays on screen under a FOLDED reply, question text included", () => {
+    const r = log([asked], { transcriptGen: 1 });
+    // the seed folds nothing for a lone newest turn, so fold it by hand
+    act(() => {
+      (marks(r)[0].props as { onClick: () => void }).onClick();
+    });
+    expect(folded(r)).toEqual(["Checking."]);
+    const n = byClass(r, "turn-unanswered");
+    expect(n.length).toBe(1);
+    expect(words(n[0])).toBe("Unanswered question — timed out after 60 minShip it?");
+  });
+
+  test("an ordinary tool result draws no notice", () => {
+    const r = log([assistant("b", { segments: [text("x\ny"), tool("t", "Read")] } as Partial<TurnRow>)]);
+    expect(byClass(r, "turn-unanswered").length).toBe(0);
+  });
+});

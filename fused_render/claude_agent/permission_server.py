@@ -600,6 +600,16 @@ def _exact_rule_content(tool_name: str, tool_input: dict):
     return cmd
 
 
+def _unanswered(sentence: str, reason: str, minutes=None) -> str:
+    """A deny message for an outcome where NO HUMAN decided (timeout, expired,
+    abandoned), with a trailing machine-readable marker. The chat finds the
+    unanswered question/approval in the transcript by this marker
+    (`protocol/unanswered.ts`), so rewording the sentence cannot lose the
+    notice. A human's own deny and a cancelled turn carry none."""
+    tail = "reason=%s" % reason + (" minutes=%d" % minutes if minutes else "")
+    return "%s [fused:unanswered %s]" % (sentence, tail)
+
+
 def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict:
     """Turn the browser's click into the CLI's permission-result shape."""
     verdict = decision.get("decision")
@@ -689,17 +699,19 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
         # agent.py latched this when it saw the run end with the request still
         # unanswered. Reaching us at all means the run outlived that call, so
         # say what happened rather than blaming the user.
-        message = "The reply ended before this was answered."
+        message = _unanswered("The reply ended before this was answered.", "expired")
     elif decision.get("reason") == "timeout":
-        message = ("No answer from the Fused Render chat window after "
-                   "%d minutes — treating this as denied." % (WAIT_TIMEOUT // 60))
+        minutes = int(WAIT_TIMEOUT // 60)
+        message = _unanswered(
+            "No answer from the Fused Render chat window after %d minutes — "
+            "treating this as denied." % minutes, "timeout", minutes=minutes)
     elif decision.get("reason") == "cancelled":
         message = "The user cancelled this turn."
     elif decision.get("reason") == "abandoned":
         # agent.py latched this when out.jsonl showed the asking scope had
         # moved on without a result for this call, or the CLI cancelled the
         # request itself (`_cancel_inflight`). Nobody is at fault.
-        message = "The run moved on before this was answered."
+        message = _unanswered("The run moved on before this was answered.", "abandoned")
     else:
         message = decision.get("message") or "The user denied this request."
     return {"behavior": "deny", "message": message,
