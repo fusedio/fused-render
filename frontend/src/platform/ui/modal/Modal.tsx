@@ -278,7 +278,19 @@ export interface ModalProps {
        *  the other, so a width the window clamped is not saved over it by a
        *  height-only drag (CodeRabbit on #2189). */
       onResize: (size: { width: number; height: number }, changed: { width: boolean; height: boolean }) => void;
+      /** A last say over each drag frame's box (`next`), given the grip held
+       *  and the box the drag began from — the rail's width magnet
+       *  (claude-rail card-snap.ts). `onDragEnd` when the drag lets go. */
+      adjust?: (
+        next: PopoverBox & { height: number },
+        edge: PopoverEdge,
+        start: PopoverBox & { height: number },
+      ) => PopoverBox & { height: number };
+      onDragEnd?: () => void;
     };
+    /** Where the sized card stands, as it changes, and null when it goes —
+     *  for a host that lines other cards up with it (the rail's magnet). */
+    onBox?: (box: { left: number; top: number; width: number; height: number } | null) => void;
   };
 }
 
@@ -694,7 +706,7 @@ export function Modal({
     const start = dragStart.current;
     const view = ownerDoc.defaultView;
     if (!start || start.pointerId !== e.pointerId || !view || !resize) return;
-    const next = popoverDrag(
+    const asked = popoverDrag(
       start.edge,
       start.box,
       e.clientX - start.x,
@@ -704,6 +716,7 @@ export function Modal({
       start.floor,
       start.bounds ?? undefined,
     );
+    const next = resize.adjust ? resize.adjust(asked, start.edge, start.box) : asked;
     dragLast.current = next;
     setDragBox((was) =>
       was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height
@@ -720,6 +733,7 @@ export function Modal({
     if (start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
     setGripHeld(null);
     setDragBox(null);
+    resize?.onDragEnd?.();
     if (!last || (last.width === start.box.width && last.height === start.box.height)) return;
     const size = { width: last.width, height: last.height };
     setDragged(size);
@@ -730,6 +744,19 @@ export function Modal({
     if (!start || start.pointerId !== e.pointerId) return;
     endDrag();
   };
+
+  // WHERE THE SIZED CARD STANDS (`popover.onBox`): while up and placed.
+  const onBox = popover?.onBox;
+  const shownLeft = dragBox?.left ?? place?.left;
+  const shownTop = dragBox?.top ?? place?.top;
+  const shownWidth = dragBox?.width ?? place?.width;
+  const shownHeight = dragBox?.height ?? place?.height;
+  useEffect(() => {
+    if (!onBox || closing || !sized || shownLeft === undefined || shownTop === undefined) return;
+    if (shownWidth === undefined || shownHeight === undefined) return;
+    onBox({ left: shownLeft, top: shownTop, width: shownWidth, height: shownHeight });
+    return () => onBox(null);
+  }, [onBox, closing, sized, shownLeft, shownTop, shownWidth, shownHeight]);
 
   const dialogStyle: CSSProperties | undefined = popover
     ? {
@@ -777,6 +804,9 @@ export function Modal({
       // The card's left edge, for side panels that stand beside it (Browse,
       // Custom recurrence — schedule.css `.modal-popover`).
       {...(popover && place ? { style: { "--modal-pop-left": `${place.left}px` } as CSSProperties } : {})}
+      // A popover card is one of our own floating layers: over the canvas
+      // frame it never refuses the canvas screenshot (canvas-shot-native).
+      {...(popover ? { "data-shot-own": "" } : {})}
       onMouseDown={(e) => {
         if (popover) return;
         // Only the scrim itself, and not in its first moments: the second press
@@ -954,6 +984,9 @@ export function Modal({
               onPointerCancel={onGripUp}
               onLostPointerCapture={() => dragStart.current && endDrag()}
             />
+          ))}
+          {POPOVER_GRIPS.map((e) => (
+            <div key={"ring-" + e} className={"rail-grip-ring is-" + e} />
           ))}
         </div>
       )}

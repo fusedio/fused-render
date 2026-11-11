@@ -113,3 +113,30 @@ def test_get_lists_by_recency_and_there_is_no_order_route(env):
     assert [x["path"] for x in body["apps"]] == [a, c, b]
     r = client.post("/api/current-apps/order", json={"paths": [b, c, a]}, headers=FUSED)
     assert r.status_code in (404, 405)
+
+
+def test_reading_the_task_anywhere_clears_the_desks_dot(env):
+    """One unread state (owner, 2026-11-11): the desk's dot lights for a task
+    that finished since the app was opened AND is still unread; a task read
+    in the peek, the rail or the chat (its row's `unread` falls to 0) takes
+    the dot with it on the next pass. A row without a count keeps the old
+    finished-since-opened rule."""
+    _, (a, _b, _c) = env
+    current_apps.add(a)
+    now = current_apps._now_epoch()
+    current_apps.mark_opened(a, now)
+    row = {"key": "ka", "project": a, "status": "done", "happened_at": now + 10, "unread": 2}
+    current_apps.observe([row])
+    assert current_apps.list_apps()[0]["unread"] is True
+    row["unread"] = 0
+    current_apps.observe([row])
+    assert current_apps.list_apps()[0]["unread"] is False
+    # No count at all: the older rule, finished since opened.
+    del row["unread"]
+    current_apps.observe([row])
+    assert current_apps.list_apps()[0]["unread"] is True
+    # Opening the app still clears it, read or not.
+    row["unread"] = 3
+    current_apps.mark_opened(a, now + 20)
+    current_apps.observe([row])
+    assert current_apps.list_apps()[0]["unread"] is False

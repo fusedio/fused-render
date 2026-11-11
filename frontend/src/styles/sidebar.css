@@ -343,7 +343,7 @@ a.sidebar-rail-btn {
      the collapsed rail read too loose. 4 (owner, 2026-11-09: "the separator
      between expand sidebar and home is perfect spacing — use it everywhere"):
      4 + the column's 4px gap = the top divider's 8px each side. The Claude
-     rail's dividers (claude-rail.css `.is-tight`, `.claude-rail-all-seat`)
+     rail's dividers (claude-rail.css `.is-tight`, `.claude-rail-node-sep`)
      wear the same. */
   margin: 4px 0;
   background: var(--rail-sep);
@@ -717,6 +717,21 @@ a.sidebar-rail-btn {
 
 .sidebar-rail-dot.is-unread {
   background: var(--status-done);
+}
+
+/* THE GIT DOOR'S PUSH DOT (ClaudeRail; owner, 2026-11-10): commits a push
+   would move, in blue — the background-job blue (`--status-background`,
+   tokens.css), not the accent, which is lime in dark and read as the
+   running yellow (QA, 2026-11-10) — and, while the top-right corner says something
+   else (a failed check, a check out, something to pull), the same blue dot
+   in the bottom-right corner (`.is-second`, git-dock-lib `gitDoorDots`). */
+.sidebar-rail-dot.is-push {
+  background: var(--status-background);
+}
+
+.sidebar-rail-dot.is-second {
+  top: auto;
+  bottom: 4px;
 }
 
 /* AND THE AI MODELS ROW'S, which is another row's fact in the same vocabulary

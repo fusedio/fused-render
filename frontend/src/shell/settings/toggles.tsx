@@ -12,6 +12,7 @@ import {
   putCanvasRailPeekEnabled,
   putTaskFavouritesEnabled,
   putTaskHeadUnifiedEnabled,
+  putTaskIconsEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -30,6 +31,7 @@ import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishTaskHeadUnified } from "../task-head-flag";
 import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { publishFavouritesParent, publishTaskFavourites } from "@platform/lib/favourites-flag";
+import { publishTaskIcons } from "@platform/lib/task-icons-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
@@ -334,6 +336,27 @@ export function TaskHeadUnifiedControl({ prefs, onChange }: PrefControlProps) {
         on
           ? "On — every task view shows the same header: close or back, prev/next, status, star, number, title, Open and ⋮."
           : "Off — each view keeps its own header."
+      }
+      onChange={onChange}
+    />
+  );
+}
+
+// TASK ICONS (owner, 2026-11-10, experiment): every task wears one of 299
+// glyphs in place of its status ring; the icon pressed while a title is
+// being edited rerolls it. Off, the ring is drawn as before.
+export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.task_icons?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="tasks-icons"
+      checked={on}
+      put={putTaskIconsEnabled}
+      after={(next) => publishTaskIcons(next.task_icons)}
+      status={
+        on
+          ? "On — each task wears its own small picture in place of the status ring, in the ring's colour; click it while editing the title for a new one."
+          : "Off — the plain status ring."
       }
       onChange={onChange}
     />

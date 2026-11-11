@@ -31,7 +31,7 @@ export interface StatusChipProps {
    *  painting it, so the chip does not jump when the dot appears. Omit it and
    *  the chip has no dot slot at all. `attention` / `running` / `unread` are
    *  the left rail's own dot hues (sidebar.css `.sidebar-rail-dot`: red,
-   *  yellow, green) — the Git chip's (shell/GitDock.tsx). */
+   *  yellow, green) — added for the Git chip, since moved to the rail. */
   dot?: ChipDot;
 }
 

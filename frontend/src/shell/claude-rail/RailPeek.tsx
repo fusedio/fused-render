@@ -128,6 +128,7 @@ import { notify } from "@platform/lib/notifications";
 import { archiveTask, renameTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { pokeTasks } from "@shell/tasksPulse";
+import { useHoldOpenTask } from "@shell/task-open-read";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { shortTaskId } from "@platform/lib/task-id";
 import { ChatMount, draftHref } from "@apps/claude";
@@ -162,6 +163,7 @@ import { TaskHead } from "@shell/TaskHead";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
+import { TaskIconReroll } from "@shell/TaskIconReroll";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -170,8 +172,10 @@ import {
   PEEK_WIDTH,
   STAR_MARK_MS,
   bottomClear,
+  dragMaxWidth,
   dragResize,
   errorWords,
+  snapWidth,
   favCardWish,
   favMaxHeight,
   listCardWish,
@@ -189,6 +193,7 @@ import {
   type ResizeEdge,
   type StarMark,
 } from "./rail-peek-lib";
+import { publishWindowABox, setSnapGuide, windowABox } from "./card-snap";
 
 /** Where a card's dragged size is kept in the ui-layout document: the
  *  rail's pinned card, or the favourite's (RailPeekProps `resizeKey`). */
@@ -650,15 +655,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
     if (!start || start.pointerId !== e.pointerId || !row) return;
-    const next = dragResize(
-      start.corner,
-      start.box,
-      e.clientX - start.x,
-      e.clientY - start.y,
-      row.getBoundingClientRect(),
-      start.floor,
-      start.cap,
-    );
+    const bounds = row.getBoundingClientRect();
+    const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, start.floor, start.cap);
+    // THE WIDTH MAGNET (card-snap.ts): the other window's card — window A's
+    // for the favourite's card, window B's (`avoid`) for the list's.
+    const snapped = snapWidth(asked, start.corner, resizeKey ? windowABox() : avoid, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
+    setSnapGuide(snapped.guide);
+    const next = snapped.box;
     dragLast.current = next;
     setBox((prev) =>
       prev && prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height
@@ -676,6 +679,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const start = dragStart.current;
     dragStart.current = null;
     setResizing(null);
+    setSnapGuide(null);
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
@@ -717,6 +721,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the follow-the-ring paths would stand back for good (reviewer), and a
   // release would save a size that was about the old chat (CodeRabbit).
   const visible = on && box !== null && shownKey !== null;
+  // OPEN, SO READ (task-open-read `useHoldOpenTask`): a chat the reader
+  // pressed open here — pinned or held, not a passing hover — is a chat on
+  // screen; what lands in it while it shows is read, and raises no notice.
+  useHoldOpenTask(visible && (pinned || held) && shown?.pulse.session_id ? shownKey : null);
   // The host that places another card around this one hears where it is.
   const onBoxRef = useRef(onBox);
   onBoxRef.current = onBox;
@@ -724,6 +732,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onBoxRef.current?.(visible ? box : null);
   }, [visible, box, onBox]);
   useEffect(() => () => onBoxRef.current?.(null), []);
+  // The list's card is window A's: the box window B's grips snap to
+  // (card-snap.ts).
+  useEffect(() => {
+    if (resizeKey || !visible || !box) return;
+    publishWindowABox("list", box);
+    return () => publishWindowABox("list", null);
+  }, [resizeKey, visible, box]);
   // A pinned list card — any list card with favourites on (`oneSize`) — or
   // a card sized by the reader whatever its pin (the favourite's,
   // `resizeKey`); a fixed-size card never.
@@ -1534,6 +1549,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         (view && !view.pulse.session_id ? " is-plain" : "")
       }
       role="dialog"
+      // Ours: never makes the canvas screenshot refuse (canvas-shot-native).
+      data-shot-own=""
       aria-label={head ? `${head.label} — preview` : "Chat preview"}
       style={
         box
@@ -1567,6 +1584,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             onLostPointerCapture={() => dragStart.current && endDrag(true)}
           />
         ))}
+      {gripsOn && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
       <div className="claude-rail-peek-card">
         {head && unified ? (
           // THE SHARED HEAD (flag on; shell/TaskHead): the × (or, favourites
@@ -1728,14 +1746,25 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 // stands over it on hover —, the star, the task's number.
                 <>
                   <span className="claude-rail-peek-status">
-                    <StatusIcon
-                      status={taskColumn(head.merged)}
-                      unread={head.unread > 0}
-                      background={liveJobRow(head.t)}
-                      draftHeld={!!head.row && draftRing(head.merged as Task)}
-                      {...(head.row?.failed ? { failed: true } : {})}
-                    />
-                    {head.t.session_id && !head.draft && archiveButton(head)}
+                    <TaskIconReroll
+                      task={{ key: head.t.key, icon_slot: head.merged.icon_slot ?? head.t.icon_slot }}
+                      editing={draft !== null}
+                      onDone={onReload}
+                    >
+                      <StatusIcon
+                        status={taskColumn(head.merged)}
+                        unread={head.unread > 0}
+                        background={liveJobRow(head.t)}
+                        draftHeld={!!head.row && draftRing(head.merged as Task)}
+                        {...(head.row?.failed ? { failed: true } : {})}
+                        icon={head.merged.icon_slot ?? head.t.icon_slot}
+                      />
+                    </TaskIconReroll>
+                    {/* Not while the title is being edited: the Archive seat
+                        stands OVER the ring on hover, and during a rename
+                        the ring is the New-icon button (TaskIconReroll) —
+                        a press there must reroll, not archive. */}
+                    {head.t.session_id && !head.draft && draft === null && archiveButton(head)}
                   </span>
                   {head.t.session_id && (
                     // Behind the favourites switch (favourites-flag). Only a

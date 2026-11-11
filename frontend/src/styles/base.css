@@ -20,6 +20,27 @@
   --ease-out: ease-out;
 }
 
+/* ---- A window nobody can see stops its CSS loops ------------------------- */
+/* The Chromium engine keeps covered windows rendering
+   (`disable-backgrounding-occluded-windows`, chromium/native/FRCefApp.cc — so
+   Mission Control and the Dock show their last frame, not grey), and that keeps
+   every infinite animation in them ticking: the running shimmer on a task's
+   title (schedule.css, sidebar.css) repaints its text-clipped gradient on the
+   main thread every frame, in windows that share the GPU process — and, for a
+   window opened from another, the renderer — with the one being used.
+   WKWebView throttles a covered window by itself, so only the engine sets this
+   attribute (FRChromiumView `syncOcclusion`, on the window's occlusion change
+   and on each main-frame load while hidden). Pausing, not removing: the loops
+   pick up where they stopped when the window shows again. Transitions and Web
+   Animations (`el.animate`, whose `.finished` some code awaits) are untouched;
+   overlays unmount on timers (platform/lib/exit-animation.ts), never on
+   `animationend`. */
+:root[data-fused-occluded] *,
+:root[data-fused-occluded] *::before,
+:root[data-fused-occluded] *::after {
+  animation-play-state: paused !important;
+}
+
 /* ---- Shared hover/press easing ------------------------------------------- */
 /* One rule for every interactive surface in the shell, grouped here rather than
    as a `transition` bolted onto sixteen scattered declarations — that way the

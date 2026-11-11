@@ -27,6 +27,7 @@ import { columnLabel } from "./schedule-lib";
 import { pokeTasks } from "./tasksPulse";
 import { QueueCaptionText, StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
 import type { QueueCaption } from "@platform/lib/queue";
+import { TaskIconReroll } from "./TaskIconReroll";
 import {
   BACKGROUND_LABEL,
   basename,
@@ -217,12 +218,19 @@ export function TaskPeekWho({
         className="task-side-peek-status"
         title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
       >
-        <StatusIcon
-          status={status}
-          failed={running ? false : ringFailed(task)}
-          background={background}
-        />
-        {statusOverlay}
+        <TaskIconReroll task={task} editing={draft !== null} {...(onRenamed ? { onDone: onRenamed } : {})}>
+          <StatusIcon
+            status={status}
+            failed={running ? false : ringFailed(task)}
+            background={background}
+            icon={task.icon_slot}
+          />
+        </TaskIconReroll>
+        {/* Not while the title is being edited: the host's overlay (the rail
+            card's Archive) stands OVER the ring, and during a rename the ring
+            is the New-icon button — a press there must reroll, not archive
+            (RailPeek's own rule, #2238). */}
+        {draft === null ? statusOverlay : null}
       </span>
       <TaskAgentMark backend={task.backend} />
       {starNode ?? (star && <TaskStar task={task} />)}

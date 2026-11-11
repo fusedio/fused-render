@@ -203,6 +203,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Why the task needs you (needsYouCaption), in the preview's seat. */
+.ws-ask {
+  color: var(--fg);
+}
 .ws-card-facts {
   flex: 0 1 auto;
   max-width: 65%;

@@ -31,7 +31,19 @@
 export type CanvasShotWhat = "canvas" | "udf";
 /** Who asked: the reader at the seat, or the model's tool. */
 export type CanvasShotBy = "user" | "agent";
-export type CanvasShotAnswer = { ok: true; blob: Blob } | { ok: false; error: string };
+/** What the picture really is (D1471, F6): the cropped graph, one node's
+ *  output, or the whole frame when no crop could be had. */
+export type CanvasShotFraming = "graph" | "node" | "whole-frame";
+export type CanvasShotAnswer =
+  | {
+      ok: true;
+      blob: Blob;
+      framing?: CanvasShotFraming;
+      /** A caveat about the picture, for the asker's eyes (D1472: a still of a
+       *  hidden window may show an older state). */
+      note?: string;
+    }
+  | { ok: false; error: string; refusal?: boolean };
 export interface CanvasShot {
   /** `udf` names the node for `what: "udf"`; omitted, the host uses the node
    *  this chat is on (the agent's `canvas_screenshot` tool may name any).

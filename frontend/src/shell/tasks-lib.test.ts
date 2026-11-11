@@ -100,6 +100,8 @@ import {
   isFailedTask,
   needsAttention,
   attentionCaption,
+  needsYouCaption,
+  failedCaption,
   isMessageRunning,
   isRunningNow,
   isRunningIn,
@@ -1232,6 +1234,43 @@ describe("attentionCaption", () => {
     expect(CARDS_SRC).toContain("const asking = attentionCaption(task);");
     expect(CARDS_SRC).toContain('{asking && <span className="task-card-limit">{asking}</span>}');
     expect(CARDS_SRC).toContain("label={asking || undefined}");
+  });
+});
+
+describe("failedCaption", () => {
+  it("says a run that broke failed, on the blocked status and nothing else", () => {
+    expect(failedCaption(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Run failed");
+    expect(failedCaption(task({ status: "done", blocked_reason: "failed" }))).toBe("");
+    expect(failedCaption(task({ status: "blocked", blocked_reason: "usage_limit" }))).toBe("Run failed");
+  });
+
+  it("follows isFailedTask: the blocked lane or a flagged settled run, nothing else", () => {
+    expect(failedCaption(task({ status: "blocked" }))).toBe("Run failed");
+    expect(failedCaption(task({ status: "done", failed: true }))).toBe("Run failed");
+    expect(failedCaption(task({ status: "done" }))).toBe("");
+    expect(failedCaption(task({ status: "in_progress" }))).toBe("");
+  });
+});
+
+describe("needsYouCaption", () => {
+  // The Workspace card's one line: every cause that puts a task in "Needs you".
+  const t = (over: Partial<Task>) => task({ status: "needs_attention", ...over });
+
+  it("covers a question, an approval, a usage limit and a failed run", () => {
+    expect(needsYouCaption(t({ blocked_reason: "question", attention: { tool: "AskUserQuestion", summary: "Ship it?" } })))
+      .toBe("Waiting on your answer · Ship it?");
+    expect(needsYouCaption(t({ blocked_reason: "permission", attention: { tool: "Bash", summary: "ls" } })))
+      .toBe("Waiting on your approval · Bash: ls");
+    expect(needsYouCaption(task({ status: "blocked", blocked_reason: "usage_limit", resumes_at: 0 })))
+      .toBe("Usage limit");
+    expect(needsYouCaption(task({ status: "blocked", blocked_reason: "usage_limit", resumes_at: 1789066800 })))
+      .toMatch(/^Usage limit · resumes \d{1,2}:\d{2} (AM|PM)$/);
+    expect(needsYouCaption(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Run failed");
+  });
+
+  it("says nothing for a task that does not need you", () => {
+    expect(needsYouCaption(task({ status: "in_progress" }))).toBe("");
+    expect(needsYouCaption(task({ status: "done" }))).toBe("");
   });
 });
 
@@ -2474,7 +2513,7 @@ describe("the unread mark", () => {
     // held thread), so the ring hollows on the row's own press rather than on the
     // next poll — the same number that used to feed the dot.
     expect(ROW).toMatch(
-      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+label=\{asking \|\| undefined\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s+background=\{liveJobRow\(task\)\}\s*\/>/,
+      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+label=\{asking \|\| undefined\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s+background=\{liveJobRow\(task\)\}\s+icon=\{task\.icon_slot\}\s*\/>/,
     );
     // Nothing trails the title any more: the ring leads the row, the title
     // follows, and the next thing is the live ping.
@@ -10889,6 +10928,14 @@ describe("provisionalTasks", () => {
     expect(t.unread).toBe(2);
     expect(t.last_active).toBe(1_700_000_000);
     expect(t.happened_at).toBe(1_699_999_000);
+  });
+
+  it("carries the task's face too, and null (not undefined) when the pulse has none", () => {
+    // The glyph (task-icons) is drawn off `icon_slot`; a provisional row
+    // without it wore the plain ring until the listing landed, so the one
+    // mark on the row that changed on open was the icon.
+    expect(provisionalTasks([row({ icon_slot: 42 })])[0].icon_slot).toBe(42);
+    expect(provisionalTasks([row()])[0].icon_slot).toBeNull();
   });
 
   it("fills everything pulse does not carry with a neutral default", () => {

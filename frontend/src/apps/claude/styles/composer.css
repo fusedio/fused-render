@@ -54,7 +54,7 @@
 }
 .c-topbar .c-spark {
   color: var(--c-accent);
-  font-size: 15px;
+  font-size: calc(15px * var(--c-zoom, 1));
 }
 /* THE IDENTITY LINE BEFORE ANYONE HAS ANSWERED FOR IT (`Topbar`'s `pending`).
    The peek's own block is a 16px ring, a number and a title; this is its
@@ -86,13 +86,13 @@
 
 .c-tb-title {
   font-weight: 600;
-  font-size: 13px;
+  font-size: calc(13px * var(--c-zoom, 1));
   color: var(--c-fg-strong);
   white-space: nowrap;
 }
 .c-tb-file {
   color: var(--c-faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -102,7 +102,7 @@
 .c-session {
   flex-shrink: 0;
   color: var(--c-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   letter-spacing: 0.3px;
   font-variant-numeric: tabular-nums;
   /* MONOSPACE (FIX-5). Legacy's `#session` carries `class="mono"` (T:4068) and
@@ -124,7 +124,7 @@
 .c-tb-run,
 .c-row-run {
   flex: 0 0 auto;
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--c-zoom, 1));
   line-height: 1.6;
   padding: 1px;
   color: var(--c-status-progress);
@@ -148,7 +148,7 @@
    the ring this task wears everywhere else on the page. */
 .c-tb-paused {
   flex: 0 0 auto;
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--c-zoom, 1));
   line-height: 1.6;
   padding: 1px;
   white-space: nowrap;
@@ -211,7 +211,7 @@
   border-radius: 8px;
   color: var(--c-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   padding: 4px 10px;
   cursor: pointer;
   flex-shrink: 0;
@@ -263,7 +263,7 @@
   height: 26px;
   padding: 0;
   font: inherit;
-  font-size: 14px;
+  font-size: calc(14px * var(--c-zoom, 1));
   line-height: 1;
   border: 0;
   border-radius: 6px;
@@ -300,7 +300,7 @@
   width: 100%;
   padding: 7px 9px;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   line-height: 1;
   white-space: nowrap;
   border: 0;
@@ -492,9 +492,9 @@
   resize: none;
   color: var(--c-fg);
   font: inherit;
-  font-size: 14px;
+  font-size: calc(14px * var(--c-zoom, 1));
   line-height: 1.5;
-  max-height: 200px;
+  max-height: calc(200px * var(--c-zoom, 1));
   padding: 2px 2px 6px;
 }
 .c-composer textarea::placeholder {
@@ -571,7 +571,7 @@
    A quiet line under the box, not a bubble: the transcript owns bubbles. */
 .c-queued {
   margin: 2px 2px 6px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   line-height: 1.45;
   color: var(--c-faint);
 }
@@ -615,7 +615,7 @@
   border-radius: 999px;
   color: var(--c-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   padding: 3px 8px;
   cursor: pointer;
   outline: none;
@@ -793,7 +793,7 @@ select.c-pill {
    same words the CLI says. */
 .c-ctxwarn {
   margin: 0 2px 6px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   line-height: 1.45;
   color: var(--c-faint);
   white-space: nowrap;
@@ -870,13 +870,13 @@ select.c-pill {
   gap: 2px;
 }
 .c-ctxpop-title {
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   font-weight: 600;
   line-height: 1.5;
   color: var(--c-fg);
 }
 .c-ctxpop-dim {
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   line-height: 1.5;
   color: var(--c-faint);
 }
@@ -896,7 +896,7 @@ select.c-pill {
      categories are told apart only by three greys. */
   font-family: "Apple Symbols", "Segoe UI Symbol", "Noto Sans Symbols 2",
     "Noto Sans Symbols2", "DejaVu Sans", "Symbola", sans-serif;
-  font-size: 10px;
+  font-size: calc(10px * var(--c-zoom, 1));
   line-height: 1.2;
   text-align: center;
 }
@@ -939,7 +939,7 @@ select.c-pill {
   align-items: baseline;
   flex-wrap: wrap;
   gap: 2px 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   line-height: 1.4;
 }
 .c-ctxpop-label {
@@ -950,7 +950,7 @@ select.c-pill {
 }
 .c-ctxpop-note {
   color: var(--c-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
 }
 /* A row with a drill-down list is the button that opens it. */
 .c-ctxpop-toggle {
@@ -999,7 +999,7 @@ select.c-pill {
   align-items: baseline;
   gap: 4px;
   min-width: 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   line-height: 1.4;
 }
 .c-ctxpop-subname {
@@ -1112,7 +1112,7 @@ select.c-pill {
 }
 .c-selpop-head {
   padding: 4px 8px 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0.04em;
@@ -1128,7 +1128,7 @@ select.c-pill {
   height: 28px;
   padding: 0 8px;
   font: inherit;
-  font-size: 13px;
+  font-size: calc(13px * var(--c-zoom, 1));
   line-height: 1;
   white-space: nowrap;
   border: 0;
@@ -1140,7 +1140,7 @@ select.c-pill {
 }
 /* A model's word or two ("Fast"), quieter than its name. */
 .c-selpop-desc {
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   color: var(--c-faint);
 }
 .c-selpop-check {
@@ -1165,13 +1165,13 @@ select.c-pill {
   box-shadow: 0 6px 24px var(--c-shadow);
 }
 .c-schedpop-title {
-  font-size: 13px;
+  font-size: calc(13px * var(--c-zoom, 1));
   line-height: 1.4;
   color: var(--c-fg-strong);
 }
 .c-schedpop-sub {
   margin-top: 3px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   line-height: 1.45;
   color: var(--c-faint);
 }
@@ -1187,7 +1187,7 @@ select.c-pill {
   border-radius: 999px;
   color: var(--c-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   line-height: 1;
   padding: 5px 11px;
   cursor: pointer;
@@ -1278,7 +1278,7 @@ select.c-pill {
 }
 .c-sent-head {
   margin: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
@@ -1289,7 +1289,7 @@ select.c-pill {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1352,7 +1352,7 @@ select.c-pill {
      than to one of the shape's parts, and the ✕ is dressed by the same rule
      either way. */
   padding: 3px 6px 3px 10px;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   color: var(--c-fg);
   transition:
     background 0.12s,
@@ -1456,7 +1456,7 @@ select.c-pill {
   background: transparent;
   color: var(--c-dim);
   cursor: pointer;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   padding: 0 3px;
   border-radius: 50%;
   flex-shrink: 0;
@@ -1501,7 +1501,7 @@ select.c-pill {
 .chat-root .c-annchip .c-pinlbl {
   display: inline-flex;
   align-items: center;
-  font-size: 13px;
+  font-size: calc(13px * var(--c-zoom, 1));
   transition: color 0.12s;
 }
 /* A seat whose bytes are still on their way. Quieter, and not a spinner: the
@@ -1664,7 +1664,7 @@ select.c-pill {
   direction: rtl;
   text-align: left;
   min-width: 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   color: var(--fg-muted);
 }
 /* Whatever the picture does NOT show, in the one place the user is actually
@@ -1672,7 +1672,7 @@ select.c-pill {
    feature (`viewNote`) and had nowhere on screen to be said until then. */
 .c-shotview-note {
   max-width: 60ch;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   line-height: 1.45;
   color: var(--c-dim);
 }
@@ -1695,7 +1695,7 @@ select.c-pill {
   background: var(--c-surface-2);
 }
 .c-shotview-loading {
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   color: var(--c-dim);
 }
 /* Nothing to show and nothing to frame (a .zip, a refusal, an extension with no
@@ -1708,7 +1708,7 @@ select.c-pill {
   color: var(--c-faint);
 }
 .c-shotview-glyph {
-  font-size: 44px;
+  font-size: calc(44px * var(--c-zoom, 1));
 }
 .c-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1730,7 +1730,7 @@ select.c-pill {
   display: flex;
   gap: 8px;
   align-items: baseline;
-  font-size: 13px;
+  font-size: calc(13px * var(--c-zoom, 1));
 }
 .c-sent-body .c-sent-note-lbl {
   flex: none;
@@ -1741,18 +1741,18 @@ select.c-pill {
   background: var(--c-accent);
   color: var(--c-on-accent);
   font-weight: 700;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 .c-sent-body .c-sent-note-meta {
   color: var(--c-dim);
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
 }
 .c-sent-body .c-sent-caveat {
   color: var(--c-dim);
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
 }
 
 /* ---- the plan popup (D890) ------------------------------------------------ */
@@ -1822,7 +1822,7 @@ select.c-pill {
   /* THE PILLS' OWN TYPE AND SPACING (Akshil, 2026-10-01: "keep the font-size
      and style same"): 12px in the pills' dim colour, the words 6px apart
      exactly as the row seats them. */
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   line-height: 1.4;
   color: var(--c-dim);
   gap: 5px;
@@ -1920,7 +1920,7 @@ select.c-pill {
   border-radius: 6px;
   background: transparent;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   color: var(--c-dim);
   cursor: pointer;
   pointer-events: auto;
@@ -1968,8 +1968,8 @@ select.c-pill {
   height: 30px;
   box-sizing: border-box;
   padding: 7px 9px;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: calc(12px * var(--c-zoom, 1));
+  line-height: calc(16px * var(--c-zoom, 1));
   border-radius: 7px;
   color: var(--c-fg);
   cursor: pointer;
@@ -1997,8 +1997,8 @@ select.c-pill {
 .chat-cmd-tag {
   flex: 0 0 auto;
   padding: 0 5px;
-  font-size: 10px;
-  line-height: 14px;
+  font-size: calc(10px * var(--c-zoom, 1));
+  line-height: calc(14px * var(--c-zoom, 1));
   border: 1px solid var(--c-border);
   border-radius: 4px;
   color: var(--c-faint);
@@ -2019,8 +2019,8 @@ select.c-pill {
   max-width: 180px;
   padding: 2px 8px;
   font: inherit;
-  font-size: 11.5px;
-  line-height: 18px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
+  line-height: calc(18px * var(--c-zoom, 1));
   border: 1px solid var(--c-border);
   border-radius: 999px;
   background: none;
@@ -2063,8 +2063,8 @@ select.c-pill {
   width: 100%;
   padding: 7px 9px;
   font: inherit;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: calc(12px * var(--c-zoom, 1));
+  line-height: calc(16px * var(--c-zoom, 1));
   border: 0;
   border-radius: 7px;
   background: none;
@@ -2100,7 +2100,7 @@ select.c-pill {
 }
 .chat-worktree-miss {
   display: block;
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   color: var(--c-faint);
   white-space: normal;
 }
@@ -2122,7 +2122,7 @@ select.c-pill {
   box-sizing: border-box;
   padding: 6px 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   border: 1px solid var(--c-border-strong);
   border-radius: 7px;
   background: var(--c-surface);
@@ -2130,8 +2130,8 @@ select.c-pill {
 }
 .chat-worktree-note {
   padding: 6px 9px;
-  font-size: 11.5px;
-  line-height: 16px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
+  line-height: calc(16px * var(--c-zoom, 1));
   color: var(--c-dim);
   white-space: normal;
 }
@@ -2147,7 +2147,7 @@ select.c-pill {
   gap: 12px;
   margin: 0 0 6px;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   color: var(--c-dim);
   background: var(--c-surface);
   border: 1px solid var(--c-border);
@@ -2172,7 +2172,7 @@ select.c-pill {
   gap: 12px;
   margin: 0 0 6px;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   color: var(--c-dim);
   background: var(--c-surface);
   border: 1px solid var(--c-border);
@@ -2235,7 +2235,7 @@ select.c-pill {
   border-top: 1px solid var(--c-border);
   background: var(--c-bg);
   color: var(--c-dim);
-  font-size: 13px;
+  font-size: calc(13px * var(--c-zoom, 1));
 }
 .chat-root .waiting-bar-dot {
   flex: none;
@@ -2275,7 +2275,7 @@ select.c-pill {
    next capture. `role="status"` so a screen reader hears it too. */
 .chat-root .c-attach-notice {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   line-height: 1.4;
   color: var(--c-dim, var(--fg-muted));
   overflow-wrap: anywhere;

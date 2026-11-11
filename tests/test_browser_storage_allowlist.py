@@ -29,12 +29,16 @@ ALLOWED = {
     # ---- platform ---------------------------------------------------------
     "platform/lib/agent-backends.ts": "signal",
     "platform/lib/bookmarks.ts": "tab",            # armed bookmark (sessionStorage)
+    "platform/lib/bots-available.ts": "cache",     # last "server offers Bots" answer, re-read on boot
+    "platform/lib/botsPulse.ts": "cache",          # pinned bot rows until the next poll lands
     "platform/lib/claude-defaults.ts": "signal",
+    "platform/lib/favourites-flag.ts": "cache",    # flag pair's last prefs answer, re-read
     "platform/lib/last-chat.ts": "tab",            # last chat picked, per window (sessionStorage)
     "platform/lib/peek-session.ts": "tab",         # chats mounted in this window's panes (sessionStorage)
     "platform/lib/pending-claude-ask.ts": "tab",
     "platform/lib/presence.ts": "signal",
     "platform/lib/restart-store.ts": "signal",
+    "platform/lib/task-icons-flag.ts": "cache",    # flag's last prefs answer, re-read
     "platform/lib/theme.ts": "display",
     "platform/lib/tours/index.ts": "display",       # one-shot tour seen (per viewer)
     "platform/lib/ui-layout.ts": "import",
@@ -49,6 +53,8 @@ ALLOWED = {
     "shell/TaskWorkspace.tsx": "display",           # group collapse state (per viewer)
     "shell/TerminalDrawer.tsx": "cache",            # pty ids re-checked against GET /api/terminal
     "shell/UpdateCard.tsx": "tab",
+    "shell/claude-rail/claude-rail-lib.ts": "cache",  # rail stood last; dropped if the pulse says empty
+    "shell/claude-rail/rail-peek-flag.ts": "cache",   # flag's last prefs answer, re-read
     "shell/notifications-seen-store.ts": "import",
     "shell/task-peek-store.ts": "display",          # peek width + per-tab autocollapse marker
     "shell/tasks-lib.ts": "display",                # Tasks "Sort by" choice (per viewer)
@@ -69,8 +75,6 @@ ALLOWED = {
     "apps/marketplace/install-flow.tsx": "import",
     # ---- lan (phone UI; per-device origin by nature, SPEC §52 BS-5) -----------
     "lan/App.tsx": "display",
-    "lan/bots/hooks.ts": "cache",
-    "lan/tasks/TasksList.tsx": "display",           # chip + folder filter of the phone task list (per viewer)
 }
 
 _CATEGORIES = {"signal", "cache", "tab", "display", "import", "dev"}

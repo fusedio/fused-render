@@ -82,6 +82,11 @@
 // the server. On its autosave cadence it posts the body it would have saved,
 // minus code, as
 //   iframe → { type: "fused-embed-snapshot", gen, seq, body }
+// (`body.rev`: the last delta rev the frame had applied when it serialized
+// the body; a body older than a delta the server already cut is BOUNCED —
+// answered `stale: true, rebuild: true, rev` with nothing written, and the
+// frame re-sends once it has applied that delta — so a Claude edit still on
+// its way to the frame is never undone by a stale picture of the canvas)
 // which this page relays to POST /api/canvases/snapshot; the answer goes back
 // as fused-embed-snapshot-applied / -rejected. A relay the page ABANDONS
 // because a newer snapshot superseded it while the clone was busy (the newer
@@ -106,8 +111,10 @@
 //              frame's base (Claude wrote the file) — the frame rebases its
 //              edits onto `disk_text` and posts again; "busy": the clone stayed
 //              locked, post again later; "fenced": a hard pull just replaced
-//              the clone, post again once its full state has landed; anything
-//              else: dropped, logged.
+//              the clone, post again once its full state has landed; "gone":
+//              the file was deleted or renamed on disk under the frame's base,
+//              never recreated from its text — the delta that drops or renames
+//              the node settles it; anything else: dropped, logged.
 // Relayed on the SAME ordered chain as snapshots and rename hints: a body for
 // a UDF's old file name must not overtake the rename that moves the file.
 // The token message tells the frame this host speaks the channel
@@ -151,9 +158,12 @@
 // message — or the 2 s sync/state poll while the socket is down) it fetches
 // GET /api/canvases/delta — diff(disk, what the server believes the frame
 // holds) — and posts it as
-//   parent → { type: "fused-embed-delta", rev, base_rev, full, ops }
-//   iframe → { type: "fused-embed-delta-applied", rev } | "-rejected"
-// relaying the ack to POST /api/canvases/delta/ack. The frame patches its
+//   parent → { type: "fused-embed-delta", rev, base_rev, full, ops, gen, seq }
+//   iframe → { type: "fused-embed-delta-applied", rev, skipped? } | "-rejected"
+// relaying the ack to POST /api/canvases/delta/ack. `gen`/`seq` say which of
+// the frame's snapshots the server had applied when it cut the delta; the
+// frame skips ops on nodes its own later, unacked snapshots touched (the
+// user's change wins) and names them in `skipped`. The frame patches its
 // nodes in place: camera, selection, results and the right pane's session
 // all survive. A frame that just hydrated says
 //   iframe → { type: "fused-embed-hello" }
@@ -233,7 +243,7 @@ import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
-import { placeRoot } from "@shell/claude-rail/claude-rail-lib";
+import { CHAT_PARAMS, placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
@@ -247,8 +257,9 @@ import {
   type SyncState,
 } from "./sync-state";
 import { CANVAS_SHOT_SCRIM_HINT, canvasShotScrimLabel, type CanvasShotPhase } from "./canvas-shot-scrim";
-import { SHOT_UDF_CROP_MIN_WIDTH, nativeCanvasShot, type ShotRect } from "./canvas-shot-native";
-import { nativeShotRefusal, screenRecordingNeeded, slowRoadAllowedHere } from "./canvas-shot-permission";
+import { SHOT_UDF_CROP_MIN_WIDTH, fitShotBlob, nativeCanvasShot, type ShotRect } from "./canvas-shot-native";
+import { useCanvasPageShotResponder } from "./canvas-page-shot-responder";
+import { agentNativeAllowedHere, nativeShotRefusal, screenRecordingNeeded, slowRoadAllowedHere } from "./canvas-shot-permission";
 import type { ScreenshotSource } from "@platform/lib/screen-permission";
 import { watchTopOrigin } from "@apps/claude/shots";
 import { captureSources } from "@platform/lib/capture-audio";
@@ -259,6 +270,9 @@ import { breakoutOpener } from "@platform/lib/breakouts";
 // over a big graph takes seconds; a frame without the handler never answers,
 // and the chat's camera must come back.
 const THUMBNAIL_TIMEOUT_MS = 45_000;
+/** Rides a stale still (D1472) to the agent, beside the picture. */
+const STALE_SHOT_NOTE =
+  "the canvas window was hidden or minimized when this was taken, so it shows what the window last drew and may be older than the files; say so if it matters";
 // How long a screenshot request waits for the workbench frame's first hello
 // before giving up: a page still framing the workbench (a fresh open, a
 // slow `fused whoami`) answers within this on an ordinary day.
@@ -715,6 +729,9 @@ export default function CanvasWorkspace({
   // already have. Kept after the push recovers — the session may still be
   // finishing its final message.
   const [fixRunId, setFixRunId] = useState<string | null>(null);
+  // `canvasChatSeq` as it stood when that fix was started — the chat mount the
+  // run was handed to. -1 before any fix.
+  const [fixChatSeq, setFixChatSeq] = useState(-1);
   // Bumped when a hop lands on the CANVAS chat with a `session_id` other
   // than the one it mounted on — another root task of the same canvas from
   // the Tasks page, or Back to the bare canvas from one (none) — the chat
@@ -723,6 +740,9 @@ export default function CanvasWorkspace({
   // (replaceState, no event here) can leave it behind, which costs at most
   // one needless remount onto the session the URL names.
   const [canvasChatSeq, setCanvasChatSeq] = useState(0);
+  // Read by `onFix` after its await, where the render's own copy may be stale.
+  const canvasChatSeqRef = useRef(canvasChatSeq);
+  canvasChatSeqRef.current = canvasChatSeq;
   const canvasChatSidRef = useRef<string | null>(
     new URLSearchParams(window.location.search).get("session_id"),
   );
@@ -888,6 +908,24 @@ export default function CanvasWorkspace({
     }
     shotBusyRef.current = true;
     const udfName = udf || (what === "udf" ? nodeRef.current?.udfName ?? null : null);
+    // The crop the native road used, kept for the stale still below.
+    let staleCrop: ShotRect | null = null;
+    let staleWhole = false;
+    let staleTried = false;
+    // The agent's native roads wait for the Screen Recording grant (D1472).
+    let native = true;
+    // A still of the window as it last drew, for a HIDDEN page (D1472), said
+    // to be possibly stale.
+    const staleStill = async (): Promise<ShotAnswer | null> => {
+      staleTried = true;
+      if (!staleCrop) return null;
+      const blob = await nativeCanvasShot(frameRef.current, by, {
+        crop: staleCrop,
+        stale: true,
+        ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
+      });
+      return blob ? { ok: true, blob, note: STALE_SHOT_NOTE, framing: staleWhole ? "whole-frame" : what === "udf" ? "node" : "graph" } : null;
+    };
     try {
       // THE FRAME FIRST. A request that lands before the workbench's first
       // hello (the agent's tool fires as its turn starts) waits for it under
@@ -897,7 +935,9 @@ export default function CanvasWorkspace({
         const up = await awaitFrameUp(FRAME_UP_WAIT_MS);
         setShotPhase(null);
         if (!up) {
-          return { ok: false, error: "the workbench has not loaded in this canvas page yet — reload the canvas page and try again" };
+          // Never "reload the page": the agent relays this sentence, and
+          // the page keeps itself current (D1472).
+          return { ok: false, error: "the workbench is still loading in this canvas page — try again in a few seconds" };
         }
         // The scrim is still in the DOM until React commits and the browser
         // paints; the native road's gate (`frameCovered`) would find it over
@@ -918,17 +958,21 @@ export default function CanvasWorkspace({
         ? { x: 0, y: 0, w: frameEl.clientWidth, h: frameEl.clientHeight }
         : null;
       const crop: ShotRect | null = rects ? (what === "canvas" ? rects.canvas : rects.udf) : whole;
+      staleCrop = crop;
+      staleWhole = crop === whole;
       // The workbench said this node has nothing to photograph (not run,
       // still loading): that sentence is the answer, on every platform.
       if (what === "udf" && rects && !rects.udf && rects.udfReason) {
-        return { ok: false, error: rects.udfReason };
+        return { ok: false, error: rects.udfReason, refusal: true };
       }
-      if (crop) {
+      if (by === "agent") native = agentNativeAllowedHere((await screenshotSource())?.granted);
+      if (crop && native) {
         const blob = await nativeCanvasShot(frameRef.current, by, {
           crop,
           ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
         });
-        if (blob) return { ok: true, blob };
+        // Said as it is (D1471, F6): no rects means the whole frame.
+        if (blob) return { ok: true, blob, framing: crop === whole ? "whole-frame" : what === "udf" ? "node" : "graph" };
       }
       // NATIVE COULD NOT. Off a Mac the slow embed road below draws it; on a
       // Mac that road is off unless Settings turned it on, and the answer is
@@ -936,17 +980,23 @@ export default function CanvasWorkspace({
       // A Mac with no native still at all (macOS 11–12) falls back like any
       // other platform: there is no grant to point at.
       const nativeAvailable = (await screenshotSource())?.available !== false;
-      if (!(await slowRoadAllowedHere(nativeAvailable))) {
+      if (!(await slowRoadAllowedHere(nativeAvailable, by === "agent"))) {
         // A node the zoom draws too small for a crop (under
         // SHOT_UDF_CROP_MIN_WIDTH) is declined above so the embed road can
         // draw it at full size — a road this Mac does not take. The whole
         // frame, the node somewhere in it, is still a picture; "bring the
         // window to the front" would be the wrong sentence for it.
-        if (whole && crop && crop !== whole) {
+        if (native && whole && crop && crop !== whole) {
           const blob = await nativeCanvasShot(frameRef.current, by, { crop: whole });
-          if (blob) return { ok: true, blob };
+          if (blob) return { ok: true, blob, framing: "whole-frame" };
         }
         return { ok: false, error: nativeShotRefusal({ permissionMissing: await screenRecordingMissing(), app: bundleName() }) };
+      }
+      // A HIDDEN page, for the agent: the stale still BEFORE the embed road,
+      // whose draw in a hidden document mostly runs out its 45 s first.
+      if (by === "agent" && native && document.visibilityState !== "visible") {
+        const still = await staleStill();
+        if (still) return still;
       }
     } finally {
       shotBusyRef.current = false;
@@ -982,6 +1032,26 @@ export default function CanvasWorkspace({
       }, THUMBNAIL_TIMEOUT_MS);
     });
     setShotPhase(null);
+    // THE LAST RESORT for the agent (D1472): the document is HIDDEN — the
+    // window minimized, fully covered, on another Space — so both native
+    // roads stood down (a hidden web view may not have painted), and the
+    // workbench's own draw did not answer either. A still of the window as
+    // it last drew, said to be possibly stale, beats no picture: the agent
+    // had just asked to see its own work. Only for a hidden document: a
+    // visible page whose workbench timed out gets the timeout's sentence,
+    // not a fresh still wearing a false caveat.
+    // (Tried before the embed road when the page was hidden already; here
+    // for a page hidden while the embed road ran.)
+    if (!answer.ok && by === "agent" && native && !staleTried && document.visibilityState !== "visible") {
+      // The scrim the slow road showed is in the DOM until React commits
+      // and the browser paints; the gate would read it as "covered" (the
+      // same wait the frame-up path takes above).
+      await nextPaint();
+      const still = await staleStill();
+      if (still) return still;
+    }
+    // The embed road's full-size PNG, under the view budget (D1471, F6).
+    if (answer.ok) return { ok: true, blob: await fitShotBlob(answer.blob), framing: what === "udf" ? "node" : "graph" };
     return answer;
   }, [settleShot, awaitFrameUp, requestEmbedRects, screenRecordingMissing, screenshotSource]);
   // The in-page canvas chat's contract: the canvas view only (no node is
@@ -990,6 +1060,9 @@ export default function CanvasWorkspace({
     () => ({ capture: requestCanvasShot, targets: ["canvas"] }),
     [requestCanvasShot],
   );
+  // The agent's `canvas_screenshot`, for every chat on this canvas wherever
+  // it is shown (D1471): this page answers, not the chat.
+  useCanvasPageShotResponder({ env, name, shot: canvasShot, frameUp: () => frameUpRef.current, error });
   useEffect(
     () => () => {
       // A request still out when the page goes: answer it, so the asking
@@ -1538,7 +1611,10 @@ export default function CanvasWorkspace({
           // gateway and open-canvas (see the module doc). The frame shows
           // its editors only when it hears "body", routes its inline AI here
           // on "ai", and hands an uploaded canvas here on "open".
-          caps: ["body", "ai", "open"],
+          // `gone`: this host answers a body post for a file deleted or
+          // renamed on disk with `code: "gone"`; a frame that sees the cap
+          // takes a `stale ""` from it as a really empty file, not a missing one.
+          caps: ["body", "ai", "open", "gone"],
           ...(publicOrigin ? { publicOrigin } : {}),
         },
         origin, // exact origin — this message carries a credential
@@ -1809,7 +1885,18 @@ export default function CanvasWorkspace({
               nodeSessions.delete(nodeSessionKey(env, name, file));
             }
           }
-          post({ type: "fused-embed-snapshot-applied", gen, seq, push_seq: ack.push_seq });
+          // `stale` + `rebuild`: the server wrote nothing — the body was
+          // built before a delta it had cut (`rev`); the frame applies that
+          // delta and posts a fresh snapshot.
+          const bounced = ack as { stale?: boolean; rebuild?: boolean; rev?: number };
+          post({
+            type: "fused-embed-snapshot-applied",
+            gen,
+            seq,
+            push_seq: ack.push_seq,
+            ...(bounced.stale ? { stale: true } : {}),
+            ...(bounced.rebuild ? { rebuild: true, rev: bounced.rev } : {}),
+          });
           return;
         } catch (e) {
           const status = (e as { status?: number }).status;
@@ -1869,7 +1956,10 @@ export default function CanvasWorkspace({
               seq,
               name: body.node,
               code: ack.code,
-              reason: "a pull just replaced the clone; retrying once it has settled",
+              reason:
+                ack.code === "gone"
+                  ? "the file was deleted or renamed on disk; not recreated"
+                  : "a pull just replaced the clone; retrying once it has settled",
             });
           }
           return;
@@ -2068,6 +2158,10 @@ export default function CanvasWorkspace({
                 base_rev: delta.base_rev ?? null,
                 full: Boolean(delta.full),
                 ops,
+                // What the host had applied of the frame's snapshots when it
+                // cut this delta: the frame keeps its own later changes.
+                gen: delta.gen ?? null,
+                seq: delta.seq ?? null,
               },
               origin,
             );
@@ -2483,8 +2577,12 @@ export default function CanvasWorkspace({
         // no error and needs no heal (the server ignores the reason too).
         const booting = reason === "not hydrated yet";
         if (ok) deltaHealRef.current = false;
+        const skippedRaw = event.data?.skipped;
+        const skipped = Array.isArray(skippedRaw)
+          ? skippedRaw.filter((n: unknown): n is string => typeof n === "string")
+          : undefined;
         relayChainRef.current = relayChainRef.current.then(() =>
-          ackDelta(env, name, rev, ok, reason).then(() => undefined, () => undefined),
+          ackDelta(env, name, rev, ok, reason, skipped).then(() => undefined, () => undefined),
         );
         // A REAL refusal: the server has dropped its picture of the frame
         // and marks the leg red. Send a full state once, right away, so the
@@ -3111,6 +3209,12 @@ export default function CanvasWorkspace({
     setFixError(null);
     try {
       const { run_id } = await fixWithClaude(env, name);
+      // THE READER LEFT WHILE THE REQUEST WAS OUT (CodeRabbit, PR #2242): the
+      // fix is running either way and `fix_active` says so on the way back,
+      // but everything below is about THIS page's chat — and the address it
+      // edits would by now be another page's.
+      const here = canvasNameFromPath(window.location.pathname);
+      if (!here || here.env !== env || here.name !== name) return;
       // Don't wait for the next sync state to reflect that a fix is now
       // running: the gap would let a double-click through to a second POST
       // (the server answers it 409, a confusing thing to show right after a
@@ -3124,6 +3228,26 @@ export default function CanvasWorkspace({
       }
       // …and shown: the button now says "see chat →", so a shut pane opens.
       setSideOpen(true);
+      // THE ADDRESS FIRST, like "← Chats" above: the fix is a NEW conversation,
+      // and the chat remounts on the render that follows and reads the URL as
+      // it is then. A `session_id` left there from the chat the reader had
+      // open is another conversation's — boot would restore THAT transcript
+      // and (rightly, `ResumeOptions.ownSession`) write the fix run off as not
+      // its own, so the fix would run with nobody watching. `run` goes on in
+      // the same write so the two can never disagree for a frame.
+      // EVERY conversation param goes (`CHAT_PARAMS`, the pane-home door's own
+      // list), not `session_id` alone: a `queued` leader left behind would have
+      // the new chat adopt THAT entry's session, and a `backend` the last chat
+      // named would label a Claude fix as another agent's.
+      const fresh = new URL(window.location.href);
+      for (const k of CHAT_PARAMS) fresh.searchParams.delete(k);
+      fresh.searchParams.set("run", run_id);
+      if (fresh.href !== window.location.href) window.history.replaceState(window.history.state, "", fresh);
+      canvasChatSidRef.current = null;
+      // WHICH MOUNT THE RUN IS FOR: the one this click makes. `canvasChatSeq`
+      // moves on every later hop, and a mount made by one of those is some
+      // other chat (see `runId` below).
+      setFixChatSeq(canvasChatSeqRef.current);
       setFixRunId(run_id);
     } catch (e) {
       setFixError((e as Error).message);
@@ -3481,7 +3605,16 @@ export default function CanvasWorkspace({
               file={dir}
               chatOnly
               paramsSource="url"
-              {...(fixRunId ? { runId: fixRunId } : {})}
+              // …ONLY WHILE THAT FIX IS RUNNING. `fixRunId` is kept (the key
+              // above must not remount the chat the reader is watching), but a
+              // finished fix handed to every later mount made each Recent-row
+              // hop boot on a dead run and adopt ITS session over the chat just
+              // opened (Sina, 2026-11-10: T004 opened wearing T006's header).
+              // …AND ONLY TO THE MOUNT THE FIX CLICK MADE (`fixChatSeq`;
+              // CodeRabbit, PR #2242): a new chat started from the rail while
+              // the fix runs remounts with no session, and handed the run it
+              // attached to the fix instead of opening empty.
+              {...(fixRunId && fixActive && canvasChatSeq === fixChatSeq ? { runId: fixRunId } : {})}
               annotateTarget={() => frameRef.current}
               // THE HEAD'S PLACE TAGS (shell/claude-rail PlaceTags): this
               // canvas and the workbench's select — the Canvas tag deselects

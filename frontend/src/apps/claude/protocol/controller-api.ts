@@ -9,7 +9,6 @@
 import type {
   Activity,
   AppStateRow,
-  CanvasShotRow,
   ContextUsage,
   Decision,
   DecisionScope,
@@ -275,8 +274,6 @@ export interface ChatState {
   permissions: PermissionRow[];
   /** Unanswered app-state requests the pane must answer (T:15758-15869). */
   appState: AppStateRow[];
-  /** Unanswered `canvas_screenshot` requests a canvas page must answer. */
-  canvasShot: CanvasShotRow[];
   skills: SkillRow[];
   working: Working | null;
   trouble: Trouble | null;
@@ -546,6 +543,18 @@ export interface ResumeOptions {
   neverShown?: boolean;
   quiet?: boolean;
   retryUnknown?: boolean;
+  /**
+   * THE CONVERSATION THIS MOUNT ALREADY HAS ON SCREEN (boot, with both
+   * `session_id` and `run` on the URL). A run whose first poll neither names
+   * this session nor resumed it (`foreignRun`) is not this chat's: the param was left behind by an earlier
+   * conversation on the same page — the canvas page's "Fix with Claude" run
+   * re-handed to every later mount — and adopting it swapped the header, the
+   * composer's settings and the URL onto that other task while the transcript
+   * stayed on this one (Sina, 2026-11-10: T004 opened as T006). Such a run is
+   * written off like a stale param instead. Only boot passes it: the standing
+   * watch and the scheduled attach never carry a foreign id.
+   */
+  ownSession?: string;
 }
 
 export interface ChatController {
@@ -607,9 +616,6 @@ export interface ChatController {
 
   /** Answer an app-state request with a snapshot block (T:15804 answerAppState). */
   answerAppState(id: string, block: string): Promise<void>;
-  /** Answer a `canvas_screenshot` request: the uploaded picture's path (in the
-   *  shots dir) and mime, or a sentence saying why there is none. */
-  answerCanvasShot(id: string, answer: { image: string; mime: string; udf?: string } | { error: string }, askedBy?: string): Promise<boolean>;
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
   /** `backend`: the arriving conversation's agent, when the opener knows it

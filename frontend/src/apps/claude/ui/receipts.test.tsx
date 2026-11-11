@@ -309,20 +309,31 @@ test("a FILE has no pixels, so it gets its own template framed in the body", asy
     size: 4096,
     pending: false,
   };
-  const r = mount(<ShotViewerBody shot={file} paneNoun="preview" />);
-  // The line that promises a preview is up while the stat is in flight: a blank
-  // box for those seconds reads as a preview that failed (T:4384).
-  expect(texts(r, "c-shotview-loading")).toEqual(["loading preview…"]);
-  expect(r.root.findAll((n) => n.type === "img").length).toBe(0);
-  // No stat answer here (no server): the promise settles to null and the line
-  // goes, which is the D616 "no template for this extension" case — and the
-  // glyph takes the empty body, so the viewer never shows nothing at all.
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-  expect(els(r, "c-shotview-loading").length).toBe(0);
-  expect(els(r, "c-shotview-blank").length).toBe(1);
+  // NO SERVER, said by this test and not left to the process: the stat must
+  // fail at once. Leaning on the real `fetch` (which rejects a relative URL
+  // synchronously) let any earlier file's leftover stub decide instead — one
+  // that never answers kept the line up forever, red on CI only (Linux file
+  // order), never locally.
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = () => Promise.reject(new TypeError("no server"));
+  try {
+    const r = mount(<ShotViewerBody shot={file} paneNoun="preview" />);
+    // The line that promises a preview is up while the stat is in flight: a blank
+    // box for those seconds reads as a preview that failed (T:4384).
+    expect(texts(r, "c-shotview-loading")).toEqual(["loading preview…"]);
+    expect(r.root.findAll((n) => n.type === "img").length).toBe(0);
+    // No stat answer here (no server): the promise settles to null and the line
+    // goes, which is the D616 "no template for this extension" case — and the
+    // glyph takes the empty body, so the viewer never shows nothing at all.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(els(r, "c-shotview-loading").length).toBe(0);
+    expect(els(r, "c-shotview-blank").length).toBe(1);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+  }
 });
 
 // ---- "what was sent" -------------------------------------------------------

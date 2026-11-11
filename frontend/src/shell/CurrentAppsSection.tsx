@@ -389,10 +389,17 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
   // which keeps a scheduled due time and so does not move when a recurring
   // run finishes early (Bugbot, 2026-09-07). Sorted, so a re-ordered pulse
   // does not refetch.
+  //
+  // ...and whether the row is READ (owner, 2026-11-11: one unread state): the
+  // desk's dot now also dies when its task is read anywhere
+  // (current_apps._unread), which moves no clock at all — a read in the peek
+  // left the server's flag off and this sidebar's dot on until something else
+  // happened. A boolean term, not the count: 3 unread becoming 2 is not news
+  // the desk draws.
   const pulseSignal = useMemo(
     () =>
       rows
-        .map((r) => `${r.key} ${r.status} ${r.happened_at ?? 0}`)
+        .map((r) => `${r.key} ${r.status} ${r.happened_at ?? 0} ${r.unread > 0 ? 1 : 0}`)
         .sort()
         .join("\n"),
     [rows],

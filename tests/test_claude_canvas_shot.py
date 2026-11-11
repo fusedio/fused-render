@@ -123,7 +123,8 @@ def test_a_canvas_screenshot_is_answered_by_the_page_with_a_picture(
         fh.write(PNG)
     answered = agent.main(action="canvas_shot", run_id="run", request_id=req["id"],
                           state=json.dumps({"image": image, "mime": "image/png",
-                                            "udf": "udf_1"}))
+                                            "udf": "udf_1",
+                                            "note": "window was minimized; may be stale"}))
     assert answered == {"answered": req["id"]}
 
     content = pending.result(10)["result"]["content"]
@@ -132,6 +133,22 @@ def test_a_canvas_screenshot_is_answered_by_the_page_with_a_picture(
     assert base64.b64decode(content[0]["data"]) == PNG
     note = json.loads(content[1]["text"])
     assert note["what"] == "udf" and note["udf"] == "udf_1" and note["path"] == image
+    # The page's caveat (D1472: a still of a hidden window) rides beside the
+    # picture, verbatim.
+    assert note["caveat"] == "window was minimized; may be stale"
+
+
+def test_the_pages_note_is_capped(agent, run_dir, tmp_path):
+    agent.RUNS = str(run_dir.parent)
+    agent.SHOTS = str(tmp_path / "shots")
+    os.makedirs(agent.SHOTS)
+    (run_dir / "canvasshot" / "r1.req.json").write_text('{"id": "r1"}', encoding="utf-8")
+    image = os.path.join(agent.SHOTS, "s.png")
+    with open(image, "wb") as fh:
+        fh.write(PNG)
+    agent.main(action="canvas_shot", run_id="run", request_id="r1",
+               state=json.dumps({"image": image, "note": "x" * 5000}))
+    assert len(agent._read_decision(str(run_dir / "canvasshot"), "r1")["note"]) == 300
 
 
 def test_a_refusal_from_the_page_reaches_the_model_as_a_sentence(
@@ -218,7 +235,12 @@ def test_a_canvas_target_is_told_about_the_tool_and_a_plain_one_is_not(
     (clone / "udf_1.py").write_text("def udf(): pass\n", encoding="utf-8")
     monkeypatch.setattr(agent, "_canvases_root", lambda: str(root))
     tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.CANVAS_SHOT_TOOL)
-    assert tool in agent._canvas_shot_note(str(clone / "udf_1.py"))
+    note = agent._canvas_shot_note(str(clone / "udf_1.py"))
+    assert tool in note
+    # D1472: a layout change is checked with a picture, and a picture that
+    # could not be taken never turns into "reload the canvas" for the user.
+    assert "re-arrange" in note and "overlapping" in note
+    assert "never ask the user to reload" in note
     assert agent._canvas_shot_note(str(tmp_path / "elsewhere.py")) == ""
 
 
@@ -236,3 +258,522 @@ def test_a_canvas_session_gets_an_mcp_ceiling_above_the_screenshot_wait(
             return json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]["timeout"]
     assert ceiling(canvas=True) >= (agent.CANVAS_SHOT_WAIT + 60) * 1000
     assert ceiling(canvas=False) == (agent.PERMISSION_WAIT + 60) * 1000
+
+
+# ------------------------------------------- D1471: the page answers, any chat
+
+def _canvas_root(tmp_path, monkeypatch, agent, nodes=("udf_1", "udf_2")):
+    root = tmp_path / "canvas"
+    clone = root / "unstable" / "demo"
+    clone.mkdir(parents=True)
+    for n in nodes:
+        (clone / (n + ".py")).write_text("def udf(): pass\n", encoding="utf-8")
+    (clone / "canvas.toml").write_text("", encoding="utf-8")
+    monkeypatch.setattr(agent, "_canvases_root", lambda: str(root))
+    return root, clone
+
+
+def test_only_a_fused_render_clone_gets_the_tool(agent, tmp_path, monkeypatch):
+    """F7: `~/Fused/canvas/<name>` (Fused Web's own clone, no env level) has
+    no canvas page that could answer, so no tool, no note, no pre-allow."""
+    root, clone = _canvas_root(tmp_path, monkeypatch, agent)
+    web = root / "webcanvas"
+    web.mkdir()
+    (web / "a.py").write_text("", encoding="utf-8")
+    got = agent._canvas_of(str(clone / "udf_1.py"))
+    assert got == {"env": "unstable", "name": "demo", "node": "udf_1",
+                   "clone": os.path.join(os.path.realpath(str(root)), "unstable", "demo")}
+    assert agent._canvas_of(str(clone))["node"] == ""
+    assert agent._canvas_of(str(web / "a.py")) is None
+    assert agent._in_workbench_root(str(web / "a.py"))     # skills stay
+    assert agent._canvas_shot_note(str(web / "a.py")) == ""
+    assert agent._canvas_of(str(tmp_path / "elsewhere.py")) is None
+
+
+def test_the_duplicated_canvas_facts_match_their_sources(agent):
+    from fused_render import canvases, fusedcli
+    ps = _load("permission_server")
+    assert agent._CANVAS_ENVS == fusedcli.WORKBENCH_ENV_CHOICES
+    assert agent._CANVAS_NAME_RE.pattern == canvases._NAME_RE.pattern
+    assert agent.CANVAS_OPEN_TOOL == ps.CANVAS_OPEN_TOOL
+    assert agent.CANVAS_PAGE_FRESH == ps.CANVAS_PAGE_FRESH
+
+
+def test_a_canvas_session_names_its_canvas_and_pages_to_the_server(
+        agent, tmp_path, monkeypatch):
+    agent.RUNS = str(tmp_path / "runs")
+    run_dir = tmp_path / "runs" / "r"
+    run_dir.mkdir(parents=True)
+    canvas = {"env": "prod", "name": "demo", "clone": "/x/prod/demo", "node": "udf_1"}
+    with open(agent._write_mcp_config(str(run_dir), pane=False, canvas=canvas),
+              encoding="utf-8") as fh:
+        server = json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]
+    assert server["env"]["FUSED_RENDER_CANVAS_CLONE"] == "/x/prod/demo"
+    assert server["env"]["FUSED_RENDER_CANVAS_NODE"] == "udf_1"
+    assert server["env"]["FUSED_RENDER_CANVAS_PAGES"] == agent._canvas_pages_dir()
+    # The ask, then the page: the ceiling covers both waits.
+    assert server["timeout"] >= (2 * agent.CANVAS_SHOT_WAIT + 60) * 1000
+
+
+def test_codex_gets_a_tool_timeout_above_the_screenshot_wait(
+        agent, tmp_path, monkeypatch):
+    """F8: Codex's default MCP call ceiling is 60 s, under the shot's wait."""
+    _root, clone = _canvas_root(tmp_path, monkeypatch, agent)
+    b = tmp_path / "bin" / "codex"
+    b.parent.mkdir()
+    b.write_text("#!/bin/sh\nexit 0\n")
+    b.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_CODEX_BIN", str(b))
+    agent.RUNS = str(tmp_path / "runs")
+    run_dir = tmp_path / "runs" / "r"
+    run_dir.mkdir(parents=True)
+    argv = agent._codex_argv(str(run_dir), False, None, "", "", "", [],
+                             str(clone / "udf_1.py"))
+    want = "mcp_servers.%s.tool_timeout_sec=%.1f" % (
+        agent.PERMISSION_SERVER, 2 * agent.CANVAS_SHOT_WAIT + 60)
+    assert want in argv
+    import tomllib  # Codex reads `-c` values as TOML: a float of seconds
+    assert tomllib.loads(want.split(".", 2)[2])["tool_timeout_sec"] == 260.0
+    plain = agent._codex_argv(str(run_dir), True, None, "", "", "", [],
+                              str(tmp_path / "x.py"))
+    assert not any("tool_timeout_sec" in a for a in plain)
+
+
+def test_opencode_gets_an_mcp_ceiling_above_the_screenshot_wait(agent, tmp_path):
+    """OpenCode's ACP `mcpServers` carry no timeout: the injected config's
+    global MCP ceiling is raised for a canvas session and only then."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "oc_cfg", os.path.join("fused_render", "agent_backends", "opencode_config.py"))
+    cfg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cfg)
+    kw = dict(model=None, mode="default", instructions_path=None, local=[],
+              origin=None, key=None)
+    assert "experimental" not in cfg.build(**kw)
+    got = cfg.build(mcp_timeout_ms=260_000, **kw)
+    assert got["experimental"] == {"mcp_timeout": 260_000}
+    assert 260_000 > (agent._canvas_shot_ceiling()) * 1000
+
+
+def _pointer(agent, request_id, run_id="run", env="unstable", name="demo"):
+    inbox = os.path.join(agent._canvas_pages_dir(), "inbox")
+    os.makedirs(inbox, exist_ok=True)
+    with open(os.path.join(inbox, request_id + ".json"), "w", encoding="utf-8") as fh:
+        json.dump({"run_id": run_id, "request_id": request_id, "env": env,
+                   "name": name, "what": "canvas", "udf": "", "created_at": 1}, fh)
+
+
+def _page(page_id, env="unstable", name="demo", **kw):
+    return json.dumps({"env": env, "name": name, "page_id": page_id, **kw})
+
+
+def _parked(run_dir, request_id):
+    (run_dir / "canvasshot" / (request_id + ".req.json")).write_text(
+        json.dumps({"id": request_id, "what": "canvas", "created_at": 1}), encoding="utf-8")
+
+
+def test_the_inbox_lists_its_canvas_rows_and_records_a_heartbeat(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")
+    _parked(run_dir, "r1")
+    # A pointer whose run is gone is never offered, and an old one is swept.
+    _pointer(agent, "orphan", run_id="gone")
+    _pointer(agent, "r2", name="other")
+    out = agent.main(action="canvas_shot_inbox", state=_page("p1", visible=True, focused=True))
+    assert [r["id"] for r in out["rows"]] == ["r1"]
+    assert out["rows"][0]["runId"] == "run" and out["rows"][0]["claimed"] is False
+    beat = os.path.join(agent._canvas_pages_dir(), "unstable", "demo", "p1.json")
+    with open(beat, encoding="utf-8") as fh:
+        assert json.load(fh)["focused"] is True
+    # Every poll refreshes it, not only the first (the dir exists by then).
+    agent.main(action="canvas_shot_inbox", state=_page("p1", visible=True, focused=False))
+    with open(beat, encoding="utf-8") as fh:
+        assert json.load(fh)["focused"] is False
+    assert not os.path.exists(os.path.join(agent._canvas_pages_dir(), "inbox", "orphan.json"))
+    # A bad page is refused, never joined into a path.
+    assert agent.main(action="canvas_shot_inbox",
+                      state=_page("../x"))["rows"] == []
+    assert agent.main(action="canvas_shot_inbox",
+                      state=_page("p1", env="stg"))["rows"] == []
+    # Answered: off the list.
+    (run_dir / "canvasshot" / "r1.res.json").write_text('{"error": "x"}', encoding="utf-8")
+    assert agent.main(action="canvas_shot_inbox", state=_page("p1"))["rows"] == []
+
+
+def test_one_page_claims_a_request_and_a_dead_claim_expires(agent, run_dir, monkeypatch):
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")
+    _parked(run_dir, "r1")
+    claim = lambda p: agent.main(action="canvas_shot_claim", run_id="run",
+                                 request_id="r1", state=json.dumps({"page_id": p}))
+    assert claim("front") == {"claimed": True}
+    assert claim("front") == {"claimed": True}           # idempotent
+    assert claim("hidden") == {"claimed": False}
+    # The other page no longer sees the row; the holder does, marked claimed.
+    assert agent.main(action="canvas_shot_inbox", state=_page("hidden"))["rows"] == []
+    assert agent.main(action="canvas_shot_inbox", state=_page("front"))["rows"][0]["claimed"]
+    # Its page went away: after the TTL another page may take it.
+    path = os.path.join(agent._canvas_pages_dir(), "inbox", "r1.claim")
+    old = time.time() - agent.CANVAS_CLAIM_TTL - 5
+    os.utime(path, (old, old))
+    assert claim("hidden") == {"claimed": True}
+    assert claim("nobody")["claimed"] is False
+    assert agent.main(action="canvas_shot_claim", run_id="run", request_id="nope",
+                      state=json.dumps({"page_id": "p"}))["claimed"] is False
+
+
+def test_a_claim_is_checked_and_replaced_under_one_lock(agent, run_dir, monkeypatch):
+    """The stale check, the unlink and the create are one critical section, so
+    two pages can never both win a request (CodeRabbit, #2244)."""
+    import threading
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")
+    _parked(run_dir, "r1")
+    real = agent._canvas_claim_holder
+    seen = []
+
+    def holder(*a, **k):
+        seen.append(agent._CANVAS_CLAIM_LOCK.locked())
+        return real(*a, **k)
+    monkeypatch.setattr(agent, "_canvas_claim_holder", holder)
+    claim = lambda p: agent.main(action="canvas_shot_claim", run_id="run",
+                                 request_id="r1", state=json.dumps({"page_id": p}))
+    assert claim("a") == {"claimed": True}
+    assert seen and all(seen)                            # every holder read was locked
+    # A stale claim, taken over by many pages at once: exactly one wins.
+    path = os.path.join(agent._canvas_pages_dir(), "inbox", "r1.claim")
+    old = time.time() - agent.CANVAS_CLAIM_TTL - 5
+    os.utime(path, (old, old))
+    wins = []
+    threads = [threading.Thread(target=lambda i=i: wins.append(claim("p%d" % i)["claimed"]))
+               for i in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert wins.count(True) == 1
+    with open(path, encoding="utf-8") as fh:
+        assert fh.read().startswith("p")                 # whole id, never a half-written file
+
+
+def test_a_page_that_keeps_polling_keeps_its_claim(agent, run_dir):
+    """A queued capture can outlast the 60 s TTL: the holder's inbox poll renews
+    the lease, another page's poll does not."""
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")
+    _parked(run_dir, "r1")
+    agent.main(action="canvas_shot_claim", run_id="run", request_id="r1",
+               state=json.dumps({"page_id": "front"}))
+    path = os.path.join(agent._canvas_pages_dir(), "inbox", "r1.claim")
+    aged = time.time() - agent.CANVAS_CLAIM_TTL + 10     # 10 s from expiring
+    os.utime(path, (aged, aged))
+    agent.main(action="canvas_shot_inbox", state=_page("hidden"))
+    assert os.path.getmtime(path) == pytest.approx(aged, abs=1)   # not its claim
+    agent.main(action="canvas_shot_inbox", state=_page("front"))
+    assert time.time() - os.path.getmtime(path) < 5      # renewed by the holder
+    # Past the TTL without a poll it still lapses, as before.
+    os.utime(path, (aged - 60, aged - 60))
+    assert agent.main(action="canvas_shot_claim", run_id="run", request_id="r1",
+                      state=json.dumps({"page_id": "hidden"})) == {"claimed": True}
+
+
+def test_a_claim_lapses_when_its_page_stops_polling(agent, run_dir):
+    """A page that reloads, closes or switches canvas mid-request: the page
+    that replaces it may claim as soon as the old heartbeat is stale, not
+    after the 60 s TTL."""
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")
+    _parked(run_dir, "r1")
+    agent.main(action="canvas_shot_inbox", state=_page("old"))
+    claim = lambda p: agent.main(action="canvas_shot_claim", run_id="run",
+                                 request_id="r1", state=json.dumps({"page_id": p}))
+    assert claim("old") == {"claimed": True}
+    assert claim("new") == {"claimed": False}            # old page still beating
+    beat = os.path.join(agent._canvas_pages_dir(), "unstable", "demo", "old.json")
+    gone = time.time() - agent.CANVAS_PAGE_FRESH - 1
+    os.utime(beat, (gone, gone))
+    rows = agent.main(action="canvas_shot_inbox", state=_page("new"))["rows"]
+    assert [r["id"] for r in rows] == ["r1"] and not rows[0]["claimed"]
+    assert claim("new") == {"claimed": True}
+
+
+def test_a_decided_pointer_a_dead_server_left_is_swept(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")                                # created_at=1: long past the ceiling
+    _parked(run_dir, "r1")
+    (run_dir / "canvasshot" / "r1.res.json").write_text('{"error": "x"}', encoding="utf-8")
+    inbox = os.path.join(agent._canvas_pages_dir(), "inbox")
+    open(os.path.join(inbox, "r1.claim"), "w").close()
+    assert agent.main(action="canvas_shot_inbox", state=_page("p"))["rows"] == []
+    assert os.listdir(inbox) == []
+
+
+def test_a_nul_in_an_id_is_refused_not_raised(agent):
+    assert agent._bad_id("a\0b")
+    assert agent.main(action="canvas_shot_claim", run_id="run", request_id="r\0",
+                      state=json.dumps({"page_id": "p"}))["claimed"] is False
+
+
+def test_inbox_polls_leave_the_git_cache_alone():
+    from fused_render.server.routers import claude_agent as router
+    assert {"canvas_shot_inbox", "canvas_shot_claim"} <= router._NO_GIT_ACTIONS
+    assert not router._NO_GIT_ACTIONS & {"start", "send", "poll", "canvas_shot"}
+
+
+def test_the_open_canvas_ask_reads_as_a_blocked_task(agent):
+    from fused_render.server.routers import tasks
+    news = tasks._attention_of(agent, {"tool": agent.CANVAS_OPEN_TOOL,
+                                       "input": {"env": "prod", "name": "demo"}})
+    assert news == {"tool": "", "summary": "Open demo to take a screenshot"}
+    assert agent.CANVAS_OPEN_TOOL in agent._RISK_SKIP
+
+
+# ---- the server side, live over stdio
+
+@pytest.fixture
+def pages_env(tmp_path, agent, run_dir, monkeypatch):
+    """A canvas session's server, wired the way `_write_mcp_config` wires it."""
+    _root, clone = _canvas_root(tmp_path, monkeypatch, agent)
+    agent.RUNS = str(run_dir.parent)
+    agent.SHOTS = str(tmp_path / "shots")
+    os.makedirs(agent.SHOTS)
+    # A live run: a click on a dead one is recorded as `expired`, not a verdict.
+    monkeypatch.setattr(agent, "_alive", lambda _run_dir: True)
+    env = {"FUSED_RENDER_CANVAS_CLONE": str(clone),
+           "FUSED_RENDER_CANVAS_NODE": "",
+           "FUSED_RENDER_CANVAS_PAGES": agent._canvas_pages_dir(),
+           "FUSED_RENDER_CANVAS_SHOT_TIMEOUT": "6"}
+    servers = []
+
+    def start(**extra):
+        args = [sys.executable, os.path.abspath(SERVER), str(run_dir / "perm"),
+                "--canvas-shots=" + str(run_dir / "canvasshot")]
+        s = MCPServer(args, env={**env, **extra})
+        s.initialize()
+        servers.append(s)
+        return s
+    yield start
+    for s in servers:
+        s.close()
+
+
+def _beat(agent, page_id, name="demo"):
+    agent.main(action="canvas_shot_inbox",
+               state=_page(page_id, name=name, visible=True, focused=True, frame_up=True))
+
+
+def test_an_open_page_answers_whatever_surface_the_chat_is_on(agent, run_dir, pages_env):
+    """Aman's case: the chat is in the rail card, no chat holds a canvas — the
+    PAGE sees the request in its inbox, claims it and answers. The note says
+    what the picture really is (F6)."""
+    server = pages_env()
+    _beat(agent, "page")
+    pending = server.send_async("tools/call", {
+        "name": "canvas_screenshot", "arguments": {"what": "udf", "udf": "udf_2"}})
+    deadline = time.monotonic() + 5
+    rows = []
+    while not rows and time.monotonic() < deadline:
+        _beat(agent, "page")
+        rows = agent.main(action="canvas_shot_inbox", state=_page("page"))["rows"]
+        time.sleep(0.1)
+    assert rows and rows[0]["udf"] == "udf_2"
+    assert agent.main(action="canvas_shot_claim", run_id="run", request_id=rows[0]["id"],
+                      state=json.dumps({"page_id": "page"}))["claimed"]
+    image = os.path.join(agent.SHOTS, "shot.png")
+    with open(image, "wb") as fh:
+        fh.write(PNG)
+    agent.main(action="canvas_shot", run_id="run", request_id=rows[0]["id"],
+               state=json.dumps({"image": image, "mime": "image/png", "udf": "udf_2",
+                                 "framing": "whole-frame"}))
+    content = pending.result(10)["result"]["content"]
+    note = json.loads(content[1]["text"])
+    assert note["framing"] == "whole-frame" and "WHOLE canvas frame" in note["note"]
+    assert "udf_2" in note["note"]
+    # Done: the pointer is gone, so no page picks it up late.
+    assert os.listdir(os.path.join(agent._canvas_pages_dir(), "inbox")) == []
+    assert os.listdir(run_dir / "perm") == []          # no ask: a page was open
+
+
+def test_another_canvas_open_still_asks_so_one_click_switches(agent, run_dir, pages_env):
+    """Another canvas's page is no answer for this one: the same Open / Not
+    now ask, raised fast, and Open switches the user over."""
+    server = pages_env()
+    _beat(agent, "elsewhere", name="other_canvas")
+    began = time.monotonic()
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    ask = _ask(run_dir)
+    assert time.monotonic() - began < 5
+    assert ask["tool"] == agent.CANVAS_OPEN_TOOL and ask["input"]["name"] == "demo"
+    agent.main(action="decide", run_id="run", request_id=ask["id"], decision="deny")
+    err = json.loads(pending.result(10)["result"]["content"][0]["text"])["error"]
+    assert "continue without a screenshot" in err
+
+
+def _ask(run_dir, timeout=8.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        names = [n for n in os.listdir(run_dir / "perm") if n.endswith(".req.json")]
+        if names:
+            with open(run_dir / "perm" / names[0], encoding="utf-8") as fh:
+                return json.load(fh)
+        time.sleep(0.05)
+    raise AssertionError("no open-canvas ask was parked")
+
+
+def test_no_page_open_asks_and_not_now_returns_at_once(agent, run_dir, pages_env):
+    """F5: no page for any canvas → a card in perm/ (the task reads blocked);
+    Not now → the tool returns a sentence to go on without."""
+    server = pages_env()
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    ask = _ask(run_dir)
+    assert ask["tool"] == agent.CANVAS_OPEN_TOOL
+    assert ask["input"] == {"env": "unstable", "name": "demo"}
+    began = time.monotonic()
+    agent.main(action="decide", run_id="run", request_id=ask["id"], decision="deny")
+    err = json.loads(pending.result(10)["result"]["content"][0]["text"])["error"]
+    assert time.monotonic() - began < 2
+    assert "chose not to open" in err and "continue without a screenshot" in err
+
+
+def test_open_hands_the_request_to_the_page_that_opens(agent, run_dir, pages_env):
+    server = pages_env()
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    ask = _ask(run_dir)
+    first = agent.main(action="canvas_shot_inbox", state=_page("x", name="other"))
+    assert first["rows"] == []
+    began = time.time()
+    agent.main(action="decide", run_id="run", request_id=ask["id"], decision="allow")
+    # The canvas page comes up and finds the request in its inbox, with a
+    # deadline re-set from the Open (the wait restarts there).
+    deadline = time.monotonic() + 5
+    rows = []
+    while time.monotonic() < deadline:
+        rows = agent.main(action="canvas_shot_inbox", state=_page("new"))["rows"]
+        if rows and rows[0]["deadline"] >= began + 6 - 1:
+            break
+        time.sleep(0.1)
+    assert len(rows) == 1 and rows[0]["deadline"] >= began + 6 - 1
+    agent.main(action="canvas_shot", run_id="run", request_id=rows[0]["id"],
+               state=json.dumps({"error": "drawn"}))
+    assert json.loads(pending.result(10)["result"]["content"][0]["text"]) == {"error": "drawn"}
+
+
+def test_an_unanswered_ask_is_not_now_at_the_ceiling(agent, run_dir, pages_env):
+    server = pages_env(FUSED_RENDER_CANVAS_SHOT_TIMEOUT="4")
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    err = json.loads(pending.result(15)["result"]["content"][0]["text"])["error"]
+    assert "nobody answered" in err and "continue without a screenshot" in err
+    ask = _ask(run_dir)
+    assert agent._read_decision(str(run_dir / "perm"), ask["id"])["reason"] == "timeout"
+
+
+def test_a_stopped_ask_is_not_called_the_users_choice(agent, run_dir, pages_env):
+    server = pages_env()
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    ask = _ask(run_dir)
+    agent._write_decision(str(run_dir / "perm"), ask["id"],
+                          {"decision": "deny", "reason": "cancelled"})
+    err = json.loads(pending.result(10)["result"]["content"][0]["text"])["error"]
+    assert "chose not" not in err and "ended before anyone answered" in err
+
+
+def test_an_open_page_that_never_answers_is_not_told_to_open(agent, run_dir, pages_env):
+    """A page keeps beating but never answers: the sentence must not ask the
+    user to open a canvas that is open."""
+    server = pages_env(FUSED_RENDER_CANVAS_SHOT_TIMEOUT="3")
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    deadline = time.monotonic() + 10
+    while not pending.done.is_set() and time.monotonic() < deadline:
+        _beat(agent, "mute")
+        time.sleep(0.2)
+    err = json.loads(pending.result(5)["result"]["content"][0]["text"])["error"]
+    assert "is open but did not answer" in err and "ask the user to open" not in err
+    assert os.listdir(run_dir / "perm") == []
+
+
+def test_the_inbox_dirs_are_private_at_every_level(tmp_path):
+    ps = _load("permission_server")
+    target = tmp_path / "a" / "b" / "inbox"
+    old = os.umask(0o002)
+    try:
+        ps._mkdir_private(str(target))
+        ps._mkdir_private(str(target))                   # exists: fine
+    finally:
+        os.umask(old)
+    for d in (tmp_path / "a", tmp_path / "a" / "b", target):
+        assert os.stat(d).st_mode & 0o777 == 0o700
+
+
+def test_a_wrong_udf_name_is_refused_with_the_nodes(agent, run_dir, pages_env):
+    server = pages_env()
+    out = server.call("tools/call", {"name": "canvas_screenshot",
+                                     "arguments": {"what": "udf", "udf": "nope"}}, timeout=10)
+    err = json.loads(out["result"]["content"][0]["text"])["error"]
+    assert err == 'no UDF named "nope" on this canvas — nodes: udf_1, udf_2'
+    assert os.listdir(run_dir / "canvasshot") == []
+
+
+def test_a_page_opened_some_other_way_ends_the_ask(agent, run_dir, pages_env):
+    """The user opens the canvas from the sidebar instead of pressing Open:
+    the card closes as opened and that page answers."""
+    server = pages_env()
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    ask = _ask(run_dir)
+    rows = agent.main(action="canvas_shot_inbox", state=_page("late"))["rows"]
+    deadline = time.monotonic() + 5
+    while not agent._read_decision(str(run_dir / "perm"), ask["id"]) and time.monotonic() < deadline:
+        agent.main(action="canvas_shot_inbox", state=_page("late"))
+        time.sleep(0.1)
+    assert agent._read_decision(str(run_dir / "perm"), ask["id"]) == {
+        "decision": "allow", "reason": "opened"}
+    agent.main(action="canvas_shot", run_id="run", request_id=rows[0]["id"],
+               state=json.dumps({"error": "drawn"}))
+    assert json.loads(pending.result(10)["result"]["content"][0]["text"]) == {"error": "drawn"}
+
+
+def test_a_seen_page_that_stops_beating_falls_through_to_the_ask(agent, run_dir, pages_env):
+    """A page heard from once keeps a fresh heartbeat for a few seconds after it
+    closes; when it then goes quiet for a grace the request offers Open / Not
+    now instead of waiting out the whole ceiling (d81ef8bf6)."""
+    server = pages_env(FUSED_RENDER_CANVAS_SHOT_TIMEOUT="40",
+                       FUSED_RENDER_CANVAS_PAGE_GRACE="1")
+    _beat(agent, "gone")                                 # one beat, then the page closes
+    began = time.monotonic()
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    ask = _ask(run_dir, timeout=20)
+    assert ask["tool"] == agent.CANVAS_OPEN_TOOL
+    assert time.monotonic() - began < 15                 # well under the 40 s ceiling
+    agent.main(action="decide", run_id="run", request_id=ask["id"], decision="deny")
+    err = json.loads(pending.result(10)["result"]["content"][0]["text"])["error"]
+    assert "chose not to open" in err
+
+
+def test_the_open_ask_does_not_hand_the_folder_to_another_task(agent, run_dir, pages_env,
+                                                               monkeypatch):
+    """The ask posts no `card_raised`: the folder stays with this task, so the
+    automatic allow (the canvas opened another way) never resumes it beside a
+    task that took its folder (CodeRabbit, #2244)."""
+    import http.server
+    import threading
+    events = []
+
+    class Sink(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            events.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), Sink)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:%d" % httpd.server_port)
+    try:
+        server = pages_env()
+        pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+        ask = _ask(run_dir)
+        agent.main(action="decide", run_id="run", request_id=ask["id"], decision="deny")
+        pending.result(10)
+        time.sleep(0.5)                                  # a post would be in by now
+    finally:
+        httpd.shutdown()
+    assert events == []

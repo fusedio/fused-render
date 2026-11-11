@@ -20,12 +20,15 @@ down with it.
 """
 import json
 import logging
+import os
+import secrets
+import threading
 
 from fastapi import APIRouter, Body, Header, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from fused_render import health
+from fused_render import health, jobs
 from fused_render.server.common import _error, _require_fused
 
 logger = logging.getLogger(__name__)
@@ -38,6 +41,15 @@ router = APIRouter()
 MAX_OUTAGE_BODY = 64 * 1024
 
 _NO_STORE = {"Cache-Control": "no-store"}
+
+# Where the diagnostics job row opens: Preferences scrolled to the row. One of
+# `jobs._ORIGIN_BY_ROUTE`'s shell routes, so the dock navigates instead of
+# treating it as an fs path.
+DIAGNOSTICS_PAGE = "/preferences?s=diagnostics"
+
+# How often a running diagnostics build re-reports; well under
+# `jobs.STALE_AFTER_S` so the dock never calls it stalled.
+HEARTBEAT_S = 10.0
 
 
 @router.get("/api/health")
@@ -149,8 +161,6 @@ def api_diagnostics(
     beacon, this one drops a zip in the user's Downloads, and a blind
     cross-origin POST must not be able to do that.
     """
-    import os
-
     if (err := _require_fused(x_fused)):
         return err
 
@@ -158,13 +168,48 @@ def api_diagnostics(
     # `system_log` (macOS `log show`) is the one slow step, 15-45 s; the
     # Preferences button sends false unless its checkbox is on.
     system_log = bool(body.get("system_log")) if isinstance(body, dict) else False
+    # Mirrored into the job registry so the build shows in the bottom
+    # Activity dock: the user can leave Preferences while it runs (the
+    # system log alone is 15-45 s) and still see it finish. The row links
+    # back to the Diagnostics row, which keeps the result in a module store.
+    job_id = f"{jobs.SERVER_ID_PREFIX}diagnostics:{secrets.token_hex(4)}"
+
+    def report(**fields) -> None:
+        try:
+            jobs.upsert({"id": job_id, "kind": "task", **fields},
+                        page=DIAGNOSTICS_PAGE, origin="Diagnostics", server=True)
+        except Exception:  # noqa: BLE001 — reporting must never break the work
+            logger.debug("could not report the diagnostics job")
+
+    report(title="Saving diagnostics", state=jobs.RUNNING,
+           detail="Reading the system log…" if system_log else "Collecting…")
+    # `build_bundle` only ticks between phases, and `log show` alone can run
+    # 45 s — past `jobs.STALE_AFTER_S`, which would paint a working build as
+    # "no longer reporting". A bare re-report every few seconds keeps it fresh.
+    finished = threading.Event()
+
+    def heartbeat() -> None:
+        while not finished.wait(HEARTBEAT_S):
+            report()
+
+    try:
+        threading.Thread(target=heartbeat, name="diagnostics-heartbeat", daemon=True).start()
+    except RuntimeError:  # best-effort: no thread means a stale row, not no bundle
+        logger.debug("could not start the diagnostics heartbeat")
     try:
         from fused_render import diagnostics
 
-        path = diagnostics.build_bundle(since_s=since_s, system_log=system_log)
+        path = diagnostics.build_bundle(
+            since_s=since_s, system_log=system_log,
+            progress=lambda msg: report(detail=msg),
+        )
     except Exception as exc:  # noqa: BLE001 — the user clicked a button; say why
+        finished.set()
         logger.exception("diagnostics bundle failed")
+        report(title="Diagnostics failed", state="error", detail="", message=str(exc))
         return _error(f"could not write diagnostics bundle: {exc}", status=500)
+    finished.set()
+    report(title="Diagnostics saved", state="done", detail=os.path.basename(path))
     out = {"path": path}
     try:
         out["bytes"] = os.path.getsize(path)

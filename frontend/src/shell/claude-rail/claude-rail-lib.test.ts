@@ -10,6 +10,7 @@ import {
   activeRing,
   chipDoor,
   chipPath,
+  dragging,
   placeTags,
   chipLabel,
   chipPlace,
@@ -458,12 +459,19 @@ describe("listSeats (the two sections are independent, 2026-11-05)", () => {
     expect(seats.map((s) => s.pulse.key)).toEqual(["a", "fav", "b"]);
     expect(favSeats(rows, new Map()).map((s) => s.pulse.key)).toEqual(["fav"]);
   });
-  it("a node narrows the list, never the favourites", () => {
+  it("a node sorts the list — its chats first, the canvas's others after, marked off — never the favourites", () => {
     const NODE: RailPlace = { ...PLACE, file: "n.py" };
-    const onNode = pulse(task({ key: "n", target: `${DIR}/n.py` }));
-    const starredElsewhere = pulse(task({ key: "fav2", target: `${DIR}/other.py` }), { starred: true });
-    const all = [onNode, starredElsewhere];
-    expect(listSeats(railRows(all, new Map(), NODE), true).map((s) => s.pulse.key)).toEqual(["n"]);
+    const newer = pulse(task({ key: "o", target: `${DIR}/other.py`, happened_at: 300 }));
+    const onNode = pulse(task({ key: "n", target: `${DIR}/n.py`, happened_at: 100 }));
+    const starredElsewhere = pulse(task({ key: "fav2", target: `${DIR}/other.py`, happened_at: 200 }), { starred: true });
+    const all = [newer, onNode, starredElsewhere];
+    const seats = listSeats(railRows(all, new Map(), NODE), true);
+    expect(seats.map((s) => [s.pulse.key, !!s.off])).toEqual([
+      ["n", false],
+      ["o", true],
+      ["fav2", true],
+    ]);
+    expect(railRows(all, new Map(), PLACE).every((s) => !s.off)).toBe(true);
     expect(favSeats(all, new Map()).map((s) => s.pulse.key)).toEqual(["fav2"]);
   });
 });
@@ -1051,5 +1059,13 @@ describe("queuedEditHref (a queued form row's door)", () => {
     for (const s of seats.filter((x) => x.pulse.status === "queued" && x.row?.entry_origin !== "chat")) {
       expect(queuedEditHref(s.row, s.pulse.status)).toBe(`/tasks?edit=${s.pulse.key.slice("pending:".length)}`);
     }
+  });
+});
+
+describe("dragging", () => {
+  it("a pointer arriving with a button held is a drag passing through, not a hover", () => {
+    expect(dragging({ buttons: 1 })).toBe(true); // a text selection, a resize
+    expect(dragging({ buttons: 2 })).toBe(true);
+    expect(dragging({ buttons: 0 })).toBe(false); // a plain hover
   });
 });

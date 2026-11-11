@@ -301,6 +301,47 @@ export function dragResize(
   return { left: Math.round(right - width), top: Math.round(top), width, height };
 }
 
+/** THE WIDTH MAGNET (card-snap.ts header): how near the other window's width
+ *  a drag must come before it takes that width. */
+export const SNAP_PX = 12;
+
+/** A width drag's box after the magnet: `next` is what the drag asked for,
+ *  `edge` the grip held, `other` the other window's card (null: none up).
+ *  It snaps only when a WIDTH grip is held and the two share the rail's
+ *  column — right edges level (stacked, not side by side) — and the other's
+ *  width is one this card may take (`minWidth`..`maxWidth`, its own clamps
+ *  as the drag stands). Snapped: the box at the other's width, its right
+ *  edge kept, and the guide along the shared left edge over both cards. */
+export function snapWidth(
+  next: Box,
+  edge: ResizeEdge,
+  other: Box | null,
+  minWidth: number,
+  maxWidth: number,
+): { box: Box; guide: { x: number; top: number; bottom: number } | null } {
+  if (!other || edge === "t" || edge === "b") return { box: next, guide: null };
+  const right = next.left + next.width;
+  const otherRight = other.left + other.width;
+  if (Math.abs(right - otherRight) > 2) return { box: next, guide: null };
+  const w = Math.round(other.width);
+  if (Math.abs(next.width - w) > SNAP_PX || w < minWidth || w > maxWidth) return { box: next, guide: null };
+  const box = { ...next, left: right - w, width: w };
+  return {
+    box,
+    guide: {
+      x: box.left,
+      top: Math.min(box.top, other.top),
+      bottom: Math.max(box.top + box.height, other.top + other.height),
+    },
+  };
+}
+
+/** The widest a drag from `start` may make the card inside `bounds`
+ *  (`dragResize`'s own width cap). */
+export function dragMaxWidth(start: Box, bounds: Box): number {
+  return Math.min(PEEK_MAX_WIDTH, start.left + start.width - (bounds.left + PEEK_INSET));
+}
+
 /** The bottom the rail's card may be dragged down to with the favourite's
  *  card up (`avoid`): where `placeClear` would let it end when it stands
  *  above the favourite (its first choice — the two share the rail's column):
@@ -508,7 +549,10 @@ export class PeekIntent {
   pressStart(): void {
     this.pressing = true;
     this.cancelClose();
-    if (this.shown !== null) this.setPinned(true);
+    if (this.shown !== null) {
+      this.cancelOpen();
+      this.setPinned(true);
+    }
   }
 
   /** …and came up (anywhere). */

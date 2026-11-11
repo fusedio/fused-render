@@ -447,3 +447,28 @@ def test_a_stop_older_than_the_slack_is_still_a_stop_not_a_crash(
     turns = transcript([_user("build it"), _tool_call()])
     assert [t["role"] for t in turns] == ["user", "assistant"]
     assert turns[-1].get("stopped") is True
+
+
+def test_a_limit_row_right_after_an_unanswered_question_is_its_own_error_turn(transcript):
+    """The incident shape: AskUserQuestion, the permission server's timeout deny
+    as its tool_result, then the next API call fails on the session limit. The
+    question's tool segment keeps the marker the chat draws its notice from, and
+    the limit is a separate `error` turn, not text folded into the reply."""
+    denied = ("No answer from the Fused Render chat window after 60 minutes — "
+              "treating this as denied. [fused:unanswered reason=timeout minutes=60]")
+    turns = transcript([
+        _user("go"),
+        {"type": "assistant", "message": {"role": "assistant", "id": "m1", "content": [
+            {"type": "tool_use", "id": "q1", "name": "AskUserQuestion",
+             "input": {"questions": [{"question": "Ship it?"}]}}]}},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "q1", "is_error": True,
+             "content": denied}]}},
+        _assistant("You've hit your session limit · resets 3am (Asia/Kolkata)",
+                   isApiErrorMessage=True, apiErrorStatus=429),
+    ])
+    assert [t["role"] for t in turns] == ["user", "assistant", "error"]
+    seg = turns[1]["segments"][0]
+    assert seg["name"] == "AskUserQuestion"
+    assert "[fused:unanswered reason=timeout minutes=60]" in seg["output"]
+    assert "session limit" in turns[2]["text"]

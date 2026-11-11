@@ -73,7 +73,6 @@ import type {
   Activity,
   AppStateResponse,
   AppStateRow,
-  CanvasShotRow,
   CancelResponse,
   Decision,
   DecideResponse,
@@ -314,7 +313,6 @@ function emptyState(file: string | null): ChatState {
     forkClamped: false,
     permissions: [],
     appState: [],
-    canvasShot: [],
     skills: [],
     working: null,
     trouble: null,
@@ -520,9 +518,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   // ---- per-transcript memos (T:15721-15756) -------------------------------
   const answeredStates = new Set<string>();
-  /** `canvas_screenshot` requests this page has claimed (`answerCanvasShot`). */
-  const answeredShots = new Set<string>();
-  const shotPolls = new Map<string, number>();
   const notedStates = new Set<string>();
   const nullStatePolls = new Map<string, number>();
   const notedSkills = new Set<string>();
@@ -1538,22 +1533,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (rows.length || state.appState.length) emit({ appState: rows });
   };
 
-  /** The `canvas_screenshot` rows a canvas page still has to answer. Replayed
-   *  every poll like `surfaceAppState`, with `pollsSeen` advancing so a page
-   *  WITHOUT a canvas (the Tasks peek) can answer "open the canvas" only after
-   *  the canvas page has had its chance (`useCanvasShotResponder`). */
-  const surfaceCanvasShot = (list: CanvasShotRow[] | null | undefined, runId: string) => {
-    const rows: CanvasShotRow[] = [];
-    for (const req of list || []) {
-      if (!req || !req.id || answeredShots.has(req.id)) continue;
-      const seen = (shotPolls.get(req.id) || 0) + 1;
-      shotPolls.set(req.id, seen);
-      trim(shotPolls);
-      rows.push({ ...req, runId, pollsSeen: seen });
-    }
-    if (rows.length || state.canvasShot.length) emit({ canvasShot: rows });
-  };
-
   // ---- permissions (T:14750-14775) ---------------------------------------
 
   /**
@@ -2202,7 +2181,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (poll.worktree_hint) landWorktreeHint(poll.worktree_hint);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
-        surfaceCanvasShot(poll.canvas_shot, runId);
         // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
@@ -3730,38 +3708,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (res && "error" in res && res.error && res.retry) answeredStates.delete(id);
   }
 
-  async function answerCanvasShot(
-    id: string,
-    answer: { image: string; mime: string; udf?: string } | { error: string },
-    askedBy?: string,
-  ): Promise<boolean> {
-    if (disposed) return false;
-    // The run that asked, as the responder remembers it; the row's own, else
-    // the current run — never a later run for a request a former one made.
-    const runId = askedBy || state.canvasShot.find((r) => r.id === id)?.runId || activeRun;
-    if (!runId) return false;
-    if (answeredShots.has(id)) return true;
-    answeredShots.add(id); // claimed before the await: polls overlap
-    trim(answeredShots);
-    emit({ canvasShot: state.canvasShot.filter((r) => r.id !== id) });
-    let res: AppStateResponse | null = null;
-    try {
-      res = (await run("canvas_shot", {
-        run_id: runId,
-        request_id: id,
-        state: JSON.stringify(answer),
-      })) as AppStateResponse;
-    } catch {
-      answeredShots.delete(id); // the tool call is still blocked: retry next poll
-      return false;
-    }
-    if (res && "error" in res && res.error && res.retry) {
-      answeredShots.delete(id);
-      return false;
-    }
-    return true;
-  }
-
   // ---- history / sessions -------------------------------------------------
 
   /**
@@ -3936,7 +3882,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
       context: null,
       permissions: [],
       appState: [],
-      canvasShot: [],
       skills: [],
       trouble: null,
       // A restored conversation has no live run, so the picker's param is the
@@ -4143,6 +4088,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * exist to reconcile a run this frame never started against turns history
    * already restored.
    */
+  /**
+   * IS THIS RUN ANOTHER CONVERSATION'S? (`ResumeOptions.ownSession`, boot only.)
+   *
+   * A run names a conversation twice: `session_id` is the id its OWN turn is
+   * in, `resumed_from` the one it continued. Either matching is ownership —
+   * a follow-up that has not spoken yet has only the second, and a backend
+   * that mints a new id on resume has only the second for good.
+   *
+   * NEITHER matching is the other case, and it does not wait for the run to
+   * name itself: a run that did not resume this session cannot turn out to BE
+   * it, because the session on the URL was learned from a poll that had
+   * already written the name down. So an unnamed run (a Copilot or Codex run
+   * in its first seconds) is decided here too, before its message or its id
+   * can land in this transcript.
+   *
+   * An older agent.py sends no `resumed_from`; then only a NAMED mismatch is
+   * proof, which is the rule this guard shipped with.
+   */
+  const foreignRun = (own: string | undefined, poll: PollResponse): boolean => {
+    if (!own) return false;
+    const sid = String(poll.session_id || "");
+    if (sid === own || poll.resumed_from === own) return false;
+    return sid ? true : poll.resumed_from !== undefined;
+  };
+
   async function resumeRun(runId: string, opts: ResumeOptions = {}): Promise<void> {
     if (disposed) return;
     try {
@@ -4256,8 +4226,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // and the schedule poller must never re-attach to it. Marked at this one
       // point rather than in each of the branches below, so no reconciliation
       // road can be added later that forgets to.
-      if (runId) shownRuns.add(runId);
       const poll = probe as PollResponse;
+      // ANOTHER CONVERSATION'S RUN (`ResumeOptions.ownSession`): the param
+      // outlived the chat it belonged to. Dropped like a stale one — never
+      // adopted over the session this mount restored — and quietly: the
+      // reader asked for THIS chat and got it; there is nothing to report.
+      if (foreignRun(opts.ownSession, poll)) {
+        clearRunParam();
+        deps.onRunAbandoned?.();
+        return;
+      }
+      if (runId) shownRuns.add(runId);
       if (poll.session_id) noteSessionId(String(poll.session_id));
       if (Array.isArray(poll.tasks) && poll.tasks.length) publishTasks(poll.tasks, runId || null);
       const probeMsg = stripBlocks(poll.message || "");
@@ -5001,7 +4980,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     decidePlan,
     dismissCard,
     answerAppState,
-    answerCanvasShot,
     openSession,
     resumeRun,
     adoptLiveRun,

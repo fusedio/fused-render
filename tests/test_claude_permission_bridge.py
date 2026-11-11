@@ -3109,3 +3109,37 @@ def test_without_the_env_var_nothing_changes(tmp_path, agent, server):
     assert agent._write_decision(str(perm_dir), req["id"],
                                  {"decision": "allow", "scope": "once"})
     assert _result_payload(pending.result(10))["behavior"] == "allow"
+
+
+@pytest.mark.parametrize("decision,reason", [
+    ({"decision": "deny", "reason": "timeout"}, "timeout"),
+    ({"decision": "expired"}, "expired"),
+    ({"decision": "deny", "reason": "abandoned"}, "abandoned"),
+])
+def test_no_human_denials_carry_a_machine_readable_marker(decision, reason):
+    """The chat finds an unanswered question/approval in the transcript by this
+    marker, not by matching the human sentence; the sentence stays for the model."""
+    srv = _load("permission_server")
+    out = srv._permission_result("AskUserQuestion", {}, decision)
+    assert out["behavior"] == "deny"
+    marker = "[fused:unanswered reason=%s" % reason
+    assert marker in out["message"]
+    assert out["message"].index(marker) > 0, "the human sentence leads"
+
+
+@pytest.mark.parametrize("decision", [
+    {"decision": "deny", "reason": "cancelled"},
+    {"decision": "deny", "message": "no thanks"},
+    {"decision": "deny"},
+])
+def test_human_denials_carry_no_unanswered_marker(decision):
+    srv = _load("permission_server")
+    out = srv._permission_result("Bash", {}, decision)
+    assert "[fused:unanswered" not in out["message"]
+
+
+def test_timeout_marker_names_the_minutes(monkeypatch):
+    srv = _load("permission_server")
+    monkeypatch.setattr(srv, "WAIT_TIMEOUT", 3600)
+    out = srv._permission_result("Bash", {}, {"decision": "deny", "reason": "timeout"})
+    assert out["message"].endswith("[fused:unanswered reason=timeout minutes=60]")

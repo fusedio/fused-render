@@ -94,15 +94,19 @@ export const HOME_TITLE_STEPS: readonly (readonly [number, string])[] = [
 
 /** Ratios, not a re-measure per step: text width scales with font-size, so one
  *  canvas pass prices all three candidates. `""` = the full 26px fits; nothing
- *  fitting on one line takes the smallest step and WRAPS (T:12430-12446). */
+ *  fitting on one line takes the smallest step and WRAPS (T:12430-12446).
+ *  `base` is the title's computed size at the first step, which the chat text
+ *  zoom (`--c-zoom`) multiplies along with every step: each candidate is priced
+ *  at its size times that same factor. */
 export function pickHomeTitleStep(
   need: number,
   base: number,
   box: number,
 ): string {
   const px = base || HOME_TITLE_STEPS[0][0];
+  const zoom = px / HOME_TITLE_STEPS[0][0];
   for (const [size, cls] of HOME_TITLE_STEPS) {
-    if ((need * size) / px <= box) return cls;
+    if ((need * size * zoom) / px <= box) return cls;
   }
   return HOME_TITLE_STEPS[HOME_TITLE_STEPS.length - 1][1];
 }

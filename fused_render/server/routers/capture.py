@@ -191,6 +191,29 @@ def api_capture_shot_region(body: dict = Body(...),
                     headers={"Cache-Control": "no-store"})
 
 
+@router.post("/api/capture/shot-window")
+def api_capture_shot_window(body: dict = Body(...),
+                            x_fused: str | None = Header(default=None)):
+    """The pixels under a browser-measured screen rect, read off the page's
+    OWN WINDOW (`capture.shot_window`, D1472): `{rect, window, dpr}`, PNG
+    back. Same shape and guard as `shot-region`; 409 where the platform has
+    no window still, and the page falls back to the region one.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        png = capture.shot_window(body)
+    except capture.CaptureError as e:
+        return _error(str(e), status=400)
+    except capture.Unsupported as e:
+        return _error(str(e), status=409)
+    except Exception as e:                      # noqa: BLE001
+        return _error(f"{e.__class__.__name__}: {e}".rstrip(": "), status=500)
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
+
+
 @router.post("/api/capture/settings")
 def api_capture_settings(x_fused: str | None = Header(default=None)):
     """Open the OS pane where Screen Recording is granted (`capture.open_settings`).

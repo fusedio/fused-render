@@ -184,7 +184,6 @@ html[data-host="lan"] body:has(> #root > main.lan-grid) {
    inside its own .tablewrap. */
 .lan-bots .bots-page {
   --mid: 0px;
-  --chatw: 0px;
 }
 .lan-bots .bots-page .thread {
   overflow-x: hidden;

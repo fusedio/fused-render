@@ -24,6 +24,8 @@
 // accordion, the thread rows, the id chips, the unread dot) is in
 // styles/tasks.css.
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
+import { useTaskIcons } from "@platform/lib/task-icons-flag";
+import { taskIconHref } from "./task-icons";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
 import {
@@ -758,8 +760,15 @@ export function StatusIcon({
   count,
   draftHeld,
   background,
+  icon,
 }: {
   status: BoardColumn;
+  /** THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): the task's
+   *  `icon_slot`. With the experiment on, the ring becomes that glyph —
+   *  same box, same hue, every mark (unread dot, draft dot, "!") in its
+   *  top-right corner (schedule.css `.schedule-ring--glyph`). Omitted on a container (a lane header, the
+   *  queue chip) and the ring is drawn as always. */
+  icon?: number | null;
   failed?: boolean;
   label?: string;
   /** Fill the centre — there is something in here nobody has looked at. */
@@ -802,6 +811,9 @@ export function StatusIcon({
   // the one a person can still do something about.
   const marks = [draftHeld ? "unsent draft" : null, said]
     .filter(Boolean).join(", ");
+  // The glyph, when the experiment is on and this is a task's own ring.
+  const iconsOn = useTaskIcons();
+  const glyph = iconsOn ? taskIconHref(icon) : null;
   return (
     <span
       className={
@@ -809,12 +821,18 @@ export function StatusIcon({
         (red ? " schedule-ring--failed" : "") +
         (background ? " schedule-ring--background" : "") +
         (unread ? " schedule-ring--unread" : "") +
-        (draftHeld ? " schedule-ring--draft-held" : "")
+        (draftHeld ? " schedule-ring--draft-held" : "") +
+        (glyph ? " schedule-ring--glyph" : "")
       }
       aria-label={marks ? `${text}, ${marks}` : text}
       data-tip={many ?? ""}
       title={many ? "" : text}
     >
+      {glyph && (
+        <svg aria-hidden="true" focusable="false">
+          <use href={glyph} />
+        </svg>
+      )}
       {/* THE WAITING MARK IS AN ELEMENT, not a pseudo, and that is not a style
           preference — a ring has exactly two pseudos and BOTH are already spent
           on this very component. `::after` is the unread fill, and `::before` is
@@ -4441,6 +4459,7 @@ function TaskNode({
             count={unread}
             draftHeld={draftRing(task) && !heldInPeek}
             background={liveJobRow(task)}
+            icon={task.icon_slot}
           />
           {/* The Board's drag onto Archive — or out of it — as a press. ONE
               button in this slot, never two: a task is either put away or it is

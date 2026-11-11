@@ -36,6 +36,7 @@ import {
   filingIntent,
   isDraftTask,
   liveJobRow,
+  needsYouCaption,
   openThreadIntent,
   peekOpenable,
   ringFailed,
@@ -301,9 +302,13 @@ function WorkspaceCard({
   const clear = group === "clear";
   const hasPrs = prRefsOf(task).some((r) => r.repo);
   const hasBg = bg !== null;
-  const preview = messagePreview(task);
+  // Why the task needs you, in the preview's seat: a stopped or waiting task's
+  // last message is not what the reader needs to see first. Only the Needs-you
+  // group says it; a queued task carrying a limit reason keeps its preview.
+  const ask = needsYou(task) ? needsYouCaption(task) : "";
+  const preview = ask ? "" : messagePreview(task);
   const showChip = showProject && task.project !== "";
-  const hasContext = preview !== "" || showChip;
+  const hasContext = preview !== "" || ask !== "" || showChip;
   const when = taskWhenFor(task, now);
   const branch = pickBranch(
     holdRows,
@@ -347,6 +352,7 @@ function WorkspaceCard({
             unread={task.unread > 0}
             count={task.unread}
             background={liveJobRow(task)}
+            icon={task.icon_slot}
           />
           {file && (
             <button
@@ -396,6 +402,11 @@ function WorkspaceCard({
         <div className="ws-card-ctx">
           {showChip && <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />}
           {preview && <span className="ws-preview">{preview}</span>}
+          {ask && (
+            <span className="ws-preview ws-ask" title={ask}>
+              {ask}
+            </span>
+          )}
         </div>
       )}
       {(realFacts || clear) && (

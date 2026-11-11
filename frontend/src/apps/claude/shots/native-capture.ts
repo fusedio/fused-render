@@ -36,6 +36,61 @@ export function resetNativeOffForTests(): void {
   nativeOff = false;
 }
 
+/** Set by a 409 from `/api/capture/shot-window`: this platform has no WINDOW
+ *  still (Linux, macOS 13, an older server). Remembered like `nativeOff`, and
+ *  separately: the region still may well be there. */
+let windowOff = false;
+
+export function isWindowShotOff(): boolean {
+  return windowOff;
+}
+
+export function resetWindowOffForTests(): void {
+  windowOff = false;
+}
+
+/** How long either native still is waited for before the caller's next road.
+ *  The window road's server side answers inside `capture.WINDOW_BUDGET_S`
+ *  (3 s, native lock wait included) so the lock is free again BEFORE this
+ *  abort sends the caller to the region still, which waits on that same lock
+ *  (D1472). Keep the server's budget at least a second under this
+ *  (tests/test_capture.py reads it). */
+export const NATIVE_SHOT_ABORT_MS = 4000;
+
+/** The frame's TOP window's box on the screen as the browser reports it —
+ *  `screenX/Y` and `outerWidth/Height`, screen points with the title bar in —
+ *  which is how the server finds the window to photograph (D1472: by its
+ *  box, since a page cannot know its window's id). Null when the top window
+ *  is not ours to read or the numbers are not numbers. */
+export function windowFrame(frame: HTMLIFrameElement): [number, number, number, number] | null {
+  let top: Window;
+  try {
+    const win = frame.ownerDocument && frame.ownerDocument.defaultView;
+    if (!win) return null;
+    top = win.top as Window;
+    void top.outerWidth;
+  } catch {
+    return null;
+  }
+  const box = [top.screenX, top.screenY, top.outerWidth, top.outerHeight];
+  if (!box.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  if (box[2] <= 0 || box[3] <= 0) return null;
+  return box as [number, number, number, number];
+}
+
+/** The TOP document's title — the second key the server matches the window
+ *  by (D1472): a window at the right box whose title shows another page is
+ *  not this page's window. Empty when unreadable or unset. */
+export function windowTitle(frame: HTMLIFrameElement): string {
+  try {
+    const win = frame.ownerDocument && frame.ownerDocument.defaultView;
+    const title = (win?.top as Window | undefined)?.document?.title;
+    return typeof title === "string" ? title : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * THE BOOT PROBE'S HALF of the same fact (T:7840-7847): `capture.sources()` is
  * read once at boot and `shotNativeOff = true` when
@@ -73,7 +128,7 @@ export const SHOOTING_ATTR = "data-capture-shooting";
  *  outerWidth/innerWidth arithmetic assumes chrome on top split evenly at the
  *  sides. Our window may be a frame of the shell's, so the learned origin is
  *  walked up to the top through the frame offsets (T:9802). */
-let topOrigin: { x: number; y: number } | null = null;
+let topOrigin: { x: number; y: number; wx: number; wy: number } | null = null;
 
 /** `pointerdown` ONLY: a keyboard-activated click is a real MouseEvent with
  *  every coordinate ZERO, which would teach an origin of (0,0) and send viewport
@@ -81,11 +136,25 @@ let topOrigin: { x: number; y: number } | null = null;
 export function learnTopOrigin(e: { screenX: number; clientX: number; screenY: number; clientY: number }, win: Window): void {
   const off = frameOffset(win);
   if (!off) return;
-  topOrigin = { x: e.screenX - e.clientX - off.x, y: e.screenY - e.clientY - off.y };
+  // `wx/wy`: where the window stood when learned, so a window moved since
+  // (another display) shifts the origin with it instead of photographing
+  // where it used to be (D1472).
+  let top: Window;
+  try {
+    top = win.top as Window;
+  } catch {
+    return;
+  }
+  topOrigin = {
+    x: e.screenX - e.clientX - off.x,
+    y: e.screenY - e.clientY - off.y,
+    wx: top.screenX || 0,
+    wy: top.screenY || 0,
+  };
 }
 
 export function topOriginForTests(): { x: number; y: number } | null {
-  return topOrigin;
+  return topOrigin && { x: topOrigin.x, y: topOrigin.y };
 }
 
 export function resetTopOriginForTests(): void {
@@ -159,7 +228,10 @@ export function screenRect(
     return null;
   }
   const origin =
-    topOrigin || {
+    (topOrigin && {
+      x: topOrigin.x + (topWin.screenX || 0) - topOrigin.wx,
+      y: topOrigin.y + (topWin.screenY || 0) - topOrigin.wy,
+    }) || {
       x: topWin.screenX + Math.max(0, (topWin.outerWidth - topWin.innerWidth) / 2),
       y: topWin.screenY + Math.max(0, topWin.outerHeight - topWin.innerHeight),
     };
@@ -173,6 +245,15 @@ export interface NativeCaptureOptions {
    *  does (T:9884). The default finds the flash, which this module's own
    *  `flash()` stamps `[data-shot-flash]`. */
   overlays?: () => Element[];
+  /** THE WINDOW ROAD (D1472): the still of the WINDOW the frame lives in
+   *  (`POST /api/capture/shot-window`, named by `windowFrame`) instead of the
+   *  pixels under its rect — so the window may sit behind another app, on
+   *  another Space or across two displays and the picture is still the page.
+   *  Window-ONLY: a caller asking for it has relaxed its "is my window in
+   *  front" gate, and the region still would photograph whatever IS in
+   *  front, so a refusal here is null, never that fallback. A 409 (no window
+   *  still on this platform) is remembered as `isWindowShotOff`. */
+  window?: boolean;
 }
 
 /** The default overlay set: every flash sheet in this document and in the frame's
@@ -217,6 +298,10 @@ export async function captureNative(
   if (nativeOff || !frame || !frame.isConnected) return null;
   const box = screenRect(frame);
   if (!box) return null;
+  // Read beside `box`, so the rect and the window it is measured against
+  // come from one instant, not from either side of the hide wait below.
+  const win = opts.window ? windowFrame(frame) : null;
+  if (opts.window && (windowOff || !win)) return null;
   const hidden = (opts.overlays ? opts.overlays() : flashOverlays(frame)).filter(
     (el): el is HTMLElement => !!(el as HTMLElement).style,
   );
@@ -239,23 +324,38 @@ export async function captureNative(
       ),
       new Promise<void>((res) => setTimeout(res, 120)),
     ]);
+    const payload: Record<string, unknown> = { rect: box.rect, dpr: window.devicePixelRatio || 1 };
+    if (win) {
+      payload.window = win;
+      const title = windowTitle(frame);
+      if (title) payload.title = title;
+    }
     const ctl = new AbortController();
     const left = (deadline || Date.now() + SHOT_TIMEOUT_MS) - Date.now();
-    const timer = setTimeout(() => ctl.abort(), Math.max(200, Math.min(4000, left)));
+    const timer = setTimeout(
+      () => ctl.abort(),
+      Math.max(200, Math.min(NATIVE_SHOT_ABORT_MS, left)),
+    );
     let res: Response;
     try {
-      res = await fetch("/api/capture/shot-region", {
+      res = await fetch(win ? "/api/capture/shot-window" : "/api/capture/shot-region", {
         method: "POST",
         signal: ctl.signal,
         headers: { "X-Fused": "1", "Content-Type": "application/json" },
-        body: JSON.stringify({ rect: box.rect, dpr: window.devicePixelRatio || 1 }),
+        body: JSON.stringify(payload),
       });
     } finally {
       clearTimeout(timer);
     }
-    // 409 is "this platform has no still": remembered. 400 (off-display, bad
-    // rect) and 500 are about THIS shot — the next one may land (T:9920).
-    if (res.status === 409) nativeOff = true;
+    // 409 is "this platform has no still" — no WINDOW still, on that road:
+    // remembered. So is a 404 on the window road: an older server without
+    // the route, which will not grow one under this page. 400 (off-display,
+    // bad rect, no window at the box) and 500 are about THIS shot — the next
+    // one may land (T:9920).
+    if (res.status === 409 || (win && res.status === 404)) {
+      if (win) windowOff = true;
+      else nativeOff = true;
+    }
     if (!res.ok) {
       // Said, not swallowed: a 400 on every click is a bug in the arithmetic
       // above that only the console can show (T:9926).

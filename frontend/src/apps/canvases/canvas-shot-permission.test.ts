@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { SCREEN_RECORDING_SETTINGS_URL, openScreenRecordingPane } from "@platform/lib/screen-permission";
 
 import {
+  agentNativeAllowed,
   nativeShotRefusal,
   screenRecordingNeeded,
   slowFallbackEnabled,
@@ -27,6 +28,10 @@ test("the slow road is automatic off a Mac, and on a Mac only behind the switch"
   // A Mac with no native still at all (macOS 11–12): nothing to grant.
   expect(slowRoadAllowed({ mac: true, fallbackOn: false, nativeAvailable: false })).toBe(true);
   expect(slowRoadAllowed({ mac: true, fallbackOn: false, nativeAvailable: true })).toBe(false);
+  // The agent's gesture-less capture takes it on a Mac too (D1472): nobody is
+  // at the window to bring it front or grant anything.
+  expect(slowRoadAllowed({ mac: true, fallbackOn: false, nativeAvailable: true, agent: true })).toBe(true);
+  expect(slowRoadAllowed({ mac: true, fallbackOn: false, nativeAvailable: true, agent: false })).toBe(false);
 });
 
 test("the switch is the preference, only a stored true is on, and a failed read is off", async () => {
@@ -65,4 +70,12 @@ test("the pane opens through the server, and by deep link when that door is miss
     }, nav),
   ).toBe("link");
   expect(went).toEqual([SCREEN_RECORDING_SETTINGS_URL]);
+});
+
+test("the agent's native roads wait for the Screen Recording grant on a Mac (no prompt over another app)", () => {
+  expect(agentNativeAllowed({ mac: true, granted: true })).toBe(true);
+  expect(agentNativeAllowed({ mac: true, granted: false })).toBe(false);
+  expect(agentNativeAllowed({ mac: true, granted: null })).toBe(false);
+  expect(agentNativeAllowed({ mac: true })).toBe(false);
+  expect(agentNativeAllowed({ mac: false, granted: false })).toBe(true);
 });
