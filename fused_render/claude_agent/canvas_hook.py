@@ -32,7 +32,9 @@ import urllib.parse
 import urllib.request
 
 _ORIGIN_ENV = "FUSED_RENDER_ORIGIN"
-_TIMEOUT_S = 3.0
+# Per attempt. agent.py gives the whole hook 5 s; a failed first attempt plus
+# the server.json retry must fit inside that, or the CLI kills the retry.
+_TIMEOUT_S = 2.0
 
 
 def _ask(origin: str, payload: dict) -> dict:
