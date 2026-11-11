@@ -140,7 +140,18 @@ export async function openBreakoutSettled(
   isMissing: (path: string) => Promise<boolean> = isMissingDir,
 ): Promise<void> {
   const { cwd, ...rest } = req;
-  openBreakout(cwd && (await isMissing(cwd)) ? rest : req);
+  if (!cwd || !(await isMissing(cwd))) {
+    openBreakout(req);
+    return;
+  }
+  // A card already open for this selection may carry the folder that is gone:
+  // it falls back to `file` too, so the reopened card never mounts on it.
+  const id = openBreakout(rest);
+  const open = cards.find((c) => c.id === id);
+  if (open?.cwd) {
+    const { cwd: _gone, ...bare } = open;
+    emit(cards.map((c) => (c === open ? bare : c)));
+  }
 }
 
 /** What a host passes as `onBreakout`: `openBreakoutSettled`, or nothing inside

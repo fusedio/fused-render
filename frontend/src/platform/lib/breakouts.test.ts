@@ -59,6 +59,14 @@ describe("breakout folder", () => {
     await openBreakoutSettled({ ...req, cwd: wt }, async () => false);
     expect(getBreakouts()[0]?.cwd).toBe(wt);
   });
+  test("reopening a card whose folder has since gone drops its cwd", async () => {
+    const keyed = { ...req, cwd: wt, forkKey: "k-reopen" };
+    await openBreakoutSettled(keyed, async () => false);
+    expect(getBreakouts()[0]?.cwd).toBe(wt);
+    await openBreakoutSettled(keyed, async () => true);
+    expect(getBreakouts()).toHaveLength(1);
+    expect("cwd" in getBreakouts()[0]!).toBe(false);
+  });
   test("only a 404 or a non-directory counts as missing; a failed stat keeps the cwd", async () => {
     const reject = (err: unknown) => () => Promise.reject(err);
     expect(await isMissingDir(wt, reject(Object.assign(new Error("HTTP 404"), { status: 404 })))).toBe(true);
