@@ -12,6 +12,7 @@ import type { CanvasShotInboxRow } from "@apps/claude/protocol/types";
 const {
   CLAIM_DELAY_MS,
   HIDDEN_SENTENCE,
+  SHOT_WAIT_MS,
   claimDelayMs,
   claimDue,
   createPageShotResponder,
@@ -97,6 +98,28 @@ test("a request another page won is left alone; one not yet due is not claimed",
   await h.r.tick();
   await h.r.idle();
   expect(h.answers).toEqual([]);
+});
+
+test("a request past the tool's own wait is never claimed or captured, even one queued behind a slow capture", async () => {
+  // Already expired when the page polls: no claim, no capture, no answer.
+  const old = harness({ rows: [row("old", SHOT_WAIT_MS + 1000)] });
+  await old.r.tick();
+  await old.r.idle();
+  expect(old.log).toEqual([]);
+  expect(old.answers).toEqual([]);
+  // Fresh when queued, expired by the time the first capture frees the chain.
+  let clock = NOW;
+  const h = harness({
+    rows: [row("slow", 1000), row("late", SHOT_WAIT_MS - 2000)],
+    now: () => clock,
+    take: async (x) => {
+      clock += 5000;
+      return { error: "drawn " + x.id };
+    },
+  });
+  await h.r.tick();
+  await h.r.idle();
+  expect(h.answers.map(([id]) => id)).toEqual(["slow"]);
 });
 
 test("an answer that did not land is re-sent from the picture already taken", async () => {

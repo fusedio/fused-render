@@ -316,6 +316,22 @@ def test_codex_gets_a_tool_timeout_above_the_screenshot_wait(
     assert not any("tool_timeout_sec" in a for a in plain)
 
 
+def test_opencode_gets_an_mcp_ceiling_above_the_screenshot_wait(agent, tmp_path):
+    """OpenCode's ACP `mcpServers` carry no timeout: the injected config's
+    global MCP ceiling is raised for a canvas session and only then."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "oc_cfg", os.path.join("fused_render", "agent_backends", "opencode_config.py"))
+    cfg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cfg)
+    kw = dict(model=None, mode="default", instructions_path=None, local=[],
+              origin=None, key=None)
+    assert "experimental" not in cfg.build(**kw)
+    got = cfg.build(mcp_timeout_ms=260_000, **kw)
+    assert got["experimental"] == {"mcp_timeout": 260_000}
+    assert 260_000 > (agent._canvas_shot_ceiling()) * 1000
+
+
 def _pointer(agent, request_id, run_id="run", env="unstable", name="demo"):
     inbox = os.path.join(agent._canvas_pages_dir(), "inbox")
     os.makedirs(inbox, exist_ok=True)
@@ -381,6 +397,59 @@ def test_one_page_claims_a_request_and_a_dead_claim_expires(agent, run_dir, monk
     assert claim("nobody")["claimed"] is False
     assert agent.main(action="canvas_shot_claim", run_id="run", request_id="nope",
                       state=json.dumps({"page_id": "p"}))["claimed"] is False
+
+
+def test_a_claim_is_checked_and_replaced_under_one_lock(agent, run_dir, monkeypatch):
+    """The stale check, the unlink and the create are one critical section, so
+    two pages can never both win a request (CodeRabbit, #2244)."""
+    import threading
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")
+    _parked(run_dir, "r1")
+    real = agent._canvas_claim_holder
+    seen = []
+
+    def holder(*a, **k):
+        seen.append(agent._CANVAS_CLAIM_LOCK.locked())
+        return real(*a, **k)
+    monkeypatch.setattr(agent, "_canvas_claim_holder", holder)
+    claim = lambda p: agent.main(action="canvas_shot_claim", run_id="run",
+                                 request_id="r1", state=json.dumps({"page_id": p}))
+    assert claim("a") == {"claimed": True}
+    assert seen and all(seen)                            # every holder read was locked
+    # A stale claim, taken over by many pages at once: exactly one wins.
+    path = os.path.join(agent._canvas_pages_dir(), "inbox", "r1.claim")
+    old = time.time() - agent.CANVAS_CLAIM_TTL - 5
+    os.utime(path, (old, old))
+    wins = []
+    threads = [threading.Thread(target=lambda i=i: wins.append(claim("p%d" % i)["claimed"]))
+               for i in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert wins.count(True) == 1
+    with open(path, encoding="utf-8") as fh:
+        assert fh.read().startswith("p")                 # whole id, never a half-written file
+
+
+def test_a_page_that_keeps_polling_keeps_its_claim(agent, run_dir):
+    """A queued capture can outlast the 60 s TTL: the holder's inbox poll renews
+    the lease, another page's poll does not."""
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")
+    _parked(run_dir, "r1")
+    agent.main(action="canvas_shot_claim", run_id="run", request_id="r1",
+               state=json.dumps({"page_id": "front"}))
+    path = os.path.join(agent._canvas_pages_dir(), "inbox", "r1.claim")
+    aged = time.time() - agent.CANVAS_CLAIM_TTL + 10     # 10 s from expiring
+    os.utime(path, (aged, aged))
+    agent.main(action="canvas_shot_inbox", state=_page("hidden"))
+    assert os.path.getmtime(path) == pytest.approx(aged, abs=1)   # not its claim
+    agent.main(action="canvas_shot_inbox", state=_page("front"))
+    assert time.time() - os.path.getmtime(path) < 5      # renewed by the holder
+    # Past the TTL without a poll it still lapses, as before.
+    os.utime(path, (aged - 60, aged - 60))
+    assert agent.main(action="canvas_shot_claim", run_id="run", request_id="r1",
+                      state=json.dumps({"page_id": "hidden"})) == {"claimed": True}
 
 
 def test_the_open_canvas_ask_reads_as_a_blocked_task(agent):
@@ -543,3 +612,53 @@ def test_a_page_opened_some_other_way_ends_the_ask(agent, run_dir, pages_env):
     agent.main(action="canvas_shot", run_id="run", request_id=rows[0]["id"],
                state=json.dumps({"error": "drawn"}))
     assert json.loads(pending.result(10)["result"]["content"][0]["text"]) == {"error": "drawn"}
+
+
+def test_a_seen_page_that_stops_beating_falls_through_to_the_ask(agent, run_dir, pages_env):
+    """A page heard from once keeps a fresh heartbeat for a few seconds after it
+    closes; when it then goes quiet for a grace the request offers Open / Not
+    now instead of waiting out the whole ceiling (d81ef8bf6)."""
+    server = pages_env(FUSED_RENDER_CANVAS_SHOT_TIMEOUT="40",
+                       FUSED_RENDER_CANVAS_PAGE_GRACE="1")
+    _beat(agent, "gone")                                 # one beat, then the page closes
+    began = time.monotonic()
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    ask = _ask(run_dir, timeout=20)
+    assert ask["tool"] == agent.CANVAS_OPEN_TOOL
+    assert time.monotonic() - began < 15                 # well under the 40 s ceiling
+    agent.main(action="decide", run_id="run", request_id=ask["id"], decision="deny")
+    err = json.loads(pending.result(10)["result"]["content"][0]["text"])["error"]
+    assert "chose not to open" in err
+
+
+def test_the_open_ask_does_not_hand_the_folder_to_another_task(agent, run_dir, pages_env,
+                                                               monkeypatch):
+    """The ask posts no `card_raised`: the folder stays with this task, so the
+    automatic allow (the canvas opened another way) never resumes it beside a
+    task that took its folder (CodeRabbit, #2244)."""
+    import http.server
+    import threading
+    events = []
+
+    class Sink(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            events.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), Sink)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:%d" % httpd.server_port)
+    try:
+        server = pages_env()
+        pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+        ask = _ask(run_dir)
+        agent.main(action="decide", run_id="run", request_id=ask["id"], decision="deny")
+        pending.result(10)
+        time.sleep(0.5)                                  # a post would be in by now
+    finally:
+        httpd.shutdown()
+    assert events == []

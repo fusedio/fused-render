@@ -1015,7 +1015,12 @@ def _ask_to_open(env: str, name: str, budget: float, shot_res: str) -> dict:
         "created_at": time.time(),
     })
     key = _register_inflight(ask_id)
-    _post_card_raised(ask_id)
+    # NO `card_raised` (so no `card_cleared` either): the queue would hand this
+    # task's folder to the next in line while the card is up, and an automatic
+    # allow below (the user opened the canvas some other way) is written here,
+    # not through `decideThroughQueue` -- the run would resume beside the task
+    # that took its folder. The ask is bounded by the shot ceiling, so the
+    # task simply keeps its folder until the ask ends.
     ask_res = os.path.join(PERM_DIR, ask_id + ".res.json")
     deadline = time.monotonic() + max(0.0, budget)
     try:
@@ -1030,7 +1035,6 @@ def _ask_to_open(env: str, name: str, budget: float, shot_res: str) -> dict:
             time.sleep(POLL_INTERVAL)
         return _await_answer(ask_res, 0, {"decision": "deny", "reason": "timeout"})
     finally:
-        _post_card_cleared(ask_id)
         if key is not None:
             with _INFLIGHT_LOCK:
                 _INFLIGHT.pop(key, None)

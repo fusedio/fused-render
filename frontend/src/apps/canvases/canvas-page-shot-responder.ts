@@ -25,6 +25,16 @@ export const CAPTURE_RETRY_MS = 1500;
 /** …and how far into the request a retry may still start. */
 export const CAPTURE_RETRY_BUDGET_MS = 40_000;
 
+/** How long the tool waits for one picture (agent.CANVAS_SHOT_WAIT, the
+ *  permission server's CANVAS_SHOT_TIMEOUT). Past it the agent already has its
+ *  timeout sentence, so a capture started then could never be delivered. */
+export const SHOT_WAIT_MS = 100_000;
+
+/** Has the tool's own wait for this request run out? */
+export function requestExpired(row: Pick<CanvasShotRow, "created_at">, nowMs: number): boolean {
+  return !!row.created_at && nowMs >= row.created_at * 1000 + SHOT_WAIT_MS;
+}
+
 export const PAGE_POLL_MS = 1000;
 export const PAGE_POLL_HIDDEN_MS = 3000;
 
@@ -136,6 +146,14 @@ export function createPageShotResponder(deps: PageResponderDeps) {
   const run = (row: CanvasShotInboxRow) => {
     busy.add(row.id);
     chain = chain.then(async () => {
+      // Queued behind slow captures until the tool's wait ran out: nothing
+      // can be delivered, so skip it rather than spend a capture on it.
+      if (requestExpired(row, deps.now())) {
+        taken.delete(row.id);
+        done.add(row.id);
+        busy.delete(row.id);
+        return;
+      }
       let a = taken.get(row.id);
       if (!a) {
         try {
@@ -166,6 +184,10 @@ export function createPageShotResponder(deps: PageResponderDeps) {
       const rows = await deps.inbox(p);
       for (const row of rows) {
         if (busy.has(row.id) || done.has(row.id)) continue;
+        if (requestExpired(row, deps.now())) {
+          done.add(row.id);
+          continue;
+        }
         if (!row.claimed && !taken.has(row.id)) {
           if (!claimDue(row, p, deps.now())) continue;
           if (!(await deps.claim(row))) continue;

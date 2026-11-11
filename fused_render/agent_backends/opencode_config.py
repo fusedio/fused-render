@@ -147,7 +147,8 @@ def _model_row(row: dict) -> dict:
 
 def build(*, model: Optional[str], mode: str, instructions_path: Optional[str],
           local: list, origin: Optional[str], key: Optional[str],
-          deny_all_tools: bool = False) -> dict:
+          deny_all_tools: bool = False,
+          mcp_timeout_ms: Optional[int] = None) -> dict:
     """The injected config, as a dict (`json.dumps` it onto `CONTENT_ENV`).
 
     `mode` is a fused mode (`prompt` | `default` | `acceptEdits` | `auto`);
@@ -161,6 +162,12 @@ def build(*, model: Optional[str], mode: str, instructions_path: Optional[str],
     else:
         permission = dict(PERMISSIONS.get(mode or "prompt") or PERMISSIONS["prompt"])
     config: dict = {"permission": permission}
+    if mcp_timeout_ms:
+        # OpenCode's one MCP call ceiling (`experimental.mcp_timeout`, ms): the
+        # ACP `mcpServers` list the host hands over carries no per-server
+        # timeout, so this global is the only knob. Set for a canvas session,
+        # whose `canvas_screenshot` outlasts the default (D1471).
+        config["experimental"] = {"mcp_timeout": int(mcp_timeout_ms)}
     if model:
         config["model"] = str(model)
     if instructions_path:

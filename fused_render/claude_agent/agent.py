@@ -4886,7 +4886,12 @@ def _opencode_argv(run_dir: str, pane: bool, cli_mode: str | None,
     mode = _OPENCODE_MODES.get(cli_mode or "default", "default")
     with _private_open(os.path.join(ctx, _OPENCODE_SPAWN_FILE)) as fh:
         json.dump({"model": model or "", "mode": mode,
-                   "instructions": os.path.join(ctx, "AGENTS.md")}, fh)
+                   "instructions": os.path.join(ctx, "AGENTS.md"),
+                   # A canvas session's screenshot outlasts OpenCode's own MCP
+                   # call ceiling: the config's global one is raised above it
+                   # (`_opencode_env`; D1471).
+                   **({"mcp_timeout_ms": int((_canvas_shot_ceiling() + 60) * 1000)}
+                      if _canvas_of(file) else {})}, fh)
     canvas = _canvas_of(file)
     if pane or _terminal_tools_supported() or canvas:
         _write_mcp_config(run_dir, pane, approve=False, canvas=canvas)
@@ -5160,7 +5165,8 @@ def _opencode_env(env: dict, run_dir: str = "") -> None:
         model=str(facts.get("model") or "") or None,
         mode=str(facts.get("mode") or "default"),
         instructions_path=str(facts.get("instructions") or "") or None,
-        local=local, origin=origin, key=key))
+        local=local, origin=origin, key=key,
+        mcp_timeout_ms=int(facts.get("mcp_timeout_ms") or 0) or None))
 
 
 def _spawn_env(chat_id: str = "", backend: str = "", run_dir: str = "") -> dict:
