@@ -24,6 +24,7 @@ import { cn } from "@platform/lib/utils";
 import type { ChatController } from "../protocol/controller-api";
 import { OTHER_MAX_H, questionModel, questionOptions } from "../protocol/summaries";
 import type { PermissionRow, Question, QuestionOption } from "../protocol/types";
+import { unansweredCardText, unansweredReasonOf } from "../protocol/unanswered";
 import { CollapsiblePre } from "./CollapsiblePre";
 /** THE QUEUE'S LATCH, shared with the approval card rather than re-derived here
  *  (project queue, prefs `queue.enabled`). A question goes through the very same
@@ -318,6 +319,7 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
      payload arrived in a shape this window could not read, the raw JSON is what
      is on screen and the chosen labels have nowhere else to go. */
   const joined = !answerable && chosen.length;
+  const unanswered = unansweredReasonOf(row);
   const status = held
     ? // FIRST, ahead of every verdict below and ahead of the chosen labels. A
       // held answer HAS a decision — the one the reader made, which is what
@@ -331,8 +333,8 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
       ? joined
         ? { cls: "chose", node: <>{"✓ You chose: "}<span className="val">{chosen.join(" · ")}</span></> }
         : { cls: "allow", node: <>✓ Answered</> }
-      : row.decision === "expired"
-        ? { cls: "expired", node: <>◦ Unanswered — the reply ended before you answered</> }
+      : unanswered
+        ? { cls: "expired", node: <>{unansweredCardText(unanswered, "answered")}</> }
         : { cls: "deny", node: <>✗ Not answered</> }
     : sendError
       ? { cls: "deny", node: <>{sendError}</> }

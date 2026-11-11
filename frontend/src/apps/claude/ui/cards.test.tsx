@@ -307,6 +307,8 @@ test("a resolved PermCard is a receipt: past tense, no controls, the landed verd
     [{ decision: "allow", scope: "exact" }, "✓ Allowed — this exact command, for the rest of this chat"],
     [{ decision: "allow", mode: "auto" }, "✓ Allowed — approvals set to “Auto”"],
     [{ decision: "expired" }, "◦ Unanswered — the reply ended before you decided"],
+    [{ decision: "deny", reason: "abandoned" }, "◦ Unanswered — the run moved on before you decided"],
+    [{ decision: "deny", reason: "timeout" }, "◦ Unanswered — timed out before you decided"],
     [{ decision: "deny" }, "✗ Denied"],
   ];
   for (const [over, said] of cases) {
@@ -315,6 +317,17 @@ test("a resolved PermCard is a receipt: past tense, no controls, the landed verd
     expect(textOf(withClass(r, "gate-head")[0])).toBe("Claude wanted to use Edit");
     expect(textOf(withClass(r, "gate-status")[0])).toBe(said);
   }
+});
+
+test("a timed-out question and plan read as unanswered, not refused", () => {
+  const q = mount(
+    <QuestionCard row={row({ tool: "AskUserQuestion", input: oneQ, decision: "deny", reason: "timeout" })} onAnswer={noop} onDismiss={() => {}} />,
+  );
+  expect(textOf(withClass(q, "perm-status")[0])).toBe("◦ Unanswered — timed out before you answered");
+  const p = mount(
+    <PlanCard row={row({ tool: PLAN, input: { plan: "# p" }, decision: "deny", reason: "timeout" })} onDecide={noop} />,
+  );
+  expect(textOf(withClass(p, "perm-status")[0])).toBe("◦ Unanswered — timed out before you decided");
 });
 
 test("a held answer latches the card, from the click AND from the server", () => {

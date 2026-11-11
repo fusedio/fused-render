@@ -597,6 +597,26 @@
   }
 }
 
+/* ── unanswered question / approval ─────────────────────────────────────────
+   Drawn under a FOLDED reply (ui/Turn). Muted like an expired card, not the error red: the
+   run did not fail, nobody was there to answer. */
+.chat-root .turn.assistant .turn-unanswered {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--c-dim);
+  background: color-mix(in srgb, var(--c-dim) 8%, transparent);
+  border-radius: 0 8px 8px 0;
+  font-size: calc(13px * var(--c-zoom, 1));
+  word-break: break-word;
+}
+.chat-root .turn.assistant .turn-unanswered-title {
+  font-weight: 600;
+}
+.chat-root .turn.assistant .turn-unanswered-detail {
+  margin-top: 2px;
+  color: var(--c-dim);
+}
+
 /* ── error / trouble (T:1886-1947) ──────────────────────────────────────── */
 .chat-root .turn.error {
   color: var(--c-error);

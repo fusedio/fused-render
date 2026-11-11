@@ -66,6 +66,8 @@ import {
 } from "./schedule-lib";
 import type { BoardColumn, BoardLane, RunStatus } from "./schedule-lib";
 import { canvasPagePath } from "@apps/canvases/api";
+import { usageLimitCaption } from "@platform/lib/usage-limit";
+import { oneLine, SUMMARY_LINE_MAX } from "@platform/lib/one-line";
 
 // How many messages the LISTING carries per task — the server's window, not a
 // display cap: an expanded task draws every message it has (there is no Show more
@@ -2431,7 +2433,7 @@ export function upcomingEditEntry(task: Task, held?: TaskMessage[]): string | nu
  * flag its newest SETTLED run genuinely did break, which is what the flag has
  * always meant.
  */
-export function isFailedTask(task: Task): boolean {
+export function isFailedTask(task: Pick<Task, "status" | "kind" | "failed">): boolean {
   return taskColumn(task) === "blocked" || task.failed;
 }
 
@@ -2464,17 +2466,10 @@ export function needsAttention(task: Pick<Task, "status">): boolean {
  * it, so a ring that is not drawing "!" never gets this sentence either.
  *
  * "" on every other row, and on an older server that sends no `attention`:
- * nothing is drawn rather than a sentence with its object missing. "failed" and
- * "usage_limit" are not asked here — a row has one reason, so it never wears
- * this caption and the limit's at once.
+ * nothing is drawn rather than a sentence with its object missing. This covers
+ * the parked asks only: "failed" and "usage_limit" are not asked here, and
+ * `needsYouCaption` combines this with the limit's and the failure's captions.
  */
-const ATTENTION_SUMMARY_MAX = 80;
-/** Whitespace collapsed, trimmed, and cut with an ellipsis past `max`. */
-function oneLine(text: string, max = Infinity): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? flat.slice(0, max - 1).trimEnd() + "…" : flat;
-}
-
 export function attentionCaption(
   task: Pick<Task, "status" | "blocked_reason" | "attention">,
 ): string {
@@ -2483,7 +2478,7 @@ export function attentionCaption(
   // aria-label, and a Bash command can be a pasted script. The server's own
   // cap is 80 for a question; a tool line gets the same treatment here.
   const tool = oneLine(task.attention.tool || "");
-  const summary = oneLine(task.attention.summary || "", ATTENTION_SUMMARY_MAX);
+  const summary = oneLine(task.attention.summary || "", SUMMARY_LINE_MAX);
   if (task.blocked_reason === "permission") {
     // "Bash: rm -rf build", either half alone when the other is empty.
     const what = tool && summary ? `${tool}: ${summary}` : tool || summary;
@@ -2495,6 +2490,25 @@ export function attentionCaption(
     return "Waiting on your answer" + (summary ? ` · ${summary}` : "");
   }
   return "";
+}
+
+/** "Run failed" for a task `isFailedTask` calls failed (the blocked lane, or a
+ *  settled run flagged failed), else "". */
+export function failedCaption(task: Pick<Task, "status" | "kind" | "failed">): string {
+  return isFailedTask(task) ? "Run failed" : "";
+}
+
+/**
+ * WHY A TASK IS IN "NEEDS YOU", in one line: the ask of a parked card, the usage
+ * limit's pause and when it ends, or "Run failed". "" when nothing stopped it.
+ * Only the Workspace card draws the combined line; the List, Board and Cards
+ * draw `attentionCaption` and `usageLimitCaption` in their own seats, and say a
+ * failed run by its ring and lane.
+ */
+export function needsYouCaption(
+  task: Pick<Task, "status" | "kind" | "failed" | "blocked_reason" | "attention" | "resumes_at">,
+): string {
+  return attentionCaption(task) || usageLimitCaption(task) || failedCaption(task);
 }
 
 // ---- the project queue -------------------------------------------------------

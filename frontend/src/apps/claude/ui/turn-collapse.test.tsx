@@ -827,3 +827,44 @@ describe("Turn `unfolded`", () => {
     expect(byClass(flat, "toolchip")).toHaveLength(3);
   });
 });
+
+describe("an unanswered question or approval", () => {
+  const ask = (): ToolSegment => ({
+    kind: "tool",
+    id: "q1",
+    name: "AskUserQuestion",
+    input: { questions: [{ question: "Ship it?", options: [{ label: "Yes" }] }] },
+    status: "error",
+    output: "No answer … treating this as denied. [fused:unanswered reason=timeout minutes=60]",
+    images: [],
+  });
+  const asked = assistant("a", { segments: [text("Checking.\nmore"), ask()] } as Partial<TurnRow>);
+
+  test("stays on screen under a FOLDED reply, question text included", () => {
+    const r = log([asked], { transcriptGen: 1 });
+    // the seed folds nothing for a lone newest turn, so fold it by hand
+    act(() => {
+      (marks(r)[0].props as { onClick: () => void }).onClick();
+    });
+    expect(folded(r)).toEqual(["Checking."]);
+    const n = byClass(r, "turn-unanswered");
+    expect(n.length).toBe(1);
+    expect(words(n[0])).toBe("Unanswered question — timed out after 60 minShip it?");
+  });
+
+  test("an OPEN turn with no settled card under the chip still says it (restored transcript)", () => {
+    const r = log([asked], { transcriptGen: 1 });
+    expect(byClass(r, "turn-unanswered").length).toBe(1);
+  });
+
+  test("an OPEN turn whose chip has a settled card under it draws no second notice", () => {
+    const cardsAfter = new Map<number, React.ReactNode>([[1, <i key="c" />]]);
+    const r = mount(<Turn turn={asked} cardsAfter={cardsAfter} />);
+    expect(byClass(r, "turn-unanswered").length).toBe(0);
+  });
+
+  test("an ordinary tool result draws no notice", () => {
+    const r = log([assistant("b", { segments: [text("x\ny"), tool("t", "Read")] } as Partial<TurnRow>)]);
+    expect(byClass(r, "turn-unanswered").length).toBe(0);
+  });
+});
