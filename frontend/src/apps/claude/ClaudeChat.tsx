@@ -345,9 +345,6 @@ export interface ClaudeChatProps {
   /** With `breakout`: the parent messages it was opened from. A chip above the
    *  composer shows them until the first send carries them. */
   breakoutContext?: BreakoutContext;
-  /** With `breakout`: the parent chat's own target, the server's fallback when
-   *  `file` names a folder that is gone. */
-  breakoutHome?: string;
   /** With `breakout`: the first message, auto-sent once on mount. */
   breakoutPrompt?: string;
   /** Called once the prompt has gone out, so the card forgets it. */
@@ -1419,7 +1416,6 @@ function ChatBody(props: ChatBodyProps) {
         params,
         ...(props.breakout ? { breakout: true } : {}),
         ...(props.breakout && props.breakoutContext ? { breakoutContext: props.breakoutContext.block } : {}),
-        ...(props.breakout && props.breakoutHome ? { breakoutHome: props.breakoutHome } : {}),
         // The transcript restore takes its own road (owner E2E R1, F5):
         // `/api/claude-sessions/history`. See `fetchHistory`.
         history: (f, s) => fetchHistory(f, s),

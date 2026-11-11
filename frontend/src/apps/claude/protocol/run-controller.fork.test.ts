@@ -211,15 +211,6 @@ describe("breakout posture", () => {
     expect(r.controller.getState().sessionId).toBe("brk");
   });
 
-  test("the parent chat's target rides on the start as breakout_home", async () => {
-    const r = fresh({}, { breakoutHome: "/w/p" });
-    await r.controller.sendMessage("q");
-    expect(r.of("start")[0]!.fields).toMatchObject({ breakout: "1", breakout_home: "/w/p" });
-    const plain = fresh();
-    await plain.controller.sendMessage("q");
-    expect("breakout_home" in plain.of("start")[0]!.fields).toBe(false);
-  });
-
   test("the first send spends no folder draft", async () => {
     const r = fresh();
     await r.controller.sendMessage("what is this?");

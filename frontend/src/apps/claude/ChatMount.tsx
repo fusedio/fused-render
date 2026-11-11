@@ -262,9 +262,6 @@ export interface ChatMountProps {
    *  opened from; they ride on its first send. See ClaudeChat. */
   breakout?: boolean;
   breakoutContext?: BreakoutContext;
-  /** With `breakout` and a `file` that is a hint's folder: the parent chat's
-   *  own target, the fallback when that folder is gone. */
-  breakoutHome?: string;
   /** With `breakout`: sent once as the first message on mount. */
   breakoutPrompt?: string;
   onBreakoutPromptSent?: () => void;
@@ -376,7 +373,6 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.onHidePane ? { onHidePane: props.onHidePane } : {})}
         {...(props.breakout ? { breakout: true } : {})}
         {...(props.breakoutContext ? { breakoutContext: props.breakoutContext } : {})}
-        {...(props.breakoutHome ? { breakoutHome: props.breakoutHome } : {})}
         {...(props.breakoutPrompt ? { breakoutPrompt: props.breakoutPrompt } : {})}
         {...(props.onBreakoutPromptSent ? { onBreakoutPromptSent: props.onBreakoutPromptSent } : {})}
         {...(props.onBreakout ? { onBreakout: props.onBreakout } : {})}

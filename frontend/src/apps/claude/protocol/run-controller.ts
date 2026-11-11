@@ -2917,7 +2917,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
               session_id: sessionId,
               ...(forkAt ? { fork_at: forkAt } : {}),
               ...(bk ? { breakout: bk } : {}),
-              ...(bk && deps.breakoutHome ? { breakout_home: deps.breakoutHome } : {}),
               backend: curBackend(),
               model: curModel(),
               effort: curEffort(),
