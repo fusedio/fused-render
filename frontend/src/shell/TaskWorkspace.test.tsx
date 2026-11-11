@@ -811,3 +811,14 @@ test("a Needs-you card says why in the preview's seat, instead of the last messa
   expect(ask("ok")).toHaveLength(0);
   expect(within(r.root.findByProps({ "data-key": "ok" }), "ws-preview")).toHaveLength(1);
 });
+
+test("a queued task carrying a usage-limit reason keeps its preview: it is not in Needs you", async () => {
+  serve();
+  const last = { role: "assistant" as const, text: "Waiting my turn.", at: 1 };
+  const r = await render([
+    task({ key: "qd", status: "queued", blocked_reason: "usage_limit", resumes_at: 0, last_message: last } as Partial<Task>),
+  ]);
+  const card = r.root.findByProps({ "data-key": "qd" });
+  expect(within(card, "ws-preview ws-ask")).toHaveLength(0);
+  expect(within(card, "ws-preview")).toHaveLength(1);
+});

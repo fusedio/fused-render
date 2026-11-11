@@ -1241,7 +1241,14 @@ describe("failedCaption", () => {
   it("says a run that broke failed, on the blocked status and nothing else", () => {
     expect(failedCaption(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Run failed");
     expect(failedCaption(task({ status: "done", blocked_reason: "failed" }))).toBe("");
-    expect(failedCaption(task({ status: "blocked", blocked_reason: "usage_limit" }))).toBe("");
+    expect(failedCaption(task({ status: "blocked", blocked_reason: "usage_limit" }))).toBe("Run failed");
+  });
+
+  it("follows isFailedTask: the blocked lane or a flagged settled run, nothing else", () => {
+    expect(failedCaption(task({ status: "blocked" }))).toBe("Run failed");
+    expect(failedCaption(task({ status: "done", failed: true }))).toBe("Run failed");
+    expect(failedCaption(task({ status: "done" }))).toBe("");
+    expect(failedCaption(task({ status: "in_progress" }))).toBe("");
   });
 });
 

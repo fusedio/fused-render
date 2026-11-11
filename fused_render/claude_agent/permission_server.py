@@ -605,7 +605,9 @@ def _unanswered(sentence: str, reason: str, minutes=None) -> str:
     abandoned), with a trailing machine-readable marker. The chat finds the
     unanswered question/approval in the transcript by this marker
     (`protocol/unanswered.ts`), so rewording the sentence cannot lose the
-    notice. A human's own deny and a cancelled turn carry none."""
+    notice. A human's own deny and a cancelled turn carry none. The model reads
+    the text with the marker (short, harmless); the chat's tool chip strips it
+    from the output it shows."""
     tail = "reason=%s" % reason + (" minutes=%d" % minutes if minutes else "")
     return "%s [fused:unanswered %s]" % (sentence, tail)
 

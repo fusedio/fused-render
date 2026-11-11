@@ -2433,7 +2433,7 @@ export function upcomingEditEntry(task: Task, held?: TaskMessage[]): string | nu
  * flag its newest SETTLED run genuinely did break, which is what the flag has
  * always meant.
  */
-export function isFailedTask(task: Task): boolean {
+export function isFailedTask(task: Pick<Task, "status" | "kind" | "failed">): boolean {
   return taskColumn(task) === "blocked" || task.failed;
 }
 
@@ -2466,11 +2466,10 @@ export function needsAttention(task: Pick<Task, "status">): boolean {
  * it, so a ring that is not drawing "!" never gets this sentence either.
  *
  * "" on every other row, and on an older server that sends no `attention`:
- * nothing is drawn rather than a sentence with its object missing. "failed" and
- * "usage_limit" are not asked here — a row has one reason, so it never wears
- * this caption and the limit's at once.
+ * nothing is drawn rather than a sentence with its object missing. This covers
+ * the parked asks only: "failed" and "usage_limit" are not asked here, and
+ * `needsYouCaption` combines this with the limit's and the failure's captions.
  */
-
 export function attentionCaption(
   task: Pick<Task, "status" | "blocked_reason" | "attention">,
 ): string {
@@ -2493,9 +2492,10 @@ export function attentionCaption(
   return "";
 }
 
-/** "Run failed" for a run that broke (`blocked`, reason "failed"), else "". */
-export function failedCaption(task: Pick<Task, "status" | "blocked_reason">): string {
-  return task.status === "blocked" && task.blocked_reason === "failed" ? "Run failed" : "";
+/** "Run failed" for a task `isFailedTask` calls failed (the blocked lane, or a
+ *  settled run flagged failed), else "". */
+export function failedCaption(task: Pick<Task, "status" | "kind" | "failed">): string {
+  return isFailedTask(task) ? "Run failed" : "";
 }
 
 /**
@@ -2506,7 +2506,7 @@ export function failedCaption(task: Pick<Task, "status" | "blocked_reason">): st
  * failed run by its ring and lane.
  */
 export function needsYouCaption(
-  task: Pick<Task, "status" | "blocked_reason" | "attention" | "resumes_at">,
+  task: Pick<Task, "status" | "kind" | "failed" | "blocked_reason" | "attention" | "resumes_at">,
 ): string {
   return attentionCaption(task) || usageLimitCaption(task) || failedCaption(task);
 }

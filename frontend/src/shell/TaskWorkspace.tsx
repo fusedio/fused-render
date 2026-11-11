@@ -303,8 +303,9 @@ function WorkspaceCard({
   const hasPrs = prRefsOf(task).some((r) => r.repo);
   const hasBg = bg !== null;
   // Why the task needs you, in the preview's seat: a stopped or waiting task's
-  // last message is not what the reader needs to see first.
-  const ask = needsYouCaption(task);
+  // last message is not what the reader needs to see first. Only the Needs-you
+  // group says it; a queued task carrying a limit reason keeps its preview.
+  const ask = needsYou(task) ? needsYouCaption(task) : "";
   const preview = ask ? "" : messagePreview(task);
   const showChip = showProject && task.project !== "";
   const hasContext = preview !== "" || ask !== "" || showChip;
