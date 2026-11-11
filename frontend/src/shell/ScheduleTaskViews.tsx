@@ -24,6 +24,7 @@
 // accordion, the thread rows, the id chips, the unread dot) is in
 // styles/tasks.css.
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
+import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useTaskIcons } from "@platform/lib/task-icons-flag";
 import { taskIconHref } from "./task-icons";
 import { useArchiveConfirm } from "@shell/archive-confirm";
@@ -763,8 +764,8 @@ export function StatusIcon({
   icon,
 }: {
   status: BoardColumn;
-  /** THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): the task's
-   *  `icon_slot`. With the experiment on, the ring becomes that glyph —
+  /** THE FAVOURITE'S FACE (`task_icons_enabled`, 2026-11-10): the task's
+   *  `icon_slot`, null unless it is starred. With the experiment on, the ring becomes that glyph —
    *  same box, same hue, every mark (unread dot, draft dot, "!") in its
    *  top-right corner (schedule.css `.schedule-ring--glyph`). Omitted on a container (a lane header, the
    *  queue chip) and the ring is drawn as always. */
@@ -811,9 +812,13 @@ export function StatusIcon({
   // the one a person can still do something about.
   const marks = [draftHeld ? "unsent draft" : null, said]
     .filter(Boolean).join(", ");
-  // The glyph, when the experiment is on and this is a task's own ring.
+  // The glyph, when the experiment is on and this is a FAVOURITE's own ring
+  // (the listing sends a slot for starred tasks only). Favourites switched
+  // off is no star to press, so no mark of one either — read live here, not
+  // server-side, where a cached listing would outlast the flip.
   const iconsOn = useTaskIcons();
-  const glyph = iconsOn ? taskIconHref(icon) : null;
+  const favsOn = useTaskFavourites();
+  const glyph = iconsOn && favsOn ? taskIconHref(icon) : null;
   return (
     <span
       className={

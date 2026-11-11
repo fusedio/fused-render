@@ -1600,7 +1600,7 @@ export interface Prefs {
   // shell/prefs.py; off by default). Optional: absent (older server) reads as off.
   task_head_unified?: { enabled: boolean };
   // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
-  // experiment 2026-11-10): every task wears one of 299 glyphs in place of
+  // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
   // its status ring. Optional: absent (older server) reads as off.
   task_icons?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
@@ -3952,11 +3952,11 @@ export interface TaskBackgroundJobs {
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
-  // THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): which of the 299
+  // THE FAVOURITE'S FACE (`task_icons_enabled`, 2026-11-10): which of the 299
   // glyphs in shell/task-icons.ts this task wears — arithmetic on its number
-  // server-side (tasks_store.icon_slot), so no two tasks in a project share
-  // one; a reroll (`rerollTaskIcon`) stamps a new one. null while the task has
-  // no number; absent from an older server.
+  // server-side (tasks_store.icon_slot); a pick (`setTaskIcon`) stamps
+  // another. ONLY A STARRED TASK CARRIES ONE (2026-11-11): null on every
+  // other row, which draws the ring; absent from an older server.
   icon_slot?: number | null;
   // FAVOURITE (owner, 2026-11-03): the star on the rail card. Server-side,
   // global (`tasks_store.FAVOURITES_FILE`), so every rail and every pane on
@@ -4983,10 +4983,11 @@ export function renameTask(key: string, title: string): Promise<{ ok: boolean; t
   return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
 }
 
-/** A NEW FACE for one task (`task_icons_enabled`): the server picks a glyph
- *  no other task in the project wears and keeps it. Answers the new slot. */
-export function rerollTaskIcon(key: string): Promise<{ ok: boolean; icon_slot: number }> {
-  return postJson<{ ok: boolean; icon_slot: number }>("/api/tasks/icon", { key });
+/** THE FACE THE USER PICKED for one task (`task_icons_enabled`): `slot`
+ *  indexes shell/task-icons.ts and is kept server-side; null takes the pick
+ *  back (the face the task's number gives it). Answers the slot it wears now. */
+export function setTaskIcon(key: string, slot: number | null): Promise<{ ok: boolean; icon_slot: number }> {
+  return postJson<{ ok: boolean; icon_slot: number }>("/api/tasks/icon", { key, slot });
 }
 
 /** THE STAR (owner, 2026-11-03): make a task a favourite, or take it back.

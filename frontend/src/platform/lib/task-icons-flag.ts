@@ -1,9 +1,10 @@
-// Whether every task wears a GLYPH in place of its status ring — the
+// Whether a FAVOURITE wears a GLYPH in place of its status ring — the
 // `task_icons_enabled` preference (shell/prefs.py), default OFF, an
 // experiment (owner, 2026-11-10: "do this under experiment flag"). One of 299
 // line drawings (shell/task-icons.ts), chosen server-side from the task's
-// number so no two tasks in a project share one (`Task.icon_slot`); off, the
-// ring is drawn as it always was and the slot the listing sends is ignored.
+// number and sent only while the task is starred (`Task.icon_slot`; owner,
+// 2026-11-11); off, the ring is drawn as it always was and the slot the
+// listing sends is ignored.
 //
 // The single-flag half of favourites-flag.ts: a localStorage memo so a reload
 // draws the right mark on its first frame, one generation so a publish beats

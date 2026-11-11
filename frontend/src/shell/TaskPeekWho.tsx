@@ -27,7 +27,7 @@ import { columnLabel } from "./schedule-lib";
 import { pokeTasks } from "./tasksPulse";
 import { QueueCaptionText, StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
 import type { QueueCaption } from "@platform/lib/queue";
-import { TaskIconReroll } from "./TaskIconReroll";
+import { TaskIconPick } from "./TaskIconPick";
 import {
   BACKGROUND_LABEL,
   basename,
@@ -155,6 +155,8 @@ export function TaskPeekWho({
   const title = useTaskHeadline(task);
   const canRename = renamable(task);
   const [draft, setDraft] = useState<string | null>(null);
+  // The icon picker is open (TaskIconPick): the host's overlay stays away.
+  const [iconPicking, setIconPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Enter saves and the unmount-time blur must not save twice; Escape must not
@@ -218,19 +220,26 @@ export function TaskPeekWho({
         className="task-side-peek-status"
         title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
       >
-        <TaskIconReroll task={task} editing={draft !== null} {...(onRenamed ? { onDone: onRenamed } : {})}>
+        <TaskIconPick
+          task={task}
+          editing={draft !== null}
+          onOpenChange={setIconPicking}
+          {...(onRenamed ? { onDone: onRenamed } : {})}
+        >
           <StatusIcon
             status={status}
             failed={running ? false : ringFailed(task)}
             background={background}
             icon={task.icon_slot}
           />
-        </TaskIconReroll>
+        </TaskIconPick>
         {/* Not while the title is being edited: the host's overlay (the rail
             card's Archive) stands OVER the ring, and during a rename the ring
-            is the New-icon button — a press there must reroll, not archive
-            (RailPeek's own rule, #2238). */}
-        {draft === null ? statusOverlay : null}
+            is the icon picker's button — a press there must open the picker,
+            not archive (RailPeek's own rule, #2238). Nor while that picker is
+            open: its filter box takes the focus, the rename ends, and the
+            overlay would be back under the pointer that pressed the glyph. */}
+        {draft === null && !iconPicking ? statusOverlay : null}
       </span>
       <TaskAgentMark backend={task.backend} />
       {starNode ?? (star && <TaskStar task={task} />)}

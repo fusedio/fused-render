@@ -560,14 +560,15 @@ const ENTRIES = [
     renderOnly: true,
     child: true,
   },
-  // TASK ICONS (owner, 2026-11-10): a face per task, in place of the ring.
+  // TASK ICONS (owner, 2026-11-10): a face per FAVOURITE, in place of the
+  // ring (2026-11-11: only a starred task wears one).
   {
     id: "tasks-icons",
     group: "features",
     section: "Sidebar",
     label: "Task icons",
-    description: "Every task wears its own small picture — an animal, a food, a thing — in place of the status ring, in the ring's colour, on the rail, the Tasks list and the task's head. No two tasks in a project share one. While editing a title, click the picture for a different one.",
-    keywords: "icon glyph picture emoji animal face ring task rail avatar",
+    description: "A favourite wears its own small picture — an animal, a food, a thing — in place of the status ring, in the ring's colour, on the rail, the Tasks list and the task's head. Star a chat to give it one; remove the star and the ring is back. While editing a favourite's title, click the picture to choose another. Needs Favourite chats on.",
+    keywords: "icon glyph picture emoji animal face ring task rail avatar favourite favorite star",
     renderOnly: true,
   },
   {
