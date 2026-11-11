@@ -136,7 +136,7 @@ CANVAS_CLONE = os.environ.get("FUSED_RENDER_CANVAS_CLONE", "")
 CANVAS_NODE = os.environ.get("FUSED_RENDER_CANVAS_NODE", "")
 CANVAS_PAGES_DIR = os.environ.get("FUSED_RENDER_CANVAS_PAGES", "")
 # A page heartbeats every 1 s (3 s hidden); one heard from within this is open.
-CANVAS_PAGE_FRESH = 4.0
+CANVAS_PAGE_FRESH = 10.0
 # How long a request waits to hear from a page of its canvas before it decides
 # none is open: one hidden page's poll interval.
 CANVAS_PAGE_GRACE = float(os.environ.get("FUSED_RENDER_CANVAS_PAGE_GRACE", "3"))

@@ -43,7 +43,7 @@ export type CanvasShotAnswer =
        *  hidden window may show an older state). */
       note?: string;
     }
-  | { ok: false; error: string };
+  | { ok: false; error: string; refusal?: boolean };
 export interface CanvasShot {
   /** `udf` names the node for `what: "udf"`; omitted, the host uses the node
    *  this chat is on (the agent's `canvas_screenshot` tool may name any).

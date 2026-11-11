@@ -910,6 +910,7 @@ export default function CanvasWorkspace({
     const udfName = udf || (what === "udf" ? nodeRef.current?.udfName ?? null : null);
     // The crop the native road used, kept for the stale still below.
     let staleCrop: ShotRect | null = null;
+    let staleWhole = false;
     try {
       // THE FRAME FIRST. A request that lands before the workbench's first
       // hello (the agent's tool fires as its turn starts) waits for it under
@@ -943,10 +944,11 @@ export default function CanvasWorkspace({
         : null;
       const crop: ShotRect | null = rects ? (what === "canvas" ? rects.canvas : rects.udf) : whole;
       staleCrop = crop;
+      staleWhole = crop === whole;
       // The workbench said this node has nothing to photograph (not run,
       // still loading): that sentence is the answer, on every platform.
       if (what === "udf" && rects && !rects.udf && rects.udfReason) {
-        return { ok: false, error: rects.udfReason };
+        return { ok: false, error: rects.udfReason, refusal: true };
       }
       if (crop) {
         const blob = await nativeCanvasShot(frameRef.current, by, {
@@ -1026,7 +1028,7 @@ export default function CanvasWorkspace({
         stale: true,
         ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
       });
-      if (blob) return { ok: true, blob, note: STALE_SHOT_NOTE };
+      if (blob) return { ok: true, blob, note: STALE_SHOT_NOTE, framing: staleWhole ? "whole-frame" : what === "udf" ? "node" : "graph" };
     }
     // The embed road's full-size PNG, under the view budget (D1471, F6).
     if (answer.ok) return { ok: true, blob: await fitShotBlob(answer.blob), framing: what === "udf" ? "node" : "graph" };
