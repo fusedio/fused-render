@@ -299,3 +299,32 @@ def test_history_drops_errored_worktree_hints(agent, tmp_path):
     write(False)
     assert agent._history(str(target), "sid")["worktree_hint"]["prev"]["path"] == \
         "/r/.claude/worktrees/x"
+
+
+def test_poll_reports_the_path_of_an_errored_worktree_call(agent, run_dir):
+    out = _poll(agent, run_dir, _call_rows("Bash", _BASH_ADD, "t1", True))
+    assert out["worktree_hint"] is None
+    assert out["worktree_failed"] == ["/r/.claude/worktrees/x"]
+    assert _poll(agent, run_dir, _call_rows("Bash", _BASH_ADD, "t1", False))["worktree_failed"] == []
+
+
+def test_poll_names_the_path_when_the_call_went_out_in_an_earlier_window(agent, run_dir):
+    # The call is behind the poll cursor; only its errored result is in the window.
+    rows = _call_rows("Bash", _BASH_ADD, "t1", True)
+    agent.RUNS = str(run_dir.parent)
+    agent._alive = lambda _d: True
+    body = "".join(json.dumps(r) + "\n" for r in rows)
+    (run_dir / "out.jsonl").write_text(body, encoding="utf-8")
+    assert agent._failed_worktree_path(str(run_dir), "t1", "/r") == "/r/.claude/worktrees/x"
+    assert agent._failed_worktree_path(str(run_dir), "nope", "/r") == ""
+    assert agent._failed_worktree_path(str(run_dir), "", "/r") == ""
+
+
+def test_an_errored_result_without_an_id_retracts_nothing(agent):
+    scan = agent._WorktreeScan()
+    scan.add(None, {"path": "/r/a", "branch": "a", "via": "bash"})
+    scan.add("t2", {"path": "/r/b", "branch": "b", "via": "bash"})
+    assert scan.fail(None) is None and scan.fail("") is None
+    assert scan.state["path"] == "/r/b"
+    assert scan.fail("t2")["path"] == "/r/b"
+    assert scan.state["path"] == "/r/a"

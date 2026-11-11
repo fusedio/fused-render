@@ -1046,12 +1046,10 @@ export const Transcript = memo(function Transcript({
                 </Turn>
               );
             })}
-            {/* THE ROW AND THE CARD, both (#27). T appends a red row per failure
-                AND draws the actionable card for the newest one; the port
-                suppressed the row the card duplicated, which left an API error
-                or a session limit with no line at the end of the log saying the
-                turn had stopped — "last line = the error" is the request. The
-                row is the log entry, the card is what the user can act on. */}
+            {/* THE FAILURE, ONCE. While the trouble card is up it is the only
+                statement of the newest error: that row is skipped in the log
+                above, so the failure is not shown twice. Older errors stay as
+                their own rows; the card is what the user can act on. */}
             {state.trouble ? (
               <TroubleView
                 trouble={state.trouble}

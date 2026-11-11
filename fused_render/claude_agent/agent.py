@@ -9337,14 +9337,54 @@ class _WorktreeScan:
         self._calls.append((tool_use_id, hint))
         self._fold(hint)
 
-    def fail(self, tool_use_id) -> None:
-        """The call `tool_use_id` errored: replay the others without it."""
-        kept = [c for c in self._calls if c[0] != tool_use_id]
-        if len(kept) == len(self._calls):
-            return
-        self._calls, self.state = kept, None
-        for _, hint in kept:
+    def fail(self, tool_use_id) -> dict | None:
+        """The call `tool_use_id` errored: replay the others without it and
+        return the hint it carried. A result with no id retracts nothing."""
+        if not tool_use_id:
+            return None
+        gone = next((h for i, h in self._calls if i == tool_use_id), None)
+        if gone is None:
+            return None
+        self._calls = [c for c in self._calls if c[0] != tool_use_id]
+        self.state = None
+        for _, hint in self._calls:
             self._fold(hint)
+        return gone
+
+
+def _failed_worktree_path(run_dir: str, tool_use_id, cwd: str) -> str:
+    """The worktree path a call named, found in `out.jsonl` by its tool_use id,
+    or "". A poll window can hold an errored result whose call went out in an
+    earlier window; this is how the page still hears which path to withdraw."""
+    if not tool_use_id:
+        return ""
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
+                  errors="replace") as fh:
+            for line in fh:
+                if tool_use_id not in line or '"tool_use"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                for blk in (row.get("message") or {}).get("content") or []:
+                    if isinstance(blk, dict) and blk.get("type") == "tool_use" \
+                            and blk.get("id") == tool_use_id:
+                        hint = _worktree_hint(blk.get("name"), blk.get("input"), cwd)
+                        return _hint_path(hint)
+    except OSError:
+        pass
+    return ""
+
+
+def _hint_path(hint: dict | None) -> str:
+    """The absolute folder a bash/enter hint names; "" for any other hint (an
+    agent hint's own path is empty, an exit hint names none)."""
+    if hint and hint.get("via") in ("bash", "enter") \
+            and os.path.isabs(str(hint.get("path") or "")):
+        return hint["path"]
+    return ""
 
 
 def _read_poll_cursor(run_dir: str, size: int) -> int:
@@ -11199,8 +11239,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     streaming_tid = ""     # tool_use id of the block whose input is streaming
     stream_bufs = {}       # Agent/Task id -> partial_json so far
     stream_found = {}      # Agent/Task id -> {"description"/"subagent_type": str}
-    worktree_hint = None   # latest `_worktree_hint` over finalized inputs
-    wt_scan = _WorktreeScan(exit_marker=True)
+    wt_scan = _WorktreeScan(exit_marker=True)   # `_worktree_hint` over finalized inputs
+    worktree_failed: list = []   # paths of worktree calls whose result errored here
     wt_cwd = _run_workdir(run_dir, file)
     thinking_tokens = 0    # CLI's running estimate for the message in flight
     hooks_open = {}        # hook_id -> hook_name, started and not yet responded
@@ -11351,7 +11391,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                                           wt_cwd)
                     if hint is not None:
                         wt_scan.add(blk["id"], hint)
-                        worktree_hint = wt_scan.state
                     if blk["id"] in tools_open:
                         tools_open[blk["id"]]["detail"] = _tool_detail(
                             blk.get("name"), tool_inputs[blk["id"]])
@@ -11378,8 +11417,14 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # can never leave a finished tool on the line forever.
                 tid = b.get("tool_use_id")
                 if b.get("is_error"):
-                    wt_scan.fail(tid)
-                    worktree_hint = wt_scan.state
+                    # The page keeps a hint it has until told otherwise, so a
+                    # refused call's path is reported by name. A call from an
+                    # earlier window is no longer in the scan: its path comes
+                    # from the tool_use row in out.jsonl.
+                    path = _hint_path(wt_scan.fail(tid)) \
+                        or _failed_worktree_path(run_dir, tid, wt_cwd)
+                    if path and path not in worktree_failed:
+                        worktree_failed.append(path)
                 if tid in tools_open:
                     del tools_open[tid]
                 elif tools_open:
@@ -11885,7 +11930,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # `{"path", "branch", "via": "bash"|"enter"|"agent", "label"?}`.
             # `None` when this poll's window held none — "nothing new", which
             # the page reads as "keep what you have".
-            "worktree_hint": worktree_hint,
+            "worktree_hint": wt_scan.state,
+            # Absolute paths of worktree calls whose result errored in this
+            # window: the folder was never made, so the page withdraws them
+            # from the hint it holds, `prev` included.
+            "worktree_failed": worktree_failed,
             # Same array `activity.tasks` renders from, collapsed to the
             # yes/no a session host's reap loop wants: background work still
             # running is what holds a host open past an otherwise-idle turn

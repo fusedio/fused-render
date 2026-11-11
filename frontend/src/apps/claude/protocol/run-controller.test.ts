@@ -5275,6 +5275,27 @@ describe("the run's tasks", () => {
     expect(controller.getState().worktreeHint).toEqual({ ...agentHint, prev: hint });
   });
 
+  test("worktree_failed withdraws a hint the page already holds, and its prev under an agent hint", async () => {
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const agentHint = { path: "", branch: "", via: "agent" as const, label: "t" };
+    const run = async (steps: Array<Record<string, unknown>>) => {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) => (n < steps.length ? poll(steps[n]!) : poll({ done: true, segments: [text("ok")], text: "ok" })),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      return controller.getState().worktreeHint;
+    };
+    // The hint came in one window, its refusal in a later one.
+    expect(await run([{ worktree_hint: hint }, { worktree_failed: ["/x/wt"] }])).toBe(null);
+    expect(await run([{ worktree_hint: hint }, { worktree_failed: ["/x/other"] }])).toEqual(hint);
+    // A failed path under an agent hint's prev goes; the agent hint stays.
+    expect(await run([{ worktree_hint: hint }, { worktree_hint: agentHint }, { worktree_failed: ["/x/wt"] }])).toEqual(agentHint);
+    // A failure and the agent hint in one window: no prev is carried from the failed path.
+    expect(await run([{ worktree_hint: hint }, { worktree_hint: agentHint, worktree_failed: ["/x/wt"] }])).toEqual(agentHint);
+  });
+
   test("removing the prev worktree under an agent hint drops only prev; a bare exit clears", async () => {
     const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
     const agentHint = { path: "", branch: "", via: "agent" as const, label: "t" };

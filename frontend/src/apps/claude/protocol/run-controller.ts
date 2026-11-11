@@ -871,6 +871,24 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
   };
+  /** Withdraw worktree paths whose call errored (`worktree_failed`): the hint
+   *  the page holds drops them, as the `prev` under an agent hint too. Runs
+   *  before the window's own hint lands, so a failed path never becomes the
+   *  `prev` of a later one. */
+  const withdrawWorktrees = (failed: readonly string[] | undefined) => {
+    const cur = state.worktreeHint;
+    if (!cur || !failed?.length) return;
+    let next: WorktreeHint | null = cur;
+    if (cur.via === "agent") {
+      if (cur.prev && failed.includes(cur.prev.path)) {
+        const { prev: _prev, ...rest } = cur;
+        next = rest;
+      }
+    } else if (failed.includes(cur.path)) {
+      next = null;
+    }
+    if (next !== cur) emit({ worktreeHint: next });
+  };
   /** Publish a worktree hint, only when it differs from the current one (an
    *  equal hint on every poll must not bump `rev`). `via: "exit"` is the
    *  backend's "work left the worktree" marker and clears it. */
@@ -2178,6 +2196,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // that knows WHICH conversation is on screen.
         if (poll.context) emit({ context: poll.context });
         // LATEST WORKTREE HINT WINS; a window with none says nothing.
+        withdrawWorktrees(poll.worktree_failed);
         if (poll.worktree_hint) landWorktreeHint(poll.worktree_hint);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
