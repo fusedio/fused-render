@@ -598,7 +598,7 @@
 }
 
 /* ── unanswered question / approval ─────────────────────────────────────────
-   Drawn under a reply, folded or open (ui/Turn). Muted like an expired card, not the error red: the
+   Drawn under a FOLDED reply (ui/Turn). Muted like an expired card, not the error red: the
    run did not fail, nobody was there to answer. */
 .chat-root .turn.assistant .turn-unanswered {
   margin-top: 6px;

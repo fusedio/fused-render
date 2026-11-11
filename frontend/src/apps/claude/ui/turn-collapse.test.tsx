@@ -852,6 +852,11 @@ describe("an unanswered question or approval", () => {
     expect(words(n[0])).toBe("Unanswered question — timed out after 60 minShip it?");
   });
 
+  test("draws nothing on an OPEN turn: the settled card already says it", () => {
+    const r = log([asked], { transcriptGen: 1 });
+    expect(byClass(r, "turn-unanswered").length).toBe(0);
+  });
+
   test("an ordinary tool result draws no notice", () => {
     const r = log([assistant("b", { segments: [text("x\ny"), tool("t", "Read")] } as Partial<TurnRow>)]);
     expect(byClass(r, "turn-unanswered").length).toBe(0);

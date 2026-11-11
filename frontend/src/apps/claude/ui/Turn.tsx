@@ -373,7 +373,7 @@ export const Turn = memo(function Turn({
   const bodyId = uid + "body";
   const folded = foldable && collapsed;
   const line = folded ? collapsedLine(turn) : null;
-  const notices = unansweredNotices(turn.segments);
+  const notices = folded ? unansweredNotices(turn.segments) : [];
   return (
     <>
       <div
@@ -502,10 +502,9 @@ export const Turn = memo(function Turn({
               {children}
             </>
           )}
-          {/* AN UNANSWERED QUESTION OR APPROVAL is drawn under the reply folded
-              or open: it is the one thing in a fold the reader needs to see
-              (nobody was there when it was asked), and the chip that carries it
-              sits inside a run's "show more". */}
+          {/* AN UNANSWERED QUESTION OR APPROVAL under a FOLDED reply: it is the
+              one thing in a fold the reader needs to see (nobody was there when
+              it was asked). An open turn already shows its settled card. */}
           {notices.length ? (
             <div className="turn-unanswered-list">
               {notices.map((n, i) => (

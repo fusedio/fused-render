@@ -321,7 +321,7 @@ test("a resolved PermCard is a receipt: past tense, no controls, the landed verd
 
 test("a timed-out question and plan read as unanswered, not refused", () => {
   const q = mount(
-    <QuestionCard row={row({ tool: "AskUserQuestion", input: { questions: [] }, decision: "deny", reason: "timeout" })} onDecide={noop} />,
+    <QuestionCard row={row({ tool: "AskUserQuestion", input: oneQ, decision: "deny", reason: "timeout" })} onAnswer={noop} onDismiss={() => {}} />,
   );
   expect(textOf(withClass(q, "perm-status")[0])).toBe("◦ Unanswered — timed out before you answered");
   const p = mount(
