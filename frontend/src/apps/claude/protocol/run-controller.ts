@@ -4256,8 +4256,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // and the schedule poller must never re-attach to it. Marked at this one
       // point rather than in each of the branches below, so no reconciliation
       // road can be added later that forgets to.
-      if (runId) shownRuns.add(runId);
       const poll = probe as PollResponse;
+      // ANOTHER CONVERSATION'S RUN (`ResumeOptions.ownSession`): the param
+      // outlived the chat it belonged to. Dropped like a stale one — never
+      // adopted over the session this mount restored — and quietly: the
+      // reader asked for THIS chat and got it; there is nothing to report.
+      if (opts.ownSession && poll.session_id && String(poll.session_id) !== opts.ownSession) {
+        clearRunParam();
+        deps.onRunAbandoned?.();
+        return;
+      }
+      if (runId) shownRuns.add(runId);
       if (poll.session_id) noteSessionId(String(poll.session_id));
       if (Array.isArray(poll.tasks) && poll.tasks.length) publishTasks(poll.tasks, runId || null);
       const probeMsg = stripBlocks(poll.message || "");

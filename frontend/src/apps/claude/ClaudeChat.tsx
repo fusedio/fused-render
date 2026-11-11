@@ -2326,7 +2326,10 @@ function ChatBody(props: ChatBodyProps) {
         // A bare `run` has nothing to restore, and a restored session is on
         // screen by now: either way this is the moment the host may uncover us.
         markReady();
-        if (runId) await controller.resumeRun(runId);
+        // …AND A RUN BESIDE A SESSION MUST BE THAT SESSION'S (`ownSession`):
+        // a `run=` another conversation left on this page is written off,
+        // not adopted over the transcript just restored.
+        if (runId) await controller.resumeRun(runId, sessionId ? { ownSession: sessionId } : {});
         else if (sessionId && !props.breakout) {
           // NO `run` ON THE URL and a session that may well be busy: ask the
           // session itself. `openSession` above already started this watch, so

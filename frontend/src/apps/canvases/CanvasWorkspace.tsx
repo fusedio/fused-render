@@ -3481,7 +3481,12 @@ export default function CanvasWorkspace({
               file={dir}
               chatOnly
               paramsSource="url"
-              {...(fixRunId ? { runId: fixRunId } : {})}
+              // …ONLY WHILE THAT FIX IS RUNNING. `fixRunId` is kept (the key
+              // above must not remount the chat the reader is watching), but a
+              // finished fix handed to every later mount made each Recent-row
+              // hop boot on a dead run and adopt ITS session over the chat just
+              // opened (Sina, 2026-11-10: T004 opened wearing T006's header).
+              {...(fixRunId && fixActive ? { runId: fixRunId } : {})}
               annotateTarget={() => frameRef.current}
               // THE HEAD'S PLACE TAGS (shell/claude-rail PlaceTags): this
               // canvas and the workbench's select — the Canvas tag deselects

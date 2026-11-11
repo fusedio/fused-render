@@ -3703,6 +3703,47 @@ describe("openSession / resumeRun / newChat", () => {
     expect(controller.getState().adopting).toBe(false);
   });
 
+  // Sina, 2026-11-10 (canvas page): a "Fix with Claude" run id stayed on the
+  // page and was handed to every later chat mount. Opening T004 from Recent
+  // chats restored T004's transcript, then boot's `resumeRun` polled the dead
+  // fix run, whose session is T006's — and `noteSessionId` moved the header,
+  // the composer's settings and the URL onto T006 over T004's words.
+  test("boot writes off a `run=` whose session is not the one it restored (ownSession)", async () => {
+    const params = createMemoryParamsStore({ run: "r-other", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ done: true, session_id: "s-other", segments: [text("someone else's reply")] }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r-other", { ownSession: "s-42" });
+    // The session on screen is untouched, the stale param is gone, the gate is
+    // down and the other run's reply never landed in this transcript.
+    expect(controller.getState().sessionId).toBe("s-42");
+    expect(params.get("session_id")).toBe("s-42");
+    expect(params.get("run")).toBeUndefined();
+    expect(controller.getState().adopting).toBe(false);
+    expect(controller.getState().turns.map((t) => t.role)).toEqual(["user"]);
+    expect(controller.getState().trouble).toBeNull();
+  });
+
+  test("boot still adopts a `run=` that belongs to the restored session", async () => {
+    const params = createMemoryParamsStore({ run: "r1", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ done: true, session_id: "s-42", segments: [text("finished offscreen")] }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r1", { ownSession: "s-42" });
+    expect(controller.getState().sessionId).toBe("s-42");
+    expect(controller.getState().adopting).toBe(false);
+  });
+
   test("a resumeRun refused by the send gate lowers the gate rather than hiding forever", async () => {
     // The third road: `openSession` still holds `sending` when the boot's
     // `resumeRun` arrives, so it bails before the probe. A bail is a reason to
