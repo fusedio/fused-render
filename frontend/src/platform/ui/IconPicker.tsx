@@ -10,6 +10,11 @@
 // Enter, or Remove) applies and closes, while the shuffle button applies and
 // stays open — a random draw is meant to be redrawn until one lands.
 //
+// A HOST'S OWN SET (`set`, 2026-11-11): the same popover over a fixed list
+// the host supplies and draws — the task icons (shell/TaskIconPick) — in
+// place of the two built-in tabs: one heading, no colour, the same filter,
+// shuffle, Recent row and reset.
+//
 // Pure presentation — the caller owns positioning (anchor rect) and persists
 // the pick. Both data sets load lazily on first open: `emojibase-data` and the
 // vanilla `lucide` package are imported by nothing else in the shell, so they
@@ -47,13 +52,32 @@ export type IconPick =
   | { kind: "emoji"; emoji: string }
   | { kind: "icon"; name: string; svg: string };
 
+/** A host's own set, offered in place of the built-in tabs. */
+export interface IconPickerSet {
+  /** The heading, where the tabs would stand ("Icons"). */
+  label: string;
+  /** Names the Recent row's storage, apart from the built-in tabs'. */
+  recent: string;
+  /** Every choice, in grid order. `title` is the hover title and what the
+   *  filter matches. */
+  cells: readonly { id: string; title: string }[];
+  /** Draws one cell's glyph, on currentColor. */
+  render: (id: string) => React.ReactNode;
+  /** Called like `onPick`, with the cell's id. */
+  onPick: (id: string) => void;
+  /** The reset button's word and hover title (default "Remove"). */
+  removeLabel?: string;
+  removeTitle?: string;
+}
+
 interface IconPickerProps {
   /** Viewport rect of the glyph that opened the picker. */
   anchor: { top: number; left: number };
   /** Called for every applied pick — a grid choice, Enter, or a shuffle. The
    *  picker calls `onClose` itself for the first two, so a host must NOT close
-   *  from here: shuffle applies without closing. */
-  onPick: (pick: IconPick) => void;
+   *  from here: shuffle applies without closing. Not asked of a host that
+   *  passes its own `set`. */
+  onPick?: (pick: IconPick) => void;
   onRemove: () => void;
   onClose: () => void;
   /** CSS selector for the glyphs that toggle this picker. A mousedown on
@@ -65,6 +89,8 @@ interface IconPickerProps {
   /** Which tabs to offer. Bookmarks store a single emoji string and can't take
    *  an svg, so they pass ["emoji"]; the Projects rows take both. */
   tabs?: IconPickerTab[];
+  /** The host's own choices in place of the tabs (see `IconPickerSet`). */
+  set?: IconPickerSet;
 }
 
 // ---- icon svg --------------------------------------------------------------
@@ -246,10 +272,11 @@ function loadIcons(): Promise<Section[]> {
   return iconCache;
 }
 
-function useSections(tab: IconPickerTab): Section[] | null {
+function useSections(tab: IconPickerTab, skip: boolean): Section[] | null {
   const [state, setState] = useState<Partial<Record<IconPickerTab, Section[]>>>({});
   useEffect(() => {
-    if (state[tab]) return;
+    // A host's own set: neither built-in data set is wanted, so neither loads.
+    if (skip || state[tab]) return;
     let live = true;
     (tab === "emoji" ? loadEmoji() : loadIcons()).then((sections) => {
       if (live) setState((cur) => ({ ...cur, [tab]: sections }));
@@ -257,16 +284,17 @@ function useSections(tab: IconPickerTab): Section[] | null {
     return () => {
       live = false;
     };
-  }, [tab, state]);
+  }, [tab, state, skip]);
   return state[tab] ?? null;
 }
 
 // ---- recent ----------------------------------------------------------------
 
 const RECENT_MAX = 16;
-const recentKey = (tab: IconPickerTab) => `fused-render:icon-picker-recent:${tab}`;
+// `tab` is a built-in tab's name, or a host set's `recent`.
+const recentKey = (tab: string) => `fused-render:icon-picker-recent:${tab}`;
 
-function readRecent(tab: IconPickerTab): string[] {
+function readRecent(tab: string): string[] {
   try {
     const raw = localStorage.getItem(recentKey(tab));
     const v = raw ? JSON.parse(raw) : [];
@@ -276,7 +304,7 @@ function readRecent(tab: IconPickerTab): string[] {
   }
 }
 
-function pushRecent(tab: IconPickerTab, id: string) {
+function pushRecent(tab: string, id: string) {
   try {
     const next = [id, ...readRecent(tab).filter((x) => x !== id)].slice(0, RECENT_MAX);
     localStorage.setItem(recentKey(tab), JSON.stringify(next));
@@ -349,6 +377,7 @@ export default function IconPicker({
   onClose,
   toggleSelector = ".bookmark-glyph:not(.folder-glyph):not(.current-app-glyph)",
   tabs = ["icon", "emoji"],
+  set,
 }: IconPickerProps) {
   const [tab, setTab] = useState<IconPickerTab>(tabs[0] ?? "icon");
   const [query, setQuery] = useState("");
@@ -365,20 +394,44 @@ export default function IconPicker({
   // The shadcn Input is a plain function component (no forwardRef under React
   // 18), so a `ref` on it would be dropped — find the box through the root.
   const searchInput = () => rootRef.current?.querySelector<HTMLInputElement>("input");
+  // `preventScroll`: the popover is placed on screen by hand (below), and a
+  // focus that scrolls a host's box to "reveal" it would be an outside scroll
+  // — the very thing that closes the picker (the Tasks side peek's host did
+  // exactly that the moment the picker opened, 2026-11-11).
+  const focusSearch = () => searchInput()?.focus({ preventScroll: true });
   const restoreRef = useRef<Element | null>(null);
-  const sections = useSections(tab);
+  const builtIn = useSections(tab, !!set);
+  const setCells = set?.cells;
+  const setLabel = set?.label;
+  const sections = useMemo<Section[] | null>(
+    () =>
+      setCells && setLabel !== undefined
+        ? [
+            {
+              name: setLabel,
+              cells: setCells.map((c) => ({ id: c.id, title: c.title, search: c.title.toLowerCase() })),
+            },
+          ]
+        : builtIn,
+    [setCells, setLabel, builtIn],
+  );
+  // Whose Recent row: the host set's own, or the tab's.
+  const recentOf = set ? set.recent : tab;
+  // What one choice is called ("Random icon").
+  const noun = set || tab === "icon" ? "icon" : "emoji";
+  const heading = set ? set.label : TAB_LABEL[tab];
 
   // Capture the opener on mount and restore focus to it on unmount (Esc or a
   // pick), so focus never drops to <body> when the autofocused search unmounts.
   useEffect(() => {
     restoreRef.current = document.activeElement;
     return () => {
-      (restoreRef.current as HTMLElement | null)?.focus?.();
+      (restoreRef.current as HTMLElement | null)?.focus?.({ preventScroll: true });
     };
   }, []);
 
   useEffect(() => {
-    searchInput()?.focus();
+    focusSearch();
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (rootRef.current && rootRef.current.contains(target)) return;
@@ -438,11 +491,11 @@ export default function IconPicker({
       const hits = all.filter((c) => c.search.includes(q));
       return hits.length ? [{ name: "Results", cells: hits }] : [];
     }
-    const recent = readRecent(tab)
+    const recent = readRecent(recentOf)
       .map((id) => byId.get(id))
       .filter((c): c is Cell => !!c);
     return recent.length ? [{ name: "Recent", cells: recent }, ...sections] : sections;
-  }, [sections, all, byId, q, tab]);
+  }, [sections, all, byId, q, recentOf]);
 
   // Flat order of the visible grid, for arrow-key navigation. `active` indexes
   // into this list; the search input keeps focus and exposes the highlighted
@@ -453,20 +506,22 @@ export default function IconPicker({
     active === null || flat.length === 0 ? null : Math.min(active, flat.length - 1);
   const cellId = (i: number) => `${baseId}-cell-${i}`;
 
+  const setPick = set?.onPick;
   const pick = useCallback(
     (cell: Cell) => {
-      pushRecent(tab, cell.id);
-      if (cell.node) onPick({ kind: "icon", name: cell.id, svg: glyphIconSvg(cell.node, color) });
-      else onPick({ kind: "emoji", emoji: cell.id });
+      pushRecent(recentOf, cell.id);
+      if (setPick) setPick(cell.id);
+      else if (cell.node) onPick?.({ kind: "icon", name: cell.id, svg: glyphIconSvg(cell.node, color) });
+      else onPick?.({ kind: "emoji", emoji: cell.id });
     },
-    [tab, color, onPick],
+    [recentOf, color, onPick, setPick],
   );
 
   const chooseColor = (next: IconColor) => {
     setColor(next);
     saveColor(next);
     setColorOpen(false);
-    searchInput()?.focus();
+    focusSearch();
   };
 
   // Choosing from the grid is the deliberate pick: apply it and close.
@@ -488,7 +543,7 @@ export default function IconPicker({
     pick(all[Math.floor(Math.random() * all.length)]);
     // A mouse click puts focus on the button; hand it back to the filter box
     // so arrow-key navigation and typing keep working after a shuffle.
-    searchInput()?.focus();
+    focusSearch();
   };
 
   const moveActive = (delta: number) => {
@@ -535,7 +590,7 @@ export default function IconPicker({
     setQuery("");
     setActive(null);
     setColorOpen(false);
-    searchInput()?.focus();
+    focusSearch();
   };
 
   // Track the flat position while rendering the grouped sections.
@@ -556,7 +611,7 @@ export default function IconPicker({
       data-peek-keep="1"
     >
       <div className="flex items-center justify-between gap-2 border-b border-border pb-1">
-        {tabs.length > 1 ? (
+        {!set && tabs.length > 1 ? (
           <Tabs value={tab} onValueChange={(v) => switchTab(v as IconPickerTab)}>
             <TabsList variant="line" className="h-7">
               {tabs.map((t) => (
@@ -567,21 +622,22 @@ export default function IconPicker({
             </TabsList>
           </Tabs>
         ) : (
-          // A one-tab picker (Bookmarks) shows the name as a plain heading —
-          // a single underlined tab would suggest a choice that isn't there.
-          <div className="px-2 text-[13px] font-medium">{TAB_LABEL[tab]}</div>
+          // A one-tab picker (Bookmarks, a host's own set) shows the name as
+          // a plain heading — a single underlined tab would suggest a choice
+          // that isn't there.
+          <div className="px-2 text-[13px] font-medium">{heading}</div>
         )}
         <Button
           variant="ghost"
           size="sm"
           className="text-muted-foreground"
-          title="Reset to the default glyph"
+          title={set?.removeTitle ?? "Reset to the default glyph"}
           onClick={() => {
             onRemove();
             onClose();
           }}
         >
-          Remove
+          {set?.removeLabel ?? "Remove"}
         </Button>
       </div>
 
@@ -595,7 +651,7 @@ export default function IconPicker({
             type="text"
             className="h-7 pl-7 text-[13px] md:text-[13px]"
             placeholder="Filter…"
-            aria-label={`Filter ${TAB_LABEL[tab].toLowerCase()}`}
+            aria-label={`Filter ${heading.toLowerCase()}`}
             role="combobox"
             aria-expanded="true"
             aria-controls={`${baseId}-grid`}
@@ -611,14 +667,14 @@ export default function IconPicker({
         <Button
           variant="outline"
           size="icon-sm"
-          title={`Random ${tab === "icon" ? "icon" : "emoji"}`}
-          aria-label={`Random ${tab === "icon" ? "icon" : "emoji"}`}
+          title={`Random ${noun}`}
+          aria-label={`Random ${noun}`}
           disabled={!loaded}
           onClick={random}
         >
           <Shuffle />
         </Button>
-        {tab === "icon" && (
+        {tab === "icon" && !set && (
           // The colour every icon pick is written in — a dot in that colour,
           // and under it Notion's two rows of five swatches. Inside the
           // picker's root, so the document-level outside-click closer treats
@@ -679,11 +735,11 @@ export default function IconPicker({
       <div
         id={`${baseId}-grid`}
         role="listbox"
-        aria-label={TAB_LABEL[tab]}
+        aria-label={heading}
         className="max-h-[288px] overflow-y-auto"
         // The Icons grid previews in the chosen colour (its glyphs draw on
         // currentColor), so the swatch is seen before it is committed.
-        style={tab === "icon" ? { color: colorVar(color) } : undefined}
+        style={tab === "icon" && !set ? { color: colorVar(color) } : undefined}
       >
         {!loaded && <div className="px-1 py-3 text-xs text-muted-foreground">Loading…</div>}
         {loaded && visible.length === 0 && (
@@ -728,7 +784,13 @@ export default function IconPicker({
                       isActive && "bg-muted ring-2 ring-ring ring-inset",
                     )}
                   >
-                    {cell.node ? <LucideGlyph node={cell.node} className="size-[18px]" /> : cell.id}
+                    {set ? (
+                      set.render(cell.id)
+                    ) : cell.node ? (
+                      <LucideGlyph node={cell.node} className="size-[18px]" />
+                    ) : (
+                      cell.id
+                    )}
                   </button>
                 );
               })}

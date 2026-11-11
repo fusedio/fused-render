@@ -130,7 +130,6 @@ import json
 import logging
 import math
 import os
-import random
 import re
 import threading
 import time
@@ -535,7 +534,7 @@ def _record(store: dict, key: str) -> dict | None:
         moved_to = rec.get("moved_to")
         if isinstance(moved_to, str) and moved_to:
             out["moved_to"] = moved_to
-    # A REROLLED ICON rides along the same way (`reroll_icon`): the slot the
+    # A PICKED ICON rides along the same way (`set_icon`): the slot the
     # user chose over the number's own. Anything out of range is dropped, so a
     # record edited by hand cannot index past the sprite.
     slot = rec.get("icon_slot")
@@ -737,9 +736,14 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
 
 # ----------------------------------------------------------------- task icons
 #
-# Every task wears one of ICON_COUNT glyphs (frontend/public/task-icons.svg;
+# A FAVOURITE wears one of ICON_COUNT glyphs (frontend/public/task-icons.svg;
 # the slot order is frontend/src/shell/task-icons.ts), shown in place of the
 # status ring under the `task_icons_enabled` experiment (shell/prefs.py).
+# ONLY A STARRED TASK (owner, 2026-11-11: "we will show these icons only for
+# special tasks — when we click fav, and when it is unfav we remove the
+# icon"): every task HAS a face, the listing hands it out only while the star
+# stands (routers/tasks.py `_icon_slots`), so a task starred again wears the
+# face it wore before.
 #
 # THE SLOT IS ARITHMETIC ON THE TASK NUMBER, not a hash of the id and not a
 # probe over the project's live tasks: `slot = (n * STRIDE + seed) mod COUNT`,
@@ -751,10 +755,10 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
 # nobody else's icon (owner, 2026-11-10). The seed makes two projects start
 # at different places in the set so their TASK-001s differ.
 #
-# One exception, persisted: a REROLL (`reroll_icon`, the icon pressed while a
-# title is being edited) stamps `icon_slot` on the task's record in
-# task_ids.json, and that override wins. A reroll picks from the slots no other
-# task in the project wears, so uniqueness holds there too.
+# One exception, persisted: a PICK (`set_icon`, the icon pressed while a title
+# is being edited opens a picker — owner, 2026-11-11: "instead of giving a
+# random one, we let user pick") stamps `icon_slot` on the task's record in
+# task_ids.json, and that override wins until the picker's Reset drops it.
 
 ICON_COUNT = 299
 _ICON_STRIDE = 173  # coprime with 299 (= 13 * 23)
@@ -775,7 +779,7 @@ def icon_seed(project: str) -> int:
 
 def icon_slot_for(n: int, project: str, override: int | None = None) -> int:
     """The slot task number `n` of `project` wears — the override when a
-    reroll stamped one, the arithmetic slot otherwise."""
+    pick stamped one, the arithmetic slot otherwise."""
     if (isinstance(override, int) and not isinstance(override, bool)
             and 0 <= override < ICON_COUNT):
         return override
@@ -795,7 +799,7 @@ def icon_slots() -> dict[str, int]:
     """`{key: slot}` for every numbered task — read once per listing and
     handed to each row (`routers/tasks.py::_row`). THE RECORD DECIDES, not
     the row: the slot is computed from the number and the project the number
-    was allocated in (plus a reroll's override), so a task whose project the
+    was allocated in (plus a pick's override), so a task whose project the
     listing spells differently on a later pass — a `pending:` row rekeyed
     onto its session, a page-origin task whose cwd is read from the
     transcript next time — keeps the face it was first drawn with. Spent
@@ -809,8 +813,8 @@ def icon_slots() -> dict[str, int]:
 
 
 def icon_overrides() -> dict[str, int]:
-    """`{key: slot}` for every task whose icon was rerolled (tests, and the
-    one question "was this one rerolled?")."""
+    """`{key: slot}` for every task whose icon was picked (tests, and the
+    one question "was this one picked?")."""
     out: dict[str, int] = {}
     for key, rec in task_ids().items():
         slot = rec.get("icon_slot")
@@ -819,45 +823,25 @@ def icon_overrides() -> dict[str, int]:
     return out
 
 
-def reroll_icon(key: str, live: set[str] | frozenset[str] | None = None) -> int | None:
-    """Give one task a new, random face from the slots nobody else in its
-    project wears (any slot but the current one once the project has used
-    them all). Persisted on the task's number record, so it survives
-    listings and restarts. None when the task has no number yet.
-
-    `live` is the set of task keys that EXIST right now (the listing's
-    `_collect()` plus its drafts — routers/tasks.py `api_task_icon`): only
-    their faces count as worn. The store alone cannot tell (Bugbot, PR
-    #2238): a deleted or erased task keeps its number record forever so the
-    number is never handed out again, and after 299 allocations every slot
-    would read as taken by a tombstone, leaving the fallback to hand a live
-    neighbour's face out. Without `live` (tests, a caller with no listing)
-    every unspent, unerased record counts."""
+def set_icon(key: str, slot: int | None) -> int | None:
+    """Give one task the face the user PICKED (`slot`), or take the pick back
+    (`slot=None`: the number's own face again). Persisted on the task's
+    number record, so it survives listings, restarts and a rekey. Answers the
+    slot the task wears now; None when the task has no number yet. A slot out
+    of range is the caller's to refuse (routers/tasks.py `api_task_icon`) —
+    here it would read back as no override (`_record`)."""
     def mutate(store: dict):
         rec = _record(store, key)
-        if rec is None or rec.get("spent"):
-            return None, False
-        counter = _counter(rec["project"])
-        current = icon_slot_for(rec["n"], rec["project"], rec.get("icon_slot"))
-        worn: set[int] = set()
-        for other_key in store:
-            if other_key == key or (live is not None and other_key not in live):
-                continue
-            raw = store.get(other_key)
-            if isinstance(raw, dict) and raw.get("erased"):
-                continue
-            other = _record(store, other_key)
-            if other is None or other.get("spent") or _counter(other["project"]) != counter:
-                continue
-            worn.add(icon_slot_for(other["n"], other["project"], other.get("icon_slot")))
-        free = [s for s in range(ICON_COUNT) if s != current and s not in worn]
-        if not free:
-            free = [s for s in range(ICON_COUNT) if s != current]
-        chosen = random.choice(free)
         raw = store.get(key)
-        if isinstance(raw, dict):
-            raw["icon_slot"] = chosen
-        return chosen, True
+        if rec is None or rec.get("spent") or not isinstance(raw, dict):
+            return None, False
+        before = raw.get("icon_slot")
+        if slot is None:
+            raw.pop("icon_slot", None)
+        else:
+            raw["icon_slot"] = slot
+        return (icon_slot_for(rec["n"], rec["project"], slot),
+                raw.get("icon_slot") != before)
 
     return _update(TASK_IDS_FILE, mutate)
 

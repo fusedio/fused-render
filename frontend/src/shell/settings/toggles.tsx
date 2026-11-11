@@ -322,9 +322,10 @@ export function TaskFavouritesControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// TASK ICONS (owner, 2026-11-10, experiment): every task wears one of 299
-// glyphs in place of its status ring; the icon pressed while a title is
-// being edited rerolls it. Off, the ring is drawn as before.
+// TASK ICONS (owner, 2026-11-10, experiment): a FAVOURITE wears one of 299
+// glyphs in place of its status ring (2026-11-11: only a starred task); the
+// icon pressed while a title is being edited opens a picker. Off, the ring
+// is drawn as before.
 export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
   const on = prefs.task_icons?.enabled === true;
   return (
@@ -335,7 +336,7 @@ export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
       after={(next) => publishTaskIcons(next.task_icons)}
       status={
         on
-          ? "On — each task wears its own small picture in place of the status ring, in the ring's colour; click it while editing the title for a new one."
+          ? "On — a favourite wears its own small picture in place of the status ring, in the ring's colour; click it while editing the title to choose another."
           : "Off — the plain status ring."
       }
       onChange={onChange}
