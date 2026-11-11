@@ -255,8 +255,11 @@
    focus treatment. :where() keeps specificity at the scope class alone, so
    composite frames that reset their inner input (.templates-key-input input,
    .templates-chip-draft) and deliberate variants (.templates-rec-add-input)
-   still win. */
-.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea) {
+   still win. A chat inside a modal (the rail's task card) keeps its own
+   controls: `.c-pill` and the composer box tie this rule at (0,1,0), so
+   without the `.chat-root` exclusion stylesheet load order decided whether
+   the model/effort/mode pills came out as boxed native selects. */
+.modal-body :where(:is(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):not(.chat-root *)) {
   font: inherit;
   font-size: 13px;
   color: var(--fg);
@@ -266,7 +269,7 @@
   padding: 7px 10px;
 }
 
-.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):focus {
+.modal-body :where(:is(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):not(.chat-root *)):focus {
   outline: none;
   border-color: var(--fg-muted);
 }
