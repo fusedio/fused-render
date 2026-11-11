@@ -108,3 +108,19 @@ def test_reroll_ignores_erased_tombstones(state):
     # from full, so prove it the direct way — s2's slot is pickable.
     seen = {tasks_store.reroll_icon("s1") for _ in range(400)}
     assert s2_face in seen
+
+
+def test_the_face_follows_the_number_record_not_the_rows_project_spelling(state):
+    """A listing that later spells a task's project differently (a rekeyed
+    `pending:` row, a cwd read from the transcript) must not move its face:
+    `icon_slots` computes from the record's own project."""
+    tasks_store.ensure_ids([("s1", "/Users/me/proj", 1.0)])
+    slots = tasks_store.icon_slots()
+    assert slots == {"s1": tasks_store.icon_slot_for(1, "/Users/me/proj")}
+    # ...and NOT what the other spelling would give.
+    # A rekey keeps the face on the new key and drops the spent old one.
+    tasks_store.ensure_ids([("sess", "/somewhere/else", 2.0)], rekeys=(("s1", "sess"),))
+    assert tasks_store.icon_slots() == {"sess": slots["s1"]}
+    # A reroll shows through.
+    new = tasks_store.reroll_icon("sess")
+    assert tasks_store.icon_slots() == {"sess": new}

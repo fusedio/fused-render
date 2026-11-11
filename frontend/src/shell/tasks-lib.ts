@@ -6089,6 +6089,10 @@ export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
   return rows.map((row) => ({
     key: row.key,
     task_id: row.task_id,
+    // The face too (task-icons): a provisional row that dropped it drew the
+    // plain ring for the first frames and the glyph only once the listing
+    // landed — the one mark on the row that visibly CHANGED on open.
+    icon_slot: row.icon_slot ?? null,
     project: row.project,
     target: row.target,
     session_id: row.session_id,

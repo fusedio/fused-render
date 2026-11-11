@@ -10891,6 +10891,14 @@ describe("provisionalTasks", () => {
     expect(t.happened_at).toBe(1_699_999_000);
   });
 
+  it("carries the task's face too, and null (not undefined) when the pulse has none", () => {
+    // The glyph (task-icons) is drawn off `icon_slot`; a provisional row
+    // without it wore the plain ring until the listing landed, so the one
+    // mark on the row that changed on open was the icon.
+    expect(provisionalTasks([row({ icon_slot: 42 })])[0].icon_slot).toBe(42);
+    expect(provisionalTasks([row()])[0].icon_slot).toBeNull();
+  });
+
   it("fills everything pulse does not carry with a neutral default", () => {
     // NEUTRAL, not plausible: a guessed `live` or `failed` would put a shimmer
     // or a red ring on a row this client knows nothing about, and every one of
