@@ -25,9 +25,10 @@
 // width off screen. React still bubbles its events to the host, so the
 // card's focus hold sees the filter box, and the picker's own
 // `data-peek-keep` keeps a press on it from reading as blank page.
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { setTaskIcon, type Task } from "@platform/lib/api";
+import { notify } from "@platform/lib/notifications";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useTaskIcons } from "@platform/lib/task-icons-flag";
 import IconPicker, { type IconPickerSet } from "@platform/ui/IconPicker";
@@ -66,18 +67,31 @@ export function TaskIconPick({
 }) {
   const iconsOn = useTaskIcons();
   const favsOn = useTaskFavourites();
-  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  // Where the picker opened, AND FOR WHICH TASK: a head that swaps to another
+  // chat under an open picker (the rail card's next ring, the side peek's
+  // next row) must not hand the next pick to the newcomer.
+  const [at, setAnchor] = useState<{ key: string; top: number; left: number } | null>(null);
   const key = task.key;
+  const anchor = at && at.key === key ? at : null;
+  // One write at a time, in the order pressed: the shuffle button stays up to
+  // be pressed again, and two fast draws answered out of order would keep the
+  // earlier face (the star's rule, platform/ui/TaskStar).
+  const chain = useRef<Promise<unknown>>(Promise.resolve());
   const save = useCallback(
     (slot: number | null) => {
-      setTaskIcon(key, slot)
-        .then(() => {
-          pokeTasks();
-          onDone?.();
-        })
-        .catch(() => {
-          /* the face stays; the next pick asks again */
-        });
+      chain.current = chain.current
+        .catch(() => {})
+        .then(() => setTaskIcon(key, slot))
+        .then(
+          () => {
+            pokeTasks();
+            onDone?.();
+          },
+          () => {
+            // The face stays as it was; the icon is still there to press.
+            notify({ title: "The icon could not be saved", tone: "error" });
+          },
+        );
     },
     [key, onDone],
   );
@@ -92,6 +106,15 @@ export function TaskIconPick({
   }, [open, onOpenChange]);
   // The glyph is drawn (StatusIcon's own rule): both switches on, and a slot.
   const has = iconsOn && favsOn && task.icon_slot !== null && task.icon_slot !== undefined;
+  // THE GLYPH WENT AWAY UNDER AN OPEN PICKER (unstarred in another window, a
+  // switch flipped): the picker goes with it for good — left set, `anchor`
+  // kept the host's Archive seat hidden and brought the picker back, unasked,
+  // the moment the task was starred again (Bugbot, PR #2253). The same for a
+  // picker left behind by a head that moved on to another task.
+  const stale = at !== null && (!has || at.key !== key);
+  useEffect(() => {
+    if (stale) setAnchor(null);
+  }, [stale]);
   if (!has) return <>{children}</>;
   const set: IconPickerSet = {
     label: "Icons",
@@ -137,7 +160,7 @@ export function TaskIconPick({
         onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
-          setAnchor((cur) => (cur ? null : { top: rect.top, left: rect.left }));
+          setAnchor((cur) => (cur && cur.key === key ? null : { key, top: rect.top, left: rect.left }));
         }}
       >
         {children}

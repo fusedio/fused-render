@@ -2959,7 +2959,10 @@ export function ClaudeRail({
                     // settled row holding unsent words (tasks-lib.draftRing).
                     draftHeld={!!row && draftRing(merged as Task)}
                     {...(row?.failed ? { failed: true } : {})}
-                    icon={merged.icon_slot ?? t.icon_slot}
+                    // Only while starred, by the PULSE's word — the row the
+                    // star itself is read from: the listing row lags it, and
+                    // its old slot would keep the glyph on an unstarred ring.
+                    icon={t.starred ? (merged.icon_slot ?? t.icon_slot) : null}
                   />
                 </a>
                 </div>

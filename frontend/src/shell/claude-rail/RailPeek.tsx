@@ -1111,6 +1111,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const starSeq = useRef(0);
   const starOf = (t: RailRow["pulse"]): boolean =>
     starMark && starMark.key === t.key ? starMark.on : !!t.starred;
+  // THE HEAD'S FACE: only while starred, by the star this card shows (the
+  // mark included, so the glyph leaves with the press) — the listing row lags
+  // the pulse, and its old slot would keep the glyph on an unstarred head.
+  const headIcon = head && starOf(head.t) ? (head.merged.icon_slot ?? head.t.icon_slot) : null;
   useEffect(() => {
     if (!starMark) return;
     // The shown seat too.
@@ -1632,7 +1636,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 <>
                   <span className="claude-rail-peek-status">
                     <TaskIconPick
-                      task={{ key: head.t.key, icon_slot: head.merged.icon_slot ?? head.t.icon_slot }}
+                      task={{ key: head.t.key, icon_slot: headIcon }}
                       editing={draft !== null}
                       onDone={onReload}
                       onOpenChange={setIconPicking}
@@ -1643,7 +1647,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                         background={liveJobRow(head.t)}
                         draftHeld={!!head.row && draftRing(head.merged as Task)}
                         {...(head.row?.failed ? { failed: true } : {})}
-                        icon={head.merged.icon_slot ?? head.t.icon_slot}
+                        icon={headIcon}
                       />
                     </TaskIconPick>
                     {/* Not while the title is being edited: the Archive seat
