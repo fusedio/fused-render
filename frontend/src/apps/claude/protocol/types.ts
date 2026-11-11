@@ -178,6 +178,8 @@ export interface CanvasShotInboxRow extends CanvasShotRow {
   /** This page already holds the claim (a capture in flight, or an answer
    *  that did not land). */
   claimed: boolean;
+  /** When the tool stops waiting (epoch s; 0 from an older server). */
+  deadline?: number;
 }
 
 export interface CanvasShotInboxResponse {
@@ -648,9 +650,6 @@ export interface PollResponse {
   permissions: PermissionRow[];
   /** [] once done. */
   app_state: AppStateRow[];
-  /** Unanswered `canvas_screenshot` requests (agent `_canvas_shot_requests`);
-   *  absent on an older agent.py. */
-  canvas_shot?: CanvasShotRow[];
   /** Live permission mode (`_live_mode`). */
   mode: PermissionMode;
   skills: SkillRow[];

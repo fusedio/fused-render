@@ -1003,3 +1003,26 @@ test("a resolved open-canvas ask is a receipt, and an unanswered one says so", (
   const declined = mount(<OpenCanvasCard row={askRow({ decision: "deny" })} onDecide={noop} />);
   expect(textOf(withClass(declined, "gate-status")[0])).toContain("Not now");
 });
+
+test("an open-canvas ask that Stop ended or the queue holds says so, not Not now", () => {
+  const stopped = mount(<OpenCanvasCard row={askRow({ decision: "deny", reason: "cancelled" })} onDecide={noop} />);
+  expect(textOf(withClass(stopped, "gate-status")[0])).toContain("Stopped");
+  const held = mount(<OpenCanvasCard row={askRow({ decision: "deny", queuedAhead: "" })} onDecide={noop} />);
+  expect(textOf(withClass(held, "gate-status")[0])).toContain("Answer queued");
+  const restored = mount(<OpenCanvasCard row={askRow({ held: true })} onDecide={noop} />);
+  expect(labels(restored)).toEqual([]);
+  expect(textOf(withClass(restored, "gate-status")[0])).toContain("Answer queued");
+});
+
+test("on the phone the open-canvas ask offers only Not now", () => {
+  // lan.html stamps `data-host="lan"` (isLanHost); the test shim has no <html>.
+  const doc = document as unknown as { documentElement?: unknown };
+  const had = doc.documentElement;
+  doc.documentElement = { dataset: { host: "lan" } };
+  try {
+    const r = mount(<OpenCanvasCard row={askRow()} onDecide={noop} />);
+    expect(labels(r)).toEqual(["Not now"]);
+  } finally {
+    doc.documentElement = had;
+  }
+});

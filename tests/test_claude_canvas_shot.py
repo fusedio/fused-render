@@ -274,6 +274,7 @@ def test_the_duplicated_canvas_facts_match_their_sources(agent):
     assert agent._CANVAS_ENVS == fusedcli.WORKBENCH_ENV_CHOICES
     assert agent._CANVAS_NAME_RE.pattern == canvases._NAME_RE.pattern
     assert agent.CANVAS_OPEN_TOOL == ps.CANVAS_OPEN_TOOL
+    assert agent.CANVAS_PAGE_FRESH == ps.CANVAS_PAGE_FRESH
 
 
 def test_a_canvas_session_names_its_canvas_and_pages_to_the_server(
@@ -452,6 +453,49 @@ def test_a_page_that_keeps_polling_keeps_its_claim(agent, run_dir):
                       state=json.dumps({"page_id": "hidden"})) == {"claimed": True}
 
 
+def test_a_claim_lapses_when_its_page_stops_polling(agent, run_dir):
+    """A page that reloads, closes or switches canvas mid-request: the page
+    that replaces it may claim as soon as the old heartbeat is stale, not
+    after the 60 s TTL."""
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")
+    _parked(run_dir, "r1")
+    agent.main(action="canvas_shot_inbox", state=_page("old"))
+    claim = lambda p: agent.main(action="canvas_shot_claim", run_id="run",
+                                 request_id="r1", state=json.dumps({"page_id": p}))
+    assert claim("old") == {"claimed": True}
+    assert claim("new") == {"claimed": False}            # old page still beating
+    beat = os.path.join(agent._canvas_pages_dir(), "unstable", "demo", "old.json")
+    gone = time.time() - agent.CANVAS_PAGE_FRESH - 1
+    os.utime(beat, (gone, gone))
+    rows = agent.main(action="canvas_shot_inbox", state=_page("new"))["rows"]
+    assert [r["id"] for r in rows] == ["r1"] and not rows[0]["claimed"]
+    assert claim("new") == {"claimed": True}
+
+
+def test_a_decided_pointer_a_dead_server_left_is_swept(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    _pointer(agent, "r1")                                # created_at=1: long past the ceiling
+    _parked(run_dir, "r1")
+    (run_dir / "canvasshot" / "r1.res.json").write_text('{"error": "x"}', encoding="utf-8")
+    inbox = os.path.join(agent._canvas_pages_dir(), "inbox")
+    open(os.path.join(inbox, "r1.claim"), "w").close()
+    assert agent.main(action="canvas_shot_inbox", state=_page("p"))["rows"] == []
+    assert os.listdir(inbox) == []
+
+
+def test_a_nul_in_an_id_is_refused_not_raised(agent):
+    assert agent._bad_id("a\0b")
+    assert agent.main(action="canvas_shot_claim", run_id="run", request_id="r\0",
+                      state=json.dumps({"page_id": "p"}))["claimed"] is False
+
+
+def test_inbox_polls_leave_the_git_cache_alone():
+    from fused_render.server.routers import claude_agent as router
+    assert {"canvas_shot_inbox", "canvas_shot_claim"} <= router._NO_GIT_ACTIONS
+    assert not router._NO_GIT_ACTIONS & {"start", "send", "poll", "canvas_shot"}
+
+
 def test_the_open_canvas_ask_reads_as_a_blocked_task(agent):
     from fused_render.server.routers import tasks
     news = tasks._attention_of(agent, {"tool": agent.CANVAS_OPEN_TOOL,
@@ -469,6 +513,8 @@ def pages_env(tmp_path, agent, run_dir, monkeypatch):
     agent.RUNS = str(run_dir.parent)
     agent.SHOTS = str(tmp_path / "shots")
     os.makedirs(agent.SHOTS)
+    # A live run: a click on a dead one is recorded as `expired`, not a verdict.
+    monkeypatch.setattr(agent, "_alive", lambda _run_dir: True)
     env = {"FUSED_RENDER_CANVAS_CLONE": str(clone),
            "FUSED_RENDER_CANVAS_NODE": "",
            "FUSED_RENDER_CANVAS_PAGES": agent._canvas_pages_dir(),
@@ -569,10 +615,20 @@ def test_open_hands_the_request_to_the_page_that_opens(agent, run_dir, pages_env
     server = pages_env()
     pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
     ask = _ask(run_dir)
+    first = agent.main(action="canvas_shot_inbox", state=_page("x", name="other"))
+    assert first["rows"] == []
+    began = time.time()
     agent.main(action="decide", run_id="run", request_id=ask["id"], decision="allow")
-    # The canvas page comes up and finds the request in its inbox.
-    rows = agent.main(action="canvas_shot_inbox", state=_page("new"))["rows"]
-    assert len(rows) == 1
+    # The canvas page comes up and finds the request in its inbox, with a
+    # deadline re-set from the Open (the wait restarts there).
+    deadline = time.monotonic() + 5
+    rows = []
+    while time.monotonic() < deadline:
+        rows = agent.main(action="canvas_shot_inbox", state=_page("new"))["rows"]
+        if rows and rows[0]["deadline"] >= began + 6 - 1:
+            break
+        time.sleep(0.1)
+    assert len(rows) == 1 and rows[0]["deadline"] >= began + 6 - 1
     agent.main(action="canvas_shot", run_id="run", request_id=rows[0]["id"],
                state=json.dumps({"error": "drawn"}))
     assert json.loads(pending.result(10)["result"]["content"][0]["text"]) == {"error": "drawn"}
@@ -585,6 +641,43 @@ def test_an_unanswered_ask_is_not_now_at_the_ceiling(agent, run_dir, pages_env):
     assert "nobody answered" in err and "continue without a screenshot" in err
     ask = _ask(run_dir)
     assert agent._read_decision(str(run_dir / "perm"), ask["id"])["reason"] == "timeout"
+
+
+def test_a_stopped_ask_is_not_called_the_users_choice(agent, run_dir, pages_env):
+    server = pages_env()
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    ask = _ask(run_dir)
+    agent._write_decision(str(run_dir / "perm"), ask["id"],
+                          {"decision": "deny", "reason": "cancelled"})
+    err = json.loads(pending.result(10)["result"]["content"][0]["text"])["error"]
+    assert "chose not" not in err and "ended before anyone answered" in err
+
+
+def test_an_open_page_that_never_answers_is_not_told_to_open(agent, run_dir, pages_env):
+    """A page keeps beating but never answers: the sentence must not ask the
+    user to open a canvas that is open."""
+    server = pages_env(FUSED_RENDER_CANVAS_SHOT_TIMEOUT="3")
+    pending = server.send_async("tools/call", {"name": "canvas_screenshot", "arguments": {}})
+    deadline = time.monotonic() + 10
+    while not pending.done.is_set() and time.monotonic() < deadline:
+        _beat(agent, "mute")
+        time.sleep(0.2)
+    err = json.loads(pending.result(5)["result"]["content"][0]["text"])["error"]
+    assert "is open but did not answer" in err and "ask the user to open" not in err
+    assert os.listdir(run_dir / "perm") == []
+
+
+def test_the_inbox_dirs_are_private_at_every_level(tmp_path):
+    ps = _load("permission_server")
+    target = tmp_path / "a" / "b" / "inbox"
+    old = os.umask(0o002)
+    try:
+        ps._mkdir_private(str(target))
+        ps._mkdir_private(str(target))                   # exists: fine
+    finally:
+        os.umask(old)
+    for d in (tmp_path / "a", tmp_path / "a" / "b", target):
+        assert os.stat(d).st_mode & 0o777 == 0o700
 
 
 def test_a_wrong_udf_name_is_refused_with_the_nodes(agent, run_dir, pages_env):

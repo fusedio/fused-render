@@ -7,14 +7,18 @@
 //     responder (apps/canvases/canvas-page-shot-responder) takes the picture;
 //   * Not now sends `deny`; the tool returns at once and the agent carries on
 //     without a screenshot. No answer is the same as Not now, at the ceiling.
+//   * On the phone (the LAN door) there is no Open: the canvas page is not
+//     served there, and opening it on the Mac is not the phone's to do.
 import { useState } from "react";
 
 import { GateCard, type GateStatus } from "@platform/ui/GateCard";
+import { isLanHost } from "@platform/lib/host";
 import { cn } from "@platform/lib/utils";
 
 import type { ChatController } from "../protocol/controller-api";
 import type { PermissionRow } from "../protocol/types";
 import { useAgent } from "./agent-context";
+import { answerHeld, queuedAnswerText } from "./PermCard";
 
 /** The canvas page's path — `canvasPagePath(env, name)` with no options
  *  (apps/canvases/api; this app may not import that one, so a test pins the
@@ -30,8 +34,12 @@ export interface OpenCanvasCardProps {
 }
 
 function statusOf(row: PermissionRow): GateStatus {
+  // Answered but held by the folder's queue: the tool has not seen it yet.
+  if (answerHeld(row)) return { tone: "queued", text: queuedAnswerText(row.queuedAhead || "") };
   if (row.decision === "allow") return { tone: "allow", text: "✓ Opened" };
-  if (row.decision === "expired" || row.reason === "timeout" || row.reason === "abandoned") {
+  if (row.reason === "cancelled") return { tone: "expired", text: "◦ Stopped before you decided" };
+  // Only a click with no `reason` is the reader's Not now.
+  if (row.decision === "expired" || (row.decision && row.reason)) {
     return { tone: "expired", text: "◦ Unanswered — continued without a screenshot" };
   }
   if (row.decision) return { tone: "deny", text: "Not now — continued without a screenshot" };
@@ -45,7 +53,7 @@ export function OpenCanvasCard({ row, onDecide, navigate }: OpenCanvasCardProps)
   const input = row.input as Record<string, unknown>;
   const env = typeof input.env === "string" ? input.env : "";
   const name = typeof input.name === "string" ? input.name : "";
-  const resolved = !!row.decision;
+  const resolved = !!row.decision || answerHeld(row);
   const sendError = row.sendError || (threw ? "Could not send that: " + threw : "");
   const posting = sent && !sendError && !resolved;
 
@@ -80,7 +88,9 @@ export function OpenCanvasCard({ row, onDecide, navigate }: OpenCanvasCardProps)
       bodyWhat="input"
       resolved={resolved}
       actions={[
-        { key: "open", text: "Open", kind: "primary", disabled: posting || !env || !name, onClick: () => void send(true) },
+        ...(isLanHost()
+          ? []
+          : [{ key: "open", text: "Open", kind: "primary" as const, disabled: posting || !env || !name, onClick: () => void send(true) }]),
         { key: "not-now", text: "Not now", kind: "default", disabled: posting, onClick: () => void send(false) },
       ]}
       status={status}

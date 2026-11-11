@@ -16,6 +16,7 @@ const {
   claimDelayMs,
   claimDue,
   createPageShotResponder,
+  requestExpired,
   takeCanvasShot,
   workbenchErrorSentence,
 } = await import("./canvas-page-shot-responder");
@@ -207,4 +208,60 @@ test("takeCanvasShot: the picture's framing rides the answer (the tool's note sa
   } finally {
     globalThis.fetch = real;
   }
+});
+
+test("the server's deadline wins over created_at: a late Open is still served", () => {
+  const late = { ...row("r", SHOT_WAIT_MS + 5000), deadline: (NOW + 60_000) / 1000 };
+  expect(requestExpired(late, NOW)).toBe(false);
+  expect(requestExpired({ ...late, deadline: (NOW - 1) / 1000 }, NOW)).toBe(true);
+  expect(requestExpired(row("r", SHOT_WAIT_MS + 5000), NOW)).toBe(true);
+});
+
+test("a page that lost focus during the poll claims by its standing now", async () => {
+  const h = harness({ rows: [row("r", 300)] });
+  h.r = createPageShotResponder({
+    page: () => h.page,
+    now: () => NOW,
+    inbox: async () => {
+      h.page.focused = false; // focus moved while the poll was out
+      return [row("r", 300)];
+    },
+    claim: async (x) => {
+      h.log.push("claim " + x.id);
+      return true;
+    },
+    take: async () => ({ error: "x" }),
+    answer: async () => true,
+  });
+  await h.r.tick();
+  expect(h.log).toEqual([]);
+});
+
+test("a stopped page claims and captures nothing more", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((res) => (release = res));
+  const h = harness({ rows: [row("a")] });
+  h.r = createPageShotResponder({
+    page: () => h.page,
+    now: () => NOW,
+    inbox: async () => {
+      await gate;
+      return [row("a")];
+    },
+    claim: async (x) => {
+      h.log.push("claim " + x.id);
+      return true;
+    },
+    take: async (x) => {
+      h.log.push("take " + x.id);
+      return { error: "x" };
+    },
+    answer: async () => true,
+  });
+  const t = h.r.tick();
+  h.r.stop(); // the page left while its poll was out
+  release();
+  await t;
+  await h.r.idle();
+  expect(h.log).toEqual([]);
 });

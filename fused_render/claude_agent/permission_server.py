@@ -959,39 +959,40 @@ def _canvas_nodes() -> list:
                    and not n.startswith(".")}, key=str.casefold)
 
 
-def _open_pages(now=None) -> list:
-    """Every canvas page heard from within CANVAS_PAGE_FRESH, as
-    `(env, name, heartbeat)`."""
+def _open_pages(env: str, name: str, now=None) -> list:
+    """The heartbeats of every page of canvas `env/name` heard from within
+    CANVAS_PAGE_FRESH. Only that canvas's directory: this runs every tick."""
     now = time.time() if now is None else now
+    beats = os.path.join(CANVAS_PAGES_DIR, env, name)
     out = []
     try:
-        envs = os.listdir(CANVAS_PAGES_DIR)
+        files = [f for f in os.listdir(beats) if f.endswith(".json")]
     except OSError:
         return out
-    for env in envs:
-        if env == "inbox":
-            continue
+    for f in files:
+        path = os.path.join(beats, f)
         try:
-            names = os.listdir(os.path.join(CANVAS_PAGES_DIR, env))
-        except OSError:
-            continue
-        for name in names:
-            beats = os.path.join(CANVAS_PAGES_DIR, env, name)
-            try:
-                files = [f for f in os.listdir(beats) if f.endswith(".json")]
-            except OSError:
+            if now - os.path.getmtime(path) > CANVAS_PAGE_FRESH:
                 continue
-            for f in files:
-                path = os.path.join(beats, f)
-                try:
-                    if now - os.path.getmtime(path) > CANVAS_PAGE_FRESH:
-                        continue
-                    with open(path, encoding="utf-8") as fh:
-                        beat = json.load(fh)
-                except (OSError, ValueError):
-                    continue
-                out.append((env, name, beat if isinstance(beat, dict) else {}))
+            with open(path, encoding="utf-8") as fh:
+                beat = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        out.append(beat if isinstance(beat, dict) else {})
     return out
+
+
+def _mkdir_private(path: str) -> None:
+    """`path` and each missing parent `rwx------`: `os.makedirs` gives `mode`
+    to the leaf only, and a umask-wide parent is one agent.py's
+    `require_private` refuses — no page heartbeat could be written under it."""
+    parent = os.path.dirname(path)
+    if parent and parent != path and not os.path.isdir(parent):
+        _mkdir_private(parent)
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
 
 
 def _not_now_sentence(name: str, why: str) -> str:
@@ -1028,7 +1029,7 @@ def _ask_to_open(env: str, name: str, budget: float, shot_res: str) -> dict:
             decision = _read_decision(ask_res)
             if decision:
                 return decision
-            if any((e, n) == (env, name) for e, n, _b in _open_pages()):
+            if _open_pages(env, name):
                 return _await_answer(ask_res, 0, {"decision": "allow", "reason": "opened"})
             if _read_decision(shot_res):  # the run ended under the ask
                 return _await_answer(ask_res, 0, {"decision": "deny", "reason": "abandoned"})
@@ -1054,12 +1055,14 @@ def _await_canvas_page(req_id: str, res_path: str, what: str, udf: str) -> dict:
     inbox = os.path.join(CANVAS_PAGES_DIR, "inbox")
     pointer = os.path.join(inbox, req_id + ".json")
     started = time.monotonic()
+    row = {"run_id": os.path.basename(os.path.dirname(CANVAS_SHOT_DIR)),
+           "request_id": req_id, "env": env, "name": name,
+           "what": what, "udf": udf, "created_at": time.time(),
+           # When this server stops waiting: the page skips a row past it.
+           "deadline": time.time() + CANVAS_SHOT_TIMEOUT}
     try:
-        os.makedirs(inbox, mode=0o700, exist_ok=True)
-        _write_atomic(pointer, {
-            "run_id": os.path.basename(os.path.dirname(CANVAS_SHOT_DIR)),
-            "request_id": req_id, "env": env, "name": name,
-            "what": what, "udf": udf, "created_at": time.time()})
+        _mkdir_private(inbox)
+        _write_atomic(pointer, row)
     except OSError:
         pass  # no pointer: only the timeout below can answer
     try:
@@ -1073,7 +1076,7 @@ def _await_canvas_page(req_id: str, res_path: str, what: str, udf: str) -> dict:
             answer = _read_decision(res_path)
             if answer:
                 return answer
-            if any((e, n) == (env, name) for e, n, _b in _open_pages()):
+            if _open_pages(env, name):
                 last_seen = now
             if last_seen is None:
                 if now - started >= CANVAS_PAGE_GRACE:
@@ -1081,15 +1084,23 @@ def _await_canvas_page(req_id: str, res_path: str, what: str, udf: str) -> dict:
             elif now - last_seen >= CANVAS_PAGE_GRACE:
                 break
             if now - started >= CANVAS_SHOT_TIMEOUT:
-                return _await_answer(res_path, 0, _no_page_answer())
+                # A page kept beating but never answered: it is open, so
+                # "ask the user to open it" would be wrong.
+                return _await_answer(res_path, 0, {"error": _not_now_sentence(
+                    name, "the canvas page is open but did not answer within %d "
+                          "seconds" % CANVAS_SHOT_TIMEOUT)})
             time.sleep(POLL_INTERVAL)
         decision = _ask_to_open(env, name, CANVAS_SHOT_TIMEOUT - (time.monotonic() - started),
                                 res_path)
         if decision.get("decision") != "allow":
-            why = ("nobody answered the ask to open the canvas"
-                   if decision.get("reason") == "timeout"
-                   else "the user chose not to open the canvas")
-            return _await_answer(res_path, 0, {"error": _not_now_sentence(name, why)})
+            return _await_answer(res_path, 0, {"error": _not_now_sentence(
+                name, _ask_ended_why(decision))})
+        # The wait restarts here, so the page's deadline does too: a late
+        # Open must not hand the page a row it already counts as expired.
+        try:
+            _write_atomic(pointer, dict(row, deadline=time.time() + CANVAS_SHOT_TIMEOUT))
+        except OSError:
+            pass
         return _await_answer(res_path, CANVAS_SHOT_TIMEOUT, {
             "error": _not_now_sentence(name, "the canvas was opened but its page did "
                                        "not answer within %d seconds" % CANVAS_SHOT_TIMEOUT)})
@@ -1099,6 +1110,17 @@ def _await_canvas_page(req_id: str, res_path: str, what: str, udf: str) -> dict:
                 os.unlink(path)
             except OSError:
                 pass
+
+
+def _ask_ended_why(decision: dict) -> str:
+    """Why the open-canvas ask ended without Open. Only a click with no
+    `reason` is the user's Not now; Stop, an abandoned run or an expiry is
+    nobody's choice."""
+    if decision.get("decision") == "deny" and not decision.get("reason"):
+        return "the user chose not to open the canvas"
+    if decision.get("reason") == "timeout":
+        return "nobody answered the ask to open the canvas"
+    return "the ask to open the canvas ended before anyone answered"
 
 
 def _no_page_answer() -> dict:

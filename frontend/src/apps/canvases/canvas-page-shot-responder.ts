@@ -30,8 +30,11 @@ export const CAPTURE_RETRY_BUDGET_MS = 40_000;
  *  timeout sentence, so a capture started then could never be delivered. */
 export const SHOT_WAIT_MS = 100_000;
 
-/** Has the tool's own wait for this request run out? */
-export function requestExpired(row: Pick<CanvasShotRow, "created_at">, nowMs: number): boolean {
+/** Has the tool's own wait for this request run out? The server's
+ *  `deadline` when it sent one (it moves when the open-canvas ask is
+ *  answered, D1471), else `created_at` plus the wait. */
+export function requestExpired(row: Pick<CanvasShotInboxRow, "created_at" | "deadline">, nowMs: number): boolean {
+  if (row.deadline) return nowMs >= row.deadline * 1000;
   return !!row.created_at && nowMs >= row.created_at * 1000 + SHOT_WAIT_MS;
 }
 
@@ -131,6 +134,9 @@ export function createPageShotResponder(deps: PageResponderDeps) {
   /** A picture whose answer did not land: re-answered, never re-captured. */
   const taken = new Map<string, ShotAnswer>();
   let chain: Promise<void> = Promise.resolve();
+  /** The page is leaving: claim nothing more, start no capture. A claim it
+   *  holds lapses once its heartbeat goes stale (agent._canvas_claim_holder). */
+  let stopped = false;
 
   const answerFor = async (row: CanvasShotInboxRow): Promise<ShotAnswer> => {
     const p = deps.page();
@@ -146,6 +152,10 @@ export function createPageShotResponder(deps: PageResponderDeps) {
   const run = (row: CanvasShotInboxRow) => {
     busy.add(row.id);
     chain = chain.then(async () => {
+      if (stopped && !taken.has(row.id)) {
+        busy.delete(row.id);
+        return;
+      }
       // Queued behind slow captures until the tool's wait ran out: nothing
       // can be delivered, so skip it rather than spend a capture on it.
       if (requestExpired(row, deps.now())) {
@@ -180,20 +190,26 @@ export function createPageShotResponder(deps: PageResponderDeps) {
 
   return {
     async tick(): Promise<void> {
-      const p = deps.page();
-      const rows = await deps.inbox(p);
+      if (stopped) return;
+      const rows = await deps.inbox(deps.page());
       for (const row of rows) {
+        if (stopped) return;
         if (busy.has(row.id) || done.has(row.id)) continue;
         if (requestExpired(row, deps.now())) {
           done.add(row.id);
           continue;
         }
         if (!row.claimed && !taken.has(row.id)) {
-          if (!claimDue(row, p, deps.now())) continue;
-          if (!(await deps.claim(row))) continue;
+          // Standing as of NOW, not as of the poll: a page that lost focus
+          // meanwhile must not claim ahead of the one that gained it.
+          if (!claimDue(row, deps.page(), deps.now())) continue;
+          if (!(await deps.claim(row)) || stopped) continue;
         }
         void run(row);
       }
+    },
+    stop(): void {
+      stopped = true;
     },
     /** Everything queued so far has settled (tests). */
     idle: () => chain,
@@ -215,7 +231,11 @@ export function useCanvasPageShotResponder(opts: {
   error: string | null;
 }): void {
   const live = useRef(opts);
-  live.current = opts;
+  // Committed props only: a render React throws away must not reach a
+  // capture already in flight.
+  useEffect(() => {
+    live.current = opts;
+  });
   const { env, name } = opts;
   useEffect(() => {
     const pageId = newPageId();
@@ -264,6 +284,7 @@ export function useCanvasPageShotResponder(opts: {
     void loop();
     return () => {
       stopped = true;
+      responder.stop();
       if (timer) clearTimeout(timer);
     };
   }, [env, name]);

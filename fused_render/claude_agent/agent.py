@@ -58,7 +58,6 @@ Actions:
           "permissions": [{"id", "tool", "input", "decision", "scope",
                            "answers"}, ...],
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
-          "canvas_shot": [{"id", "what", "udf", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session"|"exact", answers=<json string, AskUserQuestion only>,
@@ -385,6 +384,10 @@ CANVAS_OPEN_TOOL = "OpenCanvas"
 # How long a page's claim on a canvas-shot request holds before another page
 # may take it over (a page that claimed and then closed).
 CANVAS_CLAIM_TTL = 60.0
+# permission_server.CANVAS_PAGE_FRESH (a test pins them): a claim whose page
+# has not polled for this long lapses at once — a page that reloaded, closed
+# or switched canvas never blocks the page that replaced it for the TTL.
+CANVAS_PAGE_FRESH = 4.0
 _CANVAS_CLAIM_LOCK = threading.Lock()
 # fusedcli.WORKBENCH_ENV_CHOICES and canvases._NAME_RE, duplicated: this file
 # never imports `fused_render` (a test pins the copies together).
@@ -1344,8 +1347,8 @@ def _bad_id(value: str) -> bool:
 
     run ids and session ids both arrive as URL params and both get joined onto
     a directory we own, so neither may carry a path separator or a leading dot
-    (nor `\\` or `:`)."""
-    return not value or value.startswith(".") or any(c in value for c in "/\\:")
+    (nor `\\`, `:` or a NUL, which `open` refuses with a ValueError)."""
+    return not value or value.startswith(".") or any(c in value for c in "/\\:\0")
 
 
 def _workdir(file: str) -> str:
@@ -4088,8 +4091,11 @@ def _canvas_shot_inbox(state: str) -> dict:
         if _bad_id(run_id) or _bad_id(request_id):
             continue
         shot_dir = _canvas_shot_dir(os.path.join(RUNS, run_id))
-        if not os.path.isfile(os.path.join(shot_dir, request_id + ".req.json")):
-            # Its run is gone: a pointer a dead permission server left behind.
+        if not os.path.isfile(os.path.join(shot_dir, request_id + ".req.json")) \
+                or _read_decision(shot_dir, request_id):
+            # Its run is gone, or it is answered (the permission server
+            # removes the pointer next). Past the tool's ceiling that server
+            # is dead: sweep what it left, so it is not re-read every poll.
             if now - float(req.get("created_at") or 0) > _canvas_shot_ceiling() + 60:
                 for ext in (".json", ".claim"):
                     try:
@@ -4097,9 +4103,7 @@ def _canvas_shot_inbox(state: str) -> dict:
                     except OSError:
                         pass
             continue
-        if _read_decision(shot_dir, request_id):
-            continue  # answered: the permission server removes the pointer next
-        holder = _canvas_claim_holder(inbox, request_id, now)
+        holder = _canvas_claim_holder(inbox, request_id, now, env, name)
         if holder and holder != page_id:
             continue
         if holder:
@@ -4114,26 +4118,42 @@ def _canvas_shot_inbox(state: str) -> dict:
                      "udf": str(req.get("udf") or ""),
                      "reason": str(req.get("reason") or ""),
                      "created_at": req.get("created_at") or 0,
+                     # When the tool stops waiting (epoch s): re-set when the
+                     # open-canvas ask is answered, since the wait restarts.
+                     "deadline": req.get("deadline") or 0,
                      "claimed": holder == page_id})
     return {"rows": rows}
 
 
-def _canvas_claim_holder(inbox: str, request_id: str, now: float) -> str:
-    """The page holding a live claim on `request_id`, or ""."""
+def _canvas_claim_holder(inbox: str, request_id: str, now: float,
+                         env: str, name: str) -> str:
+    """The page holding a live claim on `request_id`, or "". Live: renewed
+    within CANVAS_CLAIM_TTL, and its page's heartbeat (when there is one)
+    fresh within CANVAS_PAGE_FRESH."""
     path = os.path.join(inbox, request_id + ".claim")
     try:
         if now - os.path.getmtime(path) > CANVAS_CLAIM_TTL:
             return ""
         with open(path, encoding="utf-8") as fh:
-            return fh.read().strip()
+            holder = fh.read().strip()
     except OSError:
         return ""
+    if _bad_id(holder):
+        return ""
+    if env not in _CANVAS_ENVS or not _CANVAS_NAME_RE.match(name):
+        return holder
+    try:
+        beat = os.path.getmtime(os.path.join(_canvas_pages_dir(), env, name, holder + ".json"))
+    except OSError:
+        return holder  # no heartbeat to judge by: the TTL alone
+    return "" if now - beat > CANVAS_PAGE_FRESH else holder
 
 
 def _canvas_shot_claim(run_id: str, request_id: str, state: str) -> dict:
     """One page takes one request (D1471): `O_EXCL` on `inbox/<id>.claim`, so
     two pages on the same canvas never both capture. A claim older than
-    CANVAS_CLAIM_TTL (its page went away) may be taken over. The PAGE decides
+    CANVAS_CLAIM_TTL, or whose page stopped polling (`_canvas_claim_holder`),
+    may be taken over. The PAGE decides
     when to ask — a focused page at once, a hidden one later — so the front
     page wins."""
     page = _json_obj(state)
@@ -4141,14 +4161,20 @@ def _canvas_shot_claim(run_id: str, request_id: str, state: str) -> dict:
     if _bad_id(run_id) or _bad_id(request_id) or _bad_id(page_id):
         return {"claimed": False, "error": "bad claim"}
     inbox = os.path.join(_canvas_pages_dir(), "inbox")
-    if not os.path.isfile(os.path.join(inbox, request_id + ".json")):
+    try:
+        with open(os.path.join(inbox, request_id + ".json"), encoding="utf-8") as fh:
+            pointer = json.load(fh)
+    except (OSError, ValueError):
+        pointer = None
+    if not isinstance(pointer, dict):
         return {"claimed": False, "error": "unknown canvas-screenshot request"}
+    canvas = (str(pointer.get("env") or ""), str(pointer.get("name") or ""))
     path = os.path.join(inbox, request_id + ".claim")
     # One lock around check + stale-removal + create: pages reach this
     # process over HTTP, so concurrent claims can never remove each other's
     # fresh claim, and a half-written file is never read as stale.
     with _CANVAS_CLAIM_LOCK:
-        holder = _canvas_claim_holder(inbox, request_id, time.time())
+        holder = _canvas_claim_holder(inbox, request_id, time.time(), *canvas)
         if holder:
             return {"claimed": holder == page_id}
         try:
@@ -4156,7 +4182,8 @@ def _canvas_shot_claim(run_id: str, request_id: str, state: str) -> dict:
                 os.unlink(path)  # stale: its page stopped answering
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
-            return {"claimed": _canvas_claim_holder(inbox, request_id, time.time()) == page_id}
+            return {"claimed": _canvas_claim_holder(inbox, request_id, time.time(),
+                                                    *canvas) == page_id}
         except OSError as exc:
             return {"claimed": False, "error": str(exc)}
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -10898,7 +10925,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
-                "permissions": [], "app_state": [], "canvas_shot": [], "skills": [], "retry": None,
+                "permissions": [], "app_state": [], "skills": [], "retry": None,
                 "retry_total": 0, "retry_status": 0, "segments": [], "inbox": []}
 
     # A page may only attach to a run about ITS OWN target. Run ids are global
@@ -10931,7 +10958,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 and not _folder_and_member(run_file, file):
             return {"text": "", "done": True, "session_id": "",
                     "error": "run is for another target",
-                    "permissions": [], "app_state": [], "canvas_shot": [], "skills": [], "retry": None,
+                    "permissions": [], "app_state": [], "skills": [], "retry": None,
                     "retry_total": 0, "retry_status": 0, "segments": [],
                     "inbox": []}
 
@@ -11653,7 +11680,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
             "app_state": app_state, "mode": _live_mode(meta, permissions),
-            "canvas_shot": _canvas_shot_requests(run_dir),
             "skills": skills, "retry": retry, "retry_total": retry_total,
             "retry_status": retry_status,
             # The plan window as of the last API response (`_quota_info`).
