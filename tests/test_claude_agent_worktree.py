@@ -211,3 +211,91 @@ def test_task_record_carries_isolation(agent, run_dir):
         {"tu": "Bash"}, {"tu": {"isolation": "worktree"}}, 1.0)
     assert reg2["k"]["isolation"] == ""
     assert agent._upgrade_task_record("k", {"isolation": "worktree"})["isolation"] == "worktree"
+
+
+# ------------------------------------------- failed calls never become hints
+
+def _tool_result(tid, is_error=False):
+    return {"type": "user", "session_id": "s", "message": {
+        "role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tid, "is_error": is_error,
+             "content": "refused" if is_error else "ok"}]}}
+
+
+_BASH_ADD = {"command": "git worktree add -q -b wt-x /r/.claude/worktrees/x origin/main"}
+
+
+def _call_rows(name, inp, tid, is_error):
+    return [_assistant_tool(name, inp, tid), _tool_result(tid, is_error)]
+
+
+@pytest.mark.parametrize("name,inp", [
+    ("Bash", _BASH_ADD),
+    ("EnterWorktree", {"path": "/r/.claude/worktrees/x"}),
+])
+def test_errored_worktree_call_leaves_no_hint(agent, run_dir, name, inp):
+    rows = _call_rows(name, inp, "t1", True)
+    assert _poll(agent, run_dir, rows)["worktree_hint"] is None
+
+
+@pytest.mark.parametrize("name,inp", [
+    ("Bash", _BASH_ADD),
+    ("EnterWorktree", {"path": "/r/.claude/worktrees/x"}),
+])
+def test_errored_worktree_call_leaves_no_prev_under_an_agent_hint(agent, run_dir, name, inp):
+    rows = (_call_rows(name, inp, "t1", True)
+            + [_assistant_tool("Agent", {"isolation": "worktree", "description": "D"}, "t2")])
+    hint = _poll(agent, run_dir, rows)["worktree_hint"]
+    assert hint["via"] == "agent" and "prev" not in hint
+
+
+def test_errored_worktree_call_restores_the_previous_standing_hint(agent, run_dir):
+    rows = (_call_rows("Bash", {"command": "git worktree add /r/a -b a"}, "t1", False)
+            + _call_rows("Bash", _BASH_ADD, "t2", True)
+            + [_assistant_tool("Agent", {"isolation": "worktree"}, "t3")])
+    hint = _poll(agent, run_dir, rows)["worktree_hint"]
+    assert hint["prev"]["path"] == "/r/a"
+
+
+def test_successful_worktree_call_still_yields_the_hint(agent, run_dir):
+    hint = _poll(agent, run_dir, _call_rows("Bash", _BASH_ADD, "t1", False))["worktree_hint"]
+    assert hint["via"] == "bash" and hint["path"] == "/r/.claude/worktrees/x"
+    # in flight (no result yet) it already stands
+    hint = _poll(agent, run_dir, [_assistant_tool("Bash", _BASH_ADD, "t1")])["worktree_hint"]
+    assert hint["path"] == "/r/.claude/worktrees/x"
+
+
+def test_history_drops_errored_worktree_hints(agent, tmp_path):
+    agent.RUNS = str(tmp_path / "runs")
+    os.makedirs(agent.RUNS)
+    work = tmp_path / "repo"
+    work.mkdir()
+    target = work / "x.py"
+    target.write_text("")
+    path = os.path.join(agent.PROJECTS, agent._munge(str(work)), "sid.jsonl")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    def rows(is_error):
+        out = [{"type": "user", "uuid": "u0", "message": {"role": "user", "content": "go"}}]
+        for i, (name, inp) in enumerate([("Bash", _BASH_ADD),
+                                         ("Agent", {"isolation": "worktree"})]):
+            out.append({"type": "assistant", "uuid": f"a{i}", "message": {
+                "role": "assistant", "content": [
+                    {"type": "tool_use", "id": f"tu{i}", "name": name, "input": inp}]}})
+            out.append({"type": "user", "uuid": f"r{i}", "message": {
+                "role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": f"tu{i}",
+                     "is_error": is_error and i == 0, "content": "x"}]}})
+        return out
+
+    def write(is_error):
+        with open(path, "w", encoding="utf-8") as fh:
+            for r in rows(is_error):
+                fh.write(json.dumps(r) + "\n")
+
+    write(True)
+    hint = agent._history(str(target), "sid")["worktree_hint"]
+    assert hint["via"] == "agent" and "prev" not in hint
+    write(False)
+    assert agent._history(str(target), "sid")["worktree_hint"]["prev"]["path"] == \
+        "/r/.claude/worktrees/x"
