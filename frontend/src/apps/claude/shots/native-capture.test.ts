@@ -33,13 +33,17 @@ const {
   captureNative,
   frameOffset,
   isNativeOff,
+  isWindowShotOff,
   learnTopOrigin,
   noteSourcesProbe,
   resetNativeOffForTests,
   resetTopOriginForTests,
+  resetWindowOffForTests,
   screenRect,
   topOriginForTests,
   watchTopOrigin,
+  windowFrame,
+  windowTitle,
 } = await import("./native-capture");
 const { SHOT_NATIVE_MIN } = await import("./types");
 
@@ -168,7 +172,7 @@ function recordingBody(): Rec & { attrs: Record<string, string> } {
 
 interface FetchCall {
   url: string;
-  body: { rect: number[]; dpr: number };
+  body: { rect: number[]; dpr: number; window?: number[]; title?: string };
 }
 let fetches: FetchCall[] = [];
 let respond: () => Promise<unknown> = () => Promise.reject(new Error("no responder"));
@@ -178,6 +182,7 @@ beforeEach(() => {
   // may leak into the next test — a sticky `nativeOff` would make every later
   // capture answer null before it asked anything.
   resetNativeOffForTests();
+  resetWindowOffForTests();
   resetTopOriginForTests();
   drawn = [];
   canvases = [];
@@ -325,6 +330,15 @@ describe("screenRect (T:9838)", () => {
     learnTopOrigin({ screenX: 500, clientX: 100, screenY: 300, clientY: 50 }, topWin());
     const box = screenRect(makeFrame());
     expect(box?.rect).toEqual([400 + 103, 250 + 54, 400, 300]);
+  });
+
+  test("a learned origin follows a window moved since (another display)", () => {
+    const win = topWin();
+    learnTopOrigin({ screenX: 500, clientX: 100, screenY: 300, clientY: 50 }, win);
+    (win as unknown as Rec).screenX = 40 + 1700;
+    (win as unknown as Rec).screenY = 90 + 1400;
+    const frame = makeFrame({ win });
+    expect(screenRect(frame)?.rect).toEqual([400 + 1700 + 103, 250 + 1400 + 54, 400, 300]);
   });
 
   test("the frame's CLIENT size wins over its client rect", () => {
@@ -503,6 +517,59 @@ describe("captureNative the success road (T:9878, 9884, 9944)", () => {
     expect(out?.incomplete).toBe(false);
     expect(out?.blanks).toEqual([]);
     expect(out?.imagesMissing).toBe(0);
+  });
+
+  test("the window road (D1472) posts the top window's box beside the rect; a 409 shuts only that road; a refusal never falls back", async () => {
+    respond = () => Promise.resolve(reply(200));
+    const out = await captureNative(makeFrame(), undefined, { window: true });
+    expect(out?.width).toBe(400);
+    expect(fetches[0].url).toBe("/api/capture/shot-window");
+    // The box the server finds the window by: screenX/Y, outerWidth/Height.
+    expect(fetches[0].body).toEqual({ rect: [143, 204, 400, 300], dpr: 2, window: [40, 90, 1200, 860] });
+    expect(windowFrame(makeFrame())).toEqual([40, 90, 1200, 860]);
+    // No window still on this platform (Linux, macOS 13, an older server):
+    // remembered, never asked again — and the region still is untouched.
+    respond = () => Promise.resolve(reply(409));
+    expect(await captureNative(makeFrame(), undefined, { window: true })).toBeNull();
+    expect(isWindowShotOff()).toBe(true);
+    expect(isNativeOff()).toBe(false);
+    expect(await captureNative(makeFrame(), undefined, { window: true })).toBeNull();
+    expect(fetches.length).toBe(2);
+    respond = () => Promise.resolve(reply(200));
+    expect((await captureNative(makeFrame()))?.width).toBe(400);
+    expect(fetches[2].url).toBe("/api/capture/shot-region");
+    expect(fetches[2].body.window).toBeUndefined();
+    // Window-ONLY: a refusal about this shot (no window at the box) is null,
+    // not the region still — whose pixels would be whatever is in front.
+    resetWindowOffForTests();
+    respond = () => Promise.resolve(reply(400));
+    expect(await captureNative(makeFrame(), undefined, { window: true })).toBeNull();
+    expect(fetches.length).toBe(4);
+    expect(fetches[3].url).toBe("/api/capture/shot-window");
+    expect(isWindowShotOff()).toBe(false);
+    // A top window whose box is not readable (a cross-origin ancestor): no
+    // request at all; nor one whose numbers are not numbers.
+    expect(await captureNative(makeFrame({ win: childWin(topWin(), undefined) }), undefined, { window: true })).toBeNull();
+    expect(windowFrame(makeFrame({ win: topWin({ outerWidth: NaN }) }))).toBeNull();
+    expect(windowFrame(makeFrame({ win: topWin({ outerHeight: 0 }) }))).toBeNull();
+    expect(fetches.length).toBe(4);
+    // An older server without the route: a 404 shuts the window road like a
+    // 409 does; a 500 is this shot only.
+    respond = () => Promise.resolve(reply(500));
+    expect(await captureNative(makeFrame(), undefined, { window: true })).toBeNull();
+    expect(isWindowShotOff()).toBe(false);
+    respond = () => Promise.resolve(reply(404));
+    expect(await captureNative(makeFrame(), undefined, { window: true })).toBeNull();
+    expect(isWindowShotOff()).toBe(true);
+    expect(isNativeOff()).toBe(false);
+    resetWindowOffForTests();
+    // The top document's title rides along as the second key when there is one.
+    respond = () => Promise.resolve(reply(200));
+    const titled = makeFrame({ win: topWin({ document: { title: "HLS Data – Fused Render" } }) });
+    expect(windowTitle(titled)).toBe("HLS Data – Fused Render");
+    expect((await captureNative(titled, undefined, { window: true }))?.width).toBe(400);
+    expect(fetches[6].body.title).toBe("HLS Data – Fused Render");
+    expect(fetches[0].body.title).toBeUndefined();
   });
 
   test("the overlays are RESTORED even when the request fails", async () => {

@@ -93,13 +93,17 @@ export {
   flashOverlays,
   frameOffset,
   isNativeOff,
+  isWindowShotOff,
   learnTopOrigin,
   noteSourcesProbe,
   screenRect,
   resetNativeOffForTests,
   resetTopOriginForTests,
+  resetWindowOffForTests,
   topOriginForTests,
   watchTopOrigin,
+  windowFrame,
+  windowTitle,
   type NativeCaptureOptions,
 } from "./native-capture";
 

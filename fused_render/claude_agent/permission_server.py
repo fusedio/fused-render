@@ -1233,6 +1233,9 @@ def _handle_canvas_shot(args: dict) -> dict:
     shot_udf = answer.get("udf") or udf or None
     note = {"what": what, "udf": shot_udf, "path": image, "framing": framing,
             "note": _framing_note(what, framing, shot_udf or "")}
+    caveat = answer.get("note")
+    if isinstance(caveat, str) and caveat:
+        note["caveat"] = caveat
     return {"content": [
         {"type": "image", "data": base64.b64encode(data).decode("ascii"),
          "mimeType": mime},

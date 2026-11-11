@@ -69,7 +69,7 @@ export function claimDue(row: Pick<CanvasShotRow, "created_at">, p: PageStanding
 }
 
 export type ShotAnswer =
-  | { image: string; mime: string; udf?: string; framing?: string }
+  | { image: string; mime: string; udf?: string; framing?: string; note?: string }
   | { error: string };
 
 /** Take the picture the row asks for and put it where the tool can read it:
@@ -103,6 +103,7 @@ export async function takeCanvasShot(shot: CanvasShot, row: Pick<CanvasShotRow, 
       mime: a.blob.type || "image/png",
       ...(row.udf ? { udf: row.udf } : {}),
       ...(a.framing ? { framing: a.framing } : {}),
+      ...(a.note ? { note: a.note } : {}),
     };
   } catch (err) {
     return { error: "the picture was taken but could not be saved (" + (err instanceof Error ? err.message : String(err)) + ")" };

@@ -1030,6 +1030,58 @@ def shot_region(body: dict) -> bytes:
             pass
 
 
+def shot_window(body: dict) -> bytes:
+    """The pixels of a browser-measured screen rect, read off THE WINDOW the
+    page lives in rather than off the screen (D1472) — `{rect, window, dpr}`,
+    PNG bytes back, the same contract as `shot_region` with one more box:
+    `window` is the page's own window frame as the browser reports it
+    (`screenX/Y`, `outerWidth/Height`, screen points), which is how the
+    backend finds the window without an id the page cannot know.
+
+    What it buys over `shot_region`: the window is drawn from its own backing
+    store, so it may sit behind another app, on another Space or across two
+    displays and the picture is still the page. Everything else is
+    unchanged — the grant, the units, the refusal shape. A backend with no
+    `shot_window` hook (Linux, a Mac below 14) is `Unsupported` (409): the
+    page remembers and takes the region still instead. A rect not inside
+    the window is a 400, as a rect off its display is for `shot_region`.
+    """
+    import tempfile
+
+    rect = _rect(body.get("rect"))
+    if rect is None:
+        raise CaptureError("'rect' is required")
+    try:
+        window = _rect(body.get("window"))
+    except CaptureError as e:
+        raise CaptureError(str(e).replace("'rect'", "'window'")) from None
+    if window is None:
+        raise CaptureError("'window' is required")
+    # `dpr` rides along for symmetry with `shot_region` and is not read: the
+    # window still's scale comes from the image itself (`_darwin.crop_box`).
+    # `title` — the page's `document.title` — tells two windows at one box
+    # apart (`_darwin.pick_window`); optional, a page may have none.
+    title = body.get("title")
+    title = title.strip() if isinstance(title, str) else ""
+    backend = _backend()
+    hook = getattr(backend, "shot_window", None)
+    if hook is None:
+        raise Unsupported("this platform has no window still — the region still is the one to take")
+    fd, out = tempfile.mkstemp(prefix="fused-shot-", suffix=".png")
+    os.close(fd)
+    try:
+        with _native():
+            hook(out, {"path": out, "rect": list(rect), "window": list(window),
+                       "title": title})
+        with open(out, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+
+
 def open_settings() -> None:
     """Open the OS pane where Screen Recording is granted (SPEC §45).
 

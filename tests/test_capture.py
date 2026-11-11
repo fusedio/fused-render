@@ -1795,3 +1795,301 @@ def test_a_linux_region_shot_is_a_409_not_a_crop_of_another_window(
     assert res.status_code == 409
     assert "Linux" in res.json()["error"]
     assert called == []
+
+
+# ------------------------------------------------------------- window still
+# `POST /api/capture/shot-window` (D1472): the page names its own window by
+# the box the browser reports, and the backend photographs THAT window rather
+# than the pixels under a rect of the screen.
+
+
+def test_a_window_shot_goes_through_the_backend_hook_with_both_boxes(
+        backend, client):
+    seen = []
+
+    def shot_window(out, spec):
+        seen.append(spec)
+        with open(out, "wb") as fh:
+            fh.write(b"png-window")
+
+    backend.shot_window = shot_window
+    res = client.post("/api/capture/shot-window",
+                      json={"rect": [100, 200, 400, 300], "dpr": 2,
+                            "window": [40, 90, 1200, 860]}, headers=H)
+    assert res.status_code == 200, res.text
+    assert res.headers["content-type"] == "image/png"
+    assert res.content == b"png-window"
+    assert seen[0]["rect"] == [100.0, 200.0, 400.0, 300.0]
+    assert seen[0]["window"] == [40.0, 90.0, 1200.0, 860.0]
+    assert seen[0]["title"] == ""   # none sent: matched by box alone
+    res = client.post("/api/capture/shot-window",
+                      json={"rect": [100, 200, 400, 300], "dpr": 2,
+                            "window": [40, 90, 1200, 860], "title": " HLS Data "},
+                      headers=H)
+    assert res.status_code == 200
+    assert seen[1]["title"] == "HLS Data"
+    # The temp file is gone once the bytes are read.
+    assert not os.path.exists(seen[0]["path"])
+
+
+def test_a_window_shot_needs_both_boxes_and_is_guarded(backend, client):
+    backend.shot_window = lambda out, spec: None
+    ok = {"rect": [0, 0, 10, 10], "window": [0, 0, 10, 10]}
+    assert client.post("/api/capture/shot-window", json=ok).status_code == 403
+    res = client.post("/api/capture/shot-window",
+                      json={"rect": [0, 0, 10, 10]}, headers=H)
+    assert res.status_code == 400 and "'window' is required" in res.json()["error"]
+    res = client.post("/api/capture/shot-window",
+                      json={"window": [0, 0, 10, 10]}, headers=H)
+    assert res.status_code == 400 and "'rect' is required" in res.json()["error"]
+    res = client.post("/api/capture/shot-window",
+                      json={"rect": [0, 0, 10, 10], "window": "nope"}, headers=H)
+    assert res.status_code == 400 and "'window' must be" in res.json()["error"]
+    res = client.post("/api/capture/shot-window",
+                      json={"rect": [0, 0, 10, 10], "window": [0, 0, 0, 10]}, headers=H)
+    assert res.status_code == 400 and "'window' width and height" in res.json()["error"]
+    # A backend failure that is not a refusal is a 500 with the reason, not a 409.
+    def boom(out, spec):
+        raise RuntimeError("the window screenshot came back empty")
+    backend.shot_window = boom
+    res = client.post("/api/capture/shot-window", json=ok, headers=H)
+    assert res.status_code == 500 and "came back empty" in res.json()["error"]
+
+
+def test_a_backend_without_a_window_still_is_a_409_the_page_remembers(
+        backend, client):
+    """The stub has no `shot_window`, like Linux: 409, not a 500, so the page
+    shuts that road and takes the region still."""
+    assert not hasattr(backend, "shot_window")
+    res = client.post("/api/capture/shot-window",
+                      json={"rect": [0, 0, 10, 10], "window": [0, 0, 10, 10]},
+                      headers=H)
+    assert res.status_code == 409
+    assert "region still" in res.json()["error"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_pick_window_matches_the_pages_box_and_nothing_else():
+    from fused_render.capture import _darwin
+
+    def win(id, frame, layer=0, onscreen=True):
+        return {"id": id, "frame": frame, "layer": layer, "onscreen": onscreen}
+
+    wins = [win(1, (0, 0, 3440, 30)),
+            win(2, (1787, 68, 1610, 1073)),
+            win(3, (1830, 118, 1610, 1073), onscreen=False),
+            win(4, (1787, 68, 1610, 1073), layer=25)]
+    # The page's own box.
+    assert _darwin.pick_window(wins, (1787, 68, 1610, 1073))["id"] == 2
+    # A title bar the browser counted differently: within the slack.
+    assert _darwin.pick_window(wins, (1787, 96, 1610, 1045))["id"] == 2
+    # The second window of the same size, 50 px over (another Space, off
+    # screen): its own box wins over the nearer on-screen one.
+    assert _darwin.pick_window(wins, (1830, 118, 1610, 1073))["id"] == 3
+    # Nothing near: None, never the least-wrong window.
+    assert _darwin.pick_window(wins, (10, 10, 500, 500)) is None
+    # A status item or a sheet at the very box is never the page's window.
+    assert _darwin.pick_window([wins[3]], (1787, 68, 1610, 1073)) is None
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_pick_window_reads_the_title_as_the_second_key():
+    """Two windows at one box (a second window dropped on the same spot,
+    2026-10-31): the one whose title shows the page wins; a titled window
+    showing something else — another tab in front — is refused rather than
+    photographed; untitled windows match by box alone."""
+    from fused_render.capture import _darwin
+
+    def win(id, frame, title, onscreen=True):
+        return {"id": id, "frame": frame, "title": title, "layer": 0, "onscreen": onscreen}
+
+    box = (200, 120, 1300, 900)
+    cover = win(1, box, "about:blank - Google Chrome for Testing")
+    page = win(2, box, "HLS Data – Fused Render - Google Chrome for Testing")
+    untitled = win(3, box, "")
+    # The page's window, whichever order the walk lists them in.
+    assert _darwin.pick_window([cover, page], box, "HLS Data – Fused Render")["id"] == 2
+    assert _darwin.pick_window([page, cover], box, "HLS Data – Fused Render")["id"] == 2
+    # The page's title is the HEAD of the window's: a page whose title
+    # merely contains it further in is another page.
+    longer = win(4, box, "Settings – Tasks – Fused Render - Google Chrome")
+    assert _darwin.pick_window([longer], box, "Tasks – Fused Render") is None
+    assert _darwin.pick_window([win(5, box, "Tasks – Fused Render - Google Chrome")], box,
+                               "Tasks – Fused Render")["id"] == 5
+    # Non-ASCII titles compare as text.
+    assert _darwin.pick_window([win(6, box, "Карта 🗺 – Fused Render")], box, "Карта 🗺")["id"] == 6
+    # Only a window showing another page at the box: refused.
+    assert _darwin.pick_window([cover], box, "HLS Data – Fused Render") is None
+    # An untitled window (an app window with no title) matches by box.
+    assert _darwin.pick_window([untitled], box, "HLS Data – Fused Render")["id"] == 3
+    # A titled match beats an untitled one at the same box.
+    assert _darwin.pick_window([untitled, page], box, "HLS Data – Fused Render")["id"] == 2
+    # No page title: the box alone, as before.
+    assert _darwin.pick_window([cover], box, "")["id"] == 1
+    assert _darwin.pick_window([cover], box, None)["id"] == 1
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_crop_box_scales_by_the_still_and_clamps_to_the_window():
+    from fused_render.capture import _darwin
+
+    # A Retina still, 2 px per point; the rect 40 / 120 points into the window.
+    assert _darwin.crop_box((1787, 68, 1610, 1073), (1827, 188, 600, 400),
+                            (3220, 2146)) == (80, 240, 1200, 800)
+    # A still ScreenCaptureKit rounded a pixel short: scaled by the image.
+    assert _darwin.crop_box((0, 0, 100, 100), (0, 0, 100, 100),
+                            (199, 199)) == (0, 0, 199, 199)
+    # Past the window's edge: REFUSED, never clamped — the page draws the
+    # answer at the rect's size, and a clamped still would be stretched.
+    assert _darwin.crop_box((0, 0, 100, 100), (50, 50, 100, 100),
+                            (100, 100)) is None
+    # A half-point over the edge is the browser's rounding, not an overlap.
+    assert _darwin.crop_box((0, 0, 100, 100), (0.6, 0, 100, 100),
+                            (100, 100)) == (1, 0, 99, 100)
+    # Entirely outside: nothing to crop.
+    assert _darwin.crop_box((0, 0, 100, 100), (200, 200, 10, 10),
+                            (100, 100)) is None
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_the_scwindow_for_a_live_pick_comes_from_a_cached_list_refreshed_once(monkeypatch):
+    """The live window list picks the id; ScreenCaptureKit's list only
+    supplies the object. A cached copy serves a hit; an id it lacks (a
+    window newer than the copy) is looked for once more on a fresh walk; a
+    walk that does not answer is skipped, never fatal."""
+    from fused_render.capture import _darwin
+
+    walks = []
+    lists = {"ours": {}, "all": {7: "W7"}}
+
+    def shareable(ours):
+        walks.append("ours" if ours else "all")
+        if ours and lists["ours"] is None:
+            raise _darwin._Timeout("listing windows did not answer within 10s")
+        return dict(lists["ours" if ours else "all"])
+
+    monkeypatch.setattr(_darwin, "_shareable_windows", shareable)
+    monkeypatch.setattr(_darwin, "_can_walk_ours", lambda: True)
+    _darwin._window_cache.clear()
+    assert _darwin._sc_window(7) == "W7"
+    assert walks == ["ours", "all"]
+    # Cached hit: no walk.
+    assert _darwin._sc_window(7) == "W7"
+    assert walks == ["ours", "all"]
+    # A new window: each cached list is walked afresh once, and the id is found.
+    lists["all"][8] = "W8"
+    assert _darwin._sc_window(8) == "W8"
+    assert walks == ["ours", "all", "ours", "all"]
+    # Not there at all: one fresh walk per list, then None — never a loop.
+    del walks[:]
+    assert _darwin._sc_window(9) is None
+    assert walks == ["ours", "all"]
+    # The own-process walk hanging is skipped, not fatal — and remembered:
+    # the next lookup never asks it again.
+    lists["ours"] = None
+    _darwin._window_cache.clear()
+    monkeypatch.setattr(_darwin, "_ours_walk_off", False)
+    del walks[:]
+    assert _darwin._sc_window(7) == "W7"
+    assert walks == ["ours", "all"] and _darwin._ours_walk_off is True
+    _darwin._window_cache.clear()
+    del walks[:]
+    assert _darwin._sc_window(7) == "W7"
+    assert walks == ["all"]
+    _darwin._window_cache.clear()
+    monkeypatch.setattr(_darwin, "_ours_walk_off", False)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_shot_window_picks_live_then_captures_and_retries_only_a_capture_failure(
+        monkeypatch, tmp_path):
+    """The orchestration: the live list picks the window (title and all),
+    ScreenCaptureKit supplies the object, a refusal about the rect and a call
+    that never answered are final, and only a capture failure gets one more
+    try — on a fresh object, when the walk still has the window."""
+    from fused_render.capture import CaptureError, _darwin
+
+    live = [{"id": 7, "frame": (0.0, 0.0, 800.0, 600.0), "title": "Canvas – Fused Render",
+             "layer": 0, "onscreen": True}]
+    monkeypatch.setattr(_darwin, "_cg_windows", lambda: live)
+    objects = {"n": 0}
+
+    def sc_window(wid):
+        objects["n"] += 1
+        return "SC%d" % objects["n"] if wid == 7 else None
+
+    monkeypatch.setattr(_darwin, "_sc_window", sc_window)
+    shots = []
+
+    def shot(out, win, rect, spec):
+        shots.append(win["window"])
+        if len(shots) == 1 and spec.get("fail_first"):
+            raise RuntimeError("the window screenshot came back empty")
+        return {"width": 1, "height": 1}
+
+    monkeypatch.setattr(_darwin, "_sck_window_shot", shot)
+    out = str(tmp_path / "x.png")
+    base = {"rect": [10, 10, 100, 100], "window": [0, 0, 800, 600]}
+    # Title and box match: one shot on the object the walk gave.
+    assert _darwin.shot_window(out, {**base, "title": "Canvas"}) == {"width": 1, "height": 1}
+    assert shots == ["SC1"]
+    # Another page's title at the box: refused before any capture.
+    with pytest.raises(CaptureError):
+        _darwin.shot_window(out, {**base, "title": "Elsewhere"})
+    assert shots == ["SC1"]
+    # A capture failure: once more on a fresh object.
+    del shots[:]
+    assert _darwin.shot_window(out, {**base, "title": "", "fail_first": True})["width"] == 1
+    assert shots == ["SC2", "SC3"]
+    # A call that never answered is not retried.
+    del shots[:]
+
+    def hangs(out, win, rect, spec):
+        shots.append(win["window"])
+        raise _darwin._Timeout("taking the window screenshot did not answer within 15s")
+
+    monkeypatch.setattr(_darwin, "_sck_window_shot", hangs)
+    with pytest.raises(_darwin._Timeout):
+        _darwin.shot_window(out, {**base, "title": ""})
+    assert len(shots) == 1
+    # ScreenCaptureKit will not share the window the live list chose.
+    monkeypatch.setattr(_darwin, "_sc_window", lambda wid: None)
+    with pytest.raises(RuntimeError):
+        _darwin.shot_window(out, {**base, "title": ""})
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_cg_windows_reads_the_live_list_and_skips_rows_it_cannot_read(monkeypatch):
+    from fused_render.capture import _darwin
+
+    rows = [
+        {"kCGWindowNumber": 7, "kCGWindowBounds": {"X": -1710, "Y": -200, "Width": 800, "Height": 600},
+         "kCGWindowName": "Canvas – Fused Render", "kCGWindowLayer": 0, "kCGWindowIsOnscreen": True},
+        {"kCGWindowNumber": 8, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 100, "Height": 20}},
+        {"kCGWindowNumber": 9},                      # no bounds: skipped
+        {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1, "Height": 1}},   # no number: skipped
+    ]
+    monkeypatch.setattr(_darwin.Quartz, "CGWindowListCopyWindowInfo", lambda opts, wid: rows)
+    got = _darwin._cg_windows()
+    # A display left of and above the main one gives negative coordinates,
+    # kept as they are: the browser's screen coordinates are in the same space.
+    assert got[0] == {"id": 7, "frame": (-1710.0, -200.0, 800.0, 600.0),
+                      "title": "Canvas – Fused Render", "layer": 0, "onscreen": True}
+    assert got[1] == {"id": 8, "frame": (0.0, 0.0, 100.0, 20.0), "title": "", "layer": 0,
+                      "onscreen": False}
+    assert len(got) == 2
+    # And a crop in that negative space lands where it should.
+    assert _darwin.crop_box((-1710, -200, 800, 600), (-1700, -190, 100, 50), (1600, 1200)) == (20, 20, 200, 100)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_a_mac_below_14_has_no_window_still(monkeypatch, tmp_path):
+    """`SCScreenshotManager` is the only window still here; the region
+    still covers 13 and the page falls back to it on the 409."""
+    from fused_render.capture import _darwin
+
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (13, 6))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("13.6", "", ""))
+    with pytest.raises(capture.Unsupported):
+        _darwin.shot_window(str(tmp_path / "x.png"),
+                            {"rect": [0, 0, 1, 1], "window": [0, 0, 1, 1]})

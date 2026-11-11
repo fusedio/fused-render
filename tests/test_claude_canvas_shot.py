@@ -123,7 +123,8 @@ def test_a_canvas_screenshot_is_answered_by_the_page_with_a_picture(
         fh.write(PNG)
     answered = agent.main(action="canvas_shot", run_id="run", request_id=req["id"],
                           state=json.dumps({"image": image, "mime": "image/png",
-                                            "udf": "udf_1"}))
+                                            "udf": "udf_1",
+                                            "note": "window was minimized; may be stale"}))
     assert answered == {"answered": req["id"]}
 
     content = pending.result(10)["result"]["content"]
@@ -132,6 +133,9 @@ def test_a_canvas_screenshot_is_answered_by_the_page_with_a_picture(
     assert base64.b64decode(content[0]["data"]) == PNG
     note = json.loads(content[1]["text"])
     assert note["what"] == "udf" and note["udf"] == "udf_1" and note["path"] == image
+    # The page's caveat (D1472: a still of a hidden window) rides beside the
+    # picture, verbatim.
+    assert note["caveat"] == "window was minimized; may be stale"
 
 
 def test_a_refusal_from_the_page_reaches_the_model_as_a_sentence(
@@ -218,7 +222,12 @@ def test_a_canvas_target_is_told_about_the_tool_and_a_plain_one_is_not(
     (clone / "udf_1.py").write_text("def udf(): pass\n", encoding="utf-8")
     monkeypatch.setattr(agent, "_canvases_root", lambda: str(root))
     tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.CANVAS_SHOT_TOOL)
-    assert tool in agent._canvas_shot_note(str(clone / "udf_1.py"))
+    note = agent._canvas_shot_note(str(clone / "udf_1.py"))
+    assert tool in note
+    # D1472: a layout change is checked with a picture, and a picture that
+    # could not be taken never turns into "reload the canvas" for the user.
+    assert "re-arrange" in note and "overlapping" in note
+    assert "never ask the user to reload" in note
     assert agent._canvas_shot_note(str(tmp_path / "elsewhere.py")) == ""
 
 

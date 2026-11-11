@@ -270,6 +270,9 @@ import { breakoutOpener } from "@platform/lib/breakouts";
 // over a big graph takes seconds; a frame without the handler never answers,
 // and the chat's camera must come back.
 const THUMBNAIL_TIMEOUT_MS = 45_000;
+/** Rides a stale still (D1472) to the agent, beside the picture. */
+const STALE_SHOT_NOTE =
+  "the canvas window was hidden or minimized when this was taken, so it shows what the window last drew and may be older than the files; say so if it matters";
 // How long a screenshot request waits for the workbench frame's first hello
 // before giving up: a page still framing the workbench (a fresh open, a
 // slow `fused whoami`) answers within this on an ordinary day.
@@ -905,6 +908,8 @@ export default function CanvasWorkspace({
     }
     shotBusyRef.current = true;
     const udfName = udf || (what === "udf" ? nodeRef.current?.udfName ?? null : null);
+    // The crop the native road used, kept for the stale still below.
+    let staleCrop: ShotRect | null = null;
     try {
       // THE FRAME FIRST. A request that lands before the workbench's first
       // hello (the agent's tool fires as its turn starts) waits for it under
@@ -914,7 +919,9 @@ export default function CanvasWorkspace({
         const up = await awaitFrameUp(FRAME_UP_WAIT_MS);
         setShotPhase(null);
         if (!up) {
-          return { ok: false, error: "the workbench has not loaded in this canvas page yet — reload the canvas page and try again" };
+          // Never "reload the page": the agent relays this sentence, and
+          // the page keeps itself current (D1472).
+          return { ok: false, error: "the workbench is still loading in this canvas page — try again in a few seconds" };
         }
         // The scrim is still in the DOM until React commits and the browser
         // paints; the native road's gate (`frameCovered`) would find it over
@@ -935,6 +942,7 @@ export default function CanvasWorkspace({
         ? { x: 0, y: 0, w: frameEl.clientWidth, h: frameEl.clientHeight }
         : null;
       const crop: ShotRect | null = rects ? (what === "canvas" ? rects.canvas : rects.udf) : whole;
+      staleCrop = crop;
       // The workbench said this node has nothing to photograph (not run,
       // still loading): that sentence is the answer, on every platform.
       if (what === "udf" && rects && !rects.udf && rects.udfReason) {
@@ -954,7 +962,7 @@ export default function CanvasWorkspace({
       // A Mac with no native still at all (macOS 11–12) falls back like any
       // other platform: there is no grant to point at.
       const nativeAvailable = (await screenshotSource())?.available !== false;
-      if (!(await slowRoadAllowedHere(nativeAvailable))) {
+      if (!(await slowRoadAllowedHere(nativeAvailable, by === "agent"))) {
         // A node the zoom draws too small for a crop (under
         // SHOT_UDF_CROP_MIN_WIDTH) is declined above so the embed road can
         // draw it at full size — a road this Mac does not take. The whole
@@ -1000,6 +1008,26 @@ export default function CanvasWorkspace({
       }, THUMBNAIL_TIMEOUT_MS);
     });
     setShotPhase(null);
+    // THE LAST RESORT for the agent (D1472): the document is HIDDEN — the
+    // window minimized, fully covered, on another Space — so both native
+    // roads stood down (a hidden web view may not have painted), and the
+    // workbench's own draw did not answer either. A still of the window as
+    // it last drew, said to be possibly stale, beats no picture: the agent
+    // had just asked to see its own work. Only for a hidden document: a
+    // visible page whose workbench timed out gets the timeout's sentence,
+    // not a fresh still wearing a false caveat.
+    if (!answer.ok && by === "agent" && staleCrop && document.visibilityState !== "visible") {
+      // The scrim the slow road showed is in the DOM until React commits
+      // and the browser paints; the gate would read it as "covered" (the
+      // same wait the frame-up path takes above).
+      await nextPaint();
+      const blob = await nativeCanvasShot(frameRef.current, by, {
+        crop: staleCrop,
+        stale: true,
+        ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
+      });
+      if (blob) return { ok: true, blob, note: STALE_SHOT_NOTE };
+    }
     // The embed road's full-size PNG, under the view budget (D1471, F6).
     if (answer.ok) return { ok: true, blob: await fitShotBlob(answer.blob), framing: what === "udf" ? "node" : "graph" };
     return answer;

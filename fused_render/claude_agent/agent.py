@@ -4037,7 +4037,10 @@ def _answer_canvas_shot(run_id: str, request_id: str, state: str) -> dict:
                    # What the picture really is (D1471, F6): the tool's note
                    # says "whole frame" rather than claiming a crop it is not.
                    "framing": answer.get("framing") if answer.get("framing") in
-                   ("graph", "node", "whole-frame") else ""}
+                   ("graph", "node", "whole-frame") else "",
+                   # The page's caveat (D1472: a still of a hidden window may
+                   # be stale), handed to the model verbatim.
+                   "note": answer.get("note") if isinstance(answer.get("note"), str) else ""}
     else:
         payload = {"error": str(answer.get("error")
                                 or "the canvas page could not take the picture")}
@@ -4529,12 +4532,18 @@ def _canvas_shot_note(file: str) -> str:
         "chart, text; `udf` names the node — required from the canvas chat, "
         "optional on a node's own chat). After you change a UDF, call it once "
         "to check the output looks right before you say it does; call it too "
-        "when the user asks about what they see. It needs the canvas open in "
-        "Fused Render (the user is asked to open it when it is not): if the "
-        "result says to continue without a screenshot, do not call it again "
-        "this turn. Its note says what the "
-        "picture really is — trust it over what you asked for. Map nodes "
-        "(WebGL) may come out blank or fail to capture; say so rather than guess."
+        "when the user asks about what they see. After you re-arrange "
+        "folders, move nodes or change the layout, call it once with "
+        "`what: \"canvas\"` and fix anything missing, misplaced or "
+        "overlapping before you say the layout is done. It needs the canvas "
+        "open in Fused Render (the user is asked to open it when it is not): "
+        "if the result says to continue without a screenshot, do not call it "
+        "again this turn. Any other failure means the picture could not be "
+        "taken this time: say so and go on; never ask the user to reload or "
+        "refresh the canvas, the page keeps itself current. Its note says "
+        "what the picture really is — trust it over what you asked for. Map "
+        "nodes (WebGL) may come out blank or fail to capture; say so rather "
+        "than guess."
     )
 
 
