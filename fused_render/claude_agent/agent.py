@@ -9964,12 +9964,30 @@ _CTX_CACHE = "context_breakdown.json"
 _CTX_PROBE_TIMEOUT = 12.0
 
 
+def _headsup_module():
+    """The stdlib `headsup.py` beside this file, loaded BY PATH: this module
+    never imports `fused_render` (the session host loads it by path and cannot,
+    tests/test_templates_decoupled.py). The package's own copy when this
+    process already has it, so the server keeps one instance. Cached."""
+    mod = getattr(_headsup_module, "_mod", None)
+    if mod is None:
+        mod = sys.modules.get("fused_render.claude_agent.headsup")
+    if mod is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "fused_render_claude_headsup", os.path.join(HERE, "headsup.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    _headsup_module._mod = mod
+    return mod
+
+
 def _ctx_probe(run_dir: str):
     """`get_context_usage` asked of a throwaway fork of the run's session, for
     a run whose host has gone and left no saved answer (an older chat). No
     user turn is sent, so no API call: the CLI answers from its own estimate
     of the resumed transcript. The raw answer, or None."""
-    from fused_render.claude_agent import headsup
+    headsup = _headsup_module()
     try:
         built = headsup.build_fork_argv(sys.modules[__name__], run_dir)
     except Exception:
@@ -9980,6 +9998,8 @@ def _ctx_probe(run_dir: str):
     proc = None
     try:
         spawn, kw_cwd = headsup._spawn_argv(argv, cwd)
+        # posix-spawn-exempt: `spawn` is the Claude CLI's argv (headsup's
+        # build_fork_argv, the heads-up fork's own), never git.
         proc = subprocess.Popen(
             spawn, env=_spawn_env(session), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

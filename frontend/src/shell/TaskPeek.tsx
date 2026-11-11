@@ -42,7 +42,7 @@ import { useArchiveConfirm } from "@shell/archive-confirm";
 import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import { ChatMount } from "@apps/claude";
+import { ChatFramePlaceholder, ChatMount } from "@apps/claude";
 import {
   RUN_BLOCKED_HINT,
   TASK_ACTION_LABELS,
@@ -502,6 +502,37 @@ export function TaskPeek({
     const t = setTimeout(() => setParked(true), PEEK_PARK_MS);
     return () => clearTimeout(t);
   }, [layout.open]);
+  // ARRIVED: the panel is open AND its slide-in is over. The chat and the app
+  // preview mount only then (the body below draws their placeholders meanwhile).
+  //
+  // The frame's width glide (task-peek.css `.tasks-frame`) is a main-thread
+  // animation, and a trace of an open showed the main thread busy 170 of the
+  // first 250 ms: the chat's first render, the same-origin preview document
+  // booting, and the restyles of both, in tasks of 14–31 ms. Each one held the
+  // glide still for two to four 120 Hz frames. With nothing mounting, a glide
+  // frame costs about 1 ms.
+  //
+  // Only an open that SLIDES waits: a deep link (`layout.instant`) shows the
+  // panel in place, reduced motion has no slide, and a task swap inside an
+  // open panel never re-slides. Closing keeps what is mounted (a re-open
+  // mid-slide has it all still there); parking is what drops it, so the next
+  // open waits again. A timer, as parking is, for the same reasons.
+  const [arrived, setArrived] = useState(layout.open);
+  useEffect(() => {
+    if (!layout.open || arrived) return;
+    const still =
+      layout.instant ||
+      (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+    if (still) {
+      setArrived(true);
+      return;
+    }
+    const t = setTimeout(() => setArrived(true), PEEK_PARK_MS);
+    return () => clearTimeout(t);
+  }, [layout.open, layout.instant, arrived]);
+  useEffect(() => {
+    if (parked && !layout.open) setArrived(false);
+  }, [parked, layout.open]);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   /**
    * THE TASK THE DELETE WAS ASKED ABOUT — a SNAPSHOT, not `task` (Bugbot,
@@ -862,7 +893,7 @@ export function TaskPeek({
       for (const doc of seen) doc.removeEventListener("keydown", onKey);
       seen.clear();
     };
-  }, [key, previewSrc, previewReady, peekKey]);
+  }, [key, previewSrc, previewReady, peekKey, arrived]);
 
   // ---- the preview's seam ----------------------------------------------------
   // The horizontal twin of the panel's own edge: same 12px hit area, same 1px
@@ -1322,19 +1353,27 @@ export function TaskPeek({
                         height: box.frameHeight * box.scale,
                       }}
                     >
-                      <iframe
-                        ref={previewRef}
-                        className="task-side-peek-preview-frame"
-                        src={previewSrc}
-                        title={app ? `${app.name} preview` : "App preview"}
-                        style={{
-                          width: PREVIEW_VW,
-                          height: box.frameHeight,
-                          transform: `scale(${box.scale})`,
-                        }}
-                        onLoad={() => stepLoad("load")}
-                        onError={() => stepLoad("error")}
-                      />
+                      {/* Not until the slide is over (`arrived`): the app is
+                          same-origin, so its document boots on this page's
+                          main thread, and the frame's width glide stalls for
+                          as long as it does. The card keeps its size meanwhile
+                          (with its skeleton until the app's first load), so
+                          nothing moves when the frame lands. */}
+                      {arrived ? (
+                        <iframe
+                          ref={previewRef}
+                          className="task-side-peek-preview-frame"
+                          src={previewSrc}
+                          title={app ? `${app.name} preview` : "App preview"}
+                          style={{
+                            width: PREVIEW_VW,
+                            height: box.frameHeight,
+                            transform: `scale(${box.scale})`,
+                          }}
+                          onLoad={() => stepLoad("load")}
+                          onError={() => stepLoad("error")}
+                        />
+                      ) : null}
                     </div>
                     {!previewReady && (
                       <div className="task-side-peek-preview-wait" aria-hidden>
@@ -1370,7 +1409,14 @@ export function TaskPeek({
             </>
           )}
           <div className="task-side-peek-chat">
-            {chatHere && task && mounted ? (
+            {chatHere && task && mounted && !arrived ? (
+              // THE CHAT WAITS FOR THE SLIDE (`arrived`), behind the very
+              // placeholder ChatMount shows while its chunk loads, so the
+              // hand-over is invisible. Mounting it inside the 200 ms glide
+              // put 14–31 ms tasks on the main thread the frame's width
+              // transition runs on, and the glide stuttered.
+              <ChatFramePlaceholder />
+            ) : chatHere && task && mounted ? (
               // KEYED ON THE TASK, which is what makes a SWAP a swap: the panel
               // itself never re-slides (design.md, Peek body), and the new
               // conversation arrives behind the chat's own skeleton — the same

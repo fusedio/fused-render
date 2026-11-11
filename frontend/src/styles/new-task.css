@@ -1479,11 +1479,7 @@ button.new-task-source:focus-visible {
 
 .nt-landing-mark {
   flex: none;
-  color: #d97757;
-}
-
-:root[data-theme="light"] .nt-landing-mark {
-  color: #b8542f;
+  color: var(--nt-mark);
 }
 
 .nt-landing-sub {
@@ -1498,9 +1494,6 @@ button.new-task-source:focus-visible {
 }
 
 .nt-composer {
-  --nt-send-bg: #d97757;
-  --nt-send-fg: #1a1a1a;
-  --nt-card-border-strong: #4a4d57;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -1511,12 +1504,6 @@ button.new-task-source:focus-visible {
   padding: 12px 14px 10px;
   box-shadow: 0 4px 16px var(--shadow-sm);
   transition: border-color 0.15s;
-}
-
-:root[data-theme="light"] .nt-composer {
-  --nt-send-bg: #b8542f;
-  --nt-send-fg: #ffffff;
-  --nt-card-border-strong: #c9cbd2;
 }
 
 .nt-composer:focus-within {

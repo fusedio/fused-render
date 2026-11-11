@@ -417,6 +417,13 @@
   --store-icon-shadow: 0 12px 28px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
   --store-icon-ring: rgba(255, 255, 255, 0.09);
   --store-scrim: rgba(6, 7, 9, 0.86);
+  /* The New task card (styles/new-task.css): the landing's Claude mark, the
+     send button (the agent's orange, with ink that reads on it), and the
+     composer's focused edge. */
+  --nt-mark: #d97757;
+  --nt-send-bg: #d97757;
+  --nt-send-fg: #1a1a1a;
+  --nt-card-border-strong: #4a4d57;
 }
 
 :root[data-theme="light"] {
@@ -632,6 +639,10 @@
   --store-icon-shadow: 0 12px 26px rgba(16, 24, 40, 0.16), 0 2px 6px rgba(16, 24, 40, 0.08);
   --store-icon-ring: rgba(0, 0, 0, 0.07);
   --store-scrim: rgba(20, 22, 26, 0.72);
+  --nt-mark: #b8542f;
+  --nt-send-bg: #b8542f;
+  --nt-send-fg: #ffffff;
+  --nt-card-border-strong: #c9cbd2;
 }
 
 /* -- METRICS, NOT COLOURS ----------------------------------------------------

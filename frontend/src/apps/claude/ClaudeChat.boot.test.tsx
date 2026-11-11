@@ -17,6 +17,7 @@ const { Kebab } = await import("./ui/Kebab");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
+const { resetClaudeDefaultsForTests } = await import("@platform/lib/claude-defaults");
 
 /** One `/api/claude/agent` call: the action, plus the fields. */
 interface RunCall {
@@ -116,6 +117,14 @@ function stubFetch(): void {
 }
 
 beforeEach(() => {
+  // THE GLOBAL DEFAULTS READ IS SINGLE-FLIGHT and process-wide
+  // (platform/lib/claude-defaults `reading`). A chat mounted by an EARLIER file,
+  // under a fetch stub that never answered, leaves that read pinned for the rest
+  // of the bun run: every chat here then joins it, `defaults.ready` never comes,
+  // and an `initialAsk` sits out ASK_DETECTION_TIMEOUT_MS (1.5 s) — so each
+  // "sends once" test saw zero starts after its 20 ms settle. That was red on CI
+  // only (Linux file order), never locally. Reset before, not only after.
+  resetClaudeDefaultsForTests();
   runs.length = 0;
   historyReads = 0;
   historyTurns = [];
