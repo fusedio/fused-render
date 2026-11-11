@@ -159,7 +159,7 @@ import { queueCaption } from "@platform/lib/queue";
 import { PlaceTags } from "./PlaceTags";
 import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
-import { TaskIconReroll } from "@shell/TaskIconReroll";
+import { TaskIconPick } from "@shell/TaskIconPick";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -1162,6 +1162,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // title back. The input's Escape is its own (`defaultPrevented`), so the
   // head's Escape does not close the card under it.
   const [draft, setDraft] = useState<string | null>(null);
+  // The head's icon picker is open (TaskIconPick): see the Archive seat.
+  const [iconPicking, setIconPicking] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameError, setRenameError] = useState("");
   const renameSettled = useRef(false);
@@ -1629,10 +1631,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 // stands over it on hover —, the star, the task's number.
                 <>
                   <span className="claude-rail-peek-status">
-                    <TaskIconReroll
+                    <TaskIconPick
                       task={{ key: head.t.key, icon_slot: head.merged.icon_slot ?? head.t.icon_slot }}
                       editing={draft !== null}
                       onDone={onReload}
+                      onOpenChange={setIconPicking}
                     >
                       <StatusIcon
                         status={taskColumn(head.merged)}
@@ -1642,12 +1645,15 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                         {...(head.row?.failed ? { failed: true } : {})}
                         icon={head.merged.icon_slot ?? head.t.icon_slot}
                       />
-                    </TaskIconReroll>
+                    </TaskIconPick>
                     {/* Not while the title is being edited: the Archive seat
                         stands OVER the ring on hover, and during a rename
-                        the ring is the New-icon button (TaskIconReroll) —
-                        a press there must reroll, not archive. */}
-                    {head.t.session_id && !head.draft && draft === null && archiveButton(head)}
+                        the ring is the Choose-icon button (TaskIconPick) —
+                        a press there must open the picker, not archive. Nor
+                        while that picker is open: its filter box takes the
+                        focus, the rename ends, and the seat would be back
+                        under the pointer that just pressed the glyph. */}
+                    {head.t.session_id && !head.draft && draft === null && !iconPicking && archiveButton(head)}
                   </span>
                   {head.t.session_id && (
                     // Behind the favourites switch (favourites-flag). Only a

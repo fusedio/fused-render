@@ -538,12 +538,12 @@ def task_favourites_enabled() -> bool:
 
 
 def task_icons_enabled() -> bool:
-    """Whether every task wears a GLYPH in place of its status ring (owner,
-    2026-11-10, experiment): one of 299 line drawings, chosen from the task's
-    number (`tasks_store.icon_slot`) so no two tasks in a project share one;
-    the icon pressed while a title is edited rerolls it. Default off; only a
-    stored `true` is on. The listing sends `icon_slot` either way — the switch
-    only changes what the shell draws.
+    """Whether a FAVOURITE wears a GLYPH in place of its status ring (owner,
+    2026-11-10, experiment; 2026-11-11: only a starred task): one of 299 line
+    drawings, chosen from the task's number (`tasks_store.icon_slot`); the
+    icon pressed while a title is edited opens a picker. Default off; only a
+    stored `true` is on. The listing sends a favourite's `icon_slot` either
+    way — the switch only changes what the shell draws.
     """
     return read_prefs().get("task_icons_enabled") is True
 

@@ -2908,10 +2908,10 @@ input.schedule-when-field {
 }
 
 /* -- Task icons (`task_icons_enabled`, experiment, 2026-11-10) -------------------
-   With the flag on, a task row's ring becomes a GLYPH: one of 299 line drawings
+   With the flag on, a FAVOURITE's ring becomes a GLYPH: one of 299 line drawings
    (frontend/public/task-icons.svg, slot order in shell/task-icons.ts) chosen
-   once per task by the server (`icon_slot`) so every task in a project wears a
-   different face. It is still `.schedule-ring` — same 16px box, same lane hue
+   once per task by the server (`icon_slot`, sent for starred tasks only —
+   2026-11-11) so every task in a project has a different face. It is still `.schedule-ring` — same 16px box, same lane hue
    via `currentColor`, same class vocabulary — so every caller and every rule
    above keeps working; only the marks move off the centre, because the centre
    is now the drawing. ONE CORNER, TOP-RIGHT, ONE MARK (owner, 2026-11-10:
@@ -2962,10 +2962,10 @@ input.schedule-when-field {
   font-size: 8px;
 }
 
-/* The icon as a button while a title is being edited (shell/TaskIconReroll):
-   the ring's own box, a wash on hover, and a nudge so the press reads as
-   "this changes". Nothing else in the head moves. */
-.task-icon-reroll {
+/* The icon as a button while a title is being edited (shell/TaskIconPick —
+   it opens the icon picker): the ring's own box, a wash on hover, and a nudge
+   so the glyph reads as pressable. Nothing else in the head moves. */
+.task-icon-pick {
   display: inline-grid;
   place-items: center;
   margin: -4px;
@@ -2977,23 +2977,17 @@ input.schedule-when-field {
   font: inherit;
   cursor: pointer;
 }
-.task-icon-reroll:hover:not(:disabled) {
+.task-icon-pick:hover,
+.task-icon-pick[aria-expanded="true"] {
   background: var(--row-hover, var(--bg-alt));
 }
-.task-icon-reroll:hover:not(:disabled) .schedule-ring {
+.task-icon-pick:hover .schedule-ring {
   transform: scale(1.12);
 }
-.task-icon-reroll .schedule-ring {
+.task-icon-pick .schedule-ring {
   transition: transform 0.12s ease;
 }
-.task-icon-reroll:active:not(:disabled) .schedule-ring {
-  transform: rotate(18deg) scale(1.05);
-}
-.task-icon-reroll:disabled {
-  cursor: progress;
-  opacity: 0.7;
-}
-.task-icon-reroll:focus-visible {
+.task-icon-pick:focus-visible {
   outline: 2px solid var(--accent, currentColor);
   outline-offset: 1px;
 }
