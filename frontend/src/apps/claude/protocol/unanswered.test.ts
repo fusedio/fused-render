@@ -33,7 +33,21 @@ describe("unansweredOf", () => {
     const n = unansweredOf(seg)!;
     expect(n.reason).toBe("abandoned");
     expect(n.title).toBe("Unanswered approval — the run moved on first");
-    expect(n.detail.join(" ")).toContain("rm -rf build");
+    expect(n.detail).toEqual(["Bash: $ rm -rf build"]);
+  });
+
+  test("an approval's detail is one capped line, not the whole script", () => {
+    const cmd = Array.from({ length: 200 }, (_, i) => "echo line" + i).join("\n");
+    const n = unansweredOf(tool("Bash", { command: cmd }, "x" + MARK))!;
+    expect(n.detail).toHaveLength(1);
+    expect(n.detail[0]).not.toContain("\n");
+    expect(n.detail[0].length).toBeLessThanOrEqual("Bash: ".length + 80);
+  });
+
+  test("the marker must END the output and the call must have errored", () => {
+    // a Bash that merely prints the marker (grep, git diff, cat of the test file)
+    expect(unansweredOf(tool("Bash", {}, "tests/x.py:3: [fused:unanswered reason=timeout]\nmore output"))).toBeNull();
+    expect(unansweredOf({ ...tool("Bash", {}, "x" + MARK), status: "ok" })).toBeNull();
   });
 
   test("expired says the reply ended", () => {
@@ -50,6 +64,15 @@ describe("unansweredOf", () => {
 });
 
 describe("unansweredNotices", () => {
+  test("looks inside a subagent's children", () => {
+    const parent = {
+      ...tool("Agent", {}, "done"),
+      status: "ok" as const,
+      children: [tool("AskUserQuestion", { questions: [{ question: "Deep?" }] }, "x" + MARK)],
+    };
+    expect(unansweredNotices([parent]).map((n) => n.detail[0])).toEqual(["Deep?"]);
+  });
+
   test("keeps order and skips everything else", () => {
     const segs: Segment[] = [
       { kind: "text", text: "hi" },

@@ -67,6 +67,7 @@ import {
 import type { BoardColumn, BoardLane, RunStatus } from "./schedule-lib";
 import { canvasPagePath } from "@apps/canvases/api";
 import { usageLimitCaption } from "@platform/lib/usage-limit";
+import { oneLine, SUMMARY_LINE_MAX } from "@platform/lib/one-line";
 
 // How many messages the LISTING carries per task — the server's window, not a
 // display cap: an expanded task draws every message it has (there is no Show more
@@ -2469,12 +2470,6 @@ export function needsAttention(task: Pick<Task, "status">): boolean {
  * "usage_limit" are not asked here — a row has one reason, so it never wears
  * this caption and the limit's at once.
  */
-const ATTENTION_SUMMARY_MAX = 80;
-/** Whitespace collapsed, trimmed, and cut with an ellipsis past `max`. */
-function oneLine(text: string, max = Infinity): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? flat.slice(0, max - 1).trimEnd() + "…" : flat;
-}
 
 export function attentionCaption(
   task: Pick<Task, "status" | "blocked_reason" | "attention">,
@@ -2484,7 +2479,7 @@ export function attentionCaption(
   // aria-label, and a Bash command can be a pasted script. The server's own
   // cap is 80 for a question; a tool line gets the same treatment here.
   const tool = oneLine(task.attention.tool || "");
-  const summary = oneLine(task.attention.summary || "", ATTENTION_SUMMARY_MAX);
+  const summary = oneLine(task.attention.summary || "", SUMMARY_LINE_MAX);
   if (task.blocked_reason === "permission") {
     // "Bash: rm -rf build", either half alone when the other is empty.
     const what = tool && summary ? `${tool}: ${summary}` : tool || summary;

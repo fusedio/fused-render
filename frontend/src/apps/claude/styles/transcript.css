@@ -615,7 +615,6 @@
 .chat-root .turn.assistant .turn-unanswered-detail {
   margin-top: 2px;
   color: var(--c-dim);
-  white-space: pre-wrap;
 }
 
 /* ── error / trouble (T:1886-1947) ──────────────────────────────────────── */

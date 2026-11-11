@@ -7,6 +7,7 @@
 // on the tool segment's `output` in both transcript shapes, and matching it
 // (not the English sentence) keeps the notice alive across rewordings. A
 // human's own deny and a cancelled turn carry no marker.
+import { oneLine, SUMMARY_LINE_MAX } from "@platform/lib/one-line";
 import { ANSWERABLE_TOOL, toolChipSummary } from "./summaries";
 import type { Segment, ToolSegment } from "./types";
 
@@ -20,7 +21,10 @@ export interface UnansweredNotice {
   detail: string[];
 }
 
-const MARKER = /\[fused:unanswered reason=(timeout|expired|abandoned)(?: minutes=(\d+))?\]/;
+// The permission server appends the marker as the LAST thing in the deny text,
+// so it is anchored to the end: a tool that merely prints the marker (a grep, a
+// diff, a cat of this repo's tests) does not match.
+const MARKER = /\[fused:unanswered reason=(timeout|expired|abandoned)(?: minutes=(\d+))?\]\s*$/;
 
 const WHY: Record<UnansweredReason, string> = {
   timeout: "timed out",
@@ -30,7 +34,7 @@ const WHY: Record<UnansweredReason, string> = {
 
 /** The notice for one segment, or null when it is not an unanswered call. */
 export function unansweredOf(seg: Segment | null | undefined): UnansweredNotice | null {
-  if (!seg || seg.kind !== "tool") return null;
+  if (!seg || seg.kind !== "tool" || seg.status !== "error") return null;
   const hit = MARKER.exec(typeof seg.output === "string" ? seg.output : "");
   if (!hit) return null;
   const reason = hit[1] as UnansweredReason;
@@ -39,7 +43,7 @@ export function unansweredOf(seg: Segment | null | undefined): UnansweredNotice 
   return {
     reason,
     title: `Unanswered ${asked ? "question" : "approval"} — ${why}`,
-    detail: asked ? questionsOf(seg) : [toolChipSummary(seg)],
+    detail: asked ? questionsOf(seg) : [approvalLine(seg)],
   };
 }
 
@@ -49,8 +53,15 @@ export function unansweredNotices(segments: Segment[] | undefined): UnansweredNo
   for (const seg of segments ?? []) {
     const n = unansweredOf(seg);
     if (n) out.push(n);
+    // A subagent's own transcript: its questions and approvals go unanswered too.
+    if (seg.kind === "tool" && seg.children) out.push(...unansweredNotices(seg.children));
   }
   return out;
+}
+
+/** "Bash: rm -rf build" — one line, capped like a task row's caption. */
+function approvalLine(seg: ToolSegment): string {
+  return oneLine(`${seg.name}: ${toolChipSummary(seg)}`, SUMMARY_LINE_MAX + seg.name.length + 2);
 }
 
 function questionsOf(seg: ToolSegment): string[] {
