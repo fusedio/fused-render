@@ -546,6 +546,18 @@ export interface ResumeOptions {
   neverShown?: boolean;
   quiet?: boolean;
   retryUnknown?: boolean;
+  /**
+   * THE CONVERSATION THIS MOUNT ALREADY HAS ON SCREEN (boot, with both
+   * `session_id` and `run` on the URL). A run whose first poll neither names
+   * this session nor resumed it (`foreignRun`) is not this chat's: the param was left behind by an earlier
+   * conversation on the same page — the canvas page's "Fix with Claude" run
+   * re-handed to every later mount — and adopting it swapped the header, the
+   * composer's settings and the URL onto that other task while the transcript
+   * stayed on this one (Sina, 2026-11-10: T004 opened as T006). Such a run is
+   * written off like a stale param instead. Only boot passes it: the standing
+   * watch and the scheduled attach never carry a foreign id.
+   */
+  ownSession?: string;
 }
 
 export interface ChatController {

@@ -243,7 +243,7 @@ import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
-import { placeRoot } from "@shell/claude-rail/claude-rail-lib";
+import { CHAT_PARAMS, placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { railPullAt } from "./rail-pull";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
@@ -725,6 +725,9 @@ export default function CanvasWorkspace({
   // already have. Kept after the push recovers — the session may still be
   // finishing its final message.
   const [fixRunId, setFixRunId] = useState<string | null>(null);
+  // `canvasChatSeq` as it stood when that fix was started — the chat mount the
+  // run was handed to. -1 before any fix.
+  const [fixChatSeq, setFixChatSeq] = useState(-1);
   // Bumped when a hop lands on the CANVAS chat with a `session_id` other
   // than the one it mounted on — another root task of the same canvas from
   // the Tasks page, or Back to the bare canvas from one (none) — the chat
@@ -733,6 +736,9 @@ export default function CanvasWorkspace({
   // (replaceState, no event here) can leave it behind, which costs at most
   // one needless remount onto the session the URL names.
   const [canvasChatSeq, setCanvasChatSeq] = useState(0);
+  // Read by `onFix` after its await, where the render's own copy may be stale.
+  const canvasChatSeqRef = useRef(canvasChatSeq);
+  canvasChatSeqRef.current = canvasChatSeq;
   const canvasChatSidRef = useRef<string | null>(
     new URLSearchParams(window.location.search).get("session_id"),
   );
@@ -3146,6 +3152,12 @@ export default function CanvasWorkspace({
     setFixError(null);
     try {
       const { run_id } = await fixWithClaude(env, name);
+      // THE READER LEFT WHILE THE REQUEST WAS OUT (CodeRabbit, PR #2242): the
+      // fix is running either way and `fix_active` says so on the way back,
+      // but everything below is about THIS page's chat — and the address it
+      // edits would by now be another page's.
+      const here = canvasNameFromPath(window.location.pathname);
+      if (!here || here.env !== env || here.name !== name) return;
       // Don't wait for the next sync state to reflect that a fix is now
       // running: the gap would let a double-click through to a second POST
       // (the server answers it 409, a confusing thing to show right after a
@@ -3159,6 +3171,26 @@ export default function CanvasWorkspace({
       }
       // …and shown: the button now says "see chat →", so a shut pane opens.
       setSideOpen(true);
+      // THE ADDRESS FIRST, like "← Chats" above: the fix is a NEW conversation,
+      // and the chat remounts on the render that follows and reads the URL as
+      // it is then. A `session_id` left there from the chat the reader had
+      // open is another conversation's — boot would restore THAT transcript
+      // and (rightly, `ResumeOptions.ownSession`) write the fix run off as not
+      // its own, so the fix would run with nobody watching. `run` goes on in
+      // the same write so the two can never disagree for a frame.
+      // EVERY conversation param goes (`CHAT_PARAMS`, the pane-home door's own
+      // list), not `session_id` alone: a `queued` leader left behind would have
+      // the new chat adopt THAT entry's session, and a `backend` the last chat
+      // named would label a Claude fix as another agent's.
+      const fresh = new URL(window.location.href);
+      for (const k of CHAT_PARAMS) fresh.searchParams.delete(k);
+      fresh.searchParams.set("run", run_id);
+      if (fresh.href !== window.location.href) window.history.replaceState(window.history.state, "", fresh);
+      canvasChatSidRef.current = null;
+      // WHICH MOUNT THE RUN IS FOR: the one this click makes. `canvasChatSeq`
+      // moves on every later hop, and a mount made by one of those is some
+      // other chat (see `runId` below).
+      setFixChatSeq(canvasChatSeqRef.current);
       setFixRunId(run_id);
     } catch (e) {
       setFixError((e as Error).message);
@@ -3516,7 +3548,16 @@ export default function CanvasWorkspace({
               file={dir}
               chatOnly
               paramsSource="url"
-              {...(fixRunId ? { runId: fixRunId } : {})}
+              // …ONLY WHILE THAT FIX IS RUNNING. `fixRunId` is kept (the key
+              // above must not remount the chat the reader is watching), but a
+              // finished fix handed to every later mount made each Recent-row
+              // hop boot on a dead run and adopt ITS session over the chat just
+              // opened (Sina, 2026-11-10: T004 opened wearing T006's header).
+              // …AND ONLY TO THE MOUNT THE FIX CLICK MADE (`fixChatSeq`;
+              // CodeRabbit, PR #2242): a new chat started from the rail while
+              // the fix runs remounts with no session, and handed the run it
+              // attached to the fix instead of opening empty.
+              {...(fixRunId && fixActive && canvasChatSeq === fixChatSeq ? { runId: fixRunId } : {})}
               annotateTarget={() => frameRef.current}
               // THE HEAD'S PLACE TAGS (shell/claude-rail PlaceTags): this
               // canvas and the workbench's select — the Canvas tag deselects

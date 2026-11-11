@@ -197,6 +197,24 @@ def test_the_first_poll_already_names_the_session(agent, started):
     assert data["session_id"] == out["session_id"]
 
 
+def test_the_poll_says_which_session_the_run_resumed(agent, started):
+    """Both spellings of a run's conversation ride the poll: its own id and
+    the one it resumed. A page re-attaching at boot needs the second to tell
+    this chat's follow-up — which has not spoken yet, so has no id of its own
+    to show — from a run some other chat left on its URL."""
+    _out, _req, run_dir = started("sess-old")
+    _write_out(run_dir, [{"type": "stream_event"}])
+    data = agent._poll(os.path.basename(run_dir))
+    assert data["resumed_from"] == "sess-old"
+    assert data["session_id"] == ""
+
+    out, _req, fresh = started()
+    _write_out(fresh, [{"type": "stream_event"}])
+    data = agent._poll(os.path.basename(fresh))
+    assert data["resumed_from"] == ""
+    assert data["session_id"] == out["session_id"]
+
+
 def test_a_seeded_id_does_not_latch_and_the_clis_own_word_wins(agent, started,
                                                                monkeypatch):
     """SEEDED, NEVER PREFERRED. The `recorded` marker is one-shot and a seed has

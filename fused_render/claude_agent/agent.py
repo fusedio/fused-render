@@ -11551,6 +11551,13 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             "out_size": out_size,
             "turn_started_at": turn_started_at,
             "session_id": new_session, "error": error, "backend": backend,
+            # The session this run RESUMED ("" for a fresh chat and for a
+            # fork, exactly as meta holds it). `session_id` above is the
+            # run's OWN id and is "" until the CLI speaks on a backend that
+            # mints none up front; a page re-attaching at boot needs both to
+            # tell "this conversation's run" from one another chat left on
+            # its URL (run-controller `foreignRun`).
+            "resumed_from": str(meta.get("resumed_from") or ""),
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
             "app_state": app_state, "mode": _live_mode(meta, permissions),
