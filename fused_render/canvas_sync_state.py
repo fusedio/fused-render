@@ -10,7 +10,10 @@ canvases.py).
 THE RING (`SyncLog`): 200 structured events per canvas — `{seq, t, leg,
 action, ms, ok, detail}` — each also written as one `logger.info` line, so a
 diag bundle and the page's drawer tell the same story. `seq` only grows; the
-page pages with `after=<last seq it saw>`.
+page pages with `after=<last seq it saw>`. Given a `path`, every event is
+also appended to it as one JSON line (`.sync/<name>.log`, rotated to
+`.log.1` past `rotate_bytes`): the ring forgets on restart, the journal is
+what a diag bundle reads days later.
 
 THE NOTIFIER: one registry keyed by CANVAS, not by manager — the key is
 canvases.py's `_sync_key(env, name)` (`"<env>/<name>"`: prod's and unstable's
@@ -59,12 +62,15 @@ class SyncLog:
     """Bounded, thread-safe event ring for one canvas. `name` is the label its
     log lines carry (canvases.py passes the `<env>/<name>` key)."""
 
-    def __init__(self, name: str, notify) -> None:
+    def __init__(self, name: str, notify, *, path: str | None = None,
+                 rotate_bytes: int = 2 * 1024 * 1024) -> None:
         self.name = name
         self._notify = notify
         self._lock = threading.Lock()
         self._events: collections.deque = collections.deque(maxlen=LOG_RING_MAX)
         self._seq = 0
+        self._path = path
+        self._rotate_bytes = rotate_bytes
 
     def add(self, leg: str, action: str, *, ms: float | int | None = None,
             ok: bool = True, detail: str = "") -> dict:
@@ -80,10 +86,29 @@ class SyncLog:
                 "detail": detail or "",
             }
             self._events.append(event)
+            self._journal(event)
         logger.info("canvas %s: %s %s %s", self.name, leg, action,
                     (detail or "") + ("" if ms is None else f" ({int(ms)} ms)"))
         self._notify()
         return event
+
+    def _journal(self, event: dict) -> None:
+        """Append `event` to the persistent journal (under the ring lock, so
+        lines never interleave). Best-effort: a full disk costs the journal,
+        never the sync."""
+        if not self._path:
+            return
+        try:
+            try:
+                if os.path.getsize(self._path) >= self._rotate_bytes:
+                    os.replace(self._path, self._path + ".1")
+            except OSError:
+                pass  # no journal yet
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            with open(self._path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({**event, "canvas": self.name}) + "\n")
+        except OSError:
+            pass
 
     def since(self, after: int = 0) -> dict:
         """Events with seq > `after`, oldest first, and the `after` to pass

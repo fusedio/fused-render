@@ -1231,8 +1231,10 @@ def _fused_cli_note(backend: str = "") -> str:
     never reach for some other fused (a `pip install fused`, a `python -m
     fused`, another venv's copy — those miss the pieces the canvas sync needs
     and bypass the push protection); never run its login flows (they open a
-    browser and a headless session hangs on them); and DO push inside a canvas
-    clone with the standard command.
+    browser and a headless session hangs on them); and NEVER push or pull
+    inside a canvas clone (the revision spine, 2026-11-11: the folder
+    publishes itself at turn end, server changes are merged in, and both
+    commands are refused there).
 
     That last one used to say the opposite — "let the sync push, rather than
     running `canvas push` yourself" — which was right when a hand-push meant an
@@ -1270,10 +1272,10 @@ def _fused_cli_note(backend: str = "") -> str:
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
         "terminal instead. Inside a canvas folder under ~/Fused/canvas/, "
-        "fused-render holds its own auto-push while you work and "
-        "routes `fused workbench canvas push .` through its sync manager, "
-        "which merges concurrent workbench edits first: publish a coherent "
-        "change set with that command and read the errors it prints back."
+        "fused-render does all the syncing: the folder publishes itself when "
+        "your turn ends and server changes are merged into it for you, so "
+        "never run `fused workbench canvas push` or `pull` there (both are "
+        "refused); check your work with `fused workbench canvas validate .`."
         + _CANVAS_CLAUDE_MD
     )
 
@@ -4440,6 +4442,11 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
             "PostToolUse": [{
                 "matcher": "*",
                 "hooks": [{"type": "command", "command": canvas_hook("post"),
+                           "timeout": 5}]}],
+            # The turn ended: the server merges a held server move and
+            # publishes the folder (the session has no sync verbs, Q7).
+            "Stop": [{
+                "hooks": [{"type": "command", "command": canvas_hook("stop"),
                            "timeout": 5}]}]}})]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]

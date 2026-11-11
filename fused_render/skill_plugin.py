@@ -520,6 +520,136 @@ def fetch_workbench_skills() -> str | None:
     return workbench_plugin_root()
 
 
+# -- the fused-render splice of the workbench skills ----------------------------
+#
+# ONE skill source serves two readers (owner Q9, 2026-11-11): a standalone
+# `claude` in a folder the user pulled by hand, and a fused-render session in a
+# live clone that must never pull or push. The skills repo marks the difference
+# in each `skills/*/SKILL.md`, on lines of their own at column 0, never nested:
+#
+#   <!-- fused-render:strip -->      standalone-only guidance ("pull it first",
+#   ...                              the push/pull table rows, --no-validate):
+#   <!-- /fused-render:strip -->     deleted here, markers included.
+#
+#   <!-- fused-render:only           clone guidance, an HTML comment (invisible)
+#   ...                              to every other reader: unwrapped here —
+#   -->                              the two marker lines deleted, body kept.
+#
+# The clone is never edited (the fetch resets it): a spliced COPY is staged under
+# `home_dir()/workbench-plugin` and that copy is what WORKBENCH_PLUGIN_DIR_ENV
+# publishes. Only `skills/*/SKILL.md` is spliced — the plugin README describes
+# the markers in prose and is copied verbatim like every other file. Re-staged
+# whenever the source tree's content changes (a refresh moving the clone's
+# HEAD, or a dev override's edit).
+WORKBENCH_STAGED_SUBDIR = "workbench-plugin"
+_STRIP_OPEN = "<!-- fused-render:strip -->"
+_STRIP_CLOSE = "<!-- /fused-render:strip -->"
+_ONLY_OPEN = "<!-- fused-render:only"
+_ONLY_CLOSE = "-->"
+# Bumped when the splice rule itself changes, so a stamp from the old rule
+# re-stages.
+_SPLICE_VERSION = "1"
+
+
+def splice_fused_render_markers(text: str) -> str:
+    """`text` as a fused-render session reads it: strip blocks deleted, only
+    blocks unwrapped. A marker is a line that is EXACTLY the marker (column
+    0, nothing after it but the line ending). An unterminated block runs to
+    the end of the file (strip: dropped; only: kept)."""
+    out: list[str] = []
+    mode = "text"
+    for line in text.splitlines(keepends=True):
+        bare = line.rstrip("\r\n")
+        if mode == "text":
+            if bare == _STRIP_OPEN:
+                mode = "strip"
+            elif bare == _ONLY_OPEN:
+                mode = "only"
+            else:
+                out.append(line)
+        elif mode == "strip":
+            if bare == _STRIP_CLOSE:
+                mode = "text"
+        elif bare == _ONLY_CLOSE:
+            mode = "text"
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+def workbench_staged_dir() -> str:
+    return os.path.join(home_dir(), WORKBENCH_STAGED_SUBDIR)
+
+
+def _tree_stamp(root: str) -> str:
+    """The content of `root` (relpaths + sha256 of bytes, `.git` skipped) and
+    the splice version — a few dozen markdown files, cheap on every export."""
+    import hashlib
+
+    digest = hashlib.sha256(_SPLICE_VERSION.encode())
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d != ".git")
+        for name in sorted(filenames):
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            try:
+                with open(full, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            digest.update(rel.encode() + b"\0" + hashlib.sha256(data).digest())
+    return digest.hexdigest()
+
+
+def stage_workbench_plugin(source: str) -> str | None:
+    """The spliced copy of the workbench plugin at `source`, staged under
+    `workbench_staged_dir()` (a no-op when its stamp matches), or None when
+    it could not be staged. Never raises."""
+    staged = workbench_staged_dir()
+    stamp_path = staged + _STAMP_SUFFIX
+    staging = None
+    try:
+        stamp = _tree_stamp(source)
+        if _is_loadable(staged, WORKBENCH_SKILLS):
+            try:
+                with open(stamp_path, encoding="utf-8") as fh:
+                    if fh.read() == stamp:
+                        return staged
+            except OSError:
+                pass
+        parent = os.path.dirname(staged)
+        os.makedirs(parent, exist_ok=True)
+        staging = tempfile.mkdtemp(prefix=os.path.basename(staged) + ".new-", dir=parent)
+        dest = os.path.join(staging, "root")
+        shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
+        skills = os.path.join(dest, SKILLS_SUBDIR)
+        for name in sorted(os.listdir(skills)) if os.path.isdir(skills) else ():
+            path = os.path.join(skills, name, "SKILL.md")
+            if not os.path.isfile(path):
+                continue
+            with open(path, encoding="utf-8", newline="") as fh:
+                text = fh.read()
+            spliced = splice_fused_render_markers(text)
+            if spliced != text:
+                with open(path, "w", encoding="utf-8", newline="") as fh:
+                    fh.write(spliced)
+        if not _is_loadable(dest, WORKBENCH_SKILLS):
+            logger.warning("the staged workbench plugin is not loadable; not publishing it")
+            return staged if _is_loadable(staged, WORKBENCH_SKILLS) else None
+        # Delete-then-rename, as the app's own plugin swap (`sync_skill_plugin`).
+        shutil.rmtree(staged, ignore_errors=True)
+        os.replace(dest, staged)
+        with open(stamp_path, "w", encoding="utf-8") as fh:
+            fh.write(stamp)
+        return staged
+    except (OSError, UnicodeDecodeError, shutil.Error) as exc:
+        logger.warning("could not stage the workbench plugin at %s: %s", staged, exc)
+        return staged if _is_loadable(staged, WORKBENCH_SKILLS) else None
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
 def export_workbench_plugin_env() -> str | None:
     """Publish the workbench plugin root for the sessions we spawn, or clear the
     var when there is none. Filesystem-only and never raises — same rules as
@@ -530,6 +660,10 @@ def export_workbench_plugin_env() -> str | None:
     the canvases path (`sync_workbench_plugin`), where the feature is actually
     about to be used and where a slow network delays one request instead of the
     whole server's bind.
+
+    What it exports is the SPLICED copy (`stage_workbench_plugin`), never the
+    clone itself; the raw clone only when staging fails (some skills beat
+    none — its standalone guidance is the cost).
     """
     try:
         root = workbench_plugin_root()
@@ -539,6 +673,12 @@ def export_workbench_plugin_env() -> str | None:
     if root is None:
         os.environ.pop(WORKBENCH_PLUGIN_DIR_ENV, None)
         return None
+    try:
+        staged = stage_workbench_plugin(root)
+    except Exception:  # noqa: BLE001 — never a failed start
+        logger.warning("could not stage the workbench plugin", exc_info=True)
+        staged = None
+    root = staged or root
     os.environ[WORKBENCH_PLUGIN_DIR_ENV] = root
     return root
 
