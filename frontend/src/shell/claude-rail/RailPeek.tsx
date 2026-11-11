@@ -1631,6 +1631,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // stays off, so there is one archive, not two).
               {...(favsOn && head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
               fileSeat={false}
+              // The ring's own facts, as the old head passed them to its
+              // StatusIcon: the unread mark, the unsent-draft dot, a failure.
+              ring={{
+                unread: head.unread > 0,
+                draftHeld: !!head.row && draftRing(head.merged as Task),
+                ...(head.row?.failed ? { failed: true } : {}),
+              }}
               // The last reply after the title, as the old title row drew it.
               {...(head.reply
                 ? {

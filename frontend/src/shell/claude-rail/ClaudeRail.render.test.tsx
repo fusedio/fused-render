@@ -167,6 +167,9 @@ afterEach(() => {
   // for every later suite in the process once a mounted flag has joined it.
   dropSharedPrefsRead();
   resetClaudeFlagsForTests();
+  // …and the unified-head flag keeps a read of its OWN (task-head-flag `read`):
+  // a card mounted here leaves it pending under the same stub.
+  resetTaskHeadUnifiedFlagForTests();
   for (const [name, was] of saved) {
     if (was === MISSING) delete g[name];
     else g[name] = was;

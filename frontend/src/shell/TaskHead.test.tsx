@@ -398,6 +398,11 @@ test("the ring's Archive is there only when the task can be filed — never whil
   );
   // A run in flight: no button, the ring stays.
   expect(seatOf(render(head({ task: task({ status: "in_progress" }) })))).toBeUndefined();
+  // THE PAGE'S OWN CLOCK outranks a listing that has not caught up: a turn
+  // that just started over a row still saying "done" has no Archive either —
+  // the press would stop it. A card being answered keeps its (confirmed) one.
+  expect(seatOf(render(head({ running: true })))).toBeUndefined();
+  expect(seatOf(render(head({ running: true, task: task({ status: "needs_attention" }) })))).toBeDefined();
   // No session yet: nothing to file.
   expect(seatOf(render(head({ task: task({ session_id: undefined } as Partial<Task>) })))).toBeUndefined();
   // A host that keeps its archive elsewhere turns it off.

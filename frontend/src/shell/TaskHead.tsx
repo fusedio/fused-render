@@ -51,6 +51,7 @@ import type { Task } from "@platform/lib/api";
 import { queueCaption, type QueueFacts } from "@platform/lib/queue";
 import { QueuedCaption, TaskPeekWho } from "./TaskPeekWho";
 import { TaskFileSeat, type FiledKind } from "./TaskFileSeat";
+import { taskColumn } from "./tasks-lib";
 import { TASK_HEAD_DROPS, TASK_HEAD_STACK_LEVEL, taskHeadNeed, useStripFit } from "./row-fit";
 
 export interface TaskHeadLead {
@@ -112,6 +113,9 @@ export interface TaskHeadProps {
   starNode?: ReactNode;
   /** Over the ring, inside its seat (TaskPeekWho `statusOverlay`). */
   statusOverlay?: ReactNode;
+  /** Ring facts only the host knows (TaskPeekWho `ring`): unread, held
+   *  draft, failed. */
+  ring?: { unread?: boolean; draftHeld?: boolean; failed?: boolean };
   /** A muted line after the title, in the title's row (TaskPeekWho). */
   subtitle?: ReactNode;
   /** After a rename the server took (TaskPeekWho `onRenamed`). */
@@ -204,6 +208,7 @@ export function TaskHead({
   star = true,
   starNode,
   statusOverlay,
+  ring,
   subtitle,
   onRenamed,
   seatsRef,
@@ -246,15 +251,24 @@ export function TaskHead({
   const blockedWhy = lead?.disabled && lead.reason ? lead.reason : "";
   /** What both identity halves share: the host's star, overlay, reply line
    *  and rename hook. */
+  // THE SEAT FILES WHAT THE RING SHOWS. The page knows a turn is live before
+  // the listing does (TaskPeekWho `running`): for those seconds the row still
+  // says done, `filingIntent` would offer Archive with no confirm, and the
+  // press would stop the turn that just started (CodeRabbit, #2230). The seat
+  // reads the same effective status the ring draws — a card being answered
+  // (`needs_attention`) keeps its confirmed Archive, a queued line its own.
+  const liveTurn = !line && running && !!who && taskColumn(who) !== "needs_attention";
+  const seatTask = who && liveTurn ? ({ ...who, status: "in_progress" } as Task) : who;
   const whoExtras = {
     ...(starNode ? { starNode } : {}),
+    ...(ring ? { ring } : {}),
     ...(statusOverlay
       ? { statusOverlay }
-      : fileSeat && who?.session_id
+      : fileSeat && seatTask?.session_id
         ? {
             statusOverlay: (
               <TaskFileSeat
-                task={who}
+                task={seatTask}
                 onPress={() => setRefiled(true)}
                 {...(onFiled ? { onFiled } : {})}
               />

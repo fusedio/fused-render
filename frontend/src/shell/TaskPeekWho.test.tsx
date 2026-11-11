@@ -328,3 +328,19 @@ test("while the title is being renamed, the input carries the dialog's title id 
   expect(input.props.role).toBeUndefined();
   expect(input.props["aria-label"]).toBe("Task title");
 });
+
+test("a host's ring facts reach the ring: the unread mark, the held draft, a failure", () => {
+  const { StatusIcon } = require("./ScheduleTaskViews") as typeof import("./ScheduleTaskViews");
+  const ringOf = (props: Record<string, unknown>) =>
+    render({ task: task(), ...props }).r.root.findAllByType(StatusIcon)[0]!.props as Record<string, unknown>;
+  // Nothing passed: the ring is the listing row's, as before.
+  const plain = ringOf({});
+  expect(plain.unread).toBeUndefined();
+  expect(plain.draftHeld).toBeUndefined();
+  const marked = ringOf({ ring: { unread: true, draftHeld: true, failed: true } });
+  expect(marked.unread).toBe(true);
+  expect(marked.draftHeld).toBe(true);
+  expect(marked.failed).toBe(true);
+  // A live turn still outranks a stale failure, the block's own rule.
+  expect(ringOf({ ring: { failed: true }, running: true }).failed).toBe(false);
+});

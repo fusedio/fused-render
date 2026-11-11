@@ -102,10 +102,15 @@ export function TaskPeekWho({
   titleId,
   starNode,
   statusOverlay,
+  ring,
   subtitle,
   onRenamed,
 }: {
   task: Task;
+  /** RING FACTS ONLY THE HOST KNOWS (the rail card: RailPeek): the unread
+   *  mark, the unsent-draft dot, and a failure the merged row carries. The
+   *  listing row this block reads has none of them. */
+  ring?: { unread?: boolean; draftHeld?: boolean; failed?: boolean };
   /**
    * WHICH HALF OF THE BLOCK, for a head that has folded its title onto a row of
    * its own (shell/TaskHead `stacked`): `"marks"` is the ring, the agent mark,
@@ -228,9 +233,11 @@ export function TaskPeekWho({
         >
           <StatusIcon
             status={status}
-            failed={running ? false : ringFailed(task)}
+            failed={running ? false : ring?.failed || ringFailed(task)}
             background={background}
             icon={task.icon_slot}
+            {...(ring?.unread ? { unread: true } : {})}
+            {...(ring?.draftHeld ? { draftHeld: true } : {})}
           />
         </TaskIconPick>
         {/* Not while the title is being edited: the host's overlay (the rail
