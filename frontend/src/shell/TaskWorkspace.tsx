@@ -304,7 +304,7 @@ function WorkspaceCard({
   const hasBg = bg !== null;
   // Why the task needs you, in the preview's seat: a stopped or waiting task's
   // last message is not what the reader needs to see first.
-  const ask = needsYou(task) && !isDraftTask(task) ? needsYouCaption(task) : "";
+  const ask = needsYouCaption(task);
   const preview = ask ? "" : messagePreview(task);
   const showChip = showProject && task.project !== "";
   const hasContext = preview !== "" || ask !== "" || showChip;

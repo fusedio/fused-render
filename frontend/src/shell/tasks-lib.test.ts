@@ -101,6 +101,7 @@ import {
   needsAttention,
   attentionCaption,
   needsYouCaption,
+  failedCaption,
   isMessageRunning,
   isRunningNow,
   isRunningIn,
@@ -1210,20 +1211,14 @@ describe("attentionCaption", () => {
       blocked_reason: "permission",
       attention: { tool: "Bash", summary: "ls" },
     }))).toBe("");
-    // "usage_limit" and "" keep their own (or no) caption.
-    for (const reason of ["usage_limit", ""] as const) {
+    // "failed", "usage_limit" and "" keep their own (or no) caption.
+    for (const reason of ["failed", "usage_limit", ""] as const) {
       expect(attentionCaption(task({
         status: reason === "" ? "needs_attention" : "blocked",
         blocked_reason: reason,
         attention: { tool: "Bash", summary: "ls" },
       }))).toBe("");
     }
-  });
-
-  it("says a run that broke failed, on the blocked status and nothing else", () => {
-    expect(attentionCaption(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Run failed");
-    expect(attentionCaption(task({ status: "blocked", blocked_reason: "failed", attention: null }))).toBe("Run failed");
-    expect(attentionCaption(task({ status: "done", blocked_reason: "failed" }))).toBe("");
   });
 
   it("is drawn on all three surfaces and said by their rings", () => {
@@ -1239,6 +1234,14 @@ describe("attentionCaption", () => {
     expect(CARDS_SRC).toContain("const asking = attentionCaption(task);");
     expect(CARDS_SRC).toContain('{asking && <span className="task-card-limit">{asking}</span>}');
     expect(CARDS_SRC).toContain("label={asking || undefined}");
+  });
+});
+
+describe("failedCaption", () => {
+  it("says a run that broke failed, on the blocked status and nothing else", () => {
+    expect(failedCaption(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Run failed");
+    expect(failedCaption(task({ status: "done", blocked_reason: "failed" }))).toBe("");
+    expect(failedCaption(task({ status: "blocked", blocked_reason: "usage_limit" }))).toBe("");
   });
 });
 

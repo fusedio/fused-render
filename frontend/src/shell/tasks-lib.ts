@@ -2465,9 +2465,9 @@ export function needsAttention(task: Pick<Task, "status">): boolean {
  * it, so a ring that is not drawing "!" never gets this sentence either.
  *
  * "" on every other row, and on an older server that sends no `attention`:
- * nothing is drawn rather than a sentence with its object missing. "usage_limit"
- * is not asked here — it has its own caption (`usageLimitCaption`), and a row
- * has one reason, so it never wears both.
+ * nothing is drawn rather than a sentence with its object missing. "failed" and
+ * "usage_limit" are not asked here — a row has one reason, so it never wears
+ * this caption and the limit's at once.
  */
 const ATTENTION_SUMMARY_MAX = 80;
 /** Whitespace collapsed, trimmed, and cut with an ellipsis past `max`. */
@@ -2479,9 +2479,6 @@ function oneLine(text: string, max = Infinity): string {
 export function attentionCaption(
   task: Pick<Task, "status" | "blocked_reason" | "attention">,
 ): string {
-  // A run that broke is `blocked`, not waiting, and has no `attention`: its
-  // reason is the whole story.
-  if (task.status === "blocked" && task.blocked_reason === "failed") return "Run failed";
   if (!needsAttention(task) || !task.attention) return "";
   // ONE LINE, and a short one: this goes into a row caption, a hint and an
   // aria-label, and a Bash command can be a pasted script. The server's own
@@ -2501,16 +2498,22 @@ export function attentionCaption(
   return "";
 }
 
+/** "Run failed" for a run that broke (`blocked`, reason "failed"), else "". */
+export function failedCaption(task: Pick<Task, "status" | "blocked_reason">): string {
+  return task.status === "blocked" && task.blocked_reason === "failed" ? "Run failed" : "";
+}
+
 /**
  * WHY A TASK IS IN "NEEDS YOU", in one line: the ask of a parked card, the usage
  * limit's pause and when it ends, or "Run failed". "" when nothing stopped it.
- * The Workspace card draws this; the List, Board and Cards draw the same two
- * halves (`attentionCaption`, `usageLimitCaption`) in their own seats.
+ * Only the Workspace card draws the combined line; the List, Board and Cards
+ * draw `attentionCaption` and `usageLimitCaption` in their own seats, and say a
+ * failed run by its ring and lane.
  */
 export function needsYouCaption(
   task: Pick<Task, "status" | "blocked_reason" | "attention" | "resumes_at">,
 ): string {
-  return attentionCaption(task) || usageLimitCaption(task);
+  return attentionCaption(task) || usageLimitCaption(task) || failedCaption(task);
 }
 
 // ---- the project queue -------------------------------------------------------
