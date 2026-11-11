@@ -5319,6 +5319,23 @@ describe("the run's tasks", () => {
     expect(await run([{ worktree_hint: hint }, { worktree_hint: agentHint, worktree_failed: ["/x/wt"] }])).toEqual(agentHint);
   });
 
+  test("withdrawing a hint reverts to the plain hint it replaced, across windows", async () => {
+    const a = { path: "/x/a", branch: "feat/a", via: "bash" as const };
+    const b = { path: "/x/b", branch: "feat/b", via: "bash" as const };
+    const run = async (steps: Array<Record<string, unknown>>) => {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) => (n < steps.length ? poll(steps[n]!) : poll({ done: true, segments: [text("ok")], text: "ok" })),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      return controller.getState().worktreeHint;
+    };
+    expect(await run([{ worktree_hint: a }, { worktree_hint: b }, { worktree_failed: ["/x/b"] }])).toEqual(a);
+    // Both failed: nothing stands.
+    expect(await run([{ worktree_hint: a }, { worktree_hint: b }, { worktree_failed: ["/x/b", "/x/a"] }])).toBe(null);
+  });
+
   test("removing the prev worktree under an agent hint drops only prev; a bare exit clears", async () => {
     const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
     const agentHint = { path: "", branch: "", via: "agent" as const, label: "t" };

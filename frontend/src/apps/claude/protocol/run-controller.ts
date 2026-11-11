@@ -871,6 +871,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
   };
+  /** The plain hint a newer plain hint replaced: what a withdrawal of the
+   *  newer one reverts to (the server's `_WorktreeScan.fail` replays the same
+   *  way inside one window, this carries it across windows). */
+  let replacedHint: WorktreeHint | null = null;
   /** Withdraw worktree paths whose call errored (`worktree_failed`): the hint
    *  the page holds drops them, as the `prev` under an agent hint too. Runs
    *  before the window's own hint lands, so a failed path never becomes the
@@ -885,7 +889,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         next = rest;
       }
     } else if (failed.includes(cur.path)) {
-      next = null;
+      // The hint that stood before the withdrawn one stands again, unless its
+      // own call failed too.
+      next = replacedHint && !failed.includes(replacedHint.path) ? replacedHint : null;
+      replacedHint = null;
     }
     if (next !== cur) emit({ worktreeHint: next });
   };
@@ -914,6 +921,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (hint && hint.via !== "exit" && next && next.via === "agent" && !next.prev && standing && standing.path.startsWith("/") && standing.via !== "exit") {
       next = { ...next, prev: { path: standing.path, branch: standing.branch, via: standing.via } };
     }
+    if (next && next.via !== "agent" && cur && cur.via !== "agent" && cur.path !== next.path) replacedHint = cur;
     if (
       next === cur ||
       (next &&
@@ -934,6 +942,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     hostWatched = "";
     if (state.tasks.length || state.tasksRunId !== null) emit({ tasks: [], tasksRunId: null });
     // …and so does the worktree hint the model's tool calls raised.
+    replacedHint = null;
     if (state.worktreeHint) emit({ worktreeHint: null });
   };
 
