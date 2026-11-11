@@ -3744,6 +3744,61 @@ describe("openSession / resumeRun / newChat", () => {
     expect(controller.getState().adopting).toBe(false);
   });
 
+  // CodeRabbit, PR #2242. Ownership has TWO spellings: the run's own id and
+  // the session it resumed. A backend that mints a new id on resume matches
+  // only by the second, and must still be adopted.
+  test("boot adopts a `run=` that RESUMED the restored session, whatever id it runs under", async () => {
+    const params = createMemoryParamsStore({ run: "r1", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ done: true, session_id: "s-new", resumed_from: "s-42", segments: [text("carried on")] }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r1", { ownSession: "s-42" });
+    expect(controller.getState().sessionId).toBe("s-new");
+    expect(controller.getState().trouble).toBeNull();
+  });
+
+  // …and a run that has not NAMED itself yet (a Copilot or Codex run in its
+  // first seconds: no minted id) is decided at the probe all the same — it did
+  // not resume this session, so it cannot turn out to be it. Waiting for the
+  // name let its message into this transcript and its id onto the header.
+  test("boot writes off an UNNAMED `run=` that did not resume the restored session", async () => {
+    const params = createMemoryParamsStore({ run: "r-other", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ session_id: "", resumed_from: "", message: "someone else's ask" }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r-other", { ownSession: "s-42" });
+    expect(controller.getState().sessionId).toBe("s-42");
+    expect(params.get("run")).toBeUndefined();
+    expect(controller.getState().turns.map((t) => t.role)).toEqual(["user"]);
+    expect(controller.getState().adopting).toBe(false);
+  });
+
+  test("an unnamed follow-up run that resumed the restored session is adopted", async () => {
+    const params = createMemoryParamsStore({ run: "r1", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ done: true, session_id: "", resumed_from: "s-42", segments: [text("reply")] }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r1", { ownSession: "s-42" });
+    expect(controller.getState().sessionId).toBe("s-42");
+    expect(params.get("run")).toBeUndefined();
+    expect(controller.getState().trouble).toBeNull();
+  });
+
   test("a resumeRun refused by the send gate lowers the gate rather than hiding forever", async () => {
     // The third road: `openSession` still holds `sending` when the boot's
     // `resumeRun` arrives, so it bails before the probe. A bail is a reason to

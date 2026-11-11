@@ -601,6 +601,11 @@ export interface PollResponse {
   text: string;
   done: boolean;
   session_id: string;
+  /** The session this run resumed — "" for a fresh chat or a fork. Absent on
+   *  an older agent.py. Beside `session_id` (the run's OWN id, "" until the
+   *  CLI speaks on a backend that mints none) it is what tells a boot whose
+   *  run this is (`run-controller` `foreignRun`). */
+  resumed_from?: string;
   /** The run's agent (D2 §8). Absent on an older agent.py. */
   backend?: string;
   /** "" normally; non-empty does NOT narrow the shape. */

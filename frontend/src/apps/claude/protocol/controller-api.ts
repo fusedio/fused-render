@@ -548,8 +548,8 @@ export interface ResumeOptions {
   retryUnknown?: boolean;
   /**
    * THE CONVERSATION THIS MOUNT ALREADY HAS ON SCREEN (boot, with both
-   * `session_id` and `run` on the URL). A run whose first poll names ANOTHER
-   * session is not this chat's: the param was left behind by an earlier
+   * `session_id` and `run` on the URL). A run whose first poll neither names
+   * this session nor resumed it (`foreignRun`) is not this chat's: the param was left behind by an earlier
    * conversation on the same page — the canvas page's "Fix with Claude" run
    * re-handed to every later mount — and adopting it swapped the header, the
    * composer's settings and the URL onto that other task while the transcript
