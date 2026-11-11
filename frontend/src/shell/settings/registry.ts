@@ -538,15 +538,6 @@ const ENTRIES = [
     keywords: "rail hover click preview peek card chat collapsed claude panel popover canvas app explorer",
     renderOnly: true,
   },
-  {
-    id: "tasks-unified-head",
-    group: "features",
-    section: "Sidebar",
-    label: "Unified task header",
-    description: "One header for every task view: the Tasks page panel, the rail cards and the New task card.",
-    keywords: "task header unified head close back prev next status star open kebab card panel rail",
-    renderOnly: true,
-  },
   // FAVOURITE CHATS (owner, 2026-11-03): the star on that preview card, so
   // a child of it — nothing to star without the card. Always shown, though:
   // a stored "on" under a preview switched off must stay reachable.
@@ -569,6 +560,18 @@ const ENTRIES = [
     label: "Task icons",
     description: "A favourite wears its own small picture — an animal, a food, a thing — in place of the status ring, in the ring's colour, on the rail, the Tasks list and the task's head. Star a chat to give it one; remove the star and the ring is back. While editing a favourite's title, click the picture to choose another. Needs Favourite chats on.",
     keywords: "icon glyph picture emoji animal face ring task rail avatar favourite favorite star",
+    renderOnly: true,
+  },
+  // ONE HEADER FOR EVERY TASK VIEW (shell/TaskHead, task-head-flag). After the
+  // rail preview's two children, not between them: a row set there read as
+  // the parent of "Favourite chats".
+  {
+    id: "tasks-unified-head",
+    group: "features",
+    section: "Sidebar",
+    label: "Unified task header",
+    description: "One header for every task view: the Tasks page panel, the chat panes, the rail cards and the New task card.",
+    keywords: "task header unified head close back prev next status star open kebab card panel rail",
     renderOnly: true,
   },
   {
