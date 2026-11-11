@@ -733,6 +733,9 @@ export interface ControllerDeps {
   breakout?: boolean;
   /** With `breakout`: the `<breakout-context>` block the first send carries. */
   breakoutContext?: string;
+  /** With `breakout`: the parent chat's own target. The server runs the
+   *  breakout there when `file` (a worktree hint's folder) does not exist. */
+  breakoutHome?: string;
   /** For the working-line clock and tests. MONOTONIC as far as this file is
    *  concerned: every reader of it measures a DURATION (elapsed run time, a
    *  retry budget, a poll deadline), a test is free to hand it `() => 1_000`,

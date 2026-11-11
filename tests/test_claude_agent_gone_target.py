@@ -50,3 +50,29 @@ def test_a_gone_folder_is_refused_not_walked_up(agent, tmp_path):
     gone chat — it must not start the turn in its parent (Bugbot #2195)."""
     gone = tmp_path / "deleted_clone"
     assert _start(agent, str(gone)) == {"error": f"target not found: {gone}"}
+
+
+def _breakout_start(agent, file, home, monkeypatch):
+    monkeypatch.setattr(agent, "_breakout_pref", lambda: True)
+    return agent._start(file, "hi", "", "", "", backend="no-such-agent",
+                        breakout=True, breakout_home=home)
+
+
+def test_a_breakout_in_a_gone_folder_falls_back_to_the_chats_folder(agent, tmp_path, monkeypatch):
+    gone = tmp_path / ".claude" / "worktrees" / "h3-reduce-batch-route"
+    out = _breakout_start(agent, str(gone), str(tmp_path), monkeypatch)
+    assert "target not found" not in out.get("error", "")
+    assert "unknown agent backend" in out.get("error", "")
+
+
+def test_a_breakout_whose_chat_folder_is_gone_too_is_refused(agent, tmp_path, monkeypatch):
+    gone = tmp_path / "wt"
+    out = _breakout_start(agent, str(gone), str(tmp_path / "also-gone"), monkeypatch)
+    assert out == {"error": f"target not found: {gone}"}
+
+
+def test_a_non_breakout_start_ignores_the_home_and_still_refuses(agent, tmp_path):
+    gone = tmp_path / "wt"
+    out = agent._start(str(gone), "hi", "", "", "", backend="no-such-agent",
+                       breakout_home=str(tmp_path))
+    assert out == {"error": f"target not found: {gone}"}

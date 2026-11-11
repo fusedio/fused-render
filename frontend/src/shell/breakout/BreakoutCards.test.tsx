@@ -607,7 +607,9 @@ test("the chat mounts on the card's cwd when it has one, else on its file", () =
   };
   show("/w/p/.claude/worktrees/x");
   expect(seen["file"]).toBe("/w/p/.claude/worktrees/x");
+  expect(seen["breakoutHome"]).toBe("/w/p");
   show();
   expect(seen["file"]).toBe("/w/p");
+  expect(seen["breakoutHome"]).toBeUndefined();
   resetBreakouts();
 });

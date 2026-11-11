@@ -5781,7 +5781,8 @@ def _start(file: str, message: str, session_id: str, model: str,
            draft_key: str = "", terminal_hint: str = "",
            backend: str = "", bot: str = "", fork_at: str = "",
            isolate_mcp: bool = False, client_uuid: str = "", typed: str = "",
-           breakout: bool = False, breakout_resume: bool = False) -> dict:
+           breakout: bool = False, breakout_resume: bool = False,
+           breakout_home: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -5797,10 +5798,17 @@ def _start(file: str, message: str, session_id: str, model: str,
         # already chats on itself): that chat is gone, so it refuses rather
         # than walking up into the parent.
         parent = os.path.dirname(file)
-        if not (os.path.splitext(os.path.basename(file))[1]
+        #
+        # A BREAKOUT'S FOLDER IS A SUGGESTION: it rides on the parent chat's
+        # worktree hint, which can name a checkout that never came to be. The
+        # parent chat's own target (`breakout_home`) stands in for it.
+        if (os.path.splitext(os.path.basename(file))[1]
                 and parent and os.path.isdir(parent)):
+            file = parent
+        elif breakout and breakout_home and os.path.exists(breakout_home):
+            file = os.path.abspath(breakout_home)
+        else:
             return {"error": f"target not found: {file}"}
-        file = parent
 
     # WHICH AGENT RUNS THIS TURN — settled before anything touches disk, so a
     # refusal leaves no run dir behind. A RESUME is owned by the session: the
@@ -14350,7 +14358,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
          terminal_hint: str = "", task_id: str = "", backend: str = "",
          fork_at: str = "", tool_use_id: str = "",
-         client_uuid: str = "", breakout: str = "", typed: str = "") -> dict:
+         client_uuid: str = "", breakout: str = "", typed: str = "",
+         breakout_home: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -14373,7 +14382,8 @@ def main(action: str = "start", file: str = "", message: str = "",
                       draft_key=draft_key, terminal_hint=terminal_hint,
                       backend=backend, fork_at=fork_at, client_uuid=client_uuid,
                       typed=typed, breakout=breakout in ("1", "resume"),
-                      breakout_resume=breakout == "resume")
+                      breakout_resume=breakout == "resume",
+                      breakout_home=breakout_home)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
