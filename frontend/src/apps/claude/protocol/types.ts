@@ -666,6 +666,9 @@ export interface PollResponse {
   cancelled: boolean;
   /** Absent on an older agent.py; null when this window held no hint. */
   worktree_hint?: WorktreeHint | null;
+  /** Absolute paths of worktree calls whose result errored in this window:
+   *  the folder was never made, so the page withdraws them from its hint. */
+  worktree_failed?: string[];
   tasks_pending: boolean;
   activity: Activity;
   segments: Segment[];

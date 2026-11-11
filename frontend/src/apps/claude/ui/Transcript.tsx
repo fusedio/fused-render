@@ -1052,6 +1052,7 @@ export const Transcript = memo(function Transcript({
             {state.trouble ? (
               <TroubleView
                 trouble={state.trouble}
+                messageShownAbove={newestErrorText(state.turns) === state.trouble.message.trim()}
                 {...(what ? { what } : {})}
                 {...(comebackPending !== undefined ? { comebackPending } : {})}
               />
@@ -1335,6 +1336,15 @@ export function lastAssistantKey(turns: ChatState["turns"]): string | null {
  *  test: the rule is "the newest error row is the card", not "any error row". */
 export function lastErrorKey(turns: ChatState["turns"]): string | null {
   for (let i = turns.length - 1; i >= 0; i--) if (turns[i].role === "error") return turns[i].key;
+  return null;
+}
+
+/** The trimmed text of the last `role: "error"` row, or null. */
+function newestErrorText(turns: ChatState["turns"]): string | null {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
+    if (t.role === "error") return String(t.text ?? "").trim();
+  }
   return null;
 }
 

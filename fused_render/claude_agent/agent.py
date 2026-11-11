@@ -9312,6 +9312,96 @@ def _next_worktree_hint(cur: dict | None, hint: dict) -> dict | None:
     return None
 
 
+class _WorktreeScan:
+    """The worktree hint standing over a run of tool calls, folded in order.
+    A hint is recorded when its call is finalized (so the page sees it before
+    the call runs) and retracted when the matching tool_result comes back
+    `is_error` and the folder it named does not exist: a refused
+    `git worktree add` never made the folder, so the hint it carried must not
+    stand, nor sit as the `prev` under a later agent hint.
+    `exit_marker` keeps an exit that this window cannot match to a standing
+    hint as the marker itself, for the page to compare against state this
+    window cannot see."""
+
+    def __init__(self, exit_marker: bool = False):
+        self._exit_marker = exit_marker
+        self._calls: list = []   # (tool_use_id, hint), in call order
+        self.state: dict | None = None
+
+    def _fold(self, hint: dict) -> None:
+        nxt = _next_worktree_hint(self.state, hint)
+        if nxt is None and self._exit_marker and hint.get("via") == "exit":
+            nxt = hint
+        self.state = nxt
+
+    def add(self, tool_use_id, hint: dict) -> None:
+        self._calls.append((tool_use_id, hint))
+        self._fold(hint)
+
+    def fail(self, tool_use_id) -> dict | None:
+        """The call `tool_use_id` errored: replay the others without it and
+        return the hint it carried. A result with no id retracts nothing."""
+        if not tool_use_id:
+            return None
+        gone = next((h for i, h in self._calls if i == tool_use_id), None)
+        if gone is None:
+            return None
+        path = _hint_path(gone)
+        if path and os.path.isdir(path):
+            # The folder exists: the add succeeded (or the folder was already
+            # there) and a later step of the call failed. The hint stands.
+            return None
+        self._calls = [c for c in self._calls if c[0] != tool_use_id]
+        self.state = None
+        for _, hint in self._calls:
+            self._fold(hint)
+        return gone
+
+
+_WORKTREE_CALLS_CAP = 64
+
+
+def _read_worktree_calls(run_dir: str) -> dict:
+    """`tool_use_id -> path` for the worktree calls `_poll` has seen go out,
+    kept beside the cursor so an errored result that lands in a later window
+    still names the path its call carried."""
+    try:
+        with open(os.path.join(run_dir, "worktree_calls.json"),
+                  encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, str)} \
+        if isinstance(data, dict) else {}
+
+
+def _record_worktree_call(run_dir: str, calls: dict, tool_use_id, hint: dict) -> None:
+    """Remember a bash/enter call's path under its id (newest
+    `_WORKTREE_CALLS_CAP` kept). `calls` is the dict `_read_worktree_calls`
+    returned, updated in place; the file is rewritten only on a new id."""
+    path = _hint_path(hint)
+    if not (tool_use_id and path) or calls.get(tool_use_id) == path:
+        return
+    calls.pop(tool_use_id, None)
+    calls[tool_use_id] = path
+    while len(calls) > _WORKTREE_CALLS_CAP:
+        del calls[next(iter(calls))]
+    try:
+        with _private_open(os.path.join(run_dir, "worktree_calls.json")) as fh:
+            json.dump(calls, fh)
+    except OSError:
+        pass  # a later window then cannot name the path; the hint just stands
+
+
+def _hint_path(hint: dict | None) -> str:
+    """The absolute folder a bash/enter hint names; "" for any other hint (an
+    agent hint's own path is empty, an exit hint names none)."""
+    if hint and hint.get("via") in ("bash", "enter") \
+            and os.path.isabs(str(hint.get("path") or "")):
+        return hint["path"]
+    return ""
+
+
 def _read_poll_cursor(run_dir: str, size: int) -> int:
     """The byte offset in `out.jsonl` that `_poll` last proved safe to resume
     from — see the advance logic at the bottom of `_read_current_turn` for
@@ -11164,7 +11254,9 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     streaming_tid = ""     # tool_use id of the block whose input is streaming
     stream_bufs = {}       # Agent/Task id -> partial_json so far
     stream_found = {}      # Agent/Task id -> {"description"/"subagent_type": str}
-    worktree_hint = None   # latest `_worktree_hint` over finalized inputs
+    wt_scan = _WorktreeScan(exit_marker=True)   # `_worktree_hint` over finalized inputs
+    wt_calls = _read_worktree_calls(run_dir)    # id -> path of worktree calls from earlier windows
+    worktree_failed: list = []   # paths of worktree calls whose result errored here
     wt_cwd = _run_workdir(run_dir, file)
     thinking_tokens = 0    # CLI's running estimate for the message in flight
     hooks_open = {}        # hook_id -> hook_name, started and not yet responded
@@ -11314,14 +11406,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                     hint = _worktree_hint(blk.get("name"), tool_inputs[blk["id"]],
                                           wt_cwd)
                     if hint is not None:
-                        if hint["via"] == "exit":
-                            # Stays a marker unless this window can see the
-                            # hint is for another checkout; the page makes the
-                            # same comparison for state this window cannot see.
-                            kept = _next_worktree_hint(worktree_hint, hint)
-                            worktree_hint = kept if kept is not None else hint
-                        else:
-                            worktree_hint = _next_worktree_hint(worktree_hint, hint)
+                        wt_scan.add(blk["id"], hint)
+                        _record_worktree_call(run_dir, wt_calls, blk["id"], hint)
                     if blk["id"] in tools_open:
                         tools_open[blk["id"]]["detail"] = _tool_detail(
                             blk.get("name"), tool_inputs[blk["id"]])
@@ -11347,6 +11433,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # falls back to closing the oldest open call, so a missing id
                 # can never leave a finished tool on the line forever.
                 tid = b.get("tool_use_id")
+                if b.get("is_error"):
+                    # The page keeps a hint it has until told otherwise, so a
+                    # refused call's path is reported by name, unless the
+                    # folder exists. A call from an earlier window is no
+                    # longer in the scan: its path comes from `wt_calls`.
+                    path = _hint_path(wt_scan.fail(tid)) or wt_calls.get(tid, "")
+                    if path and not os.path.isdir(path) \
+                            and path not in worktree_failed:
+                        worktree_failed.append(path)
                 if tid in tools_open:
                     del tools_open[tid]
                 elif tools_open:
@@ -11852,7 +11947,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # `{"path", "branch", "via": "bash"|"enter"|"agent", "label"?}`.
             # `None` when this poll's window held none — "nothing new", which
             # the page reads as "keep what you have".
-            "worktree_hint": worktree_hint,
+            "worktree_hint": wt_scan.state,
+            # Absolute paths of worktree calls whose result errored in this
+            # window: the folder was never made, so the page withdraws them
+            # from the hint it holds, `prev` included.
+            "worktree_failed": worktree_failed,
             # Same array `activity.tasks` renders from, collapsed to the
             # yes/no a session host's reap loop wants: background work still
             # running is what holds a host open past an otherwise-idle turn
@@ -13148,7 +13247,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                 reply["uuid"] = opener
             turns.append(reply)
 
-    worktree_hint = None  # `_worktree_hint` over every assistant tool_use, in order
+    wt_scan = _WorktreeScan()  # `_worktree_hint` over every assistant tool_use, in order
     for line in open(path, encoding="utf-8", errors="replace"):
         try:
             row = json.loads(line)
@@ -13200,7 +13299,12 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                     hint = _worktree_hint(blk.get("name"), blk.get("input"),
                                           _workdir(file))
                     if hint is not None:
-                        worktree_hint = _next_worktree_hint(worktree_hint, hint)
+                        wt_scan.add(blk.get("id"), hint)
+        if role == "user" and isinstance(content, list):
+            for blk in content:
+                if isinstance(blk, dict) and blk.get("type") == "tool_result" \
+                        and blk.get("is_error"):
+                    wt_scan.fail(blk.get("tool_use_id"))
         if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
             meta = row.get("compactMetadata")
             compacted = meta if isinstance(meta, dict) else {}
@@ -13419,7 +13523,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # while we were parsing shows up as a change rather than being missed.
     return {"turns": turns, "transcript": stat, "context": context,
             "tasks": tasks, "tasks_run": host_run_id,
-            "worktree_hint": worktree_hint, "backend": backend,
+            "worktree_hint": wt_scan.state, "backend": backend,
             **_history_live(file, session_id, inbox=inbox)}
 
 

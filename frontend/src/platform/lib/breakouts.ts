@@ -8,6 +8,7 @@
 // layer under them.
 import { useSyncExternalStore } from "react";
 import { IS_EMBED } from "./router";
+import { statPath } from "./api";
 import type { HandoffTurn } from "./breakout-context";
 import { chatDraftKey, fetchChatDraft, saveChatDraft, type ChatDraft, type DraftAttachment } from "./drafts";
 
@@ -115,11 +116,49 @@ export function openBreakout(req: BreakoutRequest): string {
   return card.id;
 }
 
-/** What a host passes as `onBreakout`: `openBreakout`, or nothing inside an
- *  embedded document, where the shell mounts no `BreakoutCards` to draw the
+/** Is `path` known NOT to be a usable folder? Only a definitive answer says
+ *  so: the server reports it missing (404) or reports it as not a directory.
+ *  A stat that fails any other way (network, refusal, busy server) says
+ *  nothing, so the folder is kept as requested. */
+export async function isMissingDir(
+  path: string,
+  stat: (path: string) => Promise<{ is_dir: boolean }> = statPath,
+): Promise<boolean> {
+  try {
+    return !(await stat(path)).is_dir;
+  } catch (err) {
+    return (err as { status?: number } | null)?.status === 404;
+  }
+}
+
+/** Open a card for `req` with its folder settled first. A `cwd` comes from the
+ *  parent chat's worktree hint and can name a checkout that was never made;
+ *  the card drops it when `isMissing` answers yes and stays on `file`, the
+ *  parent chat's own target, for every turn it runs. */
+export async function openBreakoutSettled(
+  req: BreakoutRequest,
+  isMissing: (path: string) => Promise<boolean> = isMissingDir,
+): Promise<void> {
+  const { cwd, ...rest } = req;
+  if (!cwd || !(await isMissing(cwd))) {
+    openBreakout(req);
+    return;
+  }
+  // A card already open for this selection may carry the folder that is gone:
+  // it falls back to `file` too, so the reopened card never mounts on it.
+  const id = openBreakout(rest);
+  const open = cards.find((c) => c.id === id);
+  if (open?.cwd) {
+    const { cwd: _gone, ...bare } = open;
+    emit(cards.map((c) => (c === open ? bare : c)));
+  }
+}
+
+/** What a host passes as `onBreakout`: `openBreakoutSettled`, or nothing inside
+ *  an embedded document, where the shell mounts no `BreakoutCards` to draw the
  *  card (so no Breakout seat should exist there). */
-export function breakoutOpener(embed: boolean = IS_EMBED): typeof openBreakout | undefined {
-  return embed ? undefined : openBreakout;
+export function breakoutOpener(embed: boolean = IS_EMBED): typeof openBreakoutSettled | undefined {
+  return embed ? undefined : openBreakoutSettled;
 }
 
 /** The card's chat has sent its first message: forget it so a remount cannot

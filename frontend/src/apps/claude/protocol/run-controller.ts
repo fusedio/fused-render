@@ -871,6 +871,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
   };
+  /** The plain hint a newer plain hint replaced: what a withdrawal of the
+   *  newer one reverts to (the server's `_WorktreeScan.fail` replays the same
+   *  way inside one window, this carries it across windows). */
+  let replacedHint: WorktreeHint | null = null;
+  /** Withdraw worktree paths whose call errored (`worktree_failed`): the hint
+   *  the page holds drops them, as the `prev` under an agent hint too. Runs
+   *  before the window's own hint lands, so a failed path never becomes the
+   *  `prev` of a later one. */
+  const withdrawWorktrees = (failed: readonly string[] | undefined) => {
+    const cur = state.worktreeHint;
+    if (!cur || !failed?.length) return;
+    let next: WorktreeHint | null = cur;
+    if (cur.via === "agent") {
+      if (cur.prev && failed.includes(cur.prev.path)) {
+        const { prev: _prev, ...rest } = cur;
+        next = rest;
+      }
+    } else if (failed.includes(cur.path)) {
+      // The hint that stood before the withdrawn one stands again, unless its
+      // own call failed too.
+      next = replacedHint && !failed.includes(replacedHint.path) ? replacedHint : null;
+      replacedHint = null;
+    }
+    if (next !== cur) emit({ worktreeHint: next });
+  };
   /** Publish a worktree hint, only when it differs from the current one (an
    *  equal hint on every poll must not bump `rev`). `via: "exit"` is the
    *  backend's "work left the worktree" marker and clears it. */
@@ -896,6 +921,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (hint && hint.via !== "exit" && next && next.via === "agent" && !next.prev && standing && standing.path.startsWith("/") && standing.via !== "exit") {
       next = { ...next, prev: { path: standing.path, branch: standing.branch, via: standing.via } };
     }
+    if (next && next.via !== "agent" && cur && cur.via !== "agent" && cur.path !== next.path) replacedHint = cur;
     if (
       next === cur ||
       (next &&
@@ -916,6 +942,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     hostWatched = "";
     if (state.tasks.length || state.tasksRunId !== null) emit({ tasks: [], tasksRunId: null });
     // …and so does the worktree hint the model's tool calls raised.
+    replacedHint = null;
     if (state.worktreeHint) emit({ worktreeHint: null });
   };
 
@@ -2178,6 +2205,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // that knows WHICH conversation is on screen.
         if (poll.context) emit({ context: poll.context });
         // LATEST WORKTREE HINT WINS; a window with none says nothing.
+        // Only the loop that still owns the page withdraws: a superseded loop's
+        // late answer must not undo a hint a newer run has since landed.
+        if (loopSeq === seat) withdrawWorktrees(poll.worktree_failed);
         if (poll.worktree_hint) landWorktreeHint(poll.worktree_hint);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);

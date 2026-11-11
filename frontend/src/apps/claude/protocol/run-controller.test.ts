@@ -2362,6 +2362,29 @@ describe("ownership: only the NEWEST loop owns the chrome (Bugbot PR #653)", () 
     expect(assistants(controller).map((t) => t.text)).toContain("the new turn");
   });
 
+  test("a superseded loop's late `worktree_failed` does not withdraw the newer run's hint", async () => {
+    let controller!: ChatController;
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const made = makeController({
+      start: (_f, n) => ({ run_id: n === 0 ? "r1" : "r2" }),
+      send: () => ({ respawn: true as const }),
+      poll: async (f, n) => {
+        if (f.run_id === "r1" && n === 0) {
+          const held = new Promise<void>((r) => void controller.sendFollowUp("respawn me").then(() => r()));
+          await held;
+          // The newer loop has landed the hint by the time this answer arrives.
+          await new Promise((r) => setTimeout(r, 20));
+          return poll({ done: true, worktree_failed: ["/x/wt"] });
+        }
+        return poll({ done: true, worktree_hint: hint, segments: [text("new")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(controller.getState().worktreeHint).toEqual(hint);
+  });
+
   test("newChat retires the loop: it stops writing params and the transcript", async () => {
     let controller!: ChatController;
     const made = makeController({
@@ -5273,6 +5296,44 @@ describe("the run's tasks", () => {
     });
     await controller.sendMessage("go");
     expect(controller.getState().worktreeHint).toEqual({ ...agentHint, prev: hint });
+  });
+
+  test("worktree_failed withdraws a hint the page already holds, and its prev under an agent hint", async () => {
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const agentHint = { path: "", branch: "", via: "agent" as const, label: "t" };
+    const run = async (steps: Array<Record<string, unknown>>) => {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) => (n < steps.length ? poll(steps[n]!) : poll({ done: true, segments: [text("ok")], text: "ok" })),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      return controller.getState().worktreeHint;
+    };
+    // The hint came in one window, its refusal in a later one.
+    expect(await run([{ worktree_hint: hint }, { worktree_failed: ["/x/wt"] }])).toBe(null);
+    expect(await run([{ worktree_hint: hint }, { worktree_failed: ["/x/other"] }])).toEqual(hint);
+    // A failed path under an agent hint's prev goes; the agent hint stays.
+    expect(await run([{ worktree_hint: hint }, { worktree_hint: agentHint }, { worktree_failed: ["/x/wt"] }])).toEqual(agentHint);
+    // A failure and the agent hint in one window: no prev is carried from the failed path.
+    expect(await run([{ worktree_hint: hint }, { worktree_hint: agentHint, worktree_failed: ["/x/wt"] }])).toEqual(agentHint);
+  });
+
+  test("withdrawing a hint reverts to the plain hint it replaced, across windows", async () => {
+    const a = { path: "/x/a", branch: "feat/a", via: "bash" as const };
+    const b = { path: "/x/b", branch: "feat/b", via: "bash" as const };
+    const run = async (steps: Array<Record<string, unknown>>) => {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) => (n < steps.length ? poll(steps[n]!) : poll({ done: true, segments: [text("ok")], text: "ok" })),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      return controller.getState().worktreeHint;
+    };
+    expect(await run([{ worktree_hint: a }, { worktree_hint: b }, { worktree_failed: ["/x/b"] }])).toEqual(a);
+    // Both failed: nothing stands.
+    expect(await run([{ worktree_hint: a }, { worktree_hint: b }, { worktree_failed: ["/x/b", "/x/a"] }])).toBe(null);
   });
 
   test("removing the prev worktree under an agent hint drops only prev; a bare exit clears", async () => {

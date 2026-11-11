@@ -29,6 +29,8 @@ const runs: RunCall[] = [];
 let historyReads = 0;
 let historyTurns: unknown[] = [];
 let pollHint: unknown = undefined;
+/** What `start` answers instead of a run id (a refusal, say). */
+let startAnswer: unknown = undefined;
 /** Held back so a test can park the boot inside its detection wait: the
  *  agent's `defaults` read never answers. */
 let holdDetection = false;
@@ -108,7 +110,7 @@ function stubFetch(): void {
         return jsonRes({});
       }
       if (action === "live_host") return jsonRes({ run_id: "" });
-      if (action === "start") return jsonRes({ run_id: "r1" });
+      if (action === "start") return jsonRes(startAnswer === undefined ? { run_id: "r1" } : startAnswer);
       if (action === "poll") return jsonRes({ done: true, session_id: "s1", text: "ok", ...(pollHint === undefined ? {} : { worktree_hint: pollHint }) });
       return jsonRes({});
     }
@@ -129,6 +131,7 @@ beforeEach(() => {
   historyReads = 0;
   historyTurns = [];
   pollHint = undefined;
+  startAnswer = undefined;
   holdDetection = false;
   holdPaneStat = false;
   holdSessions = false;
@@ -306,6 +309,16 @@ test("a chat-only mount's first send says has_pane: 0", async () => {
   expect(started().length).toBe(1);
   expect(started()[0].params.has_pane).toBe("0");
   expect(started()[0].params.message).toContain("fix the chart");
+});
+
+test("a refused start says its message once: the red row, with the trouble card still up", async () => {
+  startAnswer = { error: "target not found: /x" };
+  const { r } = await mountChat({ initialAsk: "go" });
+  await settle(20);
+  expect(started().length).toBe(1);
+  const said = JSON.stringify(r.toJSON()).split("target not found").length - 1;
+  expect(said).toBe(1);
+  expect(JSON.stringify(r.toJSON())).toContain("Something went wrong");
 });
 
 test("an UNRESOLVED pane sends has_pane EMPTY and lets agent.py decide", async () => {
