@@ -3124,6 +3124,18 @@ export default function CanvasWorkspace({
       }
       // …and shown: the button now says "see chat →", so a shut pane opens.
       setSideOpen(true);
+      // THE ADDRESS FIRST, like "← Chats" above: the fix is a NEW conversation,
+      // and the chat remounts on the render that follows and reads the URL as
+      // it is then. A `session_id` left there from the chat the reader had
+      // open is another conversation's — boot would restore THAT transcript
+      // and (rightly, `ResumeOptions.ownSession`) write the fix run off as not
+      // its own, so the fix would run with nobody watching. `run` goes on in
+      // the same write so the two can never disagree for a frame.
+      const fresh = new URL(window.location.href);
+      fresh.searchParams.delete("session_id");
+      fresh.searchParams.set("run", run_id);
+      if (fresh.href !== window.location.href) window.history.replaceState(window.history.state, "", fresh);
+      canvasChatSidRef.current = null;
       setFixRunId(run_id);
     } catch (e) {
       setFixError((e as Error).message);
