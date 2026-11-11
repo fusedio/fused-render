@@ -4,11 +4,11 @@
 // preference (shell/prefs.py), default OFF. PR 1 of the unification
 // (design.md): the old heads stay as they are until the switch is on.
 //
-// The shape of `./claude-rail/rail-peek-flag.ts`: one shared prefs GET, a
+// The shape of `./claude-rail/rail-peek-flag.ts`: a prefs GET of its own (see `read`), a
 // generation guard so a publish beats a slower in-flight read, and `null`
 // meaning "not asked yet", which renders as off — the flag's own default.
 import { useEffect, useState } from "react";
-import { dropSharedPrefsRead, getPrefsShared, onPrefsWrittenElsewhere, type Prefs } from "@platform/lib/api";
+import { getPrefs, onPrefsWrittenElsewhere, type Prefs } from "@platform/lib/api";
 
 /** THE LAST ANSWER, REMEMBERED ACROSS A RELOAD: until the prefs GET answered
  *  this read as off, so a task view would draw its old header for the first
@@ -55,7 +55,17 @@ function set(next: boolean) {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
-  reading = getPrefsShared()
+  // ITS OWN GET, NOT THE SHARED ONE (`getPrefsShared`, api.ts). This hook is
+  // mounted by every task view — the chat panes, the Tasks panel, the rail
+  // cards, the New task card — so in `bun test` (one process, every suite)
+  // any file that mounts one under a fetch stub that never answers left the
+  // SHARED read pinned for the rest of the run, and the chat controller's
+  // `queueFlagReady` then sat out its whole 8 s deadline in a later file
+  // (red on CI's file order only: run-controller "a decide writes back what
+  // LANDED on disk"). A read of our own can only ever hold up this flag,
+  // whose unanswered state is the default (off). One extra local GET per page
+  // load, for as long as this flag exists.
+  reading = getPrefs()
     .then((p) => {
       if (generation === departed) set(fromPrefs(p.task_head_unified));
     })
@@ -107,10 +117,8 @@ export function taskHeadUnifiedNow(): boolean {
   return answer ?? false;
 }
 
-/** Test-only: forget the cached answer so a suite starts from "not asked".
- *  Drops the SHARED prefs read too (api.ts). */
+/** Test-only: forget the cached answer so a suite starts from "not asked". */
 export function resetTaskHeadUnifiedFlagForTests() {
-  dropSharedPrefsRead();
   reading = null;
   if (retry) clearTimeout(retry);
   retry = null;
