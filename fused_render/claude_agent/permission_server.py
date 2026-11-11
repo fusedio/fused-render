@@ -136,7 +136,7 @@ CANVAS_CLONE = os.environ.get("FUSED_RENDER_CANVAS_CLONE", "")
 CANVAS_NODE = os.environ.get("FUSED_RENDER_CANVAS_NODE", "")
 CANVAS_PAGES_DIR = os.environ.get("FUSED_RENDER_CANVAS_PAGES", "")
 # A page heartbeats every 1 s (3 s hidden); one heard from within this is open.
-CANVAS_PAGE_FRESH = 4.0
+CANVAS_PAGE_FRESH = 10.0
 # How long a request waits to hear from a page of its canvas before it decides
 # none is open: one hidden page's poll interval.
 CANVAS_PAGE_GRACE = float(os.environ.get("FUSED_RENDER_CANVAS_PAGE_GRACE", "3"))
@@ -1233,6 +1233,9 @@ def _handle_canvas_shot(args: dict) -> dict:
     shot_udf = answer.get("udf") or udf or None
     note = {"what": what, "udf": shot_udf, "path": image, "framing": framing,
             "note": _framing_note(what, framing, shot_udf or "")}
+    caveat = answer.get("note")
+    if isinstance(caveat, str) and caveat:
+        note["caveat"] = caveat
     return {"content": [
         {"type": "image", "data": base64.b64encode(data).decode("ascii"),
          "mimeType": mime},

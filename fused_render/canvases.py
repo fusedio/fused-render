@@ -1556,7 +1556,10 @@ protection described above.
   converting its coordinates too. Deleting or renaming a node means
   removing or renaming it in its folder's `childUdfOrder` as well: a stale
   name there is tolerated, but it is a bug to fix. A node in a folder is
-  still a root-level file in this folder, never a subdirectory.
+  still a root-level file in this folder, never a subdirectory. After
+  re-arranging folders or moving nodes, take one canvas screenshot (the
+  `canvas_screenshot` tool, `what: "canvas"`) and fix what is missing,
+  misplaced or overlapping before you report the layout done.
 
 ## The user edits this canvas live, beside you
 

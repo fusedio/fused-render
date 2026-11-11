@@ -33,7 +33,15 @@
 // frame's CSS px, which are this page's CSS px too) and crops the still to
 // the answer. No answer (an older workbench build), or a node not fully on
 // screen → null, and the embed road draws it instead.
-import { captureNative, encode, shotPixels, SHOT_VIEW_BYTES, SHOT_VIEW_EDGE } from "@apps/claude/shots";
+import {
+  captureNative,
+  encode,
+  isWindowShotOff,
+  shotPixels,
+  SHOT_VIEW_BYTES,
+  SHOT_VIEW_EDGE,
+  type PaneBitmap,
+} from "@apps/claude/shots";
 import type { CanvasShotBy } from "@apps/claude";
 
 /** A box in the frame's CSS px, as the workbench measures it. */
@@ -92,9 +100,19 @@ export interface ShotGate {
   covered: boolean;
 }
 
-/** Whether a screen shot of the frame's box would show the canvas. */
-export function nativeShotAllowed(gate: ShotGate): boolean {
-  return gate.visible && gate.focused && !gate.covered;
+/** The road a still takes: the REGION of the screen under the frame
+ *  (`shot-region`), or the WINDOW the frame lives in (`shot-window`, D1472). */
+export type ShotRoad = "region" | "window";
+
+/** Whether a still would show the canvas. The region road needs the window
+ *  in front: its pixels are whatever is on the screen there. The window road
+ *  draws the window itself, wherever it is, so only the document's own state
+ *  matters — not visible (a web view that is not painting has nothing fresh
+ *  to draw, so the picture could be stale) or something of ours over the
+ *  frame (a dialog is in the window too). */
+export function nativeShotAllowed(gate: ShotGate, road: ShotRoad = "region"): boolean {
+  if (!gate.visible || gate.covered) return false;
+  return road === "window" || gate.focused;
 }
 
 /** Our own floating layers — the rail's card, a popover card, the toast —
@@ -169,19 +187,47 @@ export async function nativeCanvasShot(
     minWidth?: number;
     gate?: (frame: HTMLIFrameElement, by: CanvasShotBy) => ShotGate;
     capture?: typeof captureNative;
+    /** Whether the window road is shut (`isWindowShotOff`). */
+    windowOff?: () => boolean;
+    /** THE LAST RESORT (D1472): the window road even for a HIDDEN document
+     *  (minimized, fully covered, another Space), whose still is what the
+     *  window last drew and may be stale — the caller says so beside the
+     *  picture. Only a dialog of ours over the frame still refuses, and the
+     *  region road is never taken (its pixels would be another app's). */
+    stale?: boolean;
   } = {},
 ): Promise<Blob | null> {
   if (!frame || !frame.isConnected) return null;
   if (!opts.crop) return null;
-  const gate = (opts.gate || shotGateOf)(frame, by);
-  if (!nativeShotAllowed(gate)) return null;
-  const pane = await (opts.capture || captureNative)(frame);
-  if (!pane) return null;
-  // The still took a round trip; a page hidden meanwhile — or, for the
-  // agent's gesture-less capture, a window sent behind another — makes it a
-  // picture of something else. Narrows the window, does not close it.
-  const after = (opts.gate || shotGateOf)(frame, "agent");
-  if (!after.visible || (by === "agent" && !after.focused)) return null;
+  const gateOf = opts.gate || shotGateOf;
+  const capture = opts.capture || captureNative;
+  const gate = gateOf(frame, by);
+  let pane: PaneBitmap | null = null;
+  // THE WINDOW ROAD FIRST (D1472): the window behind another app, on another
+  // Space, across two displays — still the page, ~100 ms. Shut (a 409
+  // remembered: no window still on this platform) or refused, the region
+  // road below as before.
+  const windowOk = opts.stale ? !gate.covered : nativeShotAllowed(gate, "window");
+  if (!(opts.windowOff || isWindowShotOff)() && windowOk) {
+    pane = await capture(frame, undefined, { window: true });
+    // A page hidden while the still was taken may not have painted it, and
+    // a dialog opened over the frame meanwhile is in the window too.
+    const after = pane ? gateOf(frame, "agent") : null;
+    if (after && (after.covered || (!opts.stale && !after.visible))) return null;
+  }
+  if (!pane) {
+    // Gated afresh: the window road took a round trip, and focus may have
+    // left in it — the region still would then be the other app's pixels.
+    if (opts.stale || !nativeShotAllowed(gateOf(frame, by), "region")) return null;
+    pane = await capture(frame);
+    if (!pane) return null;
+    // The still took a round trip; a page hidden meanwhile, a dialog opened
+    // over the frame — or, for the agent's gesture-less capture, a window
+    // sent behind another — makes it a picture of something else. Narrows
+    // the window, does not close it.
+    const after = gateOf(frame, "agent");
+    if (!after.visible || after.covered || (by === "agent" && !after.focused)) return null;
+  }
   const box = cropToPane(opts.crop, pane, opts.minWidth);
   if (!box) return null;
   return encode(pane, box, { maxEdge: SHOT_VIEW_EDGE, maxBytes: SHOT_VIEW_BYTES });

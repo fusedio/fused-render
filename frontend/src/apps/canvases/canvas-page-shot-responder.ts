@@ -40,6 +40,8 @@ export function requestExpired(row: Pick<CanvasShotInboxRow, "created_at" | "dea
 
 export const PAGE_POLL_MS = 1000;
 export const PAGE_POLL_HIDDEN_MS = 3000;
+// (the permission server counts a page open for CANVAS_PAGE_FRESH, which must
+// outlast a few delayed polls of this hidden pace)
 
 /** How long after a request a page of this standing may claim it. */
 export const CLAIM_DELAY_MS = { focused: 0, visible: 500, hidden: 2000 } as const;
@@ -69,8 +71,8 @@ export function claimDue(row: Pick<CanvasShotRow, "created_at">, p: PageStanding
 }
 
 export type ShotAnswer =
-  | { image: string; mime: string; udf?: string; framing?: string }
-  | { error: string };
+  | { image: string; mime: string; udf?: string; framing?: string; note?: string }
+  | { error: string; refusal?: boolean };
 
 /** Take the picture the row asks for and put it where the tool can read it:
  *  the shots dir, under a stamped name, like every pane screenshot. */
@@ -80,7 +82,7 @@ export async function takeCanvasShot(shot: CanvasShot, row: Pick<CanvasShotRow, 
   let what: "canvas" | "udf" = "canvas";
   if (row.what === "udf") {
     if (!row.udf && !shot.targets.includes("udf")) {
-      return { error: "name the UDF (`udf`) to screenshot one node's output from the canvas chat; without a name only `what: \"canvas\"` is possible here" };
+      return { error: "name the UDF (`udf`) to screenshot one node's output from the canvas chat; without a name only `what: \"canvas\"` is possible here", refusal: true };
     }
     what = "udf";
   }
@@ -93,7 +95,7 @@ export async function takeCanvasShot(shot: CanvasShot, row: Pick<CanvasShotRow, 
     await new Promise((res) => setTimeout(res, CAPTURE_RETRY_MS));
     a = await shot.capture(what, row.udf || undefined, "agent");
   }
-  if (!a.ok) return { error: a.error };
+  if (!a.ok) return a.refusal ? { error: a.error, refusal: true } : { error: a.error };
   try {
     const dir = await shotsDir();
     const path = shotJoin(dir, shotStamp() + (what === "udf" ? "-udf" : "-canvas") + shotExt(a.blob));
@@ -103,9 +105,11 @@ export async function takeCanvasShot(shot: CanvasShot, row: Pick<CanvasShotRow, 
       mime: a.blob.type || "image/png",
       ...(row.udf ? { udf: row.udf } : {}),
       ...(a.framing ? { framing: a.framing } : {}),
+      ...(a.note ? { note: a.note } : {}),
     };
   } catch (err) {
-    return { error: "the picture was taken but could not be saved (" + (err instanceof Error ? err.message : String(err)) + ")" };
+    // Not the window's fault: never swapped for the hidden-window sentence.
+    return { error: "the picture was taken but could not be saved (" + (err instanceof Error ? err.message : String(err)) + ")", refusal: true };
   }
 }
 
@@ -145,7 +149,10 @@ export function createPageShotResponder(deps: PageResponderDeps) {
     // A hidden page with its workbench up could not take it because of the
     // window; a frame that never came up keeps its own sentence.
     const after = deps.page();
-    if ("error" in a && !after.visible && after.frameUp) return { error: HIDDEN_SENTENCE };
+    if ("error" in a) {
+      if (!a.refusal && !after.visible && after.frameUp) return { error: HIDDEN_SENTENCE };
+      return { error: a.error };
+    }
     return a;
   };
 
