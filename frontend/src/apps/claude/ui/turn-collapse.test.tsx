@@ -833,7 +833,7 @@ describe("an unanswered question or approval", () => {
     kind: "tool",
     id: "q1",
     name: "AskUserQuestion",
-    input: { questions: [{ question: "Ship it?" }] },
+    input: { questions: [{ question: "Ship it?", options: [{ label: "Yes" }] }] },
     status: "error",
     output: "No answer … treating this as denied. [fused:unanswered reason=timeout minutes=60]",
     images: [],
@@ -852,8 +852,14 @@ describe("an unanswered question or approval", () => {
     expect(words(n[0])).toBe("Unanswered question — timed out after 60 minShip it?");
   });
 
-  test("draws nothing on an OPEN turn: the settled card already says it", () => {
+  test("an OPEN turn with no settled card under the chip still says it (restored transcript)", () => {
     const r = log([asked], { transcriptGen: 1 });
+    expect(byClass(r, "turn-unanswered").length).toBe(1);
+  });
+
+  test("an OPEN turn whose chip has a settled card under it draws no second notice", () => {
+    const cardsAfter = new Map<number, React.ReactNode>([[1, <i key="c" />]]);
+    const r = mount(<Turn turn={asked} cardsAfter={cardsAfter} />);
     expect(byClass(r, "turn-unanswered").length).toBe(0);
   });
 

@@ -8,7 +8,7 @@
 // (not the English sentence) keeps the notice alive across rewordings. A
 // human's own deny and a cancelled turn carry no marker.
 import { oneLine, SUMMARY_LINE_MAX } from "@platform/lib/one-line";
-import { ANSWERABLE_TOOL, toolChipSummary } from "./summaries";
+import { ANSWERABLE_TOOL, PLAN_TOOL, prettyToolName, questionModel, toolChipSummary } from "./summaries";
 import type { Segment, ToolSegment } from "./types";
 
 export type UnansweredReason = "timeout" | "expired" | "abandoned";
@@ -26,11 +26,32 @@ export interface UnansweredNotice {
 // diff, a cat of this repo's tests) does not match.
 const MARKER = /\[fused:unanswered reason=(timeout|expired|abandoned)(?: minutes=(\d+))?\]\s*$/;
 
-const WHY: Record<UnansweredReason, string> = {
+const PHRASE: Record<UnansweredReason, string> = {
   timeout: "timed out",
-  expired: "the reply ended first",
-  abandoned: "the run moved on first",
+  expired: "the reply ended",
+  abandoned: "the run moved on",
 };
+
+/** The reason a settled card row was never answered by a person, or null when it
+ *  was (an allow) or a person refused it. `expired` is its own decision; the
+ *  others ride on a deny's `reason`. */
+export function unansweredReasonOf(row: { decision?: string; reason?: string }): UnansweredReason | null {
+  if (row.decision === "expired") return "expired";
+  return row.reason === "timeout" || row.reason === "abandoned" ? row.reason : null;
+}
+
+/** A settled card's status line for an unanswered ask: "◦ Unanswered — timed out
+ *  before you decided". `verb` is what the card asked of the reader. */
+export function unansweredCardText(reason: UnansweredReason, verb: "decided" | "answered"): string {
+  return `◦ Unanswered — ${PHRASE[reason]} before you ${verb}`;
+}
+
+/** The output a tool chip shows: the model-facing text without the trailing
+ *  unanswered marker, which is plumbing for the notice and not something the
+ *  reader should see. */
+export function stripUnansweredMarker(output: string | null | undefined): string | null | undefined {
+  return typeof output === "string" ? output.replace(MARKER, "").trimEnd() : output;
+}
 
 /** The notice for one segment, or null when it is not an unanswered call. */
 export function unansweredOf(seg: Segment | null | undefined): UnansweredNotice | null {
@@ -38,12 +59,12 @@ export function unansweredOf(seg: Segment | null | undefined): UnansweredNotice 
   const hit = MARKER.exec(typeof seg.output === "string" ? seg.output : "");
   if (!hit) return null;
   const reason = hit[1] as UnansweredReason;
-  const asked = seg.name === ANSWERABLE_TOOL;
-  const why = reason === "timeout" && hit[2] ? `timed out after ${hit[2]} min` : WHY[reason];
+  const kind = seg.name === ANSWERABLE_TOOL ? "question" : seg.name === PLAN_TOOL ? "plan" : "approval";
+  const why = reason === "timeout" ? (hit[2] ? `timed out after ${hit[2]} min` : PHRASE.timeout) : `${PHRASE[reason]} first`;
   return {
     reason,
-    title: `Unanswered ${asked ? "question" : "approval"} — ${why}`,
-    detail: asked ? questionsOf(seg) : [approvalLine(seg)],
+    title: `Unanswered ${kind} — ${why}`,
+    detail: kind === "question" ? questionsOf(seg) : kind === "plan" ? [] : [approvalLine(seg)],
   };
 }
 
@@ -59,15 +80,16 @@ export function unansweredNotices(segments: Segment[] | undefined): UnansweredNo
   return out;
 }
 
-/** "Bash: rm -rf build" — one line, capped like a task row's caption. */
+/** "Bash: rm -rf build" — one line, the summary capped like a task row's caption;
+ *  the name alone when the call has no summary. */
 function approvalLine(seg: ToolSegment): string {
-  return oneLine(`${seg.name}: ${toolChipSummary(seg)}`, SUMMARY_LINE_MAX + seg.name.length + 2);
+  const name = prettyToolName(seg.name);
+  const summary = oneLine(toolChipSummary(seg), SUMMARY_LINE_MAX);
+  return summary ? `${name}: ${summary}` : name;
 }
 
 function questionsOf(seg: ToolSegment): string[] {
-  const qs = (seg.input as { questions?: unknown }).questions;
-  if (!Array.isArray(qs)) return [];
-  return qs
-    .map((q) => (q && typeof (q as { question?: unknown }).question === "string" ? (q as { question: string }).question : ""))
+  return questionModel(seg.input)
+    .questions.map((q) => oneLine(q.question, SUMMARY_LINE_MAX))
     .filter(Boolean);
 }

@@ -29,6 +29,7 @@ import {
   SWITCHABLE_MODES,
 } from "../protocol/summaries";
 import type { PermissionRow, SwitchableMode } from "../protocol/types";
+import { unansweredCardText, unansweredReasonOf } from "../protocol/unanswered";
 import { CollapsiblePre } from "./CollapsiblePre";
 import { MarkdownView } from "./MarkdownView";
 import { activateOnKey, guardedOpenOnClick } from "./planAffordance";
@@ -102,6 +103,7 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
     }
   }
 
+  const unanswered = unansweredReasonOf(row);
   const status = held
     ? // FIRST, ahead of the three verdicts — the folder was busy, so the
       // decision is stored and goes in the moment that run ends. See PermCard.
@@ -109,12 +111,8 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
     : resolved
     ? row.decision === "allow"
       ? { cls: "allow", text: "✓ Plan approved" }
-      : row.decision === "expired"
-        ? { cls: "expired", text: "◦ Unanswered — the reply ended before you decided" }
-        : row.reason === "timeout"
-        ? { cls: "expired", text: "◦ Unanswered — timed out before you decided" }
-        : row.reason === "abandoned"
-        ? { cls: "expired", text: "◦ Unanswered — the run moved on before you decided" }
+      : unanswered
+        ? { cls: "expired", text: unansweredCardText(unanswered, "decided") }
         : // Not a refusal — the other half of a conversation, so it does not
           // read in the deny red (see `.perm.plan .perm-status.deny`).
           { cls: "deny", text: "◦ Sent back for revision" }

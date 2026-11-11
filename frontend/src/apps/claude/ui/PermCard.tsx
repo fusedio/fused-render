@@ -22,6 +22,7 @@ import {
   summarizePermission,
 } from "../protocol/summaries";
 import type { Decision, DecisionScope, PermissionMode, PermissionRow, SwitchableMode } from "../protocol/types";
+import { unansweredCardText, unansweredReasonOf } from "../protocol/unanswered";
 import { useAgent } from "./agent-context";
 import { permissionLabelsFor } from "./composer-defaults";
 
@@ -106,16 +107,12 @@ function statusFor(
       return { cls: "allow", text: "✓ Allowed — this exact command, for the rest of this chat" };
     return { cls: "allow", text: "✓ Allowed" };
   }
-  if (row.decision === "expired")
-    return { cls: "expired", text: "◦ Unanswered — the reply ended before you decided" };
-  // A deny NOBODY CLICKED, in the same hollow skin as `expired`: the CLI walked
-  // away from the call (a subagent told to carry on while its card sat unseen)
-  // and agent.py closed the card so the task stops reading "waiting on you".
-  // "✗ Denied" here would pin on the reader a refusal they never made.
-  if (row.reason === "abandoned")
-    return { cls: "expired", text: "◦ Unanswered — the run moved on before you decided" };
-  if (row.reason === "timeout")
-    return { cls: "expired", text: "◦ Unanswered — timed out before you decided" };
+  // A deny NOBODY CLICKED (timeout, the reply ended, or the CLI walked away
+  // from the call — a subagent told to carry on while its card sat unseen), in
+  // the same hollow skin: "✗ Denied" would pin on the reader a refusal they
+  // never made.
+  const unanswered = unansweredReasonOf(row);
+  if (unanswered) return { cls: "expired", text: unansweredCardText(unanswered, "decided") };
   return { cls: "deny", text: "✗ Denied" };
 }
 

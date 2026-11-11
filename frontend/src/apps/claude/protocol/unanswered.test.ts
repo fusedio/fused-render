@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import type { Segment, ToolSegment } from "./types";
-import { unansweredNotices, unansweredOf } from "./unanswered";
+import {
+  stripUnansweredMarker,
+  unansweredCardText,
+  unansweredNotices,
+  unansweredOf,
+  unansweredReasonOf,
+} from "./unanswered";
 
 const MARK = " [fused:unanswered reason=timeout minutes=60]";
 const tool = (name: string, input: Record<string, unknown>, output: string | null): ToolSegment => ({
@@ -18,7 +24,7 @@ describe("unansweredOf", () => {
   test("an AskUserQuestion denied by the timeout names the question and the wait", () => {
     const seg = tool(
       "AskUserQuestion",
-      { questions: [{ question: "Ship it?" }, { question: "Which branch?" }] },
+      { questions: [{ question: "Ship it?", options: [{ label: "Yes" }] }, { question: "Which branch?", options: [{ label: "Yes" }] }] },
       "No answer from the Fused Render chat window after 60 minutes — treating this as denied." + MARK,
     );
     expect(unansweredOf(seg)).toEqual({
@@ -68,7 +74,7 @@ describe("unansweredNotices", () => {
     const parent = {
       ...tool("Agent", {}, "done"),
       status: "ok" as const,
-      children: [tool("AskUserQuestion", { questions: [{ question: "Deep?" }] }, "x" + MARK)],
+      children: [tool("AskUserQuestion", { questions: [{ question: "Deep?", options: [{ label: "Yes" }] }] }, "x" + MARK)],
     };
     expect(unansweredNotices([parent]).map((n) => n.detail[0])).toEqual(["Deep?"]);
   });
@@ -76,9 +82,54 @@ describe("unansweredNotices", () => {
   test("keeps order and skips everything else", () => {
     const segs: Segment[] = [
       { kind: "text", text: "hi" },
-      tool("AskUserQuestion", { questions: [{ question: "A?" }] }, "x" + MARK),
+      tool("AskUserQuestion", { questions: [{ question: "A?", options: [{ label: "Yes" }] }] }, "x" + MARK),
       tool("Bash", { command: "ls" }, "fine"),
     ];
     expect(unansweredNotices(segs).map((n) => n.detail[0])).toEqual(["A?"]);
+  });
+});
+
+describe("approval and question lines", () => {
+  test("no summary means no dangling colon", () => {
+    expect(unansweredOf(tool("Mystery", {}, "x" + MARK))!.detail).toEqual(["Mystery"]);
+  });
+
+  test("a plan reads as a plan, with no raw tool name", () => {
+    const n = unansweredOf(tool("ExitPlanMode", { plan: "Do it" }, "x" + MARK))!;
+    expect(n.title).toBe("Unanswered plan — timed out after 60 min");
+    expect(n.detail).toEqual([]);
+  });
+
+  test("an MCP tool is named readably", () => {
+    const n = unansweredOf(tool("mcp__my_srv__do_thing", { a: 1 }, "x" + MARK))!;
+    expect(n.detail[0].startsWith("my srv: do thing")).toBe(true);
+    expect(n.detail[0]).not.toContain("mcp__");
+  });
+
+  test("question texts are one capped line each; unusable questions are dropped", () => {
+    const long = "word ".repeat(60);
+    const n = unansweredOf(
+      tool("AskUserQuestion", { questions: [{ question: "A\nB?", options: [{ label: "Yes" }] }, { question: long, options: [{ label: "Yes" }] }, { nope: 1 }] }, "x" + MARK),
+    )!;
+    expect(n.detail[0]).toBe("A B?");
+    expect(n.detail[1].length).toBeLessThanOrEqual(80);
+    expect(n.detail).toHaveLength(2);
+  });
+});
+
+describe("shared helpers", () => {
+  test("stripUnansweredMarker drops only the trailing marker", () => {
+    expect(stripUnansweredMarker("No answer. [fused:unanswered reason=timeout minutes=60]")).toBe("No answer.");
+    expect(stripUnansweredMarker("a [fused:unanswered reason=timeout] b")).toBe("a [fused:unanswered reason=timeout] b");
+    expect(stripUnansweredMarker(null)).toBeNull();
+  });
+
+  test("a card's unanswered reason and its status line", () => {
+    expect(unansweredReasonOf({ decision: "expired" })).toBe("expired");
+    expect(unansweredReasonOf({ decision: "deny", reason: "timeout" })).toBe("timeout");
+    expect(unansweredReasonOf({ decision: "deny", reason: "abandoned" })).toBe("abandoned");
+    expect(unansweredReasonOf({ decision: "deny" })).toBeNull();
+    expect(unansweredCardText("expired", "answered")).toBe("◦ Unanswered — the reply ended before you answered");
+    expect(unansweredCardText("abandoned", "decided")).toBe("◦ Unanswered — the run moved on before you decided");
   });
 });

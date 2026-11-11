@@ -36,6 +36,7 @@ import {
   toolStatusGlyph,
 } from "../protocol/summaries";
 import { COPY_RESET_MS } from "../protocol/markdown";
+import { stripUnansweredMarker } from "../protocol/unanswered";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { isAgentTool, subagentChipModel, taskFor, type SubagentChipModel } from "../protocol/tasks";
 import type { Segment, ToolSegment } from "../protocol/types";
@@ -229,7 +230,7 @@ function ChipBody({
   const inp = asRecord(seg.input);
   // The host sidecars (`_acp`, `_codex`) are plumbing, never a leftover.
   const extra = leftoverInput(inp, [...usedKeys(seg, inp), ...SIDECAR_KEYS]);
-  const out = chipOutput(seg.output);
+  const out = chipOutput(stripUnansweredMarker(seg.output));
   const children = Array.isArray(seg.children) ? seg.children : [];
   return (
     <>
