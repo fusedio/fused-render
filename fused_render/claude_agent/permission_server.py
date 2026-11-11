@@ -1059,13 +1059,25 @@ def _await_canvas_page(req_id: str, res_path: str, what: str, udf: str) -> dict:
     except OSError:
         pass  # no pointer: only the timeout below can answer
     try:
-        while time.monotonic() - started < CANVAS_PAGE_GRACE:
+        # A page's heartbeat outlives it by CANVAS_PAGE_FRESH, so "seen" is
+        # re-checked all the way: a page that stops beating (closed or
+        # crashed) for a grace of its own falls through to the ask, instead of
+        # waiting out the whole timeout on an answer that cannot come.
+        last_seen = None
+        while True:
+            now = time.monotonic()
             answer = _read_decision(res_path)
             if answer:
                 return answer
             if any((e, n) == (env, name) for e, n, _b in _open_pages()):
-                return _await_answer(res_path, CANVAS_SHOT_TIMEOUT - (time.monotonic() - started),
-                                     _no_page_answer())
+                last_seen = now
+            if last_seen is None:
+                if now - started >= CANVAS_PAGE_GRACE:
+                    break
+            elif now - last_seen >= CANVAS_PAGE_GRACE:
+                break
+            if now - started >= CANVAS_SHOT_TIMEOUT:
+                return _await_answer(res_path, 0, _no_page_answer())
             time.sleep(POLL_INTERVAL)
         decision = _ask_to_open(env, name, CANVAS_SHOT_TIMEOUT - (time.monotonic() - started),
                                 res_path)
