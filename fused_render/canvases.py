@@ -102,6 +102,7 @@ import tomllib
 import urllib.parse
 import zipfile
 import zlib
+from collections.abc import Iterable
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -179,6 +180,11 @@ SCAN_INTERVAL_S = 1.0
 # slower than the local fingerprint walk), clean or dirty; with an external CLI
 # the legacy `pull --dry-run` probe instead, clean clones only. Detects only.
 PULL_POLL_S = 10.0
+# The user's canvas changes kept for Claude sessions' hooks, per canvas.
+JOURNAL_MAX = 200
+# A tombstone (a node the user deleted) whose file stays gone is forgotten
+# after this long; one whose file is back without a row is kept.
+TOMBSTONE_TTL_S = 7 * 24 * 3600.0
 # How long after a landed hard pull the frame's snapshots are acked stale
 # without a delta ack from it (see _SyncManager._hard_fence).
 HARD_FENCE_S = 60.0
@@ -1423,8 +1429,10 @@ _CLONE_CLAUDE_MD = """\
 # Fused canvas clone: {name}
 
 This folder is a live clone of the Fused canvas **{name}**, two-way synced by
-fused-render: a watcher pushes every quiet change set upstream, and edits made
-in the hosted workbench come down when the user pulls, merged per file.
+fused-render: a watcher pushes every quiet change set upstream, edits the
+user makes in the canvas view beside this chat land here LIVE (see "The user
+edits this canvas live, beside you" below), and edits made in a separate
+hosted workbench tab come down when the user pulls, merged per file.
 
 ## Skills — invoke these FIRST
 
@@ -1550,38 +1558,46 @@ protection described above.
   name there is tolerated, but it is a bug to fix. A node in a folder is
   still a root-level file in this folder, never a subdirectory.
 
-## Files can change between change sets — trust the filesystem, not your memory
+## The user edits this canvas live, beside you
 
-The user may be editing this same canvas in the hosted workbench while you
-work. Their edits do NOT land here on their own: the sync only notices them
-("Server changes") and waits for the user to pull. So this folder is stable
-while you work and can change when they pull. Consequences:
+The canvas view next to this chat writes to THIS folder as the user works:
+adding, deleting or renaming a node, dragging or resizing one, grouping nodes
+into folders and editing a node's code all land in `canvas.toml` and the
+source files within a fraction of a second — while you are mid change set.
+(Edits made in a separate hosted workbench tab are different: they arrive
+only when the user pulls.) So:
 
-- Re-read a file (Read tool) before editing it if you have pushed since you
-  last looked, or if you are not sure. Your memory can be stale across a
-  push, and an Edit whose old text no longer matches means the file changed
-  underneath: re-read and re-apply, don't force it.
-- Never reconstruct or rewrite a whole file from memory (Write over it) —
-  that silently discards remote edits a pull merged in. Prefer targeted
-  Edits against freshly read content.
-- The sync's rules on concurrent changes: a file only you touched keeps
-  your version; a file only the workbench touched gets theirs; both →
-  yours wins. Because their edits arrive only when the user pulls, a
-  same-file collision surfaces then rather than mid-edit; `canvas.toml`
-  merges per node, but where you both changed the same node your version
-  wins — mention it if you notice.
-- A file that unexpectedly disappeared or reverted was likely changed
-  remotely, or the user ran a Hard pull on the canvas page, which replaces
-  this whole folder with the server's copy while you keep working. Either
-  way: re-read the files you are about to edit rather than rewriting them
-  from memory, check the state on disk and say what you found. The
-  overwritten/deleted versions are in `../.sync/trash/<canvas>/<timestamp>/`
-  (newest last; a Hard pull always makes one) — restore from there only
-  what the user asks for.
-- Group related multi-file changes (e.g. a rename: the `.py` file AND its
-  `canvas.toml` entry) into one change set and push it whole — a half-done
-  rename that gets pushed or merged mid-way is exactly how invalid states
-  happen.
+- **Re-read `canvas.toml` right before every edit to it.** It changes under
+  you whenever the user moves something. An Edit that fails with "modified
+  since read" or "string not found" means exactly that: Read it again and
+  re-apply your change to what is there now. Never force it.
+- **Edit `canvas.toml` with targeted Edits only.** Never rewrite the whole
+  file (Write, a heredoc, a script that dumps it): that throws away whatever
+  the user did since you read it.
+- **A file that vanished was deleted by the user.** If a node's file is gone
+  when you go to edit it, the user deleted that node on the canvas (a copy is
+  in `../.sync/trash/<canvas>/<timestamp>/`). Do not recreate it unless the
+  user asks; say what you found. A recreated file with no row in
+  `canvas.toml` stays off the canvas.
+- **When you and the user change the same property, the user's wins.** If
+  you set a node's title, position or folder and the user changes that same
+  property of that node at the same moment, theirs is kept (your other
+  changes stay); re-read and adjust.
+- After your tool calls you may get a note listing what the user changed
+  meanwhile (nodes added, deleted, renamed, moved). Take it as the current
+  state of the folder.
+
+A file that unexpectedly reverted, or a whole folder that changed, can also
+come from the user's Pull (merging a hosted tab's edits in) or a Hard pull
+(replacing this folder with the server's copy; a backup is always made under
+`../.sync/trash/<canvas>/<timestamp>/`). Either way: re-read the files you are
+about to edit rather than rewriting them from memory, check the state on disk
+and say what you found. Restore from the trash only what the user asks for.
+
+Group related multi-file changes (e.g. a rename: the `.py` file AND its
+`canvas.toml` entry) into one change set and push it whole — a half-done
+rename that gets pushed or merged mid-way is exactly how invalid states
+happen.
 
 """
 
@@ -2509,6 +2525,39 @@ class _SyncManager:
         # Disk readings handed to the page, by rev, until the frame acks.
         self._delta_views: dict[int, dict] = {}
         self._embed_applied: dict[tuple[int, int], dict] = {}
+        self._gen_applied_max: dict[int, int] = {}
+        # Causality between the two legs (audit 2026-11-10): the highest delta
+        # rev this manager CUT WITH OPS (a full state counts, an empty cut
+        # does not). A snapshot names the rev the frame had applied when it
+        # serialized it (`body.rev`); one below `_cut_rev` was built before a
+        # delta the host had already sent — a stale picture — and is BOUNCED
+        # (apply_snapshot): nothing written, the frame applies the delta and
+        # posts again. The frame stays the one merge engine.
+        self._cut_rev = 0
+        # The snapshot seq the last skip-triggered re-cut was made at (see
+        # ack_delta): never two re-cuts for one seq, so a frame that keeps
+        # skipping cannot drive a delta loop.
+        self._skip_recut_seq: tuple[int, int] | None = None
+        # What the user did to the canvas from the workbench, for the Claude
+        # sessions working in this clone (owner, 2026-11-10: Claude is told in
+        # real time). `_journal` is a bounded ring of {seq, at, kind, name,
+        # …}; each session reads what it has not seen through the hook
+        # endpoint (`hook_post`), `_hook_cursors` keeping its place.
+        self._journal: list[dict] = []
+        self._journal_seq = 0
+        self._hook_cursors: dict[str, int] = {}
+        self._hook_denied: set[tuple[str, str]] = set()
+        # TOMBSTONES: nodes the user deleted on the canvas, by name →
+        # {file, at}, persisted beside the merge base (a restart must not
+        # forget them). The user's delete wins (owner, 2026-11-10): a file of
+        # that name written back WITHOUT a row (Claude finishing an edit it
+        # started before the delete) stays on disk but off the canvas — no
+        # default row, not in the push. A row for the name (Claude writing
+        # one on purpose, the user re-adding it, a pull bringing it) ends
+        # the tombstone.
+        self._tombstones_path = os.path.join(self.root, ".sync", f"{name}.tombstones.json")
+        self._tombstones: dict[str, dict] = self._load_tombstones()
+        self._held_out_logged: list[str] = []
         # Highest seq applied in this generation. A snapshot is the embed's
         # FULL state, so one that arrives after a later seq (a 409 retry that
         # lost the race, a replayed queue) is superseded: it is acked as
@@ -2734,7 +2783,15 @@ class _SyncManager:
         run_id = ""
         if agent is not None:
             try:
-                run_id = str(agent._live_run(self.dir, limit=None).get("run_id") or "")
+                # Any run in the clone: the folder chat AND a chat opened on a
+                # node's file (its target is `<clone>/<node>.<ext>`), which an
+                # exact-target `_live_run(self.dir)` never matched — so a node
+                # chat's half-done change set was auto-pushed. `_live_run` stays
+                # the fallback for an agent module without the folder lookup.
+                live_in = getattr(agent, "_live_run_in", None)
+                found = (live_in(self.dir) if live_in is not None
+                         else agent._live_run(self.dir, limit=None))
+                run_id = str(found.get("run_id") or "")
             except Exception:  # noqa: BLE001 — a failed read must not stop the
                 # watcher, and "cannot tell" is reported as "not live": the
                 # alternative is a lock that never releases.
@@ -3615,12 +3672,15 @@ class _SyncManager:
     def _push_copy_dir(self) -> str:
         return os.path.join(self.root, ".sync", "push", self.name)
 
-    def _freeze_copy(self) -> str:
+    def _freeze_copy(self, exclude: Iterable[str] = ()) -> str:
         """Copy the clone to `.sync/push/<name>/` (fresh each push) for the
         CLI to read while _op_lock is free: dot-dirs and what `.fusedignore`
-        names are left out; `.fusedignore` itself travels. Under _op_lock,
-        so no snapshot write lands half-way through the copy. Raises
-        OSError/shutil.Error on failure."""
+        names are left out; `.fusedignore` itself travels; so do top-level
+        `exclude` basenames (a node the user deleted whose file came back
+        without a row — `held_tombstones`). Under _op_lock, so no snapshot
+        write lands half-way through the copy. Raises OSError/shutil.Error
+        on failure."""
+        exclude = set(exclude)
         dest = self._push_copy_dir()
         _rmtree_quiet(dest)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -3632,6 +3692,9 @@ class _SyncManager:
             out = []
             for n in names:
                 is_dir = os.path.isdir(os.path.join(folder, n))
+                if at_root and n in exclude:
+                    out.append(n)
+                    continue
                 if ((is_dir and n.startswith("."))
                         or (n != ".fusedignore" and canvas_snapshot.fusedignored(
                             rules, n, is_dir=is_dir, at_root=at_root))):
@@ -3787,13 +3850,22 @@ class _SyncManager:
         try:
             served = {os.path.splitext(f)[0] for f in self._base_files or ()
                       if f.endswith(canvas_snapshot.BODY_SUFFIXES)}
+            held = self.held_tombstones()
             dropped = self._reconcile_rows(
-                "disk_to_server", self.dir, pending=self._rowless, drop=served - self._fileless,
+                "disk_to_server", self.dir, pending=self._rowless | held,
+                drop=served - self._fileless,
                 backup=lambda rel, data: self._backup_to(self._new_trash_dir(), rel, data))
             self._fingerprint = frozen = self._take_fingerprint()
             self._dirty_since = None
+            held_files = canvas_snapshot.node_files(self.dir) if held else {}
+            held_out = sorted(held_files[n] for n in held if n in held_files)
+            if held_out and held_out != self._held_out_logged:
+                self.log_event("disk_to_server", "held out of the push",
+                               detail=f"{', '.join(held_out)}: the user deleted "
+                                      "this node on the canvas; a row in canvas.toml brings it back")
+            self._held_out_logged = held_out
             try:
-                copy_dir = self._freeze_copy()
+                copy_dir = self._freeze_copy(exclude=held_out)
             except (OSError, shutil.Error) as exc:
                 copy_dir = None
                 copy_error = str(exc)
@@ -4328,24 +4400,45 @@ class _SyncManager:
         already given for this (gen, seq), or a no-op ack for a seq older than
         one already applied in this generation. None means: apply, then record
         the ack with _embed_record."""
+        # Dedupe FIRST: a replayed (gen, seq) this host already applied is
+        # answered with its ack and touches nothing — not even the generation.
+        # Looked up after the generation switch below, an old pair flipped the
+        # generation back (view, revs and fences reset) and the snapshot after
+        # it ran with no picture of the frame, its rows overwriting Claude's.
+        done = self._embed_applied.get((gen, seq))
+        if done is not None:
+            return done
+        if gen != self._embed_gen and seq <= self._gen_applied_max.get(gen, -1):
+            # An OLDER generation's pair at or below the highest seq applied
+            # in it: applied, or superseded by a later full state of that
+            # generation — a replay whose ack was pruned from
+            # `_embed_applied`. Answered stale, and the generation stays put:
+            # flipped back, the view, revs and (on the next newer post) the
+            # hard-pull fences would all reset for a body that is no news.
+            return {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                    "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
         if gen != self._embed_gen:
+            newer = gen > self._embed_gen
             self._embed_gen = gen
             # A new generation: the embed re-hydrated from the SERVER, so what
             # it holds is no longer any disk reading. Its hello brings a full
-            # delta that re-seeds the view. It also holds what a hard pull
-            # just brought down, so the fence has nothing left to hold out.
+            # delta that re-seeds the view.
             self._embed_view = None
             self._rowless = set()
             if self._fileless:
                 self._reconcile_rows("embed_to_disk", self.dir, drop=self._fileless, add=False)
                 self._fileless = set()
-            self._embed_applied = {}
+            # `_embed_applied` and `_gen_applied_max` are NOT cleared: (gen,
+            # seq) pairs never repeat (a fresh tab's gen is its clock, a
+            # refetch bumps it by one and restarts seq), and keeping them is
+            # what answers a replay above.
             self._embed_max_seq = -1
-            self._hard_fence = None
-            self._body_fence_rev = None
-        done = self._embed_applied.get((gen, seq))
-        if done is not None:
-            return done
+            if newer:
+                # A NEWER generation holds what a hard pull just brought down
+                # (it refetched), so the fences have nothing left to hold out.
+                # An OLDER one (a second frame on this canvas) predates it.
+                self._hard_fence = None
+                self._body_fence_rev = None
         fence = self._hard_fence
         if fence is not None and time.time() >= fence["until"]:
             self._hard_fence = fence = None
@@ -4368,6 +4461,12 @@ class _SyncManager:
     def _embed_record(self, gen: int, seq: int, ack: dict) -> dict:
         self._embed_max_seq = max(self._embed_max_seq, seq)
         self._embed_applied[(gen, seq)] = ack
+        # Per generation, the highest seq applied — what answers a replay
+        # once its own ack has been pruned below (`_embed_enter`).
+        self._gen_applied_max[gen] = max(self._gen_applied_max.get(gen, -1), seq)
+        if len(self._gen_applied_max) > 32:
+            for old in sorted(self._gen_applied_max)[:-16]:
+                del self._gen_applied_max[old]
         # Bound the dedupe memory: the embed's queue is never deep.
         if len(self._embed_applied) > 64:
             for key in sorted(self._embed_applied)[:-32]:
@@ -4396,6 +4495,181 @@ class _SyncManager:
                 for old in [r for r in self._rev_times if r <= self._view_rev] or \
                         sorted(self._rev_times)[:-64]:
                     self._rev_times.pop(old, None)
+        self._bump()
+
+    # -- the user's canvas changes, for Claude (journal, tombstones, hooks) ---
+
+    def _load_tombstones(self) -> dict[str, dict]:
+        try:
+            with open(self._tombstones_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, dict)}
+
+    def _save_tombstones(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._tombstones_path), exist_ok=True)
+            if self._tombstones:
+                canvas_snapshot._write_atomic(self._tombstones_path, json.dumps(self._tombstones))
+            elif os.path.exists(self._tombstones_path):
+                os.unlink(self._tombstones_path)
+        except OSError as exc:
+            logger.warning("canvas %s: could not save tombstones: %s",
+                           _sync_key(self.env, self.name), exc)
+
+    def _journal_add(self, kind: str, name: str, **extra) -> None:
+        self._journal_seq += 1
+        self._journal.append({"seq": self._journal_seq, "at": time.time(),
+                              "kind": kind, "name": name, **extra})
+        if len(self._journal) > JOURNAL_MAX:
+            del self._journal[:-JOURNAL_MAX]
+
+    def _note_user_deletes(self, deleted: list[str], deleted_files: list[str]) -> None:
+        """The frame deleted these nodes (apply_snapshot): tombstone each and
+        tell the sessions in the clone."""
+        by_stem = {os.path.splitext(f)[0]: f for f in deleted_files}
+        now = time.time()
+        for name in deleted:
+            self._tombstones[name] = {"file": by_stem.get(name), "at": now}
+            self._journal_add("deleted", name, file=by_stem.get(name))
+        self._save_tombstones()
+
+    def _note_user_changes(self, result: dict, renamed: list | None = None) -> None:
+        for name in result.get("added") or ():
+            if self._tombstones.pop(name, None) is not None:
+                self._save_tombstones()
+            self._journal_add("added", name)
+        added = set(result.get("added") or ())
+        moved = [n for n in result.get("upserted") or () if n not in added]
+        if moved:
+            # A drag posts a snapshot every 100 ms: consecutive edits fold
+            # into ONE entry (re-numbered, so a session that saw the older
+            # fold sees the grown one), or they would push a delete out of
+            # the ring and out of the note.
+            last = self._journal[-1] if self._journal else None
+            if last is not None and last["kind"] == "edited":
+                self._journal.pop()
+                moved = sorted(set(last.get("names") or ()) | set(moved))
+            self._journal_add("edited", "", names=sorted(moved))
+        for frm, to in renamed or ():
+            if self._tombstones.pop(to, None) is not None:
+                self._save_tombstones()
+            self._journal_add("renamed", frm, to=to)
+
+    def held_tombstones(self) -> set[str]:
+        """Tombstoned names whose source file is back on disk with no row —
+        kept off the canvas and out of the push. Prunes tombstones a row has
+        ended (or that are older than TOMBSTONE_TTL_S). Under _op_lock or
+        not: it only reads the clone."""
+        if not self._tombstones:
+            return set()
+        try:
+            rows = set(canvas_snapshot.rows_of_doc(canvas_snapshot._load_toml(
+                os.path.join(self.dir, "canvas.toml")))["nodes"])
+            files = canvas_snapshot.node_files(self.dir)
+        except Exception:  # noqa: BLE001 — unreadable mid-write: hold them all
+            return set(self._tombstones)
+        now = time.time()
+        held: set[str] = set()
+        # A row ends a tombstone at once; age only one whose file is gone too
+        # — expiring one with the file still back and rowless would hand the
+        # deleted node a default row on the next push.
+        ended = [n for n, t in list(self._tombstones.items())
+                 if n in rows or (n not in files
+                                  and now - float(t.get("at") or 0) > TOMBSTONE_TTL_S)]
+        for name in ended:
+            del self._tombstones[name]
+        if ended:
+            self._save_tombstones()
+        for name in list(self._tombstones):
+            if name in files:
+                held.add(name)
+        return held
+
+    def hook_pre(self, session_id: str, tool: str, tool_input: dict) -> dict:
+        """PreToolUse for a Claude session in this clone: refuse ONCE a write
+        that would recreate the source file of a node the user deleted on the
+        canvas. Once: told why, a session that writes it again means it (the
+        user asked) — and even then the file stays off the canvas until its
+        row is written too (`held_tombstones`)."""
+        if tool not in ("Write", "Edit", "MultiEdit", "NotebookEdit") or not self._tombstones:
+            return {}
+        target = tool_input.get("file_path") or tool_input.get("notebook_path")
+        if not isinstance(target, str) or not target:
+            return {}
+        target = os.path.abspath(target)
+        if os.path.dirname(target) not in {os.path.normpath(self.dir), os.path.realpath(self.dir)}:
+            return {}
+        base = os.path.basename(target)
+        stem = os.path.splitext(base)[0]
+        tomb = self._tombstones.get(stem)
+        if tomb is None or os.path.exists(target) or (session_id, base) in self._hook_denied:
+            return {}
+        self._hook_denied.add((session_id, base))
+        if len(self._hook_denied) > 500:
+            self._hook_denied = set(list(self._hook_denied)[-250:])
+        when = time.strftime("%H:%M:%S", time.localtime(float(tomb.get("at") or time.time())))
+        return {"deny": (
+            f"The user deleted the node `{stem}` on the canvas at {when}, so {base} is gone "
+            f"on purpose (a copy is under ../.sync/trash/{self.name}/). Do not recreate it "
+            "unless the user asked you to. If they did, write it again and also add its "
+            "[[canvas.nodes]] row in canvas.toml: a file without a row stays off the canvas.")}
+
+    def hook_post(self, session_id: str) -> dict:
+        """PostToolUse for a Claude session in this clone: what the user did
+        in the workbench since this session's previous tool call, as context
+        for its next step. Nothing on a session's first call (what happened
+        before it started is already on disk when it reads)."""
+        if not session_id:
+            return {}
+        cursor = self._hook_cursors.get(session_id)
+        self._hook_cursors[session_id] = self._journal_seq
+        if len(self._hook_cursors) > 200:
+            for sid in list(self._hook_cursors)[:100]:
+                self._hook_cursors.pop(sid, None)
+        if cursor is None:
+            return {}
+        events = [e for e in self._journal if e["seq"] > cursor]
+        if not events:
+            return {}
+        lines: list[str] = []
+        edited: set[str] = set()
+        for e in events:
+            if e["kind"] == "edited":
+                edited.update(e.get("names") or ())
+        structural = [e for e in events if e["kind"] != "edited"]
+        toml_moved = bool(edited)
+        for e in structural[-20:]:
+            if e["kind"] == "deleted":
+                lines.append(f"- deleted node `{e['name']}`"
+                             + (f" ({e['file']} moved to ../.sync/trash/{self.name}/)" if e.get("file") else "")
+                             + " — do not recreate it unless the user asks")
+            elif e["kind"] == "added":
+                lines.append(f"- added node `{e['name']}`")
+            elif e["kind"] == "renamed":
+                lines.append(f"- renamed node `{e['name']}` to `{e['to']}` (file and row)")
+            toml_moved = True
+        if edited:
+            names = sorted(edited)
+            lines.append("- moved or edited: " + ", ".join(names[:12])
+                         + (f" (+{len(names) - 12} more)" if len(names) > 12 else ""))
+        text = ("While you worked, the user changed this canvas in the workbench "
+                "(already on disk in this folder):\n" + "\n".join(lines))
+        if toml_moved:
+            text += ("\ncanvas.toml was rewritten: Read it again before your next edit "
+                     "to it, and edit it with Edit, never by rewriting the whole file.")
+        return {"context": text}
+
+    def _force_recut(self) -> None:
+        """Advance `disk_rev` with no file moving, so the page cuts a delta
+        again: the view changed under the host's own hand (a partly applied
+        delta) and the frame is owed the difference."""
+        with self._rev_lock:
+            self.disk_rev += 1
+            self._rev_times[self.disk_rev] = time.time()
         self._bump()
 
     def _remote_ids(self) -> dict[str, str]:
@@ -4477,14 +4751,24 @@ class _SyncManager:
             self._view_rev = rev
             self._delta_error = None
             self._bump()
-            return {"rev": rev, "base_rev": rev, "ops": [], "full": False}
+            return {"rev": rev, "base_rev": rev, "ops": [], "full": False, **self._cut_seq()}
         self._delta_views[rev] = disk
+        self._cut_rev = max(self._cut_rev, rev)
         for old in sorted(self._delta_views)[:-8]:
             del self._delta_views[old]
         self.log_event("disk_to_embed", "delta cut",
                        detail=f"rev {rev}: {len(ops)} op(s)" + (" (full)" if view is None else ""))
         return {"rev": rev, "base_rev": None if view is None else self._view_rev,
-                "ops": ops, "full": view is None}
+                "ops": ops, "full": view is None, **self._cut_seq()}
+
+    def _cut_seq(self) -> dict:
+        """What a delta says about the snapshot leg (audit 2026-11-10): the
+        frame generation and the highest snapshot/rename seq applied in it
+        when the delta was cut. The frame skips ops on nodes its own LATER,
+        still unacked snapshots added, deleted, renamed or moved — the delta
+        was cut without them, and the user's change wins."""
+        return {"gen": self._embed_gen or None,
+                "seq": self._embed_max_seq if self._embed_max_seq >= 0 else None}
 
     def _cut_held(self, rev: int, reason: str) -> dict:
         """A delta the clone cannot answer yet. Logged once per distinct
@@ -4494,7 +4778,8 @@ class _SyncManager:
             self.log_event("disk_to_embed", "delta held", ok=False, detail=f"rev {rev}: {reason}")
         return {"rev": rev, "held": reason}
 
-    def ack_delta(self, rev: int, ok: bool, reason: str | None = None) -> dict:
+    def ack_delta(self, rev: int, ok: bool, reason: str | None = None,
+                  skipped: Iterable[str] = ()) -> dict:
         """The frame applied (or refused) the delta cut at `rev`. `reason` is
         the page's word for a refusal; one that only means "nobody could take
         it yet" (no frame on the page, a frame not hydrated) resets the view
@@ -4543,9 +4828,47 @@ class _SyncManager:
                 cur["bodies"] = bodies
             self.log_event("disk_to_embed", "delta acked", detail=f"rev {rev} (stale)")
             return {"ok": True, "rev": rev, "stale": True}
+        cur = self._embed_view or {}
+        skipped = {n for n in skipped if isinstance(n, str)}
+        if skipped:
+            # The frame kept its own newer change for these (its unacked
+            # snapshot touched them after the snapshot this delta was cut
+            # behind): the view keeps its previous entry — node and the edges
+            # touching it — so the next cut re-sends what the frame did not
+            # take, and the frame's next snapshot is not read as removing an
+            # edge it never received.
+            for table in ("nodes", "files", "bodies", "ids"):
+                fresh = dict(view.get(table) or {})
+                for name in skipped:
+                    if name in (cur.get(table) or {}):
+                        fresh[name] = cur[table][name]
+                    else:
+                        fresh.pop(name, None)
+                view[table] = fresh
+            view["edges"] = (
+                [list(e) for e in view.get("edges") or []
+                 if e[0] not in skipped and e[1] not in skipped]
+                + [list(e) for e in cur.get("edges") or []
+                   if (e[0] in skipped or e[1] in skipped)])
         self._embed_view = self._adopt(view)
         self._view_rev = rev
         self._delta_error = None
+        if skipped:
+            # The snapshot that made the frame skip reached this host before
+            # this ack (the page relays both through one ordered chain), so a
+            # cut now carries its seq and the frame has settled it: the
+            # re-sent ops apply. Once per applied seq only — a frame still
+            # skipping on the same seq waits for its next snapshot, whose
+            # write re-reads disk into the view and cuts on its own.
+            key = (self._embed_gen, self._embed_max_seq)
+            names = sorted(skipped)
+            self.log_event("disk_to_embed", "delta partly kept",
+                           detail=f"rev {rev}: the workbench kept its own newer "
+                                  f"{', '.join(names[:8])}"
+                                  + (f" (+{len(names) - 8})" if len(names) > 8 else ""))
+            if key != self._skip_recut_seq:
+                self._skip_recut_seq = key
+                self._force_recut()
         cut_at = self._rev_times.get(rev)
         self.log_event("disk_to_embed", "delta acked",
                        ms=None if cut_at is None else (time.time() - cut_at) * 1000,
@@ -4601,6 +4924,26 @@ class _SyncManager:
             self._backup_to(trash[0], rel, data)
 
         prev = self._embed_view
+        # BOUNCE a stale picture. `body.rev` is the delta rev the frame had
+        # applied when it serialized this body (absent from an older
+        # workbench, or a rev from before a server restart when it exceeds
+        # ours → read as today). One below the newest delta this manager cut
+        # with ops was built before the frame saw that delta: applied as the
+        # frame's full state it would write the frame's stale rows over
+        # Claude's edit (a drag reverting a title, a replayed body deleting a
+        # new node — audit R2/R3). So nothing is written; the ack says
+        # `rebuild` and names the rev, the frame applies the delta it is owed
+        # and posts a fresh snapshot. One round trip, no second merge engine.
+        snap_rev = body.get("rev")
+        if (isinstance(snap_rev, int) and not isinstance(snap_rev, bool)
+                and snap_rev <= self.disk_rev and snap_rev < self._cut_rev):
+            self.log_event("embed_to_disk", "snapshot bounced",
+                           detail=f"{gen}/{seq} built on rev {snap_rev}, a delta was cut at "
+                                  f"rev {self._cut_rev}: the workbench re-sends")
+            ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                   "rebuild": True, "rev": self._cut_rev, "upserted": [], "deleted": [],
+                   "created": [], "push_seq": self.push_seq}
+            return self._embed_record(gen, seq, ack)
         result = canvas_snapshot.apply_snapshot(self.dir, new, prev, backup=backup,
                                                 rowless_prev=self._rowless)
         self._log_folder_fixes("embed_to_disk", result.get("folder_fixes") or [])
@@ -4626,6 +4969,9 @@ class _SyncManager:
             self._body_written.pop(gone, None)
         self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
                                        bodies=bodies, embed_rows=new["nodes"])
+        if result.get("deleted"):
+            self._note_user_deletes(result["deleted"], result.get("deleted_files") or [])
+        self._note_user_changes(result, renamed=result.get("renamed"))
         deleted_files = list(result.get("deleted_files") or ())
         if deleted_files:
             # A node deleted in the canvas takes its file's chats with it
@@ -4698,6 +5044,19 @@ class _SyncManager:
         text = canvas_snapshot.normalize_newlines(text)
         raw = canvas_snapshot._read_bytes(path)
         current = canvas_snapshot.body_text(raw)
+        if current is None and base_hash != canvas_snapshot.body_hash(""):
+            # The file was there when the frame last agreed on it and is gone
+            # now: Claude (or a pull) deleted or renamed the node. Answered as
+            # `stale` with the empty text, the frame rebased its edit onto ""
+            # and posted again with the empty base, which reads as a create —
+            # the deleted node came back holding a fragment of its code, and
+            # the next push gave it a row (audit R5). `gone`: the frame keeps
+            # its text and retries later; the delta that deletes or renames
+            # the node settles it. Only an empty base (the frame creating a
+            # node it just made) may create a file.
+            self.log_event("embed_to_disk", "body for a missing file",
+                           detail=f"{file}: deleted or renamed on disk; not recreated")
+            return {"ok": False, "code": "gone", "node": node, "file": file}
         current_hash = canvas_snapshot.body_hash(current if current is not None else "")
         if current_hash != base_hash:
             self.log_event("embed_to_disk", "body stale",
@@ -4776,6 +5135,8 @@ class _SyncManager:
                 held.add(to)
         if frm in self._body_written:
             self._body_written[to] = self._body_written.pop(frm)
+        if result["changed"]:
+            self._note_user_changes({}, renamed=[(frm, to)])
         renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
         if renamed is None:
             # Nothing known before the rename, nothing known after: the next
@@ -5125,13 +5486,15 @@ def _stop_manager(env: str, name: str) -> _SyncManager | None:
 
 def _clone_leftovers(env: str, name: str) -> list[str]:
     """What a clone leaves under `<root>/.sync` besides the folder itself:
-    the merge base, the writer lock, the push freeze and the trash. All go
+    the merge base, the tombstones of nodes the user deleted, the writer
+    lock, the push freeze and the trash. All go
     with the canvas — a later clone of the same name must not inherit a
     stale merge base, and the trash held versions of files that no longer
     have a canvas to go back to."""
     sync = os.path.join(canvases_root(env), ".sync")
     return [
         os.path.join(sync, f"{name}.json"),
+        os.path.join(sync, f"{name}.tombstones.json"),
         os.path.join(sync, f"{name}.lock"),
         os.path.join(sync, "push", name),
         os.path.join(sync, "trash", name),
@@ -5691,11 +6054,26 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
             else:
                 ack = manager.apply_snapshot(gen, seq, snapshot)
         except FileNotFoundError:
-            manager.log_event("embed_to_disk", "snapshot rejected", ok=False,
-                              detail=f"{what} {gen}/{seq}: the clone has no canvas.toml yet")
-            return JSONResponse(
-                {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
-                 "error": "the clone has no canvas.toml yet"}, status_code=400)
+            # Busy, not rejected: a canvas.toml that is missing for a moment
+            # (Claude replacing it, a pull mid-write) must not cost the user
+            # the edit — a 400 makes the frame drop this snapshot and refetch
+            # the server's copy. The page retries a 409 for two minutes and
+            # only then reports it.
+            manager.log_event("embed_to_disk", "snapshot busy", ok=False,
+                              detail=f"{what} {gen}/{seq}: the clone has no canvas.toml right now")
+            return _busy("the clone has no canvas.toml right now; retrying")
+        except canvas_snapshot.DiskUnreadable as exc:
+            # Claude's edit between two steps, or a script writing it in
+            # pieces: retried until it parses (audit R4).
+            manager.log_event("embed_to_disk", "snapshot busy", ok=False,
+                              detail=f"{what} {gen}/{seq}: {exc}")
+            return _busy(str(exc))
+        except canvas_snapshot.DiskMoved as exc:
+            # Claude wrote canvas.toml while this was being applied: nothing
+            # of Claude's is replaced; the retry is measured against it.
+            manager.log_event("embed_to_disk", "snapshot busy", ok=False,
+                              detail=f"{what} {gen}/{seq}: {exc}")
+            return _busy(str(exc))
         except OSError as exc:
             # A file write failed (disk full, a vanished folder): a 409 keeps
             # the snapshot queued on the embed, where a 400 would drop it.
@@ -5845,8 +6223,47 @@ def api_canvases_delta_ack(body: dict = Body(...), x_fused: str | None = Header(
         return JSONResponse({"ok": False, "code": "no_watcher"}, status_code=409)
     reason = body.get("reason")
     with manager._op_lock:
+        skipped = body.get("skipped")
         return JSONResponse(manager.ack_delta(
-            rev, bool(ok), reason=reason if isinstance(reason, str) else None))
+            rev, bool(ok), reason=reason if isinstance(reason, str) else None,
+            skipped=[n for n in skipped if isinstance(n, str)] if isinstance(skipped, list) else ()))
+
+
+@router.post("/api/canvases/agent/hook")
+def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Claude Code hooks for a session working in a canvas clone
+    (claude_agent/canvas_hook.py posts here; agent.py attaches it to every
+    session whose target is in a clone). `event` "pre" (PreToolUse) may
+    answer `{deny}` — a write recreating a node the user deleted, refused
+    once; "post" (PostToolUse) may answer `{context}` — what the user changed
+    in the workbench since the session's previous tool call. `{}` otherwise,
+    and always `{}` for a path in no synced clone: a hook must never get in
+    the way of a session the sync has nothing to say to."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    event = body.get("event")
+    session_id = str(body.get("session_id") or "")
+    tool = str(body.get("tool_name") or "")
+    tool_input = body.get("tool_input") if isinstance(body.get("tool_input"), dict) else {}
+    where = tool_input.get("file_path") or tool_input.get("notebook_path") or body.get("cwd")
+    found = clone_dir_for(where) if isinstance(where, str) else None
+    if found is None and isinstance(body.get("cwd"), str):
+        found = clone_dir_for(body["cwd"])
+    if found is None:
+        return {}
+    env, name, _dir = found
+    manager = _sync_manager(env, name, create=False)
+    if manager is None:
+        return {}
+    try:
+        if event == "pre":
+            return manager.hook_pre(session_id, tool, tool_input)
+        if event == "post":
+            return manager.hook_post(session_id)
+    except Exception:  # noqa: BLE001 — a hook answer is advice, never a failure
+        logger.warning("canvas %s: agent hook failed", _sync_key(env, name), exc_info=True)
+    return {}
 
 
 @router.post("/api/canvases/sync/push")

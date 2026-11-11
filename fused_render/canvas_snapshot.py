@@ -565,6 +565,30 @@ def _load_toml(path: str) -> dict:
         return rtoml.loads(fh.read())
 
 
+class DiskUnreadable(OSError):
+    """canvas.toml is on disk but does not parse (or is not UTF-8). In a
+    live clone that is almost always a write in progress — Claude's edit
+    between two steps, a script writing it in pieces — so callers that
+    answer an OSError with "busy, try again" retry instead of dropping the
+    user's edit (audit R4, 2026-11-10: a 400 here made the frame drop the
+    snapshot and refetch the server copy)."""
+
+
+def _load_toml_raw(path: str) -> tuple[dict, bytes]:
+    """`_load_toml` plus the exact bytes it parsed — what a compare-and-swap
+    write (`_replace_if_unchanged`) checks disk against before replacing.
+    A file that does not parse raises DiskUnreadable, not the parser's own
+    ValueError."""
+    import rtoml
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    try:
+        return rtoml.loads(raw.decode("utf-8")), raw
+    except ValueError as exc:  # rtoml.TomlParsingError, UnicodeDecodeError
+        raise DiskUnreadable(f"canvas.toml does not parse right now ({exc}); "
+                             "it is probably being written") from exc
+
+
 def _dump_toml(data: dict) -> str:
     import rtoml
     return rtoml.dumps(data)
@@ -575,6 +599,66 @@ def _write_atomic(path: str, text: str) -> None:
     with open(tmp, "w", encoding="utf-8", newline="") as fh:
         fh.write(text)
     os.replace(tmp, path)
+
+
+class DiskMoved(OSError):
+    """A file changed on disk between this process reading it and replacing
+    it — another writer (Claude, which writes the clone with no lock) got
+    there in between. An OSError so every caller that already answers a
+    failed write with "busy, try again" (the snapshot and rename routes →
+    409, the page retries) recomputes from the new text instead of
+    overwriting it."""
+
+
+def _replace_if_unchanged(path: str, text: str, before: bytes | None) -> None:
+    """Write `text` to `path` atomically ONLY if disk still holds `before`
+    (None = the file must not exist). Every host write in a clone is a
+    load → edit → replace; without this check a Claude write landing between
+    the load and the replace was silently replaced, and Claude's own tool had
+    already reported success. The temp file is written first, so the window
+    left is the re-read → `os.replace` pair (microseconds), not the edit.
+    Raises DiskMoved when disk moved."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+    try:
+        if _read_bytes(path) != before:
+            raise DiskMoved(f"{os.path.basename(path)} changed on disk while it was being "
+                            "updated; it will be re-read")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _create_exclusive(path: str, text: str) -> bool:
+    """Create `path` with `text` only if nothing is there; False when a file
+    already exists (another writer created it first — code is disk-owned,
+    never overwritten from the snapshot leg). Atomic: the content is staged
+    in a temp file and hard-linked into place, which fails on an existing
+    name instead of replacing it."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+    try:
+        os.link(tmp, path)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        # A file system without hard links: the exists check is the best left.
+        if os.path.exists(path):
+            return False
+        os.replace(tmp, path)
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _read_bytes(path: str) -> bytes | None:
@@ -713,7 +797,7 @@ def apply_rename(clone_dir: str, frm: str, to: str,
     clone with no canvas.toml; a `to` that already names a row is rejected
     (ValueError) rather than merged into."""
     path = os.path.join(clone_dir, "canvas.toml")
-    doc = _load_toml(path)
+    doc, raw = _load_toml_raw(path)
     canvas = doc.setdefault("canvas", {})
     if not isinstance(canvas, dict):
         raise ValueError("canvas.toml: [canvas] is not a table")
@@ -729,7 +813,7 @@ def apply_rename(clone_dir: str, frm: str, to: str,
     moved = _move_file(clone_dir, file_from, file_to)
     if changed:
         _fill_names(rows)
-        _write_atomic(path, _dump_toml(doc))
+        _replace_if_unchanged(path, _dump_toml(doc), raw)
     return {"changed": changed or moved is not None, "renamed": [frm, to],
             "moved": moved, "at": time.time()}
 
@@ -745,24 +829,32 @@ def apply_snapshot(
     """Fold `new` (a `compact_state`) into `<clone_dir>/canvas.toml`.
 
     `prev` is the previous compact state from the same embed generation, or
-    None. `backup(rel, data)` receives every file about to be deleted or
+    None.     `backup(rel, data)` receives every file about to be deleted or
     overwritten. `rowless_prev` are the files this embed generation created
     that still have no row (the host's `rowless_files` so far): one this
     snapshot no longer lists (no UDF, no node, no row) has its file trashed
     and is reported in `deleted`. Returns `{changed, upserted,
     deleted, deleted_files, renamed, created, written, fileless,
-    rowless_files, deferred_deletes, folder_fixes}` (`deleted_files`: the
+    rowless_files, deferred_deletes, folder_fixes, added}` (`added`: rows this
+    snapshot appended; `deleted_files`: the
     source files this snapshot removed from the clone, by basename, a
     folder in `deleted` has none; `fileless`: rows added for nodes whose
     source has not arrived; `rowless_files`: the embed's files still
     without a row; `deferred_deletes`: known nodes the snapshot omitted
     while still listing their UDF, the host keeps them in its view;
-    `folder_fixes`: `normalise_folders`' lines). Raises FileNotFoundError
-    when the clone has no canvas.toml, and whatever `rtoml` raises on a
-    malformed one (the caller reports both as rejections).
+    `folder_fixes`: `normalise_folders`' lines). Raises FileNotFoundError when
+    the clone has no canvas.toml, whatever `rtoml` raises on a malformed one,
+    and DiskMoved when canvas.toml changed on disk while this ran (the caller
+    answers busy; the retry re-reads).
+
+    A snapshot is applied as the frame's FULL state. It is the host's job
+    (canvases._SyncManager.apply_snapshot) to refuse one the frame built
+    before applying a delta the host had already cut — `body.rev` names that
+    delta — so a stale picture never reaches this function: the frame
+    re-serializes after applying the delta and posts again.
     """
     path = os.path.join(clone_dir, "canvas.toml")
-    doc = _load_toml(path)
+    doc, raw_before = _load_toml_raw(path)
     canvas = doc.setdefault("canvas", {})
     if not isinstance(canvas, dict):
         raise ValueError("canvas.toml: [canvas] is not a table")
@@ -827,9 +919,20 @@ def apply_snapshot(
     files_changed = False
     deferred_deletes: list[str] = []
 
+    checked = [False]
+
     def remove(file: str | None) -> None:
         nonlocal files_changed
         if file and os.path.isfile(os.path.join(clone_dir, file)):
+            if not checked[0]:
+                # Before the first file goes: if canvas.toml already moved
+                # since it was read, give up now (busy → retried against the
+                # new text) rather than trash files and then fail the
+                # compare-and-swap at the end with the rows still listing them.
+                checked[0] = True
+                if _read_bytes(path) != raw_before:
+                    raise DiskMoved("canvas.toml changed on disk while the snapshot was "
+                                    "being applied; it will be re-read")
             trash(file)
             pathlib.Path(clone_dir, file).unlink(missing_ok=True)
             files_changed = True
@@ -876,6 +979,7 @@ def apply_snapshot(
     # would strip them and rewrite the toml for nothing.
     prev_nodes = (prev.get("embed_rows") or {}) if prev else {}
     fileless: list[str] = []
+    added: list[str] = []
     for name, row in new["nodes"].items():
         disk = by_name.get(name)
         if disk is None:
@@ -887,6 +991,7 @@ def apply_snapshot(
             by_name[name] = rows[-1]
             changed = True
             upserted.append(name)
+            added.append(name)
             continue
         diff = False
         for key in EMBED_ROW_KEYS:
@@ -940,15 +1045,17 @@ def apply_snapshot(
         if not file or not file.endswith(EMBED_BODY_SUFFIXES):
             continue
         fpath = os.path.join(clone_dir, file)
-        current = read_body(fpath)
+        raw = _read_bytes(fpath)
+        current = body_text(raw)
         if current == text:
             continue
         if current is not None:
             trash(file)
-        # Atomic, and an OSError PROPAGATES (the route answers 409 so the
-        # embed keeps the snapshot queued): swallowed, the toml below would
-        # still be written and the ack say ok for an edit that never landed.
-        _write_atomic(fpath, text)
+        # Atomic and compare-and-swap, and an OSError (DiskMoved included)
+        # PROPAGATES (the route answers 409 so the embed keeps the snapshot
+        # queued): swallowed, the toml below would still be written and the
+        # ack say ok for an edit that never landed.
+        _replace_if_unchanged(fpath, text, raw)
         written.append(file)
 
     # New UDFs: create their source file, never overwrite one. A failure
@@ -956,8 +1063,9 @@ def apply_snapshot(
     # canvas validation on the push.
     for entry in new["new_files"]:
         fpath = os.path.join(clone_dir, entry["file"])
-        if not os.path.exists(fpath):
-            _write_atomic(fpath, entry["body"])
+        # Exclusive: a file Claude created a moment ago under the same name
+        # is code, disk-owned, and never replaced from this leg.
+        if not os.path.exists(fpath) and _create_exclusive(fpath, entry["body"]):
             created.append(entry["file"])
         slug, suffix = os.path.splitext(entry["file"])
         if (slug and suffix in _SOURCE_SUFFIXES and slug not in new["nodes"]
@@ -979,13 +1087,18 @@ def apply_snapshot(
             rows_before.setdefault(row_name(row) or "", row)
         upserted = [n for n in upserted if by_name.get(n) != rows_before.get(n)]
     if changed:
-        _write_atomic(path, _dump_toml(doc))
+        # Compare-and-swap against the bytes loaded above: a Claude write
+        # since is not replaced (DiskMoved → the route answers busy → the
+        # page re-posts this snapshot, which is then measured against the
+        # new disk). Files trashed above stay trashed; the retry reads them
+        # as already gone, and a row whose file is gone is no node.
+        _replace_if_unchanged(path, _dump_toml(doc), raw_before)
     return {"changed": changed or files_changed or bool(created) or bool(written),
             "upserted": upserted, "deleted": deleted, "deleted_files": deleted_files,
             "renamed": renamed,
             "created": created, "written": written, "fileless": fileless,
             "rowless_files": rowless_files, "deferred_deletes": deferred_deletes,
-            "folder_fixes": folder_fixes, "at": time.time()}
+            "folder_fixes": folder_fixes, "added": added, "at": time.time()}
 
 
 def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
@@ -1031,8 +1144,24 @@ def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> di
         table = dict(prev.get(key) or {})
         if frm in table:
             table[to] = table.pop(frm)
-            if key == "nodes" and isinstance(table[to], dict):
-                table[to] = dict(table[to], udfName=to)
+        if key in ("nodes", "embed_rows"):
+            # The same rewrite `_rename_in_doc` makes on disk — the name, a
+            # title that was just the name, every folder's member list — so
+            # the view does not read those as Claude edits the frame lacks.
+            for name, row in list(table.items()):
+                if not isinstance(row, dict):
+                    continue
+                fixed = row
+                if name == to:
+                    fixed = dict(fixed, udfName=to)
+                    if fixed.get("title") == frm:
+                        fixed["title"] = to
+                    if is_folder(fixed) and fixed.get("folderName") == frm:
+                        fixed["folderName"] = to
+                order = fixed.get("childUdfOrder")
+                if is_folder(fixed) and isinstance(order, list) and frm in order:
+                    fixed = dict(fixed, childUdfOrder=[to if n == frm else n for n in order])
+                table[name] = fixed
         out[key] = table
     if file_to:
         out["files"] = dict(out.get("files", {}), **{to: file_to})
@@ -1163,16 +1292,16 @@ def _default_row(stem: str, file: str, x: float, y: float, z: float) -> dict:
 
 def add_canvas_type(clone_dir: str) -> None:
     path = os.path.join(clone_dir, "canvas.toml")
-    doc = _load_toml(path)
+    doc, raw = _load_toml_raw(path)
     if "type" not in doc:
-        _write_atomic(path, _dump_toml({"type": "canvas", **doc}))
+        _replace_if_unchanged(path, _dump_toml({"type": "canvas", **doc}), raw)
 
 
 def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterable[str] = (),
                    publish: bool = False, add: bool = True,
                    backup: Callable[[str, bytes], None] | None = None) -> dict:
     path = os.path.join(clone_dir, "canvas.toml")
-    doc = _load_toml(path)
+    doc, raw = _load_toml_raw(path)
     before = copy.deepcopy(doc)
     doc = {"type": "canvas", **doc}
     canvas = doc.get("canvas", {})
@@ -1225,9 +1354,11 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), drop: Iterabl
     if canvas:
         doc["canvas"] = canvas
     if changed := doc != before:
-        if backup is not None and (old := _read_bytes(path)) is not None:
-            backup("canvas.toml", old)
-        _write_atomic(path, _dump_toml(doc))
+        if backup is not None:
+            backup("canvas.toml", raw)
+        # A Claude write since the load is not replaced: the caller logs
+        # "rows not reconciled" and the next push reconciles what is there.
+        _replace_if_unchanged(path, _dump_toml(doc), raw)
     return {"changed": changed, "dropped": dropped, "added": missing}
 
 

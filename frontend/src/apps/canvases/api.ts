@@ -333,7 +333,11 @@ export type BodyAck =
   | { ok: true; node: string; file: string; hash: string; changed: boolean; created: boolean }
   | { ok: false; code: "stale"; node: string; file: string; disk_text: string; disk_hash: string }
   /** A hard pull just replaced the clone; the frame holds its text and retries later. */
-  | { ok: false; code: "fenced"; node: string; file: string };
+  | { ok: false; code: "fenced"; node: string; file: string }
+  /** The node's file is gone from disk (deleted or renamed there): never
+   *  recreated from the frame's text; the delta that drops or renames the
+   *  node settles it. */
+  | { ok: false; code: "gone"; node: string; file: string };
 
 /** Embed v3 body channel: one source text → the clone, compare-and-swap on
  *  the hash of what disk holds (`base_hash`). Throws with `.status` 409
@@ -360,6 +364,11 @@ export interface CanvasDelta {
   full?: boolean;
   /** Set (instead of ops) while the clone is mid-write; ask again shortly. */
   held?: string;
+  /** The embed generation and the highest snapshot seq the host had applied
+   *  in it when it cut this delta (null when none). The frame skips ops on
+   *  nodes its own later, unacked snapshots touched: the user's change wins. */
+  gen?: number | null;
+  seq?: number | null;
 }
 
 /** Embed v3: diff(disk, what the frame holds), for `fused-embed-delta`.
@@ -376,6 +385,7 @@ export const ackDelta = (
   rev: number,
   ok: boolean,
   reason?: string,
+  skipped?: string[],
 ) =>
   postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", {
     name,
@@ -385,6 +395,10 @@ export const ackDelta = (
     // The frame's own words for a refusal ("not hydrated yet" during boot),
     // so the server can tell a frame still booting from a real refusal.
     ...(reason !== undefined ? { reason } : {}),
+    // Nodes the frame kept its own newer change for (it did not take this
+    // delta's version of them): the server re-sends them once it has the
+    // frame's snapshot.
+    ...(skipped && skipped.length ? { skipped } : {}),
   });
 
 /** Pull the server's canvas into the clone now (the "Server changes · Pull"

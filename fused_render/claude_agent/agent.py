@@ -1088,6 +1088,33 @@ def _in_canvases_root(target: str) -> bool:
 # (`os.path.expanduser`, not module-import time) so a test can monkeypatch HOME
 # and so a real change of HOME mid-process is honored rather than frozen at
 # whatever HOME happened to be when this module first loaded.
+# The environment segments fused-render clones live under
+# (`<canvases_root>/<env>/<name>`): fusedcli.WORKBENCH_ENV_CHOICES, duplicated
+# because this module does not import the server's (see appenv's own rule).
+_CLONE_ENVS = ("unstable", "prod", "custom")
+
+
+def _in_synced_clone(target: str) -> bool:
+    """Whether `target` is in one of fused-render's own canvas clones, the
+    ones its sync manages: `<canvases_root>/<env>/<name>[/...]`. Not Fused
+    Web's clones (`~/Fused/canvas/<name>`, same base, no env segment), whose
+    sessions the sync has nothing to tell."""
+    # realpath + normcase on both sides, as `_path_is_inside`: on macOS the
+    # root and a `pwd -P` target routinely disagree (`/tmp` vs
+    # `/private/tmp`, a symlinked home), and a miss here silently leaves a
+    # real clone session without its hooks.
+    root = os.path.normcase(os.path.realpath(os.path.abspath(_canvases_root())))
+    path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
+    try:
+        if os.path.commonpath([root, path]) != root:
+            return False
+        rel = os.path.relpath(path, root)
+    except ValueError:  # another drive on Windows
+        return False
+    parts = rel.split(os.sep)
+    return len(parts) >= 2 and parts[0] in _CLONE_ENVS and parts[1] not in ("", os.pardir)
+
+
 def _fused_web_canvas_root() -> str:
     """`~/Fused/canvas` — Fused Web's local canvas-clones folder, a SECOND
     gate root alongside `_canvases_root()` (see `_in_workbench_root`)."""
@@ -4146,6 +4173,29 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                 "matcher": "Write|Edit|MultiEdit|NotebookEdit|mcp__.*",
                 "hooks": [{"type": "command", "command": hook_cmd,
                            "timeout": 10}]}]}})]
+    elif _in_synced_clone(file):
+        # A session in a canvas clone shares the folder with the user's live
+        # canvas: their adds, deletes, renames and drags land in canvas.toml
+        # and the source files while this session works. Two hooks keep it
+        # told (owner, 2026-11-10): after every tool call, what the user
+        # changed since the previous one (PostToolUse additionalContext), and
+        # before a write, a one-time refusal to recreate the file of a node
+        # the user deleted (PreToolUse deny). Both ask the server
+        # (`/api/canvases/agent/hook`) and FAIL OPEN: any error, a missing
+        # origin, a slow answer — the hook prints nothing and exits 0, and the
+        # session carries on as if it were not there.
+        def canvas_hook(event: str) -> str:
+            argv = [_stable_python(), "-I", _canvas_hook_path(), event]
+            return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        cmd += ["--settings", json.dumps({"hooks": {
+            "PreToolUse": [{
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+                "hooks": [{"type": "command", "command": canvas_hook("pre"),
+                           "timeout": 5}]}],
+            "PostToolUse": [{
+                "matcher": "*",
+                "hooks": [{"type": "command", "command": canvas_hook("post"),
+                           "timeout": 5}]}]}})]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id and resume_at and new_session_id:
@@ -4886,6 +4936,14 @@ def _permission_server_path() -> str:
     copy (it is stdlib-only); the packaged file itself when no copy can be
     made."""
     packaged = os.path.join(HERE, "permission_server.py")
+    return _stable_script(packaged) or packaged
+
+
+def _canvas_hook_path() -> str:
+    """The canvas-clone hook script (canvas_hook.py, stdlib-only), as a
+    `_stable_script` copy; the packaged file itself when no copy can be
+    made."""
+    packaged = os.path.join(HERE, "canvas_hook.py")
     return _stable_script(packaged) or packaged
 
 
@@ -6684,6 +6742,43 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
                 # the open state is only trailing bookkeeping rows).
                 return {"run_id": name, "backend": _meta_backend(meta),
                         "turn_at": fold.get("turn_at")}
+    return {"run_id": ""}
+
+
+def _live_run_in(folder: str) -> dict:
+    """The id of a run STILL GOING anywhere in `folder` — on the folder
+    itself or on a file directly inside it — or "" if there is none.
+
+    `_live_run` answers for ONE target and matches it exactly, which is right
+    for a page re-attaching to its own chat and wrong for the canvas sync's
+    question, "is a session editing this clone?": a chat opened with a canvas
+    node selected targets that node's FILE (`<clone>/udf_3.py`), so asked
+    with the clone folder `_live_run` said nobody was there, and the watcher
+    pushed that session's half-done change set after 1.5 s of quiet. The
+    match here is `_live_sessions`' workdir rule (a file target's workdir is
+    its folder), with `_live_run`'s liveness test (pid alive AND a turn
+    open). Unbounded on purpose — see `_live_run`'s `limit`; the sync caches
+    the answer across its poll."""
+    workdir = os.path.abspath(folder)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return {"run_id": ""}
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        target = meta.get("file", "") if isinstance(meta, dict) else ""
+        if not target or os.path.abspath(_workdir(target)) != workdir:
+            continue
+        if not _alive(run_dir):
+            continue
+        turn_open, _tasks_pending = _turn_state_fold(run_dir, {}, partial=True)
+        if turn_open:
+            return {"run_id": name, "backend": _meta_backend(meta)}
     return {"run_id": ""}
 
 

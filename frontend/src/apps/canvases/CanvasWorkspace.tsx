@@ -82,6 +82,11 @@
 // the server. On its autosave cadence it posts the body it would have saved,
 // minus code, as
 //   iframe → { type: "fused-embed-snapshot", gen, seq, body }
+// (`body.rev`: the last delta rev the frame had applied when it serialized
+// the body; a body older than a delta the server already cut is BOUNCED —
+// answered `stale: true, rebuild: true, rev` with nothing written, and the
+// frame re-sends once it has applied that delta — so a Claude edit still on
+// its way to the frame is never undone by a stale picture of the canvas)
 // which this page relays to POST /api/canvases/snapshot; the answer goes back
 // as fused-embed-snapshot-applied / -rejected. A relay the page ABANDONS
 // because a newer snapshot superseded it while the clone was busy (the newer
@@ -106,8 +111,10 @@
 //              frame's base (Claude wrote the file) — the frame rebases its
 //              edits onto `disk_text` and posts again; "busy": the clone stayed
 //              locked, post again later; "fenced": a hard pull just replaced
-//              the clone, post again once its full state has landed; anything
-//              else: dropped, logged.
+//              the clone, post again once its full state has landed; "gone":
+//              the file was deleted or renamed on disk under the frame's base,
+//              never recreated from its text — the delta that drops or renames
+//              the node settles it; anything else: dropped, logged.
 // Relayed on the SAME ordered chain as snapshots and rename hints: a body for
 // a UDF's old file name must not overtake the rename that moves the file.
 // The token message tells the frame this host speaks the channel
@@ -151,9 +158,12 @@
 // message — or the 2 s sync/state poll while the socket is down) it fetches
 // GET /api/canvases/delta — diff(disk, what the server believes the frame
 // holds) — and posts it as
-//   parent → { type: "fused-embed-delta", rev, base_rev, full, ops }
-//   iframe → { type: "fused-embed-delta-applied", rev } | "-rejected"
-// relaying the ack to POST /api/canvases/delta/ack. The frame patches its
+//   parent → { type: "fused-embed-delta", rev, base_rev, full, ops, gen, seq }
+//   iframe → { type: "fused-embed-delta-applied", rev, skipped? } | "-rejected"
+// relaying the ack to POST /api/canvases/delta/ack. `gen`/`seq` say which of
+// the frame's snapshots the server had applied when it cut the delta; the
+// frame skips ops on nodes its own later, unacked snapshots touched (the
+// user's change wins) and names them in `skipped`. The frame patches its
 // nodes in place: camera, selection, results and the right pane's session
 // all survive. A frame that just hydrated says
 //   iframe → { type: "fused-embed-hello" }
@@ -1538,7 +1548,10 @@ export default function CanvasWorkspace({
           // gateway and open-canvas (see the module doc). The frame shows
           // its editors only when it hears "body", routes its inline AI here
           // on "ai", and hands an uploaded canvas here on "open".
-          caps: ["body", "ai", "open"],
+          // `gone`: this host answers a body post for a file deleted or
+          // renamed on disk with `code: "gone"`; a frame that sees the cap
+          // takes a `stale ""` from it as a really empty file, not a missing one.
+          caps: ["body", "ai", "open", "gone"],
           ...(publicOrigin ? { publicOrigin } : {}),
         },
         origin, // exact origin — this message carries a credential
@@ -1809,7 +1822,18 @@ export default function CanvasWorkspace({
               nodeSessions.delete(nodeSessionKey(env, name, file));
             }
           }
-          post({ type: "fused-embed-snapshot-applied", gen, seq, push_seq: ack.push_seq });
+          // `stale` + `rebuild`: the server wrote nothing — the body was
+          // built before a delta it had cut (`rev`); the frame applies that
+          // delta and posts a fresh snapshot.
+          const bounced = ack as { stale?: boolean; rebuild?: boolean; rev?: number };
+          post({
+            type: "fused-embed-snapshot-applied",
+            gen,
+            seq,
+            push_seq: ack.push_seq,
+            ...(bounced.stale ? { stale: true } : {}),
+            ...(bounced.rebuild ? { rebuild: true, rev: bounced.rev } : {}),
+          });
           return;
         } catch (e) {
           const status = (e as { status?: number }).status;
@@ -1869,7 +1893,10 @@ export default function CanvasWorkspace({
               seq,
               name: body.node,
               code: ack.code,
-              reason: "a pull just replaced the clone; retrying once it has settled",
+              reason:
+                ack.code === "gone"
+                  ? "the file was deleted or renamed on disk; not recreated"
+                  : "a pull just replaced the clone; retrying once it has settled",
             });
           }
           return;
@@ -2068,6 +2095,10 @@ export default function CanvasWorkspace({
                 base_rev: delta.base_rev ?? null,
                 full: Boolean(delta.full),
                 ops,
+                // What the host had applied of the frame's snapshots when it
+                // cut this delta: the frame keeps its own later changes.
+                gen: delta.gen ?? null,
+                seq: delta.seq ?? null,
               },
               origin,
             );
@@ -2483,8 +2514,12 @@ export default function CanvasWorkspace({
         // no error and needs no heal (the server ignores the reason too).
         const booting = reason === "not hydrated yet";
         if (ok) deltaHealRef.current = false;
+        const skippedRaw = event.data?.skipped;
+        const skipped = Array.isArray(skippedRaw)
+          ? skippedRaw.filter((n: unknown): n is string => typeof n === "string")
+          : undefined;
         relayChainRef.current = relayChainRef.current.then(() =>
-          ackDelta(env, name, rev, ok, reason).then(() => undefined, () => undefined),
+          ackDelta(env, name, rev, ok, reason, skipped).then(() => undefined, () => undefined),
         );
         // A REAL refusal: the server has dropped its picture of the frame
         // and marks the leg red. Send a full state once, right away, so the
