@@ -385,6 +385,7 @@ CANVAS_OPEN_TOOL = "OpenCanvas"
 # How long a page's claim on a canvas-shot request holds before another page
 # may take it over (a page that claimed and then closed).
 CANVAS_CLAIM_TTL = 60.0
+_CANVAS_CLAIM_LOCK = threading.Lock()
 # fusedcli.WORKBENCH_ENV_CHOICES and canvases._NAME_RE, duplicated: this file
 # never imports `fused_render` (a test pins the copies together).
 _CANVAS_ENVS = ("unstable", "prod", "custom")
@@ -4101,6 +4102,13 @@ def _canvas_shot_inbox(state: str) -> dict:
         holder = _canvas_claim_holder(inbox, request_id, now)
         if holder and holder != page_id:
             continue
+        if holder:
+            # Polling IS the liveness signal: a page still polling keeps its
+            # claim through a long queued capture (longer than the TTL).
+            try:
+                os.utime(os.path.join(inbox, request_id + ".claim"))
+            except OSError:
+                pass
         rows.append({"id": request_id, "runId": run_id,
                      "what": "udf" if req.get("what") == "udf" else "canvas",
                      "udf": str(req.get("udf") or ""),
@@ -4136,19 +4144,23 @@ def _canvas_shot_claim(run_id: str, request_id: str, state: str) -> dict:
     if not os.path.isfile(os.path.join(inbox, request_id + ".json")):
         return {"claimed": False, "error": "unknown canvas-screenshot request"}
     path = os.path.join(inbox, request_id + ".claim")
-    holder = _canvas_claim_holder(inbox, request_id, time.time())
-    if holder:
-        return {"claimed": holder == page_id}
-    try:
-        if os.path.exists(path):
-            os.unlink(path)  # stale: its page stopped answering
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return {"claimed": _canvas_claim_holder(inbox, request_id, time.time()) == page_id}
-    except OSError as exc:
-        return {"claimed": False, "error": str(exc)}
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(page_id)
+    # One lock around check + stale-removal + create: pages reach this
+    # process over HTTP, so concurrent claims can never remove each other's
+    # fresh claim, and a half-written file is never read as stale.
+    with _CANVAS_CLAIM_LOCK:
+        holder = _canvas_claim_holder(inbox, request_id, time.time())
+        if holder:
+            return {"claimed": holder == page_id}
+        try:
+            if os.path.exists(path):
+                os.unlink(path)  # stale: its page stopped answering
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return {"claimed": _canvas_claim_holder(inbox, request_id, time.time()) == page_id}
+        except OSError as exc:
+            return {"claimed": False, "error": str(exc)}
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(page_id)
     return {"claimed": True}
 
 
