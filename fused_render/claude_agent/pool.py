@@ -59,7 +59,10 @@ CONTROL_POOL = ThreadPoolExecutor(max_workers=2,
 #: The actions that ride `CONTROL_POOL`; every other action rides `POOL`.
 # `canvas_shot` is `app_state`'s twin: a page answering a tool call that is
 # blocked until the answer lands, so it must not queue behind polls either.
-CONTROL_ACTIONS = frozenset({"cancel", "decide", "app_state", "canvas_shot"})
+# `canvas_shot_claim` too (D1471): the page's claim is the step before the
+# capture, and a claim stuck behind polls is a slower picture.
+CONTROL_ACTIONS = frozenset({"cancel", "decide", "app_state", "canvas_shot",
+                             "canvas_shot_claim"})
 
 
 #: THE TASK-OUTPUT LANE (SPEC T-3). `task_output` parks a worker for up to

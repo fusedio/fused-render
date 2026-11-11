@@ -2,7 +2,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { expect, test } from "bun:test";
 
-const { cropToPane, frameCovered, nativeCanvasShot, nativeShotAllowed, shotGateOf } =
+const { SHOT_OWN_ATTR, cropToPane, fitShotBlob, frameCovered, nativeCanvasShot, nativeShotAllowed, shotGateOf } =
   await import("./canvas-shot-native");
 
 test("a screen shot is allowed only when it would show the canvas", () => {
@@ -15,22 +15,34 @@ test("a screen shot is allowed only when it would show the canvas", () => {
   expect(nativeShotAllowed({ visible: true, focused: true, covered: true })).toBe(false);
 });
 
-test("covered = something else is topmost at the frame's centre, or nothing is", () => {
+test("covered = something not ours is over the frame at any sample point, or nothing is", () => {
   const frame = { getBoundingClientRect: () => ({ left: 10, top: 20, width: 400, height: 300 }) };
   const asFrame = frame as unknown as Element;
-  const docWith = (hit: Element | null) => ({
+  const asked: Array<[number, number]> = [];
+  // `at(x, y)`: what is topmost there; the frame everywhere else.
+  const docWith = (at: (x: number, y: number) => Element | null | undefined) => ({
     elementFromPoint: (x: number, y: number) => {
-      expect(x).toBe(210);
-      expect(y).toBe(170);
-      return hit;
+      asked.push([x, y]);
+      const hit = at(x, y);
+      return hit === undefined ? asFrame : hit;
     },
   });
-  expect(frameCovered(frame, docWith(asFrame))).toBe(false);
-  expect(frameCovered(frame, docWith({} as Element))).toBe(true);
-  expect(frameCovered(frame, docWith(null))).toBe(true);
+  expect(frameCovered(frame, docWith(() => undefined))).toBe(false);
+  // The centre and four points a quarter in.
+  expect(asked).toEqual([[210, 170], [110, 95], [310, 95], [110, 245], [310, 245]]);
+  const foreign = { closest: () => null } as unknown as Element;
+  expect(frameCovered(frame, docWith((x, y) => (x === 210 && y === 170 ? foreign : undefined)))).toBe(true);
+  // A viewer modal over one corner only: still covered (off-centre was missed before).
+  expect(frameCovered(frame, docWith((x, y) => (x === 310 && y === 245 ? foreign : undefined)))).toBe(true);
+  expect(frameCovered(frame, docWith((x) => (x === 110 ? null : undefined)))).toBe(true);
+  // Our own floating card (the rail's, a popover, a toast) over the centre: not a refusal.
+  const own = { closest: (sel: string) => (sel === `[${SHOT_OWN_ATTR}]` ? ({} as Element) : null) } as unknown as Element;
+  expect(frameCovered(frame, docWith((x, y) => (x === 210 && y === 170 ? own : undefined)))).toBe(false);
+  // …unless it hides the whole frame: then there is no canvas in the picture.
+  expect(frameCovered(frame, docWith(() => own))).toBe(true);
   // A frame with no box is not on screen.
   const flat = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }) };
-  expect(frameCovered(flat, docWith(flat as unknown as Element))).toBe(true);
+  expect(frameCovered(flat, docWith(() => flat as unknown as Element))).toBe(true);
 });
 
 test("the user's own click is proof of focus; the agent's capture asks the document", () => {
@@ -103,4 +115,12 @@ test("nativeCanvasShot: no frame, no crop, a shut gate or a null still all answe
     }),
   ).toBeNull();
   expect(captures).toBe(1);
+});
+
+test("fitShotBlob: a picture already inside the view budget is handed over as it is", async () => {
+  const small = new Blob([new Uint8Array(10)], { type: "image/png" });
+  expect(await fitShotBlob(small)).toBe(small);
+  // Too big, but nothing here can decode it: the original, never a throw.
+  const big = new Blob([new Uint8Array(2 * 1024 * 1024)], { type: "image/png" });
+  expect(await fitShotBlob(big)).toBe(big);
 });

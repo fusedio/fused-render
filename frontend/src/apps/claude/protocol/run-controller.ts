@@ -73,7 +73,6 @@ import type {
   Activity,
   AppStateResponse,
   AppStateRow,
-  CanvasShotRow,
   CancelResponse,
   Decision,
   DecideResponse,
@@ -314,7 +313,6 @@ function emptyState(file: string | null): ChatState {
     forkClamped: false,
     permissions: [],
     appState: [],
-    canvasShot: [],
     skills: [],
     working: null,
     trouble: null,
@@ -520,9 +518,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   // ---- per-transcript memos (T:15721-15756) -------------------------------
   const answeredStates = new Set<string>();
-  /** `canvas_screenshot` requests this page has claimed (`answerCanvasShot`). */
-  const answeredShots = new Set<string>();
-  const shotPolls = new Map<string, number>();
   const notedStates = new Set<string>();
   const nullStatePolls = new Map<string, number>();
   const notedSkills = new Set<string>();
@@ -1538,22 +1533,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (rows.length || state.appState.length) emit({ appState: rows });
   };
 
-  /** The `canvas_screenshot` rows a canvas page still has to answer. Replayed
-   *  every poll like `surfaceAppState`, with `pollsSeen` advancing so a page
-   *  WITHOUT a canvas (the Tasks peek) can answer "open the canvas" only after
-   *  the canvas page has had its chance (`useCanvasShotResponder`). */
-  const surfaceCanvasShot = (list: CanvasShotRow[] | null | undefined, runId: string) => {
-    const rows: CanvasShotRow[] = [];
-    for (const req of list || []) {
-      if (!req || !req.id || answeredShots.has(req.id)) continue;
-      const seen = (shotPolls.get(req.id) || 0) + 1;
-      shotPolls.set(req.id, seen);
-      trim(shotPolls);
-      rows.push({ ...req, runId, pollsSeen: seen });
-    }
-    if (rows.length || state.canvasShot.length) emit({ canvasShot: rows });
-  };
-
   // ---- permissions (T:14750-14775) ---------------------------------------
 
   /**
@@ -2202,7 +2181,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (poll.worktree_hint) landWorktreeHint(poll.worktree_hint);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
-        surfaceCanvasShot(poll.canvas_shot, runId);
         // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
@@ -3730,38 +3708,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (res && "error" in res && res.error && res.retry) answeredStates.delete(id);
   }
 
-  async function answerCanvasShot(
-    id: string,
-    answer: { image: string; mime: string; udf?: string } | { error: string },
-    askedBy?: string,
-  ): Promise<boolean> {
-    if (disposed) return false;
-    // The run that asked, as the responder remembers it; the row's own, else
-    // the current run — never a later run for a request a former one made.
-    const runId = askedBy || state.canvasShot.find((r) => r.id === id)?.runId || activeRun;
-    if (!runId) return false;
-    if (answeredShots.has(id)) return true;
-    answeredShots.add(id); // claimed before the await: polls overlap
-    trim(answeredShots);
-    emit({ canvasShot: state.canvasShot.filter((r) => r.id !== id) });
-    let res: AppStateResponse | null = null;
-    try {
-      res = (await run("canvas_shot", {
-        run_id: runId,
-        request_id: id,
-        state: JSON.stringify(answer),
-      })) as AppStateResponse;
-    } catch {
-      answeredShots.delete(id); // the tool call is still blocked: retry next poll
-      return false;
-    }
-    if (res && "error" in res && res.error && res.retry) {
-      answeredShots.delete(id);
-      return false;
-    }
-    return true;
-  }
-
   // ---- history / sessions -------------------------------------------------
 
   /**
@@ -3936,7 +3882,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
       context: null,
       permissions: [],
       appState: [],
-      canvasShot: [],
       skills: [],
       trouble: null,
       // A restored conversation has no live run, so the picker's param is the
@@ -5035,7 +4980,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     decidePlan,
     dismissCard,
     answerAppState,
-    answerCanvasShot,
     openSession,
     resumeRun,
     adoptLiveRun,

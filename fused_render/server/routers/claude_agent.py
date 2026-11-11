@@ -81,6 +81,8 @@ ACTIONS: dict[str, str] = {
     "decide": "_decide",
     "app_state": "_answer_app_state",
     "canvas_shot": "_answer_canvas_shot",
+    "canvas_shot_inbox": "_canvas_shot_inbox",
+    "canvas_shot_claim": "_canvas_shot_claim",
     "sessions": "_sessions",
     "live_run": "_live_run",
     "cards": "_cards",
@@ -104,6 +106,8 @@ ACTIONS: dict[str, str] = {
     "task_background": "_task_background",
     "tasks": "_run_tasks",
 }
+# Actions that never change what git reports (see `agent_dispatch`).
+_NO_GIT_ACTIONS = frozenset({"canvas_shot_inbox", "canvas_shot_claim"})
 
 #: The engine name the call log records for these routes. `/api/run` wrote
 #: "builtin" or "fused"; neither is true here, and the Calls page only shows it.
@@ -465,8 +469,11 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
             tasks_watch.notify({session_id})
     # A turn writes files (and `_poll` commits them at turn end), so the git
     # status cache is dropped after every call, success or failure — the same
-    # unconditional drop /api/run made after every script.
-    git_status.invalidate_status_cache()
+    # unconditional drop /api/run made after every script. Not for a canvas
+    # page's 1 s inbox poll and claim: they touch no repo, and would keep the
+    # cache from ever holding.
+    if action not in _NO_GIT_ACTIONS:
+        git_status.invalidate_status_cache()
     # The call log's record (calls.py): attributed to agent.py, with the page's
     # params and — on failure — the error a user has since clicked away from.
     # A record exists only when the page sent `X-Fused-Page`

@@ -764,6 +764,9 @@ export function Modal({
       // The card's left edge, for side panels that stand beside it (Browse,
       // Custom recurrence — schedule.css `.modal-popover`).
       {...(popover && place ? { style: { "--modal-pop-left": `${place.left}px` } as CSSProperties } : {})}
+      // A popover card is one of our own floating layers: over the canvas
+      // frame it never refuses the canvas screenshot (canvas-shot-native).
+      {...(popover ? { "data-shot-own": "" } : {})}
       onMouseDown={(e) => {
         if (popover) return;
         // Only the scrim itself, and not in its first moments: the second press

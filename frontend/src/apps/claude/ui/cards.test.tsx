@@ -12,6 +12,7 @@ import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { RadioGroup } from "@platform/shadcn/ui/radio-group";
 
+import { OpenCanvasCard } from "./OpenCanvasCard";
 import { PermCard } from "./PermCard";
 import { PlanCard } from "./PlanCard";
 import { QuestionCard, tabTitle } from "./QuestionCard";
@@ -961,4 +962,80 @@ test("a tab's label is the header when there is one, else the question, cut at a
   );
   // No header and no question is still a tab the user can click.
   expect(tabTitle({ question: "", options: [] })).toBe("Question");
+});
+
+// ── OpenCanvasCard (D1471) ────────────────────────────────────────────────
+const askRow = (over: Partial<PermissionRow> = {}) =>
+  row({ id: "ask-1", tool: "OpenCanvas", input: { env: "prod", name: "demo" }, ...over });
+
+test("the open-canvas ask: Open allows, then goes to the canvas page", async () => {
+  const sent: unknown[] = [];
+  const went: string[] = [];
+  const r = mount(
+    <OpenCanvasCard
+      row={askRow()}
+      onDecide={async (...args) => {
+        sent.push(args);
+      }}
+      navigate={(url) => went.push(url)}
+    />,
+  );
+  expect(textOf(withClass(r, "gate-head")[0])).toBe("Claude wants to open demo to take a screenshot");
+  expect(labels(r)).toEqual(["Open", "Not now"]);
+  press(r, "Open");
+  await act(async () => {});
+  expect(sent).toEqual([["ask-1", "allow", "once"]]);
+  expect(went).toEqual(["/canvases/prod/demo"]);
+});
+
+test("the open-canvas ask: Not now denies and goes nowhere", async () => {
+  const sent: unknown[] = [];
+  const went: string[] = [];
+  const r = mount(
+    <OpenCanvasCard
+      row={askRow()}
+      onDecide={async (...args) => {
+        sent.push(args);
+      }}
+      navigate={(url) => went.push(url)}
+    />,
+  );
+  press(r, "Not now");
+  await act(async () => {});
+  expect(sent).toEqual([["ask-1", "deny", "once"]]);
+  expect(went).toEqual([]);
+});
+
+test("a resolved open-canvas ask is a receipt, and an unanswered one says so", () => {
+  const opened = mount(<OpenCanvasCard row={askRow({ decision: "allow" })} onDecide={noop} />);
+  expect(labels(opened)).toEqual([]);
+  expect(textOf(withClass(opened, "gate-head")[0])).toBe("Claude wanted to open demo to take a screenshot");
+  expect(textOf(withClass(opened, "gate-status")[0])).toBe("✓ Opened");
+  const timedOut = mount(<OpenCanvasCard row={askRow({ decision: "deny", reason: "timeout" })} onDecide={noop} />);
+  expect(textOf(withClass(timedOut, "gate-status")[0])).toContain("Unanswered");
+  const declined = mount(<OpenCanvasCard row={askRow({ decision: "deny" })} onDecide={noop} />);
+  expect(textOf(withClass(declined, "gate-status")[0])).toContain("Not now");
+});
+
+test("an open-canvas ask that Stop ended or the queue holds says so, not Not now", () => {
+  const stopped = mount(<OpenCanvasCard row={askRow({ decision: "deny", reason: "cancelled" })} onDecide={noop} />);
+  expect(textOf(withClass(stopped, "gate-status")[0])).toContain("Stopped");
+  const held = mount(<OpenCanvasCard row={askRow({ decision: "deny", queuedAhead: "" })} onDecide={noop} />);
+  expect(textOf(withClass(held, "gate-status")[0])).toContain("Answer queued");
+  const restored = mount(<OpenCanvasCard row={askRow({ held: true })} onDecide={noop} />);
+  expect(labels(restored)).toEqual([]);
+  expect(textOf(withClass(restored, "gate-status")[0])).toContain("Answer queued");
+});
+
+test("on the phone the open-canvas ask offers only Not now", () => {
+  // lan.html stamps `data-host="lan"` (isLanHost); the test shim has no <html>.
+  const doc = document as unknown as { documentElement?: unknown };
+  const had = doc.documentElement;
+  doc.documentElement = { dataset: { host: "lan" } };
+  try {
+    const r = mount(<OpenCanvasCard row={askRow()} onDecide={noop} />);
+    expect(labels(r)).toEqual(["Not now"]);
+  } finally {
+    doc.documentElement = had;
+  }
 });

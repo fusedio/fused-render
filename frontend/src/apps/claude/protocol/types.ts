@@ -15,6 +15,8 @@ export type Action =
   | "decide"
   | "app_state"
   | "canvas_shot"
+  | "canvas_shot_inbox"
+  | "canvas_shot_claim"
   | "sessions"
   | "live_run"
   | "defaults"
@@ -164,6 +166,39 @@ export interface CanvasShotRequest {
   state: string;
 }
 
+/** `canvas_shot_inbox {state}` — a canvas page's poll (D1471): `state` is its
+ *  heartbeat JSON `{env, name, page_id, visible, focused, frame_up, error}`. */
+export interface CanvasShotInboxRequest {
+  state: string;
+}
+
+/** One request waiting on THIS page's canvas, from any run. */
+export interface CanvasShotInboxRow extends CanvasShotRow {
+  runId: string;
+  /** This page already holds the claim (a capture in flight, or an answer
+   *  that did not land). */
+  claimed: boolean;
+  /** When the tool stops waiting (epoch s; 0 from an older server). */
+  deadline?: number;
+}
+
+export interface CanvasShotInboxResponse {
+  rows: CanvasShotInboxRow[];
+  error?: string;
+}
+
+/** `canvas_shot_claim {run_id, request_id, state: {page_id}}`. */
+export interface CanvasShotClaimRequest {
+  run_id: string;
+  request_id: string;
+  state: string;
+}
+
+export interface CanvasShotClaimResponse {
+  claimed: boolean;
+  error?: string;
+}
+
 export interface SendRequest {
   run_id: string;
   /** Must equal the session's agent; ignored otherwise (§8). */
@@ -248,6 +283,8 @@ export interface AgentRequests {
   decide: DecideRequest;
   app_state: AppStateRequest;
   canvas_shot: CanvasShotRequest;
+  canvas_shot_inbox: CanvasShotInboxRequest;
+  canvas_shot_claim: CanvasShotClaimRequest;
   sessions: FileRequest;
   live_run: FileSessionRequest;
   /** `session_id` OPTIONAL, exactly as `live_run` takes it: with one the agent
@@ -492,8 +529,8 @@ export interface AppStateRow {
 }
 
 /** One parked `canvas_screenshot` call (agent `_canvas_shot_requests`): what
- *  the model asked to see. Answered by the canvas page through its own
- *  capture (`useCanvasShotResponder`). */
+ *  the model asked to see. Answered by the canvas page off its own inbox
+ *  (`canvas-page-shot-responder`, D1471); the chat reads none of these. */
 export interface CanvasShotRow {
   id: string;
   what: "canvas" | "udf";
@@ -501,12 +538,8 @@ export interface CanvasShotRow {
   udf: string;
   reason: string;
   created_at: number;
-
-  // -- CLIENT-ONLY annotations (run-controller.ts). --
-  /** The run that asked. */
+  /** The run that asked (the page's inbox rows carry it). */
   runId?: string;
-  /** How many polls this request has been seen unanswered for. */
-  pollsSeen?: number;
 }
 
 export interface SkillRow {
@@ -622,9 +655,6 @@ export interface PollResponse {
   permissions: PermissionRow[];
   /** [] once done. */
   app_state: AppStateRow[];
-  /** Unanswered `canvas_screenshot` requests (agent `_canvas_shot_requests`);
-   *  absent on an older agent.py. */
-  canvas_shot?: CanvasShotRow[];
   /** Live permission mode (`_live_mode`). */
   mode: PermissionMode;
   skills: SkillRow[];
@@ -1147,6 +1177,8 @@ export interface AgentResponses {
   decide: DecideResponse;
   app_state: AppStateResponse;
   canvas_shot: AppStateResponse;
+  canvas_shot_inbox: CanvasShotInboxResponse;
+  canvas_shot_claim: CanvasShotClaimResponse;
   sessions: SessionsResponse | ErrorOnly;
   live_run: RunIdResponse | ErrorOnly;
   defaults: DefaultsResponse | ErrorOnly;

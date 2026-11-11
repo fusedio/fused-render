@@ -58,7 +58,6 @@ Actions:
           "permissions": [{"id", "tool", "input", "decision", "scope",
                            "answers"}, ...],
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
-          "canvas_shot": [{"id", "what", "udf", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session"|"exact", answers=<json string, AskUserQuestion only>,
@@ -377,6 +376,23 @@ CANVAS_SHOT_TOOL = "canvas_screenshot"
 # "no page answered" sentence reaches the model instead of the CLI's
 # MCP-timeout error.
 CANVAS_SHOT_WAIT = float(os.environ.get("FUSED_RENDER_CANVAS_SHOT_TIMEOUT", "100"))
+# D1471: the ask a `canvas_screenshot` call parks in `perm/` when no page for
+# its canvas is open ("Claude wants to open <canvas> to take a screenshot",
+# Open / Not now). A card like an approval, so the task reads blocked; never a
+# real tool. Mirrors permission_server.CANVAS_OPEN_TOOL (a test pins them).
+CANVAS_OPEN_TOOL = "OpenCanvas"
+# How long a page's claim on a canvas-shot request holds before another page
+# may take it over (a page that claimed and then closed).
+CANVAS_CLAIM_TTL = 60.0
+# permission_server.CANVAS_PAGE_FRESH (a test pins them): a claim whose page
+# has not polled for this long lapses at once — a page that reloaded, closed
+# or switched canvas never blocks the page that replaced it for the TTL.
+CANVAS_PAGE_FRESH = 4.0
+_CANVAS_CLAIM_LOCK = threading.Lock()
+# fusedcli.WORKBENCH_ENV_CHOICES and canvases._NAME_RE, duplicated: this file
+# never imports `fused_render` (a test pins the copies together).
+_CANVAS_ENVS = ("unstable", "prod", "custom")
+_CANVAS_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 # The delimiters the PAGE wraps its send-time snapshot in. Stripped from every
 # user-facing copy of a message (the run's `meta.json`, hence the commit
 # subject and a re-attach match — plus the restored
@@ -1134,6 +1150,31 @@ def _in_workbench_root(target: str) -> bool:
     return _in_canvases_root(target) or _in_fused_web_canvas_root(target)
 
 
+def _canvas_of(target: str) -> dict | None:
+    """The fused-render canvas `target` sits in — `{env, name, clone, node}` —
+    or None. Only a clone at `<canvases root>/<env>/<name>` (canvases.
+    `clone_dir_for`'s rule) has a canvas PAGE that can photograph it, so this,
+    not `_in_workbench_root`, gates the `canvas_screenshot` tool: a Fused Web
+    clone (`~/Fused/canvas/<name>`) gets the skills but not the tool (D1471,
+    F7). `node` is the node file's stem for a node chat, else ""."""
+    if not target:
+        return None
+    try:
+        root = os.path.realpath(os.path.abspath(_canvases_root()))
+        rel = os.path.relpath(os.path.realpath(os.path.abspath(target)), root)
+    except (OSError, ValueError):
+        return None
+    parts = rel.split(os.sep)
+    if (len(parts) < 2 or parts[0] not in _CANVAS_ENVS
+            or not _CANVAS_NAME_RE.match(parts[1])):
+        return None
+    node = ""
+    if len(parts) == 3 and _is_canvas_node_file(parts[2]):
+        node = os.path.splitext(parts[2])[0]
+    return {"env": parts[0], "name": parts[1],
+            "clone": os.path.join(root, parts[0], parts[1]), "node": node}
+
+
 def _plugin_argv(target: str | None = None) -> list:
     """One `--plugin-dir <root>` per plugin root fused-render has to hand this
     session for THIS target, or `[]`.
@@ -1333,8 +1374,8 @@ def _bad_id(value: str) -> bool:
 
     run ids and session ids both arrive as URL params and both get joined onto
     a directory we own, so neither may carry a path separator or a leading dot
-    (nor `\\` or `:`)."""
-    return not value or value.startswith(".") or any(c in value for c in "/\\:")
+    (nor `\\`, `:` or a NUL, which `open` refuses with a ValueError)."""
+    return not value or value.startswith(".") or any(c in value for c in "/\\:\0")
 
 
 def _workdir(file: str) -> str:
@@ -1868,6 +1909,14 @@ def _canvas_shot_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "canvasshot")
 
 
+def _canvas_pages_dir() -> str:
+    """Where canvas PAGES meet canvas-shot requests (D1471): `inbox/<id>.json`
+    is a pointer the permission server writes for every request (any run),
+    `<env>/<name>/<page_id>.json` is each open canvas page's heartbeat. Beside
+    `runs`, so it is per user like the run dirs."""
+    return os.path.join(os.path.dirname(RUNS), "canvas-pages")
+
+
 def _private_dir(path: str) -> None:
     """shared/private_dir.py's `private_dir`, anchored at our own root (the
     parent of `RUNS`, read per call): anything from it downwards is vouched
@@ -2327,6 +2376,12 @@ def _image_to_png(path: str) -> dict:
         return {"error": "could not convert: %s" % e}
 
 
+def _canvas_shot_ceiling() -> float:
+    """The longest one `canvas_screenshot` call can block: the open-canvas ask
+    and then the page's capture, each up to CANVAS_SHOT_WAIT (D1471)."""
+    return 2 * CANVAS_SHOT_WAIT
+
+
 def _terminal_tools_supported() -> bool:
     """Whether this run gets the terminal MCP tools (terminal_list / read /
     send): only with a server origin to reach. One predicate for the three
@@ -2338,7 +2393,8 @@ def _terminal_tools_supported() -> bool:
 
 def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
                       strict: bool = False, chat_id: str = "",
-                      canvas: bool = False, handoff_dir: str = "") -> str:
+                      canvas: "dict | bool | None" = None,
+                      handoff_dir: str = "") -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
@@ -2397,6 +2453,12 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
         # matches ours; the MCP ceiling below is computed from the same value).
         "FUSED_RENDER_CANVAS_SHOT_TIMEOUT": str(CANVAS_SHOT_WAIT),
     }
+    if isinstance(canvas, dict):
+        # D1471: which canvas this session is about and where its pages
+        # answer, so any open page of it — not only a chat — takes the shot.
+        server_env["FUSED_RENDER_CANVAS_CLONE"] = canvas["clone"]
+        server_env["FUSED_RENDER_CANVAS_NODE"] = canvas.get("node") or ""
+        server_env["FUSED_RENDER_CANVAS_PAGES"] = _canvas_pages_dir()
     allow_path = _chat_allow_path(chat_id)
     if allow_path and approve:
         # The chat's "Always approve" store (`_chat_allow_path`). An env var,
@@ -2428,10 +2490,10 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
             # tool call that lasts as long as the user takes to look at it. Set
             # above the server's own wait so an unanswered card returns OUR
             # "nobody answered" deny instead of the CLI's MCP-timeout error.
-            # A canvas session's screenshot waits longer than a card may
-            # (CANVAS_SHOT_WAIT, and a canvas-less page answers just under it),
-            # so its ceiling is the larger of the two (CodeRabbit, #1924).
-            "timeout": (max(PERMISSION_WAIT, CANVAS_SHOT_WAIT if canvas else 0) + 60) * 1000,
+            # A canvas session's screenshot may wait twice its own wait (the
+            # open-canvas ask, then the page), so its ceiling is the larger of
+            # the two (CodeRabbit, #1924; D1471).
+            "timeout": (max(PERMISSION_WAIT, _canvas_shot_ceiling() if canvas else 0) + 60) * 1000,
         }}}, fh)
     return path
 
@@ -2831,7 +2893,7 @@ _RISK_LOCK = threading.Lock()
 _RISK_INFLIGHT: set = set()
 _RISK_MOD = None
 # Not approvals: a question and a plan are the model asking the user something.
-_RISK_SKIP = frozenset({"AskUserQuestion", "ExitPlanMode"})
+_RISK_SKIP = frozenset({"AskUserQuestion", "ExitPlanMode", CANVAS_OPEN_TOOL})
 
 
 def _risk_module():
@@ -3971,13 +4033,189 @@ def _answer_canvas_shot(run_id: str, request_id: str, state: str) -> dict:
                     "retry": False}
         payload = {"image": real,
                    "mime": answer.get("mime") if isinstance(answer.get("mime"), str) else "",
-                   "udf": answer.get("udf") if isinstance(answer.get("udf"), str) else ""}
+                   "udf": answer.get("udf") if isinstance(answer.get("udf"), str) else "",
+                   # What the picture really is (D1471, F6): the tool's note
+                   # says "whole frame" rather than claiming a crop it is not.
+                   "framing": answer.get("framing") if answer.get("framing") in
+                   ("graph", "node", "whole-frame") else ""}
     else:
         payload = {"error": str(answer.get("error")
                                 or "the canvas page could not take the picture")}
     if not _write_decision(shot_dir, request_id, payload):
         return {"error": "could not record the page's answer", "retry": True}
     return {"answered": request_id}
+
+
+def _json_obj(text: str) -> dict:
+    try:
+        value = json.loads(text) if text else None
+    except (TypeError, ValueError):
+        value = None
+    return value if isinstance(value, dict) else {}
+
+
+def _canvas_page_of(page: dict) -> tuple | None:
+    """`(env, name, page_id)` off a page's JSON, or None when any is unsafe."""
+    env, name = page.get("env"), page.get("name")
+    page_id = str(page.get("page_id") or "")
+    if (env not in _CANVAS_ENVS or not isinstance(name, str)
+            or not _CANVAS_NAME_RE.match(name) or _bad_id(page_id)
+            or len(page_id) > 64):
+        return None
+    return env, name, page_id
+
+
+def _canvas_shot_inbox(state: str) -> dict:
+    """A canvas page's 1 s poll (D1471, F1): record its heartbeat and list the
+    canvas-shot requests waiting on ITS canvas, from any run — so the page
+    answers whichever surface holds the chat.
+
+    `state` is JSON `{env, name, page_id, visible, focused, frame_up, error}`.
+    The heartbeat (`<pages>/<env>/<name>/<page_id>.json`) is what the
+    permission server reads to know a page is open (fast refusal, the
+    open-canvas ask). Rows already answered, or claimed by another page
+    within CANVAS_CLAIM_TTL, are left out."""
+    page = _json_obj(state)
+    key = _canvas_page_of(page)
+    if key is None:
+        return {"error": "bad canvas page", "rows": []}
+    env, name, page_id = key
+    root = _canvas_pages_dir()
+    beats = os.path.join(root, env, name)
+    try:
+        if not os.path.isdir(beats):
+            _private_dir(beats)
+        tmp = os.path.join(beats, page_id + ".tmp")
+        with _private_open(tmp) as fh:
+            json.dump({"env": env, "name": name, "page_id": page_id,
+                       "visible": bool(page.get("visible")),
+                       "focused": bool(page.get("focused")),
+                       "frame_up": bool(page.get("frame_up")),
+                       "error": str(page.get("error") or "")[:300]}, fh)
+        os.replace(tmp, os.path.join(beats, page_id + ".json"))
+        for old in os.listdir(beats):  # pages long gone
+            path = os.path.join(beats, old)
+            if time.time() - os.path.getmtime(path) > CANVAS_CLAIM_TTL:
+                os.unlink(path)
+    except (OSError, PermissionError):
+        pass  # no heartbeat costs the fast refusal, never the shot
+    inbox = os.path.join(root, "inbox")
+    try:
+        names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
+    except OSError:
+        return {"rows": []}
+    now = time.time()
+    rows = []
+    for fname in names:
+        try:
+            with open(os.path.join(inbox, fname), encoding="utf-8") as fh:
+                req = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(req, dict) or (req.get("env"), req.get("name")) != (env, name):
+            continue
+        run_id, request_id = str(req.get("run_id") or ""), str(req.get("request_id") or "")
+        if _bad_id(run_id) or _bad_id(request_id):
+            continue
+        shot_dir = _canvas_shot_dir(os.path.join(RUNS, run_id))
+        if not os.path.isfile(os.path.join(shot_dir, request_id + ".req.json")) \
+                or _read_decision(shot_dir, request_id):
+            # Its run is gone, or it is answered (the permission server
+            # removes the pointer next). Past the tool's ceiling that server
+            # is dead: sweep what it left, so it is not re-read every poll.
+            if now - float(req.get("created_at") or 0) > _canvas_shot_ceiling() + 60:
+                for ext in (".json", ".claim"):
+                    try:
+                        os.unlink(os.path.join(inbox, request_id + ext))
+                    except OSError:
+                        pass
+            continue
+        holder = _canvas_claim_holder(inbox, request_id, now, env, name)
+        if holder and holder != page_id:
+            continue
+        if holder:
+            # Polling IS the liveness signal: a page still polling keeps its
+            # claim through a long queued capture (longer than the TTL).
+            try:
+                os.utime(os.path.join(inbox, request_id + ".claim"))
+            except OSError:
+                pass
+        rows.append({"id": request_id, "runId": run_id,
+                     "what": "udf" if req.get("what") == "udf" else "canvas",
+                     "udf": str(req.get("udf") or ""),
+                     "reason": str(req.get("reason") or ""),
+                     "created_at": req.get("created_at") or 0,
+                     # When the tool stops waiting (epoch s): re-set when the
+                     # open-canvas ask is answered, since the wait restarts.
+                     "deadline": req.get("deadline") or 0,
+                     "claimed": holder == page_id})
+    return {"rows": rows}
+
+
+def _canvas_claim_holder(inbox: str, request_id: str, now: float,
+                         env: str, name: str) -> str:
+    """The page holding a live claim on `request_id`, or "". Live: renewed
+    within CANVAS_CLAIM_TTL, and its page's heartbeat (when there is one)
+    fresh within CANVAS_PAGE_FRESH."""
+    path = os.path.join(inbox, request_id + ".claim")
+    try:
+        if now - os.path.getmtime(path) > CANVAS_CLAIM_TTL:
+            return ""
+        with open(path, encoding="utf-8") as fh:
+            holder = fh.read().strip()
+    except OSError:
+        return ""
+    if _bad_id(holder):
+        return ""
+    if env not in _CANVAS_ENVS or not _CANVAS_NAME_RE.match(name):
+        return holder
+    try:
+        beat = os.path.getmtime(os.path.join(_canvas_pages_dir(), env, name, holder + ".json"))
+    except OSError:
+        return holder  # no heartbeat to judge by: the TTL alone
+    return "" if now - beat > CANVAS_PAGE_FRESH else holder
+
+
+def _canvas_shot_claim(run_id: str, request_id: str, state: str) -> dict:
+    """One page takes one request (D1471): `O_EXCL` on `inbox/<id>.claim`, so
+    two pages on the same canvas never both capture. A claim older than
+    CANVAS_CLAIM_TTL, or whose page stopped polling (`_canvas_claim_holder`),
+    may be taken over. The PAGE decides
+    when to ask — a focused page at once, a hidden one later — so the front
+    page wins."""
+    page = _json_obj(state)
+    page_id = str(page.get("page_id") or "")
+    if _bad_id(run_id) or _bad_id(request_id) or _bad_id(page_id):
+        return {"claimed": False, "error": "bad claim"}
+    inbox = os.path.join(_canvas_pages_dir(), "inbox")
+    try:
+        with open(os.path.join(inbox, request_id + ".json"), encoding="utf-8") as fh:
+            pointer = json.load(fh)
+    except (OSError, ValueError):
+        pointer = None
+    if not isinstance(pointer, dict):
+        return {"claimed": False, "error": "unknown canvas-screenshot request"}
+    canvas = (str(pointer.get("env") or ""), str(pointer.get("name") or ""))
+    path = os.path.join(inbox, request_id + ".claim")
+    # One lock around check + stale-removal + create: pages reach this
+    # process over HTTP, so concurrent claims can never remove each other's
+    # fresh claim, and a half-written file is never read as stale.
+    with _CANVAS_CLAIM_LOCK:
+        holder = _canvas_claim_holder(inbox, request_id, time.time(), *canvas)
+        if holder:
+            return {"claimed": holder == page_id}
+        try:
+            if os.path.exists(path):
+                os.unlink(path)  # stale: its page stopped answering
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return {"claimed": _canvas_claim_holder(inbox, request_id, time.time(),
+                                                    *canvas) == page_id}
+        except OSError as exc:
+            return {"claimed": False, "error": str(exc)}
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(page_id)
+    return {"claimed": True}
 
 
 def _expire_canvas_shot(run_dir: str, reason: str) -> None:
@@ -4043,7 +4281,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            # rather than landing on a pipe nobody was reading from anymore.
            "--replay-user-messages",
            "--mcp-config", _write_mcp_config(
-               run_dir, pane, strict=strict_mcp, canvas=_in_workbench_root(file),
+               run_dir, pane, strict=strict_mcp, canvas=_canvas_of(file),
                handoff_dir=_breakout_handoff_dir(file) if breakout else "",
                # The chat's stable id: a resume's own session, or the id a
                # fresh chat / fork was minted (the same key `_decide` writes).
@@ -4106,7 +4344,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                     #     agent they are talking to, read-only. Offered (and so
                     #     pre-allowed) only for a target inside a canvas clone.
                     + ([f"mcp__{PERMISSION_SERVER}__{CANVAS_SHOT_TOOL}"]
-                       if _in_workbench_root(file) else [])
+                       if _canvas_of(file) else [])
                     + ([f"mcp__{PERMISSION_SERVER}__{t}"
                         for t in ("terminal_list", "terminal_read")]
                        if _terminal_tools_supported() else [])
@@ -4281,7 +4519,7 @@ def _canvas_shot_note(file: str) -> str:
     (where the tool is in the roster — an un-announced tool does not get
     called, D235). Spelled in Claude's MCP name; `_copilot_plugin_dir`
     rewrites the prefix for Copilot exactly as it does for `app_state`."""
-    if not _in_workbench_root(file):
+    if not _canvas_of(file):
         return ""
     tool = "mcp__%s__%s" % (PERMISSION_SERVER, CANVAS_SHOT_TOOL)
     return (
@@ -4292,9 +4530,11 @@ def _canvas_shot_note(file: str) -> str:
         "optional on a node's own chat). After you change a UDF, call it once "
         "to check the output looks right before you say it does; call it too "
         "when the user asks about what they see. It needs the canvas open in "
-        "Fused Render: if the result says no page answered, do not call it "
-        "again this turn — ask the user to open the canvas. Map nodes (WebGL) "
-        "may come out blank or fail to capture; say so rather than guess."
+        "Fused Render (the user is asked to open it when it is not): if the "
+        "result says to continue without a screenshot, do not call it again "
+        "this turn. Its note says what the "
+        "picture really is — trust it over what you asked for. Map nodes "
+        "(WebGL) may come out blank or fail to capture; say so rather than guess."
     )
 
 
@@ -4431,10 +4671,10 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
             cmd += ["--reasoning-effort", effort]
     cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane),
             "--agent", "fused:fused"]
-    if pane or _terminal_tools_supported() or _in_workbench_root(file):
+    if pane or _terminal_tools_supported() or _canvas_of(file):
         cmd += ["--additional-mcp-config",
                 "@" + _write_mcp_config(run_dir, pane, approve=False,
-                                        canvas=_in_workbench_root(file))]
+                                        canvas=_canvas_of(file))]
     # SHOTS is made HERE, not left to the first screenshot: `--add-dir` is the
     # session's only read grant on it, the CLI exits at startup on a directory
     # that does not exist, and there is no post-start grant over ACP. A refusal
@@ -4505,14 +4745,21 @@ def _codex_argv(run_dir: str, pane: bool, cli_mode: str | None,
     very `mcp.json` `_write_mcp_config` writes for it (`--no-approve`), so
     the two agents can never be handed different servers."""
     cmd = [_codex_bin(), "app-server"]
-    if pane or _terminal_tools_supported() or _in_workbench_root(file):
+    canvas = _canvas_of(file)
+    if pane or _terminal_tools_supported() or canvas:
         with open(_write_mcp_config(run_dir, pane, approve=False,
-                                    canvas=_in_workbench_root(file)),
+                                    canvas=canvas),
                   encoding="utf-8") as fh:
             server = json.load(fh)["mcpServers"][PERMISSION_SERVER]
         prefix = f"mcp_servers.{PERMISSION_SERVER}."
         for key in ("command", "args", "env"):
             cmd += ["-c", prefix + key + "=" + _toml_inline(server[key])]
+        if canvas:
+            # Codex's own per-call ceiling is 60 s, under the screenshot's
+            # wait: without this the model reads an MCP timeout, not our
+            # sentence (D1471, F8).
+            cmd += ["-c", prefix + "tool_timeout_sec=%.1f"
+                    % (_canvas_shot_ceiling() + 60)]
     return cmd
 
 
@@ -4613,7 +4860,7 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
                              "--include-directories on commas\n" % d)
             continue
         cmd += ["--include-directories", d]
-    canvas = _in_workbench_root(file)
+    canvas = _canvas_of(file)
     if pane or _terminal_tools_supported() or canvas:
         _write_mcp_config(run_dir, pane, approve=False, canvas=canvas)
     return cmd
@@ -4716,8 +4963,13 @@ def _opencode_argv(run_dir: str, pane: bool, cli_mode: str | None,
     mode = _OPENCODE_MODES.get(cli_mode or "default", "default")
     with _private_open(os.path.join(ctx, _OPENCODE_SPAWN_FILE)) as fh:
         json.dump({"model": model or "", "mode": mode,
-                   "instructions": os.path.join(ctx, "AGENTS.md")}, fh)
-    canvas = _in_workbench_root(file)
+                   "instructions": os.path.join(ctx, "AGENTS.md"),
+                   # A canvas session's screenshot outlasts OpenCode's own MCP
+                   # call ceiling: the config's global one is raised above it
+                   # (`_opencode_env`; D1471).
+                   **({"mcp_timeout_ms": int((_canvas_shot_ceiling() + 60) * 1000)}
+                      if _canvas_of(file) else {})}, fh)
+    canvas = _canvas_of(file)
     if pane or _terminal_tools_supported() or canvas:
         _write_mcp_config(run_dir, pane, approve=False, canvas=canvas)
     return cmd
@@ -4998,7 +5250,8 @@ def _opencode_env(env: dict, run_dir: str = "") -> None:
         model=str(facts.get("model") or "") or None,
         mode=str(facts.get("mode") or "default"),
         instructions_path=str(facts.get("instructions") or "") or None,
-        local=local, origin=origin, key=key))
+        local=local, origin=origin, key=key,
+        mcp_timeout_ms=int(facts.get("mcp_timeout_ms") or 0) or None))
 
 
 def _spawn_env(chat_id: str = "", backend: str = "", run_dir: str = "") -> dict:
@@ -5653,7 +5906,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (_write_mcp_config).
     if pane:
         _private_dir(_state_dir(run_dir))
-    if _in_workbench_root(file):
+    if _canvas_of(file):
         _private_dir(_canvas_shot_dir(run_dir))
 
     # An unknown mode falls back to the strictest of the three rather than
@@ -8803,6 +9056,8 @@ def _tool_detail(name, inp) -> str:
         d = inp.get("skill") or ""
     elif name in ("WebFetch", "WebSearch"):
         d = inp.get("url") or inp.get("query") or ""
+    elif name == CANVAS_OPEN_TOOL:
+        d = "Open %s to take a screenshot" % (inp.get("name") or "the canvas")
     else:
         d = ""
     d = " ".join(str(d).split())
@@ -10799,7 +11054,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
-                "permissions": [], "app_state": [], "canvas_shot": [], "skills": [], "retry": None,
+                "permissions": [], "app_state": [], "skills": [], "retry": None,
                 "retry_total": 0, "retry_status": 0, "segments": [], "inbox": []}
 
     # A page may only attach to a run about ITS OWN target. Run ids are global
@@ -10832,7 +11087,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 and not _folder_and_member(run_file, file):
             return {"text": "", "done": True, "session_id": "",
                     "error": "run is for another target",
-                    "permissions": [], "app_state": [], "canvas_shot": [], "skills": [], "retry": None,
+                    "permissions": [], "app_state": [], "skills": [], "retry": None,
                     "retry_total": 0, "retry_status": 0, "segments": [],
                     "inbox": []}
 
@@ -11561,7 +11816,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
             "app_state": app_state, "mode": _live_mode(meta, permissions),
-            "canvas_shot": _canvas_shot_requests(run_dir),
             "skills": skills, "retry": retry, "retry_total": retry_total,
             "retry_status": retry_status,
             # The plan window as of the last API response (`_quota_info`).
@@ -14099,6 +14353,11 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "canvas_shot":
         # Same string-shaped `state`: `{"image", "mime", "udf"}` or `{"error"}`.
         return _answer_canvas_shot(run_id, request_id, state)
+    if action == "canvas_shot_inbox":
+        # A canvas page's poll (D1471): `state` is its heartbeat JSON.
+        return _canvas_shot_inbox(state)
+    if action == "canvas_shot_claim":
+        return _canvas_shot_claim(run_id, request_id, state)
     if action == "sessions":
         if not file:
             return {"error": "missing target file (no _file param?)"}

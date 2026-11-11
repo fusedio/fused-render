@@ -67,6 +67,8 @@ export default function MessagePopupCard() {
     <div
       ref={cardRef}
       className={"toast-slot" + (notification.leaving ? " leaving" : "")}
+      // Ours: never makes the canvas screenshot refuse (canvas-shot-native).
+      data-shot-own=""
     >
       <NotificationCard
         title={notification.title}
