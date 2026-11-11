@@ -94,15 +94,15 @@
   -webkit-mask-image: linear-gradient(
     to bottom,
     transparent 0,
-    #000 var(--fade-top, 0px),
-    #000 calc(100% - var(--fade-bottom, 0px)),
+    black var(--fade-top, 0px),
+    black calc(100% - var(--fade-bottom, 0px)),
     transparent 100%
   );
   mask-image: linear-gradient(
     to bottom,
     transparent 0,
-    #000 var(--fade-top, 0px),
-    #000 calc(100% - var(--fade-bottom, 0px)),
+    black var(--fade-top, 0px),
+    black calc(100% - var(--fade-bottom, 0px)),
     transparent 100%
   );
 }
@@ -663,24 +663,24 @@
   transition: opacity var(--dur-fast) var(--ease-out);
 }
 .rail-grip-ring.is-l {
-  -webkit-mask-image: linear-gradient(to right, #000 11px, transparent 24px);
-  mask-image: linear-gradient(to right, #000 11px, transparent 24px);
+  -webkit-mask-image: linear-gradient(to right, black 11px, transparent 24px);
+  mask-image: linear-gradient(to right, black 11px, transparent 24px);
 }
 .rail-grip-ring.is-t {
-  -webkit-mask-image: linear-gradient(to bottom, #000 11px, transparent 24px);
-  mask-image: linear-gradient(to bottom, #000 11px, transparent 24px);
+  -webkit-mask-image: linear-gradient(to bottom, black 11px, transparent 24px);
+  mask-image: linear-gradient(to bottom, black 11px, transparent 24px);
 }
 .rail-grip-ring.is-b {
-  -webkit-mask-image: linear-gradient(to top, #000 11px, transparent 24px);
-  mask-image: linear-gradient(to top, #000 11px, transparent 24px);
+  -webkit-mask-image: linear-gradient(to top, black 11px, transparent 24px);
+  mask-image: linear-gradient(to top, black 11px, transparent 24px);
 }
 .rail-grip-ring.is-tl {
-  -webkit-mask-image: radial-gradient(circle at 0 0, #000 14px, transparent 44px);
-  mask-image: radial-gradient(circle at 0 0, #000 14px, transparent 44px);
+  -webkit-mask-image: radial-gradient(circle at 0 0, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 0 0, black 14px, transparent 44px);
 }
 .rail-grip-ring.is-bl {
-  -webkit-mask-image: radial-gradient(circle at 0 100%, #000 14px, transparent 44px);
-  mask-image: radial-gradient(circle at 0 100%, #000 14px, transparent 44px);
+  -webkit-mask-image: radial-gradient(circle at 0 100%, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 0 100%, black 14px, transparent 44px);
 }
 /* Lit: on a hover after a beat, at once and a shade stronger under a drag. */
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-l:hover ~ .rail-grip-ring.is-l,
