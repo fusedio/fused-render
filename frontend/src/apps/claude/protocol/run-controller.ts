@@ -2196,7 +2196,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // that knows WHICH conversation is on screen.
         if (poll.context) emit({ context: poll.context });
         // LATEST WORKTREE HINT WINS; a window with none says nothing.
-        withdrawWorktrees(poll.worktree_failed);
+        // Only the loop that still owns the page withdraws: a superseded loop's
+        // late answer must not undo a hint a newer run has since landed.
+        if (loopSeq === seat) withdrawWorktrees(poll.worktree_failed);
         if (poll.worktree_hint) landWorktreeHint(poll.worktree_hint);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);

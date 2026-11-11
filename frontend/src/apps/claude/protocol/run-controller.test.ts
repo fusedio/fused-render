@@ -2362,6 +2362,29 @@ describe("ownership: only the NEWEST loop owns the chrome (Bugbot PR #653)", () 
     expect(assistants(controller).map((t) => t.text)).toContain("the new turn");
   });
 
+  test("a superseded loop's late `worktree_failed` does not withdraw the newer run's hint", async () => {
+    let controller!: ChatController;
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const made = makeController({
+      start: (_f, n) => ({ run_id: n === 0 ? "r1" : "r2" }),
+      send: () => ({ respawn: true as const }),
+      poll: async (f, n) => {
+        if (f.run_id === "r1" && n === 0) {
+          const held = new Promise<void>((r) => void controller.sendFollowUp("respawn me").then(() => r()));
+          await held;
+          // The newer loop has landed the hint by the time this answer arrives.
+          await new Promise((r) => setTimeout(r, 20));
+          return poll({ done: true, worktree_failed: ["/x/wt"] });
+        }
+        return poll({ done: true, worktree_hint: hint, segments: [text("new")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(controller.getState().worktreeHint).toEqual(hint);
+  });
+
   test("newChat retires the loop: it stops writing params and the transcript", async () => {
     let controller!: ChatController;
     const made = makeController({
