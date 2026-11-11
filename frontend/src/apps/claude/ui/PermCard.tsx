@@ -114,6 +114,8 @@ function statusFor(
   // "✗ Denied" here would pin on the reader a refusal they never made.
   if (row.reason === "abandoned")
     return { cls: "expired", text: "◦ Unanswered — the run moved on before you decided" };
+  if (row.reason === "timeout")
+    return { cls: "expired", text: "◦ Unanswered — timed out before you decided" };
   return { cls: "deny", text: "✗ Denied" };
 }
 

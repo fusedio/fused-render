@@ -333,7 +333,11 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
         : { cls: "allow", node: <>✓ Answered</> }
       : row.decision === "expired"
         ? { cls: "expired", node: <>◦ Unanswered — the reply ended before you answered</> }
-        : { cls: "deny", node: <>✗ Not answered</> }
+        : row.reason === "timeout"
+          ? { cls: "expired", node: <>◦ Unanswered — timed out before you answered</> }
+          : row.reason === "abandoned"
+            ? { cls: "expired", node: <>◦ Unanswered — the run moved on before you answered</> }
+            : { cls: "deny", node: <>✗ Not answered</> }
     : sendError
       ? { cls: "deny", node: <>{sendError}</> }
       : invalid
