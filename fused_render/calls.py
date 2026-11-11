@@ -1911,10 +1911,14 @@ def api_calls_event(body: dict = Body(...), x_fused: str | None = Header(default
         page, _ = _cap_text(body.get("page"), 1_024)
         where, _ = _cap_text(body.get("where"), 64)
         source, _ = _cap_text(body.get("source"), 1_024)
-        logger.warning("shell error (%s) on %s: %s%s%s",
+        # React's component chain (boundary reports only): the one field
+        # that localises a minified invariant such as #185.
+        components, _ = _cap_text(body.get("componentStack"), 4_000)
+        logger.warning("shell error (%s) on %s: %s%s%s%s",
                        where or "?", page or "?", message or "(no message)",
                        f" at {source}" if source else "",
-                       f"\n{stack}" if stack else "")
+                       f"\n{stack}" if stack else "",
+                       f"\ncomponents:\n{components}" if components else "")
         return {"logged": True}
     if kind != "page-error":
         return JSONResponse(
