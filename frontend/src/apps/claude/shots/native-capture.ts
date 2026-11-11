@@ -49,6 +49,14 @@ export function resetWindowOffForTests(): void {
   windowOff = false;
 }
 
+/** How long either native still is waited for before the caller's next road.
+ *  The window road's server side answers inside `capture.WINDOW_BUDGET_S`
+ *  (3 s, native lock wait included) so the lock is free again BEFORE this
+ *  abort sends the caller to the region still, which waits on that same lock
+ *  (D1472). Keep the server's budget at least a second under this
+ *  (tests/test_capture.py reads it). */
+export const NATIVE_SHOT_ABORT_MS = 4000;
+
 /** The frame's TOP window's box on the screen as the browser reports it —
  *  `screenX/Y` and `outerWidth/Height`, screen points with the title bar in —
  *  which is how the server finds the window to photograph (D1472: by its
@@ -324,7 +332,10 @@ export async function captureNative(
     }
     const ctl = new AbortController();
     const left = (deadline || Date.now() + SHOT_TIMEOUT_MS) - Date.now();
-    const timer = setTimeout(() => ctl.abort(), Math.max(200, Math.min(4000, left)));
+    const timer = setTimeout(
+      () => ctl.abort(),
+      Math.max(200, Math.min(NATIVE_SHOT_ABORT_MS, left)),
+    );
     let res: Response;
     try {
       res = await fetch(win ? "/api/capture/shot-window" : "/api/capture/shot-region", {

@@ -276,3 +276,14 @@ test("a hidden page keeps the workbench's honest refusal instead of the window s
   await h.r.idle();
   expect(h.answers[0]).toEqual(["r", { error: "nothing to photograph" }]);
 });
+
+test("a hidden page keeps a save failure or a missing UDF name, not the window sentence", async () => {
+  const h = harness({
+    rows: [{ ...row("r"), what: "udf" }],
+    take: async (x) => takeCanvasShot({ capture: async () => ({ ok: false, error: "never" }), targets: ["canvas"] }, x),
+  });
+  h.page.visible = false;
+  await h.r.tick();
+  await h.r.idle();
+  expect(String((h.answers[0][1] as { error: string }).error)).toContain("name the UDF");
+});

@@ -917,39 +917,50 @@ def _sck_shot(out: str, display, spec: dict) -> str:
 #: list only supplies the `SCWindow` object for an id the live window server
 #: list already chose; a window newer than the copy is fetched by one fresh
 #: walk, and a window that has since closed fails the capture and clears it.
+#: Stamped when the walk ANSWERS, not when it was asked: a walk that took
+#: seconds would otherwise be cached already expired.
 WINDOW_CACHE_S = 5.0
-#: How long a window walk may take before it is given up: a process with no
-#: windows of its own has seen `getCurrentProcessShareableContent` never
-#: answer at all (2026-10-31), and the full walk is seconds on a busy Mac —
-#: either way the caller falls to its next road rather than waiting `WAIT_S`.
-WINDOW_WALK_S = 10.0
-#: How long one window still may take. ~100 ms when it answers at all; a
-#: call that does not is not retried, and the native lock every still
-#: shares is not held for `WAIT_S` on its account.
-WINDOW_SHOT_S = 15.0
-#: Latched the first time the own-process walk does not answer: that walk
-#: is skipped from then on (the full walk serves), so one hang is paid once
-#: per process, not on every still.
-_ours_walk_off = False
+#: How long the own-process walk may take before the full walk gets the rest
+#: of the budget (`capture.WINDOW_BUDGET_S` bounds every wait here). It runs
+#: only when this process owns the window (`pick_window`'s `pid`): a process
+#: with no windows of its own has seen `getCurrentProcessShareableContent`
+#: never answer at all (2026-10-31).
+WINDOW_OWN_WALK_S = 1.0
 #: How far (points, per edge) the page's frame may sit from a window's before
 #: they are not the same window: a title bar the browser counts differently,
 #: a shadow, a half-pixel. Two app windows a user has not deliberately
 #: stacked are further apart than this.
 WINDOW_MATCH_SLACK = 48.0
-#: Unlocked on purpose: every reader and writer is `shot_window`, which the
-#: neutral half runs under `with _native():` (one backend call at a time).
+#: What a browser puts AFTER the page's title in its window's title
+#: (`_title_shows`), optionally followed by a profile name.
+BROWSER_TITLE_SEPS = (" - ", " \u2014 ", " \u2013 ")
+BROWSER_NAMES = ("Google Chrome", "Google Chrome for Testing", "Chromium",
+                 "Mozilla Firefox", "Firefox", "Firefox Developer Edition",
+                 "Microsoft Edge", "Brave", "Brave Browser", "Arc", "Vivaldi",
+                 "Opera", "Safari")
+#: Written by a walk's completion handler, which may land after its caller
+#: gave up (a late answer still serves the next still); a dict item set/get
+#: is atomic, so no lock beyond the GIL.
 _window_cache: dict = {}   # "ours" | "all" -> ({window id: SCWindow}, time.monotonic())
+
+
+def _left(deadline: float) -> float:
+    """Seconds left before `deadline` (monotonic); `_Timeout` when none."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _Timeout("the window screenshot ran out of time")
+    return left
 
 
 def _cg_windows() -> list:
     """Every window the window server has, LIVE, as `pick_window` reads one:
-    id, frame, title, layer, on-screen. `CGWindowListCopyWindowInfo` answers
-    in milliseconds and its titles are current — a tab switched behind a
-    window shows up at once — where a ScreenCaptureKit list is a snapshot
-    that took seconds to walk (and a cached one held the OLD title long
-    enough to photograph the wrong tab, 2026-10-31). The title needs the
-    Screen Recording grant; without it every window is untitled and the box
-    alone decides, as `pick_window` allows."""
+    id, owner pid, frame, title, layer, on-screen. `CGWindowListCopyWindowInfo`
+    answers in milliseconds and its titles are current — a tab switched
+    behind a window shows up at once — where a ScreenCaptureKit list is a
+    snapshot that took seconds to walk (and a cached one held the OLD title
+    long enough to photograph the wrong tab, 2026-10-31). The title needs
+    the Screen Recording grant; without it another app's window is untitled
+    and `pick_window` never takes it."""
     rows = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionAll | Quartz.kCGWindowListExcludeDesktopElements,
         Quartz.kCGNullWindowID) or []
@@ -962,26 +973,31 @@ def _cg_windows() -> list:
             wid = int(row.get("kCGWindowNumber"))
         except (KeyError, TypeError, ValueError):
             continue
-        out.append({"id": wid, "frame": frame,
+        out.append({"id": wid, "pid": int(row.get("kCGWindowOwnerPID") or 0),
+                    "frame": frame,
                     "title": str(row.get("kCGWindowName") or ""),
                     "layer": int(row.get("kCGWindowLayer") or 0),
                     "onscreen": bool(row.get("kCGWindowIsOnscreen"))})
     return out
 
 
-def _shareable_windows(ours: bool) -> dict:
+def _shareable_windows(ours: bool, timeout: float) -> dict:
     """`{window id: SCWindow}` for every window ScreenCaptureKit will share,
     ON-SCREEN OR NOT — a window on another Space, or behind another app, is
     exactly the one `shot_window` exists for. `ours` walks this process's
     windows alone (macOS 14.4+; the packaged app runs this server
     in-process, so the shell's windows ARE ours), a fraction of the full
     walk's cost on a busy Mac; the full walk is for a page in a browser.
-    Bounded by `WINDOW_WALK_S`."""
+    Waits `timeout`; an answer after that still fills the cache."""
+    which = "ours" if ours else "all"
     box: dict = {}
     wait = _Wait("listing windows")
 
     def handler(content, error):
-        box["content"] = content
+        if content is not None:
+            windows = {int(w.windowID()): w for w in content.windows()}
+            _window_cache[which] = (windows, time.monotonic())
+            box["windows"] = windows
         wait.done(error)
 
     if ours:
@@ -989,9 +1005,8 @@ def _shareable_windows(ours: bool) -> dict:
     else:
         SCK.SCShareableContent.getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler_(
             True, False, handler)
-    wait.result(WINDOW_WALK_S)
-    content = box.get("content")
-    return {int(w.windowID()): w for w in content.windows()} if content else {}
+    wait.result(timeout)
+    return box.get("windows") or {}
 
 
 def _can_walk_ours() -> bool:
@@ -999,56 +1014,75 @@ def _can_walk_ours() -> bool:
                    "getCurrentProcessShareableContentWithCompletionHandler_")
 
 
-def _sc_window(wid: int):
-    """The `SCWindow` for a window id the live list chose. Every cached list
-    (`WINDOW_CACHE_S`) is tried first — this process's own, then every
-    app's — and only when none holds the id (a window newer than the copies)
-    are the lists walked afresh, once each, in that order. A walk that does
-    not answer (`WINDOW_WALK_S`) is skipped, not fatal. None when no list
-    has the window."""
-    global _ours_walk_off
+def _sc_window(wid: int, own: bool, deadline: float):
+    """The `SCWindow` for a window id the live list chose. `own`: the window
+    is this process's, so its own (cheap) list is tried before every app's;
+    another app's window is only in the full list. A cached list
+    (`WINDOW_CACHE_S`) serves first; only when none holds the id (a window
+    newer than the copies) are the lists walked afresh, once each, inside
+    `deadline`. A walk that does not answer is skipped, not fatal, and
+    nothing is latched: a first walk held up by the Screen Recording prompt
+    answers normally the next time. None when no list has the window."""
+    walks = (["ours"] if own and _can_walk_ours() else []) + ["all"]
     now = time.monotonic()
-    walks = (["ours"] if _can_walk_ours() and not _ours_walk_off else []) + ["all"]
     for which in walks:
         hit = _window_cache.get(which)
         if hit and now - hit[1] < WINDOW_CACHE_S and wid in hit[0]:
             return hit[0][wid]
     for which in walks:
+        left = _left(deadline)
         try:
-            windows = _shareable_windows(which == "ours")
-        except _Timeout:
-            if which == "ours":
-                _ours_walk_off = True
+            windows = _shareable_windows(
+                which == "ours", min(WINDOW_OWN_WALK_S, left) if which == "ours" else left)
+        except RuntimeError:        # `_Timeout` too: the next list, if any
             continue
-        except RuntimeError:
-            continue
-        _window_cache[which] = (windows, now)
         if wid in windows:
             return windows[wid]
     return None
 
 
+def _title_shows(have: str, want: str) -> bool:
+    """Whether a window titled `have` shows the page titled `want`: the very
+    title (the desktop app, Safari), or the title then a browser's name
+    ("T - Google Chrome", "T — Mozilla Firefox", "T - Google Chrome - Work").
+    A bare prefix is not enough: a page titled "Canvas" is not shown by
+    "Canvas Settings - Google Chrome" (D1472 review)."""
+    if have == want:
+        return True
+    for sep in BROWSER_TITLE_SEPS:
+        if not have.startswith(want + sep):
+            continue
+        rest = have[len(want) + len(sep):]
+        for name in BROWSER_NAMES:
+            if rest == name or any(rest.startswith(name + s) for s in BROWSER_TITLE_SEPS):
+                return True
+    return False
+
+
 def pick_window(windows: list, frame, title: str | None = None,
-                slack: float = WINDOW_MATCH_SLACK):
+                slack: float = WINDOW_MATCH_SLACK, pid: int | None = None):
     """The window whose box is the page's `frame` (x, y, w, h in points):
     the closest by the sum of the four edge distances, within `slack` on
     every edge; None when nothing is that close. Only ordinary windows
     (layer 0 — a status item, a tooltip or a sheet is never the page's), an
     on-screen one winning a tie.
 
-    `title` is the page's `document.title`, and it is the SECOND KEY: a
-    window's title carries the page it shows (the desktop app's window is
-    titled by the page; a browser's by its front tab, with the browser's
-    name AFTER — "T - Google Chrome", "T — Mozilla Firefox", so the page's
-    title is the head of the window's, never a substring somewhere inside
-    a longer unrelated one). Among the windows at the box, one whose title
-    starts with the page's wins; a titled window that does NOT is refused, because
-    it shows something else — another tab in front of the page, a second
+    `title` is the page's `document.title`, and it is the SECOND KEY
+    (`_title_shows`): among the windows at the box, one whose title shows
+    the page wins; a titled window that does NOT is refused, because it
+    shows something else — another tab in front of the page, a second
     window dropped on the very same spot (two Chromium windows at one box
     photographed the wrong one, 2026-10-31) — and a still of it would be a
-    confident picture of the wrong thing. An untitled window is matched by
-    its box alone, as is every window when the page has no title. Pure, so
-    it is tested without a screen."""
+    confident picture of the wrong thing.
+
+    ANOTHER APP's window (`pid` is this process's, `os.getpid()` by
+    default) needs that title match: the box alone would photograph
+    whatever app sits there, so a page with no title, or a Mac without the
+    grant (every other app's window untitled), gets no window still in a
+    browser. This process's own windows (the desktop app) may still match
+    by box when untitled or when the page has none. Pure, so it is tested
+    without a screen."""
+    own_pid = os.getpid() if pid is None else pid
     fx, fy, fw, fh = frame
     want = (title or "").strip()
     best = None
@@ -1060,9 +1094,12 @@ def pick_window(windows: list, frame, title: str | None = None,
         if max(edges) > slack:
             continue
         have = str(win.get("title") or "").strip()
-        if want and have and not have.startswith(want):
+        shows = bool(want and have) and _title_shows(have, want)
+        if want and have and not shows:
             continue  # titled, and showing something else
-        key = (0 if (want and have) else 1, sum(edges), 0 if win.get("onscreen") else 1)
+        if not shows and win.get("pid") != own_pid:
+            continue  # another app's window, matched by its box alone
+        key = (0 if shows else 1, sum(edges), 0 if win.get("onscreen") else 1)
         if best is None or key < best[0]:
             best = (key, win)
     return best[1] if best else None
@@ -1111,9 +1148,10 @@ def crop_box(window_frame, rect, image_size, slack: float = 1.0):
 
 
 def _sck_window_shot(out: str, win: dict, rect, spec: dict) -> dict:
-    """One ScreenCaptureKit still of `win` (a `_window_info` row), the whole
-    window at the backing scale of the display under it, cropped to `rect`
-    (screen points) and written to `out`."""
+    """One ScreenCaptureKit still of `win` (a `_cg_windows` row plus its
+    `SCWindow`), the whole window at the backing scale of the display under
+    it, cropped to `rect` (screen points) and written to `out`, inside
+    `spec["deadline"]`."""
     from fused_render.capture import CaptureError
 
     x, y, w, h = win["frame"]
@@ -1123,6 +1161,10 @@ def _sck_window_shot(out: str, win: dict, rect, spec: dict) -> dict:
     config.setWidth_(int(w * scale))
     config.setHeight_(int(h * scale))
     config.setShowsCursor_(False)
+    # A window across two displays is otherwise clipped to the one it
+    # started on — the very case the window road exists for (D1472).
+    if hasattr(config, "setIgnoreGlobalClipSingleWindow_"):
+        config.setIgnoreGlobalClipSingleWindow_(True)
     box: dict = {}
     wait = _Wait("taking the window screenshot")
 
@@ -1132,7 +1174,7 @@ def _sck_window_shot(out: str, win: dict, rect, spec: dict) -> dict:
 
     SCK.SCScreenshotManager.captureImageWithFilter_configuration_completionHandler_(
         content_filter, config, handler)
-    wait.result(WINDOW_SHOT_S)
+    wait.result(_left(spec["deadline"]))
     image = box.get("image")
     if image is None:
         raise RuntimeError("the window screenshot came back empty")
@@ -1152,22 +1194,26 @@ def _sck_window_shot(out: str, win: dict, rect, spec: dict) -> dict:
 def shot_window(out: str, spec: dict) -> dict:
     """`capture.shot_window`'s hook: a still of the window whose frame is
     `spec["window"]` and whose title shows `spec["title"]`, cropped to
-    `spec["rect"]` (both boxes in screen points), to `out`. `Unsupported`
-    below macOS 14 (`SCScreenshotManager` is the only window still here;
-    the region still covers 13), `CaptureError` when no window showing this
-    page sits where the page says its own does."""
-    from fused_render.capture import CaptureError, Unsupported
+    `spec["rect"]` (both boxes in screen points), to `out`, every wait
+    inside `spec["deadline"]` (monotonic; `capture.WINDOW_BUDGET_S`).
+    `Unsupported` below macOS 14 (`SCScreenshotManager` is the only window
+    still here; the region still covers 13), `CaptureError` when no window
+    showing this page sits where the page says its own does."""
+    from fused_render.capture import WINDOW_BUDGET_S, CaptureError, Unsupported
 
     old = _too_old(SCSHOT_MIN)
     if old:
         raise Unsupported("window screenshots " + old)
     frame, rect, title = spec["window"], spec["rect"], spec.get("title")
+    deadline = spec.get("deadline") or time.monotonic() + WINDOW_BUDGET_S
+    spec = {**spec, "deadline": deadline}
     info = pick_window(_cg_windows(), frame, title)
     if info is None:
         raise CaptureError(
             "no window showing this page sits where the page says its own "
             "does — the page's window could not be found to photograph")
-    win = _sc_window(info["id"])
+    own = info.get("pid") == os.getpid()
+    win = _sc_window(info["id"], own, deadline)
     if win is None:
         raise RuntimeError("the page's window is not one ScreenCaptureKit will share")
     try:
@@ -1177,9 +1223,10 @@ def shot_window(out: str, spec: dict) -> dict:
     except Exception:                                    # noqa: BLE001
         # The cached SCWindow may be gone (closed, re-created on a reload):
         # once more on a fresh walk, and only when that walk still has the
-        # window — the same object failing twice is the same failure.
+        # window — the same object failing twice is the same failure. Both
+        # inside the same deadline, so a slow first try leaves no retry.
         _window_cache.clear()
-        again = _sc_window(info["id"])
+        again = _sc_window(info["id"], own, deadline)
         if again is None:
             raise
         return _sck_window_shot(out, {**info, "window": again}, rect, spec)

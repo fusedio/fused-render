@@ -387,7 +387,7 @@ CANVAS_CLAIM_TTL = 60.0
 # permission_server.CANVAS_PAGE_FRESH (a test pins them): a claim whose page
 # has not polled for this long lapses at once — a page that reloaded, closed
 # or switched canvas never blocks the page that replaced it for the TTL.
-CANVAS_PAGE_FRESH = 4.0
+CANVAS_PAGE_FRESH = 10.0
 _CANVAS_CLAIM_LOCK = threading.Lock()
 # fusedcli.WORKBENCH_ENV_CHOICES and canvases._NAME_RE, duplicated: this file
 # never imports `fused_render` (a test pins the copies together).
@@ -4039,8 +4039,8 @@ def _answer_canvas_shot(run_id: str, request_id: str, state: str) -> dict:
                    "framing": answer.get("framing") if answer.get("framing") in
                    ("graph", "node", "whole-frame") else "",
                    # The page's caveat (D1472: a still of a hidden window may
-                   # be stale), handed to the model verbatim.
-                   "note": answer.get("note") if isinstance(answer.get("note"), str) else ""}
+                   # be stale), handed to the model — capped, it is page text.
+                   "note": answer.get("note")[:300] if isinstance(answer.get("note"), str) else ""}
     else:
         payload = {"error": str(answer.get("error")
                                 or "the canvas page could not take the picture")}

@@ -138,6 +138,19 @@ def test_a_canvas_screenshot_is_answered_by_the_page_with_a_picture(
     assert note["caveat"] == "window was minimized; may be stale"
 
 
+def test_the_pages_note_is_capped(agent, run_dir, tmp_path):
+    agent.RUNS = str(run_dir.parent)
+    agent.SHOTS = str(tmp_path / "shots")
+    os.makedirs(agent.SHOTS)
+    (run_dir / "canvasshot" / "r1.req.json").write_text('{"id": "r1"}', encoding="utf-8")
+    image = os.path.join(agent.SHOTS, "s.png")
+    with open(image, "wb") as fh:
+        fh.write(PNG)
+    agent.main(action="canvas_shot", run_id="run", request_id="r1",
+               state=json.dumps({"image": image, "note": "x" * 5000}))
+    assert len(agent._read_decision(str(run_dir / "canvasshot"), "r1")["note"]) == 300
+
+
 def test_a_refusal_from_the_page_reaches_the_model_as_a_sentence(
         run_dir, server, agent):
     """No picture is a text block with `error` — never a JSON-RPC error, which

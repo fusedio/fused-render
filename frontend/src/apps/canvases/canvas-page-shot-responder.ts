@@ -82,7 +82,7 @@ export async function takeCanvasShot(shot: CanvasShot, row: Pick<CanvasShotRow, 
   let what: "canvas" | "udf" = "canvas";
   if (row.what === "udf") {
     if (!row.udf && !shot.targets.includes("udf")) {
-      return { error: "name the UDF (`udf`) to screenshot one node's output from the canvas chat; without a name only `what: \"canvas\"` is possible here" };
+      return { error: "name the UDF (`udf`) to screenshot one node's output from the canvas chat; without a name only `what: \"canvas\"` is possible here", refusal: true };
     }
     what = "udf";
   }
@@ -108,7 +108,8 @@ export async function takeCanvasShot(shot: CanvasShot, row: Pick<CanvasShotRow, 
       ...(a.note ? { note: a.note } : {}),
     };
   } catch (err) {
-    return { error: "the picture was taken but could not be saved (" + (err instanceof Error ? err.message : String(err)) + ")" };
+    // Not the window's fault: never swapped for the hidden-window sentence.
+    return { error: "the picture was taken but could not be saved (" + (err instanceof Error ? err.message : String(err)) + ")", refusal: true };
   }
 }
 

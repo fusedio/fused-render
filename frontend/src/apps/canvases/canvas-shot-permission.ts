@@ -60,6 +60,18 @@ export function slowRoadAllowed(g: {
   return !g.mac || g.fallbackOn || g.nativeAvailable === false || g.agent === true;
 }
 
+/** Whether an AGENT's capture may take a native road (D1472): on a Mac only
+ *  once the OS says Screen Recording is granted. Nobody clicked, and the
+ *  first native still is what raises the macOS prompt — over whatever app
+ *  the user is in. Off a Mac there is no prompt to raise. */
+export function agentNativeAllowed(g: { mac: boolean; granted?: boolean | null }): boolean {
+  return !g.mac || g.granted === true;
+}
+
+export function agentNativeAllowedHere(granted?: boolean | null): boolean {
+  return agentNativeAllowed({ mac: detectedMac, granted });
+}
+
 export async function slowRoadAllowedHere(nativeAvailable?: boolean, agent = false): Promise<boolean> {
   // Off a Mac — or for the agent — the answer needs no round trip.
   if (!detectedMac || agent) return true;

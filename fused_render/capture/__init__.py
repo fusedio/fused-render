@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import math
 import os
 import platform
 import sys
@@ -273,6 +274,16 @@ _sessions: dict[str, _Session] = {}
 # strictly better than a hot mic or a wedged quit.
 _native_lock = threading.Lock()
 STOP_LOCK_WAIT_S = 5.0
+#: The window still's whole server-side budget (D1472), lock wait included:
+#: under the page's own abort (`NATIVE_SHOT_ABORT_MS`, 4 s, native-capture.ts)
+#: so the lock is free again BEFORE the page falls back to the region still,
+#: which waits on the same lock. A window road that cannot answer inside it
+#: answers "no" and the region road runs, rather than both timing out.
+WINDOW_BUDGET_S = 3.0
+#: How long the window still waits for the native lock: a recording start
+#: or a region still behind a Screen Recording prompt holds it for up to
+#: `WAIT_S`, and the window road is the one that should give way.
+WINDOW_LOCK_WAIT_S = 0.5
 
 
 class _native:
@@ -410,6 +421,10 @@ def _rect(value):
                    for n in value)):
         raise CaptureError("'rect' must be [x, y, width, height] in points")
     x, y, w, h = (float(n) for n in value)
+    # NaN / Infinity are JSON-legal to Python's parser and pass the type
+    # check, then fail deep in the backend as a 500 (D1472 review).
+    if not all(math.isfinite(n) for n in (x, y, w, h)):
+        raise CaptureError("'rect' must be finite numbers")
     if w <= 0 or h <= 0:
         raise CaptureError("'rect' width and height must be positive")
     return (x, y, w, h)
@@ -1067,12 +1082,16 @@ def shot_window(body: dict) -> bytes:
     hook = getattr(backend, "shot_window", None)
     if hook is None:
         raise Unsupported("this platform has no window still — the region still is the one to take")
+    # One deadline for the whole road (`WINDOW_BUDGET_S`): the backend bounds
+    # every wait by it, and the lock is waited for briefly and strictly — a
+    # busy recorder is a 400, the page takes the region still.
+    deadline = time.monotonic() + WINDOW_BUDGET_S
     fd, out = tempfile.mkstemp(prefix="fused-shot-", suffix=".png")
     os.close(fd)
     try:
-        with _native():
+        with _native(WINDOW_LOCK_WAIT_S, strict=True):
             hook(out, {"path": out, "rect": list(rect), "window": list(window),
-                       "title": title})
+                       "title": title, "deadline": deadline})
         with open(out, "rb") as fh:
             return fh.read()
     finally:

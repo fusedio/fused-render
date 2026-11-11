@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { SCREEN_RECORDING_SETTINGS_URL, openScreenRecordingPane } from "@platform/lib/screen-permission";
 
 import {
+  agentNativeAllowed,
   nativeShotRefusal,
   screenRecordingNeeded,
   slowFallbackEnabled,
@@ -69,4 +70,12 @@ test("the pane opens through the server, and by deep link when that door is miss
     }, nav),
   ).toBe("link");
   expect(went).toEqual([SCREEN_RECORDING_SETTINGS_URL]);
+});
+
+test("the agent's native roads wait for the Screen Recording grant on a Mac (no prompt over another app)", () => {
+  expect(agentNativeAllowed({ mac: true, granted: true })).toBe(true);
+  expect(agentNativeAllowed({ mac: true, granted: false })).toBe(false);
+  expect(agentNativeAllowed({ mac: true, granted: null })).toBe(false);
+  expect(agentNativeAllowed({ mac: true })).toBe(false);
+  expect(agentNativeAllowed({ mac: false, granted: false })).toBe(true);
 });

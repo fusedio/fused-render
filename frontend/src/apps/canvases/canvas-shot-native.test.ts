@@ -215,3 +215,20 @@ test("the window road first (D1472): an unfocused window is photographed, a hidd
   });
   expect(roads).toEqual([]);
 });
+
+test("a dialog that opened over the frame during the window still refuses it", async () => {
+  const frame = { isConnected: true } as unknown as HTMLIFrameElement;
+  const pane = { width: 500, height: 400, free() {} };
+  const capture = (async () => pane) as unknown as NonNullable<Parameters<typeof nativeCanvasShot>[2]>["capture"];
+  for (const stale of [false, true]) {
+    let reads = 0;
+    const out = await nativeCanvasShot(frame, "agent", {
+      crop: { x: 0, y: 0, w: 500, h: 400 },
+      stale,
+      gate: () => ({ visible: !stale, focused: true, covered: reads++ > 0 }),
+      capture,
+      windowOff: () => false,
+    });
+    expect(out).toBeNull();
+  }
+});

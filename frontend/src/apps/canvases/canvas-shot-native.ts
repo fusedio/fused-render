@@ -210,8 +210,10 @@ export async function nativeCanvasShot(
   const windowOk = opts.stale ? !gate.covered : nativeShotAllowed(gate, "window");
   if (!(opts.windowOff || isWindowShotOff)() && windowOk) {
     pane = await capture(frame, undefined, { window: true });
-    // A page hidden while the still was taken may not have painted it.
-    if (pane && !opts.stale && !gateOf(frame, "agent").visible) return null;
+    // A page hidden while the still was taken may not have painted it, and
+    // a dialog opened over the frame meanwhile is in the window too.
+    const after = pane ? gateOf(frame, "agent") : null;
+    if (after && (after.covered || (!opts.stale && !after.visible))) return null;
   }
   if (!pane) {
     // Gated afresh: the window road took a round trip, and focus may have

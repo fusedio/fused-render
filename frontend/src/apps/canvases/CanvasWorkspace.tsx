@@ -259,7 +259,7 @@ import {
 import { CANVAS_SHOT_SCRIM_HINT, canvasShotScrimLabel, type CanvasShotPhase } from "./canvas-shot-scrim";
 import { SHOT_UDF_CROP_MIN_WIDTH, fitShotBlob, nativeCanvasShot, type ShotRect } from "./canvas-shot-native";
 import { useCanvasPageShotResponder } from "./canvas-page-shot-responder";
-import { nativeShotRefusal, screenRecordingNeeded, slowRoadAllowedHere } from "./canvas-shot-permission";
+import { agentNativeAllowedHere, nativeShotRefusal, screenRecordingNeeded, slowRoadAllowedHere } from "./canvas-shot-permission";
 import type { ScreenshotSource } from "@platform/lib/screen-permission";
 import { watchTopOrigin } from "@apps/claude/shots";
 import { captureSources } from "@platform/lib/capture-audio";
@@ -911,6 +911,21 @@ export default function CanvasWorkspace({
     // The crop the native road used, kept for the stale still below.
     let staleCrop: ShotRect | null = null;
     let staleWhole = false;
+    let staleTried = false;
+    // The agent's native roads wait for the Screen Recording grant (D1472).
+    let native = true;
+    // A still of the window as it last drew, for a HIDDEN page (D1472), said
+    // to be possibly stale.
+    const staleStill = async (): Promise<ShotAnswer | null> => {
+      staleTried = true;
+      if (!staleCrop) return null;
+      const blob = await nativeCanvasShot(frameRef.current, by, {
+        crop: staleCrop,
+        stale: true,
+        ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
+      });
+      return blob ? { ok: true, blob, note: STALE_SHOT_NOTE, framing: staleWhole ? "whole-frame" : what === "udf" ? "node" : "graph" } : null;
+    };
     try {
       // THE FRAME FIRST. A request that lands before the workbench's first
       // hello (the agent's tool fires as its turn starts) waits for it under
@@ -950,7 +965,8 @@ export default function CanvasWorkspace({
       if (what === "udf" && rects && !rects.udf && rects.udfReason) {
         return { ok: false, error: rects.udfReason, refusal: true };
       }
-      if (crop) {
+      if (by === "agent") native = agentNativeAllowedHere((await screenshotSource())?.granted);
+      if (crop && native) {
         const blob = await nativeCanvasShot(frameRef.current, by, {
           crop,
           ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
@@ -970,11 +986,17 @@ export default function CanvasWorkspace({
         // draw it at full size — a road this Mac does not take. The whole
         // frame, the node somewhere in it, is still a picture; "bring the
         // window to the front" would be the wrong sentence for it.
-        if (whole && crop && crop !== whole) {
+        if (native && whole && crop && crop !== whole) {
           const blob = await nativeCanvasShot(frameRef.current, by, { crop: whole });
           if (blob) return { ok: true, blob, framing: "whole-frame" };
         }
         return { ok: false, error: nativeShotRefusal({ permissionMissing: await screenRecordingMissing(), app: bundleName() }) };
+      }
+      // A HIDDEN page, for the agent: the stale still BEFORE the embed road,
+      // whose draw in a hidden document mostly runs out its 45 s first.
+      if (by === "agent" && native && document.visibilityState !== "visible") {
+        const still = await staleStill();
+        if (still) return still;
       }
     } finally {
       shotBusyRef.current = false;
@@ -1018,17 +1040,15 @@ export default function CanvasWorkspace({
     // had just asked to see its own work. Only for a hidden document: a
     // visible page whose workbench timed out gets the timeout's sentence,
     // not a fresh still wearing a false caveat.
-    if (!answer.ok && by === "agent" && staleCrop && document.visibilityState !== "visible") {
+    // (Tried before the embed road when the page was hidden already; here
+    // for a page hidden while the embed road ran.)
+    if (!answer.ok && by === "agent" && native && !staleTried && document.visibilityState !== "visible") {
       // The scrim the slow road showed is in the DOM until React commits
       // and the browser paints; the gate would read it as "covered" (the
       // same wait the frame-up path takes above).
       await nextPaint();
-      const blob = await nativeCanvasShot(frameRef.current, by, {
-        crop: staleCrop,
-        stale: true,
-        ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
-      });
-      if (blob) return { ok: true, blob, note: STALE_SHOT_NOTE, framing: staleWhole ? "whole-frame" : what === "udf" ? "node" : "graph" };
+      const still = await staleStill();
+      if (still) return still;
     }
     // The embed road's full-size PNG, under the view budget (D1471, F6).
     if (answer.ok) return { ok: true, blob: await fitShotBlob(answer.blob), framing: what === "udf" ? "node" : "graph" };
