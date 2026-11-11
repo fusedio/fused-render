@@ -549,7 +549,10 @@ export class PeekIntent {
   pressStart(): void {
     this.pressing = true;
     this.cancelClose();
-    if (this.shown !== null) this.setPinned(true);
+    if (this.shown !== null) {
+      this.cancelOpen();
+      this.setPinned(true);
+    }
   }
 
   /** …and came up (anywhere). */
