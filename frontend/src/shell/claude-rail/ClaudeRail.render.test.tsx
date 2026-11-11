@@ -37,6 +37,7 @@ const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
 const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("@shell/task-head-flag");
+const { resetFlagsForTests: resetClaudeFlagsForTests } = await import("@apps/claude/feature-flag");
 const { TaskHead: TaskHeadC } = await import("@shell/TaskHead");
 
 const DIR = "/home/me/apps/demo";
@@ -162,6 +163,10 @@ afterEach(() => {
   resetCanvasRailPeekFlagForTests();
   setBotsAvailableForTests(null);
   (globalThis as { fetch: unknown }).fetch = realFetch;
+  // The never-settling fetch above pins the shared prefs read (platform/lib/api)
+  // for every later suite in the process once a mounted flag has joined it.
+  dropSharedPrefsRead();
+  resetClaudeFlagsForTests();
   for (const [name, was] of saved) {
     if (was === MISSING) delete g[name];
     else g[name] = was;
