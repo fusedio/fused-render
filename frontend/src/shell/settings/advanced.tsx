@@ -1,5 +1,5 @@
 // Advanced: the call log, the index query console, diagnostics.
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   askIndex,
   buildDiagnostics,
@@ -345,17 +345,50 @@ function diagnosticsSince(win: DiagnosticsWindow, startedAt: number | null): num
   }
 }
 
+// The build outlives this row: leaving Preferences unmounts the control but
+// the POST keeps running, and the server mirrors it into the job registry so
+// the bottom Activity dock shows it (its row links back here). Module state,
+// not component state, so coming back mid-build shows "Collecting…" and a
+// finished build's path instead of an idle button that could start a second.
+type DiagnosticsRun = {
+  busy: boolean;
+  /** Whether the run in flight reads the system log — its status line. */
+  systemLog: boolean;
+  result: DiagnosticsResult | null;
+  error: string | null;
+};
+let diagRun: DiagnosticsRun = { busy: false, systemLog: false, result: null, error: null };
+const diagListeners = new Set<() => void>();
+function setDiagRun(next: Partial<DiagnosticsRun>) {
+  diagRun = { ...diagRun, ...next };
+  for (const l of diagListeners) l();
+}
+function subscribeDiagRun(l: () => void) {
+  diagListeners.add(l);
+  return () => {
+    diagListeners.delete(l);
+  };
+}
+async function startDiagnostics(opts: { since_s?: number; system_log: boolean }) {
+  if (diagRun.busy) return;
+  setDiagRun({ busy: true, systemLog: opts.system_log, result: null, error: null });
+  try {
+    setDiagRun({ busy: false, result: await buildDiagnostics(opts) });
+  } catch (e) {
+    setDiagRun({ busy: false, error: (e as Error).message });
+  }
+}
+
 export function DiagnosticsControl() {
   const [plan, setPlan] = useState<DiagnosticsPlan | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<DiagnosticsResult | null>(null);
+  const run = useSyncExternalStore(subscribeDiagRun, () => diagRun);
+  const { busy, result, error } = run;
   const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [win, setWin] = useState<DiagnosticsWindow>("2h");
   // The macOS unified log is the ONE slow collector (15–45 s). Off here by
   // default; the menu items and the CLI keep it on, because a reporter's
   // bundle is the one that has to carry the jetsam evidence.
-  const [systemLog, setSystemLog] = useState(false);
+  const [systemLog, setSystemLog] = useState(() => diagRun.busy && diagRun.systemLog);
   const [startedAt, setStartedAt] = useState<number | null>(null);
 
   useEffect(() => {
@@ -380,19 +413,10 @@ export function DiagnosticsControl() {
     };
   }, [win, startedAt]);
 
-  const save = async () => {
+  const save = () => {
     if (busy) return;
-    setBusy(true);
-    setError(null);
-    setResult(null);
     setCopied(false);
-    try {
-      setResult(await buildDiagnostics({ since_s: diagnosticsSince(win, startedAt), system_log: systemLog }));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    void startDiagnostics({ since_s: diagnosticsSince(win, startedAt), system_log: systemLog });
   };
 
   return (
@@ -400,7 +424,7 @@ export function DiagnosticsControl() {
       id="diagnostics"
       status={
         busy
-          ? systemLog
+          ? run.systemLog
             ? "Reading the system log… 15–45 seconds"
             : "Collecting…"
           : plan
@@ -421,7 +445,7 @@ export function DiagnosticsControl() {
             disabled={busy}
             onChange={(v) => setWin(v as DiagnosticsWindow)}
           />
-          <Button variant="accent" size="sm" disabled={busy} onClick={() => void save()}>
+          <Button variant="accent" size="sm" disabled={busy} onClick={save}>
             {busy ? "Collecting…" : "Save…"}
           </Button>
         </>

@@ -10,6 +10,7 @@ installDomShim();
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
+import type { RailPlace } from "./claude-rail-lib";
 
 const { ClaudeRail } = await import("./ClaudeRail");
 const { RailPeek } = await import("./RailPeek");
@@ -27,7 +28,12 @@ const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 const { BotCardHost } = await import("./BotCardHost");
 const { resetBotCardForTests } = await import("./bot-card-store");
-const { railGitNow, resetRailGitStoreForTests } = await import("./rail-git-store");
+const { railGitCount, railGitOf, resetRailGitStoreForTests } = await import("./rail-git-store");
+const { gitCardRail, gitCardState, registerGitCard, resetGitCardForTests } = await import("./git-peek-store");
+const { resetRailGitCacheForTests } = await import("./rail-git");
+const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
+const { DoorCard } = await import("./DoorCard");
+const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
 
@@ -175,6 +181,9 @@ async function mountRail(o: {
   git?: { path: string; onOpenGit?: () => void };
   /** Mount the shell's bot card (BotCardHost) beside the rail, as App does. */
   botHost?: boolean;
+  /** The rail's place; the demo folder unless said. */
+  place?: RailPlace;
+  onSelectNode?: (udfName: string | null) => void;
 }) {
   // The card's flag and the favourites' pair, as Settings would publish them.
   publishCanvasRailPeek({ enabled: o.peek ?? true });
@@ -189,7 +198,8 @@ async function mountRail(o: {
       <>
         <ClaudeRail
           paneOpen={o.paneOpen}
-          place={{ kind: "folder", dir: DIR }}
+          place={o.place ?? { kind: "folder", dir: DIR }}
+          {...(o.onSelectNode ? { onSelectNode: o.onSelectNode } : {})}
           newTask={{ target: DIR, waiting: null, on: null }}
           activeSessionId={o.activeSessionId ?? null}
           onOpen={() => {}}
@@ -577,10 +587,6 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
   });
 });
 
-// THE GIT SECTION MOVES TO THE STATUS BAR (owner, 2026-11-07, the rail flag):
-// with the nav doors the rail draws no Git section and publishes the page's
-// repository for the status bar's Git chip (rail-git-store.ts, GitDock);
-// flag off, the rail of before.
 describe("ClaudeRail's Bots door and its card (BotsPeek; owner, 2026-11-09)", () => {
   beforeEach(() => {
     resetBotsCardForTests();
@@ -632,7 +638,11 @@ describe("ClaudeRail's Bots door and its card (BotsPeek; owner, 2026-11-09)", ()
   });
 });
 
-describe("ClaudeRail's git with the rail flag", () => {
+// THE GIT SECTION BECOMES A DOOR (owner, 2026-11-10, the rail flag): under
+// the rings, a hairline and one Git door seat; the page's repository goes to
+// the shell's Git card by rail (rail-git-store.ts, GitPeek). Flag off, the
+// rail's Git section of before.
+describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
   const REPO = {
     root: DIR,
     branch: "feature",
@@ -640,41 +650,343 @@ describe("ClaudeRail's git with the rail flag", () => {
     default_branch: "main",
     ahead: 0,
     behind: 2,
-    commits: [{ sha: "abc1234def", short: "abc1234", subject: "Fix it", author: "me", when: 1_000 }],
+    upstream: { ahead: 1, behind: 0 },
+    commits: ["a", "b", "c", "d", "e"].map((k) => ({ sha: `${k}234def`, short: `${k}234`, subject: `Fix ${k}`, author: "me", when: 1_000 })),
   };
+  let answer: unknown = REPO;
   beforeEach(() => {
+    answer = REPO;
+    resetRailGitCacheForTests();
     resetRailGitStoreForTests();
+    resetGitCardForTests();
+    resetBotsCardForTests();
+    resetTasksCardForTests();
     (globalThis as { fetch: unknown }).fetch = (url: string) =>
       String(url).includes("/api/git/rail")
-        ? Promise.resolve(new Response(JSON.stringify({ ok: true, repo: REPO }), { status: 200 }))
+        ? Promise.resolve(new Response(JSON.stringify({ ok: true, repo: answer }), { status: 200 }))
         : new Promise<Response>(() => {});
   });
-  afterEach(() => resetRailGitStoreForTests());
-  const gitGroup = (r: ReactTestRenderer) =>
-    r.root.findAll((n) => typeof n.type === "string" && n.props.role === "group" && n.props["aria-label"] === "Git");
-
-  test("flag on: no Git section on the rail; the repository and the Git panel door go to the store", async () => {
-    let opened = 0;
-    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR, onOpenGit: () => opened++ } });
-    await act(async () => {
+  afterEach(() => {
+    resetRailGitStoreForTests();
+    resetGitCardForTests();
+    resetBotsCardForTests();
+    resetTasksCardForTests();
+  });
+  const settle = () =>
+    act(async () => {
       await new Promise((res) => setTimeout(res, 0));
     });
+  const gitGroup = (r: ReactTestRenderer) =>
+    r.root.findAll((n) => typeof n.type === "string" && n.props.role === "group" && n.props["aria-label"] === "Git");
+  const gitDoor = (r: ReactTestRenderer) =>
+    r.root.findAll((n) => n.type === "button" && typeof n.props["aria-label"] === "string" && n.props["aria-label"].startsWith("Git, on "));
+  /** The items column's children, by class: where the hairline and the door stand. */
+  const items = (r: ReactTestRenderer): string[] =>
+    r.root
+      .find((n) => n.props?.className === "sidebar-rail-items")
+      .children.filter((c): c is ReactTestInstance => typeof c !== "string")
+      .map((c) => String(c.props.className ?? ""));
+  const pressGit = (r: ReactTestRenderer) =>
+    act(() => {
+      gitDoor(r)[0]!.props.onClick({ preventDefault() {}, button: 0, detail: 1 });
+    });
+
+  test("flag on, no rings: the hairline then the Git door; its words, dots and facts by rail", async () => {
+    let opened = 0;
+    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR, onOpenGit: () => opened++ } });
+    await settle();
     expect(gitGroup(r)).toHaveLength(0);
-    const door = railGitNow();
-    expect(door?.repo.branch).toBe("feature");
-    door?.onOpenGit?.();
+    expect(items(r).slice(0, 2)).toEqual(["sidebar-rail-sep is-tight", "claude-rail-nav claude-rail-git-door"]);
+    const door = gitDoor(r)[0]!;
+    expect(door.props.title).toBe("Git — on feature · 0 ahead · 2 behind main · 1 to push · 2 to pull");
+    expect(door.props["aria-label"]).toBe("Git, on feature, 1 to push, 2 to pull, updates on the remote");
+    // Green on top (2 behind main), the push dot bottom-right.
+    const dots = door.findAll((n) => typeof n.props?.className === "string" && n.props.className.startsWith("sidebar-rail-dot"));
+    expect(dots.map((d) => d.props.className)).toEqual(["sidebar-rail-dot is-unread", "sidebar-rail-dot is-push is-second"]);
+    const facts = railGitOf(favPeekState().rail);
+    expect(facts?.repo.branch).toBe("feature");
+    facts?.onOpenGit?.();
     expect(opened).toBe(1);
     act(() => r.unmount());
     mounted.splice(mounted.indexOf(r), 1);
-    expect(railGitNow()).toBeNull();
+    expect(railGitCount()).toBe(0);
   });
 
-  test("flag off: the rail's Git section as before, nothing published", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: false, peek: false, git: { path: DIR } });
-    await act(async () => {
-      await new Promise((res) => setTimeout(res, 0));
+  test("with rings: the hairline and the door stand under the list", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: false, chats: [chat("a")], git: { path: DIR } });
+    await settle();
+    const at = items(r);
+    const list = at.indexOf("claude-rail-chats");
+    expect(list).toBeGreaterThanOrEqual(0);
+    expect(at.slice(list + 1, list + 3)).toEqual(["sidebar-rail-sep is-tight", "claude-rail-nav claude-rail-git-door"]);
+  });
+
+  test("no repository, or no git on the page: no door, no hairline, nothing published", async () => {
+    answer = null;
+    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR } });
+    await settle();
+    expect(gitDoor(r)).toHaveLength(0);
+    expect(items(r)).not.toContain("sidebar-rail-sep is-tight");
+    expect(railGitCount()).toBe(0);
+    act(() => r.unmount());
+    mounted.splice(mounted.indexOf(r), 1);
+    const bare = await mountRail({ paneOpen: false, favourites: false });
+    await settle();
+    expect(gitDoor(bare)).toHaveLength(0);
+  });
+
+  test("no card to stand: the press opens the page's Git panel; a card mounted: pin, then the second press closes", async () => {
+    let opened = 0;
+    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR, onOpenGit: () => opened++ } });
+    await settle();
+    expect(gitDoor(r)[0]!.props["aria-haspopup"]).toBeUndefined();
+    await pressGit(r);
+    expect(opened).toBe(1);
+    expect(gitCardState().up).toBe(false);
+    let off = () => {};
+    act(() => {
+      off = registerGitCard();
     });
+    expect(gitDoor(r)[0]!.props["aria-haspopup"]).toBe("dialog");
+    await pressGit(r);
+    expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+    expect(gitDoor(r)[0]!.props["aria-expanded"]).toBe(true);
+    expect(gitDoor(r)[0]!.props.className).toContain("is-open is-pinned");
+    await pressGit(r);
+    expect(gitCardState().up).toBe(false);
+    expect(opened).toBe(1);
+    act(() => off());
+  });
+
+  test("one window A card at a time: Git and Bots put each other down", async () => {
+    const offG = registerGitCard();
+    const offB = registerBotsCard();
+    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR } });
+    await settle();
+    await pressGit(r);
+    expect(gitCardState().up).toBe(true);
+    await act(() => {
+      byLabel(r, "Bots")[0]!.props.onClick({ preventDefault() {}, button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, detail: 1 });
+    });
+    expect(botsCardState().up).toBe(true);
+    expect(gitCardState().up).toBe(false);
+    await pressGit(r);
+    expect(gitCardState().up).toBe(true);
+    expect(botsCardState().up).toBe(false);
+    act(() => {
+      offG();
+      offB();
+    });
+  });
+
+  test("an explorer split: the press records ITS rail, whose facts the card reads; that rail going forgets it (owner, 2026-11-10)", async () => {
+    (globalThis as { fetch: unknown }).fetch = (url: string) =>
+      String(url).includes("/api/git/rail")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ ok: true, repo: { ...REPO, branch: String(url).includes("left") ? "left" : "right" } }), { status: 200 }),
+          )
+        : new Promise<Response>(() => {});
+    let off = () => {};
+    act(() => {
+      off = registerGitCard();
+    });
+    const left = await mountRail({ paneOpen: false, favourites: false, git: { path: `${DIR}/left` } });
+    const right = await mountRail({ paneOpen: false, favourites: false, git: { path: `${DIR}/right` } });
+    await settle();
+    expect(railGitCount()).toBe(2);
+    // The top rail is the right one; the press is on the left one's door.
+    expect(railGitOf(favPeekState().rail)?.repo.branch).toBe("right");
+    await pressGit(left);
+    expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+    expect(railGitOf(gitCardRail())?.repo.branch).toBe("left");
+    // The left rail goes: the pinned card stays, beside the top rail now.
+    act(() => left.unmount());
+    mounted.splice(mounted.indexOf(left), 1);
+    expect(gitCardRail()).toBeNull();
+    expect(gitCardState().up).toBe(true);
+    expect(gitDoor(right)).toHaveLength(1);
+    act(() => off());
+  });
+
+  test("a same-repo hop mounts a NEW rail in one commit: the door never goes, and the pinned card follows (QA, 2026-11-10)", async () => {
+    installPortalContainer();
+    const doc = (globalThis as unknown as { document: Record<string, unknown> }).document;
+    (doc.body as { createNodeMock: unknown }).createNodeMock = () => fakeEl();
+    const hadGetById = "getElementById" in doc;
+    doc.getElementById ??= () => null;
+    const FILE = `${DIR}/f.py`;
+    // The file's own read never answers: the first frame is the cache's.
+    (globalThis as { fetch: unknown }).fetch = (url: string) =>
+      String(url).includes("/api/git/rail") && !String(url).includes("f.py")
+        ? Promise.resolve(new Response(JSON.stringify({ ok: true, repo: REPO }), { status: 200 }))
+        : new Promise<Response>(() => {});
+    try {
+      publishCanvasRailPeek({ enabled: true });
+      publishFavouritesParent({ enabled: true });
+      publishTaskFavourites({ enabled: false });
+      const Hop = ({ at }: { at: string }) => (
+        <>
+          <ClaudeRail
+            key={at}
+            paneOpen={false}
+            place={{ kind: "folder", dir: DIR }}
+            newTask={{ target: DIR, waiting: null, on: null }}
+            activeSessionId={null}
+            onOpen={() => {}}
+            onOpenChat={() => {}}
+            onPullStart={() => {}}
+            git={{ path: at, onOpenGit: () => {} }}
+          />
+          <GitPeek />
+        </>
+      );
+      let r!: ReactTestRenderer;
+      await act(async () => {
+        r = create(<Hop at={DIR} />, { createNodeMock: () => fakeEl() });
+      });
+      mounted.push(r);
+      await settle();
+      expect(gitCardState().ready).toBe(true);
+      await pressGit(r);
+      expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+      // The hop: rail A unmounts, rail B mounts, one commit.
+      act(() => r.update(<Hop at={FILE} />));
+      expect(gitDoor(r)).toHaveLength(1);
+      expect(items(r)).toContain("sidebar-rail-sep is-tight");
+      expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+      await settle();
+      expect(gitDoor(r)).toHaveLength(1);
+      expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+      // Beside the new rail, on its (seeded) repository.
+      const card = r.root.findByType(DoorCard);
+      expect(card.props.rail).toBe(favPeekState().rail);
+      expect(railGitOf(card.props.rail)?.repo.branch).toBe("feature");
+      // …and still there once the follow window is over.
+      await act(async () => {
+        await new Promise((res) => setTimeout(res, GIT_FOLLOW_MS + 50));
+      });
+      expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+    } finally {
+      for (const m of mounted.splice(0)) act(() => m.unmount());
+      removePortalContainer();
+      if (!hadGetById) delete doc.getElementById;
+    }
+  });
+
+  test("a split whose TOP rail has no repository: the other rail's door still previews and pins, the card on its repo (Bugbot on #2236)", async () => {
+    installPortalContainer();
+    const doc = (globalThis as unknown as { document: Record<string, unknown> }).document;
+    (doc.body as { createNodeMock: unknown }).createNodeMock = () => fakeEl();
+    const hadGetById = "getElementById" in doc;
+    doc.getElementById ??= () => null;
+    (globalThis as { fetch: unknown }).fetch = (url: string) =>
+      String(url).includes("/api/git/rail")
+        ? Promise.resolve(
+            new Response(JSON.stringify({ ok: true, repo: String(url).includes("left") ? { ...REPO, branch: "left" } : null }), { status: 200 }),
+          )
+        : new Promise<Response>(() => {});
+    try {
+      publishCanvasRailPeek({ enabled: true });
+      publishFavouritesParent({ enabled: true });
+      publishTaskFavourites({ enabled: false });
+      const rail = (at: string) => (
+        <ClaudeRail
+          key={at}
+          paneOpen={false}
+          place={{ kind: "folder", dir: DIR }}
+          newTask={{ target: DIR, waiting: null, on: null }}
+          activeSessionId={null}
+          onOpen={() => {}}
+          onOpenChat={() => {}}
+          onPullStart={() => {}}
+          git={{ path: at }}
+        />
+      );
+      let r!: ReactTestRenderer;
+      await act(async () => {
+        r = create(
+          <>
+            {rail(`${DIR}/left`)}
+            {rail(`${DIR}/right`)}
+            <GitPeek />
+          </>,
+          { createNodeMock: () => fakeEl() },
+        );
+      });
+      mounted.push(r);
+      await settle();
+      // The top rail (the right, mounted last) has no repository; the left has.
+      expect(railGitOf(favPeekState().rail)).toBeNull();
+      expect(gitDoor(r)).toHaveLength(1);
+      expect(gitCardState().ready).toBe(true);
+      expect(gitDoor(r)[0]!.props["aria-haspopup"]).toBe("dialog");
+      // A hover previews…
+      await act(async () => {
+        gitDoor(r)[0]!.props.onPointerEnter({ pointerType: "mouse", buttons: 0 });
+        await new Promise((res) => setTimeout(res, PEEK_OPEN_MS + 20));
+      });
+      expect(gitCardState()).toMatchObject({ up: true, pinned: false });
+      // …and a press pins it, beside the left rail, on its repository.
+      await pressGit(r);
+      expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+      const card = r.root.findByType(DoorCard);
+      expect(card.props.rail).toBe(gitCardRail());
+      expect(railGitOf(card.props.rail)?.repo.branch).toBe("left");
+      expect(card.findAll((n) => n.props?.className === "git-panel-branch-name")[0]!.children).toEqual(["left"]);
+    } finally {
+      for (const m of mounted.splice(0)) act(() => m.unmount());
+      removePortalContainer();
+      if (!hadGetById) delete doc.getElementById;
+    }
+  });
+
+  test("flag off: the rail's Git section as before — three commit seats — and nothing published", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: false, peek: false, git: { path: DIR } });
+    await settle();
     expect(gitGroup(r)).toHaveLength(1);
-    expect(railGitNow()).toBeNull();
+    expect(gitDoor(r)).toHaveLength(0);
+    const commits = gitGroup(r)[0]!.findAll((n) => n.type === "button" && String(n.props.className).includes("claude-rail-git-commit"));
+    expect(commits).toHaveLength(3);
+    expect(railGitCount()).toBe(0);
+  });
+});
+
+describe("ClaudeRail on a canvas with a node selected (owner, 2026-11-10)", () => {
+  const CANVAS: RailPlace = { kind: "canvas", env: "prod", name: "demo", dir: DIR };
+  const chats = [
+    chat("other", { target: `${DIR}/o.py`, happened_at: 3_000, last_active: 3_000 }),
+    chat("mine", { target: `${DIR}/n.py`, happened_at: 1_000 }),
+  ];
+  const seatKeys = (r: ReactTestRenderer) =>
+    r.root
+      .findAll((n) => typeof n.type === "string" && n.props.role === "listitem")
+      .map((n) => [n.findAll((c) => typeof c.props?.["data-task-key"] === "string")[0]!.props["data-task-key"], n.props.className]);
+  const seps = (r: ReactTestRenderer) => r.root.findAll((n) => n.props?.className === "claude-rail-node-sep").length;
+
+  for (const favourites of [false, true]) {
+    test(`favourites ${favourites ? "on" : "off"}: every canvas chat stays — the node's first, a hairline, the rest faded — and no way-back seat`, async () => {
+      const r = await mountRail({ paneOpen: false, favourites, chats, place: { ...CANVAS, file: "n.py" }, onSelectNode: () => {} });
+      expect(seatKeys(r)).toEqual([
+        ["mine", "claude-rail-seat"],
+        ["other", "claude-rail-seat is-off"],
+      ]);
+      expect(seps(r)).toBe(1);
+      expect(r.root.findAll((n) => typeof n.props?.className === "string" && n.props.className.includes("claude-rail-all")).length).toBe(0);
+    });
+  }
+
+  test("no node: the List's order, nothing faded, no hairline", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: CANVAS, onSelectNode: () => {} });
+    expect(seatKeys(r)).toEqual([
+      ["other", "claude-rail-seat"],
+      ["mine", "claude-rail-seat"],
+    ]);
+    expect(seps(r)).toBe(0);
+  });
+
+  test("a node with no chat of its own: every chat faded, no hairline above them", async () => {
+    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { ...CANVAS, file: "x.py" }, onSelectNode: () => {} });
+    expect(seatKeys(r).map(([, c]) => c)).toEqual(["claude-rail-seat is-off", "claude-rail-seat is-off"]);
+    expect(seps(r)).toBe(0);
   });
 });

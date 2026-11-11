@@ -1,13 +1,13 @@
 """THE CLAUDE RAIL'S GIT SECTION (frontend/src/shell/claude-rail/ClaudeRail.tsx
 ``git``): what a page's collapsed rail says about the repository its folder
 or file sits in — the branch, how far it stands from the remote's default
-branch, and the last three commits that touched the folder (or the file).
+branch, and the last commits that touched the folder (or the file).
 
 Two routes, both for ANY absolute path, not only an app folder (the explorer's
 folder and file views draw the rail too):
 
-  GET  /api/git/rail?path=<abs>   -> {"ok": true, "repo": null | {...}}
-  POST /api/git/rail/check {path} -> the same, after git_upstream's own
+  GET  /api/git/rail?path=<abs>[&limit=n]  -> {"ok": true, "repo": null | {...}}
+  POST /api/git/rail/check {path[, limit]} -> the same, after git_upstream's own
                                      user-triggered check (``force_check``:
                                      its process-wide fetch slot, its engine-
                                      owned-copy guard, its bounded wait —
@@ -29,7 +29,15 @@ folder): the rail then draws no Git section at all. Otherwise:
                   first Check
   ahead, behind   HEAD against ``origin/<default_branch>`` as last fetched
                   (git_upstream ``_ahead_behind_counts``); null with no remote
-  commits         ``git log -n3`` scoped to the path (git_snapshot ``_run_log``)
+  upstream        ``{ahead, behind}`` against the branch's own upstream
+                  (``@{u}``): what a push / pull would move — the rail Git
+                  door's push and pull dots (owner, 2026-11-10). Null with no
+                  upstream (an unpublished branch) or a detached HEAD
+  commits         ``git log -n<limit>`` scoped to the path (git_snapshot
+                  ``_run_log``); ``limit`` defaults to 3 (the flag-off rail's
+                  three seats), clamped to 1..100 — the Git door's card asks
+                  for a full window's worth (owner, 2026-11-10: "fill it with
+                  commits")
 
 Pure functions over the git helpers the two neighbouring routers already
 hold, so a test runs them against a real repository with no TestClient
@@ -49,8 +57,27 @@ from fused_render.server.routers import git_snapshot as gs
 
 router = APIRouter()
 
-# The rail has room for three seats under the branch (claude-rail.css).
+# The flag-off rail has room for three seats under the branch
+# (claude-rail.css); the Git door's card asks for more, up to the cap.
 COMMITS = 3
+COMMITS_MAX = 100
+
+
+def _limit(limit: int | None) -> int:
+    if limit is None:
+        return COMMITS
+    return max(1, min(COMMITS_MAX, int(limit)))
+
+
+def _upstream_counts(root: str) -> dict | None:
+    """``{ahead, behind}`` against ``@{u}``, or None (no upstream, detached)."""
+    result = gu._run_safe(root, "rev-list", "--left-right", "--count", "HEAD...@{u}")
+    if not gu._ok(result):
+        return None
+    parts = gu._out(result).split()
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        return None
+    return {"ahead": int(parts[0]), "behind": int(parts[1])}
 
 
 def _has_remote(root: str) -> bool:
@@ -62,7 +89,7 @@ def _folder_of(path: str) -> str:
     return real if os.path.isdir(real) else os.path.dirname(real)
 
 
-def rail_status(path: str, *, ask: bool = False) -> dict:
+def rail_status(path: str, *, ask: bool = False, limit: int | None = None) -> dict:
     if not path or not os.path.isabs(path):
         raise gs._Refused("path must be absolute", status=400)
     real = os.path.realpath(path)
@@ -75,7 +102,9 @@ def rail_status(path: str, *, ask: bool = False) -> dict:
     has_remote = _has_remote(root)
     default = gu._default_branch(root, ask=ask) if has_remote else None
     ahead, behind = gu._ahead_behind_counts(root, default) if default else (None, None)
-    commits = gs._run_log(root, rel, COMMITS) if gs._head_exists(root) else []
+    n = _limit(limit)
+    head = gs._head_exists(root)
+    commits = gs._run_log(root, rel, n) if head else []
     return {
         "ok": True,
         "repo": {
@@ -85,12 +114,13 @@ def rail_status(path: str, *, ask: bool = False) -> dict:
             "default_branch": default,
             "ahead": ahead,
             "behind": behind,
-            "commits": commits[:COMMITS],
+            "upstream": _upstream_counts(root) if head else None,
+            "commits": commits[:n],
         },
     }
 
 
-def rail_check(path: str) -> dict:
+def rail_check(path: str, limit: int | None = None) -> dict:
     """git_upstream's own user-triggered check (``force_check``, module
     header), then the status as it stands — read with ``ask=True``, so a
     clone with no recorded default-branch symref resolves it now. ``checked``
@@ -105,19 +135,20 @@ def rail_check(path: str) -> dict:
         return {"ok": True, "repo": None, "checked": False}
     started = time.time()
     state = gu.force_check(path)
-    status = rail_status(path, ask=True)
+    status = rail_status(path, ask=True, limit=limit)
     status["checked"] = bool(state) and float(state.get("checked_at") or 0) >= started
     return status
 
 
 class _CheckBody(BaseModel):
     path: str
+    limit: int | None = None
 
 
 @router.api_route("/api/git/rail", methods=["GET"])
-async def api_git_rail(path: str):
+async def api_git_rail(path: str, limit: int | None = None):
     try:
-        return await run_in_threadpool(rail_status, path)
+        return await run_in_threadpool(lambda: rail_status(path, limit=limit))
     except gs._Refused as e:
         return _error(e.message, status=e.status)
 
@@ -127,6 +158,6 @@ async def api_git_rail_check(body: _CheckBody, x_fused: str | None = Header(defa
     if (error := _require_fused(x_fused)) is not None:
         return error
     try:
-        return await run_in_threadpool(rail_check, body.path)
+        return await run_in_threadpool(rail_check, body.path, body.limit)
     except gs._Refused as e:
         return _error(e.message, status=e.status)

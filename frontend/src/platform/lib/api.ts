@@ -1595,6 +1595,10 @@ export interface Prefs {
   // favourite's own card, the rail beside the open pane, the star beside the
   // id in every task list. Optional: absent (older server) reads as off.
   task_favourites?: { enabled: boolean };
+  // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
+  // experiment 2026-11-10): every task wears one of 299 glyphs in place of
+  // its status ring. Optional: absent (older server) reads as off.
+  task_icons?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2177,6 +2181,10 @@ export function putTaskFavouritesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_favourites_enabled: enabled });
 }
 
+export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_icons_enabled: enabled });
+}
+
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */
 export function putBotsPref(
   key: "bots_autostage" | "bots_sounds" | "bots_clear_enabled",
@@ -2226,6 +2234,9 @@ export interface UiLayoutDoc {
   /** …and the favourite's card (FavouritePeek), dragged from its top and
    *  left edges; unset = its default 380×520. */
   canvasRailFav?: { width: number; height: number };
+  /** The chat text zoom, 1 = 100 % (platform/lib/chat-zoom.ts): one factor for
+   *  every chat, always one of `CHAT_TEXT_SCALES` (ui-layout.ts). */
+  chatTextScale?: number;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
@@ -3933,6 +3944,12 @@ export interface TaskBackgroundJobs {
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
+  // THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): which of the 299
+  // glyphs in shell/task-icons.ts this task wears — arithmetic on its number
+  // server-side (tasks_store.icon_slot), so no two tasks in a project share
+  // one; a reroll (`rerollTaskIcon`) stamps a new one. null while the task has
+  // no number; absent from an older server.
+  icon_slot?: number | null;
   // FAVOURITE (owner, 2026-11-03): the star on the rail card. Server-side,
   // global (`tasks_store.FAVOURITES_FILE`), so every rail and every pane on
   // every page lists the same starred tasks. `starred_open` is the server's
@@ -4340,6 +4357,7 @@ export type TaskPulseTask = Pick<
   | "happened_at"
   | "project"
   | "task_id"
+  | "icon_slot"
   | "title"
   | "target"
   | "session_id"
@@ -4955,6 +4973,12 @@ export function removeTaskWorktrees(
  *  trimmed, capped). */
 export function renameTask(key: string, title: string): Promise<{ ok: boolean; title: string }> {
   return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
+}
+
+/** A NEW FACE for one task (`task_icons_enabled`): the server picks a glyph
+ *  no other task in the project wears and keeps it. Answers the new slot. */
+export function rerollTaskIcon(key: string): Promise<{ ok: boolean; icon_slot: number }> {
+  return postJson<{ ok: boolean; icon_slot: number }>("/api/tasks/icon", { key });
 }
 
 /** THE STAR (owner, 2026-11-03): make a task a favourite, or take it back.
@@ -6675,6 +6699,10 @@ export interface RailGitRepo {
   default_branch: string | null;
   ahead: number | null;
   behind: number | null;
+  /** Against the branch's own upstream (`@{u}`): what a push / pull would
+   *  move (the rail Git door's dots). Null with no upstream or a detached
+   *  HEAD; absent from an older server. */
+  upstream?: { ahead: number; behind: number } | null;
   commits: GitCommit[];
 }
 
@@ -6684,15 +6712,17 @@ export interface RailGit {
   repo: RailGitRepo | null;
 }
 
-export function getRailGit(path: string): Promise<RailGit> {
-  return getJson<RailGit>(`/api/git/rail?path=${encodeURIComponent(path)}`);
+/** `limit`: how many commits (server default 3, capped at 100). */
+export function getRailGit(path: string, limit?: number): Promise<RailGit> {
+  const n = limit === undefined ? "" : `&limit=${limit}`;
+  return getJson<RailGit>(`/api/git/rail?path=${encodeURIComponent(path)}${n}`);
 }
 
 /** The rail's "Check for updates": git_upstream's own bounded check, then the
  *  fresh counts. `checked` is false when no fetch landed inside its wait
  *  (no remote, unreachable, another check holding the slot, still running). */
-export function postRailGitCheck(path: string): Promise<RailGit & { checked: boolean }> {
-  return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", { path });
+export function postRailGitCheck(path: string, limit?: number): Promise<RailGit & { checked: boolean }> {
+  return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", limit === undefined ? { path } : { path, limit });
 }
 
 export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {

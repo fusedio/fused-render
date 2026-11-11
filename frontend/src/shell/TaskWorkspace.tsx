@@ -347,6 +347,7 @@ function WorkspaceCard({
             unread={task.unread > 0}
             count={task.unread}
             background={liveJobRow(task)}
+            icon={task.icon_slot}
           />
           {file && (
             <button

@@ -552,7 +552,7 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     # listing answers, and the Board's Upcoming lane sorts by the next run.
     pulse_fields = (
         "key", "status", "unread", "last_active", "project",
-        "task_id", "title", "target", "session_id", "happened_at", "next_run",
+        "task_id", "icon_slot", "title", "target", "session_id", "happened_at", "next_run",
         "next_run_entry", "next_run_repeats",
         # ...and where the row stands in its folder's line (2026-09-12): the
         # sidebar's Current apps section prints "n queued" beside "n running",

@@ -11,6 +11,7 @@ import {
   putCanvasesEnabled,
   putCanvasRailPeekEnabled,
   putTaskFavouritesEnabled,
+  putTaskIconsEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -28,6 +29,7 @@ import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
 import { publishFavouritesParent, publishTaskFavourites } from "@platform/lib/favourites-flag";
+import { publishTaskIcons } from "@platform/lib/task-icons-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
@@ -314,6 +316,27 @@ export function TaskFavouritesControl({ prefs, onChange }: PrefControlProps) {
           : on
             ? "On — a star on the preview card keeps a chat in a Favourites section at the rail's foot, its own card open beside it on every page."
             : "Off — no star, no Favourites section."
+      }
+      onChange={onChange}
+    />
+  );
+}
+
+// TASK ICONS (owner, 2026-11-10, experiment): every task wears one of 299
+// glyphs in place of its status ring; the icon pressed while a title is
+// being edited rerolls it. Off, the ring is drawn as before.
+export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.task_icons?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="tasks-icons"
+      checked={on}
+      put={putTaskIconsEnabled}
+      after={(next) => publishTaskIcons(next.task_icons)}
+      status={
+        on
+          ? "On — each task wears its own small picture in place of the status ring, in the ring's colour; click it while editing the title for a new one."
+          : "Off — the plain status ring."
       }
       onChange={onChange}
     />

@@ -127,6 +127,15 @@ test("the home title picks the largest step the name fits on (T:12430)", () => {
   expect(HOME_TITLE_STEPS.map(([px]) => px)).toEqual([26, 21, 17]);
 });
 
+test("a zoomed title prices each step at the same zoom", () => {
+  // At 150 % chat text the base step computes to 39px and the text measured at
+  // it is 1.5x as wide; the 21px step renders at 31.5px, so it must be priced
+  // there and not at 21px (300*39/26 = 450 base, 450*21/26 = 363).
+  expect(pickHomeTitleStep(450, 39, 460)).toBe("");
+  expect(pickHomeTitleStep(450, 39, 400)).toBe("c-t-mid");
+  expect(pickHomeTitleStep(450, 39, 300)).toBe("c-t-min");
+});
+
 test("a zero base font falls back to the first step's size", () => {
   expect(pickHomeTitleStep(26, 0, 26)).toBe("");
 });

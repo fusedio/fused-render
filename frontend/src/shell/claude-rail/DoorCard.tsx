@@ -1,5 +1,6 @@
 // WINDOW A'S CHASSIS FOR A NAV DOOR'S CARD (owner, 2026-11-07 / 2026-11-09):
-// the Tasks card (TasksPeek) and the Bots card (BotsPeek) are one kind of
+// the Tasks card (TasksPeek), the Bots card (BotsPeek) and the Git card
+// (GitPeek, 2026-11-10) are one kind of
 // thing — a page's content in window A's frame, off one of the rail's nav
 // doors — and this is the frame: everything that is not the content. It was
 // the Tasks card's body until the Bots card wanted the very same behaviour
@@ -52,16 +53,19 @@ import { navigateUrl } from "@platform/lib/router";
 import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import type { DoorCardStore } from "./door-card-store";
 import { useFavPeekState } from "./fav-peek-store";
+import { publishWindowABox, setSnapGuide } from "./card-snap";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import {
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
   bottomClear,
+  dragMaxWidth,
   dragResize,
   inSafeCone,
   placeClear,
   railCardSize,
   rowOf,
+  snapWidth,
   type Box,
   type ResizeEdge,
 } from "./rail-peek-lib";
@@ -95,10 +99,18 @@ export interface DoorCardApi {
 export interface DoorCardProps {
   store: DoorCardStore;
   /** The door's page: where a press with no room goes, Open's default. */
-  href: string;
+  href?: string;
+  /** A door with no page of its own (the Git door): what a press that found
+   *  no room does instead of navigating to `href` (the page's Git panel). */
+  onNoRoomPress?: () => void;
   /** The card's own class beside `.claude-rail-peek` (its CSS hook). */
   className: string;
   ariaLabel: string;
+  /** The rail the card stands beside, where the content says (the Git card:
+   *  the rail whose door opened it). Absent: the top rail
+   *  (`useFavPeekState().rail`), and a PREVIEW never outlives it. Given, the
+   *  content owns that rule (git-peek-store `forgetGitCardRail`). */
+  rail?: HTMLElement | null;
   /** Only where the content can exist at all (default true). Off: no card is
    *  registered and the door stays a plain link. */
   enabled?: boolean;
@@ -113,13 +125,16 @@ export interface DoorCardProps {
   children: (api: DoorCardApi) => ReactNode;
 }
 
-export function DoorCard({ store, href, className, ariaLabel, enabled = true, subOpen, onClaim, onVisible, children }: DoorCardProps) {
+export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className, ariaLabel, enabled = true, subOpen, onClaim, onVisible, children }: DoorCardProps) {
   const on = useCanvasRailPeek() && enabled;
   const card = store.useCard();
   // …and window B's box (`favBox`): this card is window A's and keeps CLEAR
   // of the favourite's or the bot's card — above it, else to its left
   // (rail-peek-lib `placeClear`) — never closes it (owner, 2026-11-08).
-  const { rail, favBox } = useFavPeekState();
+  const fav = useFavPeekState();
+  const { favBox } = fav;
+  const rail = railProp === undefined ? fav.rail : railProp;
+  const railGiven = railProp !== undefined;
   const intent = store.intent();
 
   // A card stands behind every rail's door while the flag is on (the store's
@@ -159,8 +174,8 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
   useEffect(() => {
     if (railWas.current === rail) return;
     railWas.current = rail;
-    if (!store.state().pinned) store.close();
-  }, [rail, store]);
+    if (!railGiven && !store.state().pinned) store.close();
+  }, [rail, store, railGiven]);
 
   const up = on && card.up;
 
@@ -192,7 +207,9 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
     const pressed = atOpen && store.state().pinned;
     store.close();
     setNoRoom(true);
-    if (pressed) void navigateUrl(href);
+    if (!pressed) return;
+    if (onNoRoomPress) onNoRoomPress();
+    else if (href) void navigateUrl(href);
   };
 
   // THE GRIPS AND THEIR DRAG (RailPeek's; window A's key, `canvasRailPeek`).
@@ -214,14 +231,12 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
     if (!start || start.pointerId !== e.pointerId || !row) return;
     // Never over window B's card under it (RailPeek's own floor,
     // rail-peek-lib `bottomClear`; owner, 2026-11-08).
-    const next = dragResize(
-      start.corner,
-      start.box,
-      e.clientX - start.x,
-      e.clientY - start.y,
-      row.getBoundingClientRect(),
-      bottomClear(start.box, favBox),
-    );
+    const bounds = row.getBoundingClientRect();
+    const asked = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, bounds, bottomClear(start.box, favBox));
+    // THE WIDTH MAGNET (card-snap.ts): to window B's card.
+    const snapped = snapWidth(asked, start.corner, favBox, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
+    setSnapGuide(snapped.guide);
+    const next = snapped.box;
     dragLast.current = next;
     setBox((prev) => (prev && sameBox(prev, next) ? prev : next));
   };
@@ -229,6 +244,7 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
     const start = dragStart.current;
     dragStart.current = null;
     setResizing(null);
+    setSnapGuide(null);
     const last = dragLast.current;
     dragLast.current = null;
     if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
@@ -251,6 +267,12 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
   useEffect(() => {
     if (dragStart.current && !visible) endDrag(false);
   }, [visible]);
+  // Window A's box, for window B's grips to snap to (card-snap.ts).
+  useEffect(() => {
+    if (!visible || !box) return;
+    publishWindowABox("door:" + className, box);
+    return () => publishWindowABox("door:" + className, null);
+  }, [visible, box, className]);
   const onVisibleRef = useRef(onVisible);
   onVisibleRef.current = onVisible;
   useEffect(() => {
@@ -437,11 +459,13 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
   // OPEN: the page itself; the card goes once the hop went (a leave guard
   // may refuse it — FavouritePeek's rule).
   const openPage = useCallback(
-    (to = href) =>
-      navigateUrl(to).then((went) => {
-        if (went !== false) close();
-        return went;
-      }),
+    (to = href): Promise<boolean> =>
+      to === undefined
+        ? Promise.resolve(false)
+        : navigateUrl(to).then((went) => {
+            if (went !== false) close();
+            return went;
+          }),
     [close, href],
   );
 
@@ -499,6 +523,7 @@ export function DoorCard({ store, href, className, ariaLabel, enabled = true, su
               onLostPointerCapture={() => dragStart.current && endDrag(true)}
             />
           ))}
+        {visible && ALL_GRIPS.map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
         <div className="claude-rail-peek-card">{children(api)}</div>
       </div>
     </>,

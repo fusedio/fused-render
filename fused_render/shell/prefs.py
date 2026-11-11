@@ -537,6 +537,17 @@ def task_favourites_enabled() -> bool:
     return read_prefs().get("task_favourites_enabled") is True
 
 
+def task_icons_enabled() -> bool:
+    """Whether every task wears a GLYPH in place of its status ring (owner,
+    2026-11-10, experiment): one of 299 line drawings, chosen from the task's
+    number (`tasks_store.icon_slot`) so no two tasks in a project share one;
+    the icon pressed while a title is edited rerolls it. Default off; only a
+    stored `true` is on. The listing sends `icon_slot` either way — the switch
+    only changes what the shell draws.
+    """
+    return read_prefs().get("task_icons_enabled") is True
+
+
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
@@ -1254,6 +1265,8 @@ def _prefs_response() -> dict:
         "canvas_rail_peek": {"enabled": canvas_rail_peek_enabled()},
         # Favourite chats (`task_favourites_enabled`; off by default).
         "task_favourites": {"enabled": task_favourites_enabled()},
+        # Task icons in place of the status ring (`task_icons_enabled`; off).
+        "task_icons": {"enabled": task_icons_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1613,6 +1626,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["task_favourites_enabled"] = value
             changed = True
+        if "task_icons_enabled" in body:
+            value = body.get("task_icons_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'task_icons_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["task_icons_enabled"] = value
+            changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
             if not isinstance(value, bool):
@@ -1936,6 +1956,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'chat_recap_enabled', 'breakout_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
                           "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
+                          "'task_icons_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

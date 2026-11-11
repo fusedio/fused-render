@@ -45,10 +45,14 @@
    height (a stretched flex item with a negative bottom margin grows by it;
    no ancestor clips, measured on the canvas, app, explorer and fallback
    rows), so the last section sits on the window's edge, as the global
-   sidebar's bottom cluster does on the left. The same `is-scroll` rail,
-   the same no-drawer rule. */
-#main:not(:has(> .term-drawer)) .claude-rail.is-scroll:not([hidden]) {
-  margin-bottom: calc(-1 * var(--status-bar-h, 22px));
+   sidebar's bottom cluster does on the left. The same `is-scroll` rail.
+   THROUGH AN OPEN TERMINAL DRAWER TOO (owner, 2026-11-10: "left sidebar
+   doesn't move, right sidebar moves"): the drawer says its height on the
+   document (TerminalDrawer `--term-drawer-h`, 0 while shut) and the rail is
+   pulled down by it as well, while the drawer ends at the rail's edge
+   (notifications.css `.term-drawer`), the same as the bar does. */
+#main .claude-rail.is-scroll:not([hidden]) {
+  margin-bottom: calc(-1 * (var(--status-bar-h, 22px) + var(--term-drawer-h, 0px)));
 }
 /* A rail with nothing to draw beside the open pane (ClaudeRail `shown`,
    claude-rail-lib `railShown`) is hidden, not unmounted: the attribute alone
@@ -297,26 +301,26 @@
 .claude-rail-chat.peeked::after {
   background: rgba(var(--tint), 0.08);
 }
-/* The seat under the list while a node is selected (ClaudeRail
-   `.claude-rail-all`): the canvas glyph, the way back to every chat on the
-   canvas. Below the scroller, so a short window never scrolls it away; a
-   hairline above it, the rail's own divider (.sidebar-rail-items wears the
-   same), so it reads as the list's foot and not as one more chat. */
-.claude-rail-all-seat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  /* Never shrinks: the foot is the rail's fixed part, and the list above it
-     (basis 0) is what gives way — a favourite is a thing the reader chose to
-     keep in view, so it is never the thing that clips. */
+/* A SELECTED NODE SORTS THE LIST (ClaudeRail, claude-rail-lib `railRows`;
+   owner, 2026-11-10): the node's chats first, a hairline, then every other
+   chat on the canvas at half strength — full again under the pointer or the
+   keyboard, so the ring being read is never the faded one. The hairline is
+   the rail's own divider (sidebar.css `.sidebar-rail-sep`), its margin taken
+   in by the list's 4px gap. */
+.claude-rail-node-sep {
   flex: 0 0 auto;
   width: 28px;
-  /* 8px each side of the hairline, as every rail divider (sidebar.css
-     `.sidebar-rail-sep`): 4 + the column's 4px gap above, 8 below. */
-  margin-top: 4px;
-  padding-top: 8px;
-  border-top: 1px solid var(--rail-sep);
+  height: 1px;
+  margin: 2px 0;
+  background: var(--rail-sep);
+}
+.claude-rail-seat.is-off {
+  opacity: 0.5;
+  transition: opacity 120ms ease;
+}
+.claude-rail-seat.is-off:hover,
+.claude-rail-seat.is-off:focus-within {
+  opacity: 1;
 }
 /* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): the rail's last
    section, under the git seats and a tight hairline of its own. The ring
@@ -582,116 +586,136 @@
   user-select: none;
   -webkit-user-select: none;
 }
-/* THE GRIPS (RailPeek, owner 2026-11-02): the pinned card's two LEFT
-   corners (and its edges, below) — the right edge stands against the rail — as 12px hit areas
-   (8px of them over the card's rounded corner, clear of the pin seat), with
-   the corner's resize cursor. Quiet until the pointer rests on the corner
-   (owner, 2026-11-02: "show it when we hover over the corner … when we drag
-   the corner it changes color to accent"): a short L in the ink's tone
-   traces the corner under the pointer, and stays in that tone while the
-   drag is on — NO ACCENT while resizing (owner, 2026-11-04: "when resizing
-   we show accent border colour — let's not do that"): the cursor and the
-   ink's trace are the whole feedback. Children of the fixed box, not of the card
-   (the card clips its overflow), above the head and the chat. */
-/* …AND THE SAME GRIPS ON A SIZED POPOVER CARD (Modal `popover.resize`;
-   owner, 2026-11-08: the +'s New task card "is supposed to be window A, but
-   resize is not working"): `.modal-popover-grip` wears every rule below, so
-   the two cards resize with one look. Their frame is deploy.css's
-   `.modal-popover-frame`. */
+/* THE GRIPS (RailPeek, owner 2026-11-02): hit areas on the card's two LEFT
+   corners and its left, top and bottom edges (owner, 2026-11-04) — the right
+   edge stands against the rail — each with its resize cursor. Children of
+   the fixed box, not of the card (the card clips its overflow), above the
+   head and the chat. The SAME GRIPS ON A SIZED POPOVER CARD (Modal
+   `popover.resize`, owner 2026-11-08: the +'s New task card is window A):
+   `.modal-popover-grip` wears every rule here, in deploy.css's
+   `.modal-popover-frame`, so every card resizes with one look.
+   The grips draw nothing themselves. ONE LOOK FOR EDGE AND CORNER (owner,
+   2026-11-10: "we have edge and corner which is different and looks a bit
+   off"): the CARD'S OWN OUTLINE lights up where the drag will move it —
+   `.rail-grip-ring`, one per grip, a 2px ring on the card's 10px radius
+   masked to the part in play. An edge lights its whole side and rounds both
+   its corners; a corner lights its arc and fades out along its two sides.
+   The way window and pane edges do it (macOS, VS Code's sashes, Linear's
+   sidebar): the cursor says "resize", the outline says which part. A short
+   wait before a hover lights it, so a pointer crossing an edge does not
+   flash; the ink's tone, never the accent (owner, 2026-11-04: "when
+   resizing we show accent border colour — let's not do that"). */
 :is(.claude-rail-peek-grip, .modal-popover-grip) {
   position: absolute;
-  left: -4px;
-  width: 12px;
-  height: 12px;
   z-index: 3;
   touch-action: none;
 }
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl {
+  left: -6px;
+  width: 18px;
+  height: 18px;
+}
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-tl {
-  top: -4px;
+  top: -6px;
   cursor: nwse-resize;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-bl {
-  bottom: -4px;
+  bottom: -6px;
   cursor: nesw-resize;
 }
-:is(.claude-rail-peek-grip, .modal-popover-grip)::after {
-  content: "";
-  position: absolute;
-  left: 4px;
-  width: 7px;
-  height: 7px;
-  border-left: 2px solid currentColor;
-  color: var(--fg);
-  opacity: 0;
-  transition:
-    opacity var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
-}
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl::after {
-  top: 4px;
-  border-top: 2px solid currentColor;
-  border-top-left-radius: 4px;
-}
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl::after {
-  bottom: 4px;
-  border-bottom: 2px solid currentColor;
-  border-bottom-left-radius: 4px;
-}
-:is(.claude-rail-peek-grip, .modal-popover-grip):hover::after,
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-active::after {
-  opacity: 1;
-}
-/* THE EDGE GRIPS (owner, 2026-11-04: "resize … from edges as well: left,
-   top and bottom"): 6px hit strips centred on the card's border, short of
-   the corners (whose 12px grips sit over the strips' ends and win). The
-   same quiet trace as the corners — a 2px line along the edge, the ink's
-   tone on hover and while the drag is on (no accent). */
+/* The edges: 8px strips centred on the border, short of the corners (whose
+   grips sit over the strips' ends and win). */
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-l,
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-t,
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
   z-index: 2;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-l {
-  left: -3px;
-  top: 8px;
-  bottom: 8px;
-  width: 6px;
-  height: auto;
+  left: -4px;
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
   cursor: ew-resize;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-t,
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
-  left: 8px;
-  right: 8px;
-  width: auto;
-  height: 6px;
+  left: 12px;
+  right: 12px;
+  height: 8px;
   cursor: ns-resize;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-t {
-  top: -3px;
+  top: -4px;
 }
 :is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
-  bottom: -3px;
+  bottom: -4px;
 }
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-l::after,
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-t::after,
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-b::after {
-  border: 0;
-  background: currentColor;
-  border-radius: 1px;
+.rail-grip-ring {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in srgb, var(--fg) 55%, transparent);
+  border-radius: 10px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-l::after {
-  left: 2px;
-  top: 0;
-  width: 2px;
-  height: 100%;
+.rail-grip-ring.is-l {
+  -webkit-mask-image: linear-gradient(to right, #000 11px, transparent 24px);
+  mask-image: linear-gradient(to right, #000 11px, transparent 24px);
 }
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-t::after,
-:is(.claude-rail-peek-grip, .modal-popover-grip).is-b::after {
-  left: 0;
-  top: 2px;
-  width: 100%;
-  height: 2px;
+.rail-grip-ring.is-t {
+  -webkit-mask-image: linear-gradient(to bottom, #000 11px, transparent 24px);
+  mask-image: linear-gradient(to bottom, #000 11px, transparent 24px);
+}
+.rail-grip-ring.is-b {
+  -webkit-mask-image: linear-gradient(to top, #000 11px, transparent 24px);
+  mask-image: linear-gradient(to top, #000 11px, transparent 24px);
+}
+.rail-grip-ring.is-tl {
+  -webkit-mask-image: radial-gradient(circle at 0 0, #000 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 0 0, #000 14px, transparent 44px);
+}
+.rail-grip-ring.is-bl {
+  -webkit-mask-image: radial-gradient(circle at 0 100%, #000 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 0 100%, #000 14px, transparent 44px);
+}
+/* Lit: on a hover after a beat, at once and a shade stronger under a drag. */
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l:hover ~ .rail-grip-ring.is-l,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t:hover ~ .rail-grip-ring.is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b:hover ~ .rail-grip-ring.is-b,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl:hover ~ .rail-grip-ring.is-tl,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl:hover ~ .rail-grip-ring.is-bl {
+  opacity: 1;
+  transition-delay: 80ms;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l.is-active ~ .rail-grip-ring.is-l,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t.is-active ~ .rail-grip-ring.is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b.is-active ~ .rail-grip-ring.is-b,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl.is-active ~ .rail-grip-ring.is-tl,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl.is-active ~ .rail-grip-ring.is-bl {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--fg) 75%, transparent);
+  transition-delay: 0s;
+}
+/* THE WIDTH MAGNET'S GUIDE (card-snap.ts, owner 2026-11-10): one line on
+   <body> along the left edge two stacked cards share once a width drag
+   snapped them level — a quiet grey, dashed (owner, 2026-11-10: "shouldn't
+   be accent colour … a bit more greyish subtle"), a little past both cards' ends,
+   over every card and taking no pointer. Fades out where it last stood. */
+.rail-snap-guide {
+  position: fixed;
+  width: 0;
+  border-left: 1px dashed color-mix(in srgb, var(--fg) 35%, transparent);
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.rail-snap-guide.is-on {
+  opacity: 1;
 }
 .claude-rail-peek-card {
   flex: 1 1 auto;
@@ -1517,11 +1541,11 @@ a.claude-rail-peek-scope:focus-visible {
 }
 .chat-root .agent-peek-label {
   margin-bottom: 4px;
-  font-size: var(--c-fs-meta);
+  font-size: calc(var(--c-fs-meta) * var(--c-zoom, 1));
   color: var(--c-faint);
 }
 .chat-root .agent-peek-prompt-text.is-clamped {
-  max-height: calc(4 * var(--c-fs-read) * var(--c-lh-read));
+  max-height: calc(4 * var(--c-fs-read) * var(--c-lh-read) * var(--c-zoom, 1));
   overflow: hidden;
 }
 /* The trigger sits on the column's left edge, not in a paragraph's corner. */
@@ -1636,4 +1660,180 @@ a.claude-rail-peek-scope:focus-visible {
 }
 .claude-rail-bots-list .bots-page.bots-pick .empty {
   padding: 32px 16px;
+}
+
+/* THE GIT DOOR (ClaudeRail; owner, 2026-11-10): one nav-door seat under the
+   rings, past its hairline — the nav doors' wash and open states
+   (`.claude-rail-nav` above), on a column of its own. */
+.claude-rail-git-door {
+  width: 100%;
+}
+/* …with no rings its hairline is the items column's first child: the
+   column's own 2px of wash padding (`.has-nav .sidebar-rail-items`) comes
+   off its margin, so it stands 8px under the + as above the door (the
+   #2213 rule: 8px each side). */
+.claude-rail.has-nav .sidebar-rail-items > .sidebar-rail-sep.is-tight:first-child {
+  margin-top: 2px;
+}
+
+/* THE GIT CARD (shell/claude-rail GitPeek; owner, 2026-11-10): the status
+   bar's old Git panel (shell/GitPanelBody) in window A's chassis off the
+   rail's Git door — the Bots card's twin (DoorCard), one step above the
+   rail's own card as that one is. The branch row stays put; the commits fill
+   the card and scroll inside it. */
+#claude-rail-git-peek {
+  z-index: 46;
+}
+.claude-rail-git-peek .git-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.git-panel-head {
+  flex: 0 0 auto;
+  padding: 8px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.git-panel-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.git-panel-branch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg);
+}
+.git-panel-branch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.git-panel-branch-icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+/* ↑n / ↓n beside the branch: how far it stands from the default branch;
+   then what a push / pull would move, in the door's dot hues. */
+.git-panel-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  padding: 1px 6px 1px 4px;
+  border-radius: 999px;
+  background: var(--ctl-quiet-bg);
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.git-panel-tag.is-push {
+  background: color-mix(in srgb, var(--status-background) 16%, transparent);
+  color: var(--status-background);
+}
+.git-panel-tag.is-pull {
+  background: color-mix(in srgb, var(--status-done) 16%, transparent);
+  color: var(--status-done);
+}
+.git-panel-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+/* The Updates chip's check button, at the card's ink (not the bar's). */
+.git-panel-check {
+  margin: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--fg-muted);
+}
+.git-panel-check:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.git-panel-check:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.git-panel-warn {
+  font-size: 11px;
+  color: var(--status-failed);
+}
+/* THE COMMITS ARE THE SCROLLING SECTION (owner, 2026-11-10): the rest of the
+   card, a thin native scrollbar. */
+.git-panel-commits {
+  flex: 1 1 auto;
+  min-height: 0;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 6px;
+  border-top: 1px solid var(--border);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+/* One line a commit: subject left, short sha right. */
+.git-commit {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+}
+button.git-commit {
+  cursor: pointer;
+}
+button.git-commit:hover {
+  background: rgba(var(--tint), 0.06);
+}
+button.git-commit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.git-commit-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-commit-sha {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.git-panel-empty {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
