@@ -247,7 +247,8 @@ import {
   type SyncState,
 } from "./sync-state";
 import { CANVAS_SHOT_SCRIM_HINT, canvasShotScrimLabel, type CanvasShotPhase } from "./canvas-shot-scrim";
-import { SHOT_UDF_CROP_MIN_WIDTH, nativeCanvasShot, type ShotRect } from "./canvas-shot-native";
+import { SHOT_UDF_CROP_MIN_WIDTH, fitShotBlob, nativeCanvasShot, type ShotRect } from "./canvas-shot-native";
+import { useCanvasPageShotResponder } from "./canvas-page-shot-responder";
 import { nativeShotRefusal, screenRecordingNeeded, slowRoadAllowedHere } from "./canvas-shot-permission";
 import type { ScreenshotSource } from "@platform/lib/screen-permission";
 import { watchTopOrigin } from "@apps/claude/shots";
@@ -928,7 +929,8 @@ export default function CanvasWorkspace({
           crop,
           ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
         });
-        if (blob) return { ok: true, blob };
+        // Said as it is (D1471, F6): no rects means the whole frame.
+        if (blob) return { ok: true, blob, framing: crop === whole ? "whole-frame" : what === "udf" ? "node" : "graph" };
       }
       // NATIVE COULD NOT. Off a Mac the slow embed road below draws it; on a
       // Mac that road is off unless Settings turned it on, and the answer is
@@ -944,7 +946,7 @@ export default function CanvasWorkspace({
         // window to the front" would be the wrong sentence for it.
         if (whole && crop && crop !== whole) {
           const blob = await nativeCanvasShot(frameRef.current, by, { crop: whole });
-          if (blob) return { ok: true, blob };
+          if (blob) return { ok: true, blob, framing: "whole-frame" };
         }
         return { ok: false, error: nativeShotRefusal({ permissionMissing: await screenRecordingMissing(), app: bundleName() }) };
       }
@@ -982,6 +984,8 @@ export default function CanvasWorkspace({
       }, THUMBNAIL_TIMEOUT_MS);
     });
     setShotPhase(null);
+    // The embed road's full-size PNG, under the view budget (D1471, F6).
+    if (answer.ok) return { ok: true, blob: await fitShotBlob(answer.blob), framing: what === "udf" ? "node" : "graph" };
     return answer;
   }, [settleShot, awaitFrameUp, requestEmbedRects, screenRecordingMissing, screenshotSource]);
   // The in-page canvas chat's contract: the canvas view only (no node is
@@ -990,6 +994,9 @@ export default function CanvasWorkspace({
     () => ({ capture: requestCanvasShot, targets: ["canvas"] }),
     [requestCanvasShot],
   );
+  // The agent's `canvas_screenshot`, for every chat on this canvas wherever
+  // it is shown (D1471): this page answers, not the chat.
+  useCanvasPageShotResponder({ env, name, shot: canvasShot, frameUp: () => frameUpRef.current, error });
   useEffect(
     () => () => {
       // A request still out when the page goes: answer it, so the asking

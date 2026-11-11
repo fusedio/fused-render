@@ -81,6 +81,8 @@ ACTIONS: dict[str, str] = {
     "decide": "_decide",
     "app_state": "_answer_app_state",
     "canvas_shot": "_answer_canvas_shot",
+    "canvas_shot_inbox": "_canvas_shot_inbox",
+    "canvas_shot_claim": "_canvas_shot_claim",
     "sessions": "_sessions",
     "live_run": "_live_run",
     "cards": "_cards",

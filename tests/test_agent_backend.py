@@ -2282,7 +2282,8 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
     D9, `_NO_PREAPPROVE_BACKENDS`). The context dir spells the pane tool by
     its bare name, since that is how Gemini offers an MCP tool."""
     canvases = tmp_path / "canvases"
-    clone = canvases / "c1"
+    # `<root>/<env>/<name>`: only a fused-render clone gets the tool (D1471).
+    clone = canvases / "prod" / "c1"
     clone.mkdir(parents=True)
     (clone / "index.html").write_text("<html></html>")
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))

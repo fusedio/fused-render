@@ -23,6 +23,9 @@ import type {
 /** T:13761-13762 — the two tools whose cards are not approvals. */
 export const PLAN_TOOL = "ExitPlanMode";
 export const ANSWERABLE_TOOL = "AskUserQuestion";
+/** The open-canvas ask's card (D1471; agent.CANVAS_OPEN_TOOL): no real tool,
+ *  so its card is OpenCanvasCard, not an approval. */
+export const CANVAS_OPEN_TOOL = "OpenCanvas";
 
 /** T:13743-13745 — where "allow all of these for the rest of the reply" is a
  *  proportionate offer. Everything else gets Allow/Deny only. */

@@ -18,8 +18,9 @@
 // In this tree that is two render sites for one list: `placement="open"` right
 // above the working line, `placement="parked"` as the live turn's last child.
 import type { ChatController } from "../protocol/controller-api";
-import { ANSWERABLE_TOOL, PLAN_TOOL } from "../protocol/summaries";
+import { ANSWERABLE_TOOL, CANVAS_OPEN_TOOL, PLAN_TOOL } from "../protocol/summaries";
 import type { PermissionMode, PermissionRow } from "../protocol/types";
+import { OpenCanvasCard } from "./OpenCanvasCard";
 import { PermCard } from "./PermCard";
 import { PlanCard } from "./PlanCard";
 import { QuestionCard } from "./QuestionCard";
@@ -31,6 +32,8 @@ export interface CardActions {
   answerQuestion: ChatController["answerQuestion"];
   decidePlan: ChatController["decidePlan"];
   dismissCard: ChatController["dismissCard"];
+  /** The chat's hop (`onNavigate`): the open-canvas card's Open. */
+  navigate?: (url: string) => void;
 }
 
 export interface CardStackProps {
@@ -100,6 +103,13 @@ export function CardStack({
           />
         ) : row.tool === PLAN_TOOL ? (
           <PlanCard key={row.id} row={row} pickerMode={pickerMode} onDecide={actions.decidePlan} />
+        ) : row.tool === CANVAS_OPEN_TOOL ? (
+          <OpenCanvasCard
+            key={row.id}
+            row={row}
+            onDecide={actions.decidePermission}
+            {...(actions.navigate ? { navigate: actions.navigate } : {})}
+          />
         ) : (
           <PermCard
             key={row.id}

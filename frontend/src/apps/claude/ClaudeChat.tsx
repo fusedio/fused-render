@@ -167,7 +167,6 @@ import { planLocalCommand } from "./ui/local-commands";
 import { REMOTE_CONTROL_CONNECTING, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
 import { notify } from "@platform/lib/notifications";
 import { ScreenshotSeat } from "./ui/AnnStrip";
-import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
 import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
 import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
@@ -2093,15 +2092,9 @@ function ChatBody(props: ChatBodyProps) {
     // `useAppStateResponder.test.tsx` for the seam.
   });
 
-  // ── the canvas-screenshot pull channel (`canvas_screenshot` tool) ──────────
-  // Every chat polls its run, so every chat sees the rows; only a canvas page
-  // (`canvasShot`) can take the picture, the rest answer "open the canvas"
-  // after giving it its chance (`useCanvasShotResponder`).
-  useCanvasShotResponder({
-    rows: state.canvasShot,
-    shot: props.canvasShot ?? null,
-    answer: controller.answerCanvasShot,
-  });
+  // The `canvas_screenshot` tool is answered by the canvas PAGE, whichever
+  // surface holds the chat (D1471, apps/canvases/canvas-page-shot-responder);
+  // a chat only draws the open-canvas ask, as a card (OpenCanvasCard).
 
   // ── the ask, LATCHED PER MOUNT ─────────────────────────────────────────────
   //
@@ -4481,8 +4474,9 @@ function ChatBody(props: ChatBodyProps) {
       dismissCard: controller.dismissCard,
       stopRun: controller.stopRun,
       addNote: controller.addNote,
+      navigate: onNavigate,
     }),
-    [controller],
+    [controller, onNavigate],
   );
 
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);

@@ -1874,6 +1874,10 @@ def _attention_of(agent, perm: dict) -> dict:
     tool = str(perm.get("tool") or "")
     inp = perm.get("input") if isinstance(perm.get("input"), dict) else {}
     summary = ""
+    if tool == getattr(agent, "CANVAS_OPEN_TOOL", None):
+        # The open-canvas ask (D1471) is not a tool the user knows: the line
+        # alone ("Open demo to take a screenshot") says what it waits on.
+        return {"tool": "", "summary": agent._tool_detail(tool, inp)}
     if tool == getattr(agent, "ANSWERABLE_TOOL", "AskUserQuestion"):
         questions = inp.get("questions")
         if isinstance(questions, list) and questions:

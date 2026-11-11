@@ -1274,6 +1274,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         (view && !view.pulse.session_id ? " is-plain" : "")
       }
       role="dialog"
+      // Ours: never makes the canvas screenshot refuse (canvas-shot-native).
+      data-shot-own=""
       aria-label={head ? `${head.label} — preview` : "Chat preview"}
       style={
         box

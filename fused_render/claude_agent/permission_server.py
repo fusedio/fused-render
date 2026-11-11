@@ -116,10 +116,11 @@ APP_STATE_TIMEOUT = float(os.environ.get("FUSED_RENDER_APP_STATE_TIMEOUT", "20")
 # A canvas screenshot is slower than a state read: the page waits up to 40 s
 # for its workbench frame, then the frame draws a big graph through
 # html-to-image (seconds, tens on a loaded Mac) under the page's own 45 s
-# relay timeout — 85 s of page budget, and a canvas-less page answers "open
-# the canvas" at 88 s. This sits above all of them, so whichever page answers,
-# its sentence lands before this fallback does. agent.py forwards the env var
-# into this server's environment and reads the same value for the MCP ceiling.
+# relay timeout — 85 s of page budget. This sits above it, so the page's own
+# sentence lands before this fallback does. It is also the open-canvas ask's
+# ceiling (D1471), and after an Open the page gets this long again. agent.py
+# forwards the env var into this server's environment and reads the same value
+# for the MCP ceiling.
 CANVAS_SHOT_TIMEOUT = float(os.environ.get("FUSED_RENDER_CANVAS_SHOT_TIMEOUT", "100"))
 # The picture rides one stdio JSON line, base64, into the model's context: a
 # cap keeps a runaway capture from being that line. The page downsizes a
@@ -127,6 +128,20 @@ CANVAS_SHOT_TIMEOUT = float(os.environ.get("FUSED_RENDER_CANVAS_SHOT_TIMEOUT", "
 # Under the model API's ~5 MB per-image limit, with room for base64 growth:
 # an oversized block in a tool_result fails the whole turn.
 CANVAS_SHOT_MAX_BYTES = int(4.5 * 1024 * 1024)
+# D1471: which canvas this session is about (agent._canvas_of) and where its
+# PAGES answer. Any open canvas page polls `<pages>/inbox`, so the shot no
+# longer depends on which surface holds the chat. Absent (an older mcp.json),
+# the request is parked and waited on exactly as before.
+CANVAS_CLONE = os.environ.get("FUSED_RENDER_CANVAS_CLONE", "")
+CANVAS_NODE = os.environ.get("FUSED_RENDER_CANVAS_NODE", "")
+CANVAS_PAGES_DIR = os.environ.get("FUSED_RENDER_CANVAS_PAGES", "")
+# A page heartbeats every 1 s (3 s hidden); one heard from within this is open.
+CANVAS_PAGE_FRESH = 4.0
+# How long a request waits to hear from a page of its canvas before it decides
+# none is open: one hidden page's poll interval.
+CANVAS_PAGE_GRACE = float(os.environ.get("FUSED_RENDER_CANVAS_PAGE_GRACE", "3"))
+# The ask's card (agent.CANVAS_OPEN_TOOL; a test pins the two).
+CANVAS_OPEN_TOOL = "OpenCanvas"
 POLL_INTERVAL = 0.15
 # How long a decision file that exists but has not parsed is treated as a write
 # in flight rather than as no answer. Mirrors agent.py's DECISION_WRITE_WINDOW.
@@ -923,6 +938,178 @@ def _handle_app_state(args: dict) -> dict:
                               or "the window could not read the app")})
 
 
+def _canvas_key() -> tuple:
+    """`(env, name)` of CANVAS_CLONE (`<root>/<env>/<name>`), or ("", "")."""
+    if not CANVAS_CLONE:
+        return "", ""
+    clone = os.path.normpath(CANVAS_CLONE)
+    return os.path.basename(os.path.dirname(clone)), os.path.basename(clone)
+
+
+def _canvas_nodes() -> list:
+    """The node names in this canvas's clone (every node is the file named
+    after it), or [] when the folder will not list."""
+    try:
+        names = os.listdir(CANVAS_CLONE) if CANVAS_CLONE else []
+    except OSError:
+        return []
+    return sorted({os.path.splitext(n)[0] for n in names
+                   if n.endswith((".py", ".json", ".md", ".html"))
+                   and n not in ("canvas.toml", "CLAUDE.md", "README.md")
+                   and not n.startswith(".")}, key=str.casefold)
+
+
+def _open_pages(now=None) -> list:
+    """Every canvas page heard from within CANVAS_PAGE_FRESH, as
+    `(env, name, heartbeat)`."""
+    now = time.time() if now is None else now
+    out = []
+    try:
+        envs = os.listdir(CANVAS_PAGES_DIR)
+    except OSError:
+        return out
+    for env in envs:
+        if env == "inbox":
+            continue
+        try:
+            names = os.listdir(os.path.join(CANVAS_PAGES_DIR, env))
+        except OSError:
+            continue
+        for name in names:
+            beats = os.path.join(CANVAS_PAGES_DIR, env, name)
+            try:
+                files = [f for f in os.listdir(beats) if f.endswith(".json")]
+            except OSError:
+                continue
+            for f in files:
+                path = os.path.join(beats, f)
+                try:
+                    if now - os.path.getmtime(path) > CANVAS_PAGE_FRESH:
+                        continue
+                    with open(path, encoding="utf-8") as fh:
+                        beat = json.load(fh)
+                except (OSError, ValueError):
+                    continue
+                out.append((env, name, beat if isinstance(beat, dict) else {}))
+    return out
+
+
+def _not_now_sentence(name: str, why: str) -> str:
+    return ('%s — continue without a screenshot of "%s"; do not call '
+            "canvas_screenshot again this turn" % (why, name))
+
+
+def _ask_to_open(env: str, name: str, budget: float, shot_res: str) -> dict:
+    """The F5 ask (D1471): a card in PERM_DIR — so the chat draws it and the
+    task reads blocked, the way an approval does — "Claude wants to open
+    <canvas> to take a screenshot", Open / Not now. Returns the decision;
+    nobody answering within `budget` is a deny (`reason: timeout`). A page of
+    the canvas turning up meanwhile (the user opened it some other way) is
+    an Open, latched on the card so it stops asking."""
+    ask_id = _request_id()
+    _write_atomic(os.path.join(PERM_DIR, ask_id + ".req.json"), {
+        "id": ask_id,
+        "tool": CANVAS_OPEN_TOOL,
+        "input": {"env": env, "name": name},
+        "tool_use_id": "",
+        "created_at": time.time(),
+    })
+    key = _register_inflight(ask_id)
+    _post_card_raised(ask_id)
+    ask_res = os.path.join(PERM_DIR, ask_id + ".res.json")
+    deadline = time.monotonic() + max(0.0, budget)
+    try:
+        while time.monotonic() < deadline:
+            decision = _read_decision(ask_res)
+            if decision:
+                return decision
+            if any((e, n) == (env, name) for e, n, _b in _open_pages()):
+                return _await_answer(ask_res, 0, {"decision": "allow", "reason": "opened"})
+            if _read_decision(shot_res):  # the run ended under the ask
+                return _await_answer(ask_res, 0, {"decision": "deny", "reason": "abandoned"})
+            time.sleep(POLL_INTERVAL)
+        return _await_answer(ask_res, 0, {"decision": "deny", "reason": "timeout"})
+    finally:
+        _post_card_cleared(ask_id)
+        if key is not None:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.pop(key, None)
+
+
+def _await_canvas_page(req_id: str, res_path: str, what: str, udf: str) -> dict:
+    """The page round trip (D1471, F1/F2/F5): point every open page of this
+    canvas at the request, then
+
+      * a page heard from within CANVAS_PAGE_GRACE → wait for its answer;
+      * none (another canvas may be open: one click switches) → ask to open
+        the canvas; Open → wait for the page that opens, Not now / no answer
+        → a sentence to go on without.
+
+    The pointer is removed whatever happened, so no page picks it up late."""
+    env, name = _canvas_key()
+    inbox = os.path.join(CANVAS_PAGES_DIR, "inbox")
+    pointer = os.path.join(inbox, req_id + ".json")
+    started = time.monotonic()
+    try:
+        os.makedirs(inbox, mode=0o700, exist_ok=True)
+        _write_atomic(pointer, {
+            "run_id": os.path.basename(os.path.dirname(CANVAS_SHOT_DIR)),
+            "request_id": req_id, "env": env, "name": name,
+            "what": what, "udf": udf, "created_at": time.time()})
+    except OSError:
+        pass  # no pointer: only the timeout below can answer
+    try:
+        while time.monotonic() - started < CANVAS_PAGE_GRACE:
+            answer = _read_decision(res_path)
+            if answer:
+                return answer
+            if any((e, n) == (env, name) for e, n, _b in _open_pages()):
+                return _await_answer(res_path, CANVAS_SHOT_TIMEOUT - (time.monotonic() - started),
+                                     _no_page_answer())
+            time.sleep(POLL_INTERVAL)
+        decision = _ask_to_open(env, name, CANVAS_SHOT_TIMEOUT - (time.monotonic() - started),
+                                res_path)
+        if decision.get("decision") != "allow":
+            why = ("nobody answered the ask to open the canvas"
+                   if decision.get("reason") == "timeout"
+                   else "the user chose not to open the canvas")
+            return _await_answer(res_path, 0, {"error": _not_now_sentence(name, why)})
+        return _await_answer(res_path, CANVAS_SHOT_TIMEOUT, {
+            "error": _not_now_sentence(name, "the canvas was opened but its page did "
+                                       "not answer within %d seconds" % CANVAS_SHOT_TIMEOUT)})
+    finally:
+        for path in (pointer, os.path.join(inbox, req_id + ".claim")):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def _no_page_answer() -> dict:
+    return {"error": "no Fused Render canvas page answered within %d seconds — the "
+                     "canvas must be open in Fused Render for a screenshot; ask the "
+                     "user to open it, then try again" % CANVAS_SHOT_TIMEOUT}
+
+
+# What the picture is, by the page's `framing` (D1471, F6): never "one node's
+# output" for what is really the whole frame.
+_FRAMING_NOTES = {
+    "graph": "the canvas graph as the workbench viewport shows it right now",
+    "node": "one UDF node's output as the workbench draws it",
+}
+
+
+def _framing_note(what: str, framing: str, udf: str) -> str:
+    if framing == "whole-frame":
+        if what == "udf":
+            return ("the WHOLE canvas frame — the node could not be cropped (not "
+                    "measurable, or too small/off screen at this zoom); look for "
+                    "%s in it" % (udf or "the node"))
+        return ("the whole canvas frame, the workbench's side panes included — "
+                "the graph could not be cropped")
+    return _FRAMING_NOTES.get(framing) or _FRAMING_NOTES["node" if what == "udf" else "graph"]
+
+
 def _handle_canvas_shot(args: dict) -> dict:
     """Ask the canvas page for a picture of the workbench — the graph as the
     viewport shows it, or one UDF node's output — and hand the bytes to the
@@ -942,6 +1129,12 @@ def _handle_canvas_shot(args: dict) -> dict:
     what = what if what in ("canvas", "udf") else "canvas"
     udf = args.get("udf")
     udf = str(udf).strip() if isinstance(udf, str) and udf.strip() else ""
+    if what == "udf" and not udf:
+        udf = CANVAS_NODE  # a node's own chat: its node (the page cannot know it)
+    nodes = _canvas_nodes() if udf else []
+    if nodes and udf not in nodes:
+        return _text({"error": 'no UDF named "%s" on this canvas — nodes: %s'
+                               % (udf, ", ".join(nodes[:40]))})
     req_id = _request_id()
     _write_atomic(os.path.join(CANVAS_SHOT_DIR, req_id + ".req.json"), {
         "id": req_id,
@@ -950,11 +1143,11 @@ def _handle_canvas_shot(args: dict) -> dict:
         "reason": str(args.get("reason") or ""),
         "created_at": time.time(),
     })
-    answer = _await_answer(
-        os.path.join(CANVAS_SHOT_DIR, req_id + ".res.json"), CANVAS_SHOT_TIMEOUT,
-        {"error": "no Fused Render canvas page answered within %d seconds — the "
-                  "canvas must be open in Fused Render for a screenshot; ask the "
-                  "user to open it, then try again" % CANVAS_SHOT_TIMEOUT})
+    res_path = os.path.join(CANVAS_SHOT_DIR, req_id + ".res.json")
+    if CANVAS_PAGES_DIR and CANVAS_CLONE:
+        answer = _await_canvas_page(req_id, res_path, what, udf)
+    else:
+        answer = _await_answer(res_path, CANVAS_SHOT_TIMEOUT, _no_page_answer())
     image = answer.get("image")
     if not isinstance(image, str) or not image:
         return _text({"error": str(answer.get("error")
@@ -983,10 +1176,11 @@ def _handle_canvas_shot(args: dict) -> dict:
     mime = answer.get("mime")
     if not isinstance(mime, str) or not mime.startswith("image/"):
         mime = "image/png"
-    note = {"what": what, "udf": answer.get("udf") or udf or None, "path": image,
-            "note": ("one UDF node's output as the workbench draws it"
-                     if what == "udf" else
-                     "the canvas graph as the workbench viewport shows it right now")}
+    framing = answer.get("framing") if answer.get("framing") in ("graph", "node", "whole-frame") \
+        else ("node" if what == "udf" else "graph")
+    shot_udf = answer.get("udf") or udf or None
+    note = {"what": what, "udf": shot_udf, "path": image, "framing": framing,
+            "note": _framing_note(what, framing, shot_udf or "")}
     return {"content": [
         {"type": "image", "data": base64.b64encode(data).decode("ascii"),
          "mimeType": mime},
@@ -1217,10 +1411,12 @@ CANVAS_SHOT_SCHEMA = {
         "output (table, chart, text) — the node named by `udf`, or on a node's "
         "own chat the node whose file it is on. Call it after you change a UDF "
         "to check that the output looks right, or when the user asks about what "
-        "they see. Returns the picture inline. Read-only. The canvas must be "
-        "open in Fused Render: if the result says no page answered, do not "
-        "call again this turn — tell the user to open the canvas. Map nodes "
-        "(WebGL) may come out blank or fail to capture."
+        "they see. Returns the picture inline, with a note saying what it "
+        "really shows (the whole frame when a node could not be cropped). "
+        "Read-only. When the canvas is not open the user is asked to open it; "
+        "if the result says to continue without a screenshot, do not call "
+        "again this turn. Map nodes (WebGL) "
+        "may come out blank or fail to capture."
     ),
     "inputSchema": {
         "type": "object",
