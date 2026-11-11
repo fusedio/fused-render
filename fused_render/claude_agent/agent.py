@@ -9316,8 +9316,9 @@ class _WorktreeScan:
     """The worktree hint standing over a run of tool calls, folded in order.
     A hint is recorded when its call is finalized (so the page sees it before
     the call runs) and retracted when the matching tool_result comes back
-    `is_error`: a refused `git worktree add` never made the folder, so the hint
-    it carried must not stand, nor sit as the `prev` under a later agent hint.
+    `is_error` and the folder it named does not exist: a refused
+    `git worktree add` never made the folder, so the hint it carried must not
+    stand, nor sit as the `prev` under a later agent hint.
     `exit_marker` keeps an exit that this window cannot match to a standing
     hint as the marker itself, for the page to compare against state this
     window cannot see."""
@@ -9345,6 +9346,11 @@ class _WorktreeScan:
         gone = next((h for i, h in self._calls if i == tool_use_id), None)
         if gone is None:
             return None
+        path = _hint_path(gone)
+        if path and os.path.isdir(path):
+            # The folder exists: the add succeeded (or the folder was already
+            # there) and a later step of the call failed. The hint stands.
+            return None
         self._calls = [c for c in self._calls if c[0] != tool_use_id]
         self.state = None
         for _, hint in self._calls:
@@ -9352,30 +9358,39 @@ class _WorktreeScan:
         return gone
 
 
-def _failed_worktree_path(run_dir: str, tool_use_id, cwd: str) -> str:
-    """The worktree path a call named, found in `out.jsonl` by its tool_use id,
-    or "". A poll window can hold an errored result whose call went out in an
-    earlier window; this is how the page still hears which path to withdraw."""
-    if not tool_use_id:
-        return ""
+_WORKTREE_CALLS_CAP = 64
+
+
+def _read_worktree_calls(run_dir: str) -> dict:
+    """`tool_use_id -> path` for the worktree calls `_poll` has seen go out,
+    kept beside the cursor so an errored result that lands in a later window
+    still names the path its call carried."""
     try:
-        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
-                  errors="replace") as fh:
-            for line in fh:
-                if tool_use_id not in line or '"tool_use"' not in line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                for blk in (row.get("message") or {}).get("content") or []:
-                    if isinstance(blk, dict) and blk.get("type") == "tool_use" \
-                            and blk.get("id") == tool_use_id:
-                        hint = _worktree_hint(blk.get("name"), blk.get("input"), cwd)
-                        return _hint_path(hint)
+        with open(os.path.join(run_dir, "worktree_calls.json"),
+                  encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, str)} \
+        if isinstance(data, dict) else {}
+
+
+def _record_worktree_call(run_dir: str, calls: dict, tool_use_id, hint: dict) -> None:
+    """Remember a bash/enter call's path under its id (newest
+    `_WORKTREE_CALLS_CAP` kept). `calls` is the dict `_read_worktree_calls`
+    returned, updated in place; the file is rewritten only on a new id."""
+    path = _hint_path(hint)
+    if not (tool_use_id and path) or calls.get(tool_use_id) == path:
+        return
+    calls.pop(tool_use_id, None)
+    calls[tool_use_id] = path
+    while len(calls) > _WORKTREE_CALLS_CAP:
+        del calls[next(iter(calls))]
+    try:
+        with _private_open(os.path.join(run_dir, "worktree_calls.json")) as fh:
+            json.dump(calls, fh)
     except OSError:
-        pass
-    return ""
+        pass  # a later window then cannot name the path; the hint just stands
 
 
 def _hint_path(hint: dict | None) -> str:
@@ -11240,6 +11255,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     stream_bufs = {}       # Agent/Task id -> partial_json so far
     stream_found = {}      # Agent/Task id -> {"description"/"subagent_type": str}
     wt_scan = _WorktreeScan(exit_marker=True)   # `_worktree_hint` over finalized inputs
+    wt_calls = _read_worktree_calls(run_dir)    # id -> path of worktree calls from earlier windows
     worktree_failed: list = []   # paths of worktree calls whose result errored here
     wt_cwd = _run_workdir(run_dir, file)
     thinking_tokens = 0    # CLI's running estimate for the message in flight
@@ -11391,6 +11407,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                                           wt_cwd)
                     if hint is not None:
                         wt_scan.add(blk["id"], hint)
+                        _record_worktree_call(run_dir, wt_calls, blk["id"], hint)
                     if blk["id"] in tools_open:
                         tools_open[blk["id"]]["detail"] = _tool_detail(
                             blk.get("name"), tool_inputs[blk["id"]])
@@ -11418,12 +11435,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 tid = b.get("tool_use_id")
                 if b.get("is_error"):
                     # The page keeps a hint it has until told otherwise, so a
-                    # refused call's path is reported by name. A call from an
-                    # earlier window is no longer in the scan: its path comes
-                    # from the tool_use row in out.jsonl.
-                    path = _hint_path(wt_scan.fail(tid)) \
-                        or _failed_worktree_path(run_dir, tid, wt_cwd)
-                    if path and path not in worktree_failed:
+                    # refused call's path is reported by name, unless the
+                    # folder exists. A call from an earlier window is no
+                    # longer in the scan: its path comes from `wt_calls`.
+                    path = _hint_path(wt_scan.fail(tid)) or wt_calls.get(tid, "")
+                    if path and not os.path.isdir(path) \
+                            and path not in worktree_failed:
                         worktree_failed.append(path)
                 if tid in tools_open:
                     del tools_open[tid]

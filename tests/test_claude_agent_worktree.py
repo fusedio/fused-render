@@ -308,16 +308,64 @@ def test_poll_reports_the_path_of_an_errored_worktree_call(agent, run_dir):
     assert _poll(agent, run_dir, _call_rows("Bash", _BASH_ADD, "t1", False))["worktree_failed"] == []
 
 
+def _append(run_dir, rows):
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+
+
 def test_poll_names_the_path_when_the_call_went_out_in_an_earlier_window(agent, run_dir):
-    # The call is behind the poll cursor; only its errored result is in the window.
-    rows = _call_rows("Bash", _BASH_ADD, "t1", True)
     agent.RUNS = str(run_dir.parent)
     agent._alive = lambda _d: True
-    body = "".join(json.dumps(r) + "\n" for r in rows)
-    (run_dir / "out.jsonl").write_text(body, encoding="utf-8")
-    assert agent._failed_worktree_path(str(run_dir), "t1", "/r") == "/r/.claude/worktrees/x"
-    assert agent._failed_worktree_path(str(run_dir), "nope", "/r") == ""
-    assert agent._failed_worktree_path(str(run_dir), "", "/r") == ""
+    _append(run_dir, [_assistant_tool("Bash", _BASH_ADD, "t1")])
+    first = agent._poll("run")
+    assert first["worktree_hint"]["path"] == "/r/.claude/worktrees/x"
+    assert first["worktree_failed"] == []
+    # The cursor has moved past the call; only its errored result is new.
+    _append(run_dir, [_tool_result("t1", True)])
+    second = agent._poll("run")
+    assert second["worktree_failed"] == ["/r/.claude/worktrees/x"]
+
+
+def test_a_later_window_error_for_an_existing_folder_withdraws_nothing(agent, run_dir, tmp_path):
+    made = tmp_path / "wt"
+    made.mkdir()
+    agent.RUNS = str(run_dir.parent)
+    agent._alive = lambda _d: True
+    _append(run_dir, [_assistant_tool("Bash", {"command": f"git worktree add {made} -b wt"}, "t1")])
+    agent._poll("run")
+    _append(run_dir, [_tool_result("t1", True)])
+    assert agent._poll("run")["worktree_failed"] == []
+
+
+def test_errored_compound_command_whose_add_succeeded_keeps_the_hint(agent, run_dir, tmp_path):
+    made = tmp_path / "wt"
+    made.mkdir()
+    inp = {"command": f"git worktree add {made} -b wt && cd {made} && bun install"}
+    out = _poll(agent, run_dir, _call_rows("Bash", inp, "t1", True))
+    assert out["worktree_hint"]["path"] == str(made)
+    assert out["worktree_failed"] == []
+
+
+def test_repeated_add_of_an_existing_folder_keeps_the_hint(agent, run_dir, tmp_path):
+    made = tmp_path / "wt"
+    made.mkdir()
+    inp = {"command": f"git worktree add {made} -b wt"}
+    out = _poll(agent, run_dir, _call_rows("Bash", inp, "t1", True))
+    assert out["worktree_hint"]["path"] == str(made)
+    assert out["worktree_failed"] == []
+
+
+def test_history_keeps_an_errored_add_whose_folder_exists(agent, tmp_path):
+    scan = agent._WorktreeScan()
+    made = tmp_path / "wt"
+    made.mkdir()
+    scan.add("t1", {"path": str(made), "branch": "wt", "via": "bash"})
+    assert scan.fail("t1") is None
+    assert scan.state["path"] == str(made)
+    made.rmdir()
+    assert scan.fail("t1")["path"] == str(made)
+    assert scan.state is None
 
 
 def test_an_errored_result_without_an_id_retracts_nothing(agent):
