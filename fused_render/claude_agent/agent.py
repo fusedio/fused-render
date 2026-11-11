@@ -1099,8 +1099,16 @@ def _in_synced_clone(target: str) -> bool:
     ones its sync manages: `<canvases_root>/<env>/<name>[/...]`. Not Fused
     Web's clones (`~/Fused/canvas/<name>`, same base, no env segment), whose
     sessions the sync has nothing to tell."""
+    # realpath + normcase on both sides, as `_path_is_inside`: on macOS the
+    # root and a `pwd -P` target routinely disagree (`/tmp` vs
+    # `/private/tmp`, a symlinked home), and a miss here silently leaves a
+    # real clone session without its hooks.
+    root = os.path.normcase(os.path.realpath(os.path.abspath(_canvases_root())))
+    path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
     try:
-        rel = os.path.relpath(os.path.abspath(target), os.path.abspath(_canvases_root()))
+        if os.path.commonpath([root, path]) != root:
+            return False
+        rel = os.path.relpath(path, root)
     except ValueError:  # another drive on Windows
         return False
     parts = rel.split(os.sep)

@@ -1548,7 +1548,10 @@ export default function CanvasWorkspace({
           // gateway and open-canvas (see the module doc). The frame shows
           // its editors only when it hears "body", routes its inline AI here
           // on "ai", and hands an uploaded canvas here on "open".
-          caps: ["body", "ai", "open"],
+          // `gone`: this host answers a body post for a file deleted or
+          // renamed on disk with `code: "gone"`; a frame that sees the cap
+          // takes a `stale ""` from it as a really empty file, not a missing one.
+          caps: ["body", "ai", "open", "gone"],
           ...(publicOrigin ? { publicOrigin } : {}),
         },
         origin, // exact origin — this message carries a credential
