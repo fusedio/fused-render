@@ -116,26 +116,31 @@ export function openBreakout(req: BreakoutRequest): string {
   return card.id;
 }
 
-/** Is `path` a directory that exists right now? A stat that fails for any
- *  reason answers no: the caller falls back to a folder it already trusts. */
-async function isExistingDir(path: string): Promise<boolean> {
+/** Is `path` known NOT to be a usable folder? Only a definitive answer says
+ *  so: the server reports it missing (404) or reports it as not a directory.
+ *  A stat that fails any other way (network, refusal, busy server) says
+ *  nothing, so the folder is kept as requested. */
+export async function isMissingDir(
+  path: string,
+  stat: (path: string) => Promise<{ is_dir: boolean }> = statPath,
+): Promise<boolean> {
   try {
-    return (await statPath(path)).is_dir;
-  } catch {
-    return false;
+    return !(await stat(path)).is_dir;
+  } catch (err) {
+    return (err as { status?: number } | null)?.status === 404;
   }
 }
 
 /** Open a card for `req` with its folder settled first. A `cwd` comes from the
  *  parent chat's worktree hint and can name a checkout that was never made;
- *  the card drops it then and stays on `file`, the parent chat's own target,
- *  for every turn it runs. */
+ *  the card drops it when `isMissing` answers yes and stays on `file`, the
+ *  parent chat's own target, for every turn it runs. */
 export async function openBreakoutSettled(
   req: BreakoutRequest,
-  dirExists: (path: string) => Promise<boolean> = isExistingDir,
+  isMissing: (path: string) => Promise<boolean> = isMissingDir,
 ): Promise<void> {
   const { cwd, ...rest } = req;
-  openBreakout(cwd && (await dirExists(cwd)) ? req : rest);
+  openBreakout(cwd && (await isMissing(cwd)) ? rest : req);
 }
 
 /** What a host passes as `onBreakout`: `openBreakoutSettled`, or nothing inside

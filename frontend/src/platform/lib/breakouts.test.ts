@@ -11,6 +11,7 @@ import {
   getBreakouts,
   liveKeys,
   openBreakout,
+  isMissingDir,
   openBreakoutSettled,
   resetBreakouts,
   sendBackBreakout,
@@ -49,18 +50,26 @@ const req = { sessionId: "s1", file: "/w/proj", context };
 describe("breakout folder", () => {
   const wt = "/w/proj/.claude/worktrees/x";
   test("a cwd that does not exist is dropped: the card stays on the chat's target", async () => {
-    await openBreakoutSettled({ ...req, cwd: wt }, async () => false);
+    await openBreakoutSettled({ ...req, cwd: wt }, async () => true);
     const [card] = getBreakouts();
     expect(card?.file).toBe("/w/proj");
     expect("cwd" in card!).toBe(false);
   });
   test("a cwd that exists is kept", async () => {
-    await openBreakoutSettled({ ...req, cwd: wt }, async (p) => p === wt);
+    await openBreakoutSettled({ ...req, cwd: wt }, async () => false);
     expect(getBreakouts()[0]?.cwd).toBe(wt);
+  });
+  test("only a 404 or a non-directory counts as missing; a failed stat keeps the cwd", async () => {
+    const reject = (err: unknown) => () => Promise.reject(err);
+    expect(await isMissingDir(wt, reject(Object.assign(new Error("HTTP 404"), { status: 404 })))).toBe(true);
+    expect(await isMissingDir(wt, async () => ({ is_dir: false }))).toBe(true);
+    expect(await isMissingDir(wt, async () => ({ is_dir: true }))).toBe(false);
+    expect(await isMissingDir(wt, reject(new TypeError("Failed to fetch")))).toBe(false);
+    expect(await isMissingDir(wt, reject(Object.assign(new Error("HTTP 503"), { status: 503 })))).toBe(false);
   });
   test("a request without a cwd is never probed", async () => {
     let probed = 0;
-    await openBreakoutSettled(req, async () => (probed++, true));
+    await openBreakoutSettled(req, async () => (probed++, false));
     expect(probed).toBe(0);
     expect(getBreakouts()).toHaveLength(1);
   });
