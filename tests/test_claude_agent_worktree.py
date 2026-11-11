@@ -267,6 +267,7 @@ def test_successful_worktree_call_still_yields_the_hint(agent, run_dir):
 
 def test_history_drops_errored_worktree_hints(agent, tmp_path):
     agent.RUNS = str(tmp_path / "runs")
+    agent.PROJECTS = str(tmp_path / "projects")
     os.makedirs(agent.RUNS)
     work = tmp_path / "repo"
     work.mkdir()
