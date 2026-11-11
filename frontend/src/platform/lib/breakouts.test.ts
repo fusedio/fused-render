@@ -11,6 +11,7 @@ import {
   getBreakouts,
   liveKeys,
   openBreakout,
+  openBreakoutSettled,
   resetBreakouts,
   sendBackBreakout,
   subscribeBreakouts,
@@ -44,6 +45,26 @@ afterEach(() => resetBreakouts());
 
 const context = { block: "<breakout-context>\nx\n</breakout-context>", count: 2, title: "Parent" };
 const req = { sessionId: "s1", file: "/w/proj", context };
+
+describe("breakout folder", () => {
+  const wt = "/w/proj/.claude/worktrees/x";
+  test("a cwd that does not exist is dropped: the card stays on the chat's target", async () => {
+    await openBreakoutSettled({ ...req, cwd: wt }, async () => false);
+    const [card] = getBreakouts();
+    expect(card?.file).toBe("/w/proj");
+    expect("cwd" in card!).toBe(false);
+  });
+  test("a cwd that exists is kept", async () => {
+    await openBreakoutSettled({ ...req, cwd: wt }, async (p) => p === wt);
+    expect(getBreakouts()[0]?.cwd).toBe(wt);
+  });
+  test("a request without a cwd is never probed", async () => {
+    let probed = 0;
+    await openBreakoutSettled(req, async () => (probed++, true));
+    expect(probed).toBe(0);
+    expect(getBreakouts()).toHaveLength(1);
+  });
+});
 
 describe("breakout store", () => {
   test("open adds a card with a unique id and the parent's session", () => {
@@ -216,7 +237,7 @@ describe("buildHandoffDraft", () => {
 describe("breakoutOpener", () => {
   test("no opener inside an embedded document", () => {
     expect(breakoutOpener(true)).toBeUndefined();
-    expect(breakoutOpener(false)).toBe(openBreakout);
+    expect(breakoutOpener(false)).toBe(openBreakoutSettled);
   });
 });
 

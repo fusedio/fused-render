@@ -8,6 +8,7 @@
 // layer under them.
 import { useSyncExternalStore } from "react";
 import { IS_EMBED } from "./router";
+import { statPath } from "./api";
 import type { HandoffTurn } from "./breakout-context";
 import { chatDraftKey, fetchChatDraft, saveChatDraft, type ChatDraft, type DraftAttachment } from "./drafts";
 
@@ -115,11 +116,33 @@ export function openBreakout(req: BreakoutRequest): string {
   return card.id;
 }
 
-/** What a host passes as `onBreakout`: `openBreakout`, or nothing inside an
- *  embedded document, where the shell mounts no `BreakoutCards` to draw the
+/** Is `path` a directory that exists right now? A stat that fails for any
+ *  reason answers no: the caller falls back to a folder it already trusts. */
+async function isExistingDir(path: string): Promise<boolean> {
+  try {
+    return (await statPath(path)).is_dir;
+  } catch {
+    return false;
+  }
+}
+
+/** Open a card for `req` with its folder settled first. A `cwd` comes from the
+ *  parent chat's worktree hint and can name a checkout that was never made;
+ *  the card drops it then and stays on `file`, the parent chat's own target,
+ *  for every turn it runs. */
+export async function openBreakoutSettled(
+  req: BreakoutRequest,
+  dirExists: (path: string) => Promise<boolean> = isExistingDir,
+): Promise<void> {
+  const { cwd, ...rest } = req;
+  openBreakout(cwd && (await dirExists(cwd)) ? req : rest);
+}
+
+/** What a host passes as `onBreakout`: `openBreakoutSettled`, or nothing inside
+ *  an embedded document, where the shell mounts no `BreakoutCards` to draw the
  *  card (so no Breakout seat should exist there). */
-export function breakoutOpener(embed: boolean = IS_EMBED): typeof openBreakout | undefined {
-  return embed ? undefined : openBreakout;
+export function breakoutOpener(embed: boolean = IS_EMBED): typeof openBreakoutSettled | undefined {
+  return embed ? undefined : openBreakoutSettled;
 }
 
 /** The card's chat has sent its first message: forget it so a remount cannot
