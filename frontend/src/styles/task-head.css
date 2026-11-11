@@ -522,3 +522,20 @@
 .claude-rail-peek-task-head .task-head-subtitle .claude-rail-peek-reply {
   margin-left: 0;
 }
+
+/* THE HEAD IS CHROME: it never follows the chat text zoom (chat.css, "Chat
+   CHROME never follows the text zoom", #2233). Inside a chat pane the head
+   stands in `.chat-root`, whose `--c-zoom` scales every `calc(Npx * zoom)`
+   size — so at 150% the worktree pill, the PR chip and the pane seats grew
+   inside a 44px row whose title stayed 13px. One factor of 1 for the whole
+   head; the `:where()` base re-seats anything that names no size of its own
+   (it would otherwise inherit the zoomed `.chat-root` size). */
+.task-head,
+.task-head .task-head-chips {
+  /* …the chip seat by name too: it wears `.c-tokens` (the chat's colour
+     block), which re-reads the zoom for itself. */
+  --c-zoom: 1;
+}
+.chat-root :where(.task-head) {
+  font-size: var(--c-fs-read);
+}
