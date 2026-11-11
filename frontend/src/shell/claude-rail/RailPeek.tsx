@@ -128,6 +128,7 @@ import { notify } from "@platform/lib/notifications";
 import { archiveTask, renameTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
 import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { pokeTasks } from "@shell/tasksPulse";
+import { useHoldOpenTask } from "@shell/task-open-read";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { shortTaskId } from "@platform/lib/task-id";
 import { ChatMount, draftHref } from "@apps/claude";
@@ -717,6 +718,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the follow-the-ring paths would stand back for good (reviewer), and a
   // release would save a size that was about the old chat (CodeRabbit).
   const visible = on && box !== null && shownKey !== null;
+  // OPEN, SO READ (task-open-read `useHoldOpenTask`): a chat the reader
+  // pressed open here — pinned or held, not a passing hover — is a chat on
+  // screen; what lands in it while it shows is read, and raises no notice.
+  useHoldOpenTask(visible && (pinned || held) && shown?.pulse.session_id ? shownKey : null);
   // The host that places another card around this one hears where it is.
   const onBoxRef = useRef(onBox);
   onBoxRef.current = onBox;

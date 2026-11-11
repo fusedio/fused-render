@@ -3,7 +3,7 @@
 // carry unread messages that should be marked as they arrive.
 import { describe, expect, test } from "bun:test";
 import type { TaskPulseTask } from "@platform/lib/api";
-import { openTaskKeys, unreadOpenKeys } from "@shell/task-open-read";
+import { holdOpenTask, openTaskKeys, readHeldOpenTasks, unreadOpenKeys } from "@shell/task-open-read";
 
 function task(over: Partial<TaskPulseTask> = {}): TaskPulseTask {
   return {
@@ -52,6 +52,24 @@ describe("openTaskKeys", () => {
 
   test("nothing open, nothing returned", () => {
     expect(openTaskKeys(rows, { peekedKey: null, search: "", visible: true })).toEqual([]);
+  });
+
+  test("a chat a card holds open is open — while the window is visible", () => {
+    expect(openTaskKeys(rows, { peekedKey: null, search: "", visible: true, held: ["s1"] })).toEqual(["s1"]);
+    expect(openTaskKeys(rows, { peekedKey: null, search: "", visible: false, held: ["s1"] })).toEqual([]);
+  });
+});
+
+describe("holdOpenTask", () => {
+  test("two holders of one key let go independently; a release runs once", () => {
+    const a = holdOpenTask("k");
+    const b = holdOpenTask("k");
+    expect(readHeldOpenTasks()).toEqual(["k"]);
+    a();
+    a();
+    expect(readHeldOpenTasks()).toEqual(["k"]);
+    b();
+    expect(readHeldOpenTasks()).toEqual([]);
   });
 });
 
