@@ -11,8 +11,9 @@
   overflow-y: auto;
 }
 
+/* 1200 = four 270px cards + three 16px gaps (1128) + the 28px gutters. */
 .canvases-inner {
-  max-width: 1180px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 32px 28px 64px;
 }
@@ -105,12 +106,12 @@
    turns the "selected" border colour on hover, lifting 2px with a shadow. */
 .canvases-grid {
   display: grid;
-  /* The hosted home's card at 260px rather than its 280: 4 across fit the
-     page's usual ~1140px column (4 × 280 + gaps does not, and leaves 3 with a
-     hole at the end). Fixed, not minmax — auto-fill counts columns at a
-     minmax's MAX, so a 240–280 range still laid out 3. What a row leaves over
-     is split both sides, so the grid sits centred. */
-  grid-template-columns: repeat(auto-fill, 260px);
+  /* The hosted home's card at 270px rather than its 280, so 4 across fit the
+     page column (.canvases-inner is sized for exactly that). Fixed, not
+     minmax — auto-fill counts columns at a minmax's MAX, so a 240–280 range
+     still laid out 3. What a row leaves over is split both sides, so the
+     grid sits centred. */
+  grid-template-columns: repeat(auto-fill, 270px);
   justify-content: center;
   gap: 16px;
 }
