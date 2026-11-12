@@ -6085,6 +6085,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     del message_via_stdin
     req = {"agent": os.path.abspath(__file__), "run_dir": run_dir,
            "file": file, "cwd": _workdir(file), "pane": pane,
+           # The target is in a canvas clone the sync manages: a host with no
+           # CLI hooks of its own (Copilot) tells the sync about the turn
+           # itself (copilot_host.py `_canvas_hook`).
+           "canvas_clone": _in_synced_clone(file),
            "cli_mode": cli_mode, "session_id": session_id, "model": model,
            "effort": effort, "extra_read_dirs": list(extra_read_dirs or []),
            # The id minted above, "" for a resume and for every Copilot,

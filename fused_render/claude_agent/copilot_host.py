@@ -68,6 +68,7 @@ import os
 import signal
 import subprocess
 import sys
+import queue
 import threading
 import time
 import uuid
@@ -285,6 +286,42 @@ _EVENT_ORIGIN = _load_event_origin()
 def _send_event(url: str, body: dict) -> None:
     _EVENT_ORIGIN.send(url, body, _EVENT_PATH, _EVENT_TIMEOUT,
                        _EVENT_RETRY_SECONDS)
+
+
+# The canvas sync's session hook (canvases.py `/api/canvases/agent/hook`),
+# which a Claude session reaches through CLI hooks (canvas_hook.py). Copilot
+# has none this host can attach per run, so the host — which sees every turn
+# begin, every tool call end and every turn end — posts the same events.
+_CANVAS_HOOK_PATH = "/api/canvases/agent/hook"
+_CANVAS_HOOK_TIMEOUT = 3.0
+
+
+class _CanvasHooks:
+    """Posts a canvas-clone session's events to the server, IN ORDER, off the
+    host's threads: the sync reads "a tool call arrived after the turn end" as
+    the next turn having begun (and gives that publish up), so a turn's last
+    tool event must never overtake its end. One daemon worker, one queue.
+    Fire-and-forget, as every hook is: no origin, no server — nothing."""
+
+    def __init__(self, cwd: str):
+        self.cwd = cwd
+        self._queue: "queue.Queue[dict]" = queue.Queue()
+        threading.Thread(target=self._work, daemon=True,
+                         name="fused-canvas-hooks").start()
+
+    def post(self, event: str, session_id: str) -> None:
+        self._queue.put({"event": event, "session_id": session_id, "cwd": self.cwd})
+
+    def _work(self) -> None:
+        while True:
+            body = self._queue.get()
+            try:
+                origin = _EVENT_ORIGIN.current()
+                if origin:
+                    _EVENT_ORIGIN.send(origin + _CANVAS_HOOK_PATH, body, _CANVAS_HOOK_PATH,
+                                       _CANVAS_HOOK_TIMEOUT, _EVENT_RETRY_SECONDS)
+            except Exception:
+                pass
 
 
 # ------------------------------------------------------------- the ACP wire
@@ -585,6 +622,9 @@ class _Host:
         # `new_session_id` is not read: that is Claude's fused-minted id.
         self.sid = str(req.get("session_id") or "")
         self.resume = bool(self.sid)
+        # A session in a canvas clone tells the sync when a turn begins, a
+        # tool call ends and the turn ends (`_CanvasHooks`); None elsewhere.
+        self.canvas_hooks = _CanvasHooks(self.cwd) if req.get("canvas_clone") else None
         self.lock = threading.RLock()
         self._out = _append_private(os.path.join(self.run_dir, "out.jsonl"))
         self.transcript_path = self._transcript_path()
@@ -759,10 +799,17 @@ class _Host:
                 "role": "user", "content": [{"type": "text", "text": text}]},
                 "entrypoint": "sdk-cli", "isMeta": False, "isSidechain": False})
             self._write_registry("busy")
+        # Before the prompt goes out: the clone's watcher is running (started
+        # here when no canvas page has it open) by the time Copilot edits.
+        self._canvas_hook("start")
         self.peer.request("session/prompt", {
             "sessionId": self.sid,
             "prompt": [{"type": "text", "text": text}]},
             on_done=self._on_prompt_reply)
+
+    def _canvas_hook(self, event: str) -> None:
+        if self.canvas_hooks is not None:
+            self.canvas_hooks.post(event, self.sid)
 
     def _open_message(self) -> None:
         if self.msg_open:
@@ -863,6 +910,7 @@ class _Host:
                        "entrypoint": "sdk-cli", "isMeta": False,
                        "isSidechain": False})
         self.tail_closed = False
+        self._canvas_hook("post")
 
     def _on_prompt_reply(self, rpc: _Rpc) -> None:
         """EVERY road a prompt can end on lands here, once: a reply of any
@@ -1013,6 +1061,8 @@ class _Host:
         self._emit_out(result)
         self.result_written = True
         self.results += 1
+        # The turn's change set is complete: the sync merges and publishes.
+        self._canvas_hook("stop")
 
     # ------------------------------------------------------- notifications
 
