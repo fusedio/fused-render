@@ -2805,10 +2805,13 @@ class _SyncManager:
         self._journal_seq = 0
         self._hook_cursors: dict[str, int] = {}
         self._hook_denied: set[tuple[str, str]] = set()
-        # session → its tool hooks (pre/post) so far. The Stop route captures
-        # it and `turn_end` publishes only while it is unchanged: a newer turn
-        # of that session has started calling tools, and its own Stop
-        # publishes the change set it is in the middle of.
+        # session → its turn-start and tool hooks (start/pre/post) so far.
+        # The Stop route captures it and `turn_end` publishes only while it is
+        # unchanged: a newer turn of that session has begun, and its own Stop
+        # publishes the change set it is in the middle of. The start counts,
+        # not only the tools: a turn's first tool may be a Bash that writes
+        # the folder, and that one reports only when it is done (PreToolUse
+        # matches the edit tools alone).
         self._tool_hooks: dict[str, int] = {}
         # TOMBSTONES: nodes the user deleted on the canvas, by name →
         # {file, at}, persisted beside the merge base (a restart must not
@@ -4985,8 +4988,8 @@ class _SyncManager:
     # -- the turn end ----------------------------------------------------------
 
     def tool_hook(self, session_id: str) -> None:
-        """A tool hook (pre/post) of `session_id` arrived: its current turn
-        is calling tools (see `_tool_hooks`)."""
+        """A turn-start or tool hook (start/pre/post) of `session_id`
+        arrived: a turn of it is under way (see `_tool_hooks`)."""
         if session_id:
             self._tool_hooks[session_id] = self._tool_hooks.get(session_id, 0) + 1
 
@@ -4995,8 +4998,8 @@ class _SyncManager:
         a held server merge, then publish the folder if it is dirty — the
         session's change set is complete NOW, no need to wait for the run to
         end or the debounce. Synchronous; the hook route runs it on a thread,
-        passing the session's tool-hook count when the Stop arrived: once
-        it moves, that session's next turn is under way, and neither the
+        passing the session's hook count when the Stop arrived: once it
+        moves, that session's next turn is under way, and neither the
         merge nor the push may land in the middle of it (its own Stop
         publishes). Returns what happened: "pushed", "merged", "idle", "busy",
         "held", "superseded"."""
@@ -7338,11 +7341,11 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
         # No canvas page is open (never opened, or the idle stop ran): a
         # session at work in the clone starts the watcher itself, and
         # `agent_session_id` keeps it running for as long as the session is up.
-        manager = _revive_for_session(env, name, event)
+        manager = _revive_for_session(env, name, f"{event} hook")
     if manager is None:
         return {}
     try:
-        if event in ("pre", "post"):
+        if event in ("start", "pre", "post"):
             manager.tool_hook(session_id)
         if event == "pre":
             return manager.hook_pre(session_id, tool, tool_input)
@@ -7370,9 +7373,32 @@ def _revive_for_session(env: str, name: str, event: str) -> "_SyncManager | None
     except (_CanvasDeleting, _CanvasHandingOver, _CanvasOwned, OSError):
         return None
     if manager is not None:
-        manager.log_event("watcher", "started for a Claude session",
-                          detail=f"no canvas page open ({event} hook)")
+        manager.log_event("watcher", "started for an agent session",
+                          detail=f"no canvas page open ({event})")
     return manager
+
+
+def session_turn_start(path: str, backend: str = "") -> bool:
+    """A turn of an agent session whose target is `path` is beginning, said
+    by the server itself (agent.py `_start`/`_send`) for the backends with no
+    hook that could say it: Codex, Gemini and OpenCode have neither Claude's
+    CLI hooks nor a host that posts them (Copilot's). Starts the clone's
+    watcher when none runs, exactly as the "start" hook does. That is all
+    such a session needs: the watcher holds its push while the run is live
+    and publishes the dirty folder once it ends, and `agent_session_id`
+    keeps it running between turns. True when a watcher runs for the clone
+    now. Never raises."""
+    try:
+        found = clone_dir_for(path)
+        if found is None:
+            return False
+        env, name, _dir = found
+        if _sync_manager(env, name, create=False) is not None:
+            return True
+        return _revive_for_session(env, name, f"{backend or 'agent'} turn start") is not None
+    except Exception:  # noqa: BLE001 — a turn must start whatever the sync says
+        logger.warning("canvas sync: could not start a watcher for %s", path, exc_info=True)
+        return False
 
 
 def _file_list(files: list[str], cap: int = 12) -> str:

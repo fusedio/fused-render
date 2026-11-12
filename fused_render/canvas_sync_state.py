@@ -71,6 +71,7 @@ class SyncLog:
         self._seq = 0
         self._path = path
         self._rotate_bytes = rotate_bytes
+        self._narrowed = False
 
     def add(self, leg: str, action: str, *, ms: float | int | None = None,
             ok: bool = True, detail: str = "") -> dict:
@@ -99,15 +100,26 @@ class SyncLog:
         if not self._path:
             return
         try:
+            if not self._narrowed:
+                # Once per manager: journals written before the owner-only
+                # rule keep their old mode until something narrows them — the
+                # live one on its next open (below), but a `.log.1` already
+                # rotated out is never opened again.
+                self._narrowed = True
+                self._narrow(self._path + ".1")
             try:
                 if os.path.getsize(self._path) >= self._rotate_bytes:
+                    # Narrowed BEFORE the rename: the fchmod below reaches
+                    # only the file opened after it, so a wide journal that
+                    # is already at the threshold would rotate out wide.
+                    self._narrow(self._path)
                     os.replace(self._path, self._path + ".1")
             except OSError:
                 pass  # no journal yet
             os.makedirs(os.path.dirname(self._path), exist_ok=True)
             # Owner-only: the journal names files, canvases and errors. Created
-            # 0600, and an existing one (from before this rule, or the rotated
-            # `.log.1` it moved from) narrowed to it on every open.
+            # 0600, and an existing one (from before this rule) narrowed to it
+            # on every open.
             fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
             try:
                 if hasattr(os, "fchmod"):
@@ -115,6 +127,14 @@ class SyncLog:
                 os.write(fd, (json.dumps({**event, "canvas": self.name}) + "\n").encode("utf-8"))
             finally:
                 os.close(fd)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _narrow(path: str) -> None:
+        """Owner-only, when `path` exists (a no-op where modes mean nothing)."""
+        try:
+            os.chmod(path, 0o600)
         except OSError:
             pass
 

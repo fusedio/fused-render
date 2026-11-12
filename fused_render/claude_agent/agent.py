@@ -1135,6 +1135,33 @@ def _in_synced_clone(target: str) -> bool:
     return len(parts) >= 2 and parts[0] in _CLONE_ENVS and parts[1] not in ("", os.pardir)
 
 
+# The backends whose session tells the canvas sync nothing by itself: no CLI
+# hooks to attach (Claude's canvas_hook.py) and no host that posts the turn's
+# events (Copilot's `_canvas_hook`).
+_NO_CANVAS_HOOK_BACKENDS = ("codex", "gemini", "opencode")
+
+
+def _canvas_turn_start(file: str, backend: str) -> None:
+    """A turn is being handed to a session whose target is in a synced canvas
+    clone, on a backend with no hook to say so: have the sync start that
+    clone's watcher when none runs (no canvas page open, or its idle stop
+    ran). `_fused_cli_note` tells every backend the folder publishes itself
+    at turn end, and that is the watcher's doing (it holds its push while
+    the run is live, publishes when it ends) — without one the edits just
+    stay in the clone. Best-effort, and never in the way of the turn."""
+    if backend not in _NO_CANVAS_HOOK_BACKENDS or not _in_synced_clone(file):
+        return
+    # Looked up in sys.modules, not imported (this file never imports
+    # fused_render): the server has it loaded, a bare script run does not.
+    start = getattr(sys.modules.get("fused_render.canvases"), "session_turn_start", None)
+    if start is None:
+        return
+    try:
+        start(_workdir(file), backend)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _fused_web_canvas_root() -> str:
     """`~/Fused/canvas` — Fused Web's local canvas-clones folder, a SECOND
     gate root alongside `_canvases_root()` (see `_in_workbench_root`)."""
@@ -6182,6 +6209,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     _record_settings(new_session_id or session_id, model, effort,
                      backend if backend in _SELF_MINTED_ID_BACKENDS else "",
                      named_permission)
+    _canvas_turn_start(file, backend)
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
     # the host's, to reach the CLI's whole process group. Written here, to the
@@ -7492,6 +7520,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     _write_inbox_entry(
         run_dir, _compose_turn(message, terminal_hint), client_uuid,
         typed=typed or message)
+    # A follow-up is a turn too, and the watcher `_start` started may be gone
+    # (the server restarted under a host that lived on).
+    _canvas_turn_start(str(meta.get("file") or ""), backend)
     return {"sent": True}
 
 

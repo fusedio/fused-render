@@ -1871,6 +1871,30 @@ def test_the_sync_journal_is_owner_only_and_rotates(tmp_path):
     assert json.loads(path.read_text().splitlines()[-1])["detail"] == "z" * 150
 
 
+def test_journals_from_before_the_owner_only_rule_are_narrowed(tmp_path):
+    """A wide journal already at the rotation threshold rotates out narrowed
+    (the rename comes before the open that fchmods), and a wide `.log.1`
+    left by an earlier version is narrowed by the first write."""
+    path = tmp_path / ".sync" / "alpha.log"
+    path.parent.mkdir(parents=True)
+    old = path.parent / "alpha.log.1"
+    old.write_text("rotated before the rule\n")
+    os.chmod(old, 0o644)
+    path.write_text("x" * 50)
+    os.chmod(path, 0o644)
+    log = canvas_sync_state.SyncLog("unstable/alpha", lambda: None, path=str(path),
+                                    rotate_bytes=1000)
+    log.add("watcher", "x")                  # no rotation: the old .log.1 stays
+    assert old.read_text() == "rotated before the rule\n"
+    assert (os.stat(old).st_mode & 0o777) == 0o600
+    path.write_text("y" * 1000)              # at the threshold, and wide
+    os.chmod(path, 0o644)
+    log.add("watcher", "x")
+    assert old.read_text() == "y" * 1000
+    assert (os.stat(old).st_mode & 0o777) == 0o600
+    assert (os.stat(path).st_mode & 0o777) == 0o600
+
+
 # -- idle stop (owner 2026-11-12: free the resources of a canvas nobody has open) --
 
 _EVENTS_URL = "ws://127.0.0.1:1777/api/canvases/sync/events?env=unstable&name=alpha"
@@ -2067,6 +2091,16 @@ def test_a_stop_overtaken_by_the_sessions_next_turn_does_not_publish(
     assert m.turn_end("s1", at_stop) == "superseded"
     assert not _push_argvs(harness)
     monkeypatch.setattr(m, "_probe_remote", probe)
+    # The next turn has begun but called no tool yet (its first may be a Bash
+    # that writes the folder and reports only when done): the "start" hook
+    # alone overtakes the Stop, through the route as the session sends it.
+    at_stop = m._tool_hooks["s1"]
+    assert harness.client.post(
+        "/api/canvases/agent/hook", headers=GUARD,
+        json={"event": "start", "session_id": "s1",
+              "cwd": str(harness.root / "alpha")}).json() == {}
+    assert m.turn_end("s1", at_stop) == "superseded"
+    assert not _push_argvs(harness)
     assert m.turn_end("s1", m._tool_hooks["s1"]) == "pushed"
     assert len(_push_argvs(harness)) == 1
 
@@ -2152,10 +2186,31 @@ def test_a_session_hook_starts_the_watcher_of_a_canvas_no_page_has_open(
     assert hook("start").json() == {}
     revived = canvases_mod._syncs.get((ENV, "alpha"))
     assert revived is not None and revived is not m
-    assert "started for a Claude session" in _actions(harness)
+    assert "started for an agent session" in _actions(harness)
     (harness.root / "alpha" / "a.py").write_text("a-from-claude\n")
     assert hook("stop").json() == {}
     assert _wait_for(lambda: revived.push_seq == 1), _actions(harness)
+
+
+def test_a_hookless_backends_turn_starts_the_watcher_of_a_canvas_no_page_has_open(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """Codex, Gemini and OpenCode send no hooks: agent.py tells the sync a
+    turn begins (`session_turn_start`), which starts the watcher the same
+    way; the tick publishes the folder once the run is over."""
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
+    m._tick()
+    assert _wait_for(lambda: _gone(m))
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 60.0)
+    assert canvases_mod.session_turn_start(str(tmp_path / "elsewhere"), "codex") is False
+    assert canvases_mod._syncs.get((ENV, "alpha")) is None
+    assert canvases_mod.session_turn_start(str(harness.root / "alpha"), "codex") is True
+    revived = canvases_mod._syncs.get((ENV, "alpha"))
+    assert revived is not None and revived is not m
+    assert "started for an agent session" in _actions(harness)
+    assert canvases_mod.session_turn_start(str(harness.root / "alpha"), "codex") is True
+    assert canvases_mod._syncs.get((ENV, "alpha")) is revived   # the one already running
 
 
 def test_a_session_hook_outside_a_clone_starts_nothing(harness, tmp_path, monkeypatch,
