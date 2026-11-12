@@ -1,7 +1,8 @@
 // THE RING THAT FILES THE TASK — the shared task head's Archive / Unarchive,
-// standing over the status ring and revealed when the head is hovered (Akshil,
-// 2026-11-11: "hovering the head turns the ring into Archive, like a Tasks row
-// does").
+// standing over the status ring and revealed while the pointer is on the
+// status icon itself (Akshil, 2026-11-12: "only when we hover over the task
+// status" — the 2026-11-11 cut swapped on the whole head, which hid the status
+// most of the time).
 //
 // THE LIST ROW'S GESTURE, NOT A NEW ONE. A Tasks row has done this since
 // 2026-08-18 (`.tasks-rowmark` in ScheduleTaskViews, tasks.css "The mark slot"):

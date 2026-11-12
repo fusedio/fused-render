@@ -124,8 +124,8 @@ export interface TaskHeadProps {
    *  measures it to fold its seat labels (`useFitStrip`). */
   seatsRef?: (el: HTMLElement | null) => void;
   /** THE RING FILES THE TASK (TaskFileSeat): on by default for a task with a
-   *  session — hovering the head turns the ring into Archive / Unarchive, the
-   *  Tasks row's gesture. A host's own `statusOverlay` wins; `false` turns it
+   *  session — hovering the STATUS ICON turns the ring into Archive /
+   *  Unarchive (the icon itself, not the header: task-head.css says why). A host's own `statusOverlay` wins; `false` turns it
    *  off (a host whose archive lives elsewhere). */
   fileSeat?: boolean;
   /** After the seat filed the task: the host does what its ⋮ does on Archive
@@ -339,7 +339,18 @@ export function TaskHead({
         (refiled ? " is-refiled" : "") +
         (className ? ` ${className}` : "")
       }
+      // The press is spent until the pointer leaves the STATUS ICON (the
+      // seat's trigger, task-head.css) — leaving the head covers a pointer
+      // that left the window through it.
       onMouseLeave={refiled ? () => setRefiled(false) : undefined}
+      onMouseOver={
+        refiled
+          ? (e) => {
+              const at = e.target as Element | null;
+              if (!at?.closest?.(".task-side-peek-status")) setRefiled(false);
+            }
+          : undefined
+      }
       role="group"
       aria-label={ariaLabel}
       data-fit={fit}

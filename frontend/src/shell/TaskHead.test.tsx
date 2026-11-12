@@ -441,8 +441,14 @@ test("a press files it, tells the host, and hands the ring back until the pointe
     expect(filed).toEqual(["archive"]);
     // The spent press: the ring comes back in front while the pointer stays.
     expect(cls(headNode(r))).toContain("is-refiled");
-    act(() => headNode(r).props.onMouseLeave());
+    // …still spent while the pointer moves inside the status icon…
+    act(() => headNode(r).props.onMouseOver({ target: { closest: (sel: string) => (sel === ".task-side-peek-status" ? {} : null) } }));
+    expect(cls(headNode(r))).toContain("is-refiled");
+    // …and re-armed the moment it is anywhere else on the head (the icon is
+    // the trigger, not the header), or off the head altogether.
+    act(() => headNode(r).props.onMouseOver({ target: { closest: () => null } }));
     expect(cls(headNode(r))).not.toContain("is-refiled");
+    expect(headNode(r).props.onMouseLeave).toBeUndefined();
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -471,4 +477,13 @@ test("the status seat sits beside the identity — on no rung — and moves to r
   const narrow = render(head({ statusRef: () => {} }), 100);
   expect(JSON.stringify(byClass(narrow, "task-head-row")[0])).not.toContain("task-head-status-host");
   expect(JSON.stringify(byClass(narrow, "task-head-titlerow")[0])).toContain("task-head-status-host");
+});
+
+test("the stylesheet swaps the ring for Archive on the STATUS ICON's hover, never the header's", async () => {
+  const css = await Bun.file(new URL("../styles/task-head.css", import.meta.url)).text();
+  // The reveal and the ring's step-aside both hang off the seat's own :hover.
+  expect(css).toContain(".task-head .task-side-peek-status:hover :is(.task-head-file, .claude-rail-peek-archive)");
+  expect(css).toContain(".task-head .task-side-peek-status:hover:has(.task-head-file, .claude-rail-peek-archive) .schedule-ring");
+  // No rule reveals it from the head's hover any more.
+  expect(/\.task-head(\.is-refiled)?:hover\s+\.task-side-peek-status/.test(css)).toBe(false);
 });

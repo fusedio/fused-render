@@ -476,13 +476,20 @@
   color: var(--warning);
 }
 
-/* THE RING FILES THE TASK (shell/TaskFileSeat; the Tasks row's mark slot,
-   tasks.css "The mark slot: ring at rest, the filing button on hover"). One box,
-   two occupants: the status ring at rest, Archive / Unarchive while the head is
-   hovered or the button holds the keyboard — out of flow and centred on the
-   16px ring, so nothing in the row moves. 22px to aim at, the row's size.
+/* THE RING FILES THE TASK (shell/TaskFileSeat). One box, two occupants: the
+   status ring at rest, Archive / Unarchive while the pointer is ON THE STATUS
+   ICON ITSELF or the button holds the keyboard — out of flow and centred on
+   the 16px ring, so nothing in the row moves. 22px to aim at.
+
+   THE STATUS ICON, NOT THE HEADER (Akshil, 2026-11-12: "we show archive icon
+   on task status icon only when we hover over the task status"). The first cut
+   swapped on `.task-head:hover`, the Tasks row's rule — but a header is under
+   the pointer most of the time a reader is in the view (the title, the ⋮, the
+   chips are all there), so the status was almost never shown as a status. The
+   seat is the trigger: the pointer over the ring is the reader reaching for it.
+
    The rail card's own archive (`.claude-rail-peek-archive`, its
-   `statusOverlay`) takes the same seat and the same rules. With task icons on
+   `statusOverlay`) takes the same seat and the same rule. With task icons on
    the glyph is drawn INSIDE `.schedule-ring`, so it steps aside with it. */
 .task-head .task-side-peek-status {
   position: relative;
@@ -503,21 +510,21 @@
   border: 1px solid transparent;
   border-radius: 6px;
   cursor: pointer;
-  /* Invisible means intangible (the row's `.tasks-act` rule): a hidden
-     control sitting over the ring must not eat the press. */
+  /* Invisible means intangible: a hidden control sitting over the ring must
+     not eat the press, nor widen the seat's own hover box past the ring. */
   opacity: 0;
   pointer-events: none;
   z-index: 2;
   transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
 }
-.task-head:hover .task-side-peek-status :is(.task-head-file, .claude-rail-peek-archive),
+.task-head .task-side-peek-status:hover :is(.task-head-file, .claude-rail-peek-archive),
 .task-head .task-side-peek-status :is(.task-head-file, .claude-rail-peek-archive):focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
 /* …and the ring steps aside — only where there IS a button: a task whose
    filing cannot change (a run in flight) keeps its ring under the pointer. */
-.task-head:hover .task-side-peek-status:has(.task-head-file, .claude-rail-peek-archive) .schedule-ring,
+.task-head .task-side-peek-status:hover:has(.task-head-file, .claude-rail-peek-archive) .schedule-ring,
 .task-head .task-side-peek-status:has(.task-head-file:focus-visible, .claude-rail-peek-archive:focus-visible) .schedule-ring {
   opacity: 0;
   pointer-events: none;
@@ -532,12 +539,12 @@
 }
 /* A SPENT PRESS HANDS THE SLOT BACK (the row's `.is-refiled`): the ring — now
    drawing the new state, which is the receipt — returns until the pointer
-   leaves the head; the keyboard's own focus still shows the button. */
-.task-head.is-refiled:hover .task-side-peek-status .task-head-file:not(:focus-visible) {
+   leaves the status icon; the keyboard's own focus still shows the button. */
+.task-head.is-refiled .task-side-peek-status:hover .task-head-file:not(:focus-visible) {
   opacity: 0;
   pointer-events: none;
 }
-.task-head.is-refiled:hover .task-side-peek-status:not(:has(.task-head-file:focus-visible)) .schedule-ring {
+.task-head.is-refiled .task-side-peek-status:hover:not(:has(.task-head-file:focus-visible)) .schedule-ring {
   opacity: 1;
   pointer-events: auto;
 }
