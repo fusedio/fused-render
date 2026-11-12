@@ -8380,9 +8380,12 @@ def _account_error(error: str, backend: str = "") -> str:
                     "from Preferences → Agents (or run `opencode auth login` "
                     "in a terminal), or pick a local model, then start a new "
                     "chat here. (%s)" % error)
-        return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
-                "type /login and finish the sign-in, then start a new chat "
-                "here. Help: %s-login (%s)" % (GUIDE_URL, error))
+        # `claude auth login`, not "run `claude`, type /login": the
+        # subcommand opens the browser itself, and Preferences → Agents has
+        # the same sign-in as a button (claude_login.py).
+        return ("Claude Code isn't logged in. Sign in from Preferences → "
+                "Agents (or run `claude auth login` in a terminal), then "
+                "start a new chat here. Help: %s-login (%s)" % (GUIDE_URL, error))
     if any(m in low for m in _LIMIT_ERROR_MARKERS.get(backend, ())):
         if backend == "copilot":
             return ("Your GitHub Copilot plan's request budget was reached. "

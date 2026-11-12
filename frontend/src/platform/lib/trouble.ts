@@ -431,7 +431,7 @@ export function troubleInstructions(ctx: TroubleContext): string {
       ]
       : [
         "Confirm the CLI runs: `claude --version`.",
-        "Sign in: run `claude`, then `/login`, and complete it in the browser.",
+        "Sign in: run `claude auth login` and complete it in the browser.",
         `Confirm the session works, then tell me to retry in ${displayName()}.`,
       ],
     limit: [
