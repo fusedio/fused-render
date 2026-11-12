@@ -147,6 +147,7 @@ def subscribe(key: str) -> tuple:
     token = (asyncio.get_running_loop(), asyncio.Event())
     with _LISTENERS_LOCK:
         _LISTENERS.setdefault(key, set()).add(token)
+        _PRESENT_AT[key] = time.time()
     return token
 
 
@@ -157,6 +158,21 @@ def unsubscribe(key: str, token) -> None:
             subs.discard(token)
             if not subs:
                 del _LISTENERS[key]
+        _PRESENT_AT[key] = time.time()
+
+
+# PRESENCE: the open sockets above ARE the canvas pages showing a canvas (the
+# page opens one per canvas it shows), so their count is whether anyone is
+# looking. `_PRESENT_AT` is when a socket last opened or closed — the start of
+# an idle stretch once the count is 0 (canvases.IDLE_STOP_S).
+_PRESENT_AT: dict[str, float] = {}
+
+
+def presence(key: str) -> tuple[int, float | None]:
+    """(open sync/events sockets for canvas `key`, when one last opened or
+    closed — None if never)."""
+    with _LISTENERS_LOCK:
+        return len(_LISTENERS.get(key, ())), _PRESENT_AT.get(key)
 
 
 def notify(key: str) -> None:

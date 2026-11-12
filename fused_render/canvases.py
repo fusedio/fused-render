@@ -208,6 +208,11 @@ LEASE_SHIM_TIMEOUT = 15.0
 # The whole lease release at quit, across every canvas (in parallel): the
 # lease lapses after LEASE_TTL_S anyway, so quit never waits on it longer.
 LEASE_RELEASE_QUIT_S = 2.0
+# Owner (live testing, 2026-11-12): a canvas nobody has open stops syncing
+# IDLE_STOP_S after its last page socket (sync/events) closed — held merge,
+# a final push, lease released, watcher stopped and forgotten — never under
+# a live Claude run. Opening the canvas restarts it through sync/start.
+IDLE_STOP_S = 60.0
 # How long sync/state shows `server_to_disk: merged` after an auto-merge.
 MERGED_SHOW_S = 10.0
 # `.sync/<name>.log` (the persistent sync journal) rotates to `.log.1` here.
@@ -2678,6 +2683,13 @@ class _SyncManager:
         # `server_stale` was set because a Claude run was live (the move is
         # held, Q8): the first tick after the run ends merges it.
         self._held_for_run = False
+        # IDLE STOP (IDLE_STOP_S): when this manager started (an idle stretch
+        # never begins before it), the deadline while no page socket is open
+        # (None while one is: sync/state's `idle_stop_at`), and the live run
+        # an expired deadline is waiting out (logged once).
+        self._started_at = time.time()
+        self._idle_stop_at: float | None = None
+        self._idle_deferred_for = ""
         # The compact rows of canvas.toml at the sync point (merge_toml's base).
         self._base_toml: dict | None = None
         self.merge_rollback_seq = 0
@@ -4590,6 +4602,8 @@ class _SyncManager:
         # of the cache except once every AGENT_LIVE_CACHE_S (3 s), so it
         # does not add a scan per tick.
         live = self.agent_run_id()
+        if self._idle_check(live):
+            return  # stopping: this was the last tick
         self._lease_tick()
         gen = self._fp_gen
         current = self._take_fingerprint()
@@ -4670,6 +4684,71 @@ class _SyncManager:
                     self._pull_if_remote_changed()
             finally:
                 self._flight_lock.release()
+
+    # -- idle stop -------------------------------------------------------------
+
+    def _idle_check(self, live: str) -> bool:
+        """Arm, disarm or fire the idle stop (IDLE_STOP_S after the canvas's
+        last page socket closed). True when this tick stopped the manager."""
+        # No `_bump` on arm/disarm: arming means no socket is listening, and
+        # the socket that disarms reads the state as it connects.
+        count, at = canvas_sync_state.presence(_sync_key(self.env, self.name))
+        if count > 0:
+            self._idle_stop_at = None
+            self._idle_deferred_for = ""
+            return False
+        due = max(at or 0.0, self._started_at) + IDLE_STOP_S
+        self._idle_stop_at = due
+        if time.time() < due:
+            return False
+        if live:
+            # Never under a live run: its Stop hook still needs this manager.
+            if live != self._idle_deferred_for:
+                self._idle_deferred_for = live
+                self.log_event("server_to_disk", "idle stop deferred",
+                               detail=f"a Claude run is live in this folder ({live})")
+            return False
+        return self._idle_stop()
+
+    def _idle_stop(self) -> bool:
+        """Nobody has had this canvas open for IDLE_STOP_S: merge a held
+        server move, publish the folder if it is dirty, then stop and forget
+        this manager (the lease is released by stop()). From the watcher
+        thread; the join happens on a thread of its own (a thread cannot join
+        itself). False (retried next tick) when a sync step holds the clone."""
+        if not self._flight_lock.acquire(blocking=False):
+            return False
+        try:
+            if self._paused():
+                return False
+            done: list[str] = []
+            if self.server_stale is not None:
+                cli = fused_cli()
+                if cli is not None and _shim_manifest_command(cli) is not None:
+                    merged = self._merge_now()
+                    done.append("held server move merged" if merged.get("ok")
+                                else f"held server move not merged ({merged.get('error')})")
+            dirty = (self._dirty_since is not None
+                     or self._take_fingerprint() != self._fingerprint)
+            if dirty:
+                if self.server_stale is None:
+                    before = self.push_seq
+                    self._push()
+                    done.append("pushed" if self.push_seq > before
+                                else f"push did not land ({self.push_state}"
+                                     + (f": {self.last_error}" if self.last_error else "") + ")")
+                else:
+                    done.append("push held: " + _stale_reason(self.server_stale))
+            self.log_event("server_to_disk", "idle stop",
+                           detail=f"no canvas page open for {int(IDLE_STOP_S)}s"
+                                  + (f"; {'; '.join(done)}" if done else "; nothing to publish"))
+            # Out of the loop now: no tick after this one.
+            self.stop_event.set()
+        finally:
+            self._flight_lock.release()
+        threading.Thread(target=_retire_idle_manager, args=(self,), daemon=True,
+                         name=f"fused-canvas-idle-stop-{self.name}").start()
+        return True
 
     def _poll_and_merge(self) -> None:
         """The shim poll leg, under `_flight_lock` (not `_op_lock`): probe;
@@ -6079,6 +6158,9 @@ class _SyncManager:
             "base_revision": self._base_revision,
             "server_revision": self._server_revision,
             "lease": self._lease_state(),
+            # Epoch seconds when sync stops for want of an open canvas page
+            # (IDLE_STOP_S), or None while one is open.
+            "idle_stop_at": self._idle_stop_at,
         }
         if files:
             out["pending_files"] = self.pending_files()
@@ -7143,6 +7225,21 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
 
 def _file_list(files: list[str], cap: int = 12) -> str:
     return ", ".join(files[:cap]) + (f" (+{len(files) - cap} more)" if len(files) > cap else "")
+
+
+def _retire_idle_manager(manager: "_SyncManager") -> None:
+    """The idle stop's second half, off the watcher thread: forget the
+    manager (only if it is still the registered one — a reopen may already
+    have started its successor) and stop it: threads joined, lease and
+    writer lock released."""
+    key = (manager.env, manager.name)
+    with _SYNC_LOCK:
+        if _syncs.get(key) is manager:
+            del _syncs[key]
+    try:
+        manager.stop()
+    except Exception:  # noqa: BLE001 — a reopen starts a fresh manager anyway
+        logger.warning("canvas %s: idle stop failed", _sync_key(*key), exc_info=True)
 
 
 def _release_lease_quietly(manager: "_SyncManager") -> None:

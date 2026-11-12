@@ -126,6 +126,9 @@ export interface SyncState {
   server_revision?: number | null;
   /** The canvas's edit lease: ours (`mine`) or another editor's. */
   lease?: { owner: string | null; lease_until: string | null; mine: boolean } | null;
+  /** Epoch seconds when sync stops because no canvas page has it open
+   *  (server IDLE_STOP_S after the last page socket closed); null while one is. */
+  idle_stop_at?: number | null;
 }
 
 /** One sync/log ring entry. */

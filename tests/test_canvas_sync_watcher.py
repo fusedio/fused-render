@@ -1869,3 +1869,119 @@ def test_the_sync_journal_is_owner_only_and_rotates(tmp_path):
     assert (os.stat(path.parent / "alpha.log.1").st_mode & 0o777) == 0o600
     assert (os.stat(path).st_mode & 0o777) == 0o600
     assert json.loads(path.read_text().splitlines()[-1])["detail"] == "z" * 150
+
+
+# -- idle stop (owner 2026-11-12: free the resources of a canvas nobody has open) --
+
+_EVENTS_URL = "ws://127.0.0.1:1777/api/canvases/sync/events?env=unstable&name=alpha"
+_ORIGIN = {"origin": "http://127.0.0.1:1777"}
+
+
+def _gone(m) -> bool:
+    return (canvases_mod._syncs.get((ENV, "alpha")) is not m
+            and not m.thread.is_alive())
+
+
+def _record_lease(monkeypatch, m):
+    calls = []
+    monkeypatch.setattr(canvases_mod._SyncManager, "_run_lease_shim",
+                        lambda self, action, cid, timeout=0: calls.append(action) or {"ok": True})
+    m._lease_mine = {"owner": m._lease_owner, "lease_until": "z"}
+    return calls
+
+
+def test_the_last_page_socket_closing_arms_the_idle_stop_and_a_reopen_disarms_it(
+        harness, tmp_path, monkeypatch, fake_agent):
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    client = _ws_client(harness)
+    with client.websocket_connect(_EVENTS_URL, headers=_ORIGIN) as ws:
+        ws.receive_json()
+        assert m._idle_check("") is False and m._idle_stop_at is None
+        assert _state(harness)["idle_stop_at"] is None
+    closed = time.time()
+    assert m._idle_check("") is False
+    assert abs(m._idle_stop_at - (closed + canvases_mod.IDLE_STOP_S)) < 2
+    assert _state(harness)["idle_stop_at"] == m._idle_stop_at
+    with client.websocket_connect(_EVENTS_URL, headers=_ORIGIN) as ws:
+        ws.receive_json()
+        assert m._idle_check("") is False and m._idle_stop_at is None
+    assert canvases_mod._syncs.get((ENV, "alpha")) is m
+
+
+def test_an_idle_clean_canvas_stops_releases_its_lease_and_is_forgotten(
+        harness, tmp_path, monkeypatch, fake_agent):
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    lease = _record_lease(monkeypatch, m)
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
+    m._dirty_since = None
+    m._fingerprint = m._take_fingerprint()
+    m._tick()
+    assert _wait_for(lambda: _gone(m)), _actions(harness)
+    assert _wait_for(lambda: lease == ["release"]), lease  # stop() joins, then releases
+    assert not _push_argvs(harness)
+    log = [json.loads(line) for line in
+           (harness.root / ".sync" / "alpha.log").read_text().splitlines()]
+    stop = [e for e in log if e["action"] == "idle stop"]
+    assert stop and stop[-1]["leg"] == "server_to_disk" and "nothing to publish" in stop[-1]["detail"]
+    s = _state(harness)
+    assert s["watching"] is False
+    # A session's push now gets the no-watcher refusal (the interception
+    # turns it into "open this canvas"), not a crash.
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 409 and res.json()["code"] == "no_watcher"
+
+
+def test_an_idle_dirty_canvas_publishes_once_then_stops(harness, tmp_path, monkeypatch,
+                                                       fake_agent):
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
+    (harness.root / "alpha" / "a.py").write_text("a-unpublished\n")
+    m._dirty_since = time.time()
+    m._tick()
+    assert _wait_for(lambda: _gone(m))
+    assert len(_push_argvs(harness)) == 1
+    assert any("pushed" in e["detail"] for e in m._log.since(0)["events"]
+               if e["action"] == "idle stop")
+
+
+def test_an_idle_stop_waits_out_a_live_run(harness, tmp_path, monkeypatch, fake_agent):
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch)
+    _poll(m)
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
+    fake_agent.live = "run-9"
+    m.agent_run_id(fresh=True)
+    m._tick()
+    m._tick()
+    assert canvases_mod._syncs.get((ENV, "alpha")) is m and not m.stop_event.is_set()
+    assert _actions(harness).count("idle stop deferred") == 1
+    fake_agent.live = ""
+    m.agent_run_id(fresh=True)
+    m._tick()
+    assert _wait_for(lambda: _gone(m))
+
+
+def test_reopening_an_idle_stopped_canvas_reloads_its_base_and_leases_again(
+        harness, tmp_path, monkeypatch, fake_agent):
+    shims, m = _revision_clone(harness, tmp_path, monkeypatch, revision=4)
+    _poll(m)
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 0.0)
+    m._dirty_since = None
+    m._fingerprint = m._take_fingerprint()
+    m._tick()
+    assert _wait_for(lambda: _gone(m))
+    monkeypatch.setattr(canvases_mod, "IDLE_STOP_S", 60.0)
+    again = _start(harness)
+    assert again is not m and again.watcher_epoch != m.watcher_epoch
+    assert again._base_revision == 4 and (again._remote or {}).get("id") == "c1"
+    assert again._base_files == m._base_files
+    acquired = []
+    monkeypatch.setattr(canvases_mod._SyncManager, "_run_lease_shim",
+                        lambda self, action, cid, timeout=0: acquired.append((action, cid))
+                        or {"ok": True, "owner": self._lease_owner, "lease_until": "z"})
+    again._lease_tick()
+    assert acquired == [("acquire", "c1")] and again._lease_mine is not None
+    # The frame's hello gets a full state from the new watcher.
+    assert harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()["full"]
