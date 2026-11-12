@@ -176,9 +176,17 @@ CANVAS_SHOT_DIR = next((os.path.abspath(a[len(_CANVAS_FLAG):])
 _HOOK_FLAG = "--breakout-hook="
 BREAKOUT_HOOK_DIR = next((a[len(_HOOK_FLAG):]
                           for a in sys.argv[1:] if a.startswith(_HOOK_FLAG)), None)
+# `--allow-once-hook=<run dir>`: likewise the PreToolUse hook that honours an
+# "Allow" the user gave a call the auto-mode classifier refused
+# (`_allow_once_hook`), run by the CLI for every tool call of every chat.
+_ALLOW_ONCE_FLAG = "--allow-once-hook="
+ALLOW_ONCE_HOOK_DIR = next((a[len(_ALLOW_ONCE_FLAG):]
+                            for a in sys.argv[1:] if a.startswith(_ALLOW_ONCE_FLAG)),
+                           None)
 _POSITIONAL = [a for a in sys.argv[1:]
                if a != "--no-approve" and not a.startswith(_CANVAS_FLAG)
-               and not a.startswith(_HOOK_FLAG)]
+               and not a.startswith(_HOOK_FLAG)
+               and not a.startswith(_ALLOW_ONCE_FLAG)]
 PERM_DIR = os.path.abspath(_POSITIONAL[0]) if len(_POSITIONAL) > 0 else ""
 STATE_DIR = os.path.abspath(_POSITIONAL[1]) if len(_POSITIONAL) > 1 else ""
 
@@ -1580,7 +1588,82 @@ def _breakout_hook(handoff_dir: str) -> int:
     return 0
 
 
+# The grants `agent._allow_denied` writes into a run dir, and how long one
+# stays good. MUST stay identical to `ALLOW_ONCE_FILE`, `ALLOW_ONCE_TTL` and
+# `_allow_once_match_input` in agent.py (a test asserts the two agree).
+ALLOW_ONCE_FILE = "allow-once.json"
+ALLOW_ONCE_TTL = 30 * 60
+
+
+def _allow_once_match_input(tool_name, tool_input):
+    """What a grant matches a call on: a Bash call by its `command` alone (the
+    model rewords `description` and tunes `timeout` between tries), any other
+    tool by its whole input minus the `description`."""
+    if not isinstance(tool_input, dict):
+        return {}
+    if tool_name == "Bash":
+        return {"command": tool_input.get("command")}
+    return {k: v for k, v in tool_input.items() if k != "description"}
+
+
+def _allow_once_hook(run_dir: str) -> int:
+    """PreToolUse hook mode: answer "allow" for the one call the user approved
+    after the auto-mode classifier refused it, and consume the grant. Exit 0
+    with no output is "no opinion" — the normal permission flow goes on — and
+    is what every other call, every unreadable input and every error gets: this
+    hook never blocks."""
+    path = os.path.join(run_dir, ALLOW_ONCE_FILE)
+    try:
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
+        tool_name = data["tool_name"]
+        wanted = _allow_once_match_input(tool_name, data.get("tool_input"))
+        if not isinstance(tool_name, str):
+            return 0
+    except Exception:
+        return 0
+    lock = None
+    try:
+        try:
+            import fcntl
+            lock = open(path + ".lock", "w")
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        with open(path, encoding="utf-8") as fh:
+            entries = json.load(fh)
+        if not isinstance(entries, list):
+            return 0
+        now = time.time()
+        live = [e for e in entries if isinstance(e, dict)
+                and now - float(e.get("created") or 0) < ALLOW_ONCE_TTL]
+        hit = next((e for e in live if e.get("tool_name") == tool_name
+                    and e.get("match_input") == wanted), None)
+        if hit is None:
+            return 0
+        live.remove(hit)
+        if live:
+            tmp = "%s.%d.tmp" % (path, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(live, fh)
+            os.replace(tmp, path)
+        else:
+            os.unlink(path)
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason":
+                "Approved in fused-render after auto mode blocked it"}}) + "\n")
+        return 0
+    except Exception:
+        return 0
+    finally:
+        if lock is not None:
+            lock.close()
+
+
 def main() -> int:
+    if ALLOW_ONCE_HOOK_DIR is not None:
+        return _allow_once_hook(ALLOW_ONCE_HOOK_DIR)
     if BREAKOUT_HOOK_DIR is not None:
         try:
             return _breakout_hook(BREAKOUT_HOOK_DIR)

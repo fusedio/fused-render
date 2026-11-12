@@ -496,8 +496,11 @@ def _exact_rule_content(tool_name: str, tool_input: dict):
 #               its boundary normalises `default` back to None (`_backend_mode`).
 #   acceptEdits file edits go through; Bash/web/everything else still cards
 #   auto        the CLI's own classifier auto-approves what it judges safe,
-#               and escalates the rest to a card (it is a broader opt-in, NOT
-#               a blanket one — bypassPermissions is deliberately not offered)
+#               and REFUSES the rest outright (a refusal never reaches the
+#               approve tool, so no card appears; the chat can allow one such
+#               call after the fact, `_allow_denied`). It is a broader opt-in,
+#               NOT a blanket one — bypassPermissions is deliberately not
+#               offered
 PERMISSION_MODES = {"plan": "plan", "prompt": "default",
                     "acceptEdits": "acceptEdits", "auto": "auto"}
 DEFAULT_PERMISSION_MODE = "prompt"
@@ -3291,6 +3294,173 @@ def _chat_allow_add(run_dir: str, tool: str, asked) -> None:
         pass
 
 
+# A call the auto-mode classifier refused, approved after the fact. The grant
+# is one JSON list in the run dir that the PreToolUse hook in
+# permission_server.py (`_allow_once_hook`) consumes; the ids of the calls
+# already approved sit beside it so the chip can say "Allowed" after the grant
+# is spent. MUST stay identical to the constants and `_allow_once_match_input`
+# there (a test asserts the two agree).
+ALLOW_ONCE_FILE = "allow-once.json"
+ALLOWED_DENIED_FILE = "allowed-denied.json"
+ALLOW_ONCE_TTL = 30 * 60
+
+
+def _allow_once_match_input(tool_name: str, tool_input) -> dict:
+    if not isinstance(tool_input, dict):
+        return {}
+    if tool_name == "Bash":
+        return {"command": tool_input.get("command")}
+    return {k: v for k, v in tool_input.items() if k != "description"}
+
+
+def _allow_once_hook_cmd(run_dir: str) -> str:
+    """The PreToolUse hook command that honours `allow-once.json`. It runs on
+    every tool call, so on POSIX a shell guard answers "no opinion" without
+    starting python unless a grant is pending."""
+    argv = [_stable_python(), "-I", _permission_server_path(),
+            "--allow-once-hook=" + run_dir]
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return "[ -s %s ] || exit 0; %s" % (
+        shlex.quote(os.path.join(run_dir, ALLOW_ONCE_FILE)), shlex.join(argv))
+
+
+def _allowed_denied(run_dir: str) -> set:
+    try:
+        with open(os.path.join(run_dir, ALLOWED_DENIED_FILE),
+                  encoding="utf-8") as fh:
+            ids = json.load(fh)
+    except (OSError, ValueError):
+        return set()
+    return {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
+
+
+def _annotate_allowed(segments: list, run_dir: str) -> None:
+    """Mark the denied tool segments the user already allowed (`denied.allowed`),
+    children included."""
+    allowed = _allowed_denied(run_dir)
+    if not allowed:
+        return
+    stack = list(segments)
+    while stack:
+        seg = stack.pop()
+        if not isinstance(seg, dict):
+            continue
+        if isinstance(seg.get("denied"), dict) and seg.get("id") in allowed:
+            seg["denied"]["allowed"] = True
+        stack.extend(seg.get("children") or [])
+
+
+def _denied_call(run_dir: str, tool_use_id: str):
+    """`(tool name, input)` of the call `tool_use_id` in this run's stream when
+    its result is an auto-mode classifier refusal, else None. Read off
+    out.jsonl, never taken from the caller."""
+    call, refused = None, False
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
+                  errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        msg = row.get("message") if isinstance(row, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("id") == tool_use_id:
+                call = (str(block.get("name") or ""),
+                        block.get("input") if isinstance(block.get("input"), dict)
+                        else {})
+            elif (block.get("type") == "tool_result" and block.get("is_error")
+                  and block.get("tool_use_id") == tool_use_id):
+                refused = _classifier_denial(_tool_result_payload(block)[0]) is not None
+    return call if call and refused else None
+
+
+def _locked_json_update(path: str, update) -> None:
+    """Read-modify-write one JSON file under a flock: `update(old)` -> new, and
+    None deletes the file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".lock", "w") as lock:
+        _platform.flock(lock)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                old = json.load(fh)
+        except (OSError, ValueError):
+            old = None
+        new = update(old)
+        if new is None:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        else:
+            _write_json_atomic(path, new)
+
+
+def _allow_denied(run_id: str, tool_use_id: str) -> dict:
+    """Approve the one tool call the auto-mode classifier refused: record a
+    one-shot grant the PreToolUse hook honours, then ask the agent to run the
+    call again. The call's name and input are read from the run's own stream
+    (`_denied_call`), and only a classifier refusal qualifies."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "no such run"}
+    if _run_backend(run_dir) != "claude":
+        return {"error": "only a Claude chat can allow a blocked call"}
+    call = _denied_call(run_dir, tool_use_id) if tool_use_id else None
+    if call is None:
+        return {"error": "that call was not refused by auto mode"}
+    name, tool_input = call
+    match = _allow_once_match_input(name, tool_input)
+    entry = {"tool_name": name, "match_input": match,
+             "tool_use_id": tool_use_id, "created": time.time()}
+
+    def grant(old):
+        now = time.time()
+        kept = [e for e in old or [] if isinstance(e, dict)
+                and e.get("tool_use_id") != tool_use_id
+                and now - float(e.get("created") or 0) < ALLOW_ONCE_TTL]
+        return kept + [entry]
+
+    def revoke(old):
+        kept = [e for e in old or [] if isinstance(e, dict)
+                and e.get("tool_use_id") != tool_use_id]
+        return kept or None
+
+    grants = os.path.join(run_dir, ALLOW_ONCE_FILE)
+    try:
+        _locked_json_update(grants, grant)
+    except OSError:
+        return {"error": "could not record the approval", "retry": True}
+    shown = match.get("command") if name == "Bash" else json.dumps(match)
+    shown = " ".join(str(shown).split())
+    if len(shown) > 120:
+        shown = shown[:117] + "..."
+    res = _send(run_id, "I've approved the %s call that auto mode blocked (`%s`). "
+                "Run it again with exactly the same input." % (name, shown))
+    if "error" in res:
+        try:
+            _locked_json_update(grants, revoke)
+        except OSError:
+            pass
+        return res
+    try:
+        _locked_json_update(
+            os.path.join(run_dir, ALLOWED_DENIED_FILE),
+            lambda old: [i for i in old or [] if i != tool_use_id] + [tool_use_id])
+    except OSError:
+        pass
+    return {**res, "allowed": tool_use_id}
+
+
 def _decide(run_id: str, request_id: str, decision: str, scope: str,
             mode: str = "", answers: str = "", note: str = "",
             custom: str = "") -> dict:
@@ -4381,6 +4551,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # only when the wrapper actually exists (see _fused_cli_note).
     cmd += ["--append-system-prompt",
             _appended_prompt(file, pane, breakout=breakout)]
+    settings: dict = {}
     if breakout:
         # Forced, whatever the page asked for: `acceptEdits`/`auto`/`bypass`
         # would let an edit past the approve tool, and the approve tool is where
@@ -4409,7 +4580,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         else:
             hook_cmd = shlex.join(
                 ["sh", "-c", shlex.join(hook_argv) + " || exit 2"])
-        cmd += ["--settings", json.dumps({
+        settings = {
             "permissions": {"deny": [
                 "Bash", "Edit", "MultiEdit", "NotebookEdit", "Agent", "Task",
                 "TodoWrite", "ExitPlanMode", "EnterPlanMode", "Workflow",
@@ -4417,7 +4588,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
             "hooks": {"PreToolUse": [{
                 "matcher": "Write|Edit|MultiEdit|NotebookEdit|mcp__.*",
                 "hooks": [{"type": "command", "command": hook_cmd,
-                           "timeout": 10}]}]}})]
+                           "timeout": 10}]}]}}
     elif _in_synced_clone(file):
         # A session in a canvas clone shares the folder with the user's live
         # canvas: their adds, deletes, renames and drags land in canvas.toml
@@ -4432,7 +4603,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         def canvas_hook(event: str) -> str:
             argv = [_stable_python(), "-I", _canvas_hook_path(), event]
             return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
-        cmd += ["--settings", json.dumps({"hooks": {
+        settings = {"hooks": {
             "PreToolUse": [{
                 "matcher": "Write|Edit|MultiEdit|NotebookEdit",
                 "hooks": [{"type": "command", "command": canvas_hook("pre"),
@@ -4440,7 +4611,16 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
             "PostToolUse": [{
                 "matcher": "*",
                 "hooks": [{"type": "command", "command": canvas_hook("post"),
-                           "timeout": 5}]}]}})]
+                           "timeout": 5}]}]}}
+    # The one-shot allow for a call the auto-mode classifier refused (see
+    # `_allow_denied`), in every chat. It joins the PreToolUse list the branch
+    # above built, AFTER that branch's own hook, so a breakout's refusal (exit
+    # 2) still wins over this hook's allow.
+    settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
+        {"matcher": "*", "hooks": [{"type": "command",
+                                    "command": _allow_once_hook_cmd(run_dir),
+                                    "timeout": 5}]})
+    cmd += ["--settings", json.dumps(settings)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id and resume_at and new_session_id:
@@ -8536,6 +8716,30 @@ def _cap_output(text: str) -> str:
         len(text) - SEGMENT_OUTPUT_CAP)
 
 
+# What the CLI's auto-mode classifier answers when it refuses a tool call: an
+# errored tool_result whose text starts with this, then the reason, then the
+# generic "If you have other tasks" advice.
+_CLASSIFIER_DENIAL = ("Permission for this action was denied by the Claude "
+                      "Code auto mode classifier. Reason: ")
+_CLASSIFIER_DENIAL_TAIL = ". If you have other tasks"
+
+
+def _classifier_denial(output) -> str | None:
+    """The reason when `output` is an auto-mode classifier refusal ("" if it
+    gave none), else None."""
+    if not isinstance(output, str) or not output.startswith(_CLASSIFIER_DENIAL):
+        return None
+    reason = output[len(_CLASSIFIER_DENIAL):]
+    cut = reason.find(_CLASSIFIER_DENIAL_TAIL)
+    reason = reason[:cut] if cut >= 0 else reason
+    reason = reason.strip()
+    if reason.startswith("[") and reason.endswith("]"):
+        reason = reason[1:-1].strip()
+    elif reason.endswith("."):
+        reason = reason[:-1].strip()
+    return reason
+
+
 def _tool_result_payload(block: dict) -> tuple:
     """(output, images) for one `tool_result` block.
 
@@ -8818,6 +9022,9 @@ def _segments_from_rows(rows: list, shape: tuple = (),
 
     def settle(seg, payload, ended=None):
         seg["status"], seg["output"], seg["images"] = payload
+        denied = _classifier_denial(payload[1]) if payload[0] == "error" else None
+        if denied is not None:
+            seg["denied"] = {"reason": denied}
         if ended is not None:
             seg["ended"] = ended
 
@@ -13108,6 +13315,7 @@ def _poll_segments(parsed: list, run_dir: str, app_reads: bool, bg_tasks) -> lis
     segments = _segments_from_rows(parsed, app_reads=app_reads,
                                    task_links=_task_links(bg_tasks))
     _annotate_waits(segments, _chat_waits_load(_run_chat_id(run_dir)))
+    _annotate_allowed(segments, run_dir)
     return segments
 
 
@@ -13525,6 +13733,9 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                         seg["status"] = "error"
                         seg["output"] = death
             turns.append({"role": "error", "text": death})
+    if last_run:
+        for turn in turns:
+            _annotate_allowed(turn.get("segments") or [], last_run)
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
@@ -14465,6 +14676,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         # same question text as `answers`, of what the user typed into "Other".
         return _decide(run_id, request_id, decision, scope, mode, answers, note,
                        custom)
+    if action == "allow_denied":
+        return _allow_denied(run_id, tool_use_id)
     if action == "app_state":
         # `state` arrives as a JSON string, not a nested object: params reach
         # main() through the URL/param binder (str-shaped), and the snapshot is

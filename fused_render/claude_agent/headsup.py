@@ -299,7 +299,12 @@ def build_fork_argv(agent, run_dir: str):
         shutil.rmtree(fork_dir, ignore_errors=True)
         raise
     # The fork must not fire the user's SessionStart/Stop hooks; measured to
-    # keep a full cache hit (134k read, 0 written).
+    # keep a full cache hit (134k read, 0 written). It runs no hook of the
+    # live run's either, so the settings `_claude_argv` composed give way to
+    # this one.
+    if "--settings" in argv:
+        i = argv.index("--settings")
+        del argv[i:i + 2]
     argv += ["--fork-session", "--no-session-persistence",
              "--permission-mode", "dontAsk", "--max-turns", "1",
              "--settings", '{"disableAllHooks": true}']
