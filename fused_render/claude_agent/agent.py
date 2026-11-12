@@ -3295,50 +3295,71 @@ def _chat_allow_add(run_dir: str, tool: str, asked) -> None:
 
 
 # A call the auto-mode classifier refused, approved after the fact. The grant
-# is one JSON list in the run dir that the PreToolUse hook in
+# is one JSON list in the CHAT's store (every reply of a chat is a new run, and
+# a retry may land in any of them) that the PreToolUse hook in
 # permission_server.py (`_allow_once_hook`) consumes; the ids of the calls
-# already approved sit beside it so the chip can say "Allowed" after the grant
-# is spent. MUST stay identical to the constants and `_allow_once_match_input`
-# there (a test asserts the two agree).
-ALLOW_ONCE_FILE = "allow-once.json"
-ALLOWED_DENIED_FILE = "allowed-denied.json"
-ALLOW_ONCE_TTL = 30 * 60
+# already approved sit in a second store so the chip can say "Allowed" after the
+# grant is spent. The TTL, the match rule and the locked-update helper are
+# permission_server's, loaded from there: it is the one owner.
+_PERM_SERVER_MOD = None
 
 
-def _allow_once_match_input(tool_name: str, tool_input) -> dict:
-    if not isinstance(tool_input, dict):
-        return {}
-    if tool_name == "Bash":
-        return {"command": tool_input.get("command")}
-    return {k: v for k, v in tool_input.items() if k != "description"}
+def _permission_server_mod():
+    """permission_server.py, loaded by path (the file is stdlib-only and its
+    import has no side effects beyond reading `sys.argv`)."""
+    global _PERM_SERVER_MOD
+    if _PERM_SERVER_MOD is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "fused_permission_server", os.path.join(HERE, "permission_server.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _PERM_SERVER_MOD = mod
+    return _PERM_SERVER_MOD
 
 
-def _allow_once_hook_cmd(run_dir: str) -> str:
-    """The PreToolUse hook command that honours `allow-once.json`. It runs on
-    every tool call, so on POSIX a shell guard answers "no opinion" without
-    starting python unless a grant is pending."""
+def _chat_allow_once_path(chat_id: str) -> str:
+    """The chat's pending-grant store, or "" for a chat with no usable id."""
+    chat_id = (chat_id or "").strip()
+    if not chat_id or _bad_id(chat_id):
+        return ""
+    return _state_file("claude-sessions", "allow-once", chat_id + ".json")
+
+
+def _chat_allowed_denied_path(chat_id: str) -> str:
+    """The chat's list of tool_use ids already allowed, or ""."""
+    chat_id = (chat_id or "").strip()
+    if not chat_id or _bad_id(chat_id):
+        return ""
+    return _state_file("claude-sessions", "allowed-denied", chat_id + ".json")
+
+
+def _allow_once_hook_cmd(grants_path: str) -> str:
+    """The PreToolUse hook command that honours the chat's grant store. It runs
+    on every tool call, so on POSIX a shell guard answers "no opinion" without
+    starting python unless a grant is pending (on Windows the hook itself
+    answers that before it takes a lock)."""
     argv = [_stable_python(), "-I", _permission_server_path(),
-            "--allow-once-hook=" + run_dir]
+            "--allow-once-hook=" + grants_path]
     if os.name == "nt":
         return subprocess.list2cmdline(argv)
-    return "[ -s %s ] || exit 0; %s" % (
-        shlex.quote(os.path.join(run_dir, ALLOW_ONCE_FILE)), shlex.join(argv))
+    return "[ -s %s ] || exit 0; %s" % (shlex.quote(grants_path), shlex.join(argv))
 
 
-def _allowed_denied(run_dir: str) -> set:
+def _allowed_denied(chat_id: str) -> set:
+    path = _chat_allowed_denied_path(chat_id)
     try:
-        with open(os.path.join(run_dir, ALLOWED_DENIED_FILE),
-                  encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             ids = json.load(fh)
     except (OSError, ValueError):
         return set()
     return {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
 
 
-def _annotate_allowed(segments: list, run_dir: str) -> None:
+def _annotate_allowed(segments: list, chat_id: str) -> None:
     """Mark the denied tool segments the user already allowed (`denied.allowed`),
     children included."""
-    allowed = _allowed_denied(run_dir)
+    allowed = _allowed_denied(chat_id)
     if not allowed:
         return
     stack = list(segments)
@@ -3354,74 +3375,74 @@ def _annotate_allowed(segments: list, run_dir: str) -> None:
 def _denied_call(run_dir: str, tool_use_id: str):
     """`(tool name, input)` of the call `tool_use_id` in this run's stream when
     its result is an auto-mode classifier refusal, else None. Read off
-    out.jsonl, never taken from the caller."""
+    out.jsonl, never taken from the caller. Streamed: only the rows that name
+    the id are parsed."""
     call, refused = None, False
     try:
-        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
-                  errors="replace") as fh:
-            lines = fh.read().splitlines()
+        fh = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
+                  errors="replace")
     except OSError:
         return None
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        msg = row.get("message") if isinstance(row, dict) else None
-        content = msg.get("content") if isinstance(msg, dict) else None
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict):
+    with fh:
+        for line in fh:
+            if tool_use_id not in line:
                 continue
-            if block.get("type") == "tool_use" and block.get("id") == tool_use_id:
-                call = (str(block.get("name") or ""),
-                        block.get("input") if isinstance(block.get("input"), dict)
-                        else {})
-            elif (block.get("type") == "tool_result" and block.get("is_error")
-                  and block.get("tool_use_id") == tool_use_id):
-                refused = _classifier_denial(_tool_result_payload(block)[0]) is not None
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            msg = row.get("message") if isinstance(row, dict) else None
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and block.get("id") == tool_use_id:
+                    call = (str(block.get("name") or ""),
+                            block.get("input") if isinstance(block.get("input"), dict)
+                            else {})
+                elif (block.get("type") == "tool_result" and block.get("is_error")
+                      and block.get("tool_use_id") == tool_use_id):
+                    refused = _classifier_denial(_tool_result_payload(block)[0]) is not None
     return call if call and refused else None
 
 
-def _locked_json_update(path: str, update) -> None:
-    """Read-modify-write one JSON file under a flock: `update(old)` -> new, and
-    None deletes the file."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + ".lock", "w") as lock:
-        _platform.flock(lock)
-        try:
-            with open(path, encoding="utf-8") as fh:
-                old = json.load(fh)
-        except (OSError, ValueError):
-            old = None
-        new = update(old)
-        if new is None:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-        else:
-            _write_json_atomic(path, new)
+def _chat_denied_call(chat_id: str, tool_use_id: str):
+    """`_denied_call` across the runs of one chat, newest first: a refusal from
+    an earlier reply is as allowable as the latest one."""
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return None
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        if _run_backend(run_dir) != "claude" or _run_chat_id(run_dir) != chat_id:
+            continue
+        call = _denied_call(run_dir, tool_use_id)
+        if call is not None:
+            return call
+    return None
 
 
-def _allow_denied(run_id: str, tool_use_id: str) -> dict:
+def _allow_denied(session_id: str, tool_use_id: str) -> dict:
     """Approve the one tool call the auto-mode classifier refused: record a
-    one-shot grant the PreToolUse hook honours and answer the message that asks
-    the agent to run the call again. The PAGE sends that message, through its
-    ordinary send road, so the reply is drawn and followed like any other turn.
-    The call's name and input are read from the run's own stream
-    (`_denied_call`), and only a classifier refusal qualifies."""
-    run_dir = os.path.join(RUNS, run_id)
-    if _bad_id(run_id) or not os.path.isdir(run_dir):
-        return {"error": "no such run"}
-    if _run_backend(run_dir) != "claude":
-        return {"error": "only a Claude chat can allow a blocked call"}
-    call = _denied_call(run_dir, tool_use_id) if tool_use_id else None
+    one-shot grant in the chat's store (the PreToolUse hook of every run of the
+    chat honours it) and answer the message that asks the agent to run the call
+    again. The PAGE sends that message, through its ordinary send road, so the
+    reply is drawn and followed like any other turn. The call's name and input
+    are read from the chat's own run streams (`_chat_denied_call`), and only a
+    classifier refusal qualifies."""
+    grants_path = _chat_allow_once_path(session_id)
+    allowed_path = _chat_allowed_denied_path(session_id)
+    if not grants_path:
+        return {"error": "no such chat"}
+    call = _chat_denied_call(session_id, tool_use_id) if tool_use_id else None
     if call is None:
-        return {"error": "that call was not refused by auto mode"}
+        return {"error": "that call was not refused by auto mode in this chat"}
     name, tool_input = call
-    match = _allow_once_match_input(name, tool_input)
+    server = _permission_server_mod()
+    match = server._allow_once_match_input(name, tool_input)
     entry = {"tool_name": name, "match_input": match,
              "tool_use_id": tool_use_id, "created": time.time()}
 
@@ -3429,13 +3450,13 @@ def _allow_denied(run_id: str, tool_use_id: str) -> dict:
         now = time.time()
         kept = [e for e in old or [] if isinstance(e, dict)
                 and e.get("tool_use_id") != tool_use_id
-                and now - float(e.get("created") or 0) < ALLOW_ONCE_TTL]
+                and now - float(e.get("created") or 0) < server.ALLOW_ONCE_TTL]
         return kept + [entry]
 
     try:
-        _locked_json_update(os.path.join(run_dir, ALLOW_ONCE_FILE), grant)
-        _locked_json_update(
-            os.path.join(run_dir, ALLOWED_DENIED_FILE),
+        server._locked_json_update(grants_path, grant)
+        server._locked_json_update(
+            allowed_path,
             lambda old: [i for i in old or [] if i != tool_use_id] + [tool_use_id])
     except OSError:
         return {"error": "could not record the approval", "retry": True}
@@ -4600,13 +4621,15 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                 "hooks": [{"type": "command", "command": canvas_hook("post"),
                            "timeout": 5}]}]}}
     # The one-shot allow for a call the auto-mode classifier refused (see
-    # `_allow_denied`), in every chat. It joins the PreToolUse list the branch
+    # `_allow_denied`), in every chat with a session id. It joins the PreToolUse list the branch
     # above built, AFTER that branch's own hook, so a breakout's refusal (exit
     # 2) still wins over this hook's allow.
-    settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
-        {"matcher": "*", "hooks": [{"type": "command",
-                                    "command": _allow_once_hook_cmd(run_dir),
-                                    "timeout": 5}]})
+    grants_path = _chat_allow_once_path(new_session_id or session_id)
+    if grants_path:
+        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
+            {"matcher": "*", "hooks": [{"type": "command",
+                                        "command": _allow_once_hook_cmd(grants_path),
+                                        "timeout": 5}]})
     cmd += ["--settings", json.dumps(settings)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
@@ -13302,7 +13325,7 @@ def _poll_segments(parsed: list, run_dir: str, app_reads: bool, bg_tasks) -> lis
     segments = _segments_from_rows(parsed, app_reads=app_reads,
                                    task_links=_task_links(bg_tasks))
     _annotate_waits(segments, _chat_waits_load(_run_chat_id(run_dir)))
-    _annotate_allowed(segments, run_dir)
+    _annotate_allowed(segments, _run_chat_id(run_dir))
     return segments
 
 
@@ -13720,9 +13743,8 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                         seg["status"] = "error"
                         seg["output"] = death
             turns.append({"role": "error", "text": death})
-    if last_run:
-        for turn in turns:
-            _annotate_allowed(turn.get("segments") or [], last_run)
+    for turn in turns:
+        _annotate_allowed(turn.get("segments") or [], session_id)
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
@@ -14664,7 +14686,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _decide(run_id, request_id, decision, scope, mode, answers, note,
                        custom)
     if action == "allow_denied":
-        return _allow_denied(run_id, tool_use_id)
+        return _allow_denied(session_id, tool_use_id)
     if action == "app_state":
         # `state` arrives as a JSON string, not a nested object: params reach
         # main() through the URL/param binder (str-shaped), and the snapshot is

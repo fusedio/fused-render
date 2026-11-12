@@ -263,7 +263,7 @@ def test_argv_breakout_hard_denies_shell_and_edit_tools(agent, tmp_path):
 
 
 def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
-    argv = _argv(agent, tmp_path, breakout=True)
+    argv = _argv(agent, tmp_path, breakout=True, session_id="chat1")
     settings = json.loads(argv[argv.index("--settings") + 1])
     entry, allow_once = settings["hooks"]["PreToolUse"]
     assert "--allow-once-hook=" in allow_once["hooks"][0]["command"]

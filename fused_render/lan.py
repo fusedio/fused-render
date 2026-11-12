@@ -360,7 +360,7 @@ _PREFIXES = ("/static/", "/template-assets/", "/template-shared/", "/api/engines
 _DOOR_BOT_OPS = ("pause", "resume", "stop", "clear", "open", "settings", "routines", "skills", "seen",
                  "react", "flag", "attach", "goto", "nav", "tab", "tool", "viewport", "failures")
 _DOOR_AGENT_ACTIONS = frozenset({
-    "start", "send", "send_now", "poll", "cancel", "history", "cards", "commands", "decide", "defaults",
+    "start", "send", "send_now", "poll", "cancel", "history", "cards", "commands", "decide", "allow_denied", "defaults",
     "sessions", "shots_dir", "image_to_png", "task_background", "task_output", "task_stop", "tasks",
     "live_run", "live_host"})
 #: A bot id — never one of the collection's own names under the same prefix

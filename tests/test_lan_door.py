@@ -143,7 +143,7 @@ def test_the_agent_route_is_gated_on_its_action(home):
     inner = Inner()
     app, cookie, _ = _paired(inner)
     folder = str(home / "Fused" / "app" / "demo")
-    for action in ("start", "send", "poll", "cancel", "history", "cards", "decide", "shots_dir", "tasks"):
+    for action in ("start", "send", "poll", "cancel", "history", "cards", "decide", "allow_denied", "shots_dir", "tasks"):
         assert call(app, "/api/claude/agent", "POST", {"action": action, "file": folder}, headers=[cookie]) == 200, action
     # The body reaches the inner app intact (the door read it to look at `action`).
     assert json.loads(inner.hits[-1][3]) == {"action": "tasks", "file": folder}
