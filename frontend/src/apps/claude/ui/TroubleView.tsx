@@ -301,8 +301,39 @@ function CopyDetail({ text, label = "Copy the full output" }: { text: string; la
  *  saying most of this in the right shape. */
 export function TroubleMessage({ text }: { text: string }) {
   const lines = splitTroubleMessage(text);
+  const agent = useAgent();
+  const canRun = useCanRunInTerminal();
   if (!lines.action && !lines.help && !lines.raw) {
     return <>{linkifyTrouble(lines.lead)}</>;
+  }
+  // SIGNED OUT, AND THE FIX IS ONE COMMAND: say what happened and offer the
+  // button that runs it in the terminal drawer, instead of a sentence telling
+  // the reader where to go and type it. `-login` is the help anchor
+  // `_account_error`'s login branch (and only it) appends. Without the drawer
+  // or a command for this agent, the instruction lines below stand.
+  const signIn = canRun && /-login$/.test(lines.help ?? "") ? SIGN_IN_COMMAND[agent.backend] : undefined;
+  if (signIn) {
+    return (
+      <>
+        <div className="err-line">{linkifyTrouble(lines.lead)}</div>
+        <div className="err-line">
+          <button
+            type="button"
+            className="err-cta"
+            data-testid="err-sign-in"
+            title={`Runs ${signIn} in the terminal`}
+            onClick={() => openTerminal({ command: signIn, execute: true })}
+          >
+            Sign in
+          </button>
+        </div>
+        {lines.raw ? (
+          <div className="err-line err-raw" title={lines.raw}>
+            {lines.raw}
+          </div>
+        ) : null}
+      </>
+    );
   }
   return (
     <>
