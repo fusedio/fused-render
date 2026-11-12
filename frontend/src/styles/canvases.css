@@ -99,39 +99,58 @@
 }
 
 /* Card grid ---------------------------------------------------------------- */
-/* Chrome-less cards, modeled on the hosted workbench's gallery: the preview
-   image IS the card, with the name and two stat lines sitting directly on the
-   page background underneath it. No plate, no monogram — a canvas without an
-   uploaded preview gets the hosted gallery's map tile once per UDF, and only a
-   canvas with zero UDFs falls through to a line of text. */
+/* The hosted workbench home's recents card (CanvasCard.tsx says which client
+   component, and which of its props), value for value: 280px cards, 16px
+   apart; a 10px-padded plate on the secondary surface with a hairline that
+   turns the "selected" border colour on hover, lifting 2px with a shadow. */
 .canvases-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 34px 24px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
 }
 
 .canvas-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  text-align: left;
-  padding: 0;
-  background: none;
-  border: none;
-  border-radius: 0;
-  cursor: pointer;
-  color: inherit;
-  font: inherit;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  transform: translateY(0);
 }
 
-.canvas-card:disabled {
-  opacity: 0.6;
+.canvas-card.is-hovered:not(.is-inert) {
+  border-color: var(--fg);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.canvas-card.is-inert {
   cursor: default;
 }
 
-/* The thumbnail frame. The hairline is the only chrome left, and it exists for
-   light mode: a pale preview on white --bg would otherwise have no edge at
-   all. In dark it reads as the barely-there seam the screenshot shows. */
+/* The whole card is this link; the actions sit above it. */
+.canvas-card-link {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  border-radius: 10px;
+}
+
+.canvas-card.is-inert .canvas-card-link {
+  cursor: default;
+}
+
+.canvas-card-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .canvas-card-thumb {
   position: relative;
   aspect-ratio: 16 / 9;
@@ -139,26 +158,6 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  transition: border-color 120ms ease;
-}
-
-/* The border+name shift is the whole hover affordance now that the card has no
-   surface of its own to tint. */
-.canvas-card:hover:not(:disabled) .canvas-card-thumb {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-}
-
-.canvas-card:hover:not(:disabled) .canvas-card-name {
-  color: var(--accent-soft);
-}
-
-.canvas-card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-  border-radius: 6px;
 }
 
 /* Server-provided preview image filling the frame. */
@@ -168,11 +167,13 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border-radius: 4px;
+  background: var(--bg-alt);
 }
 
-/* Stand-in for a canvas with no uploaded preview: the hosted gallery's map tile,
-   once per UDF, in the grid shape that count rounds up into (see tileLayout).
-   `grid-template-*` arrive inline from the component, since the shape is data. */
+/* Stand-in for a canvas with no uploaded preview: the hosted gallery's map
+   tile (vendored, so the card looks right offline), once per UDF, in the grid
+   shape that count rounds up into. `grid-template-*` arrive inline. */
 .canvas-card-tiles {
   position: absolute;
   inset: 0;
@@ -193,35 +194,144 @@
 
 /* Only a canvas with zero UDFs lands here — there is nothing to tile. */
 .canvas-card-noshot {
-  font-size: 13px;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-alt);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-faint);
+}
+
+/* Overlay actions: share + star top right, delete + new tab bottom right. */
+.canvas-card-actions {
+  position: absolute;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+}
+
+.canvas-card-actions.is-top {
+  top: 10px;
+  gap: 6px;
+}
+
+.canvas-card-actions.is-bottom {
+  bottom: 10px;
+  gap: 8px;
+}
+
+/* baseui's mini secondary button, as the hosted card overrides it: a frosted
+   plate of the page colour that inverts on hover. */
+.canvas-card-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    opacity 0.3s,
+    visibility 0.3s,
+    background-color 0.3s,
+    color 0.3s;
+}
+
+.canvas-card-action.is-secondary {
   color: var(--fg-muted);
 }
 
+.canvas-card-action.is-starred {
+  color: var(--accent);
+}
+
+.canvas-card-action:hover {
+  background: color-mix(in srgb, var(--fg) 80%, transparent);
+  color: var(--bg);
+}
+
+.canvas-card-action.is-hover-only {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.canvas-card.is-hovered:not(.is-inert) .canvas-card-action.is-hover-only,
+.canvas-card-action.is-hover-only:focus-visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Title left, UDF count right (hover only). */
 .canvas-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: center;
+  min-width: 0;
 }
 
 .canvas-card-name {
-  font-size: 20px;
-  font-weight: 400;
-  letter-spacing: -0.01em;
+  position: relative;
+  display: block;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  transition: color 120ms ease;
-}
-
-/* UDF count (or the clone hint) — the louder of the two stat lines. */
-.canvas-card-stat {
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 300;
+  line-height: 20px;
   color: var(--fg);
 }
 
-.canvas-card-meta {
-  font-size: 13px;
-  color: var(--fg-muted);
+.canvas-card-name-run {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+/* Measured, never seen: the middle-truncated copy below stands in at rest. */
+.canvas-card-name-run.is-measure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.canvas-card-count {
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--fg-faint);
+}
+
+/* Opening (clone + sync) — the hosted card's copy-in-progress scrim. */
+.canvas-card-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  cursor: wait;
+}
+
+.canvas-card-spinner {
+  width: 28px;
+  height: 28px;
+  animation: canvases-refreshing-spin 0.9s linear infinite;
 }
 
 /* New-canvas inline form (replaces the head actions while open). The error

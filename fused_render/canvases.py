@@ -1364,6 +1364,23 @@ def _shim_previews_command(cli) -> list[str] | None:
     return [sys.executable, shim]
 
 
+def _shim_favourites_command(cli) -> list[str] | None:
+    """argv for the favourites shim, or None for an external CLI (no Python
+    to drive; the card's star is hidden there)."""
+    if cli.external:
+        return None
+    shim = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "_fused_canvas_favourites.py"
+    )
+    return [sys.executable, shim]
+
+
+# One control-plane round trip plus the fused import.
+FAVOURITES_SHIM_TIMEOUT = 30.0
+# Collection ids are UUIDs; anything else never reaches the URL path.
+_COLLECTION_ID_RE = re.compile(r"[0-9A-Fa-f-]{8,64}")
+
+
 # The shim signs the whole batch on a thread pool, so this is the fused import
 # cost plus roughly ONE control-plane round trip, not one per id.
 PREVIEWS_SHIM_TIMEOUT = 60.0
@@ -1894,6 +1911,10 @@ def _list_entries_uncached(env: str):
                             if isinstance(entry.get("n_code_udfs"), int)
                             else None,
                             "updated_at": _iso_epoch(entry.get("last_updated")),
+                            "share_token": entry.get("share_token")
+                            if isinstance(entry.get("share_token"), str)
+                            and entry.get("share_token")
+                            else None,
                         }
                     )
         return entries, None
@@ -1917,7 +1938,7 @@ def _list_entries_uncached(env: str):
                 entries.append(
                     {"name": entry, "id": None, "preview_url": None,
                      "preview_pending": False, "n_code_udfs": None,
-                     "updated_at": None}
+                     "updated_at": None, "share_token": None}
                 )
             elif isinstance(entry, dict):
                 name = entry.get("name") or entry.get("slug")
@@ -1925,7 +1946,7 @@ def _list_entries_uncached(env: str):
                     entries.append(
                         {"name": name, "id": entry.get("id"), "preview_url": None,
                          "preview_pending": False, "n_code_udfs": None,
-                         "updated_at": None}
+                         "updated_at": None, "share_token": None}
                     )
     return entries, None
 
@@ -2069,6 +2090,95 @@ def api_canvases_previews(
         if isinstance(k, str) and (v is None or isinstance(v, str))
     }
     return {"previews": previews}
+
+
+def _run_favourites_shim(env: str, req: dict):
+    """(data, error) from the favourites shim for `env`'s account."""
+    cli = fused_cli()
+    if cli is None:
+        return None, _no_cli_error()
+    shim_cmd = _shim_favourites_command(cli)
+    if shim_cmd is None:
+        return None, _error("favourites need the bundled fused CLI", 501)
+    try:
+        proc = subprocess.run(
+            shim_cmd,
+            input=json.dumps(req),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=FAVOURITES_SHIM_TIMEOUT,
+            env=_cli_env(cli, env),
+        )
+    except subprocess.TimeoutExpired:
+        return None, _error(
+            f"favourites timed out after {int(FAVOURITES_SHIM_TIMEOUT)}s", 502
+        )
+    except OSError as e:
+        return None, _error(f"could not run the favourites helper: {e}")
+    if proc.returncode != 0:
+        message = cli_error(proc.stderr or proc.stdout, "favourites request failed")
+        if (
+            "re-authenticate" in message.lower()
+            or "refresh your fused credentials" in message.lower()
+        ):
+            return None, _error(message, 401)
+        return None, _error(message, 502)
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        return None, _error(
+            f"the favourites helper printed something that wasn't JSON: "
+            f"{proc.stdout.strip()[-200:]!r}",
+            502,
+        )
+    if not isinstance(data, dict):
+        return None, _error("the favourites helper printed a non-object", 502)
+    return data, None
+
+
+@router.get("/api/canvases/favourites")
+def api_canvases_favourites(env: str = "", x_fused: str | None = Header(default=None)):
+    """The account's favourite canvas (collection) ids — the hosted home's
+    star, read from the same control-plane list so the two agree. EXECUTES a
+    control-plane call, so guarded like the listing."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    env, bad = _require_env(env)
+    if bad is not None:
+        return bad
+    if not _logged_in(env):
+        return _error("not signed in to Fused — sign in first", 409)
+    data, err = _run_favourites_shim(env, {"op": "get"})
+    if err is not None:
+        return err
+    ids = data.get("collection_ids")
+    return {"collection_ids": [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []}
+
+
+@router.post("/api/canvases/favourite")
+def api_canvases_favourite(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Star (`on: true`) or unstar one canvas by collection id."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    if not _logged_in(env):
+        return _error("not signed in to Fused — sign in first", 409)
+    cid = body.get("id")
+    if not isinstance(cid, str) or not _COLLECTION_ID_RE.fullmatch(cid):
+        return _error("'id' must be a collection id")
+    on = body.get("on")
+    if not isinstance(on, bool):
+        return _error("'on' must be true or false")
+    _, err = _run_favourites_shim(env, {"op": "put" if on else "delete", "id": cid})
+    if err is not None:
+        return err
+    return {"ok": True, "id": cid, "on": on}
 
 
 @router.post("/api/canvases/create")
