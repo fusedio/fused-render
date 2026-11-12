@@ -230,8 +230,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* baseui mini: 6px over/under, 8px either side of a 12px glyph. */
   min-width: 28px;
-  height: 28px;
+  height: 24px;
   padding: 0 8px;
   border: none;
   border-radius: 4px;
